@@ -304,6 +304,7 @@ describe('remote MCP App endpoint', () => {
       ['queue_foreign', 'ws_foreign'],
     ] as const) {
       createSchedulerAdmissionEntry(f.coreDb, {
+        backendId: 'nanohost',
         queueEntryId,
         workspaceId,
         threadId: thread.id,
@@ -311,10 +312,8 @@ describe('remote MCP App endpoint', () => {
         triggerActor: { kind: 'user', id: 'user_remote_mcp' },
         turnInput: 'Protected work',
         requestedAgentId: 'agent_codex_host',
-        priorityClass: 'interactive',
-        requiredPoolConstraints: ['openshell.local'],
       });
-      denySchedulerAdmissionEntry(f.coreDb, { queueEntryId, denialReason: 'no-compatible-pool' });
+      denySchedulerAdmissionEntry(f.coreDb, { queueEntryId, denialReason: 'authority-denied' });
     }
     const before = ['queue_private', 'queue_foreign'].map((id) =>
       requireSchedulerAdmissionEntry(f.coreDb, id)
@@ -504,19 +503,19 @@ describe('remote MCP App endpoint', () => {
     f.store.updateTurn(turn.id, { status: 'interrupted', completedAt: new Date().toISOString() });
     for (const queueEntryId of ['queue_b9_retry', 'queue_b9_cancel'])
       createSchedulerAdmissionEntry(f.coreDb, {
+        backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'user_remote_mcp' },
         queueEntryId,
+        requestId: `request_${queueEntryId}`,
         workspaceId: 'ws_demo',
         threadId: thread.id,
         turnId: `turn_${queueEntryId}`,
         turnInput: 'Work',
         requestedAgentId: 'agent_codex_host',
-        priorityClass: 'interactive',
-        requiredPoolConstraints: ['openshell.local'],
       });
     denySchedulerAdmissionEntry(f.coreDb, {
       queueEntryId: 'queue_b9_retry',
-      denialReason: 'no-compatible-pool',
+      denialReason: 'authority-denied',
     });
     const workspaceDb = openWorkspaceDb(f.dataRoot, 'ws_demo');
     applyScopedMigrations(workspaceDb);
@@ -719,7 +718,7 @@ describe('remote MCP App endpoint', () => {
       token.secret
     );
     expect(result.isError).toBe(true);
-    expect(JSON.parse(result.content[0].text)).toMatchObject({ code: 'turn_interrupt_failed' });
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ code: 'recovery_required' });
     expect(f.store.getTurnById(turn.id)).toEqual(turn);
     expect(f.store.listCommandRequests()).toEqual(receipts);
   });

@@ -3453,7 +3453,7 @@ describe('app api schemas', () => {
     expect(appApiSchemas.WorkerControlRejectionHumanAttentionSourceSchema.shape).not.toHaveProperty(
       'agentSessionId'
     );
-    expect(appApiSchemas.SchedulerOrphanWorkerHumanAttentionSourceSchema.shape).not.toHaveProperty(
+    expect(appApiSchemas.ExecutionAttemptHumanAttentionSourceSchema.shape).not.toHaveProperty(
       'agentSessionId'
     );
   });
@@ -4874,7 +4874,6 @@ describe('app api schemas', () => {
             requestedAgentId: 'agent_codex_host',
             profileRef: 'default',
             modelId: null,
-            priorityClass: 'interactive',
             enqueuedAt: timestamp,
             effectivePriorityAt: timestamp,
             firstCapDeferredAt: null,
@@ -4892,13 +4891,12 @@ describe('app api schemas', () => {
             requestedAgentId: 'agent_codex_host',
             profileRef: 'default',
             modelId: null,
-            priorityClass: 'interactive',
             enqueuedAt: timestamp,
             effectivePriorityAt: timestamp,
             firstCapDeferredAt: null,
             requiredPoolConstraints: ['openshell.local'],
             status: 'denied',
-            denialReason: 'no-compatible-pool',
+            denialReason: 'authority-denied',
             queuePosition: null,
           },
         ],
@@ -5265,7 +5263,6 @@ describe('app api schemas', () => {
           threadId: 'th_demo',
           turnId: 'turn_demo',
           requestedAgentId: 'agent_codex_host',
-          priorityClass: 'interactive',
         },
         actions: [{ kind: 'open_thread', label: 'Open thread', method: 'GET' }],
       },
@@ -5294,25 +5291,24 @@ describe('app api schemas', () => {
         actions: [{ kind: 'open_thread', label: 'Open thread', method: 'GET' }],
       },
       {
-        id: 'scheduler-orphan-worker:orphan_demo',
+        id: 'execution-attempt:attempt_demo',
         kind: 'blocked_turn',
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         turnId: 'turn_demo',
         title: 'Worker session needs recovery review',
-        summary: 'A scheduler restart found an orphaned worker session.',
+        summary: 'An unresolved execution attempt retains its exclusion.',
         severity: 'risk',
         createdAt: timestamp,
         source: {
-          type: 'scheduler_orphan_worker',
-          evidenceId: 'orphan_demo',
-          leaseId: 'lease_demo',
+          type: 'execution_attempt',
+          attemptId: 'attempt_demo',
+          backendId: 'nanohost',
+          phase: 'closing',
+          disposition: 'unknown',
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
           turnId: 'turn_demo',
-          packageSnapshotId: 'pkg_demo',
-          reason: 'restart-heartbeat-timeout',
-          schedulerEpoch: 7,
         },
         actions: [{ kind: 'open_thread', label: 'Open thread', method: 'GET' }],
       },

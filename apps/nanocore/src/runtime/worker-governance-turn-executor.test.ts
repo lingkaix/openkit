@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import {
   CapabilityUsageResponseSchema,
   KnowledgeManagerDraftProposalResponseSchema,
@@ -22,6 +23,7 @@ import { validateAgentEnvironmentPackageForBackend } from '@openkit/config-schem
 import type { ActorRef } from '@openkit/protocol';
 import { RequestIdSchema } from '@openkit/protocol';
 import {
+  buildWorkerCanonicalTerminalEventRecord,
   type WorkerCanonicalEventRecord,
   WorkerCanonicalEventRecordSchema,
   type WorkerLineage,
@@ -30,8 +32,8 @@ import {
   type WorkerRuntimeRawStreamManifest,
   WorkerRuntimeRawStreamManifestSchema,
 } from '@openkit/worker-protocol';
-import { describe, expect, it, vi } from 'vitest';
-import { createApp } from '../app.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createApp, createDefaultWorkerControlGateway } from '../app.js';
 import { getArtifactReview } from '../artifact-reviews.js';
 import {
   createOpenKitAccessTokenRecord,
@@ -49,15 +51,7 @@ import type {
   LLMGatewayProviderDispatcher,
 } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import {
-  completeSchedulerLeaseForTerminalTurn,
-  createSchedulerAdmissionEntry,
-  dispatchNextSchedulerEntry,
-  markSchedulerSessionLeaseReleasing,
-  requireSchedulerSessionLease,
-  upsertSchedulerCapacityRecord,
-  upsertSchedulerWorkerPool,
-} from '../scheduler-records.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { LOCAL_USER_ID, workspaceDbPath } from '../storage/fs-layout.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
@@ -70,6 +64,7 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { seedWritableGitRepository } from '../test-support/git-repository.js';
 import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
 import { operationRequest } from '../test-support/operation-request.js';
@@ -94,12 +89,24 @@ import {
 import * as snapshotLedger from './aep-snapshot-ledger.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
+import * as attempts from './execution-attempt-records.js';
 import { commandInputHash } from './idempotent-command.js';
+import {
+  acceptNanoHostAttemptHeartbeat,
+  bindNanoHostAttemptRouteTokenHashes,
+  requireNanoHostExecutionAttempt,
+} from './nanohost-attempt-records.js';
+import { runNanoHostAttemptRecoveryMaintenance } from './nanohost-attempt-recovery.js';
+import {
+  dispatchNanoHostHarnessOperation,
+  settleNanoHostHarnessOperation,
+} from './nanohost-harness-records.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   getNanoHostRuntimeTarget,
   upsertNanoHostRuntimeTarget,
 } from './nanohost-runtime-target.js';
+import type { NanoHostSessionEffectRequest } from './nanohost-session-dispatch.js';
 import { dispatchOpenkitWorkTool } from './openkit-work-mcp.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import {
@@ -110,6 +117,7 @@ import {
 } from './pending-requests.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
 import { runSchedulerRecoveryMaintenance } from './scheduler-restart-recovery.js';
+import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
 import { getWorkerBackendSession } from './worker-backend-sessions.js';
 import {
   clearWorkerCheckpoint,
@@ -121,6 +129,7 @@ import { WorkerControlGateway } from './worker-control-gateway.js';
 import {
   getWorkerControlAcceptedFinalStatus,
   recordWorkerControlAcceptedRecord,
+  waitForWorkerControlFinalStatus,
 } from './worker-control-records.js';
 import type {
   WorkerGovernanceBackend,
@@ -144,6 +153,7 @@ import {
 } from './worker-runtime-provenance.js';
 import {
   createWorkerStorageBinding,
+  getWorkerStorageBinding,
   reserveWorkerStorageAttachment,
   workerStorageDefaultWorkSlotRef,
 } from './worker-storage-bindings.js';
@@ -193,7 +203,7 @@ function openTestWorkspaceDb(coreDb: CoreDb): WorkspaceDb {
 }
 
 /** Dispatches the scheduler lease that authorizes one executor fixture. */
-function dispatchExecutorLease(
+function recordExecutorAttempt(
   coreDb: CoreDb,
   input: {
     readonly agentSessionId: string;
@@ -225,64 +235,33 @@ function dispatchExecutorLease(
       ready: true,
     });
   }
-  upsertSchedulerWorkerPool(coreDb, {
-    allowedBackendKinds: ['openshell'],
-    allowedPlacements: ['local'],
-    allowedWorkspaceScopes: ['local'],
-    budgetClass: 'interactive',
-    currentAdmittedSessionCount: 0,
-    currentQueueDepth: 1,
-    defaultTimeoutMs: 900_000,
-    healthSummary: 'ready',
-    maxConcurrentSessions: 1,
-    poolId: 'pool_executor_anchor',
-    queueLimit: 20,
-    status: 'active',
-  });
-  upsertSchedulerCapacityRecord(coreDb, {
-    capacityClass: 'local',
-    concurrencyCeiling: 1,
-    inUseCount: 0,
-    observationSource: 'configured',
-    observedAt: '2026-07-15T00:00:00.000Z',
-    poolId: 'pool_executor_anchor',
-    queueDepth: 0,
-    targetId: 'target_executor_anchor',
-  });
-  createSchedulerAdmissionEntry(coreDb, {
+  const entry = createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
     triggerActor: input.triggerActor ?? { kind: 'user', id: 'user_local' },
     ...(input.serverAdminTokenId ? { serverAdminTokenId: input.serverAdminTokenId } : {}),
-    priorityClass: 'interactive',
     profileRef: 'profile_worker',
     queueEntryId: `queue_${input.turnId}`,
-    ...(input.requestId ? { requestId: input.requestId } : {}),
+    requestId: input.requestId ?? `request:${input.turnId}`,
     requestedAgentId: 'agent_codex_host',
-    requiredPoolConstraints: ['openshell.local'],
     threadId: input.threadId,
     turnId: input.turnId,
     turnInput: input.turnInput ?? 'Run governed worker',
     workspaceId: input.workspaceId ?? 'ws_demo',
     now: () => input.admittedAt ?? '2026-07-15T00:00:01.000Z',
   });
-  dispatchNextSchedulerEntry(coreDb, {
+  recordTestExecutionAttempt(coreDb, {
+    entry,
+    attemptId: `lease_${input.turnId}`,
     agentSessionId: input.agentSessionId,
-    expectedControlMode: 'poll',
-    expectedDataPlaneMode: 'openshell-files',
-    heartbeatIntervalMs: 10_000,
-    heartbeatTimeoutMs: 30_000,
-    leaseDurationMs: 900_000,
-    leaseId: `lease_${input.turnId}`,
+    inputRef: input.packageSnapshotId,
+    bindingRef: input.sandboxBindingRef,
+    sessionCompatibilityKey: 'fixture-compatibility',
     now: () => input.admittedAt ?? '2026-07-15T00:00:02.000Z',
-    packageSnapshotId: input.packageSnapshotId,
-    planId: `plan_${input.turnId}`,
-    sandboxBindingRef: input.sandboxBindingRef,
-    schedulerEpoch: 1,
-    startupTimeoutMs: 120_000,
   });
 }
 
 /** Starts one fixture Worker with a real admission and lease for its exact package lineage. */
-function startWithExecutorLease(
+function startWithExecutorAttempt(
   coreDb: CoreDb,
   executor: WorkerGovernanceTurnExecutor,
   store: FsStore,
@@ -293,7 +272,7 @@ function startWithExecutorLease(
   context: NonNullable<Parameters<WorkerGovernanceTurnExecutor['startTurn']>[3]>
 ): Promise<void> {
   const sandboxBindingRef = `lease-binding:${turn.id}`;
-  dispatchExecutorLease(coreDb, {
+  recordExecutorAttempt(coreDb, {
     admittedAt,
     agentSessionId,
     packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
@@ -302,10 +281,13 @@ function startWithExecutorLease(
     turnId: turn.id,
     triggerActor: context.triggerActor ?? turn.triggerActor,
     workspaceId: turn.workspaceId,
+    requestId: context.requestId,
+    turnInput: input,
   });
   return executor.startTurn(store, turn.id, input, {
     ...context,
     agentSessionId,
+    attemptId: `lease_${turn.id}`,
     sandboxBindingRef,
   });
 }
@@ -478,7 +460,7 @@ function createWorkerContextExecutorFixture(
   });
   const agentSessionId = `as_context_${name}`;
   const sandboxBindingRef = `lease-binding:context-${name}`;
-  dispatchExecutorLease(coreDb, {
+  recordExecutorAttempt(coreDb, {
     agentSessionId,
     packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
     requestId,
@@ -878,7 +860,109 @@ function testGitRefExists(repositoryPath: string, reference: string): boolean {
   }
 }
 
+/** Observes the Core attempt phase without projecting the retired grant or physical accounting. */
+function observeExecutionAttempts(
+  coreDb: ReturnType<typeof openCoreDb>
+): Record<string, unknown>[] {
+  const present = coreDb.sqlite
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduler_execution_attempts'"
+    )
+    .get();
+  return present
+    ? (coreDb.sqlite
+        .prepare('SELECT * FROM scheduler_execution_attempts ORDER BY rowid')
+        .all() as Record<string, unknown>[])
+    : [];
+}
+
 describe('WorkerGovernanceTurnExecutor', () => {
+  it('closes a real preparation failure before snapshot publication without backend submission or missing-snapshot maintenance (#108)', async () => {
+    const fixture = createWorkerContextExecutorFixture('pre-snapshot-108');
+    const backend = new FakeWorkerGovernanceBackend();
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb: fixture.coreDb,
+      createAgentSessionId: () => fixture.agentSessionId,
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+    const failedPublication = vi
+      .spyOn(snapshotLedger, 'recordAgentEnvironmentPackageSnapshot')
+      .mockImplementation(() => {
+        throw new Error('Controlled snapshot preparation refusal before publication.');
+      });
+    try {
+      const failure = await executor
+        .startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
+          attemptId: `lease_${fixture.turn.id}`,
+          agentSessionId: fixture.agentSessionId,
+          agentSetup: createTestAgentSetup(),
+          requestId: fixture.requestId,
+          sandboxBindingRef: fixture.sandboxBindingRef,
+          triggerActor: fixture.turn.triggerActor,
+          workspaceRoots: [],
+        })
+        .catch((error: unknown) => error);
+      expect(failedPublication).toHaveBeenCalledOnce();
+      expect(failure).toBeInstanceOf(Error);
+      expect(backend.calls).not.toContain('materialize');
+      expect(backend.calls).not.toContain('submit');
+      const workspace = openTestWorkspaceDb(fixture.coreDb);
+      try {
+        expect(
+          snapshotLedger.listExportableAgentEnvironmentPackageSnapshots(workspace, 'ws_demo')
+        ).toEqual([]);
+      } finally {
+        workspace.sqlite.close();
+      }
+      const original = fixture.store.getTurnById(fixture.turn.id);
+      expect(original).toMatchObject({ id: fixture.turn.id, status: 'failed' });
+      const attemptTable = fixture.coreDb.sqlite
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduler_execution_attempts'"
+        )
+        .get();
+      const retainedAttempts = attemptTable
+        ? fixture.coreDb.sqlite
+            .prepare('SELECT * FROM scheduler_execution_attempts WHERE turn_id = ?')
+            .all(fixture.turn.id)
+        : [];
+      expect(retainedAttempts).toEqual([
+        expect.objectContaining({
+          phase: 'closed',
+          disposition: 'not_accepted',
+          turn_id: fixture.turn.id,
+        }),
+      ]);
+      failedPublication.mockRestore();
+      await expect(
+        runSchedulerRecoveryMaintenance(fixture.coreDb, {
+          executionBackend: backend,
+          store: fixture.store,
+          now: () => '2026-07-15T00:00:04.000Z',
+          projectRecoveredTurn: async () => ({ status: 'failed' }),
+        })
+      ).resolves.toBeUndefined();
+      await expect(
+        runSchedulerRecoveryMaintenance(fixture.coreDb, {
+          executionBackend: backend,
+          store: fixture.store,
+          now: () => '2026-07-15T00:00:05.000Z',
+          projectRecoveredTurn: async () => ({ status: 'failed' }),
+        })
+      ).resolves.toBeUndefined();
+      const reloaded = new FsStore({ dataRoot: fixture.coreDb.dataRoot });
+      expect(reloaded.getTurnById(fixture.turn.id)).toEqual(original);
+      expect(reloaded.listThreadItems('ws_demo', fixture.turn.threadId)).toEqual(
+        fixture.store.listThreadItems('ws_demo', fixture.turn.threadId)
+      );
+      expect(backend.calls).not.toContain('submit');
+    } finally {
+      failedPublication.mockRestore();
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
   it.each([
     'backend',
     'typed-preview',
@@ -894,7 +978,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           ? new WorkerNativeProofValidationError('package-binding-lineage/attachment-target', {
               proofAgentSessionId: 'as_original_proof',
               packageSnapshotId: 'snapshot_original_proof',
-              leaseId: 'lease_original_proof',
+              attemptId: 'lease_original_proof',
               originPhysicalEpoch: 'a'.repeat(64),
               attachmentPhysicalEpoch: 'b'.repeat(64),
             })
@@ -924,7 +1008,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         freshAgentSessionId: 'as_capacity_cause',
         requestId: 'request_capacity_cause',
         turn,
-        turnInput: turn.input,
+        turnInput: 'Capacity inspection',
         workspaceCwd: null,
         workspaceRoots: [],
       };
@@ -963,7 +1047,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           ? {
               proofAgentSessionId: 'as_original_proof',
               packageSnapshotId: 'snapshot_original_proof',
-              leaseId: 'lease_original_proof',
+              attemptId: 'lease_original_proof',
               originPhysicalEpoch: 'a'.repeat(64),
               attachmentPhysicalEpoch: 'b'.repeat(64),
             }
@@ -988,6 +1072,85 @@ describe('WorkerGovernanceTurnExecutor', () => {
       );
     } finally {
       appLog.mockRestore();
+    }
+  });
+
+  it('records possible preparation acceptance before effect-capable materialization', async () => {
+    const f = createWorkerContextExecutorFixture('materialization-operation');
+    f.coreDb.sqlite
+      .prepare(
+        "UPDATE scheduler_execution_attempts SET startup_deadline='2999-01-01T00:00:00.000Z'"
+      )
+      .run();
+    const observations: Array<() => void> = [];
+    const effects: string[] = [];
+    const runtime = createConfiguredWorkerLifecycleRuntime({
+      coreDb: f.coreDb,
+      store: f.store,
+      env: {},
+      workerControlGateway: new WorkerControlGateway(),
+      nanoHostSessionDispatch: {
+        async effect(connectionOrRequest, carriedRequest) {
+          const request = carriedRequest ?? (connectionOrRequest as NanoHostSessionEffectRequest);
+          effects.push(request.kind);
+          const attempt = attempts.requireSchedulerExecutionAttempt(f.coreDb, `lease_${f.turn.id}`);
+          const authority = operationAuthorizer.currentWorkerLineageWorkspaceAuthority(
+            f.coreDb,
+            {
+              agentSessionId: f.agentSessionId,
+              packageSnapshotId: attempt.inputRef!,
+              threadId: f.turn.threadId,
+              turnId: f.turn.id,
+              workspaceId: f.turn.workspaceId,
+              triggerActor: f.turn.triggerActor,
+            },
+            'runtime.launch',
+            true
+          );
+          observations.push(() => {
+            expect(attempt).toMatchObject({
+              phase: 'open',
+              disposition: 'unknown',
+              agentSessionId: f.agentSessionId,
+              inputRef: `aepsnap_${f.turn.id}_${f.agentSessionId}`,
+            });
+            expect(attempt.operationId).toEqual(expect.any(String));
+            expect(attempt.preparationInputJson).toEqual(expect.any(String));
+            expect(authority).toBeTruthy();
+          });
+          throw new Error('Controlled image acquisition refusal at the external Native boundary.');
+        },
+        async poll() {
+          return null;
+        },
+        async result() {},
+        async route() {
+          throw new Error('Unexpected route.');
+        },
+      },
+    });
+    try {
+      await expect(
+        runtime.turnExecutor.startTurn(f.store, f.turn.id, f.workerRequest, {
+          attemptId: `lease_${f.turn.id}`,
+          agentSessionId: f.agentSessionId,
+          agentSetup: createTestAgentSetup({
+            requiredCapabilities: ['trusted-worker-inference-relay'],
+          }),
+          requestId: f.requestId,
+          sandboxBindingRef: f.sandboxBindingRef,
+          triggerActor: f.turn.triggerActor,
+          workspaceRoots: [],
+        })
+      ).rejects.toThrow('Controlled image acquisition refusal');
+      expect(effects).toEqual(['image.acquire']);
+      expect(observations).toHaveLength(1);
+      observations[0]!();
+      expect(
+        attempts.requireSchedulerExecutionAttempt(f.coreDb, `lease_${f.turn.id}`).operationId
+      ).toEqual(expect.any(String));
+    } finally {
+      f.coreDb.sqlite.close();
     }
   });
 
@@ -1031,7 +1194,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         freshAgentSessionId: 'as-fresh-continuity',
         requestId: 'req-reuse-continuity',
         turn,
-        turnInput: turn.input,
+        turnInput: 'Reuse current continuity',
         workspaceRoots: [],
       })
     ).resolves.toEqual({
@@ -1092,7 +1255,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         freshAgentSessionId: 'as-fresh-after-runtime-mismatch',
         requestId: 'req-runtime-incompatible',
         turn,
-        turnInput: turn.input,
+        turnInput: 'Replace current continuity',
         workspaceRoots: [],
       })
     ).rejects.toThrow('Fresh target preview failed.');
@@ -1104,7 +1267,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('commits replacement only after fresh compatibility and runtime revalidation', async () => {
-    const store = createDemoStore();
+    const coreDb = openCommitFixtureCore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Commit current replacement');
     const currentCompatibilityKey = `sha256:${'c'.repeat(64)}`;
     const freshCompatibilityKey = `sha256:${'d'.repeat(64)}`;
@@ -1130,6 +1294,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
+      coreDb,
       now: () => '2026-08-21T00:00:05.000Z',
     });
     Object.assign(executor, {
@@ -1146,7 +1311,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       freshAgentSessionId: 'as-fresh-replacement',
       requestId: 'req-commit-replacement',
       turn,
-      turnInput: turn.input,
+      turnInput: 'Commit current replacement',
       workspaceCwd: null,
       workspaceRoots: [],
     };
@@ -1154,8 +1319,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const historyBeforeCommit = store.listThreadTurns(turn.workspaceId, turn.threadId);
 
     expect(store.getAgentSession('as-current-replacement').status).toBe('idle');
+    acquireCommitFixtureAttempt(coreDb, preparation, 'lease-commit-replacement');
     await executor.commitPreparedAgentSessionForTurn(store, {
-      leaseId: 'lease-commit-replacement',
+      attemptId: 'lease-commit-replacement',
       prepared,
       preparation,
     });
@@ -1169,7 +1335,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('selects a fresh AgentSession without local close for restart-unproved Sandbox continuity', async () => {
-    const store = createDemoStore();
+    const coreDb = openCommitFixtureCore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Replace restart continuity');
     const currentCompatibilityKey = `sha256:${'1'.repeat(64)}`;
     const freshCompatibilityKey = `sha256:${'2'.repeat(64)}`;
@@ -1198,6 +1365,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     Object.assign(backend, { prepareAgentSessionContinuity: continuity });
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
+      coreDb,
       now: () => '2026-09-06T00:00:01.000Z',
     });
     Object.assign(executor, {
@@ -1211,7 +1379,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       freshAgentSessionId: 'as-restart-unproved-fresh',
       requestId: 'req-restart-unproved',
       turn,
-      turnInput: turn.input,
+      turnInput: 'Replace restart continuity',
       workspaceCwd: null,
       workspaceRoots: [],
     };
@@ -1223,8 +1391,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       replacementRequired: true,
       sessionCompatibilityKey: freshCompatibilityKey,
     });
+    acquireCommitFixtureAttempt(coreDb, preparation, 'lease-restart-unproved');
     const committed = executor.commitPreparedAgentSessionForTurn(store, {
-      leaseId: 'lease-restart-unproved',
+      attemptId: 'lease-restart-unproved',
       prepared,
       preparation,
     });
@@ -1254,7 +1423,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     'interrupted',
     'closed',
   ] as const)('retires a %s predecessor binding after admission without rewriting Core history', async (status) => {
-    const store = createDemoStore();
+    const coreDb = openCommitFixtureCore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Admit successor after terminal');
     const predecessorCompatibilityKey = `sha256:${'a'.repeat(64)}`;
     const freshCompatibilityKey = `sha256:${'b'.repeat(64)}`;
@@ -1313,6 +1483,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
+      coreDb,
       now: () => '2026-09-17T00:00:01.000Z',
     });
     Object.assign(executor, {
@@ -1326,7 +1497,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       freshAgentSessionId: 'as-fresh-after-terminal',
       requestId: 'req-terminal-predecessor',
       turn,
-      turnInput: turn.input,
+      turnInput: 'Admit successor after terminal',
       workspaceCwd: null,
       workspaceRoots: [],
     };
@@ -1338,8 +1509,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       replacementRequired: true,
       sessionCompatibilityKey: freshCompatibilityKey,
     });
+    acquireCommitFixtureAttempt(coreDb, preparation, 'lease-terminal-predecessor');
     const committed = executor.commitPreparedAgentSessionForTurn(store, {
-      leaseId: 'lease-terminal-predecessor',
+      attemptId: 'lease-terminal-predecessor',
       prepared,
       preparation,
     });
@@ -1389,7 +1561,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expected,
     setup,
   }) => {
-    const store = createDemoStore();
+    const coreDb = openCommitFixtureCore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const predecessorTurn = createAssignedTurn(
       store,
       'ws_demo',
@@ -1458,7 +1631,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           ? null
           : { agentSessionId: 'as-local-predecessor' },
     });
-    const executor = new WorkerGovernanceTurnExecutor({ backend });
+    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
     Object.assign(executor, {
       previewAgentSessionCompatibilityKey: () => `sha256:${'d'.repeat(64)}`,
     });
@@ -1467,7 +1640,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       freshAgentSessionId: 'as-fresh-barrier',
       requestId: 'req-terminal-barrier',
       turn,
-      turnInput: turn.input,
+      turnInput: 'Keep predecessor barrier',
       workspaceCwd: null,
       workspaceRoots: [],
     };
@@ -1485,9 +1658,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
         });
         expect(inspected.has('as-local-predecessor')).toBe(false);
       } else {
+        acquireCommitFixtureAttempt(coreDb, preparation, 'lease-terminal-barrier');
         await expect(
           executor.commitPreparedAgentSessionForTurn(store, {
-            leaseId: 'lease-terminal-barrier',
+            attemptId: 'lease-terminal-barrier',
             prepared,
             preparation,
           })
@@ -1519,7 +1693,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       freshAgentSessionId: 'as_storage_choice_preview',
       requestId: '00000000-0000-4000-8000-00000000b002',
       turn,
-      turnInput: turn.input,
+      turnInput: 'Inspect the repository',
       workspaceCwd: null,
       workspaceRoots: [],
       ...(fresh
@@ -1586,7 +1760,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         workspaceRoots,
       });
       const sandboxBindingRef = `lease-binding:${turn.id}`;
-      dispatchExecutorLease(coreDb, {
+      recordExecutorAttempt(coreDb, {
         admittedAt: '2026-08-21T11:59:59.000Z',
         agentSessionId,
         packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
@@ -1597,6 +1771,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
       await expect(
         executor.startTurn(store, turn.id, turnInput, {
+          attemptId: `lease_${turn.id}`,
           agentSessionId: prepared.agentSessionId,
           agentSetup,
           requestId: '00000000-0000-4000-8000-00000000b001',
@@ -1635,8 +1810,140 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(withBoth.capabilities.interrupts).toBe(true);
   });
 
+  it('preserves the first exact terminal report after cancellation and closes the Turn as interrupted', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime('2026-07-15T00:00:10.000Z');
+    const f = await launchFinalReviewWorker('cancel');
+    try {
+      expect(f.executor.isTurnExecutionActive(f.turn.id)).toBe(true);
+      await f.executor.interruptTurn(f.store, f.turn.id);
+      expect(attempts.requireSchedulerExecutionAttempt(f.coreDb, f.attemptId)).toMatchObject({
+        phase: 'closing',
+        terminalCause: 'turn-cancelled',
+      });
+      // WCP cancellation wins the product race; the worker's first report still belongs to its exact durable evidence stream.
+      f.backend.eventsJsonlFactory = () =>
+        `${JSON.stringify(
+          buildWorkerCanonicalTerminalEventRecord({
+            lineage: f.lineage,
+            sequence: 1,
+            data: { status: 'completed', stopReason: 'completed' },
+          })
+        )}\n`;
+      f.gateway.recordFinalStatus({
+        authorization: `Bearer ${f.token}`,
+        lineage: f.lineage,
+        sequence: 1,
+        status: 'completed',
+        stopReason: 'completed',
+      });
+      expect(getWorkerControlAcceptedFinalStatus(f.coreDb, f.lineage)).toMatchObject({
+        status: 'completed',
+        stopReason: 'completed',
+      });
+      const readFinalRow = () =>
+        f.coreDb.sqlite
+          .prepare(`SELECT * FROM worker_control_records
+        WHERE workspace_id = ? AND thread_id = ? AND turn_id = ? AND agent_session_id = ?
+          AND package_snapshot_id = ? AND request_id IS ? AND operation = 'final_status'`)
+          .get(
+            f.lineage.workspaceId,
+            f.lineage.threadId,
+            f.lineage.turnId,
+            f.lineage.agentSessionId,
+            f.lineage.packageSnapshotId,
+            f.lineage.requestId
+          ) as { sequence: number; record_key: string; record_json: string } | undefined;
+      const acceptedRow = readFinalRow();
+      expect(acceptedRow).toMatchObject({ sequence: 1, record_key: '1' });
+      expect(JSON.parse(acceptedRow!.record_json)).toMatchObject({
+        sequence: 1,
+        status: 'completed',
+        stopReason: 'completed',
+      });
+      expect(await Promise.race([f.execution, delay(2000, 'completion-timeout')])).toBeNull();
+      const terminal = f.store.getTurnById(f.turn.id);
+      expect(terminal.status).toBe('interrupted');
+      expect(f.store.getTurnEvents(f.turn.id)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            event: 'turn.completed',
+            data: expect.objectContaining({ type: 'turn-completed', stopReason: 'aborted' }),
+          }),
+        ])
+      );
+      expect(getWorkerControlAcceptedFinalStatus(f.coreDb, f.lineage)).toMatchObject({
+        status: 'completed',
+        stopReason: 'completed',
+      });
+      expect(readFinalRow()).toEqual(acceptedRow);
+      completeOwnedTerminalAttempt(f.coreDb, terminal);
+    } finally {
+      await f.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    'heartbeat',
+    'startup',
+  ] as const)('wakes the real final-status waiter at the %s deadline while execution is active', async (deadlineKind) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime('2026-07-15T00:00:10.000Z');
+    const f = await launchFinalReviewWorker(`active-${deadlineKind}`);
+    try {
+      if (deadlineKind === 'heartbeat') {
+        acceptNanoHostAttemptHeartbeat(f.coreDb, {
+          attemptId: f.attemptId,
+          heartbeatTimeoutMs: 30_000,
+          workerSequence: 0,
+          workerProcessKeyHash: createHash('sha256')
+            .update('owned-worker-process')
+            .digest('base64url'),
+        });
+        acceptNanoHostAttemptHeartbeat(f.coreDb, {
+          attemptId: f.attemptId,
+          heartbeatTimeoutMs: 30_000,
+          workerSequence: 1,
+        });
+      }
+      const live = requireNanoHostExecutionAttempt(f.coreDb, f.attemptId);
+      const timeoutAt =
+        deadlineKind === 'heartbeat' ? live.heartbeatDeadline : live.startupDeadline;
+      expect(Date.parse(timeoutAt)).toBeLessThan(Date.parse(live.deadline!) - 60_000);
+      vi.setSystemTime(timeoutAt);
+      expect(f.executor.isTurnExecutionActive(f.turn.id)).toBe(true);
+      await runNanoHostAttemptRecoveryMaintenance(f.coreDb, {
+        executionBackend: f.backend,
+        store: f.store,
+        isTurnExecutionActive: (turnId) => f.executor.isTurnExecutionActive(turnId),
+        cleanupBackendSession: () => f.backend.cleanupSession(),
+        prepareBackendCleanup: () => {},
+        restoreBackendSession: async () => {},
+        reconcileAcceptedFinalStatus: async () => {
+          throw new Error('No terminal report was sent.');
+        },
+        projectRecoveredTurn: async () => {
+          throw new Error('The active executor owns product closeout.');
+        },
+      });
+      expect(requireNanoHostExecutionAttempt(f.coreDb, f.attemptId)).toMatchObject({
+        phase: 'closing',
+        terminalCause: 'native-liveness-expired',
+      });
+      await Promise.race([f.execution, delay(2000)]);
+      expect(f.settled()).toBe(true);
+      expect(f.executor.isTurnExecutionActive(f.turn.id)).toBe(false);
+      expect(Date.now()).toBeLessThan(Date.parse(live.deadline!) - 60_000);
+    } finally {
+      await f.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it('delegates exactly one same-attempt interrupt to the backend without owning terminal lifecycle', async () => {
-    const store = createDemoStore();
+    const coreDb = openCommitFixtureCore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const turn = createAssignedTurn(
       store,
       'ws_demo',
@@ -1652,8 +1959,29 @@ describe('WorkerGovernanceTurnExecutor', () => {
       workerControlGateway,
       turn
     );
+    recordExecutorAttempt(coreDb, {
+      agentSessionId,
+      packageSnapshotId,
+      sandboxBindingRef: `lease-binding:${turn.id}`,
+      threadId: turn.threadId,
+      turnId: turn.id,
+    });
+    const operation = attempts.recordSchedulerExecutionOperation(coreDb, {
+      attemptId: `lease_${turn.id}`,
+      operationId: `submit:${turn.id}`,
+      submission: true,
+    });
+    attempts.acceptSchedulerExecutionObservation(coreDb, {
+      ...attempts.schedulerExecutionCorrelation(operation),
+      disposition: 'accepted',
+      execution: 'pending',
+      fenceRef: null,
+      outcomeRef: null,
+    });
+    const cancel = vi.spyOn(backend, 'cancel');
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
+      coreDb,
       workerControlGateway,
     });
     const turnBeforeInterrupt = store.getTurnById(turn.id);
@@ -1662,8 +1990,20 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     await executor.interruptTurn(store, turn.id, { requestId: 'req_interrupt_exact' });
 
-    expect(backend.interruptTurn).toHaveBeenCalledTimes(1);
-    expect(backend.interruptTurn).toHaveBeenCalledWith(packageSnapshotId);
+    expect(cancel).toHaveBeenCalledExactlyOnceWith(
+      attempts.schedulerExecutionCorrelation(
+        attempts.requireSchedulerExecutionAttempt(coreDb, `lease_${turn.id}`)
+      )
+    );
+    expect(backend.interruptTurn).not.toHaveBeenCalled();
+    expect(attempts.requireSchedulerExecutionAttempt(coreDb, `lease_${turn.id}`)).toMatchObject({
+      phase: 'closing',
+      terminalCause: 'turn-cancelled',
+    });
+    await expect(executor.interruptTurn(store, turn.id)).rejects.toThrow(
+      'Turn cancellation is already owned or has no live attempt.'
+    );
+    expect(cancel).toHaveBeenCalledTimes(1);
     expect(workerControlGateway.getSessionSnapshot(packageSnapshotId)).not.toHaveProperty(
       'commands'
     );
@@ -1806,7 +2146,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'invalid-json': '00000000-0000-4000-8000-000000000236',
       'artifact-invalid': '00000000-0000-4000-8000-000000000234',
     }[mode];
-    const run = startWithExecutorLease(
+    const run = startWithExecutorAttempt(
       coreDb,
       executor,
       store,
@@ -1875,8 +2215,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const artifactBytes = Buffer.from('# Proposed material revision\n', 'utf8');
     const backend = new FakeWorkerGovernanceBackend();
     let artifactId: string | undefined;
-    const launch = backend.launch.bind(backend);
-    vi.spyOn(backend, 'launch').mockImplementation(async () => {
+    const launch = backend.submit.bind(backend);
+    vi.spyOn(backend, 'submit').mockImplementation(async (input) => {
       const environmentPackage = backend.lastPackage!;
       const workspaceDb = openTestWorkspaceDb(coreDb);
       try {
@@ -1909,7 +2249,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       } finally {
         workspaceDb.sqlite.close();
       }
-      return launch();
+      return launch(input);
     });
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
@@ -1923,6 +2263,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await executor.startTurn(store, turn.id, workerRequest, {
+        attemptId: `lease_${turn.id}`,
         agentSessionId,
         agentSetup: createTestAgentSetup(),
         requestId,
@@ -2004,7 +2345,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await expect(
-        startWithExecutorLease(
+        startWithExecutorAttempt(
           coreDb,
           executor,
           store,
@@ -2028,7 +2369,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
       expect(backend.calls).toEqual([
         'materialize',
-        'launch',
+        'submit',
         'collectEvidence',
         'collectTranscript',
         'cleanupSession',
@@ -2117,6 +2458,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Do not publish fenced output');
+    recordExecutorAttempt(coreDb, {
+      agentSessionId: 'as_governance_deletion_fence_1',
+      packageSnapshotId: `aepsnap_${turn.id}_as_governance_deletion_fence_1`,
+      sandboxBindingRef: `lease-binding:${turn.id}`,
+      threadId: turn.threadId,
+      turnId: turn.id,
+    });
     const backend = new FakeWorkerGovernanceBackend();
     const mutationAdmission = new WorkspaceMutationAdmission();
     const collectTranscript = backend.collectTranscript.bind(backend);
@@ -2137,6 +2485,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await expect(
         executor.startTurn(store, turn.id, 'Do not publish fenced output', {
+          attemptId: `lease_${turn.id}`,
+          agentSessionId: 'as_governance_deletion_fence_1',
+          sandboxBindingRef: `lease-binding:${turn.id}`,
           agentSetup: createTestAgentSetup(),
           requestId: '00000000-0000-4000-8000-000000000236',
           triggerActor: turn.triggerActor,
@@ -2178,7 +2529,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       now: () => '2026-07-15T00:00:01.000Z',
     });
     try {
-      const execution = startWithExecutorLease(
+      const execution = startWithExecutorAttempt(
         coreDb,
         executor,
         store,
@@ -2236,7 +2587,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       now: () => completedAt,
     });
 
-    await startWithExecutorLease(
+    await startWithExecutorAttempt(
       coreDb,
       executor,
       store,
@@ -2276,7 +2627,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     expect(backend.calls).toEqual([
       'materialize',
-      'launch',
+      'submit',
       'collectEvidence',
       'collectTranscript',
       'collectWorkspaceChanges',
@@ -2444,7 +2795,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       now: () => '2026-07-15T00:00:03.000Z',
     });
     try {
-      await startWithExecutorLease(
+      await startWithExecutorAttempt(
         coreDb,
         executor,
         store,
@@ -2507,7 +2858,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const agentSessionId = 'as_failed_status_1';
     const packageSnapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
     const sandboxBindingRef = 'lease-binding:failed-status';
-    dispatchExecutorLease(coreDb, {
+    recordExecutorAttempt(coreDb, {
       agentSessionId,
       packageSnapshotId,
       sandboxBindingRef,
@@ -2597,6 +2948,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     await expect(
       executor.startTurn(store, turn.id, 'Observe failed worker status', {
+        attemptId: `lease_${turn.id}`,
         agentSessionId,
         agentSetup: createTestAgentSetup(),
         requestId: '00000000-0000-4000-8000-000000000253',
@@ -2607,7 +2959,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     ).resolves.toBeUndefined();
     expect(backend.calls).toEqual([
       'materialize',
-      'launch',
+      'submit',
       'awaitWorkerCompletion',
       'collectEvidence',
       'collectTranscript',
@@ -2686,7 +3038,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       now: () => '2026-07-15T00:00:03.000Z',
     });
     try {
-      await startWithExecutorLease(
+      await startWithExecutorAttempt(
         coreDb,
         executor,
         store,
@@ -2732,7 +3084,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Interrupt a resident worker');
     const agentSessionId = 'as_retained_1';
     const sandboxBindingRef = 'lease-binding:retained';
-    dispatchExecutorLease(coreDb, {
+    recordExecutorAttempt(coreDb, {
       agentSessionId,
       packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
       sandboxBindingRef,
@@ -2757,6 +3109,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await executor.startTurn(store, turn.id, 'Interrupt a resident worker', {
+        attemptId: `lease_${turn.id}`,
         agentSessionId,
         agentSetup: createTestAgentSetup(),
         requestId: '00000000-0000-4000-8000-000000000256',
@@ -2783,17 +3136,18 @@ describe('WorkerGovernanceTurnExecutor', () => {
     'closed',
     'idle',
   ] as const)('continues a pre-fact predecessor with no proof and no backend binding: %s', async (status) => {
-    const store = createDemoStore();
+    const coreDb = openCommitFixtureCore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Continue without native proof');
     const backend = new FakeWorkerGovernanceBackend();
     backend.prepareAgentSessionContinuity = async () => 'absent';
-    const executor = new WorkerGovernanceTurnExecutor({ backend });
+    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
     const input = {
       agentSetup: createTestAgentSetup(),
       freshAgentSessionId: 'as_unproved_next',
       requestId: null,
       turn,
-      turnInput: turn.input,
+      turnInput: 'Continue without native proof',
       workspaceRoots: [],
     };
     store.createAgentSession({
@@ -2809,11 +3163,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const prepared = await executor.prepareAgentSessionForTurn(store, input);
     expect(prepared.agentSessionId).toBe(input.freshAgentSessionId);
     expect(prepared.workerStorageChoice).toBeUndefined();
+    acquireCommitFixtureAttempt(coreDb, input, 'lease_unproved');
     expect(
       await executor.commitPreparedAgentSessionForTurn(store, {
         prepared,
         preparation: input,
-        leaseId: 'lease_unproved',
+        attemptId: 'lease_unproved',
       })
     ).toBeUndefined();
     expect(store.getAgentSession('as_unproved_old')).toMatchObject({
@@ -3067,7 +3422,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       // A ready proof precedes baseline collection; collection need never complete.
       throw new Error('baseline failed after ready proof');
     });
-    backend.launch = launch;
+    backend.submit = launch;
     if (recordingFailure) {
       const update = store.updateAgentSession.bind(store);
       vi.spyOn(store, 'updateAgentSession').mockImplementation((id, input) => {
@@ -3079,7 +3434,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Record before open');
     try {
       await expect(
-        startWithExecutorLease(
+        startWithExecutorAttempt(
           coreDb,
           executor,
           store,
@@ -3217,7 +3572,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const run = async (agentSessionId: string, index: number) => {
       const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', `Resume turn ${index}`);
       const sandboxBindingRef = `lease-binding:resume-${index}`;
-      dispatchExecutorLease(coreDb, {
+      recordExecutorAttempt(coreDb, {
         agentSessionId,
         packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
         sandboxBindingRef,
@@ -3225,6 +3580,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         turnId: turn.id,
       });
       await executor.startTurn(store, turn.id, `Resume turn ${index}`, {
+        attemptId: `lease_${turn.id}`,
         agentSessionId,
         agentSetup: createTestAgentSetup(),
         requestId: `00000000-0000-4000-8000-00000000026${index}`,
@@ -3246,7 +3602,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       store.updateAgentSession(agentSessionIds[0]!, { status: 'closed' });
       coreDb.sqlite
         .prepare(
-          "UPDATE scheduler_session_leases SET status = 'released' WHERE agent_session_id = ?"
+          "UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE agent_session_id = ?"
         )
         .run(agentSessionIds[0]);
       record = null;
@@ -3288,33 +3644,37 @@ describe('WorkerGovernanceTurnExecutor', () => {
         record = recorder;
       },
     });
-    backend.launch = async () => {
-      backend.calls.push('launch');
+    backend.prepareLaunch = vi.fn(async () => {
+      backend.calls.push('prepareLaunch');
       // The backend accepts the open proof, then a later import fails the launch.
       record?.(digest, {
         storageRef: `wst_${'1'.repeat(32)}`,
         workSlotRef: workerStorageDefaultWorkSlotRef('ws_demo', 'th_demo'),
       });
       throw new Error('reference import failed');
-    };
+    });
     const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Open proof turn');
     try {
-      await startWithExecutorLease(
-        coreDb,
-        executor,
-        store,
-        turn,
-        'as_open_proof',
-        new Date().toISOString(),
-        'Open proof turn',
-        {
-          agentSetup: createTestAgentSetup(),
-          requestId: '00000000-0000-4000-8000-000000000271',
-          triggerActor: turn.triggerActor,
-          workspaceRoots: [],
-        }
-      ).catch(() => undefined);
+      await expect(
+        startWithExecutorAttempt(
+          coreDb,
+          executor,
+          store,
+          turn,
+          'as_open_proof',
+          new Date().toISOString(),
+          'Open proof turn',
+          {
+            agentSetup: createTestAgentSetup(),
+            requestId: '00000000-0000-4000-8000-000000000271',
+            triggerActor: turn.triggerActor,
+            workspaceRoots: [],
+          }
+        )
+      ).rejects.toThrow('reference import failed');
+      expect(backend.prepareLaunch).toHaveBeenCalledOnce();
+      expect(backend.calls).not.toContain('submit');
       expect(backend.calls).toContain('cleanupSession');
       expect(store.getAgentSession('as_open_proof').nativeHandleDigest).toBe(digest);
     } finally {
@@ -3380,7 +3740,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Successor turn');
     try {
-      const started = startWithExecutorLease(
+      const started = startWithExecutorAttempt(
         coreDb,
         executor,
         store,
@@ -3494,7 +3854,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const agentSessionId = 'as_completion_gate_1';
     const packageSnapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
     const sandboxBindingRef = 'lease-binding:completion-gate';
-    dispatchExecutorLease(coreDb, {
+    recordExecutorAttempt(coreDb, {
       agentSessionId,
       packageSnapshotId,
       sandboxBindingRef,
@@ -3533,6 +3893,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       now: () => '2026-07-15T00:00:03.000Z',
     });
     const execution = executor.startTurn(store, turn.id, 'Wait for durable worker completion', {
+      attemptId: `lease_${turn.id}`,
       agentSessionId,
       agentSetup: createTestAgentSetup(),
       requestId: '00000000-0000-4000-8000-000000000254',
@@ -3550,7 +3911,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(awaitWorkerCompletion).toHaveBeenCalledTimes(1);
     expect(awaitedEnvironmentPackage).toMatchObject({ snapshotId: packageSnapshotId });
     expect(awaitedLeaseId).toBe(`lease_${turn.id}`);
-    expect(backend.calls).toEqual(['materialize', 'launch']);
+    expect(backend.calls).toEqual(['materialize', 'submit']);
     const session = getWorkerBackendSession(coreDb, `lease_${turn.id}`);
     if (!awaitedEnvironmentPackage || !session) {
       throw new Error('Restart fixture did not reach the durable launch boundary.');
@@ -3653,7 +4014,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(restartedExecutor.isTurnExecutionActive(turn.id)).toBe(false);
       expect(backend.calls).toEqual([
         'materialize',
-        'launch',
+        'submit',
         'collectEvidence',
         'collectTranscript',
         'cleanupSession',
@@ -3679,7 +4040,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       ).resolves.toBe('interrupted');
       expect(backend.calls).toEqual([
         'materialize',
-        'launch',
+        'submit',
         'collectEvidence',
         'collectTranscript',
         'cleanupSession',
@@ -3699,7 +4060,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     expect(backend.calls).toEqual([
       'materialize',
-      'launch',
+      'submit',
       'collectEvidence',
       'collectTranscript',
       'collectWorkspaceChanges',
@@ -3925,7 +4286,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     try {
-      await startWithExecutorLease(
+      await startWithExecutorAttempt(
         coreDb,
         executor,
         store,
@@ -4150,7 +4511,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await expect(
-        startWithExecutorLease(
+        startWithExecutorAttempt(
           coreDb,
           executor,
           store,
@@ -4236,7 +4597,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     try {
       await expect(
-        startWithExecutorLease(
+        startWithExecutorAttempt(
           coreDb,
           executor,
           store,
@@ -4273,7 +4634,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       },
     });
 
-    await startWithExecutorLease(
+    await startWithExecutorAttempt(
       coreDb,
       executor,
       store,
@@ -4455,6 +4816,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       now: () => fixture.timestamp,
     });
 
+    const before = fixture.store.getTurnById(fixture.environmentPackage.scope.turnId);
     try {
       await expect(
         executor.startTurn(
@@ -4469,13 +4831,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
             workspaceRoots: [],
           }
         )
-      ).rejects.toMatchObject({ code: 'recovery_required' });
+      ).rejects.toThrow('Governed execution requires its exact durable attempt.');
 
       expect(backend.calls).toEqual([]);
       expect(collectWorkspaceChanges).not.toHaveBeenCalled();
-      expect(fixture.store.getTurnById(fixture.environmentPackage.scope.turnId)).toMatchObject({
-        status: 'failed',
-      });
+      expect(fixture.store.getTurnById(fixture.environmentPackage.scope.turnId)).toEqual(before);
     } finally {
       collectWorkspaceChanges.mockRestore();
       fixture.workspaceDb.sqlite.close();
@@ -4548,7 +4908,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       try {
-        await startWithExecutorLease(
+        await startWithExecutorAttempt(
           coreDb,
           executor,
           store,
@@ -4993,7 +5353,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const agentSessionId = 'as_failed_closeout_1';
     const packageSnapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
     const sandboxBindingRef = 'lease-binding:failed-closeout';
-    dispatchExecutorLease(coreDb, {
+    recordExecutorAttempt(coreDb, {
       agentSessionId,
       packageSnapshotId,
       sandboxBindingRef,
@@ -5022,6 +5382,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await expect(
         executor.startTurn(store, turn.id, 'Fail missing-target handoff', {
+          attemptId: `lease_${turn.id}`,
           agentSessionId,
           agentSetup: createTestAgentSetup(),
           requestId: '00000000-0000-4000-8000-000000000257',
@@ -5113,7 +5474,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       now: () => '2026-06-16T00:00:00.000Z',
     });
 
-    await startWithExecutorLease(
+    await startWithExecutorAttempt(
       coreDb,
       executor,
       store,
@@ -5189,7 +5550,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       enforcement: 'unavailable',
       evidence: { availability: 'partial', outputTruncated: false },
     } as const;
-    vi.spyOn(backend, 'launch').mockRejectedValue(
+    vi.spyOn(backend, 'submit').mockRejectedValue(
       Object.assign(new Error('Repository access returned HTTP 403; attribution unavailable.'), {
         explanation,
       })
@@ -5204,7 +5565,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     try {
       await expect(
-        startWithExecutorLease(
+        startWithExecutorAttempt(
           coreDb,
           executor,
           store,
@@ -5266,7 +5627,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     await expect(
-      startWithExecutorLease(
+      startWithExecutorAttempt(
         coreDb,
         executor,
         store,
@@ -5329,7 +5690,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     await expect(
-      startWithExecutorLease(
+      startWithExecutorAttempt(
         coreDb,
         executor,
         store,
@@ -5420,7 +5781,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await expect(
-        startWithExecutorLease(
+        startWithExecutorAttempt(
           coreDb,
           executor,
           store,
@@ -5471,6 +5832,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Fail workspace storage open');
+    recordExecutorAttempt(coreDb, {
+      agentSessionId: 'as_workspace_open_fail_1',
+      packageSnapshotId: `aepsnap_${turn.id}_as_workspace_open_fail_1`,
+      sandboxBindingRef: `lease-binding:${turn.id}`,
+      threadId: turn.threadId,
+      turnId: turn.id,
+    });
     rmSync(workspaceDbPath(dataRoot, 'ws_demo'), { force: true });
     mkdirSync(workspaceDbPath(dataRoot, 'ws_demo'), { recursive: true });
     const executor = new WorkerGovernanceTurnExecutor({
@@ -5485,6 +5853,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await expect(
         executor.startTurn(store, turn.id, 'Fail workspace storage open', {
+          attemptId: `lease_${turn.id}`,
+          agentSessionId: 'as_workspace_open_fail_1',
+          sandboxBindingRef: `lease-binding:${turn.id}`,
           agentSetup: createTestAgentSetup(),
           requestId: '00000000-0000-4000-8000-000000000208',
           triggerActor: turn.triggerActor,
@@ -5536,6 +5907,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'th_demo',
       'Fail workspace storage migration'
     );
+    recordExecutorAttempt(coreDb, {
+      agentSessionId: 'as_workspace_migrate_fail_1',
+      packageSnapshotId: `aepsnap_${turn.id}_as_workspace_migrate_fail_1`,
+      sandboxBindingRef: `lease-binding:${turn.id}`,
+      threadId: turn.threadId,
+      turnId: turn.id,
+    });
     const executor = new WorkerGovernanceTurnExecutor({
       backend: new FakeWorkerGovernanceBackend(),
       coreDb,
@@ -5548,6 +5926,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await expect(
         executor.startTurn(store, turn.id, 'Fail workspace storage migration', {
+          attemptId: `lease_${turn.id}`,
+          agentSessionId: 'as_workspace_migrate_fail_1',
+          sandboxBindingRef: `lease-binding:${turn.id}`,
           agentSetup: createTestAgentSetup(),
           requestId: '00000000-0000-4000-8000-000000000209',
           triggerActor: turn.triggerActor,
@@ -5596,7 +5977,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await expect(
-        startWithExecutorLease(
+        startWithExecutorAttempt(
           coreDb,
           executor,
           store,
@@ -5650,7 +6031,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await expect(
-        startWithExecutorLease(
+        startWithExecutorAttempt(
           coreDb,
           executor,
           store,
@@ -5702,7 +6083,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     let rejected = false;
 
     try {
-      await startWithExecutorLease(
+      await startWithExecutorAttempt(
         coreDb,
         executor,
         store,
@@ -5761,7 +6142,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     let failure: unknown = null;
 
     try {
-      await startWithExecutorLease(
+      await startWithExecutorAttempt(
         coreDb,
         executor,
         store,
@@ -5874,7 +6255,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     let failure: unknown = null;
 
     try {
-      await startWithExecutorLease(
+      await startWithExecutorAttempt(
         coreDb,
         executor,
         store,
@@ -5934,7 +6315,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     let failure: unknown = null;
 
     try {
-      await startWithExecutorLease(
+      await startWithExecutorAttempt(
         coreDb,
         executor,
         store,
@@ -5983,6 +6364,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
     'corrupt-cursor',
     'corrupt-receipt',
   ] as const)('passes workspace source catalog context and accepted base into the resolved handoff (override: %s)', async (mode) => {
+    if (!['source', 'cursor', 'historical'].includes(mode)) {
+      await assertNativePreSubmissionFault(mode as NativePreSubmissionFault);
+      return;
+    }
     const overrideBase = mode !== 'source';
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-source-ref-')));
 
@@ -5998,7 +6383,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const materialize = backend.materialize.bind(backend);
     vi.spyOn(backend, 'materialize').mockImplementation(async (...args) => {
       const result = await materialize(...args);
-      if (overrideBase && mode !== 'unproved') {
+      if (overrideBase) {
         const db = openTestWorkspaceDb(coreDb);
         const aep = args[0];
         const identity = {
@@ -6011,11 +6396,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
             .workerStorage.workSlotRef,
           collectionId: 'baseline',
           agentSessionId: aep.scope.agentSessionId,
-          threadId: mode === 'foreign-thread' ? 'foreign-thread' : aep.scope.threadId,
+          threadId: aep.scope.threadId,
           turnId: aep.scope.turnId,
           packageSnapshotId: aep.snapshotId,
         };
-        if (mode === 'foreign-slot') identity.workSlot = 'foreign-slot';
         authorizeWorkspaceBaselineInitialization(db, identity);
         acceptWorkspaceBaseline(
           db,
@@ -6024,7 +6408,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           'a'.repeat(40),
           acceptedCommit
         );
-        if (mode === 'historical' || mode === 'corrupt-receipt') {
+        if (mode === 'historical') {
           acceptWorkspaceCapture(
             db,
             { ...identity, collectionId: 'capture_context' },
@@ -6035,16 +6419,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
             .prepare('UPDATE workspace_snapshot_cursors SET accepted_commit = ?')
             .run('f'.repeat(40));
         }
-        if (mode === 'corrupt-cursor')
-          db.sqlite
-            .prepare('UPDATE workspace_snapshot_cursors SET head_json = ?')
-            .run(JSON.stringify({ tree: 'unknown', manifest: 'b'.repeat(40) }));
-        if (mode === 'corrupt-receipt')
-          db.sqlite
-            .prepare(
-              "UPDATE workspace_snapshot_collections SET result_json = json_set(result_json, '$.outcome', 'future')"
-            )
-            .run();
         db.sqlite.close();
       }
       return {
@@ -6061,7 +6435,54 @@ describe('WorkerGovernanceTurnExecutor', () => {
       },
     });
 
-    const execution = startWithExecutorLease(
+    // Observe the real finalized-package and Workspace-handoff consumers at the native effect.
+    const launch = backend.submit.bind(backend);
+    const launchEvidence: Array<() => void> = [];
+    const launchGate = vi.spyOn(backend, 'submit').mockImplementation(async (...args) => {
+      const aep = backend.lastPackage!;
+      const attempt = observeExecutionAttempts(coreDb).find((row) => row.turn_id === turn.id);
+      const db = openTestWorkspaceDb(coreDb);
+      const snapshot = requireAgentEnvironmentPackageSnapshot(
+        db,
+        aep.scope.workspaceId,
+        aep.snapshotId
+      ).snapshot;
+      const records = listWorkspaceMaterializationRecords(db, aep.scope.workspaceId);
+      db.sqlite.close();
+      const boundSession = store.getTurnById(turn.id).agentSessionId;
+      const authority = operationAuthorizer.currentWorkerLineageWorkspaceAuthority(
+        coreDb,
+        { ...turnRuntimeLineage(aep), triggerActor: aep.scope.triggerActor },
+        'runtime.launch',
+        true
+      );
+      launchEvidence.push(() => {
+        expect(attempt, 'A native effect requires its persisted exact attempt.').toBeDefined();
+        expect(attempt).toMatchObject({
+          phase: 'open',
+          disposition: 'unknown',
+          agent_session_id: aep.scope.agentSessionId,
+          input_ref: aep.snapshotId,
+        });
+        expect(attempt!.operation_id).toEqual(expect.any(String));
+        expect(snapshot).toEqual(aep);
+        expect(records).toContainEqual(
+          expect.objectContaining({
+            packageSnapshotId: aep.snapshotId,
+            inputSnapshotId: `wis_${aep.snapshotId}_repo_default`,
+            workspaceId: aep.scope.workspaceId,
+            workerSessionId: backend.lastPackage && backend.planSession(aep).backendSessionId,
+            base: expect.objectContaining({
+              commit: overrideBase ? acceptedCommit : originalCommit,
+            }),
+          })
+        );
+        expect(boundSession).toBe(aep.scope.agentSessionId);
+        expect(authority).toBeTruthy();
+      });
+      return launch(...args);
+    });
+    const execution = startWithExecutorAttempt(
       coreDb,
       executor,
       store,
@@ -6101,21 +6522,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       }
     );
 
-    if (mode === 'corrupt-cursor' || mode === 'corrupt-receipt') {
-      await expect(execution).rejects.toThrow(
-        mode === 'corrupt-cursor'
-          ? 'Invalid string: must match pattern'
-          : "Invalid discriminator value. Expected 'candidate' | 'empty' | 'no_new_head'"
-      );
-      coreDb.sqlite.close();
-      return;
-    }
-    if (['unproved', 'foreign-thread', 'foreign-slot'].includes(mode)) {
-      await expect(execution).rejects.toThrow('handoff is incomplete');
-      coreDb.sqlite.close();
-      return;
-    }
     await expect(execution).resolves.toBeUndefined();
+    expect(launchEvidence).toHaveLength(1);
+    launchEvidence[0]!();
     expect(backend.lastPackage?.workspace.inputs[0]?.source).toMatchObject({
       catalogEntryDigest: expect.stringMatching(/^sha256:/),
       kind: 'git',
@@ -6145,6 +6554,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
 
     workspaceDb.sqlite.close();
+    launchGate.mockRestore();
     coreDb.sqlite.close();
   });
 
@@ -6185,6 +6595,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await executor.startTurn(fixture.store, fixture.turn.id, workerRequest, {
+        attemptId: `lease_${fixture.turn.id}`,
         agentSessionId: fixture.agentSessionId,
         agentSetup: createTestAgentSetup(),
         requestId: fixture.requestId,
@@ -6270,8 +6681,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       });
     }
     const backend = new FakeWorkerGovernanceBackend();
-    const nativeLaunch = backend.launch.bind(backend);
-    const launch = vi.spyOn(backend, 'launch').mockImplementation(async () => {
+    const nativeLaunch = backend.submit.bind(backend);
+    const launch = vi.spyOn(backend, 'submit').mockImplementation(async (...args) => {
       if (cause === 'carried') {
         const replay = await app.request('/api/app/operations/turn.start', {
           method: 'POST',
@@ -6314,7 +6725,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
             ? { kind: 'system', id: 'nanocore-pending-request', responsibleUserId: LOCAL_USER_ID }
             : fixture.turn.triggerActor,
       });
-      return nativeLaunch();
+      return nativeLaunch(...args);
     });
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
@@ -6324,6 +6735,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     try {
       await executor.startTurn(fixture.store, fixture.turn.id, triggerInput, {
+        attemptId: `lease_${fixture.turn.id}`,
         agentSessionId: fixture.agentSessionId,
         agentSetup: createTestAgentSetup(),
         requestId: fixture.requestId,
@@ -6365,7 +6777,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       workerRequest,
     } = fixture;
     const backend = new FakeWorkerGovernanceBackend();
-    const launchSpy = vi.spyOn(backend, 'launch');
+    const launchSpy = vi.spyOn(backend, 'submit');
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
       coreDb,
@@ -6378,6 +6790,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await executor.startTurn(store, turn.id, workerRequest, {
+        attemptId: `lease_${turn.id}`,
         agentSessionId,
         agentSetup: createTestAgentSetup(),
         requestId,
@@ -6490,8 +6903,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     workspaceDb.sqlite.close();
 
     const backend = new FakeWorkerGovernanceBackend();
-    const launch = backend.launch.bind(backend);
-    const launchSpy = vi.spyOn(backend, 'launch').mockImplementation(async (...args) => {
+    const launch = backend.submit.bind(backend);
+    const launchSpy = vi.spyOn(backend, 'submit').mockImplementation(async (...args) => {
       expect(JSON.parse(readFileSync(fixture.tracePath, 'utf8'))).toMatchObject({
         goalId: null,
         knowledgeExclusions: [
@@ -6532,6 +6945,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await executor.startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
+        attemptId: `lease_${fixture.turn.id}`,
         agentSessionId: fixture.agentSessionId,
         agentSetup: createTestAgentSetup(),
         requestId: fixture.requestId,
@@ -6785,7 +7199,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     workspaceDb.sqlite.close();
 
     const backend = new FakeWorkerGovernanceBackend();
-    const launchSpy = vi.spyOn(backend, 'launch');
+    const launchSpy = vi.spyOn(backend, 'submit');
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
       coreDb: fixture.coreDb,
@@ -6799,6 +7213,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await expect(
         executor.startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
+          attemptId: `lease_${fixture.turn.id}`,
           agentSessionId: fixture.agentSessionId,
           agentSetup: createTestAgentSetup(),
           requestId: fixture.requestId,
@@ -6906,7 +7321,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       turnId: turn.id,
       workspaceId: turn.workspaceId,
     };
-    dispatchExecutorLease(coreDb, {
+    recordExecutorAttempt(coreDb, {
       ...lineage,
       sandboxBindingRef,
     });
@@ -6928,10 +7343,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
           sandboxBindingRef,
           sequence: 1,
         });
-        markSchedulerSessionLeaseReleasing(coreDb, {
-          leaseId,
+        beginOwnedAttemptCloseout(coreDb, {
+          attemptId: leaseId,
           now: () => '2026-07-15T00:00:04.000Z',
-          releaseReason: 'worker-final-status',
+          firstTerminalCause: 'worker-final-status',
         });
         return getWorkerControlAcceptedFinalStatus(coreDb, lineage)!;
       },
@@ -6940,6 +7355,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       now: () => '2026-07-15T00:00:05.000Z',
     });
     const execution = executor.startTurn(store, turn.id, 'Complete without takeover', {
+      attemptId: `lease_${turn.id}`,
       agentSessionId,
       agentSetup: createTestAgentSetup(),
       requestId,
@@ -6967,28 +7383,52 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await Promise.race([cleanupEntered.promise, execution]);
       expect(getWorkerBackendSession(coreDb, leaseId)?.state).toBe('cleanup-pending');
-      await runSchedulerRecoveryMaintenance(coreDb, 1, {
-        cleanupBackendSession: (identity) =>
-          (backend as WorkerGovernanceBackend).cleanupSession(identity),
-        isTurnExecutionActive: (turnId) => executor.isTurnExecutionActive(turnId),
+      const nativeRecovery = {
+        cleanupBackendSession: (
+          identity: Parameters<WorkerGovernanceBackend['cleanupSession']>[0]
+        ) => backend.cleanupSession(identity),
+        isTurnExecutionActive: (turnId: string) => executor.isTurnExecutionActive(turnId),
         now: () => '2026-07-15T00:01:00.000Z',
+        prepareBackendCleanup: () => {
+          throw new Error('The live owner already holds cleanup.');
+        },
+        restoreBackendSession: async () => {
+          throw new Error('Online closeout cannot be restored by maintenance.');
+        },
+        reconcileAcceptedFinalStatus: async () => {
+          throw new Error('Online closeout owns accepted final status.');
+        },
+        projectRecoveredTurn,
+      };
+      await runSchedulerRecoveryMaintenance(coreDb, {
+        executionBackend: backend,
+        now: nativeRecovery.now,
         projectRecoveredTurn,
       });
+      await runNanoHostAttemptRecoveryMaintenance(coreDb, nativeRecovery);
       // The live owner still has to prove cleanup and publish its canonical outcome.
       expect(store.getTurnById(turn.id).status).toBe('running');
       expect(projectRecoveredTurn).not.toHaveBeenCalled();
       expect(cleanup).toHaveBeenCalledTimes(1);
-      expect(requireSchedulerSessionLease(coreDb, leaseId).status).toBe('releasing');
+      expect(
+        observeExecutionAttempts(coreDb).find((attempt) => attempt.attempt_id === leaseId)?.phase
+      ).toBe('closing');
       expect(getWorkerBackendSession(coreDb, leaseId)?.physicalCleanedAt).toBeNull();
       releaseCleanup.resolve();
       expect(await executionResult).toBeNull();
       expect(executor.isTurnExecutionActive(turn.id)).toBe(false);
       expect(store.getTurnById(turn.id).status).toBe('completed');
       expect(getWorkerBackendSession(coreDb, leaseId)?.state).toBe('cleaned');
-      completeSchedulerLeaseForTerminalTurn(coreDb, store.getTurnById(turn.id));
-      await runSchedulerRecoveryMaintenance(coreDb, 1, { projectRecoveredTurn });
+      completeOwnedTerminalAttempt(coreDb, store.getTurnById(turn.id));
+      await runNanoHostAttemptRecoveryMaintenance(coreDb, nativeRecovery);
+      await runSchedulerRecoveryMaintenance(coreDb, {
+        executionBackend: backend,
+        projectRecoveredTurn,
+      });
       expect(projectRecoveredTurn).not.toHaveBeenCalled();
-      expect(requireSchedulerSessionLease(coreDb, leaseId).status).toBe('released');
+      expect(
+        observeExecutionAttempts(coreDb).find((attempt) => attempt.attempt_id === leaseId)?.phase
+      ).toBe('closed');
     } finally {
       releaseCleanup.resolve();
       await executionResult;
@@ -7006,7 +7446,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Run with scheduler binding');
     const agentSessionId = 'as_governance_binding_1';
     const sandboxBindingRef = 'lease-binding:executor_1';
-    dispatchExecutorLease(coreDb, {
+    recordExecutorAttempt(coreDb, {
       agentSessionId,
       packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
       sandboxBindingRef,
@@ -7025,6 +7465,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     await executor.startTurn(store, turn.id, 'Run with scheduler binding', {
+      attemptId: `lease_${turn.id}`,
       agentSessionId,
       agentSetup: createTestAgentSetup(),
       requestId: '00000000-0000-4000-8000-000000000214',
@@ -7068,7 +7509,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
     const agentSessionId = 'as_admin_worker_effect';
     const sandboxBindingRef = 'lease-binding:admin-worker-effect';
-    dispatchExecutorLease(coreDb, {
+    recordExecutorAttempt(coreDb, {
       agentSessionId,
       packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
       sandboxBindingRef,
@@ -7088,6 +7529,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     try {
       const execution = executor.startTurn(store, turn.id, 'Run as nonmember administrator', {
+        attemptId: `lease_${turn.id}`,
         agentSessionId,
         agentSetup: createTestAgentSetup(),
         requestId: '00000000-0000-4000-8000-000000000237',
@@ -7103,7 +7545,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         expect(backend.calls).toEqual([]);
       } else {
         await expect(execution).resolves.toBeUndefined();
-        expect(backend.calls).toContain('launch');
+        expect(backend.calls).toContain('submit');
         expect(store.getTurnById(turn.id)).toMatchObject({ status: 'completed' });
       }
     } finally {
@@ -7120,7 +7562,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Do not materialize stale work');
     const agentSessionId = 'as_prematerialize_authority_1';
     const sandboxBindingRef = 'lease-binding:prematerialize-authority';
-    dispatchExecutorLease(coreDb, {
+    recordExecutorAttempt(coreDb, {
       agentSessionId,
       packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
       sandboxBindingRef,
@@ -7144,6 +7586,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await expect(
         executor.startTurn(store, turn.id, 'Do not materialize stale work', {
+          attemptId: `lease_${turn.id}`,
           agentSessionId,
           agentSetup: createTestAgentSetup(),
           requestId: '00000000-0000-4000-8000-000000000249',
@@ -7177,7 +7620,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const agentSessionId = 'as_anchor_order_1';
     const packageSnapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
     const sandboxBindingRef = 'lease-binding:anchor-order';
-    dispatchExecutorLease(coreDb, {
+    recordExecutorAttempt(coreDb, {
       agentSessionId,
       packageSnapshotId,
       sandboxBindingRef,
@@ -7206,6 +7649,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       await executor.startTurn(store, turn.id, 'Anchor before effect', {
+        attemptId: `lease_${turn.id}`,
         agentSessionId,
         agentSetup: createTestAgentSetup(),
         requestId: '00000000-0000-4000-8000-000000000250',
@@ -7236,7 +7680,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const agentSessionId = 'as_materialize_failure_1';
     const packageSnapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
     const sandboxBindingRef = 'lease-binding:materialize-failure';
-    dispatchExecutorLease(coreDb, {
+    recordExecutorAttempt(coreDb, {
       agentSessionId,
       packageSnapshotId,
       sandboxBindingRef,
@@ -7247,6 +7691,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
     backend.failTeardown = failTeardown;
     const materialize = backend.materialize.bind(backend);
     const materializeSpy = vi.spyOn(backend, 'materialize').mockImplementation(async (...args) => {
+      // This modeled Native producer records its actual operation before the controlled effect.
+      // Without that fact, the generic no-effect closeout would truthfully release this fixture.
+      attempts.recordSchedulerExecutionOperation(coreDb, {
+        attemptId: `lease_${turn.id}`,
+        operationId: `materialize:${turn.id}`,
+      });
       await materialize(...args);
       throw new Error('materialize failed after external effect');
     });
@@ -7263,6 +7713,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await expect(
         executor.startTurn(store, turn.id, 'Fail after materialize effect', {
+          attemptId: `lease_${turn.id}`,
           agentSessionId,
           agentSetup: createTestAgentSetup(),
           requestId: '00000000-0000-4000-8000-000000000251',
@@ -7274,16 +7725,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)).toMatchObject({
         state: expectedState,
       });
-      expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT leases.status, capacity.in_use_count AS inUseCount
-               FROM scheduler_session_leases AS leases
-               JOIN scheduler_capacity_records AS capacity ON capacity.target_id = leases.target_id
-               WHERE leases.lease_id = ?`
-          )
-          .get(`lease_${turn.id}`)
-      ).toEqual({ inUseCount: 1, status: 'acquired' });
+      expect(['open', 'closing']).toContain(
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === `lease_${turn.id}`
+        )?.phase
+      );
     } finally {
       materializeSpy.mockRestore();
       coreDb.sqlite.close();
@@ -7298,7 +7744,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const agentSessionId = 'as_prelaunch_gate_1';
     const packageSnapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
     const sandboxBindingRef = 'lease-binding:prelaunch-gate';
-    dispatchExecutorLease(coreDb, {
+    recordExecutorAttempt(coreDb, {
       agentSessionId,
       packageSnapshotId,
       sandboxBindingRef,
@@ -7309,14 +7755,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const materialize = backend.materialize.bind(backend);
     const materializeSpy = vi.spyOn(backend, 'materialize').mockImplementation(async (...args) => {
       const result = await materialize(...args);
-      coreDb.sqlite
-        .prepare(
-          "UPDATE scheduler_session_leases SET status = 'stale', release_reason = 'heartbeat-timeout' WHERE lease_id = ?"
-        )
-        .run(`lease_${turn.id}`);
+      attempts.markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId: `lease_${turn.id}`,
+        cause: 'authority-revoked',
+      });
       return result;
     });
-    const launchSpy = vi.spyOn(backend, 'launch');
+    const launchSpy = vi.spyOn(backend, 'submit');
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
       coreDb,
@@ -7330,6 +7775,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await expect(
         executor.startTurn(store, turn.id, 'Lose lease before launch', {
+          attemptId: `lease_${turn.id}`,
           agentSessionId,
           agentSetup: createTestAgentSetup(),
           requestId: '00000000-0000-4000-8000-000000000252',
@@ -7337,7 +7783,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           triggerActor: turn.triggerActor,
           workspaceRoots: [],
         })
-      ).rejects.toThrow('Scheduler lease is not live for worker backend launch.');
+      ).rejects.toThrow('Execution authority was revoked before the operation.');
       expect(launchSpy).not.toHaveBeenCalled();
       expect(backend.calls.filter((call) => call === 'cleanupSession')).toHaveLength(1);
       expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)).toMatchObject({
@@ -7351,65 +7797,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('does not launch when the startup deadline elapses during materialization', async () => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-deadline-gate-')));
-    applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Expire before launch');
-    const agentSessionId = 'as_deadline_gate_1';
-    const packageSnapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
-    const sandboxBindingRef = 'lease-binding:deadline-gate';
-    let timestamp = '2026-07-15T00:00:03.000Z';
-    dispatchExecutorLease(coreDb, {
-      agentSessionId,
-      packageSnapshotId,
-      sandboxBindingRef,
-      threadId: turn.threadId,
-      turnId: turn.id,
-    });
-    const backend = new FakeWorkerGovernanceBackend();
-    const materialize = backend.materialize.bind(backend);
-    const materializeSpy = vi.spyOn(backend, 'materialize').mockImplementation(async (...args) => {
-      const result = await materialize(...args);
-      timestamp = '2026-07-15T00:03:00.000Z';
-      return result;
-    });
-    const launchSpy = vi.spyOn(backend, 'launch');
-    const executor = new WorkerGovernanceTurnExecutor({
-      backend,
-      coreDb,
-      createAgentSessionId: () => agentSessionId,
-      environmentBackend: {
-        kind: 'openshell',
-      },
-      now: () => timestamp,
-    });
-
-    try {
-      await expect(
-        executor.startTurn(store, turn.id, 'Expire before launch', {
-          agentSessionId,
-          agentSetup: createTestAgentSetup(),
-          requestId: '00000000-0000-4000-8000-000000000253',
-          sandboxBindingRef,
-          triggerActor: turn.triggerActor,
-          workspaceRoots: [],
-        })
-      ).rejects.toThrow('Scheduler lease is not live for worker backend launch.');
-      expect(launchSpy).not.toHaveBeenCalled();
-      expect(backend.calls.filter((call) => call === 'cleanupSession')).toHaveLength(1);
-      expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)).toMatchObject({
-        state: 'cleaned',
-      });
-      expect(
-        coreDb.sqlite
-          .prepare('SELECT status FROM scheduler_session_leases WHERE lease_id = ?')
-          .get(`lease_${turn.id}`)
-      ).toEqual({ status: 'acquired' });
-    } finally {
-      launchSpy.mockRestore();
-      materializeSpy.mockRestore();
-      coreDb.sqlite.close();
-    }
+    await assertNativePreSubmissionFault('startup-deadline');
   });
 
   it('records Vault injection receipts only when a Turn opens its binding', async () => {
@@ -7481,7 +7869,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     const run = async (index: number) => {
       const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', `Vault reuse ${index}`);
-      await startWithExecutorLease(
+      await startWithExecutorAttempt(
         coreDb,
         executor,
         store,
@@ -7504,7 +7892,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(listVaultInjectionReceipts(coreDb)).toHaveLength(1);
       coreDb.sqlite
         .prepare(
-          "UPDATE scheduler_session_leases SET status = 'released' WHERE agent_session_id = ?"
+          "UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE agent_session_id = ?"
         )
         .run(agentSessionId);
 
@@ -7569,7 +7957,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     try {
-      await startWithExecutorLease(
+      await startWithExecutorAttempt(
         coreDb,
         executor,
         store,
@@ -7703,7 +8091,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     try {
-      await startWithExecutorLease(
+      await startWithExecutorAttempt(
         coreDb,
         executor,
         store,
@@ -7793,8 +8181,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const store = createDemoStore({ dataRoot });
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Run Codex auth runtime file');
     const backend = new FakeWorkerGovernanceBackend();
-    const nativeLaunch = backend.launch.bind(backend);
-    vi.spyOn(backend, 'launch').mockImplementation(async () => {
+    const nativeLaunch = backend.submit.bind(backend);
+    vi.spyOn(backend, 'submit').mockImplementation(async (...args) => {
       expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
       if (launchFails) throw new Error('credential_materialization_failed');
       const credentials = backend.lastContext?.runtimeEnvCredentials ?? [];
@@ -7811,7 +8199,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       );
       expect(observed).toBe('true');
       timestamp = '2026-07-05T00:00:10.000Z';
-      return nativeLaunch();
+      return nativeLaunch(...args);
     });
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
@@ -7825,7 +8213,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     try {
-      const run = startWithExecutorLease(
+      const run = startWithExecutorAttempt(
         coreDb,
         executor,
         store,
@@ -8217,6 +8605,39 @@ function turnRuntimeSha256(bytes: Uint8Array): string {
 }
 
 class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
+  public readonly id = 'nanohost';
+  /** The external double prepares without importing or launching a native process. */
+  public async prepareLaunch(): Promise<void> {}
+  /** Inspection reports only this double's exact accepted operation. */
+  public async inspect(input: import('./execution-backend.js').ExecutionBackendCorrelation) {
+    return {
+      ...input,
+      disposition: 'accepted' as const,
+      execution: 'terminal' as const,
+      fenceRef: null,
+      outcomeRef: null,
+    };
+  }
+  /** Cancellation acknowledges the same identity without proving a physical fence. */
+  public async cancel(input: import('./execution-backend.js').ExecutionBackendCorrelation) {
+    return {
+      ...input,
+      disposition: 'accepted' as const,
+      execution: 'unknown' as const,
+      fenceRef: null,
+      outcomeRef: null,
+    };
+  }
+  /** Releases only after all real Core closeout barriers reached this external double. */
+  public async release(input: Parameters<WorkerGovernanceBackend['release']>[0]) {
+    expect(Object.values(input.proof)).toEqual([true, true, true, true, true, true]);
+    const { proof: _proof, ...correlation } = input;
+    return {
+      ...correlation,
+      state: 'released' as const,
+      fenceRef: `fixture-fence:${input.attemptId}`,
+    };
+  }
   public readonly calls: string[] = [];
   /** Candidate reply; private comparison evidence never includes echoed route plaintext. */
   public assistantText = 'Governed worker completed the task.';
@@ -8339,13 +8760,14 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
     };
   }
 
-  public async launch(): Promise<WorkerGovernanceEvidenceRecord> {
-    this.calls.push('launch');
-
+  public async submit(input: Parameters<WorkerGovernanceBackend['submit']>[0]) {
+    this.calls.push('submit');
     return {
-      data: {},
-      kind: 'fake.launch',
-      timestamp: '2026-06-16T00:00:00.000Z',
+      ...input,
+      disposition: 'accepted' as const,
+      execution: 'pending' as const,
+      fenceRef: null,
+      outcomeRef: null,
     };
   }
 
@@ -8485,7 +8907,7 @@ describe('retained-record failure publication', () => {
     const fixture = createWorkerContextExecutorFixture('snapshot-preparation-failure');
     fixture.coreDb.sqlite
       .prepare(
-        "UPDATE scheduler_session_leases SET expires_at = '2099-01-01T00:00:00.000Z', heartbeat_deadline = '2099-01-01T00:00:00.000Z', startup_deadline = '2099-01-01T00:00:00.000Z'"
+        "UPDATE scheduler_execution_attempts SET startup_deadline = '2099-01-01T00:00:00.000Z'"
       )
       .run();
     const backend = new FakeWorkerGovernanceBackend();
@@ -8509,6 +8931,7 @@ describe('retained-record failure publication', () => {
     try {
       const caught = await executor
         .startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
+          attemptId: `lease_${fixture.turn.id}`,
           agentSessionId: fixture.agentSessionId,
           agentSetup: createTestAgentSetup(),
           requestId: fixture.requestId,
@@ -8522,7 +8945,7 @@ describe('retained-record failure publication', () => {
         'AgentEnvironmentSnapshotPreparationError'
       );
       expect(backend.calls).not.toContain('materialize');
-      expect(backend.calls).not.toContain('launch');
+      expect(backend.calls).not.toContain('submit');
       const turn = fixture.store.getTurnById(fixture.turn.id);
       expect(turn).toMatchObject({
         status: 'failed',
@@ -8551,15 +8974,15 @@ describe('retained-record failure publication', () => {
   it.each([
     ['healthy', false],
     ['syntax', false],
-    ['unknown-key', false],
+    ['unknown-core', false],
     ['syntax', true],
-    ['unknown-key', true],
+    ['unknown-core', true],
   ] as const)('publishes %s start with cleanup failure %s safely', async (variant, cleanupFails) => {
     const marker = 'ROW_SECRET_X9';
     const fixture = createWorkerContextExecutorFixture(`published-${variant}-${cleanupFails}`);
     fixture.coreDb.sqlite
       .prepare(
-        "UPDATE scheduler_session_leases SET expires_at = '2099-01-01T00:00:00.000Z', heartbeat_deadline = '2099-01-01T00:00:00.000Z', startup_deadline = '2099-01-01T00:00:00.000Z'"
+        "UPDATE scheduler_execution_attempts SET startup_deadline = '2099-01-01T00:00:00.000Z'"
       )
       .run();
     const backend = new FakeWorkerGovernanceBackend();
@@ -8572,6 +8995,7 @@ describe('retained-record failure publication', () => {
       now: () => '2026-07-18T01:00:06.000Z',
     });
     createSchedulerAdmissionEntry(fixture.coreDb, {
+      backendId: 'nanohost',
       queueEntryId: 'queue_unrelated',
       workspaceId: 'ws_demo',
       threadId: 'th_unrelated',
@@ -8580,8 +9004,6 @@ describe('retained-record failure publication', () => {
       triggerActor: { kind: 'user', id: 'user_local' },
       requestedAgentId: 'agent_codex_host',
       profileRef: null,
-      priorityClass: 'interactive',
-      requiredPoolConstraints: [],
     });
     const bytes =
       variant === 'syntax'
@@ -8589,15 +9011,27 @@ describe('retained-record failure publication', () => {
         : JSON.stringify({
             kind: 'user',
             id: 'user_local',
-            ...(variant === 'unknown-key' ? { [marker]: 'private' } : {}),
+            ...(variant === 'unknown-core' ? { kind: marker } : {}),
           });
     fixture.coreDb.sqlite
       .prepare(
         "UPDATE scheduler_admission_entries SET status = 'admitted', trigger_actor_json = ? WHERE queue_entry_id = 'queue_unrelated'"
       )
       .run(bytes);
+    const materialize = backend.materialize.bind(backend);
+    vi.spyOn(backend, 'materialize').mockImplementation(async (...args) => {
+      const result = await materialize(...args);
+      if (variant !== 'healthy')
+        fixture.coreDb.sqlite
+          .prepare(
+            'UPDATE scheduler_admission_entries SET trigger_actor_json=? WHERE queue_entry_id=?'
+          )
+          .run(bytes, `queue_${fixture.turn.id}`);
+      return result;
+    });
     try {
       const start = executor.startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
+        attemptId: `lease_${fixture.turn.id}`,
         agentSessionId: fixture.agentSessionId,
         agentSetup: createTestAgentSetup(),
         requestId: fixture.requestId,
@@ -8607,15 +9041,34 @@ describe('retained-record failure publication', () => {
       });
       if (variant === 'healthy') {
         await start;
-        expect(backend.calls).toContain('launch');
+        expect(backend.calls).toContain('submit');
         expect(fixture.store.getTurnById(fixture.turn.id).status).toBe('completed');
       } else {
         const caught = await start.catch((error: unknown) => error);
         expect(caught).toBeInstanceOf(cleanupFails ? AggregateError : Error);
-        expect((caught as Error).message).toContain(marker);
+        const primary = caught instanceof AggregateError ? caught.errors[0] : caught;
+        if (variant === 'syntax') expect((primary as Error).message).toContain(marker);
+        else
+          expect(primary).toMatchObject({
+            issues: expect.arrayContaining([
+              expect.objectContaining({
+                code: 'invalid_union',
+                path: [],
+                errors: expect.arrayContaining([
+                  expect.arrayContaining([
+                    expect.objectContaining({
+                      code: 'invalid_value',
+                      path: ['kind'],
+                      values: ['user'],
+                    }),
+                  ]),
+                ]),
+              }),
+            ]),
+          });
         expect(backend.calls).toContain('materialize');
         expect(backend.calls).toContain('cleanupSession');
-        expect(backend.calls).not.toContain('launch');
+        expect(backend.calls).not.toContain('submit');
         const turn = fixture.store.getTurnById(fixture.turn.id);
         const disk = readFileSync(
           join(
@@ -8682,7 +9135,7 @@ describe('retained-record failure publication', () => {
     const fixture = createWorkerContextExecutorFixture('published-authored');
     fixture.coreDb.sqlite
       .prepare(
-        "UPDATE scheduler_session_leases SET expires_at = '2099-01-01T00:00:00.000Z', heartbeat_deadline = '2099-01-01T00:00:00.000Z', startup_deadline = '2099-01-01T00:00:00.000Z'"
+        "UPDATE scheduler_execution_attempts SET startup_deadline = '2099-01-01T00:00:00.000Z'"
       )
       .run();
     const backend = new FakeWorkerGovernanceBackend();
@@ -8699,6 +9152,7 @@ describe('retained-record failure publication', () => {
     try {
       await expect(
         executor.startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
+          attemptId: `lease_${fixture.turn.id}`,
           agentSessionId: fixture.agentSessionId,
           agentSetup: createTestAgentSetup(),
           requestId: fixture.requestId,
@@ -8716,3 +9170,517 @@ describe('retained-record failure publication', () => {
     }
   });
 });
+
+/** Moves the exact live Core attempt into closing through its current owner. */
+function beginOwnedAttemptCloseout(
+  db: CoreDb,
+  input: { attemptId: string; firstTerminalCause: string; now?: () => string }
+) {
+  return attempts.markSchedulerExecutionAttemptClosing(db, {
+    attemptId: input.attemptId,
+    cause: input.firstTerminalCause,
+    ...(input.now ? { now: input.now } : {}),
+  });
+}
+
+/** Requires online closeout itself to have released its complete attempt; this observer grants nothing. */
+function completeOwnedTerminalAttempt(db: CoreDb, input: { id: string }) {
+  expect(observeExecutionAttempts(db).filter((row) => row.turn_id === input.id)).toEqual([
+    expect.objectContaining({ phase: 'closed', fence_ref: expect.any(String) }),
+  ]);
+}
+
+const commitFixtureDbs: CoreDb[] = [];
+afterEach(() => {
+  for (const db of commitFixtureDbs.splice(0)) db.sqlite.close();
+});
+
+/** Opens the ordinary authority required by commit-only fixture consumers. */
+function openCommitFixtureCore(): CoreDb {
+  const db = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-commit-')));
+  applyMigrations(db);
+  commitFixtureDbs.push(db);
+  return db;
+}
+
+/** Acquires Core exclusion before the production commit binds its exact Native preparation. */
+function acquireCommitFixtureAttempt(
+  db: CoreDb,
+  preparation: Parameters<WorkerGovernanceTurnExecutor['prepareAgentSessionForTurn']>[1],
+  attemptId: string
+): void {
+  const entry = createSchedulerAdmissionEntry(db, {
+    backendId: 'nanohost',
+    queueEntryId: `queue:${attemptId}`,
+    requestId: preparation.requestId,
+    threadId: preparation.turn.threadId,
+    turnId: preparation.turn.id,
+    workspaceId: preparation.turn.workspaceId,
+    turnInput: preparation.turnInput,
+    triggerActor: preparation.turn.triggerActor,
+    requestedAgentId: preparation.agentSetup.manifest.id,
+  });
+  attempts.createSchedulerExecutionAttempt(db, {
+    entry,
+    attemptId,
+    preparationInput: { turnInput: preparation.turnInput },
+  });
+}
+
+/** Faults at the accepted-baseline or Native liveness crossing immediately before turn.start. */
+type NativePreSubmissionFault =
+  | 'unproved'
+  | 'foreign-thread'
+  | 'foreign-slot'
+  | 'corrupt-cursor'
+  | 'corrupt-receipt'
+  | 'startup-deadline';
+
+/**
+ * Drives the actual Core, governance, Native preparation and submission consumers; only the external
+ * NanoHost responses are modeled. Each fault mutates the exact retained fact its consumer reads.
+ */
+async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): Promise<void> {
+  const fixture = createWorkerContextExecutorFixture(`native-${fault}`);
+  const { coreDb, store, turn, agentSessionId } = fixture;
+  const attemptId = `lease_${turn.id}`;
+  coreDb.sqlite
+    .prepare("UPDATE scheduler_execution_attempts SET startup_deadline='2999-01-01T00:00:00.000Z'")
+    .run();
+  const commit = 'e'.repeat(40);
+  const effects: NanoHostSessionEffectRequest[] = [];
+  const runtime = createConfiguredWorkerLifecycleRuntime({
+    coreDb,
+    store,
+    env: {},
+    workerControlGateway: new WorkerControlGateway(),
+    nanoHostSessionDispatch: {
+      async effect(connectionOrRequest, carriedRequest) {
+        const request = carriedRequest ?? (connectionOrRequest as NanoHostSessionEffectRequest);
+        effects.push(request);
+        switch (request.kind) {
+          case 'image.acquire':
+            return { digest: `sha256:${'a'.repeat(64)}` };
+          case 'image.inspect':
+            return {
+              digest: request.input.imageDigest,
+              environmentDefaults: {
+                defaultsDigest:
+                  'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+                values: {},
+              },
+              platform: { architecture: 'amd64', os: 'linux' },
+              storageLayout: {
+                family: 'openkit-worker',
+                gid: 1000,
+                uid: 1000,
+                targets: [{ target: '/sandbox' }, { target: '/workspace' }],
+                version: '1',
+                workingDirectory: '/tmp/openkit-bootstrap',
+              },
+            };
+          case 'sandbox.create': {
+            const storage = request.input.storage as { targets: readonly object[] };
+            return {
+              sandboxId: request.input.sandboxId,
+              state: 'created',
+              storage: {
+                ...storage,
+                targets: storage.targets.map((target) => ({ ...target, initialized: true })),
+              },
+            };
+          }
+          case 'bridge.open':
+            return { accepted: true, integrationReady: true, state: 'open' };
+          case 'reference.import':
+            return { state: 'imported' };
+          case 'workspace.collect':
+            return request.input.mode === 'baseline'
+              ? {
+                  requestId: request.requestId,
+                  outcome: 'baseline',
+                  head: {
+                    tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+                    manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+                  },
+                }
+              : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
+          case 'bridge.close':
+          case 'sandbox.delete':
+            return { state: 'deleted' };
+          default:
+            throw new Error(`Unexpected Native pre-submission effect ${request.kind}.`);
+        }
+      },
+      async poll() {
+        return null;
+      },
+      async result() {},
+      async route() {
+        throw new Error('Unexpected route.');
+      },
+    },
+  });
+  const backend = (runtime.turnExecutor as unknown as { readonly backend: WorkerGovernanceBackend })
+    .backend;
+  const prepare = backend.prepareLaunch.bind(backend);
+  let injected = false;
+  const preparing = vi.spyOn(backend, 'prepareLaunch').mockImplementation(async (...args) => {
+    const materialization = args[0];
+    if (fault === 'corrupt-receipt') {
+      // A retained cursor is valid; its exact successor collection receipt is the corrupted input.
+      // The Native collection consumer must read this receipt instead of rescanning or submitting.
+      const storage = store.getAgentSession(agentSessionId).retainedStorage!;
+      const binding = getWorkerStorageBinding(coreDb, { storageRef: storage.storageRef })!;
+      const sandboxCreated = effects.find((effect) => effect.kind === 'sandbox.create')!;
+      expect(sandboxCreated.input.sandboxId).toEqual(expect.any(String));
+      const identity = {
+        workspaceId: turn.workspaceId,
+        storageRef: binding.storageRef,
+        scopeDigest: binding.scopeDigest,
+        attachmentGeneration: binding.attachmentGeneration,
+        sandboxId: sandboxCreated.input.sandboxId as string,
+        workSlot: storage.workSlotRef,
+        collectionId: 'baseline',
+        agentSessionId,
+        threadId: turn.threadId,
+        turnId: turn.id,
+        packageSnapshotId: materialization.packageSnapshotId,
+      };
+      const db = openTestWorkspaceDb(coreDb);
+      try {
+        authorizeWorkspaceBaselineInitialization(db, identity);
+        acceptWorkspaceBaseline(
+          db,
+          identity,
+          {
+            tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+            manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+          },
+          null,
+          commit
+        );
+        acceptWorkspaceCapture(
+          db,
+          {
+            ...identity,
+            collectionId: `successor-${createHash('sha256').update(materialization.packageSnapshotId).digest('hex')}`,
+          },
+          { outcome: 'no_new_head', unstable: false },
+          null
+        );
+        db.sqlite
+          .prepare(
+            "UPDATE workspace_snapshot_collections SET result_json=json_set(result_json, '$.outcome', 'future')"
+          )
+          .run();
+        injected = true;
+      } finally {
+        db.sqlite.close();
+      }
+    }
+    await prepare(...args);
+    if (fault === 'corrupt-receipt') return;
+    const db = openTestWorkspaceDb(coreDb);
+    try {
+      const cursors = db.sqlite
+        .prepare('SELECT baseline_identity_json AS identity FROM workspace_snapshot_cursors')
+        .all() as { identity: string }[];
+      expect(cursors).toHaveLength(1);
+      expect(JSON.parse(cursors[0]!.identity)).toMatchObject({
+        agentSessionId,
+        threadId: turn.threadId,
+        turnId: turn.id,
+        workspaceId: turn.workspaceId,
+        packageSnapshotId: materialization.packageSnapshotId,
+      });
+      if (fault === 'unproved')
+        db.sqlite
+          .prepare('UPDATE workspace_snapshot_cursors SET accepted_base_json=NULL, head_json=NULL')
+          .run();
+      if (fault === 'foreign-thread')
+        db.sqlite
+          .prepare(
+            "UPDATE workspace_snapshot_cursors SET baseline_identity_json=json_set(baseline_identity_json, '$.threadId', 'foreign-thread')"
+          )
+          .run();
+      if (fault === 'foreign-slot')
+        db.sqlite.prepare("UPDATE workspace_snapshot_cursors SET work_slot='foreign-slot'").run();
+      if (fault === 'corrupt-cursor')
+        db.sqlite
+          .prepare('UPDATE workspace_snapshot_cursors SET head_json=?')
+          .run(JSON.stringify({ tree: 'unknown', manifest: 'b'.repeat(40) }));
+      if (fault === 'startup-deadline')
+        coreDb.sqlite
+          .prepare(
+            "UPDATE scheduler_execution_attempts SET startup_deadline='2026-01-01T00:00:00.000Z' WHERE attempt_id=?"
+          )
+          .run(attemptId);
+      injected = true;
+    } finally {
+      db.sqlite.close();
+    }
+  });
+  const cleanup = vi.spyOn(backend, 'cleanupSession');
+  const commands: string[] = [];
+  const acceptedPreparationOperations: string[] = [];
+  let done = false;
+  let failure: unknown;
+  const running = runtime.turnExecutor
+    .startTurn(store, turn.id, fixture.workerRequest, {
+      attemptId,
+      agentSessionId,
+      requestId: fixture.requestId,
+      sandboxBindingRef: fixture.sandboxBindingRef,
+      triggerActor: turn.triggerActor,
+      agentSetup: createTestAgentSetup({
+        requiredCapabilities: ['trusted-worker-inference-relay'],
+      }),
+      workspaceDataSourceCatalog: {
+        schemaVersion: 1,
+        sources: [
+          {
+            access: 'read-write',
+            allowedSlotKinds: ['worktree'],
+            displayName: 'Main repository',
+            id: 'repo_default',
+            kind: 'git',
+            locator: { url: 'https://example.invalid/source.git', commit },
+            sensitivity: 'internal',
+            status: 'active',
+          },
+        ],
+      },
+      workspaceRoots: [
+        {
+          access: 'read-write',
+          id: 'repo_default',
+          sourceKind: 'remote-git',
+          sourceCommit: commit,
+          workerPath: '/workspace/openkit',
+        },
+      ],
+      workspaceSourceRefs: { repo_default: 'repo_default' },
+    })
+    .catch((error: unknown) => {
+      failure = error;
+    })
+    .finally(() => {
+      done = true;
+    });
+  try {
+    for (let tick = 0; tick < 1000 && !done; tick += 1) {
+      const integrations = coreDb.sqlite
+        .prepare('SELECT sandbox_integration_binding_ref AS ref FROM sandbox_runtime_records')
+        .all() as { ref: string }[];
+      for (const integration of integrations) {
+        const command = dispatchNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: integration.ref,
+        });
+        if (!command) continue;
+        if (command.operation === 'session.open') {
+          const preparation = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+          expect(preparation).toMatchObject({ phase: 'open', deadline: null });
+          expect(preparation.operationId).toEqual(expect.any(String));
+          acceptedPreparationOperations.push(preparation.operationId!);
+        }
+        runtime.acceptNanoHostHarnessCommand(command);
+        commands.push(command.operation);
+        // An illicit turn.start is refused externally so the test still drains the production waiter.
+        // The refusal assertion below counts queue publication itself, before this modeled result.
+        const result = {
+          disposition:
+            command.operation === 'turn.start' ? ('refused' as const) : ('succeeded' as const),
+          body:
+            command.operation === 'turn.start'
+              ? {
+                  reasonCode: 'dependency_failed',
+                  message: 'Unexpected turn.start at the pre-submission fault.',
+                }
+              : command.operation === 'session.close'
+                ? { state: 'closed', privateState: 'absent', childState: 'absent' }
+                : command.operation === 'session.open'
+                  ? {
+                      state: 'open',
+                      maxActiveTurns: 1,
+                      nativeHandleState: 'pending',
+                      nativeHandleDigest: null,
+                      workspaceGitBaseline: {
+                        commit,
+                        tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+                      },
+                    }
+                  : {
+                      state: 'open',
+                      childState: 'absent',
+                      cleanupState: 'clean',
+                      nativeHandleState: 'pending',
+                      nativeHandleDigest: null,
+                    },
+          harnessInstanceId: command.harnessInstanceId,
+          operationId: command.operationId,
+          schemaVersion: 2 as const,
+          sequence: command.sequence,
+        };
+        settleNanoHostHarnessOperation(coreDb, {
+          result,
+          sandboxIntegrationBindingRef: integration.ref,
+          timestamp: new Date().toISOString(),
+        });
+        runtime.acceptNanoHostHarnessResult(result);
+      }
+      if (!done) await new Promise<void>((resolve) => setTimeout(resolve, 1));
+    }
+    expect(
+      done,
+      'The actual Native refusal and cleanup must finish within the existing test timeout.'
+    ).toBe(true);
+    await running;
+    expect(
+      injected,
+      `The exact named fault must be installed after real materialization: ${(failure as Error)?.message ?? 'no failure'}.`
+    ).toBe(true);
+    expect(commands).toContain('session.open');
+    expect(commands).not.toContain('turn.start');
+    expect(failure).toBeInstanceOf(Error);
+    const primary = failure instanceof AggregateError ? failure.errors[0] : failure;
+    expect((primary as Error).message).toMatch(
+      fault === 'startup-deadline'
+        ? /execution attempt is not live for worker backend launch\./
+        : fault === 'corrupt-cursor'
+          ? /Invalid string: must match pattern/
+          : fault === 'corrupt-receipt'
+            ? /Invalid discriminator value|Invalid input/
+            : /accepted baseline/
+    );
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    const attempt = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+    expect(attempt.operationId).toEqual(expect.any(String));
+    // Corrupt retained collection is refused during preparation, before a submit intent exists.
+    // Its successful fixed effects are accepted; that does not claim native Turn acceptance.
+    expect(attempt.disposition).toBe(fault === 'corrupt-receipt' ? 'accepted' : 'unknown');
+    expect(attempt.deadline).toEqual(fault === 'corrupt-receipt' ? null : expect.any(String));
+    if (fault === 'corrupt-receipt')
+      expect(acceptedPreparationOperations).toContain(attempt.operationId);
+    expect(attempt.phase).toBe('closing');
+    expect(attempt.fenceRef).toBeNull();
+  } finally {
+    preparing.mockRestore();
+    cleanup.mockRestore();
+    coreDb.sqlite.close();
+  }
+}
+
+/** Launches through the real Core owners and waits on the real durable completion stream; only the external worker is modeled. */
+async function launchFinalReviewWorker(suffix: string) {
+  const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-review-')));
+  applyMigrations(coreDb);
+  const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+  const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Exercise worker closeout');
+  const agentSessionId = `as_review_${suffix}`;
+  const attemptId = `lease_${turn.id}`;
+  const sandboxBindingRef = `lease-binding:${turn.id}`;
+  const requestId = '00000000-0000-4000-8000-000000000290';
+  const lineage = {
+    agentSessionId,
+    packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
+    requestId,
+    threadId: turn.threadId,
+    turnId: turn.id,
+    workspaceId: turn.workspaceId,
+  };
+  const gateway = createDefaultWorkerControlGateway(coreDb);
+  const backend = interruptibleBackend();
+  const materialize = backend.materialize.bind(backend);
+  let token = '';
+  backend.materialize = async (pkg, context) => {
+    const registration = gateway.registerSession(pkg, {
+      sandboxBindingRef,
+      workerControlToken: Buffer.alloc(32, 17).toString('base64url'),
+      workerInferenceToken: Buffer.alloc(32, 34).toString('base64url'),
+      workerCapabilityToken: Buffer.alloc(32, 51).toString('base64url'),
+    });
+    token = registration.token;
+    bindNanoHostAttemptRouteTokenHashes(coreDb, {
+      attemptId,
+      sandboxBindingRef,
+      workerControlTokenHash: registration.workerControlTokenHash,
+      workerInferenceTokenHash: registration.workerInferenceTokenHash,
+      workerCapabilityTokenHash: registration.workerCapabilityTokenHash,
+    });
+    return materialize(pkg, context);
+  };
+  let notifyWaiting!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    notifyWaiting = resolve;
+  });
+  let settled = false;
+  const executor = new WorkerGovernanceTurnExecutor({
+    backend,
+    coreDb,
+    workerControlGateway: gateway,
+    awaitWorkerCompletion: (_pkg, exactAttemptId) => {
+      const result = waitForWorkerControlFinalStatus(coreDb, {
+        attemptId: exactAttemptId,
+        lineage,
+      });
+      notifyWaiting();
+      return result;
+    },
+  });
+  const execution = startWithExecutorAttempt(
+    coreDb,
+    executor,
+    store,
+    turn,
+    agentSessionId,
+    new Date().toISOString(),
+    'Exercise worker closeout',
+    {
+      agentSetup: createTestAgentSetup(),
+      requestId,
+      triggerActor: turn.triggerActor,
+      workspaceRoots: [],
+    }
+  ).then(
+    () => {
+      settled = true;
+      return null;
+    },
+    (error: unknown) => {
+      settled = true;
+      return error;
+    }
+  );
+  await Promise.race([
+    waiting,
+    execution.then((error) => {
+      if (error) throw error;
+    }),
+  ]);
+  return {
+    coreDb,
+    store,
+    turn,
+    agentSessionId,
+    attemptId,
+    lineage,
+    gateway,
+    backend,
+    executor,
+    token,
+    execution,
+    settled: () => settled,
+    async dispose() {
+      if (!settled) {
+        attempts.markSchedulerExecutionAttemptClosing(coreDb, {
+          attemptId,
+          cause: 'test-disposal',
+        });
+        vi.setSystemTime(requireNanoHostExecutionAttempt(coreDb, attemptId).deadline!);
+        await execution;
+      }
+      coreDb.sqlite.close();
+    },
+  };
+}

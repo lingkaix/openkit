@@ -18,6 +18,11 @@ import {
 import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
 import { ProviderRegistry } from './providers/registry.js';
+import {
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  upsertNanoHostRuntimeTarget,
+} from './runtime/nanohost-runtime-target.js';
+import * as schedulerDispatch from './runtime/scheduler-dispatch-loop.js';
 import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import {
   recordWorkspaceSyncReview,
@@ -25,6 +30,7 @@ import {
 } from './runtime/workspace-sync-records.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from './scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
+import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
@@ -846,6 +852,20 @@ describe('Core artifact routes', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-artifact-review-redo-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      deploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
+      identityId: 'identity_artifact_redo_fixture',
+      observedAt: new Date().toISOString(),
+      targetId: 'target_artifact_redo_fixture',
+    });
+    upsertNanoHostRuntimeTarget(coreDb, {
+      ...target,
+      freshEmpty: true,
+      observedAt: new Date().toISOString(),
+      physicalEpoch: 'a'.repeat(64),
+      predecessorFenced: true,
+      ready: true,
+    });
     const store = createDemoStore({ dataRoot });
     recordLocalWorkspaceAccess(coreDb, 'ws_demo');
     const setup = createTestAgentSetup();
@@ -951,7 +971,42 @@ describe('Core artifact routes', () => {
     } as const;
 
     try {
-      const response = await postJson(app, decisionPath, request);
+      const dispatch = vi.spyOn(schedulerDispatch, 'runSchedulerDispatchLoop');
+      let responseSettled = false;
+      const pendingResponse = postJson(app, decisionPath, request).then((response) => {
+        responseSettled = true;
+        return response;
+      });
+      try {
+        // This local command must publish its receipt before waiting for the follow-up execution.
+        await vi.waitFor(() =>
+          expect(
+            responseSettled,
+            'Artifact review acknowledgement must not wait for a worker whose dispatch requires that receipt.'
+          ).toBe(true)
+        );
+      } finally {
+        const ownCalls = dispatch.mock.calls
+          .map(([input], index) => ({ input, index }))
+          .filter(({ input }) => input.store === store);
+        for (const { index } of ownCalls) {
+          const result = dispatch.mock.results[index];
+          if (result?.type === 'return') {
+            console.info('artifact_redo_dispatch_observation', JSON.stringify(await result.value));
+          }
+        }
+        console.info(
+          'artifact_redo_admission_observation',
+          JSON.stringify(
+            listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+              workspaceId: 'ws_demo',
+              statuses: ['queued', 'admitted', 'denied', 'cancelled'],
+            })
+          )
+        );
+        dispatch.mockRestore();
+      }
+      const response = await pendingResponse;
       const responseBody = await response.json();
       expect(response.status, JSON.stringify(responseBody)).toBe(200);
       const decided = SubmitArtifactReviewDecisionResponseSchema.parse(responseBody);
@@ -962,6 +1017,9 @@ describe('Core artifact routes', () => {
         request.requestId
       );
       expect(decided).toMatchObject({ decision: 'redo', followUpTurnId });
+      await vi.waitFor(() =>
+        expect(store.getTurn('ws_demo', thread.id, followUpTurnId).status).toBe('completed')
+      );
       expect(store.getTurn('ws_demo', thread.id, followUpTurnId)).toMatchObject({
         id: followUpTurnId,
         workspaceId: 'ws_demo',

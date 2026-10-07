@@ -16,11 +16,21 @@ import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import {
+  acceptSchedulerExecutionObservation,
+  closeSchedulerExecutionAttemptWithFence,
+  listSchedulerExecutionAttemptsForTurn,
+  markSchedulerExecutionAttemptClosing,
+  recordSchedulerExecutionOperation,
+  requireSchedulerExecutionAttempt,
+  schedulerExecutionCorrelation,
+} from '../runtime/execution-attempt-records.js';
 import type {
   NanoHostSessionDispatch,
   NanoHostSessionEffectRequest,
 } from '../runtime/nanohost-session-dispatch.js';
 import { resolvePublicNativeEnvironment } from '../runtime/native-environment.js';
+import * as schedulerDispatch from '../runtime/scheduler-dispatch-loop.js';
 import type { TurnCommandRuntimeContext, TurnStartRuntimeContext } from '../runtime/types.js';
 import { writeWorkerImageSettlement } from '../runtime/worker-image-settlements.js';
 import {
@@ -30,14 +40,7 @@ import {
   reserveWorkerStorageAttachment,
   type WorkerStorageLayout,
 } from '../runtime/worker-storage-bindings.js';
-import {
-  ensureConfiguredSchedulerBaseline,
-  listSchedulerAdmissionEntriesForWorkspace,
-  listSchedulerSessionLeasesForTurn,
-  requireSchedulerSessionLease,
-  upsertSchedulerCapacityRecord,
-  upsertSchedulerWorkerPool,
-} from '../scheduler-records.js';
+import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -141,6 +144,19 @@ class DeferredInterruptTurnExecutor extends SimulatedTurnExecutor {
       });
     }
     store.updateTurn(turnId, { agentSessionId, status: 'running' });
+    if (!context?.attemptId) throw new Error('Current execution attempt is absent.');
+    // This consumer fixture models a submitted resident worker; production still owns its Core correlation.
+    const attempt = recordSchedulerExecutionOperation(this.fixtureCoreDb, {
+      attemptId: context.attemptId,
+      operationId: `submit:${turnId}`,
+      submission: true,
+    });
+    const observed = await this.submit({
+      ...schedulerExecutionCorrelation(attempt),
+      deadline: attempt.deadline!,
+    });
+    acceptSchedulerExecutionObservation(this.fixtureCoreDb, observed);
+    context.onSubmissionSettled?.();
   }
 
   /** Acknowledges the interrupt command without claiming that runtime cleanup is terminal. */
@@ -172,7 +188,7 @@ class DeferredInterruptTurnExecutor extends SimulatedTurnExecutor {
     this.fixtureCoreDb.sqlite
       .prepare(
         `UPDATE agent_session_runtime_bindings
-         SET lifecycle_state = 'open', current_turn_id = NULL, current_lease_id = NULL,
+         SET lifecycle_state = 'open', current_turn_id = NULL, current_attempt_id = NULL,
              cleanup_state = 'clean', updated_at = ?
          WHERE harness_instance_id = ?`
       )
@@ -224,9 +240,44 @@ class DeferredInterruptTurnExecutor extends SimulatedTurnExecutor {
         },
         ALREADY_DECIDED_PUBLICATION_ADMISSION
       );
-      return;
+    } else {
+      await super.interruptTurn(pending.store, pending.turnId, pending.context);
     }
-    await super.interruptTurn(pending.store, pending.turnId, pending.context);
+    const attempt = listSchedulerExecutionAttemptsForTurn(this.fixtureCoreDb, {
+      workspaceId: pending.store.getTurnById(pending.turnId).workspaceId,
+      threadId: pending.store.getTurnById(pending.turnId).threadId,
+      turnId: pending.turnId,
+    })[0]!;
+    const closing = markSchedulerExecutionAttemptClosing(this.fixtureCoreDb, {
+      attemptId: attempt.attemptId,
+      cause: `turn-${terminalStatus}`,
+      outcomeRef: `turn:${terminalStatus}`,
+    });
+    // No output/evidence streams exist in this modeled worker. Exact resident occupancy and
+    // storage cleanup above settle its only physical fixture state before the modeled fence.
+    expect(pending.store.getTurnById(pending.turnId).status).toBe(terminalStatus);
+    expect(
+      this.fixtureCoreDb.sqlite
+        .prepare(
+          'SELECT active_turn_count FROM harness_instance_records WHERE harness_instance_id = ?'
+        )
+        .get(cleanup.harnessInstanceId)
+    ).toEqual({ active_turn_count: 0 });
+    const proof = {
+      terminalHandoff: true,
+      output: true,
+      evidence: true,
+      outsideWorkspaceCollection: true,
+      integrationDrain: true,
+      routesRevoked: true,
+    } as const;
+    const correlation = schedulerExecutionCorrelation(closing);
+    const release = await this.release({ ...correlation, proof });
+    closeSchedulerExecutionAttemptWithFence(this.fixtureCoreDb, {
+      correlation,
+      proof,
+      fenceRef: release.fenceRef!,
+    });
   }
 }
 
@@ -348,35 +399,6 @@ function writeReloadableModelCatalog(dataRoot: string): void {
   );
 }
 
-/** Configures one real local scheduler slot used by predecessor and successor Turns. */
-function configureScheduler(coreDb: CoreDb): void {
-  ensureConfiguredSchedulerBaseline(coreDb, { placement: 'local' });
-  upsertSchedulerWorkerPool(coreDb, {
-    allowedBackendKinds: ['openshell'],
-    allowedPlacements: ['local'],
-    allowedWorkspaceScopes: ['local'],
-    budgetClass: 'interactive',
-    currentAdmittedSessionCount: 0,
-    currentQueueDepth: 0,
-    defaultTimeoutMs: 900_000,
-    healthSummary: 'ready',
-    maxConcurrentSessions: 1,
-    poolId: 'pool_local',
-    queueLimit: 20,
-    status: 'active',
-  });
-  upsertSchedulerCapacityRecord(coreDb, {
-    capacityClass: 'local',
-    concurrencyCeiling: 1,
-    inUseCount: 0,
-    observationSource: 'configured',
-    observedAt: new Date().toISOString(),
-    poolId: 'pool_local',
-    queueDepth: 0,
-    targetId: 'target_local',
-  });
-}
-
 /** Creates the attached persistent association and runtime lineage for one active Turn. */
 function attachResidentStorage(input: {
   readonly agentSessionId: string;
@@ -462,7 +484,7 @@ function attachResidentStorage(input: {
          agent_session_runtime_binding_id, harness_instance_id, agent_session_id,
          workspace_id, thread_id, agent_session_compatibility_key,
          effective_setup_generation, native_handle_state, lifecycle_state,
-         current_turn_id, current_lease_id, next_turn_sequence, cleanup_state,
+         current_turn_id, current_attempt_id, next_turn_sequence, cleanup_state,
          created_at, updated_at, image_digest
        ) VALUES (
          'binding_worker_environment', ?, ?, ?, ?, 'session_compatibility_worker_environment',
@@ -910,16 +932,17 @@ describe('Worker environment App composition', () => {
   });
 
   it.each([
-    ['interrupted', 'turn-interrupted'],
-    ['cancelled', 'turn-cancelled'],
-  ] as const)('waits for resident %s cleanup before admitting a same-storage successor', async (terminalStatus, releaseReason) => {
+    'interrupted',
+    'cancelled',
+  ] as const)('waits for resident %s cleanup before admitting a same-storage successor', async (terminalStatus) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-environment-replacement-app-'));
     const coreDb = openCoreDb(dataRoot);
+    const dispatchObservation = vi.spyOn(schedulerDispatch, 'runSchedulerDispatchLoop');
+    let responseSettled = false;
 
     try {
       applyMigrations(coreDb);
       insertCanonicalUser(coreDb);
-      configureScheduler(coreDb);
       const store = createDemoStore({ dataRoot }, USER_ID);
       ensureUserQuickChatWorkspace({ coreDb, store, userId: USER_ID });
       const privateWorkspace = store.ensureQuickChatWorkspace(USER_ID);
@@ -1018,13 +1041,19 @@ describe('Worker environment App composition', () => {
         status: string;
       };
       expect(predecessorResponse.status, JSON.stringify(predecessor)).toBe(202);
+      await vi.waitFor(() =>
+        expect(store.getTurnById(predecessor.id)).toMatchObject({
+          agentSessionId: expect.any(String),
+          status: 'running',
+        })
+      );
       const storedPredecessor = store.getTurnById(predecessor.id);
       expect(storedPredecessor).toMatchObject({
         agentSessionId: expect.any(String),
         status: 'running',
       });
       if (!storedPredecessor.agentSessionId) throw new Error('Predecessor AgentSession is absent.');
-      const predecessorLease = listSchedulerSessionLeasesForTurn(coreDb, {
+      const predecessorLease = listSchedulerExecutionAttemptsForTurn(coreDb, {
         threadId: productThread.id,
         turnId: predecessor.id,
         workspaceId: productWorkspace.id,
@@ -1033,8 +1062,8 @@ describe('Worker environment App composition', () => {
       const attached = attachResidentStorage({
         agentSessionId: storedPredecessor.agentSessionId,
         coreDb,
-        leaseId: predecessorLease.leaseId,
-        sandboxBindingRef: predecessorLease.sandboxBindingRef,
+        leaseId: predecessorLease.attemptId,
+        sandboxBindingRef: predecessorLease.bindingRef!,
         threadId: productThread.id,
         turnId: predecessor.id,
         workspaceId: productWorkspace.id,
@@ -1043,7 +1072,7 @@ describe('Worker environment App composition', () => {
         attachmentGeneration: attached.attachmentGeneration,
         expectedRevision: attached.revision,
         harnessInstanceId: attached.harnessInstanceId,
-        sandboxBindingRef: predecessorLease.sandboxBindingRef,
+        sandboxBindingRef: predecessorLease.bindingRef!,
         storageRef: attached.storageRef,
       });
 
@@ -1097,6 +1126,9 @@ describe('Worker environment App composition', () => {
           }
         )
       );
+      void activationResponsePromise.then(() => {
+        responseSettled = true;
+      });
       await vi.waitFor(() => expect(executor.interruptCount).toBe(1));
       await new Promise<void>((resolve) => setImmediate(resolve));
       const beforeTerminalTurnIds = store
@@ -1104,6 +1136,12 @@ describe('Worker environment App composition', () => {
         .map((turn) => turn.id);
 
       await executor.finishInterrupt(terminalStatus);
+      await vi.waitFor(() =>
+        expect(
+          responseSettled,
+          'Activation acknowledges after predecessor fencing and successor receipt publication.'
+        ).toBe(true)
+      );
       const activationResponse = await activationResponsePromise;
       const activation = (await activationResponse.json()) as ActivateWorkerEnvironmentResponse;
       await vi.waitFor(() => expect(executor.startedTurnIds).toHaveLength(2));
@@ -1132,9 +1170,11 @@ describe('Worker environment App composition', () => {
         expect(store.getTurnById(successor.id)).toMatchObject({ status: 'running' })
       );
       expect(executor.startedTurnIds).toEqual([predecessor.id, successor.id]);
-      expect(requireSchedulerSessionLease(coreDb, predecessorLease.leaseId)).toMatchObject({
-        releaseReason,
-        status: 'released',
+      expect(requireSchedulerExecutionAttempt(coreDb, predecessorLease.attemptId)).toMatchObject({
+        phase: 'closed',
+        terminalCause: `turn-${terminalStatus}`,
+        outcomeRef: `turn:${terminalStatus}`,
+        fenceRef: expect.any(String),
       });
       const successorAdmission = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
         statuses: ['admitted'],
@@ -1146,6 +1186,43 @@ describe('Worker environment App composition', () => {
         storageRef: attached.storageRef,
       });
     } finally {
+      if (!responseSettled) {
+        const observations = await Promise.all(
+          dispatchObservation.mock.results.flatMap((result, index) =>
+            dispatchObservation.mock.calls[index]?.[0].coreDb === coreDb && result.type === 'return'
+              ? [Promise.resolve(result.value)]
+              : []
+          )
+        );
+        console.info(
+          'worker-environment-replacement-dispatch',
+          JSON.stringify(
+            observations.map((result) => ({
+              startedTurns: result.startedTurns.map((started) => ({
+                turnId: started.dispatch.entry.turnId,
+                attemptId: started.dispatch.attempt.attemptId,
+              })),
+              terminalResult: result.terminalResult,
+            }))
+          )
+        );
+        console.info(
+          'worker-environment-replacement-owners',
+          JSON.stringify({
+            admissions: coreDb.sqlite
+              .prepare(
+                'SELECT queue_entry_id, request_id, turn_id, status FROM scheduler_admission_entries'
+              )
+              .all(),
+            attempts: coreDb.sqlite
+              .prepare(
+                'SELECT attempt_id, turn_id, phase, disposition, operation_id, terminal_cause, fence_ref FROM scheduler_execution_attempts'
+              )
+              .all(),
+          })
+        );
+      }
+      dispatchObservation.mockRestore();
       coreDb.sqlite.close();
     }
   });

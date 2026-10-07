@@ -42,22 +42,14 @@ export type {
 export { runtimeEvidence } from './runtime-evidence.js';
 export type {
   SchedulerAdmissionDenialReason,
-  SchedulerAdmissionPriorityClass,
   SchedulerAdmissionStatus,
 } from './scheduler-admission-entries.js';
 export { schedulerAdmissionEntries } from './scheduler-admission-entries.js';
 export type {
-  SchedulerCapacityObservationSource,
-  SchedulerWorkerPoolStatus,
-} from './scheduler-operational-records.js';
-export {
-  schedulerCapacityRecords,
-  schedulerWorkerPools,
-} from './scheduler-operational-records.js';
-export type { SchedulerPlacementPlanStatus } from './scheduler-placement-plans.js';
-export { schedulerPlacementPlans } from './scheduler-placement-plans.js';
-export type { SchedulerSessionLeaseStatus } from './scheduler-session-leases.js';
-export { schedulerSessionLeases } from './scheduler-session-leases.js';
+  SchedulerExecutionAttemptPhase,
+  SchedulerExecutionDisposition,
+} from './scheduler-execution-attempts.js';
+export { schedulerExecutionAttempts } from './scheduler-execution-attempts.js';
 export { serverSettings } from './server-settings.js';
 export type {
   VaultAdminAuditOutcome,

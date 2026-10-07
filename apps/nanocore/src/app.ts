@@ -102,6 +102,10 @@ import {
   executeCapturedPendingCall,
   prepareCapturedPendingCall,
 } from './runtime/captured-pending-call.js';
+import {
+  markSchedulerAttemptForTerminalTurn,
+  markSchedulerExecutionAttemptClosing,
+} from './runtime/execution-attempt-records.js';
 import { createGoalCoordinator } from './runtime/goal-coordinator.js';
 import {
   advanceGoalForThread,
@@ -111,6 +115,12 @@ import {
   readGoalView,
 } from './runtime/goal-owner.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
+import {
+  acceptNanoHostAttemptHeartbeatByBinding,
+  adoptNanoHostAttemptReconnect,
+  NanoHostAttemptHeartbeatRejectedError,
+  resolveNanoHostAttemptTokenBinding,
+} from './runtime/nanohost-attempt-records.js';
 import { recordNanoHostRuntimeTargetConnectionClose } from './runtime/nanohost-runtime-target.js';
 import {
   createNanoHostSessionDispatch,
@@ -120,7 +130,7 @@ import {
 } from './runtime/nanohost-session-dispatch.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { installPendingRequestAdmission } from './runtime/pending-request-flow.js';
-import { cancelOwnedDeferredAdmission, startProductTurn } from './runtime/product-turn-start.js';
+import { cancelOwnedQueuedAdmission, startProductTurn } from './runtime/product-turn-start.js';
 import { createCoordinatorTaskTool } from './runtime/task-admission.js';
 import { waitForWorkerTurnTerminalState } from './runtime/task-turn-wait.js';
 import {
@@ -149,13 +159,7 @@ import {
 import { getWorkerStorageBinding } from './runtime/worker-storage-bindings.js';
 import { updateBackendWorkspaceHandleCleanupStatus } from './runtime/workspace-sync-records.js';
 import {
-  acceptSchedulerLeaseHeartbeatByBinding,
-  adoptSchedulerLeaseReconnect,
-  completeSchedulerLeaseForTerminalTurn,
   listSchedulerAdmissionEntriesForWorkspace,
-  markSchedulerSessionLeaseReleasing,
-  resolveSchedulerLeaseTokenBinding,
-  SchedulerLeaseHeartbeatRejectedError,
   type SchedulerWorkerStorageChoice,
 } from './scheduler-records.js';
 import { registerServiceRoutes } from './service-routes.js';
@@ -386,7 +390,6 @@ export interface CreateAppOptions {
   /** Process-local MCP supervisor used by private worker capability routes. */
   workerMcpGateway?: WorkerMcpGateway;
   /** Scheduler epoch owned by this app instance. */
-  schedulerEpoch?: number;
   /** Configured scheduler placement used for admission. */
   workerPlacement?: 'local' | 'remote';
   agentManifests?: AgentManifest[];
@@ -418,7 +421,7 @@ export interface CreateAppOptions {
 /**
  * Creates the default worker-control gateway for one app instance.
  *
- * @param coreDb Optional server-scope database used for durable scheduler lease binding checks.
+ * @param coreDb Optional server-scope database used for durable execution attempt binding checks.
  * @param onFinalStatusCommitted Optional restart-only closeout observer.
  * @returns Worker-control gateway.
  */
@@ -434,14 +437,14 @@ export function createDefaultWorkerControlGateway(
     acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
     authorizeReconnectHeartbeat: (input) => {
       try {
-        adoptSchedulerLeaseReconnect(coreDb, input);
+        adoptNanoHostAttemptReconnect(coreDb, input);
       } catch (error) {
         throwSchedulerHeartbeatGatewayError(error);
       }
     },
     onHeartbeatAccepted: (input) => {
       try {
-        acceptSchedulerLeaseHeartbeatByBinding(coreDb, {
+        acceptNanoHostAttemptHeartbeatByBinding(coreDb, {
           acceptedAt: input.heartbeat.lastHeartbeatAt,
           lineage: input.lineage,
           sandboxBindingRef: input.sandboxBindingRef,
@@ -455,9 +458,16 @@ export function createDefaultWorkerControlGateway(
       }
     },
     onFinalStatusAccepted: (input) => {
-      const resolution = resolveSchedulerLeaseTokenBinding(coreDb, input);
+      const resolution = resolveNanoHostAttemptTokenBinding(coreDb, input);
 
       if (resolution.status !== 'accepted') {
+        // The gateway admitted and persisted exact terminal evidence before this hook. A
+        // cancellation-owned closing attempt keeps that evidence without restoring effect authority.
+        if (
+          resolution.reason === 'attempt-not-live' &&
+          resolveWorkerControlFinalStatusTokenBinding(coreDb, input).status === 'accepted'
+        )
+          return;
         throw new WorkerControlGatewayError(
           'worker_control_lease_not_live',
           'Worker control request lease is not live.',
@@ -465,9 +475,9 @@ export function createDefaultWorkerControlGateway(
         );
       }
 
-      markSchedulerSessionLeaseReleasing(coreDb, {
-        leaseId: resolution.lease.leaseId,
-        releaseReason: 'worker-final-status',
+      markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId: resolution.attempt.attemptId,
+        cause: 'worker-final-status',
       });
     },
     onFinalStatusCommitted: (input) => {
@@ -489,12 +499,12 @@ export function createDefaultWorkerControlGateway(
     resolveFinalStatusTokenBinding: (input) =>
       resolveWorkerControlFinalStatusTokenBinding(coreDb, input),
     resolveTokenBinding: (input) => {
-      const resolution = resolveSchedulerLeaseTokenBinding(coreDb, input);
+      const resolution = resolveNanoHostAttemptTokenBinding(coreDb, input);
       if (
         resolution.status === 'accepted' &&
-        (!resolution.lease.workerControlTokenHash ||
-          !resolution.lease.workerInferenceTokenHash ||
-          !resolution.lease.workerCapabilityTokenHash)
+        (!resolution.attempt.workerControlTokenHash ||
+          !resolution.attempt.workerInferenceTokenHash ||
+          !resolution.attempt.workerCapabilityTokenHash)
       ) {
         return { status: 'rejected', reason: 'binding-not-found' };
       }
@@ -511,7 +521,7 @@ export function createDefaultWorkerControlGateway(
 
 /** Projects scheduler heartbeat rejections into the stable worker-control error surface. */
 function throwSchedulerHeartbeatGatewayError(error: unknown): never {
-  if (!(error instanceof SchedulerLeaseHeartbeatRejectedError)) {
+  if (!(error instanceof NanoHostAttemptHeartbeatRejectedError)) {
     throw error;
   }
   if (error.reason === 'sequence-stale') {
@@ -521,7 +531,7 @@ function throwSchedulerHeartbeatGatewayError(error: unknown): never {
       409
     );
   }
-  if (error.reason === 'lease-changed') {
+  if (error.reason === 'attempt-changed') {
     throw new WorkerControlGatewayError(
       'worker_control_identity_conflict',
       'Worker control heartbeat identity conflicts with the durable lease binding.',
@@ -759,7 +769,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     options.workerControlGateway ?? createDefaultWorkerControlGateway(options.coreDb);
   const workerMcpGateway =
     options.workerMcpGateway ?? createDefaultWorkerMcpGateway(options.coreDb);
-  const schedulerEpoch = options.schedulerEpoch ?? 1;
   const app = new Hono<{ Variables: AuthVariables }>();
   app.use(createHttpTelemetryMiddleware());
   const nanohostTransportSessionAuthority =
@@ -907,7 +916,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
               const terminal = await waitForWorkerTurnTerminalState(sharedStore, member.turnId);
               if (!isSealedTurnTerminal(terminal.status))
                 throw new Error('Worker still requires human intervention.');
-              completeSchedulerLeaseForTerminalTurn(coreDb, terminal);
+              markSchedulerAttemptForTerminalTurn(coreDb, terminal);
             }
             requireAuthority();
             const released = getWorkerStorageBinding(coreDb, { storageRef: before.storageRef });
@@ -926,16 +935,18 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
               )
             )
               throw new Error('Worker storage changed during interruption.');
-            // The ordinary scheduler resolves the new AEP and refuses occupied capacity before dispatch.
-            try {
-              await startModeWorkerTurn({
+            // The ordinary scheduler resolves the new AEP and retains queued work until dispatch is eligible.
+            await new Promise<void>((resolve, reject) => {
+              void startModeWorkerTurn({
                 store: sharedStore,
                 triggerActor: { kind: 'user', id: actor.userId },
+                requestActor: actor,
                 workspaceId: replaceNow.workspaceId,
                 threadId: replaceNow.threadId,
                 prompt: replaceNow.prompt,
                 requestedAgentId: target.agentId,
                 requestId,
+                onTurnCreated: () => resolve(),
                 workerStorageChoice: {
                   kind: 'selected',
                   storageRef: before.storageRef,
@@ -944,15 +955,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
                   goalId: null,
                   taskId: null,
                 },
-              });
-            } catch (error) {
-              // A refused admission ran no successor; uncertain runtime failures retain unknown.
-              if (
-                !(error instanceof TurnStartValidationError) ||
-                error.code !== 'scheduler_admission_deferred'
-              )
-                throw error;
-            }
+              }).catch(reject);
+            });
             requireAuthority();
             const after = getWorkerStorageBinding(coreDb, { storageRef: before.storageRef });
             const image = workerEnvironmentPreparation.readResolved(
@@ -1119,7 +1123,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     readonly requestedAgentId: string;
     readonly reservedTurnId?: string | undefined;
     readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
-    readonly onTurnCreated?: (turn: z.infer<typeof TurnSchema>, agentSessionId: string) => void;
+    readonly onTurnCreated?: (
+      turn: z.infer<typeof TurnSchema>,
+      agentSessionId: string | null
+    ) => void;
   }): Promise<z.infer<typeof TurnSchema>> {
     const snapshot = runtimeConfig();
     const handle = await startProductTurn({
@@ -1132,13 +1139,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         threadId: input.threadId,
         workspaceId: input.workspaceId,
       },
-      cancelDeferredAdmission: true,
       providerCredentialResolver,
       requestedAgentId: input.requestedAgentId,
       ...(input.reservedTurnId ? { reservedTurnId: input.reservedTurnId } : {}),
       ...(input.workerStorageChoice ? { workerStorageChoice: input.workerStorageChoice } : {}),
       ...(input.requestActor ? { requestActor: input.requestActor } : {}),
-      schedulerEpoch,
       snapshot,
       store: input.store,
       triggerActor: input.triggerActor,
@@ -1148,7 +1153,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       ...(input.onTurnCreated ? { onTurnCreated: input.onTurnCreated } : {}),
     });
 
-    completeSchedulerLeaseForTerminalTurn(options.coreDb, handle.turn);
+    markSchedulerAttemptForTerminalTurn(options.coreDb, handle.turn);
     return handle.turn;
   }
 
@@ -1596,9 +1601,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         },
         requestedAgentId: turn.agentId,
         reservedTurnId: turn.id,
-        cancelDeferredAdmission: false,
         providerCredentialResolver,
-        schedulerEpoch,
         snapshot: runtimeConfig(),
         store,
         triggerActor: turn.triggerActor,
@@ -1607,24 +1610,20 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         ...(options.coreDb ? { coreDb: options.coreDb } : {}),
       }).catch((error: unknown) => {
         // Only this refused outcome attempt retires its still-queued scheduler ownership.
-        if (
-          options.coreDb &&
-          error instanceof TurnStartValidationError &&
-          error.code !== 'scheduler_admission_deferred'
-        ) {
+        if (options.coreDb && error instanceof TurnStartValidationError) {
           const entry = listSchedulerAdmissionEntriesForWorkspace(options.coreDb, {
             workspaceId: turn.workspaceId,
             statuses: ['queued'],
           }).find((candidate) => candidate.turnId === turn.id && candidate.requestId === requestId);
           if (entry)
-            cancelOwnedDeferredAdmission(options.coreDb, {
+            cancelOwnedQueuedAdmission(options.coreDb, {
               queueEntryId: entry.queueEntryId,
               workspaceId: turn.workspaceId,
             });
         }
         throw error;
       });
-      completeSchedulerLeaseForTerminalTurn(options.coreDb, handle.turn);
+      markSchedulerAttemptForTerminalTurn(options.coreDb, handle.turn);
     },
   };
 
@@ -1752,7 +1751,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       inflightCommands,
       providerCredentialResolver,
       runtimeConfig,
-      schedulerEpoch,
       turnExecutor,
       workerPlacement,
     },
@@ -1806,7 +1804,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       inflightCommands,
       providerCredentialResolver,
       runtimeConfig,
-      schedulerEpoch,
       turnExecutor,
       workerPlacement,
     },

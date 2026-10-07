@@ -7,24 +7,23 @@ import {
   redactAgentEnvironmentPackageSnapshot,
 } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
-import {
-  bindSchedulerLeaseRouteTokenHashes,
-  createSchedulerAdmissionEntry,
-  createSchedulerPlacementPlan,
-  createSchedulerSessionLease,
-} from '../scheduler-records.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ensureLocalUser } from '../auth/identity.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import { bindNanoHostAttemptRouteTokenHashes } from './nanohost-attempt-records.js';
 import { hashWorkerRouteToken, WorkerControlGateway } from './worker-control-gateway.js';
 import { rebuildWorkerControlGatewaySessions } from './worker-control-rebuild.js';
 
 interface RestorableWorkerControlFixture {
-  /** Migrated Core database containing the live scheduler lease. */
+  /** Migrated Core database containing the live execution attempt. */
   readonly coreDb: CoreDb;
   /** Durable package expected to hydrate into the gateway. */
   readonly environmentPackage: AgentEnvironmentPackage;
@@ -39,7 +38,7 @@ interface RestorableWorkerControlFixture {
 }
 
 /**
- * Creates one durable AEP plus scheduler lease for restart hydration tests.
+ * Creates one durable AEP plus submitted Native attempt for restart hydration tests.
  *
  * @param options Optional lineage mismatch and snapshot omission controls.
  * @returns Restorable gateway fixture.
@@ -50,16 +49,20 @@ function createRestorableWorkerControlFixture(
     readonly admissionRequestId?: string | null;
     /** Exact trigger actor stored on the originating admission. */
     readonly admissionTriggerActor?: ActorRef;
-    /** AgentSession stored on the lease instead of the AEP lineage. */
-    readonly leaseAgentSessionId?: string;
+    /** AgentSession stored on the attempt instead of the AEP lineage. */
+    readonly attemptAgentSessionId?: string;
     /** Whether to persist the owning AEP snapshot. */
     readonly recordSnapshot?: boolean;
   } = {}
 ): RestorableWorkerControlFixture {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-07-13T00:00:06.000Z'));
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-rebuild-'));
   const coreDb = openCoreDb(dataRoot);
 
   applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
   const store = createDemoStore();
   const turn = store.createTurn('ws_demo', 'th_demo', 'Restore worker inference identity', {
     kind: 'user',
@@ -75,7 +78,7 @@ function createRestorableWorkerControlFixture(
       },
       createdAt: '2026-07-13T00:00:00.000Z',
       requestId: 'req_restore_1',
-      triggerActor: { kind: 'user', id: 'user_restore_1' },
+      triggerActor: { kind: 'user', id: 'user_local' },
       turn,
       workspaceCwd: '/workspace/openkit',
       workspaceRoots: [],
@@ -95,10 +98,10 @@ function createRestorableWorkerControlFixture(
     workspaceDb.sqlite.close();
   }
 
-  createSchedulerAdmissionEntry(coreDb, {
+  const entry = createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
     triggerActor: options.admissionTriggerActor ?? environmentPackage.scope.triggerActor,
     now: () => '2026-07-13T00:00:02.000Z',
-    priorityClass: 'interactive',
     profileRef: 'default',
     queueEntryId: 'queue_restore_1',
     requestId:
@@ -106,48 +109,28 @@ function createRestorableWorkerControlFixture(
         ? environmentPackage.scope.requestId
         : options.admissionRequestId,
     requestedAgentId: environmentPackage.agent.agentId,
-    requiredPoolConstraints: ['openshell.local'],
     threadId: environmentPackage.scope.threadId,
     turnId: environmentPackage.scope.turnId,
     turnInput: 'Restore worker inference identity',
     workspaceId: environmentPackage.scope.workspaceId,
-  });
-  createSchedulerPlacementPlan(coreDb, {
-    capacitySnapshotRef: 'target_local:1',
-    degradedOptionalFeatures: [],
-    expectedControlMode: 'poll',
-    expectedDataPlaneMode: 'openshell-files',
-    failoverTargetId: null,
-    heartbeatIntervalMs: 10_000,
-    heartbeatTimeoutMs: 30_000,
-    now: () => '2026-07-13T00:00:03.000Z',
-    planId: 'plan_restore_1',
-    plannedLeaseDurationMs: 900_000,
-    policyDecisionIds: [],
-    queueEntryId: 'queue_restore_1',
-    schedulerEpoch: 1,
-    selectedPoolId: 'pool_local',
-    selectedTargetId: 'target_local',
   });
   const sandboxBindingRef = 'lease-binding:restore_1';
   const workerControlToken = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
   const workerInferenceToken = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
   const workerCapabilityToken = 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC';
 
-  createSchedulerSessionLease(coreDb, {
-    agentSessionId: options.leaseAgentSessionId ?? environmentPackage.scope.agentSessionId,
-    expiresAt: '2026-07-13T00:15:04.000Z',
-    heartbeatDeadline: '2026-07-13T00:00:34.000Z',
-    leaseId: 'lease_restore_1',
-    now: () => '2026-07-13T00:00:04.000Z',
-    packageSnapshotId: environmentPackage.snapshotId,
-    planId: 'plan_restore_1',
-    sandboxTokenBindingRef: sandboxBindingRef,
+  recordTestExecutionAttempt(coreDb, {
+    entry,
+    attemptId: 'lease_restore_1',
+    agentSessionId: options.attemptAgentSessionId ?? environmentPackage.scope.agentSessionId,
+    inputRef: environmentPackage.snapshotId,
+    bindingRef: sandboxBindingRef,
     sessionCompatibilityKey: 'sha256:restore-1',
-    startupDeadline: '2026-07-13T00:02:04.000Z',
+    operationId: 'submit_restore_1',
+    now: () => '2026-07-13T00:00:04.000Z',
   });
-  bindSchedulerLeaseRouteTokenHashes(coreDb, {
-    leaseId: 'lease_restore_1',
+  bindNanoHostAttemptRouteTokenHashes(coreDb, {
+    attemptId: 'lease_restore_1',
     now: () => '2026-07-13T00:00:05.000Z',
     sandboxBindingRef,
     workerCapabilityTokenHash: hashWorkerRouteToken(workerCapabilityToken),
@@ -166,6 +149,7 @@ function createRestorableWorkerControlFixture(
 }
 
 describe('worker control gateway restart hydration', () => {
+  afterEach(() => vi.useRealTimers());
   it('skips restart hydration before the scheduler schema exists', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-empty-rebuild-')));
     const gateway = new WorkerControlGateway();
@@ -207,13 +191,13 @@ describe('worker control gateway restart hydration', () => {
   it('fails closed when the durable AEP snapshot is missing or mismatched', () => {
     for (const options of [
       { recordSnapshot: false },
-      { leaseAgentSessionId: 'as_wrong_owner' },
+      { attemptAgentSessionId: 'as_wrong_owner' },
       { admissionRequestId: 'req_wrong_owner' },
       {
         admissionTriggerActor: {
           kind: 'automation',
           id: 'automation_wrong_actor',
-          responsibleUserId: 'user_restore_1',
+          responsibleUserId: 'user_local',
         },
       },
     ]) {

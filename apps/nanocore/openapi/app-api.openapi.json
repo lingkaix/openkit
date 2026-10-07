@@ -21103,39 +21103,9 @@
                     }
                   ]
                 },
-                "priorityClass": {
-                  "type": "string",
-                  "enum": [
-                    "interactive",
-                    "automation",
-                    "maintenance"
-                  ]
-                },
                 "enqueuedAt": {
                   "type": "string",
                   "minLength": 1
-                },
-                "effectivePriorityAt": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "firstCapDeferredAt": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "requiredPoolConstraints": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
                 },
                 "status": {
                   "type": "string",
@@ -21150,8 +21120,7 @@
                       "type": "string",
                       "enum": [
                         "queue-full",
-                        "policy-cap",
-                        "no-compatible-pool",
+                        "authority-denied",
                         "invalid-request"
                       ]
                     },
@@ -21182,11 +21151,7 @@
                 "requestedAgentId",
                 "profileRef",
                 "modelId",
-                "priorityClass",
                 "enqueuedAt",
-                "effectivePriorityAt",
-                "firstCapDeferredAt",
-                "requiredPoolConstraints",
                 "status",
                 "denialReason",
                 "queuePosition"
@@ -66836,6 +66801,7 @@
           "state": {
             "type": "string",
             "enum": [
+              "queued",
               "running",
               "completed",
               "cancelled",
@@ -67176,14 +67142,6 @@
                         "requestedAgentId": {
                           "type": "string",
                           "minLength": 1
-                        },
-                        "priorityClass": {
-                          "type": "string",
-                          "enum": [
-                            "interactive",
-                            "automation",
-                            "maintenance"
-                          ]
                         }
                       },
                       "required": [
@@ -67193,8 +67151,7 @@
                         "workspaceId",
                         "threadId",
                         "turnId",
-                        "requestedAgentId",
-                        "priorityClass"
+                        "requestedAgentId"
                       ],
                       "additionalProperties": false
                     },
@@ -67262,15 +67219,31 @@
                       "properties": {
                         "type": {
                           "type": "string",
-                          "const": "scheduler_orphan_worker"
+                          "const": "execution_attempt"
                         },
-                        "evidenceId": {
+                        "attemptId": {
                           "type": "string",
                           "minLength": 1
                         },
-                        "leaseId": {
+                        "backendId": {
                           "type": "string",
                           "minLength": 1
+                        },
+                        "phase": {
+                          "type": "string",
+                          "enum": [
+                            "open",
+                            "closing",
+                            "closed"
+                          ]
+                        },
+                        "disposition": {
+                          "type": "string",
+                          "enum": [
+                            "not_accepted",
+                            "accepted",
+                            "unknown"
+                          ]
                         },
                         "workspaceId": {
                           "type": "string",
@@ -67283,31 +67256,17 @@
                         "turnId": {
                           "type": "string",
                           "minLength": 1
-                        },
-                        "packageSnapshotId": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "reason": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "schedulerEpoch": {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 9007199254740991
                         }
                       },
                       "required": [
                         "type",
-                        "evidenceId",
-                        "leaseId",
+                        "attemptId",
+                        "backendId",
+                        "phase",
+                        "disposition",
                         "workspaceId",
                         "threadId",
-                        "turnId",
-                        "packageSnapshotId",
-                        "reason",
-                        "schedulerEpoch"
+                        "turnId"
                       ],
                       "additionalProperties": false
                     },
@@ -91235,5 +91194,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:bee0b7bd6f58c5977e83bfafa990cb928dddc7c4ec7f00bda651c69226b849af"
+  "x-openkit-source-digest": "sha256:542c33939f885078433b4a62a25410160da39e7831b1312b294f5a709f330082"
 }

@@ -109,12 +109,18 @@ export interface OperationInvocationDependencies {
   readonly startModeWorkerTurn?: (input: {
     readonly store: FsStore;
     readonly triggerActor: ActorRef;
+    readonly requestActor?: import('./auth/identity.js').Actor;
     readonly workspaceId: string;
     readonly threadId: string;
     readonly prompt: string;
     readonly requestId: string;
     readonly requestedAgentId: string;
     readonly reservedTurnId?: string | undefined;
+    /** Observes durable admission so the command owner can publish its receipt before dispatch. */
+    readonly onTurnCreated?: (
+      turn: ReturnType<FsStore['getTurnById']>,
+      agentSessionId: string | null
+    ) => void;
   }) => Promise<ReturnType<FsStore['getTurnById']>>;
   /** Existing NanoHost lifecycle and configured RuntimeTarget observation owner inputs. */
   readonly mode?: CoreMode;

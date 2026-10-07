@@ -36,7 +36,7 @@ export type TaskWorkerStarter = (input: {
   requestedAgentId: string;
   reservedTurnId: string;
   /** Called only after the ordinary scheduler has admitted and persisted this exact Task Turn. */
-  onTurnCreated: (turn: ReturnType<FsStore['createTurn']>, agentSessionId: string) => void;
+  onTurnCreated: (turn: ReturnType<FsStore['createTurn']>, agentSessionId: string | null) => void;
 }) => Promise<ReturnType<FsStore['createTurn']>>;
 /** Task inputs contain current read citations, never a second per-Task proposal. */
 const CoordinatorTaskInputSchema = z

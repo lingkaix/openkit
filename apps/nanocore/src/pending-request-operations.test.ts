@@ -10,9 +10,11 @@ import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
+import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -114,6 +116,7 @@ function createApprovalFixture(action: 'review.apply' | 'tool.use' = 'review.app
     app: createApp({ coreDb, store, turnExecutor: new SimulatedTurnExecutor() }),
     coreDb,
     gate,
+    turnInput: `Approve ${action}`,
     store,
     turn,
   };
@@ -203,36 +206,31 @@ describe('Pending Request operations', () => {
     }
   });
 
-  it('resolves a person approval on a leased Turn without deleting the scheduler lease', async () => {
+  it('resolves a person approval on a Turn without closing its execution attempt', async () => {
     const fixture = createApprovalFixture('review.apply');
     const now = '2026-09-15T00:00:00.000Z';
 
     try {
-      fixture.coreDb.sqlite
-        .prepare(
-          `INSERT INTO scheduler_session_leases (
-             lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
-             package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
-             heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
-             sandbox_binding_ref, backend_anchor_state
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'acquired', ?, ?, ?, ?, 0, 1, ?, 'unanchored')`
-        )
-        .run(
-          `lease_${fixture.turn.id}`,
-          `plan_${fixture.turn.id}`,
-          fixture.turn.workspaceId,
-          fixture.turn.threadId,
-          fixture.turn.id,
-          `as_${fixture.turn.id}`,
-          `pkg_${fixture.turn.id}`,
-          `pool_${fixture.turn.id}`,
-          `target_${fixture.turn.id}`,
-          now,
-          '2999-01-01T00:00:00.000Z',
-          '2999-01-01T00:00:00.000Z',
-          '2999-01-01T00:00:00.000Z',
-          `binding_${fixture.turn.id}`
-        );
+      const entry = createSchedulerAdmissionEntry(fixture.coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue_${fixture.turn.id}`,
+        workspaceId: fixture.turn.workspaceId,
+        threadId: fixture.turn.threadId,
+        turnId: fixture.turn.id,
+        triggerActor: fixture.turn.triggerActor,
+        turnInput: fixture.turnInput,
+        requestedAgentId: 'agent_codex_host',
+        now: () => now,
+      });
+      recordTestExecutionAttempt(fixture.coreDb, {
+        entry,
+        attemptId: `lease_${fixture.turn.id}`,
+        agentSessionId: `as_${fixture.turn.id}`,
+        inputRef: `pkg_${fixture.turn.id}`,
+        bindingRef: `binding_${fixture.turn.id}`,
+        sessionCompatibilityKey: `session_${fixture.turn.id}`,
+        now: () => now,
+      });
 
       const response = await respondToApproval(fixture, '00000000-0000-4000-8000-000000000171');
       expect(response.status, await response.clone().text()).toBe(200);
@@ -245,47 +243,42 @@ describe('Pending Request operations', () => {
       expect(
         fixture.coreDb.sqlite
           .prepare(
-            `SELECT status, release_reason AS releaseReason
-             FROM scheduler_session_leases
+            `SELECT phase, terminal_cause AS releaseReason
+             FROM scheduler_execution_attempts
              WHERE turn_id = ?`
           )
           .get(fixture.turn.id)
-      ).toEqual({ status: 'acquired', releaseReason: null });
+      ).toEqual({ phase: 'open', releaseReason: null });
     } finally {
       fixture.coreDb.sqlite.close();
     }
   });
 
-  it('keeps tool.use fail-closed when a lease exists without a worker checkpoint', async () => {
+  it('keeps tool.use fail-closed when an attempt exists without a worker checkpoint', async () => {
     const fixture = createApprovalFixture('tool.use');
     const now = '2026-09-15T00:00:00.000Z';
 
     try {
-      fixture.coreDb.sqlite
-        .prepare(
-          `INSERT INTO scheduler_session_leases (
-             lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
-             package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
-             heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
-             sandbox_binding_ref, backend_anchor_state
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'acquired', ?, ?, ?, ?, 0, 1, ?, 'unanchored')`
-        )
-        .run(
-          `lease_${fixture.turn.id}`,
-          `plan_${fixture.turn.id}`,
-          fixture.turn.workspaceId,
-          fixture.turn.threadId,
-          fixture.turn.id,
-          `as_${fixture.turn.id}`,
-          `pkg_${fixture.turn.id}`,
-          `pool_${fixture.turn.id}`,
-          `target_${fixture.turn.id}`,
-          now,
-          '2999-01-01T00:00:00.000Z',
-          '2999-01-01T00:00:00.000Z',
-          '2999-01-01T00:00:00.000Z',
-          `binding_${fixture.turn.id}`
-        );
+      const entry = createSchedulerAdmissionEntry(fixture.coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue_${fixture.turn.id}`,
+        workspaceId: fixture.turn.workspaceId,
+        threadId: fixture.turn.threadId,
+        turnId: fixture.turn.id,
+        triggerActor: fixture.turn.triggerActor,
+        turnInput: fixture.turnInput,
+        requestedAgentId: 'agent_codex_host',
+        now: () => now,
+      });
+      recordTestExecutionAttempt(fixture.coreDb, {
+        entry,
+        attemptId: `lease_${fixture.turn.id}`,
+        agentSessionId: `as_${fixture.turn.id}`,
+        inputRef: `pkg_${fixture.turn.id}`,
+        bindingRef: `binding_${fixture.turn.id}`,
+        sessionCompatibilityKey: `session_${fixture.turn.id}`,
+        now: () => now,
+      });
 
       const response = await respondToApproval(fixture, '00000000-0000-4000-8000-000000000172');
       expect(response.status).toBe(409);
@@ -293,9 +286,9 @@ describe('Pending Request operations', () => {
       expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('pending');
       expect(
         fixture.coreDb.sqlite
-          .prepare('SELECT status FROM scheduler_session_leases WHERE turn_id = ?')
+          .prepare('SELECT phase FROM scheduler_execution_attempts WHERE turn_id = ?')
           .get(fixture.turn.id)
-      ).toEqual({ status: 'acquired' });
+      ).toEqual({ phase: 'open' });
     } finally {
       fixture.coreDb.sqlite.close();
     }

@@ -30,6 +30,8 @@ import type { TurnExecutor, TurnStartRuntimeContext } from './types.js';
  * Input for starting a turn through the minimal orchestrator.
  */
 export interface StartTurnInput {
+  /** Exact durable execution attempt for the accepted pending Turn. */
+  attemptId?: string;
   /** Scheduler-owned AgentSession id used when a lease already reserved lineage. */
   agentSessionId?: string;
   /** Optional dependencies for tests and future orchestration expansion. */
@@ -54,7 +56,7 @@ export interface StartTurnInput {
   requestId?: string | null;
   /** Scheduler-owned non-secret sandbox binding reference for worker-control auth. */
   sandboxBindingRef?: string;
-  /** Exact pre-lease SessionCompatibilityKey committed to the scheduler lease. */
+  /** Exact preparation SessionCompatibilityKey committed to the execution attempt. */
   sessionCompatibilityKey?: string;
   /** File-backed store for workspace and turn records. */
   store: FsStore;
@@ -95,6 +97,7 @@ export interface StartTurnInput {
    *
    * Callers that need a bounded acceptance signal must filter to the exact requested Turn.
    */
+  onSubmissionSettled?: () => void;
   onTurnCreated?: (turn: z.infer<typeof TurnSchema>) => void;
 }
 
@@ -363,6 +366,8 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
 
   input.onTurnCreated?.(input.store.getTurnById(turn.id));
   await input.turnExecutor.startTurn(input.store, turn.id, input.input, {
+    ...(input.onSubmissionSettled ? { onSubmissionSettled: input.onSubmissionSettled } : {}),
+    ...(input.attemptId ? { attemptId: input.attemptId } : {}),
     ...(input.agentSessionId ? { agentSessionId: input.agentSessionId } : {}),
     ...(agentSetupResult.setup ? { agentSetup: agentSetupResult.setup } : {}),
     requestId: input.requestId ?? null,

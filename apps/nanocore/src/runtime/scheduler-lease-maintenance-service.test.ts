@@ -1,34 +1,30 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
-import {
-  acceptSchedulerLeaseHeartbeat,
-  createSchedulerAdmissionEntry,
-  dispatchNextSchedulerEntry,
-  expireReleasingSchedulerLeases,
-  listSchedulerLeasesNeedingWorkspaceRecovery,
-  markSchedulerSessionLeaseReleasing,
-  upsertSchedulerCapacityRecord,
-  upsertSchedulerWorkerPool,
-} from '../scheduler-records';
+import { describe, expect, it, vi } from 'vitest';
+import { ensureLocalUser } from '../auth/identity.js';
+import { SimulatedTurnExecutor } from '../lib/simulator.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db';
-import { LOCAL_USER_ID, workspaceDbPath } from '../storage/fs-layout';
+import { LOCAL_USER_ID } from '../storage/fs-layout';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate';
 import { recordTestAgentEnvironmentPackage as recordBaseTestAgentEnvironmentPackage } from '../test-support/agent-environment';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { markSchedulerExecutionAttemptClosing } from './execution-attempt-records.js';
+import { acceptNanoHostAttemptHeartbeat } from './nanohost-attempt-records.js';
+import { runNanoHostAttemptRecoveryMaintenance } from './nanohost-attempt-recovery.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   getNanoHostRuntimeTarget,
   upsertNanoHostRuntimeTarget,
 } from './nanohost-runtime-target';
-import {
-  runSchedulerLeaseMaintenanceOnce,
-  startSchedulerLeaseMaintenanceService,
-} from './scheduler-lease-maintenance-service';
 import { recordWorkerBackendSessionMaterializing } from './worker-backend-sessions';
+import { getWorkerBackendSession } from './worker-backend-sessions.js';
+import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
@@ -39,11 +35,22 @@ import {
   recordWorkspaceMaterializationRecords,
   updateBackendWorkspaceHandleCleanupStatus,
 } from './workspace-sync-records';
+import { listBackendWorkspaceHandles } from './workspace-sync-records.js';
 
 /** Creates an isolated migrated Core database for scheduler maintenance tests. */
 function createMigratedCoreDb() {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-scheduler-maintenance-')));
   applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: LOCAL_USER_ID });
+  coreDb.sqlite
+    .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status)
+    VALUES ('user_server', 'Server worker owner', 'server@example.invalid', 0, ?, ?, 'human', 'active')`)
+    .run(Date.now(), Date.now());
+  coreDb.sqlite
+    .prepare(`INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
+    VALUES ('ws_demo', 'user_server', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`)
+    .run(new Date().toISOString(), new Date().toISOString(), new Date().toISOString());
   return coreDb;
 }
 
@@ -134,68 +141,48 @@ function recordCanonicalWorkspaceHandoff(
   );
 }
 
-/** Seeds one active local scheduler target. */
-function seedLocalTarget(coreDb: ReturnType<typeof createMigratedCoreDb>, suffix: string): void {
-  upsertSchedulerWorkerPool(coreDb, {
-    allowedBackendKinds: ['openshell'],
-    allowedPlacements: ['local'],
-    allowedWorkspaceScopes: ['local'],
-    budgetClass: 'interactive',
-    currentAdmittedSessionCount: 0,
-    currentQueueDepth: 1,
-    defaultTimeoutMs: 900_000,
-    healthSummary: 'ready',
-    maxConcurrentSessions: 2,
-    poolId: `pool_${suffix}`,
-    queueLimit: 20,
-    status: 'active',
-  });
-  upsertSchedulerCapacityRecord(coreDb, {
-    capacityClass: 'local',
-    concurrencyCeiling: 2,
-    inUseCount: 0,
-    observationSource: 'configured',
-    observedAt: '2026-07-05T00:00:00.000Z',
-    poolId: `pool_${suffix}`,
-    queueDepth: 0,
-    targetId: `target_${suffix}`,
-  });
-}
-
-/** Dispatches one queued lease for scheduler maintenance tests. */
+/** Establishes exact authorized submitted Native authority and its original physical anchor. */
 function dispatchLease(
   coreDb: ReturnType<typeof createMigratedCoreDb>,
   suffix: string,
   triggerActor: ActorRef = { kind: 'user', id: LOCAL_USER_ID }
 ): void {
-  seedLocalTarget(coreDb, suffix);
-  createSchedulerAdmissionEntry(coreDb, {
+  const entry = createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
     triggerActor,
-    priorityClass: 'interactive',
-    profileRef: null,
     queueEntryId: `queue_${suffix}`,
+    requestId: `request_${suffix}`,
     requestedAgentId: 'agent_codex_host',
-    requiredPoolConstraints: ['openshell.local'],
     threadId: `thread_${suffix}`,
     turnId: `turn_${suffix}`,
     turnInput: `Run ${suffix}`,
     workspaceId: 'ws_demo',
     now: () => '2026-07-05T00:00:01.000Z',
   });
-  dispatchNextSchedulerEntry(coreDb, {
+  recordTestExecutionAttempt(coreDb, {
+    entry,
+    attemptId: `lease_${suffix}`,
     agentSessionId: `as_${suffix}`,
-    expectedControlMode: 'poll',
-    expectedDataPlaneMode: 'openshell-files',
-    heartbeatIntervalMs: 10_000,
-    heartbeatTimeoutMs: 30_000,
-    leaseDurationMs: 900_000,
-    leaseId: `lease_${suffix}`,
+    inputRef: `aepsnap_turn_${suffix}_as_${suffix}`,
+    bindingRef: `lease-binding:lease_${suffix}`,
+    sessionCompatibilityKey: 'c'.repeat(64),
+    operationId: `original:${suffix}`,
     now: () => '2026-07-05T00:00:02.000Z',
-    planId: `plan_${suffix}`,
-    sandboxBindingRef: `lease-binding:lease_${suffix}`,
-    schedulerEpoch: 1,
-    startupTimeoutMs: 120_000,
   });
+  recordBackendSession(coreDb, suffix);
+}
+
+/** The Native recovery subject owns Workspace projection; only its product terminal callback is modeled here. */
+function recoveryInput(coreDb: ReturnType<typeof createMigratedCoreDb>, now: () => string) {
+  return {
+    executionBackend: new SimulatedTurnExecutor({ coreDb }),
+    now,
+    cleanupBackendSession: vi.fn(async () => {}),
+    prepareBackendCleanup: vi.fn(),
+    restoreBackendSession: vi.fn(async () => {}),
+    reconcileAcceptedFinalStatus: vi.fn(async () => {}),
+    projectRecoveredTurn: vi.fn(async () => ({ status: 'interrupted' as const })),
+  };
 }
 
 /** Records the production backend anchor owned by one dispatched test lease. */
@@ -221,11 +208,11 @@ function recordBackendSession(
   }
   recordWorkerBackendSessionMaterializing(coreDb, {
     backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
-    backendVersion: '0.0.99',
+    backendVersion: '0.0.80',
     identity: {
       agentSessionId: `as_${suffix}`,
       backendKind: 'openshell',
-      backendSessionId: `openkit-as_${suffix}`,
+      backendSessionId: `sandbox_${suffix}`,
       deploymentId: 'deployment-test',
       packageSnapshotId: `aepsnap_turn_${suffix}_as_${suffix}`,
       runtimeTargetId: 'runtime-target-test',
@@ -242,132 +229,83 @@ function recordBackendSession(
   });
 }
 
+/** Observes the Core attempt phase without projecting the retired grant or physical accounting. */
+function observeExecutionAttempts(
+  coreDb: ReturnType<typeof openCoreDb>
+): Record<string, unknown>[] {
+  const present = coreDb.sqlite
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduler_execution_attempts'"
+    )
+    .get();
+  return present
+    ? (coreDb.sqlite
+        .prepare('SELECT * FROM scheduler_execution_attempts ORDER BY rowid')
+        .all() as Record<string, unknown>[])
+    : [];
+}
+
+/** Requires exact affected-record coverage and uncertainty without prescribing record partition or teardown. */
+function expectUnprovedWorkspaceReconciliation(
+  coreDb: ReturnType<typeof openCoreDb>,
+  workspaceDb: ReturnType<typeof openWorkspaceDb>,
+  environmentPackage: AgentEnvironmentPackage
+): void {
+  const affectedRecordIds = environmentPackage.workspace.inputs.flatMap(({ id: inputId }) => {
+    const materializationId = `wmr_${environmentPackage.snapshotId}_${inputId}`;
+    return [materializationId, `bwh_${materializationId}`];
+  });
+  const records = listWorkspaceReconciliationRecords(
+    workspaceDb,
+    environmentPackage.scope.workspaceId
+  ).filter((record) => record.affectedRecordIds.some((id) => affectedRecordIds.includes(id)));
+  // Coverage is over the exact durable records, so an aggregate reconciliation is sufficient.
+  expect(
+    records.flatMap((record) => record.affectedRecordIds),
+    'Stale/lost attempts must evaluate every affected materialization and backend handle.'
+  ).toEqual(expect.arrayContaining(affectedRecordIds));
+  for (const record of records) {
+    // This fixture supplies neither collected output nor a reachability observation. Staleness
+    // alone does not imply requires-human; the absent proof in this fixture does.
+    expect(record.stateAfter).toBe('requires-human');
+    expect(record.requiredHumanDecision).toBeTruthy();
+    expect(record.collectedOutputManifestIds).toEqual([]);
+    expect(['unknown', 'unavailable']).toContain(record.backendReachability.status);
+    if (record.retentionDecision === 'retain-backend') {
+      const backend = getWorkerBackendSession(
+        coreDb,
+        `lease_${environmentPackage.scope.turnId.replace(/^turn_/, '')}`
+      );
+      expect(
+        backend,
+        'A retention decision must still refer to retained backend state.'
+      ).not.toBeNull();
+      expect(
+        ['physical-cleaned', 'cleaned'],
+        'A cleaned backend cannot simultaneously be recorded as retained.'
+      ).not.toContain(backend?.state);
+    }
+  }
+}
+
 describe('scheduler lease maintenance service', () => {
-  it('wires bounded production renewal without requiring a same-snapshot refresh ack', () => {
-    const source = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
-    const maintenanceStart = source.indexOf(
-      'schedulerLeaseMaintenance = startSchedulerLeaseMaintenanceService(coreDb, {'
-    );
-    const maintenanceEnd = source.indexOf('if (refreshStatusCollector)', maintenanceStart);
-    const wiring = source.slice(maintenanceStart, maintenanceEnd);
-
-    expect(maintenanceStart).toBeGreaterThan(-1);
-    expect(maintenanceEnd).toBeGreaterThan(maintenanceStart);
-    expect(wiring).toContain('maxTotalLeaseMs: SCHEDULER_LEASE_MAX_TOTAL_MS');
-    expect(wiring).toContain('renewalDurationMs: SCHEDULER_LEASE_RENEWAL_DURATION_MS');
-    expect(wiring).toContain('runRecoveryMaintenance:');
-    expect(wiring).not.toContain('canRenewPackageSnapshot');
-    expect(source).not.toContain('scheduleExpiredReconnectCleanup');
-  });
-
-  it('runs lease watch before renewal in one maintenance iteration', () => {
-    const coreDb = createMigratedCoreDb();
-
-    try {
-      dispatchLease(coreDb, 'startup');
-      dispatchLease(coreDb, 'renew');
-      acceptSchedulerLeaseHeartbeat(coreDb, {
-        heartbeatTimeoutMs: 900_000,
-        leaseId: 'lease_renew',
-        now: () => '2026-07-05T00:00:10.000Z',
-        workerSequence: 1,
-      });
-
-      const result = runSchedulerLeaseMaintenanceOnce(coreDb, {
-        maxTotalLeaseMs: 7_200_000,
-        now: () => '2026-07-05T00:10:30.000Z',
-        renewalDurationMs: 1_800_000,
-        renewalLeadMs: 300_000,
-      });
-      const rows = coreDb.sqlite
-        .prepare(
-          "SELECT lease_id AS leaseId, status, renewal_count AS renewalCount FROM scheduler_session_leases WHERE lease_id IN ('lease_startup', 'lease_renew') ORDER BY lease_id"
-        )
-        .all();
-
-      expect(result.leaseWatch.startupTimedOut.map((lease) => lease.leaseId)).toEqual([
-        'lease_startup',
-      ]);
-      expect(result.renewal.renewed.map((lease) => lease.leaseId)).toEqual(['lease_renew']);
-      expect(rows).toEqual([
-        { leaseId: 'lease_renew', renewalCount: 1, status: 'active' },
-        { leaseId: 'lease_startup', renewalCount: 0, status: 'failed' },
-      ]);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('renews healthy leases when workspace recovery projection keeps failing', () => {
-    const coreDb = createMigratedCoreDb();
-    const errors: unknown[] = [];
-    const callbacks: Array<() => void> = [];
-
-    try {
-      dispatchLease(coreDb, 'broken_recovery');
-      acceptSchedulerLeaseHeartbeat(coreDb, {
-        heartbeatTimeoutMs: 30_000,
-        leaseId: 'lease_broken_recovery',
-        now: () => '2026-07-05T00:00:10.000Z',
-        workerSequence: 1,
-      });
-      dispatchLease(coreDb, 'renew_after_recovery_error');
-      acceptSchedulerLeaseHeartbeat(coreDb, {
-        heartbeatTimeoutMs: 900_000,
-        leaseId: 'lease_renew_after_recovery_error',
-        now: () => '2026-07-05T00:00:10.000Z',
-        workerSequence: 1,
-      });
-      const brokenWorkspaceDbPath = workspaceDbPath(coreDb.dataRoot, 'ws_demo');
-      mkdirSync(dirname(brokenWorkspaceDbPath), { recursive: true });
-      mkdirSync(brokenWorkspaceDbPath);
-
-      const service = startSchedulerLeaseMaintenanceService(coreDb, {
-        runRecoveryMaintenance: async () => {},
-        intervalMs: 30_000,
-        maxTotalLeaseMs: 7_200_000,
-        now: () => '2026-07-05T00:10:30.000Z',
-        onError: (error) => errors.push(error),
-        renewalDurationMs: 1_800_000,
-        renewalLeadMs: 300_000,
-        setInterval: (callback) => {
-          callbacks.push(callback);
-          return 'timer';
-        },
-      });
-
-      expect(callbacks).toHaveLength(1);
-      expect(errors).toHaveLength(1);
-      expect(
-        coreDb.sqlite
-          .prepare(
-            "SELECT recovery_state AS recoveryState, renewal_count AS renewalCount, status FROM scheduler_session_leases WHERE lease_id = 'lease_renew_after_recovery_error'"
-          )
-          .get()
-      ).toEqual({ recoveryState: null, renewalCount: 1, status: 'active' });
-      expect(
-        coreDb.sqlite
-          .prepare(
-            "SELECT recovery_state AS recoveryState FROM scheduler_session_leases WHERE lease_id = 'lease_broken_recovery'"
-          )
-          .get()
-      ).toEqual({ recoveryState: 'needs-evidence' });
-      service.stop();
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('records workspace reconciliation triggers for stale leases with pending backend handles', () => {
+  it('records workspace reconciliation triggers for stale Native attempts with pending backend handles', async () => {
     const coreDb = createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
       dispatchLease(coreDb, 'heartbeat');
-      acceptSchedulerLeaseHeartbeat(coreDb, {
+      acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        leaseId: 'lease_heartbeat',
+        attemptId: 'lease_heartbeat',
+        now: () => '2026-07-05T00:00:10.000Z',
+        workerSequence: 0,
+        workerProcessKeyHash: 'a'.repeat(43),
+      });
+      acceptNanoHostAttemptHeartbeat(coreDb, {
+        heartbeatTimeoutMs: 30_000,
+        attemptId: 'lease_heartbeat',
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
@@ -377,35 +315,19 @@ describe('scheduler lease maintenance service', () => {
       });
       recordCanonicalWorkspaceHandoff(workspaceDb, environmentPackage);
 
-      runSchedulerLeaseMaintenanceOnce(coreDb, {
-        maxTotalLeaseMs: 7_200_000,
-        now: () => '2026-07-05T00:03:00.000Z',
-        renewalDurationMs: 1_800_000,
-        renewalLeadMs: 300_000,
-      });
+      await runNanoHostAttemptRecoveryMaintenance(
+        coreDb,
+        recoveryInput(coreDb, () => '2026-07-05T00:03:00.000Z')
+      );
 
-      expect(listWorkspaceReconciliationRecords(workspaceDb, 'ws_demo')).toEqual([
-        expect.objectContaining({
-          affectedRecordIds: [
-            'wmr_aepsnap_turn_heartbeat_as_heartbeat_maintenance_heartbeat_repo',
-            'bwh_wmr_aepsnap_turn_heartbeat_as_heartbeat_maintenance_heartbeat_repo',
-          ],
-          backendHandleSummary: expect.objectContaining({
-            handleId: 'bwh_wmr_aepsnap_turn_heartbeat_as_heartbeat_maintenance_heartbeat_repo',
-            workerSessionId: 'sandbox_heartbeat',
-          }),
-          requiredHumanDecision: 'inspect_recovery',
-          stateAfter: 'requires-human',
-          triggerReason: 'backend_takeover',
-        }),
-      ]);
+      expectUnprovedWorkspaceReconciliation(coreDb, workspaceDb, environmentPackage);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
   });
 
-  it('opens the owner-independent workspace for a non-local scheduler admission', () => {
+  it('opens the owner-independent workspace for a non-local scheduler admission', async () => {
     const coreDb = createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
     const triggerActor = {
@@ -417,9 +339,16 @@ describe('scheduler lease maintenance service', () => {
     try {
       applyScopedMigrations(workspaceDb);
       dispatchLease(coreDb, 'server_user', triggerActor);
-      acceptSchedulerLeaseHeartbeat(coreDb, {
+      acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        leaseId: 'lease_server_user',
+        attemptId: 'lease_server_user',
+        now: () => '2026-07-05T00:00:10.000Z',
+        workerSequence: 0,
+        workerProcessKeyHash: 'a'.repeat(43),
+      });
+      acceptNanoHostAttemptHeartbeat(coreDb, {
+        heartbeatTimeoutMs: 30_000,
+        attemptId: 'lease_server_user',
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
@@ -430,26 +359,19 @@ describe('scheduler lease maintenance service', () => {
       });
       recordCanonicalWorkspaceHandoff(workspaceDb, environmentPackage);
 
-      runSchedulerLeaseMaintenanceOnce(coreDb, {
-        maxTotalLeaseMs: 7_200_000,
-        now: () => '2026-07-05T00:03:00.000Z',
-        renewalDurationMs: 1_800_000,
-        renewalLeadMs: 300_000,
-      });
+      await runNanoHostAttemptRecoveryMaintenance(
+        coreDb,
+        recoveryInput(coreDb, () => '2026-07-05T00:03:00.000Z')
+      );
 
-      expect(listWorkspaceReconciliationRecords(workspaceDb, 'ws_demo')).toEqual([
-        expect.objectContaining({
-          stateBefore: 'lease-stale',
-          triggerReason: 'backend_takeover',
-        }),
-      ]);
+      expectUnprovedWorkspaceReconciliation(coreDb, workspaceDb, environmentPackage);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
   });
 
-  it('rejects workspace recovery when the package trigger actor differs from admission', () => {
+  it('rejects workspace recovery when the package trigger actor differs from admission', async () => {
     const coreDb = createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
     const errors: unknown[] = [];
@@ -461,9 +383,16 @@ describe('scheduler lease maintenance service', () => {
         id: 'automation_admission',
         responsibleUserId: 'user_server',
       });
-      acceptSchedulerLeaseHeartbeat(coreDb, {
+      acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        leaseId: 'lease_actor_mismatch',
+        attemptId: 'lease_actor_mismatch',
+        now: () => '2026-07-05T00:00:10.000Z',
+        workerSequence: 0,
+        workerProcessKeyHash: 'a'.repeat(43),
+      });
+      acceptNanoHostAttemptHeartbeat(coreDb, {
+        heartbeatTimeoutMs: 30_000,
+        attemptId: 'lease_actor_mismatch',
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
@@ -478,13 +407,10 @@ describe('scheduler lease maintenance service', () => {
       });
       recordCanonicalWorkspaceHandoff(workspaceDb, environmentPackage);
 
-      runSchedulerLeaseMaintenanceOnce(coreDb, {
-        maxTotalLeaseMs: 7_200_000,
-        now: () => '2026-07-05T00:03:00.000Z',
-        onError: (error) => errors.push(error),
-        renewalDurationMs: 1_800_000,
-        renewalLeadMs: 300_000,
-      });
+      await runNanoHostAttemptRecoveryMaintenance(
+        coreDb,
+        recoveryInput(coreDb, () => '2026-07-05T00:03:00.000Z')
+      ).catch((error: AggregateError) => errors.push(...error.errors));
 
       expect(errors).toEqual([
         expect.objectContaining({ message: expect.stringContaining('trigger actor') }),
@@ -496,7 +422,7 @@ describe('scheduler lease maintenance service', () => {
     }
   });
 
-  it('retains capacity while an anchored releasing backend still owns cleanup', () => {
+  it('preserves closing exclusion after physical cleanup without terminal barrier proof', async () => {
     const coreDb = createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
 
@@ -508,66 +434,50 @@ describe('scheduler lease maintenance service', () => {
         workspaceInputIds: ['repo'],
       });
       recordCanonicalWorkspaceHandoff(workspaceDb, environmentPackage);
-      recordBackendSession(coreDb, 'release_retry');
-      markSchedulerSessionLeaseReleasing(coreDb, {
-        leaseId: 'lease_release_retry',
+      markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId: 'lease_release_retry',
         now: () => '2026-07-05T00:00:10.000Z',
-        releaseReason: 'worker-final-status',
+        cause: 'worker-final-status',
       });
-      expect(
-        expireReleasingSchedulerLeases(coreDb, {
-          now: () => '2026-07-05T00:05:11.000Z',
-        })
-      ).toEqual([]);
 
       for (let index = 0; index < 2; index += 1) {
-        runSchedulerLeaseMaintenanceOnce(coreDb, {
-          maxTotalLeaseMs: 7_200_000,
-          now: () => '2026-07-05T00:05:12.000Z',
-          renewalDurationMs: 1_800_000,
-          renewalLeadMs: 300_000,
-        });
+        await runNanoHostAttemptRecoveryMaintenance(
+          coreDb,
+          recoveryInput(coreDb, () => '2026-07-05T00:05:12.000Z')
+        );
       }
 
-      expect(listWorkspaceReconciliationRecords(workspaceDb, 'ws_demo')).toEqual([]);
+      // Expired Native liveness with no accepted final status still owns reconciliation;
+      // closing alone neither suppresses evaluation nor proves the terminal release barrier.
+      expectUnprovedWorkspaceReconciliation(coreDb, workspaceDb, environmentPackage);
       expect(
-        coreDb.sqlite
-          .prepare(
-            "SELECT recovery_state AS recoveryState FROM scheduler_session_leases WHERE lease_id = 'lease_release_retry'"
-          )
-          .get()
-      ).toEqual({ recoveryState: 'needs-evidence' });
-      expect(listSchedulerLeasesNeedingWorkspaceRecovery(coreDb)).toEqual([]);
-      expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT capacity.in_use_count AS inUseCount,
-                    capacity.version,
-                    pools.current_admitted_session_count AS admittedCount
-             FROM scheduler_session_leases AS leases
-             JOIN scheduler_capacity_records AS capacity
-               ON capacity.target_id = leases.target_id AND capacity.pool_id = leases.pool_id
-             JOIN scheduler_worker_pools AS pools ON pools.pool_id = leases.pool_id
-             WHERE leases.lease_id = 'lease_release_retry'`
-          )
-          .get()
-      ).toEqual({ admittedCount: 1, inUseCount: 1, version: 2 });
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'lease_release_retry'
+        )?.phase
+      ).toBe('closing');
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
   });
 
-  it('converges recovery explicitly for an AEP with no workspace inputs', () => {
+  it('converges recovery explicitly for an AEP with no workspace inputs', async () => {
     const coreDb = createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
       dispatchLease(coreDb, 'zero_input');
-      acceptSchedulerLeaseHeartbeat(coreDb, {
+      acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        leaseId: 'lease_zero_input',
+        attemptId: 'lease_zero_input',
+        now: () => '2026-07-05T00:00:10.000Z',
+        workerSequence: 0,
+        workerProcessKeyHash: 'a'.repeat(43),
+      });
+      acceptNanoHostAttemptHeartbeat(coreDb, {
+        heartbeatTimeoutMs: 30_000,
+        attemptId: 'lease_zero_input',
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
@@ -576,38 +486,40 @@ describe('scheduler lease maintenance service', () => {
         workspaceInputIds: [],
       });
 
-      runSchedulerLeaseMaintenanceOnce(coreDb, {
-        maxTotalLeaseMs: 7_200_000,
-        now: () => '2026-07-05T00:03:00.000Z',
-        renewalDurationMs: 1_800_000,
-        renewalLeadMs: 300_000,
-      });
+      await runNanoHostAttemptRecoveryMaintenance(
+        coreDb,
+        recoveryInput(coreDb, () => '2026-07-05T00:03:00.000Z')
+      );
 
       expect(listWorkspaceReconciliationRecords(workspaceDb, 'ws_demo')).toEqual([]);
-      expect(listSchedulerLeasesNeedingWorkspaceRecovery(coreDb)).toEqual([]);
-      expect(
-        coreDb.sqlite
-          .prepare(
-            "SELECT recovery_state AS recoveryState FROM scheduler_session_leases WHERE lease_id = 'lease_zero_input'"
-          )
-          .get()
-      ).toEqual({ recoveryState: 'recovery-projected' });
+      expect(['open', 'closing']).toContain(
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'lease_zero_input'
+        )?.phase
+      );
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
   });
 
-  it('keeps recovery retryable until every AEP workspace input has a handle', () => {
+  it('keeps recovery retryable until every AEP workspace input has a handle', async () => {
     const coreDb = createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
       dispatchLease(coreDb, 'partial_handoff');
-      acceptSchedulerLeaseHeartbeat(coreDb, {
+      acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        leaseId: 'lease_partial_handoff',
+        attemptId: 'lease_partial_handoff',
+        now: () => '2026-07-05T00:00:10.000Z',
+        workerSequence: 0,
+        workerProcessKeyHash: 'a'.repeat(43),
+      });
+      acceptNanoHostAttemptHeartbeat(coreDb, {
+        heartbeatTimeoutMs: 30_000,
+        attemptId: 'lease_partial_handoff',
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
@@ -620,40 +532,45 @@ describe('scheduler lease maintenance service', () => {
       expect(secondInput).toBeDefined();
       recordCanonicalWorkspaceHandoff(workspaceDb, environmentPackage, [firstInput!.id]);
 
-      runSchedulerLeaseMaintenanceOnce(coreDb, {
-        maxTotalLeaseMs: 7_200_000,
-        now: () => '2026-07-05T00:03:00.000Z',
-        renewalDurationMs: 1_800_000,
-        renewalLeadMs: 300_000,
+      // Partial evidence may retain the backend and return, or report incomplete handoff.
+      // Either outcome must preserve exclusion until the missing input can be evaluated.
+      await runNanoHostAttemptRecoveryMaintenance(
+        coreDb,
+        recoveryInput(coreDb, () => '2026-07-05T00:03:00.000Z')
+      ).catch((error: AggregateError) => {
+        expect(error.errors).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ message: expect.stringContaining('handoff is incomplete') }),
+          ])
+        );
       });
+      expect(
+        listBackendWorkspaceHandles(workspaceDb, 'ws_demo').filter(
+          (handle) => handle.packageSnapshotId === environmentPackage.snapshotId
+        )
+      ).toHaveLength(1);
 
-      expect(listWorkspaceReconciliationRecords(workspaceDb, 'ws_demo')).toHaveLength(0);
-      expect(listSchedulerLeasesNeedingWorkspaceRecovery(coreDb)).toHaveLength(1);
+      expect(['open', 'closing']).toContain(
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'lease_partial_handoff'
+        )?.phase
+      );
+
       recordCanonicalWorkspaceHandoff(workspaceDb, environmentPackage, [secondInput!.id]);
 
-      runSchedulerLeaseMaintenanceOnce(coreDb, {
-        maxTotalLeaseMs: 7_200_000,
-        now: () => '2026-07-05T00:03:01.000Z',
-        renewalDurationMs: 1_800_000,
-        renewalLeadMs: 300_000,
-      });
+      await runNanoHostAttemptRecoveryMaintenance(
+        coreDb,
+        recoveryInput(coreDb, () => '2026-07-05T00:03:01.000Z')
+      );
 
-      expect(listWorkspaceReconciliationRecords(workspaceDb, 'ws_demo')).toHaveLength(2);
-      expect(listSchedulerLeasesNeedingWorkspaceRecovery(coreDb)).toEqual([]);
-      expect(
-        coreDb.sqlite
-          .prepare(
-            "SELECT recovery_state AS recoveryState FROM scheduler_session_leases WHERE lease_id = 'lease_partial_handoff'"
-          )
-          .get()
-      ).toEqual({ recoveryState: 'recovery-projected' });
+      expectUnprovedWorkspaceReconciliation(coreDb, workspaceDb, environmentPackage);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
   });
 
-  it('does not reinterpret retained handles as pending scheduler cleanup', () => {
+  it('does not reinterpret retained handles as pending scheduler cleanup', async () => {
     const coreDb = createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
 
@@ -671,8 +588,6 @@ describe('scheduler lease maintenance service', () => {
       });
       recordCanonicalWorkspaceHandoff(workspaceDb, staleEnvironmentPackage);
       recordCanonicalWorkspaceHandoff(workspaceDb, releaseEnvironmentPackage);
-      recordBackendSession(coreDb, 'stale_retained');
-      recordBackendSession(coreDb, 'release_retained');
       updateBackendWorkspaceHandleCleanupStatus(
         workspaceDb,
         'ws_demo',
@@ -687,24 +602,29 @@ describe('scheduler lease maintenance service', () => {
         'retained',
         '2026-07-05T00:00:20.000Z'
       );
-      acceptSchedulerLeaseHeartbeat(coreDb, {
+      acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        leaseId: 'lease_stale_retained',
+        attemptId: 'lease_stale_retained',
+        now: () => '2026-07-05T00:00:10.000Z',
+        workerSequence: 0,
+        workerProcessKeyHash: 'a'.repeat(43),
+      });
+      acceptNanoHostAttemptHeartbeat(coreDb, {
+        heartbeatTimeoutMs: 30_000,
+        attemptId: 'lease_stale_retained',
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
-      markSchedulerSessionLeaseReleasing(coreDb, {
-        leaseId: 'lease_release_retained',
+      markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId: 'lease_release_retained',
         now: () => '2026-07-05T00:00:10.000Z',
-        releaseReason: 'worker-final-status',
+        cause: 'worker-final-status',
       });
 
-      runSchedulerLeaseMaintenanceOnce(coreDb, {
-        maxTotalLeaseMs: 7_200_000,
-        now: () => '2026-07-05T00:05:11.000Z',
-        renewalDurationMs: 1_800_000,
-        renewalLeadMs: 300_000,
-      });
+      await runNanoHostAttemptRecoveryMaintenance(
+        coreDb,
+        recoveryInput(coreDb, () => '2026-07-05T00:05:11.000Z')
+      );
 
       expect(listWorkspaceReconciliationRecords(workspaceDb, 'ws_demo')).toEqual([]);
     } finally {
@@ -713,7 +633,7 @@ describe('scheduler lease maintenance service', () => {
     }
   });
 
-  it('retains capacity when finalization times out before backend cleanup', () => {
+  it('preserves closing exclusion when finalization times out before backend cleanup', async () => {
     const coreDb = createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
 
@@ -725,172 +645,80 @@ describe('scheduler lease maintenance service', () => {
         workspaceInputIds: ['repo'],
       });
       recordCanonicalWorkspaceHandoff(workspaceDb, environmentPackage);
-      recordBackendSession(coreDb, 'release_timeout');
-      acceptSchedulerLeaseHeartbeat(coreDb, {
+      acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        leaseId: 'lease_release_timeout',
+        attemptId: 'lease_release_timeout',
+        now: () => '2026-07-05T00:00:10.000Z',
+        workerSequence: 0,
+        workerProcessKeyHash: 'a'.repeat(43),
+      });
+      acceptNanoHostAttemptHeartbeat(coreDb, {
+        heartbeatTimeoutMs: 30_000,
+        attemptId: 'lease_release_timeout',
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
-      markSchedulerSessionLeaseReleasing(coreDb, {
-        leaseId: 'lease_release_timeout',
+      markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId: 'lease_release_timeout',
         now: () => '2026-07-05T00:00:10.000Z',
-        releaseReason: 'worker-final-status',
+        cause: 'worker-final-status',
       });
 
-      runSchedulerLeaseMaintenanceOnce(coreDb, {
-        maxTotalLeaseMs: 7_200_000,
-        now: () => '2026-07-05T00:01:00.000Z',
-        renewalDurationMs: 1_800_000,
-        renewalLeadMs: 300_000,
+      recordWorkerControlAcceptedRecord(coreDb, {
+        acceptedAt: '2026-07-05T00:00:11.000Z',
+        lineage: {
+          ...environmentPackage.scope,
+          packageSnapshotId: environmentPackage.snapshotId,
+          requestId: 'request_release_timeout',
+        },
+        operation: 'final_status',
+        recordKey: '2',
+        sequence: 2,
+        record: { sequence: 2, status: 'completed', stopReason: 'completed' },
+      });
+      const recovery = recoveryInput(coreDb, () => '2026-07-05T00:01:00.000Z');
+      recovery.reconcileAcceptedFinalStatus.mockImplementation(async () => {
+        throw new Error('terminal finalization timeout');
+      });
+      await expect(runNanoHostAttemptRecoveryMaintenance(coreDb, recovery)).rejects.toMatchObject({
+        errors: [expect.objectContaining({ message: 'terminal finalization timeout' })],
       });
       expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT
-              leases.status AS leaseStatus,
-              leases.release_reason AS releaseReason,
-              capacity.in_use_count AS inUseCount
-            FROM scheduler_session_leases AS leases
-            JOIN scheduler_capacity_records AS capacity
-              ON capacity.target_id = leases.target_id AND capacity.pool_id = leases.pool_id
-            WHERE leases.lease_id = 'lease_release_timeout'`
-          )
-          .get()
-      ).toEqual({
-        inUseCount: 1,
-        leaseStatus: 'releasing',
-        releaseReason: 'worker-final-status',
-      });
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'lease_release_timeout'
+        )?.phase
+      ).toBe('closing');
 
-      runSchedulerLeaseMaintenanceOnce(coreDb, {
-        maxTotalLeaseMs: 7_200_000,
-        now: () => '2026-07-05T00:05:11.000Z',
-        renewalDurationMs: 1_800_000,
-        renewalLeadMs: 300_000,
+      await expect(
+        runNanoHostAttemptRecoveryMaintenance(coreDb, {
+          ...recovery,
+          now: () => '2026-07-05T00:05:11.000Z',
+        })
+      ).rejects.toMatchObject({
+        errors: [expect.objectContaining({ message: 'terminal finalization timeout' })],
       });
-      runSchedulerLeaseMaintenanceOnce(coreDb, {
-        maxTotalLeaseMs: 7_200_000,
-        now: () => '2026-07-05T00:05:11.000Z',
-        renewalDurationMs: 1_800_000,
-        renewalLeadMs: 300_000,
+      await expect(
+        runNanoHostAttemptRecoveryMaintenance(coreDb, {
+          ...recovery,
+          now: () => '2026-07-05T00:05:11.000Z',
+        })
+      ).rejects.toMatchObject({
+        errors: [expect.objectContaining({ message: 'terminal finalization timeout' })],
+      });
+      expect(recovery.reconcileAcceptedFinalStatus).toHaveBeenCalledTimes(3);
+      expect(recovery.cleanupBackendSession).not.toHaveBeenCalled();
+      expect(getWorkerBackendSession(coreDb, 'lease_release_timeout')).toMatchObject({
+        state: 'materializing',
+        physicalCleanedAt: null,
       });
       expect(listWorkspaceReconciliationRecords(workspaceDb, 'ws_demo')).toEqual([]);
       expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT
-              leases.status AS leaseStatus,
-              leases.expires_at AS expiresAt,
-              leases.release_reason AS releaseReason,
-              leases.recovery_state AS recoveryState,
-              plans.status AS planStatus,
-              capacity.in_use_count AS inUseCount,
-              capacity.version,
-              pools.current_admitted_session_count AS admittedCount
-            FROM scheduler_session_leases AS leases
-            JOIN scheduler_placement_plans AS plans ON plans.plan_id = leases.plan_id
-            JOIN scheduler_capacity_records AS capacity
-              ON capacity.target_id = leases.target_id AND capacity.pool_id = leases.pool_id
-            JOIN scheduler_worker_pools AS pools ON pools.pool_id = leases.pool_id
-            WHERE leases.lease_id = 'lease_release_timeout'`
-          )
-          .get()
-      ).toEqual({
-        admittedCount: 1,
-        expiresAt: '2026-07-05T00:05:10.000Z',
-        inUseCount: 1,
-        leaseStatus: 'releasing',
-        planStatus: 'executing',
-        recoveryState: 'needs-evidence',
-        releaseReason: 'worker-final-status',
-        version: 2,
-      });
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'lease_release_timeout'
+        )?.phase
+      ).toBe('closing');
     } finally {
       workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('starts immediately, schedules future maintenance, and stops cleanly', () => {
-    const coreDb = createMigratedCoreDb();
-    const callbacks: Array<() => void> = [];
-    const cleared: unknown[] = [];
-
-    try {
-      const service = startSchedulerLeaseMaintenanceService(coreDb, {
-        runRecoveryMaintenance: async () => {},
-        intervalMs: 30_000,
-        maxTotalLeaseMs: 7_200_000,
-        now: () => '2026-07-05T00:10:30.000Z',
-        renewalDurationMs: 1_800_000,
-        renewalLeadMs: 300_000,
-        clearInterval: (handle) => {
-          cleared.push(handle);
-        },
-        setInterval: (callback, intervalMs) => {
-          callbacks.push(callback);
-          return { intervalMs };
-        },
-      });
-
-      callbacks[0]?.();
-      service.stop();
-
-      expect(callbacks).toHaveLength(1);
-      expect(cleared).toEqual([{ intervalMs: 30_000 }]);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('serializes restart recovery maintenance and retries after an isolated failure', async () => {
-    const coreDb = createMigratedCoreDb();
-    const callbacks: Array<() => void> = [];
-    const errors: unknown[] = [];
-    let rejectFirstAttempt: ((error: Error) => void) | undefined;
-    const firstAttempt = new Promise<void>((_resolve, reject) => {
-      rejectFirstAttempt = reject;
-    });
-    let attempts = 0;
-
-    try {
-      const service = startSchedulerLeaseMaintenanceService(coreDb, {
-        runRecoveryMaintenance: async () => {
-          attempts += 1;
-          if (attempts === 1) {
-            await firstAttempt;
-          }
-        },
-        intervalMs: 30_000,
-        maxTotalLeaseMs: 7_200_000,
-        now: () => '2026-07-05T00:10:30.000Z',
-        onError: (error) => errors.push(error),
-        renewalDurationMs: 1_800_000,
-        renewalLeadMs: 300_000,
-        setInterval: (callback) => {
-          callbacks.push(callback);
-          return 'timer';
-        },
-      });
-
-      await Promise.resolve();
-      expect(attempts).toBe(1);
-
-      callbacks[0]?.();
-      await Promise.resolve();
-      expect(attempts).toBe(1);
-
-      rejectFirstAttempt?.(new Error('NanoHost is not ready'));
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(errors).toEqual([expect.objectContaining({ message: 'NanoHost is not ready' })]);
-
-      callbacks[0]?.();
-      await Promise.resolve();
-      expect(attempts).toBe(2);
-
-      service.stop();
-    } finally {
       coreDb.sqlite.close();
     }
   });

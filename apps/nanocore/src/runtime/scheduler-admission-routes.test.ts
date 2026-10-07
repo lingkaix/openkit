@@ -34,20 +34,20 @@ describe('scheduler admission routes', () => {
       'queue_retry_audit_failure',
     ]) {
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId,
+        requestId: `request_${queueEntryId}`,
         workspaceId: 'ws_demo',
         threadId: thread.id,
         turnId: `turn_${queueEntryId}`,
         turnInput: 'Exercise scheduler admission database lifecycle.',
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',
-        priorityClass: 'interactive',
-        requiredPoolConstraints: ['openshell.local'],
       });
     }
     for (const queueEntryId of ['queue_retry_close', 'queue_retry_audit_failure']) {
-      denySchedulerAdmissionEntry(coreDb, { queueEntryId, denialReason: 'no-compatible-pool' });
+      denySchedulerAdmissionEntry(coreDb, { queueEntryId, denialReason: 'authority-denied' });
     }
 
     const workspaceDbs: WorkspaceDb[] = [];
@@ -147,21 +147,21 @@ describe('scheduler admission routes', () => {
 
     for (const queueEntryId of ['queue_foreign_retry', 'queue_foreign_cancel']) {
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId,
+        requestId: `request_${queueEntryId}`,
         workspaceId: 'ws_foreign',
         threadId: 'thread_foreign',
         turnId: `turn_${queueEntryId}`,
         turnInput: 'Keep foreign scheduler admission existence private.',
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',
-        priorityClass: 'interactive',
-        requiredPoolConstraints: ['openshell.local'],
       });
     }
     denySchedulerAdmissionEntry(coreDb, {
       queueEntryId: 'queue_foreign_retry',
-      denialReason: 'no-compatible-pool',
+      denialReason: 'authority-denied',
     });
     const repositoryWorkspaceDb = vi.fn(() => {
       throw new Error('Foreign scheduler admissions must fail before opening workspace storage.');
@@ -252,7 +252,9 @@ describe('scheduler admission routes', () => {
 
     for (const queueEntryId of ['queue_victim_retry', 'queue_victim_cancel']) {
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         queueEntryId,
+        requestId: `request_${queueEntryId}`,
         triggerActor: { kind: 'user', id: 'user_victim' },
         workspaceId: 'ws_demo',
         threadId: shared.id,
@@ -260,13 +262,11 @@ describe('scheduler admission routes', () => {
         turnInput: 'Shared workspace admission from another actor.',
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',
-        priorityClass: 'interactive',
-        requiredPoolConstraints: ['openshell.local'],
       });
     }
     denySchedulerAdmissionEntry(coreDb, {
       queueEntryId: 'queue_victim_retry',
-      denialReason: 'no-compatible-pool',
+      denialReason: 'authority-denied',
     });
     registerOperationJsonRoutes({
       app,

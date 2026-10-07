@@ -154,10 +154,9 @@ describe('Worker environment operations', () => {
   it('refuses purge while a queued Turn still selects the idle storage', async () => {
     const fixture = createFixture();
     createSchedulerAdmissionEntry(fixture.coreDb, {
-      priorityClass: 'interactive',
+      backendId: 'nanohost',
       queueEntryId: 'queued-storage-work',
       requestedAgentId: 'agent-codex',
-      requiredPoolConstraints: [],
       threadId: fixture.threadId,
       triggerActor: { kind: 'user', id: 'user_local' },
       turnId: 'turn-queued-storage-work',
@@ -200,10 +199,9 @@ describe('Worker environment operations', () => {
     );
     fixture.store.updateTurn(turn.id, { status: 'pending' });
     createSchedulerAdmissionEntry(fixture.coreDb, {
-      priorityClass: 'interactive',
+      backendId: 'nanohost',
       queueEntryId: 'queued-storage-work',
       requestedAgentId: 'agent-codex',
-      requiredPoolConstraints: [],
       threadId: fixture.threadId,
       triggerActor: { kind: 'user', id: 'user_local' },
       turnId: turn.id,

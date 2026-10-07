@@ -5,16 +5,16 @@ import type { StopReason } from '@openkit/protocol';
 
 import type { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
-import {
-  listSchedulerSessionLeasesForTurn,
-  requireSchedulerSessionLeaseAdmissionContext,
-} from '../scheduler-records.js';
+import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
   listExportableAgentEnvironmentPackageSnapshots,
   requireAgentEnvironmentPackageSnapshot,
 } from './aep-snapshot-ledger.js';
-import { getWorkerBackendSession, listWorkerBackendSessions } from './worker-backend-sessions.js';
+import {
+  isSchedulerExecutionBusyRefusal,
+  listSchedulerExecutionAttemptsForTurn,
+} from './execution-attempt-records.js';
 import {
   clearWorkerCheckpoint,
   getWorkerCheckpoint,
@@ -23,11 +23,7 @@ import {
   type WorkerCheckpointContextAssemblySummary,
   type WorkerCheckpointRecord,
 } from './worker-checkpoints.js';
-import {
-  canonicalStopReasonForAcceptedWorkerFinalStatus,
-  getWorkerControlAcceptedFinalStatus,
-  turnStatusForCanonicalWorkerStopReason,
-} from './worker-control-records.js';
+import { turnStatusForCanonicalWorkerStopReason } from './worker-control-records.js';
 import { importWorkerRuntimeProvenance } from './worker-runtime-provenance.js';
 import {
   isTerminalWorkerTurnStage,
@@ -52,17 +48,17 @@ export function requireWorkerCheckpointHumanCommandScope(
   coreDb: CoreDb,
   checkpoint: WorkerCheckpointRecord
 ): { readonly actorId: string; readonly threadId: string; readonly workspaceId: string } {
-  const leases = listSchedulerSessionLeasesForTurn(coreDb, {
+  const attempts = listSchedulerExecutionAttemptsForTurn(coreDb, {
     workspaceId: checkpoint.workspaceId,
     threadId: checkpoint.threadId,
     turnId: checkpoint.turnId,
-  });
-  const lease = leases[0];
-  if (leases.length !== 1 || !lease || lease.agentSessionId !== checkpoint.workerSessionId) {
-    throw new Error('Worker checkpoint has no exact scheduler lease.');
+  }).filter((attempt) => !isSchedulerExecutionBusyRefusal(attempt));
+  const attempt = attempts[0];
+  if (attempts.length !== 1 || !attempt || attempt.agentSessionId !== checkpoint.workerSessionId) {
+    throw new Error('Worker checkpoint has no exact execution attempt.');
   }
 
-  const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, lease.leaseId);
+  const admission = requireSchedulerExecutionAttemptAdmissionContext(coreDb, attempt.attemptId);
   if (admission.requestId !== checkpoint.requestId || admission.triggerActor.kind !== 'user') {
     throw new Error('Worker checkpoint has no exact human command identity.');
   }
@@ -170,16 +166,15 @@ export interface ClearWorkerCheckpointAfterTerminalStateInput {
    * Skips runtime-provenance re-import for one proved boot leftover.
    *
    * Only the stale direct-Task classifier sets this, and only after a null
-   * worker session plus one `failed` / `turn-start-failed` / `needs-evidence`
-   * lease. Skipping does not claim provenance is complete or that no Worker ran.
+   * worker session plus one closed, definite pre-effect failed-start attempt. Skipping does not claim provenance is complete or that no Worker ran.
    */
   readonly skipRuntimeProvenance?: boolean;
 }
 
 /**
- * Derives one checkpoint outcome from the complete backend-specific worker owner tuple.
+ * Derives one checkpoint outcome from the exact released attempt and canonical product owner tuple.
  *
- * @param coreDb Open Core database containing scheduler and worker-control authority.
+ * @param coreDb Open Core database containing exact scheduler execution authority.
  * @param store Product store containing the Turn and AgentSession owners.
  * @param workspaceDb Open workspace database containing the package and checkpoint owners.
  * @param checkpoint Exact request-bound worker checkpoint.
@@ -216,16 +211,16 @@ export function recoverWorkerCheckpointStopReason(
     throw new Error('Worker AgentSession contradicts its checkpoint lineage.');
   }
 
-  const leases = listSchedulerSessionLeasesForTurn(coreDb, {
+  const attempts = listSchedulerExecutionAttemptsForTurn(coreDb, {
     workspaceId: checkpoint.workspaceId,
     threadId: checkpoint.threadId,
     turnId: checkpoint.turnId,
-  });
-  const lease = leases[0];
-  if (leases.length !== 1 || !lease || lease.agentSessionId !== checkpoint.workerSessionId) {
-    throw new Error('Worker checkpoint has no exact scheduler lease.');
+  }).filter((attempt) => !isSchedulerExecutionBusyRefusal(attempt));
+  const attempt = attempts[0];
+  if (attempts.length !== 1 || !attempt || attempt.agentSessionId !== checkpoint.workerSessionId) {
+    throw new Error('Worker checkpoint has no exact execution attempt.');
   }
-  const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, lease.leaseId);
+  const admission = requireSchedulerExecutionAttemptAdmissionContext(coreDb, attempt.attemptId);
   if (admission.requestId !== checkpoint.requestId) {
     throw new Error('Worker scheduler admission contradicts its command owner.');
   }
@@ -234,11 +229,6 @@ export function recoverWorkerCheckpointStopReason(
   if (stopReason && checkpoint.stage !== workerTurnStageForStopReason(stopReason)) {
     throw new Error('Worker checkpoint contradicts its recorded StopReason.');
   }
-  const backendSession = getWorkerBackendSession(coreDb, lease.leaseId);
-  const environmentPackages = listExportableAgentEnvironmentPackageSnapshots(
-    workspaceDb,
-    checkpoint.workspaceId
-  );
   if (agentSession.environmentPackageSnapshotId) {
     let environmentPackage: ReturnType<typeof requireAgentEnvironmentPackageSnapshot>['snapshot'];
     try {
@@ -257,52 +247,35 @@ export function recoverWorkerCheckpointStopReason(
       environmentPackage.scope.turnId !== checkpoint.turnId ||
       environmentPackage.scope.agentSessionId !== checkpoint.workerSessionId ||
       environmentPackage.scope.requestId !== checkpoint.requestId ||
-      lease.packageSnapshotId !== environmentPackage.snapshotId
+      attempt.inputRef !== environmentPackage.snapshotId
     ) {
       throw new Error('Worker environment package contradicts its checkpoint lineage.');
     }
-    const accepted = getWorkerControlAcceptedFinalStatus(coreDb, {
-      agentSessionId: checkpoint.workerSessionId,
-      packageSnapshotId: environmentPackage.snapshotId,
-      requestId: checkpoint.requestId,
-      threadId: checkpoint.threadId,
-      turnId: checkpoint.turnId,
-      workspaceId: checkpoint.workspaceId,
-    });
-    if (!accepted) {
-      throw new Error('Worker checkpoint has no accepted final status.');
-    }
-    const acceptedStopReason = canonicalStopReasonForAcceptedWorkerFinalStatus(accepted);
-    if (stopReason && stopReason !== acceptedStopReason) {
-      throw new Error('Worker checkpoint contradicts its accepted final status.');
-    }
-    stopReason = acceptedStopReason;
-    if (
-      !backendSession ||
-      backendSession.workspaceId !== checkpoint.workspaceId ||
-      backendSession.threadId !== checkpoint.threadId ||
-      backendSession.turnId !== checkpoint.turnId ||
-      backendSession.agentSessionId !== checkpoint.workerSessionId ||
-      backendSession.packageSnapshotId !== environmentPackage.snapshotId ||
-      backendSession.workspaceHandoffState !== 'complete' ||
-      backendSession.state !== 'cleaned'
-    ) {
-      throw new Error('Worker checkpoint has no complete backend closeout.');
-    }
+    // Native final-status verification and every release barrier belong behind the adapter.
+    // A closed attempt with its exact retained fence proves those owners settled, while the
+    // product terminal event supplies the canonical StopReason without parsing Native proof.
+    if (attempt.phase !== 'closed' || !attempt.fenceRef || !attempt.operationId)
+      throw new Error('Worker checkpoint has no complete execution closeout.');
   } else if (
     !stopReason ||
     checkpoint.stage === 'preparing' ||
     checkpoint.stage === 'running_worker' ||
-    listWorkerBackendSessions(coreDb).some(
-      (record) => record.agentSessionId === checkpoint.workerSessionId
-    ) ||
-    environmentPackages.some((record) => record.agentSessionId === checkpoint.workerSessionId) ||
-    coreDb.sqlite
-      .prepare('SELECT 1 FROM worker_control_records WHERE agent_session_id = ? LIMIT 1')
-      .get(checkpoint.workerSessionId)
+    attempt.phase !== 'closed' ||
+    attempt.disposition !== 'not_accepted' ||
+    attempt.operationId !== null ||
+    attempt.inputRef !== null
   ) {
-    throw new Error('In-process worker checkpoint has no complete terminal closeout.');
+    throw new Error('Pre-effect worker checkpoint has no definite terminal closeout.');
   }
+  const terminalEvents = store
+    .getTurnEvents(checkpoint.turnId)
+    .filter((event) => event.event === 'turn.completed' && event.data.type === 'turn-completed');
+  if (terminalEvents.length !== 1 || terminalEvents[0]?.data.type !== 'turn-completed')
+    throw new Error('Worker checkpoint has no exact product terminal event.');
+  const productStopReason = terminalEvents[0].data.stopReason;
+  if (stopReason && stopReason !== productStopReason)
+    throw new Error('Worker checkpoint contradicts its product terminal event.');
+  stopReason = productStopReason;
 
   if (!stopReason) {
     throw new Error('Worker checkpoint has no canonical StopReason.');
@@ -314,7 +287,7 @@ export function recoverWorkerCheckpointStopReason(
       ? 'interrupted'
       : 'completed'
     : turnStatusForCanonicalWorkerStopReason(stopReason);
-  const expectedLeaseStatus = expectedTurnStatus === 'failed' ? 'failed' : 'released';
+
   const expectedAgentSessionStatus =
     closedApprovalGate?.stopReason === 'completed'
       ? 'closed'
@@ -323,14 +296,10 @@ export function recoverWorkerCheckpointStopReason(
         : expectedTurnStatus === 'interrupted'
           ? 'interrupted'
           : 'failed';
-  const terminalEvents = store
-    .getTurnEvents(checkpoint.turnId)
-    .filter((event) => event.event === 'turn.completed' && event.data.type === 'turn-completed');
   if (
     turn.status !== expectedTurnStatus ||
     agentSession.status !== expectedAgentSessionStatus ||
-    lease.status !== expectedLeaseStatus ||
-    lease.recoveryState !== (expectedTurnStatus === 'failed' ? 'needs-evidence' : null) ||
+    attempt.phase !== 'closed' ||
     terminalEvents.length !== 1 ||
     terminalEvents[0]?.data.type !== 'turn-completed' ||
     terminalEvents[0].data.stopReason !== stopReason
@@ -586,19 +555,18 @@ export function resolveInterruptedWorkerRetryDecision(
     return { status: 'recovery-required', checkpoint };
   }
 
-  const leases = listSchedulerSessionLeasesForTurn(coreDb, input);
-  if (leases.length !== 1 || leases[0]?.agentSessionId !== agentSessionId) {
+  const attempts = listSchedulerExecutionAttemptsForTurn(coreDb, input).filter(
+    (attempt) => !isSchedulerExecutionBusyRefusal(attempt)
+  );
+  if (attempts.length !== 1 || attempts[0]?.agentSessionId !== agentSessionId) {
     return { status: 'recovery-required', checkpoint };
   }
-  const lease = leases[0];
+  const attempt = attempts[0];
 
-  if (
-    (lease.status === 'active' || lease.status === 'idle') &&
-    lease.recoveryState === 'awaiting-reconnect'
-  ) {
+  if (attempt.phase === 'open') {
     return { status: 'reconnect-pending', checkpoint };
   }
-  if (['acquired', 'starting', 'active', 'idle'].includes(lease.status)) {
+  if (attempt.phase === 'closing') {
     return { status: 'stale', checkpoint };
   }
 
@@ -607,9 +575,7 @@ export function resolveInterruptedWorkerRetryDecision(
     checkpoint.stopReason !== null ||
     turn.status !== 'interrupted' ||
     agentSession.status !== 'interrupted' ||
-    lease.status !== 'released' ||
-    lease.recoveryState !== null ||
-    lease.releaseReason !== 'scheduler-restart-backend-cleanup'
+    attempt.phase !== 'closed'
   ) {
     return { status: 'recovery-required', checkpoint };
   }

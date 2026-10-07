@@ -24,6 +24,7 @@ import type { OperationInvocationDependencies } from './operation-composition.js
 import type { OperationImplementations } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
+import { hasUnprovedNanoHostWorkspaceCleanup } from './runtime/nanohost-attempt-records.js';
 import { listWorkerBackendSessions } from './runtime/worker-backend-sessions.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
@@ -768,7 +769,7 @@ function requireDeletingRegistry(coreDb: CoreDb, request: WorkspaceDeletionReque
 /**
  * Reports whether Workspace deletion must stay fenced for an active runtime, unproved lease, or pending apply.
  *
- * A failed lease may keep `needs-evidence` without blocking only when its existing backend row matches that lease lineage, is `cleaned`, and records `physical_cleaned_at`.
+ * Every non-closed execution attempt blocks deletion until its actual handoff and exact fence are proved.
  *
  * @param input Core, Workspace, and AgentSession sources for the target Workspace.
  * @returns True when deletion must remain fenced.
@@ -783,34 +784,7 @@ function hasActiveWorkspaceRuntime(input: {
     input.store
       .listWorkspaceAgentSessions(input.workspaceId)
       .some((session) => ['created', 'initializing', 'busy'].includes(session.status)) ||
-    input.coreDb.sqlite
-      .prepare(
-        `SELECT 1 FROM scheduler_session_leases AS lease
-         WHERE lease.workspace_id = ?
-           AND (
-             lease.status NOT IN ('idle', 'released', 'lost', 'failed')
-             OR (
-               lease.recovery_state = 'needs-evidence'
-               AND NOT (
-                 lease.status = 'failed'
-                 AND EXISTS (
-                   SELECT 1
-                   FROM worker_backend_sessions AS backend
-                   WHERE backend.lease_id = lease.lease_id
-                     AND backend.workspace_id = lease.workspace_id
-                     AND backend.thread_id = lease.thread_id
-                     AND backend.turn_id = lease.turn_id
-                     AND backend.agent_session_id = lease.agent_session_id
-                     AND backend.package_snapshot_id = lease.package_snapshot_id
-                     AND backend.state = 'cleaned'
-                     AND backend.physical_cleaned_at IS NOT NULL
-                 )
-               )
-             )
-           )
-         LIMIT 1`
-      )
-      .get(input.workspaceId) ||
+    hasUnprovedNanoHostWorkspaceCleanup(input.coreDb, input.workspaceId) ||
     listWorkerBackendSessions(input.coreDb).some(
       (session) => session.workspaceId === input.workspaceId && session.state !== 'cleaned'
     )

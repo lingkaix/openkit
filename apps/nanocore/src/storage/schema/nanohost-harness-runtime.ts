@@ -149,7 +149,7 @@ export const agentSessionRuntimeBindings = sqliteTable(
     /** Active Turn identity, when present. */
     currentTurnId: text('current_turn_id'),
     /** Active Turn execution lease, when present. */
-    currentLeaseId: text('current_lease_id'),
+    currentAttemptId: text('current_attempt_id'),
     /** Next sequential Turn number for this exact AgentSession binding. */
     nextTurnSequence: integer('next_turn_sequence').notNull(),
     /** AgentSession-local cleanup proof. */

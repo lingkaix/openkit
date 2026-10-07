@@ -446,14 +446,14 @@ export function createNanoHostSessionDispatch(
         row.runtimeTargetId !== readiness.runtimeTarget.targetId
       )
         return false;
-      if (!row.leaseId.trim() || !row.packageSnapshotId.trim()) {
+      if (!row.attemptId.trim() || !row.packageSnapshotId.trim()) {
         throw effectTransportError(409, 'NanoHost delete correlation lineage is incomplete.');
       }
       const sandboxId = nanoHostSandboxIdFromBackendSessionId(row.backendSessionId);
       return (
         sandboxId === result.sandboxId &&
-        createNanoHostEffectRequest(row, row.leaseId, 'sandbox.delete', {
-          leaseId: row.leaseId,
+        createNanoHostEffectRequest(row, row.attemptId, 'sandbox.delete', {
+          attemptId: row.attemptId,
           sandboxId,
         }).requestId === requestId
       );

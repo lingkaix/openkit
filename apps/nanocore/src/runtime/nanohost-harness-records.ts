@@ -7,9 +7,8 @@ import {
   NativeEnvironmentRecordSchema,
   parseHarnessResultBody,
 } from '@openkit/worker-protocol';
-
-import { bindSchedulerLeaseRouteTokenHashes } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
+import { bindNanoHostAttemptRouteTokenHashes } from './nanohost-attempt-records.js';
 import { hashWorkerRouteToken } from './worker-control-gateway.js';
 
 /** Exact enqueue-to-result outage budget for one private Harness operation. */
@@ -137,7 +136,7 @@ export interface FenceNanoHostSandboxRuntimeInput {
 /** Exact current-owner inputs for one read-only AgentSession continuity inspection. */
 export interface InspectNanoHostAgentSessionContinuityInput {
   readonly admissionAgentSessionId?: string;
-  readonly admissionLeaseId?: string;
+  readonly admissionAttemptId?: string;
   /** No desired key means proof-only inspection cannot establish reuse. */
   readonly agentSessionCompatibilityKey?: string;
   readonly agentSessionId: string;
@@ -465,22 +464,22 @@ export function inspectNanoHostAgentSessionContinuity(
   requireIdentity(input.agentSessionId, 'AgentSession');
   requireIdentity(input.threadId, 'Thread');
   requireIdentity(input.workspaceId, 'Workspace');
-  const hasAdmissionLease = input.admissionLeaseId !== undefined;
+  const hasAdmissionLease = input.admissionAttemptId !== undefined;
   if (hasAdmissionLease !== (input.admissionAgentSessionId !== undefined)) {
     throw new Error('NanoHost AgentSession inspection requires complete admission lease lineage.');
   }
-  if (input.admissionLeaseId && input.admissionAgentSessionId) {
-    requireIdentity(input.admissionLeaseId, 'Scheduler lease');
+  if (input.admissionAttemptId && input.admissionAgentSessionId) {
+    requireIdentity(input.admissionAttemptId, 'execution attempt');
     requireIdentity(input.admissionAgentSessionId, 'Admission AgentSession');
     const admissionLease = coreDb.sqlite
       .prepare(
         `SELECT workspace_id AS workspaceId, thread_id AS threadId,
                 agent_session_id AS agentSessionId
-         FROM scheduler_session_leases
-         WHERE lease_id = ?
-           AND status NOT IN ('released', 'lost', 'failed')`
+         FROM scheduler_execution_attempts
+         WHERE attempt_id = ?
+           AND phase <> 'closed'`
       )
-      .get(input.admissionLeaseId) as
+      .get(input.admissionAttemptId) as
       | {
           readonly agentSessionId: string;
           readonly threadId: string;
@@ -499,13 +498,13 @@ export function inspectNanoHostAgentSessionContinuity(
   const hasActiveLease = Boolean(
     coreDb.sqlite
       .prepare(
-        `SELECT 1 FROM scheduler_session_leases
+        `SELECT 1 FROM scheduler_execution_attempts
          WHERE agent_session_id = ?
-           AND status NOT IN ('released', 'lost', 'failed')
-           AND (? IS NULL OR lease_id <> ?)
+           AND phase <> 'closed'
+           AND (? IS NULL OR attempt_id <> ?)
          LIMIT 1`
       )
-      .get(input.agentSessionId, input.admissionLeaseId ?? null, input.admissionLeaseId ?? null)
+      .get(input.agentSessionId, input.admissionAttemptId ?? null, input.admissionAttemptId ?? null)
   );
   const row = coreDb.sqlite
     .prepare(
@@ -515,7 +514,7 @@ export function inspectNanoHostAgentSessionContinuity(
               b.native_handle_state AS nativeHandleState,
               b.native_handle_digest AS nativeHandleDigest,
               b.lifecycle_state AS bindingLifecycleState,
-              b.current_turn_id AS currentTurnId, b.current_lease_id AS currentLeaseId,
+              b.current_turn_id AS currentTurnId, b.current_attempt_id AS currentAttemptId,
               b.cleanup_state AS bindingCleanupState,
               h.harness_instance_id AS harnessInstanceId,
               h.harness_binding_ref AS harnessBindingRef,
@@ -544,7 +543,7 @@ export function inspectNanoHostAgentSessionContinuity(
         readonly agentSessionRuntimeBindingId: string;
         readonly bindingCleanupState: string;
         readonly bindingLifecycleState: string;
-        readonly currentLeaseId: string | null;
+        readonly currentAttemptId: string | null;
         readonly currentTurnId: string | null;
         readonly harnessBindingRef: string;
         readonly harnessCompatibilityKey: string;
@@ -579,7 +578,7 @@ export function inspectNanoHostAgentSessionContinuity(
           threadId: input.threadId,
         });
   if (hasActiveLease) {
-    throw new Error('NanoHost AgentSession still owns a live scheduler lease.');
+    throw new Error('NanoHost AgentSession still owns a live execution attempt.');
   }
   if (
     row.workspaceId !== input.workspaceId ||
@@ -613,7 +612,7 @@ export function inspectNanoHostAgentSessionContinuity(
       row.bindingLifecycleState === 'open' &&
       row.bindingCleanupState === 'clean' &&
       row.currentTurnId === null &&
-      row.currentLeaseId === null &&
+      row.currentAttemptId === null &&
       nativeHandleReady,
   };
 }
@@ -692,7 +691,7 @@ export function openNanoHostAgentSessionBinding(
            agent_session_runtime_binding_id, harness_instance_id, agent_session_id,
            workspace_id, thread_id, agent_session_compatibility_key,
            effective_setup_generation, native_handle_state, native_handle_digest,
-           lifecycle_state, current_turn_id, current_lease_id, next_turn_sequence, cleanup_state,
+           lifecycle_state, current_turn_id, current_attempt_id, next_turn_sequence, cleanup_state,
            created_at, updated_at, image_digest, native_environment_json
          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 'opening', NULL, NULL, 0, 'clean', ?, ?, ?, ?)`
       )
@@ -946,22 +945,22 @@ export function dispatchNanoHostHarnessOperation(
       while (capabilityToken === workerControlToken || capabilityToken === inferenceToken) {
         capabilityToken = requireRouteToken(token());
       }
-      const leaseId = body.leaseId as string;
+      const attemptId = body.leaseId as string;
       const lease = coreDb.sqlite
         .prepare(
-          'SELECT sandbox_binding_ref AS sandboxBindingRef FROM scheduler_session_leases WHERE lease_id = ?'
+          'SELECT binding_ref AS bindingRef FROM scheduler_execution_attempts WHERE attempt_id = ?'
         )
-        .get(leaseId) as { readonly sandboxBindingRef: string } | undefined;
+        .get(attemptId) as { readonly bindingRef: string } | undefined;
       if (!lease) {
         throw new Error('NanoHost Harness Turn lease is missing.');
       }
       const workerControlTokenHash = hashWorkerRouteToken(workerControlToken);
       const workerInferenceTokenHash = hashWorkerRouteToken(inferenceToken);
       const workerCapabilityTokenHash = hashWorkerRouteToken(capabilityToken);
-      bindSchedulerLeaseRouteTokenHashes(coreDb, {
-        leaseId,
+      bindNanoHostAttemptRouteTokenHashes(coreDb, {
+        attemptId,
         ...(input.now ? { now: input.now } : {}),
-        sandboxBindingRef: lease.sandboxBindingRef,
+        sandboxBindingRef: lease.bindingRef,
         workerCapabilityTokenHash,
         workerControlTokenHash,
         workerInferenceTokenHash,
@@ -1283,7 +1282,7 @@ function projectSuccessfulResult(
     const started = coreDb.sqlite
       .prepare(
         `UPDATE agent_session_runtime_bindings
-         SET lifecycle_state = 'active', current_turn_id = ?, current_lease_id = ?, native_environment_applied = 1,
+         SET lifecycle_state = 'active', current_turn_id = ?, current_attempt_id = ?, native_environment_applied = 1,
              native_handle_state = ?, native_handle_digest = ?,
              next_turn_sequence = next_turn_sequence + 1, updated_at = ?
          WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ?
@@ -1321,7 +1320,7 @@ function projectSuccessfulResult(
     const inspected = coreDb.sqlite
       .prepare(
         `UPDATE agent_session_runtime_bindings
-         SET lifecycle_state = ?, current_turn_id = NULL, current_lease_id = NULL,
+         SET lifecycle_state = ?, current_turn_id = NULL, current_attempt_id = NULL,
              native_handle_state = ?, native_handle_digest = ?, cleanup_state = 'clean', updated_at = ?
          WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ?`
       )
@@ -1373,7 +1372,7 @@ function requireOperationLineage(
     .prepare(
       `SELECT agent_session_id AS agentSessionId, workspace_id AS workspaceId,
               thread_id AS threadId, lifecycle_state AS lifecycleState,
-              current_turn_id AS currentTurnId, current_lease_id AS currentLeaseId,
+              current_turn_id AS currentTurnId, current_attempt_id AS currentAttemptId,
               next_turn_sequence AS nextTurnSequence, native_environment_json AS nativeEnvironment
        FROM agent_session_runtime_bindings
        WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ?`
@@ -1381,7 +1380,7 @@ function requireOperationLineage(
     .get(body.agentSessionRuntimeBindingId, harness.harness_instance_id) as
     | {
         readonly agentSessionId: string;
-        readonly currentLeaseId: string | null;
+        readonly currentAttemptId: string | null;
         readonly currentTurnId: string | null;
         readonly workspaceId: string;
         readonly threadId: string;
@@ -1411,22 +1410,22 @@ function requireOperationLineage(
       harness.active_turn_count !== 1 ||
       binding.lifecycleState !== 'active' ||
       binding.currentTurnId !== body.turnId ||
-      binding.currentLeaseId !== body.leaseId
+      binding.currentAttemptId !== body.leaseId
     ) {
       throw new Error('NanoHost Harness interrupt conflicts with the active Turn binding.');
     }
     const lease = coreDb.sqlite
       .prepare(
         `SELECT workspace_id AS workspaceId, thread_id AS threadId, turn_id AS turnId,
-                agent_session_id AS agentSessionId, package_snapshot_id AS packageSnapshotId,
-                status
-         FROM scheduler_session_leases WHERE lease_id = ?`
+                agent_session_id AS agentSessionId, input_ref AS inputRef,
+                phase
+         FROM scheduler_execution_attempts WHERE attempt_id = ?`
       )
       .get(body.leaseId) as
       | {
           readonly agentSessionId: string;
-          readonly packageSnapshotId: string;
-          readonly status: string;
+          readonly inputRef: string;
+          readonly phase: string;
           readonly threadId: string;
           readonly turnId: string;
           readonly workspaceId: string;
@@ -1445,7 +1444,7 @@ function requireOperationLineage(
             lease.threadId,
             lease.turnId,
             lease.agentSessionId,
-            lease.packageSnapshotId
+            lease.inputRef
           )
       : null;
     const activeTurnStart =
@@ -1454,12 +1453,12 @@ function requireOperationLineage(
         : null;
     if (
       !lease ||
-      !['acquired', 'starting', 'active', 'idle'].includes(lease.status) ||
+      !['open', 'closing'].includes(lease.phase) ||
       lease.workspaceId !== binding.workspaceId ||
       lease.threadId !== binding.threadId ||
       lease.turnId !== body.turnId ||
       lease.agentSessionId !== body.agentSessionId ||
-      activeTurnStart?.packageSnapshotId !== lease.packageSnapshotId ||
+      activeTurnStart?.packageSnapshotId !== lease.inputRef ||
       acceptedFinal
     ) {
       throw new Error('NanoHost Harness interrupt conflicts with the live lease lineage.');
@@ -1481,9 +1480,9 @@ function requireOperationLineage(
   const lease = coreDb.sqlite
     .prepare(
       `SELECT workspace_id AS workspaceId, thread_id AS threadId, turn_id AS turnId,
-              agent_session_id AS agentSessionId, package_snapshot_id AS packageSnapshotId,
-              status
-       FROM scheduler_session_leases WHERE lease_id = ?`
+              agent_session_id AS agentSessionId, input_ref AS inputRef,
+              phase
+       FROM scheduler_execution_attempts WHERE attempt_id = ?`
     )
     .get(body.leaseId) as
     | {
@@ -1491,18 +1490,18 @@ function requireOperationLineage(
         readonly threadId: string;
         readonly turnId: string;
         readonly agentSessionId: string;
-        readonly packageSnapshotId: string;
-        readonly status: string;
+        readonly inputRef: string;
+        readonly phase: string;
       }
     | undefined;
   if (
     !lease ||
-    !['acquired', 'starting', 'active', 'idle'].includes(lease.status) ||
+    lease.phase !== 'open' ||
     lease.workspaceId !== body.workspaceId ||
     lease.threadId !== body.threadId ||
     lease.turnId !== body.turnId ||
     lease.agentSessionId !== body.agentSessionId ||
-    lease.packageSnapshotId !== body.packageSnapshotId
+    lease.inputRef !== body.packageSnapshotId
   ) {
     throw new Error('NanoHost Harness Turn lease lineage conflicts.');
   }

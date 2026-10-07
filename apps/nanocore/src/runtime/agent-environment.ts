@@ -29,10 +29,6 @@ import {
 } from '../auth/operation-authorizer.js';
 import { loadWorkspaceResourceCatalog } from '../catalog/resource-catalog.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
-import {
-  listSchedulerSessionLeasesForTurn,
-  resolveSchedulerLeaseTokenBinding,
-} from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
@@ -43,6 +39,10 @@ import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend
 import { createVaultInjectionPlan } from '../vault-injection-plans.js';
 import type { CreateVaultInjectionReceiptInput } from '../vault-injection-receipts.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
+import {
+  isSchedulerExecutionBusyRefusal,
+  listSchedulerExecutionAttemptsForTurn,
+} from './execution-attempt-records.js';
 import { resolvePublicNativeEnvironment } from './native-environment.js';
 import { createOpenkitGenerativeMcpSupply } from './openkit-generative-mcp.js';
 import { createOpenkitWorkMcpSupply } from './openkit-work-mcp.js';
@@ -1250,32 +1250,24 @@ function resolveWorkerCredentialDeclarations(
           );
     const leases =
       input.credentialResolution === 'materialize'
-        ? listSchedulerSessionLeasesForTurn(coreDb, turnLineage).filter(
+        ? listSchedulerExecutionAttemptsForTurn(coreDb, turnLineage).filter(
             (lease) =>
               lease.agentSessionId === input.agentSessionId &&
-              lease.packageSnapshotId === input.packageSnapshotId
+              lease.inputRef === input.packageSnapshotId &&
+              !isSchedulerExecutionBusyRefusal(lease)
           )
         : [];
     const lease = leases.length === 1 ? leases[0] : null;
-    const liveLease =
-      lease &&
-      resolveSchedulerLeaseTokenBinding(coreDb, {
-        sandboxBindingRef: lease.sandboxBindingRef,
-        lineage: {
-          workspaceId: input.workspaceId,
-          threadId: input.threadId,
-          turnId: input.turnId,
-          agentSessionId: input.agentSessionId,
-          packageSnapshotId: input.packageSnapshotId,
-        },
-        now: input.authorityNow,
-      });
+    const timestamp = input.authorityNow?.() ?? new Date().toISOString();
+    // Preparation has current attempt authority before submission fixes its absolute deadline.
+    // Native liveness and adoption remain with the adapter and mediated route owner.
     if (
       !authorized ||
       (input.credentialResolution === 'materialize' &&
-        (!liveLease ||
-          liveLease.status !== 'accepted' ||
-          liveLease.lease.leaseId !== lease?.leaseId))
+        (!lease ||
+          lease.phase !== 'open' ||
+          !lease.bindingRef ||
+          (lease.deadline !== null && lease.deadline <= timestamp)))
     ) {
       throw new TurnStartValidationError(
         'workspace_access_denied',

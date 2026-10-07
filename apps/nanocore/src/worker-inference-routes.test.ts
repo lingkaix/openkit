@@ -18,6 +18,7 @@ import type { ReasoningEffort } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WORKER_ADAPTERS } from '../../../packages/worker-shim/src/adapter-registry.js';
 import { openSandboxIntegration } from '../../../packages/worker-shim/src/integration-client.js';
+import { createDefaultWorkerControlGateway } from './app.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
@@ -41,18 +42,21 @@ import {
 } from './llm/provider-dispatcher.js';
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
 import { ProviderRegistry } from './providers/registry.js';
-import { hashWorkerRouteToken, WorkerControlGateway } from './runtime/worker-control-gateway.js';
+import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import {
-  createSchedulerAdmissionEntry,
-  createSchedulerPlacementPlan,
-  createSchedulerSessionLease,
-} from './scheduler-records.js';
+  acceptSchedulerExecutionObservation,
+  schedulerExecutionCorrelation,
+} from './runtime/execution-attempt-records.js';
+import { bindNanoHostAttemptRouteTokenHashes } from './runtime/nanohost-attempt-records.js';
+import { hashWorkerRouteToken, WorkerControlGateway } from './runtime/worker-control-gateway.js';
+import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { readWorkObservations } from './storage/work-observations.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -309,6 +313,8 @@ function createWorkerInferenceRouteFixture(
     readonly subscriptionFamily?: 'openai-codex';
     readonly subscriptionCheckUnavailable?: boolean;
     readonly persistedTurn?: boolean;
+    /** Use the production credential/deadline consumer for the absolute-deadline regression. */
+    readonly durableAuthority?: boolean;
     readonly adminBearer?: boolean;
     readonly autoFailover?: boolean;
     readonly reasoningEffort?: ReasoningEffort;
@@ -432,7 +438,8 @@ function createWorkerInferenceRouteFixture(
         workspaceIds: [],
       });
     }
-    createSchedulerAdmissionEntry(appCoreDb, {
+    const entry = createSchedulerAdmissionEntry(appCoreDb, {
+      backendId: 'nanohost',
       queueEntryId: `queue_${turn.id}`,
       requestId: 'req_worker_inference_outer_1',
       triggerActor: environmentPackage.scope.triggerActor,
@@ -442,39 +449,53 @@ function createWorkerInferenceRouteFixture(
       turnId: turn.id,
       turnInput: 'Call worker inference',
       requestedAgentId: environmentPackage.agent.agentId,
-      priorityClass: 'interactive',
-      requiredPoolConstraints: [],
     });
-    createSchedulerPlacementPlan(appCoreDb, {
-      planId: `plan_${turn.id}`,
-      queueEntryId: `queue_${turn.id}`,
-      selectedPoolId: 'pool_test',
-      selectedTargetId: 'target_test',
-      plannedLeaseDurationMs: 900_000,
-      heartbeatIntervalMs: 10_000,
-      heartbeatTimeoutMs: 30_000,
-      expectedControlMode: 'poll',
-      expectedDataPlaneMode: 'openshell-files',
-      degradedOptionalFeatures: [],
-      policyDecisionIds: [],
-      schedulerEpoch: 1,
-    });
-    createSchedulerSessionLease(appCoreDb, {
-      leaseId: `lease_${turn.id}`,
-      planId: `plan_${turn.id}`,
+    const submittedAttempt = recordTestExecutionAttempt(appCoreDb, {
+      entry,
+      attemptId: `lease_${turn.id}`,
       agentSessionId: environmentPackage.scope.agentSessionId,
-      packageSnapshotId: environmentPackage.snapshotId,
-      expiresAt: '2099-01-01T00:00:00.000Z',
-      heartbeatDeadline: '2099-01-01T00:00:00.000Z',
-      startupDeadline: '2099-01-01T00:00:00.000Z',
-      sandboxTokenBindingRef: sandboxBindingRef,
+      inputRef: environmentPackage.snapshotId,
+      bindingRef: sandboxBindingRef,
+      sessionCompatibilityKey: 'fixture-compatibility',
+      now: () => new Date().toISOString(),
+      operationId: `fixture-submit:${`lease_${turn.id}`}`,
     });
+    expect(
+      acceptSchedulerExecutionObservation(appCoreDb, {
+        ...schedulerExecutionCorrelation(submittedAttempt),
+        disposition: 'accepted',
+        execution: 'running',
+        fenceRef: null,
+        outcomeRef: null,
+      })?.disposition
+    ).toBe('accepted');
+  }
+  if (options.durableAuthority && appCoreDb) {
+    bindNanoHostAttemptRouteTokenHashes(appCoreDb, {
+      attemptId: `lease_${turn.id}`,
+      sandboxBindingRef,
+      workerCapabilityTokenHash: hashWorkerRouteToken(workerCapabilityToken),
+      workerControlTokenHash: hashWorkerRouteToken(workerControlToken),
+      workerInferenceTokenHash: hashWorkerRouteToken(workerInferenceToken),
+    });
+    const workspaceDb = openWorkspaceDb(appCoreDb.dataRoot, turn.workspaceId);
+    try {
+      applyScopedMigrations(workspaceDb);
+      recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+        environmentPackage,
+        createdAt: environmentPackage.createdAt,
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
   }
   let leaseLive = true;
-  const workerControlGateway = new WorkerControlGateway({
-    resolveTokenBinding: () =>
-      leaseLive ? { status: 'accepted' } : { reason: 'lease-not-live', status: 'rejected' },
-  });
+  const workerControlGateway = options.durableAuthority
+    ? createDefaultWorkerControlGateway(appCoreDb)
+    : new WorkerControlGateway({
+        resolveTokenBinding: () =>
+          leaseLive ? { status: 'accepted' } : { reason: 'lease-not-live', status: 'rejected' },
+      });
   const dispatcher = new FakeWorkerInferenceDispatcher();
 
   workerControlGateway.registerSession(environmentPackage, {
@@ -1647,6 +1668,56 @@ describe('worker inference routes', () => {
     }
   });
 
+  it('reloads administrator provenance and refuses its revocation even after the actor becomes a Workspace member', async () => {
+    const fixture = createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+      adminBearer: true,
+    });
+    const reloaded = openCoreDb(fixture.coreDb!.dataRoot);
+    try {
+      const admission = reloaded.sqlite
+        .prepare(
+          'SELECT server_admin_token_id AS tokenId FROM scheduler_admission_entries WHERE turn_id = ?'
+        )
+        .get(fixture.environmentPackage.scope.turnId);
+      expect(admission).toEqual({ tokenId: 'token_worker_inference_admin' });
+      expect(
+        (
+          await postWorkerResponses(fixture, {
+            input: 'Use the presented administrator authority.',
+            model: WORKER_LOGICAL_MODEL_ID,
+          })
+        ).status
+      ).toBe(200);
+      const joinedAt = new Date().toISOString();
+      reloaded.sqlite
+        .prepare(`INSERT INTO workspace_members (
+        workspace_id, user_id, status, access_level, invitation_id, joined_at,
+        removed_at, revision, created_at, updated_at
+      ) VALUES ('ws_demo', 'user_inference_admin', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`)
+        .run(joinedAt, joinedAt, joinedAt);
+      reloaded.sqlite
+        .prepare(
+          "UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = ?"
+        )
+        .run(new Date().toISOString(), 'token_worker_inference_admin');
+      const refused = await postWorkerResponses(fixture, {
+        input: 'Do not substitute membership for revoked provenance.',
+        model: WORKER_LOGICAL_MODEL_ID,
+      });
+      expect(refused.status).toBe(503);
+      expect(fixture.dispatcher.responseCalls).toHaveLength(1);
+      expect(
+        reloaded.sqlite
+          .prepare(
+            'SELECT server_admin_token_id AS tokenId FROM scheduler_admission_entries WHERE turn_id = ?'
+          )
+          .get(fixture.environmentPackage.scope.turnId)
+      ).toEqual(admission);
+    } finally {
+      reloaded.sqlite.close();
+    }
+  });
+
   it('uses the exact admitted admin bearer for nonmember inference and denies revocation or lineage drift', async () => {
     const fixture = createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
       adminBearer: true,
@@ -1679,7 +1750,7 @@ describe('worker inference routes', () => {
       .run();
     fixture
       .coreDb!.sqlite.prepare(
-        'UPDATE scheduler_session_leases SET package_snapshot_id = ? WHERE turn_id = ?'
+        'UPDATE scheduler_execution_attempts SET input_ref = ? WHERE turn_id = ?'
       )
       .run('pkg_other', fixture.environmentPackage.scope.turnId);
     const mismatched = await request();
@@ -1775,6 +1846,55 @@ describe('worker inference routes', () => {
       });
     }
     expect(fixture.dispatcher.responseCalls).toEqual([]);
+  });
+
+  it('enforces the persisted absolute attempt deadline at the mediated inference boundary', async () => {
+    const f = createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+      durableAuthority: true,
+    });
+    const db = f.coreDb!;
+    const scope = f.environmentPackage.scope;
+    const present = db.sqlite
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduler_execution_attempts'"
+      )
+      .get();
+    expect(
+      present,
+      'The fixture must seed the current attempt before route evidence is meaningful.'
+    ).toBeDefined();
+    const attempt = db.sqlite
+      .prepare('SELECT * FROM scheduler_execution_attempts WHERE turn_id = ?')
+      .get(scope.turnId) as Record<string, unknown>;
+    expect(attempt).toBeDefined();
+    expect(Number.isFinite(Date.parse(String(attempt.deadline)))).toBe(true);
+    // Move only the authority deadline into the fixture's still-live adapter window.
+    const deadline = new Date(Date.now() + 1000).toISOString();
+    db.sqlite
+      .prepare('UPDATE scheduler_execution_attempts SET deadline = ? WHERE attempt_id = ?')
+      .run(deadline, attempt.attempt_id);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.parse(deadline) - 1);
+      expect(
+        (await postWorkerResponses(f, { input: 'Before expiry', model: WORKER_LOGICAL_MODEL_ID }))
+          .status
+      ).toBe(200);
+      const calls = f.dispatcher.responseCalls.length;
+      vi.setSystemTime(Date.parse(deadline));
+      expect(
+        (await postWorkerResponses(f, { input: 'At expiry', model: WORKER_LOGICAL_MODEL_ID }))
+          .status
+      ).toBe(403);
+      expect(f.dispatcher.responseCalls).toHaveLength(calls);
+      expect(
+        db.sqlite
+          .prepare('SELECT deadline FROM scheduler_execution_attempts WHERE attempt_id = ?')
+          .get(attempt.attempt_id)
+      ).toEqual({ deadline });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('fails closed when the durable lease dies or a restored session has no AEP', async () => {

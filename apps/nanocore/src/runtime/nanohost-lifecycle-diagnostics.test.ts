@@ -10,13 +10,17 @@ import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 import { runWorkerHarness, WorkerHarness } from '../../../../packages/worker-shim/src/harness.js';
 import type { SandboxIntegrationClient } from '../../../../packages/worker-shim/src/integration-client.js';
+import { ensureLocalUser } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   createNanoHostHarnessRuntime,
   markNanoHostHarnessOperationUnknown,
@@ -397,11 +401,34 @@ describe('Harness delivery localization through real Core and shim owners', () =
         timestamp: now,
         workspaceId: 'diag-workspace',
       });
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO scheduler_session_leases (lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at, heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch, sandbox_binding_ref, backend_anchor_state) VALUES ('diag-lease', 'diag-plan', 'diag-workspace', 'diag-thread', 'diag-turn', 'diag-session', 'diag-package', 'diag-pool', 'diag', 'acquired', ?, '2099-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z', 0, 1, 'diag-turn-binding', 'anchored')`
-        )
-        .run(now);
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        workspaceId: 'diag-workspace',
+        ownerUserId: 'user_local',
+      });
+      const entry = createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: 'diag-queue',
+        requestId: 'diag-request',
+        workspaceId: 'diag-workspace',
+        threadId: 'diag-thread',
+        turnId: 'diag-turn',
+        turnInput: 'Exercise exact private Harness transport delivery',
+        requestedAgentId: 'agent_diag',
+        triggerActor: { kind: 'user', id: 'user_local' },
+        now: () => now,
+      });
+      recordTestExecutionAttempt(coreDb, {
+        entry,
+        attemptId: 'diag-lease',
+        agentSessionId: 'diag-session',
+        inputRef: 'diag-package',
+        bindingRef: 'diag-turn-binding',
+        sessionCompatibilityKey: 'c'.repeat(64),
+        operationId: 'diag-submit',
+        now: () => now,
+      });
       queueNanoHostHarnessOperation(coreDb, {
         harnessInstanceId: 'diag-harness',
         operation: 'turn.start',
@@ -550,7 +577,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
         expect(
           coreDb.sqlite
             .prepare(
-              'SELECT worker_control_token_hash, worker_inference_token_hash, worker_capability_token_hash FROM scheduler_session_leases'
+              'SELECT worker_control_token_hash, worker_inference_token_hash, worker_capability_token_hash FROM scheduler_execution_attempts'
             )
             .get()
         ).toEqual({
@@ -578,7 +605,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
         ).toEqual({ operation_state: 'queued', operation_id: null });
         expect(
           coreDb.sqlite
-            .prepare('SELECT worker_control_token_hash FROM scheduler_session_leases')
+            .prepare('SELECT worker_control_token_hash FROM scheduler_execution_attempts')
             .get()
         ).toEqual({ worker_control_token_hash: null });
         const next = await post('/worker-control/harness/poll', '{"schemaVersion":2}');

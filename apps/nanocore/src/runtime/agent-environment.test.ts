@@ -34,14 +34,14 @@ import {
 import { ProviderRegistry } from '../providers/registry.js';
 import {
   createSchedulerAdmissionEntry,
-  createSchedulerPlacementPlan,
-  createSchedulerSessionLease,
+  requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestGatewayConfig } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import {
   admitTestNativeEnvironment,
   createTestNativeEnvironmentDb,
@@ -58,6 +58,14 @@ import {
   resolveAgentEnvironmentPackageMetadata as resolveMetadata,
   resolveAgentEnvironmentPackage as resolvePackage,
 } from './agent-environment.js';
+import {
+  markSchedulerExecutionAttemptClosing,
+  recordSchedulerExecutionOperation,
+} from './execution-attempt-records.js';
+import {
+  acceptNanoHostAttemptHeartbeat,
+  resolveNanoHostAttemptTokenBinding,
+} from './nanohost-attempt-records.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import type { PublicNetworkConfiguration } from './public-network-grants.js';
 import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
@@ -189,6 +197,7 @@ function createTurnFixture(
   const turn = store.createTurn('ws_demo', 'th_demo', input, triggerActor);
   if (coreDb) {
     createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
       queueEntryId: `queue_${turn.id}`,
       triggerActor,
       ...(serverAdminTokenId ? { serverAdminTokenId } : {}),
@@ -197,45 +206,25 @@ function createTurnFixture(
       turnId: turn.id,
       turnInput: input,
       requestedAgentId: 'agent_codex_host',
-      priorityClass: 'interactive',
-      requiredPoolConstraints: [],
     });
   }
   return turn;
 }
 
-/** Gives a credential fixture its exact durable Worker package and live scheduler lease. */
-function leaseCredentialFixture(
+/** Gives a credential fixture its exact durable Worker package and prepared execution attempt. */
+function prepareCredentialAttemptFixture(
   coreDb: ReturnType<typeof openCoreDb>,
   turn: ReturnType<typeof createTurnFixture>,
   agentSessionId: string
 ): void {
-  createSchedulerPlacementPlan(coreDb, {
-    planId: `plan_${turn.id}`,
-    queueEntryId: `queue_${turn.id}`,
-    selectedPoolId: 'pool_credential_fixture',
-    selectedTargetId: 'target_credential_fixture',
-    plannedLeaseDurationMs: 900_000,
-    heartbeatIntervalMs: 10_000,
-    heartbeatTimeoutMs: 30_000,
-    expectedControlMode: 'poll',
-    expectedDataPlaneMode: 'openshell-files',
-    degradedOptionalFeatures: [],
-    failoverTargetId: null,
-    policyDecisionIds: [],
-    capacitySnapshotRef: 'target_credential_fixture:1',
-    schedulerEpoch: 1,
-  });
-  createSchedulerSessionLease(coreDb, {
-    leaseId: `lease_${turn.id}`,
-    planId: `plan_${turn.id}`,
+  recordTestExecutionAttempt(coreDb, {
+    entry: requireSchedulerAdmissionEntry(coreDb, `queue_${turn.id}`),
+    attemptId: `lease_${turn.id}`,
     agentSessionId,
-    packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
+    inputRef: `aepsnap_${turn.id}_${agentSessionId}`,
+    bindingRef: `lease-token:${turn.id}`,
     sessionCompatibilityKey: 'sha256:credential-fixture',
-    expiresAt: '2099-01-01T00:00:00.000Z',
-    heartbeatDeadline: '2099-01-01T00:00:00.000Z',
-    startupDeadline: '2099-01-01T00:00:00.000Z',
-    sandboxTokenBindingRef: `lease-token:${turn.id}`,
+    now: () => new Date().toISOString(),
   });
 }
 
@@ -1361,7 +1350,7 @@ describe('agent environment package resolver', () => {
 
     try {
       const turn = createTurnFixture('Run Pi directly', coreDb, AUTOMATION_TRIGGER_ACTOR);
-      leaseCredentialFixture(coreDb, turn, 'session_direct_1');
+      prepareCredentialAttemptFixture(coreDb, turn, 'session_direct_1');
       const resolve = () =>
         resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
@@ -1431,15 +1420,32 @@ describe('agent environment package resolver', () => {
       expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
       expect(listVaultUseRecords(coreDb)).toHaveLength(1);
       coreDb.sqlite
-        .prepare('UPDATE scheduler_session_leases SET package_snapshot_id = ? WHERE turn_id = ?')
+        .prepare('UPDATE scheduler_execution_attempts SET input_ref = ? WHERE turn_id = ?')
         .run('aepsnap_wrong_package', turn.id);
       expect(resolve).toThrow(TurnStartValidationError);
       expect(runtimeEnvCredentials).toHaveLength(1);
       expect(listVaultInjectionPlans(coreDb)).toHaveLength(1);
       expect(listVaultUseRecords(coreDb)).toHaveLength(1);
+      // A submitted Native process awaiting exact adoption has revoked mediated route authority.
+      recordSchedulerExecutionOperation(coreDb, {
+        attemptId: `lease_${turn.id}`,
+        operationId: `submit:${turn.id}`,
+        submission: true,
+      });
+      acceptNanoHostAttemptHeartbeat(coreDb, {
+        attemptId: `lease_${turn.id}`,
+        workerSequence: 0,
+        workerProcessKeyHash: 'a'.repeat(43),
+        heartbeatTimeoutMs: 30_000,
+      });
+      acceptNanoHostAttemptHeartbeat(coreDb, {
+        attemptId: `lease_${turn.id}`,
+        workerSequence: 1,
+        heartbeatTimeoutMs: 30_000,
+      });
       coreDb.sqlite
         .prepare(
-          'UPDATE scheduler_session_leases SET package_snapshot_id = ?, recovery_state = ?, recovery_deadline = ? WHERE turn_id = ?'
+          'UPDATE scheduler_execution_attempts SET input_ref = ?, recovery_state = ?, recovery_deadline = ? WHERE turn_id = ?'
         )
         .run(
           `aepsnap_${turn.id}_session_direct_1`,
@@ -1447,6 +1453,23 @@ describe('agent environment package resolver', () => {
           '2099-01-01T00:00:00.000Z',
           turn.id
         );
+      expect(
+        resolveNanoHostAttemptTokenBinding(coreDb, {
+          sandboxBindingRef: `lease-token:${turn.id}`,
+          lineage: {
+            workspaceId: turn.workspaceId,
+            threadId: turn.threadId,
+            turnId: turn.id,
+            agentSessionId: 'session_direct_1',
+            packageSnapshotId: `aepsnap_${turn.id}_session_direct_1`,
+          },
+        })
+      ).toEqual({ status: 'rejected', reason: 'reconnect-required' });
+      // Native mediated routes reject adoption independently; the generic AEP resolver owns Core phase authority.
+      markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId: `lease_${turn.id}`,
+        cause: 'authority-revoked',
+      });
       expect(resolve).toThrow(TurnStartValidationError);
       expect(runtimeEnvCredentials).toHaveLength(1);
       expect(listVaultInjectionPlans(coreDb)).toHaveLength(1);
@@ -1504,7 +1527,7 @@ describe('agent environment package resolver', () => {
 
     try {
       const turn = createTurnFixture('Use the Workspace GitHub account', coreDb);
-      leaseCredentialFixture(coreDb, turn, 'session_workspace_binding');
+      prepareCredentialAttemptFixture(coreDb, turn, 'session_workspace_binding');
       const resolved = resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: createTestSetup({
@@ -1615,7 +1638,7 @@ describe('agent environment package resolver', () => {
         health: 'Vault backend is unavailable for worker credential injection.',
       }[failure];
       const turn = createTurnFixture(`Reject ${failure} Worker grant`, coreDb);
-      leaseCredentialFixture(coreDb, turn, 'session_public_github');
+      prepareCredentialAttemptFixture(coreDb, turn, 'session_public_github');
       expect(() =>
         resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
@@ -2096,7 +2119,7 @@ describe('agent environment package resolver', () => {
 
     try {
       const turn = createTurnFixture('Reject missing sink', coreDb, AUTOMATION_TRIGGER_ACTOR);
-      leaseCredentialFixture(coreDb, turn, 'session_missing_sink');
+      prepareCredentialAttemptFixture(coreDb, turn, 'session_missing_sink');
       expect(() =>
         resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
@@ -2428,7 +2451,7 @@ describe('public network AEP admission', () => {
     try {
       const preview = resolveAgentEnvironmentPackageMetadata(input);
       expect(preview.policy.network?.rules).toContainEqual({ ...network[0], action: 'allow' });
-      leaseCredentialFixture(coreDb, turn, 'session_public');
+      prepareCredentialAttemptFixture(coreDb, turn, 'session_public');
       const resolved = resolveAgentEnvironmentPackage(input);
       const canonicalBytes = JSON.stringify(resolved);
       const uppercaseSetup = createTestSetup({

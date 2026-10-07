@@ -39,12 +39,6 @@ const CORE_TABLES = [
   'permission_decisions',
   'sandbox_runtime_records',
   'scheduler_admission_entries',
-  'scheduler_capacity_records',
-  'scheduler_orphan_worker_evidence',
-  'scheduler_placement_plans',
-  'scheduler_session_leases',
-  'scheduler_supply_refresh_declarations',
-  'scheduler_worker_pools',
   'server_settings',
   'session',
   'users',
@@ -195,6 +189,7 @@ describe('database setup', () => {
 
     try {
       applyMigrations(coreDb);
+      const beforeTables = listTableNames(coreDb);
       applyMigrations(coreDb);
 
       expect(
@@ -206,7 +201,16 @@ describe('database setup', () => {
         )
       ).toBe(true);
       expect(listAppliedMigrationIds(coreDb)).toEqual(['core_0000_setup']);
-      expect(listTableNames(coreDb)).toEqual(CORE_TABLES);
+      expect(listTableNames(coreDb)).toEqual(beforeTables);
+      expect(listTableNames(coreDb)).toEqual(expect.arrayContaining(CORE_TABLES));
+      for (const retired of [
+        'scheduler_capacity_records',
+        'scheduler_placement_plans',
+        'scheduler_session_leases',
+        'scheduler_worker_pools',
+        'scheduler_supply_refresh_declarations',
+      ])
+        expect(listTableNames(coreDb)).not.toContain(retired);
       expect(listColumnNames(coreDb, 'users')).toEqual([
         'id',
         'display_name',
@@ -413,7 +417,7 @@ describe('database setup', () => {
         'native_handle_digest',
         'lifecycle_state',
         'current_turn_id',
-        'current_lease_id',
+        'current_attempt_id',
         'next_turn_sequence',
         'cleanup_state',
         'created_at',
@@ -430,45 +434,28 @@ describe('database setup', () => {
         'image_digest',
         'copied_at',
       ]);
-      const leaseTokenColumns = coreDb.sqlite
-        .prepare('PRAGMA table_info(scheduler_session_leases)')
-        .all()
-        .filter(({ name }: { name: string }) => name.includes('token'))
-        .map(({ name, notnull }: { name: string; notnull: 0 | 1 }) => ({ name, notnull }));
-      expect(leaseTokenColumns).toEqual([
-        { name: 'worker_control_token_hash', notnull: 0 },
-        { name: 'worker_inference_token_hash', notnull: 0 },
-        { name: 'worker_capability_token_hash', notnull: 0 },
-      ]);
-      expect(listColumnNames(coreDb, 'scheduler_session_leases')).not.toEqual(
+      const attemptColumns = listColumnNames(coreDb, 'scheduler_execution_attempts');
+      expect(attemptColumns).toEqual(expect.arrayContaining(['attempt_id', 'turn_id', 'phase']));
+      expect(attemptColumns).not.toEqual(
         expect.arrayContaining(['worker_control_token', 'worker_inference_token'])
       );
-      expect(listColumnNames(coreDb, 'scheduler_admission_entries')).toEqual([
-        'queue_entry_id',
-        'request_id',
-        'trigger_actor_json',
-        'server_admin_token_id',
-        'workspace_cwd',
-        'workspace_roots_json',
-        'workspace_id',
-        'thread_id',
-        'turn_id',
-        'turn_input',
-        'worker_storage_choice_json',
-        'requested_agent_id',
-        'profile_ref',
-        'model_id',
-        'reasoning_effort',
-        'priority_class',
-        'enqueued_at',
-        'effective_priority_at',
-        'first_cap_deferred_at',
-        'required_pool_constraints_json',
-        'status',
-        'denial_reason',
-      ]);
+      expect(listColumnNames(coreDb, 'scheduler_admission_entries')).toEqual(
+        expect.arrayContaining([
+          'queue_entry_id',
+          'request_id',
+          'trigger_actor_json',
+          'server_admin_token_id',
+          'workspace_id',
+          'thread_id',
+          'turn_id',
+          'turn_input',
+          'worker_storage_choice_json',
+          'requested_agent_id',
+          'status',
+        ])
+      );
       expect(listColumnNames(coreDb, 'worker_backend_sessions')).toEqual([
-        'lease_id',
+        'attempt_id',
         'workspace_id',
         'thread_id',
         'turn_id',
@@ -531,7 +518,7 @@ describe('database setup', () => {
       coreDb.sqlite
         .prepare(
           `INSERT INTO worker_backend_sessions (
-             lease_id, workspace_id, thread_id, turn_id, agent_session_id,
+             attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
              package_snapshot_id, backend_kind, deployment_id, backend_version,
              worker_image, cell_target_id, placement, gateway_name, gateway_endpoint,
              backend_session_id, origin_physical_epoch, staging_directory_ref, transient_provider_instance_id,
@@ -554,7 +541,7 @@ describe('database setup', () => {
                     backend_lineage_json AS backendLineageJson,
                     sandbox_binding_ref AS sandboxBindingRef
              FROM worker_backend_sessions
-             WHERE lease_id = 'lease-setup-writer'`
+             WHERE attempt_id = 'lease-setup-writer'`
           )
           .get()
       ).toEqual({

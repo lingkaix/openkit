@@ -12,7 +12,7 @@ import {
   findSchedulerAdmissionForTurn,
   findSchedulerAdmissionForWorkerLineage,
   type SchedulerAdmissionEntryRecord,
-  type SchedulerLeaseTokenBindingLineage,
+  type SchedulerExecutionLineage,
 } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 import {
@@ -360,7 +360,7 @@ export function currentSchedulerAdmissionWorkspaceAuthority(
  */
 export function currentWorkerLineageWorkspaceAuthority(
   coreDb: CoreDb,
-  lineage: SchedulerLeaseTokenBindingLineage & { readonly triggerActor: ActorRef },
+  lineage: SchedulerExecutionLineage & { readonly triggerActor: ActorRef },
   operation: string,
   effectAuthority: boolean
 ): WorkspaceRole | null {

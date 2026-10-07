@@ -47,7 +47,7 @@ CREATE TABLE `agent_session_runtime_bindings` (
 	`native_handle_digest` text,
 	`lifecycle_state` text NOT NULL,
 	`current_turn_id` text,
-	`current_lease_id` text,
+	`current_attempt_id` text,
 	`next_turn_sequence` integer NOT NULL,
 	`cleanup_state` text NOT NULL,
 	`created_at` text NOT NULL,
@@ -272,7 +272,65 @@ CREATE TABLE `sandbox_runtime_records` (
 
 --> statement-breakpoint
 
+CREATE TABLE `scheduler_execution_attempts` (
+  `attempt_id` text PRIMARY KEY NOT NULL,
+  `queue_entry_id` text NOT NULL,
+  `backend_id` text NOT NULL,
+  `workspace_id` text NOT NULL,
+  `thread_id` text NOT NULL,
+  `turn_id` text NOT NULL,
+  `agent_session_id` text,
+  `preparation_input_json` text NOT NULL,
+  `input_ref` text,
+  `binding_ref` text,
+  `phase` text NOT NULL CHECK (`phase` IN ('open','closing','closed')),
+  `disposition` text NOT NULL CHECK (`disposition` IN ('not_accepted','accepted','unknown')),
+  `operation_id` text,
+  `deadline` text,
+  `terminal_cause` text,
+  `outcome_ref` text,
+  `fence_ref` text,
+  `created_at` text NOT NULL,
+  `updated_at` text NOT NULL,
+  `session_compatibility_key` text,
+  `heartbeat_timeout_ms` integer NOT NULL DEFAULT 30000,
+  `heartbeat_deadline` text,
+  `startup_deadline` text,
+  `last_accepted_heartbeat_at` text,
+  `last_worker_sequence` integer,
+  `recovery_state` text,
+  `recovery_deadline` text,
+  `worker_process_key_hash` text,
+  `worker_control_token_hash` text,
+  `worker_inference_token_hash` text,
+  `worker_capability_token_hash` text
+);
+
+--> statement-breakpoint
+
+CREATE UNIQUE INDEX `scheduler_execution_attempts_live_turn_idx` ON `scheduler_execution_attempts` (`turn_id`) WHERE `phase` <> 'closed';
+
+--> statement-breakpoint
+
+CREATE UNIQUE INDEX `scheduler_execution_attempts_live_thread_idx` ON `scheduler_execution_attempts` (`workspace_id`, `thread_id`) WHERE `phase` <> 'closed';
+
+--> statement-breakpoint
+
+CREATE UNIQUE INDEX `scheduler_execution_attempts_live_session_idx` ON `scheduler_execution_attempts` (`agent_session_id`) WHERE `phase` <> 'closed' AND `agent_session_id` IS NOT NULL;
+
+--> statement-breakpoint
+
+CREATE INDEX `scheduler_execution_attempts_queue_idx` ON `scheduler_execution_attempts` (`queue_entry_id`);
+
+--> statement-breakpoint
+
+CREATE INDEX `scheduler_execution_attempts_deadline_idx` ON `scheduler_execution_attempts` (`phase`, `deadline`);
+
+--> statement-breakpoint
+
 CREATE TABLE `scheduler_admission_entries` (
+	`backend_id` text NOT NULL,
+	`input_hash` text NOT NULL,
 	`queue_entry_id` text PRIMARY KEY NOT NULL,
 	`request_id` text,
 	`trigger_actor_json` text NOT NULL,
@@ -288,133 +346,9 @@ CREATE TABLE `scheduler_admission_entries` (
 	`profile_ref` text,
 	`model_id` text,
 	`reasoning_effort` text,
-	`priority_class` text NOT NULL,
 	`enqueued_at` text NOT NULL,
-	`effective_priority_at` text NOT NULL,
-	`first_cap_deferred_at` text,
-	`required_pool_constraints_json` text NOT NULL,
 	`status` text NOT NULL,
 	`denial_reason` text
-);
-
---> statement-breakpoint
-
-CREATE TABLE `scheduler_capacity_records` (
-	`target_id` text PRIMARY KEY NOT NULL,
-	`pool_id` text NOT NULL,
-	`capacity_class` text NOT NULL,
-	`concurrency_ceiling` integer NOT NULL,
-	`in_use_count` integer NOT NULL,
-	`queue_depth` integer NOT NULL,
-	`observed_at` text NOT NULL,
-	`observation_source` text NOT NULL,
-	`version` integer NOT NULL
-);
-
---> statement-breakpoint
-
-CREATE TABLE `scheduler_orphan_worker_evidence` (
-	`evidence_id` text NOT NULL PRIMARY KEY,
-	`lease_id` text NOT NULL,
-	`workspace_id` text NOT NULL,
-	`thread_id` text NOT NULL,
-	`turn_id` text NOT NULL,
-	`agent_session_id` text NOT NULL,
-	`package_snapshot_id` text NOT NULL,
-	`pool_id` text NOT NULL,
-	`target_id` text NOT NULL,
-	`reason` text NOT NULL,
-	`scheduler_epoch` integer NOT NULL,
-	`heartbeat_deadline` text NOT NULL,
-	`last_accepted_heartbeat_at` text,
-	`recorded_at` text NOT NULL
-);
-
---> statement-breakpoint
-
-CREATE TABLE `scheduler_placement_plans` (
-	`plan_id` text PRIMARY KEY NOT NULL,
-	`queue_entry_id` text NOT NULL,
-	`workspace_id` text NOT NULL,
-	`thread_id` text NOT NULL,
-	`turn_id` text NOT NULL,
-	`selected_pool_id` text NOT NULL,
-	`selected_target_id` text NOT NULL,
-	`planned_lease_duration_ms` integer NOT NULL,
-	`heartbeat_interval_ms` integer NOT NULL,
-	`heartbeat_timeout_ms` integer NOT NULL,
-	`expected_control_mode` text NOT NULL,
-	`expected_data_plane_mode` text NOT NULL,
-	`degraded_optional_features_json` text NOT NULL,
-	`failover_target_id` text,
-	`policy_decision_ids_json` text NOT NULL,
-	`capacity_snapshot_ref` text,
-	`status` text NOT NULL,
-	`created_at` text NOT NULL,
-	`scheduler_epoch` integer NOT NULL
-);
-
---> statement-breakpoint
-
-CREATE TABLE `scheduler_session_leases` (
-	`lease_id` text PRIMARY KEY NOT NULL,
-	`plan_id` text NOT NULL,
-	`workspace_id` text NOT NULL,
-	`thread_id` text NOT NULL,
-	`turn_id` text NOT NULL,
-	`agent_session_id` text NOT NULL,
-	`package_snapshot_id` text NOT NULL,
-	`pool_id` text NOT NULL,
-	`target_id` text NOT NULL,
-	`status` text NOT NULL,
-	`acquired_at` text NOT NULL,
-	`expires_at` text NOT NULL,
-	`heartbeat_deadline` text NOT NULL,
-	`startup_deadline` text NOT NULL,
-	`last_accepted_heartbeat_at` text,
-	`last_worker_sequence` integer,
-	`renewal_count` integer NOT NULL,
-	`scheduler_epoch` integer NOT NULL,
-	`sandbox_binding_ref` text NOT NULL,
-	`backend_anchor_state` text DEFAULT 'unanchored' NOT NULL,
-	`release_reason` text,
-	`recovery_state` text,
-	`recovery_deadline` text,
-	`worker_process_key_hash` text
-, `session_compatibility_key` text, `worker_control_token_hash` text, `worker_inference_token_hash` text, `worker_capability_token_hash` text);
-
---> statement-breakpoint
-
-CREATE TABLE `scheduler_supply_refresh_declarations` (
-  `workspace_id` text NOT NULL,
-  `thread_id` text NOT NULL,
-  `turn_id` text NOT NULL,
-  `agent_session_id` text NOT NULL,
-  `package_snapshot_id` text NOT NULL,
-  `refresh_id` text NOT NULL,
-  `sequence` integer NOT NULL,
-  `status` text NOT NULL,
-  `message` text,
-  `acknowledged_at` text NOT NULL,
-  PRIMARY KEY(`agent_session_id`, `package_snapshot_id`, `refresh_id`)
-);
-
---> statement-breakpoint
-
-CREATE TABLE `scheduler_worker_pools` (
-	`pool_id` text PRIMARY KEY NOT NULL,
-	`allowed_backend_kinds_json` text NOT NULL,
-	`allowed_placements_json` text NOT NULL,
-	`max_concurrent_sessions` integer NOT NULL,
-	`queue_limit` integer NOT NULL,
-	`default_timeout_ms` integer NOT NULL,
-	`allowed_workspace_scopes_json` text NOT NULL,
-	`budget_class` text NOT NULL,
-	`health_summary` text NOT NULL,
-	`current_admitted_session_count` integer NOT NULL,
-	`current_queue_depth` integer NOT NULL,
-	`status` text NOT NULL,
-	`warm_session_target` integer
 );
 
 --> statement-breakpoint
@@ -636,7 +570,7 @@ CREATE TABLE `worker_storage_contributors` (
 --> statement-breakpoint
 
 CREATE TABLE "worker_backend_sessions" (
-	`lease_id` text PRIMARY KEY NOT NULL,
+	`attempt_id` text PRIMARY KEY NOT NULL,
 	`workspace_id` text NOT NULL,
 	`thread_id` text NOT NULL,
 	`turn_id` text NOT NULL,
@@ -881,67 +815,11 @@ CREATE UNIQUE INDEX `scheduler_admission_entries_non_terminal_turn_idx` ON `sche
 
 --> statement-breakpoint
 
-CREATE INDEX `scheduler_admission_entries_queue_idx` ON `scheduler_admission_entries` (`status`,`priority_class`,`effective_priority_at`,`enqueued_at`);
+CREATE INDEX `scheduler_admission_entries_queue_idx` ON `scheduler_admission_entries` (`status`,`enqueued_at`);
 
 --> statement-breakpoint
 
 CREATE INDEX `scheduler_admission_entries_workspace_idx` ON `scheduler_admission_entries` (`workspace_id`,`status`,`enqueued_at`);
-
---> statement-breakpoint
-
-CREATE INDEX `scheduler_capacity_records_pool_idx` ON `scheduler_capacity_records` (`pool_id`,`observed_at`);
-
---> statement-breakpoint
-
-CREATE UNIQUE INDEX `scheduler_orphan_worker_evidence_lease_idx` ON `scheduler_orphan_worker_evidence` (`lease_id`,`reason`,`scheduler_epoch`);
-
---> statement-breakpoint
-
-CREATE INDEX `scheduler_orphan_worker_evidence_scope_idx` ON `scheduler_orphan_worker_evidence` (`workspace_id`,`thread_id`,`turn_id`,`agent_session_id`,`package_snapshot_id`,`reason`);
-
---> statement-breakpoint
-
-CREATE INDEX `scheduler_placement_plans_lineage_idx` ON `scheduler_placement_plans` (`workspace_id`,`thread_id`,`turn_id`);
-
---> statement-breakpoint
-
-CREATE INDEX `scheduler_placement_plans_queue_idx` ON `scheduler_placement_plans` (`queue_entry_id`,`status`);
-
---> statement-breakpoint
-
-CREATE INDEX `scheduler_placement_plans_target_idx` ON `scheduler_placement_plans` (`selected_pool_id`,`selected_target_id`,`status`);
-
---> statement-breakpoint
-
-CREATE UNIQUE INDEX `scheduler_session_leases_binding_idx` ON `scheduler_session_leases` (`sandbox_binding_ref`);
-
---> statement-breakpoint
-
-CREATE INDEX `scheduler_session_leases_deadline_idx` ON `scheduler_session_leases` (`status`,`expires_at`,`heartbeat_deadline`);
-
---> statement-breakpoint
-
-CREATE INDEX `scheduler_session_leases_lineage_idx` ON `scheduler_session_leases` (`workspace_id`,`thread_id`,`turn_id`);
-
---> statement-breakpoint
-
-CREATE INDEX `scheduler_session_leases_plan_idx` ON `scheduler_session_leases` (`plan_id`,`status`);
-
---> statement-breakpoint
-
-CREATE INDEX `scheduler_session_leases_recovery_idx` ON `scheduler_session_leases` (`recovery_state`,`recovery_deadline`);
-
---> statement-breakpoint
-
-CREATE INDEX `scheduler_session_leases_target_idx` ON `scheduler_session_leases` (`pool_id`,`target_id`,`status`);
-
---> statement-breakpoint
-
-CREATE INDEX `scheduler_supply_refresh_declarations_scope_idx` ON `scheduler_supply_refresh_declarations` (`workspace_id`,`thread_id`,`turn_id`,`agent_session_id`,`package_snapshot_id`,`status`);
-
---> statement-breakpoint
-
-CREATE INDEX `scheduler_worker_pools_status_idx` ON `scheduler_worker_pools` (`status`,`budget_class`);
 
 --> statement-breakpoint
 

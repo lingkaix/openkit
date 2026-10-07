@@ -14,6 +14,10 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import {
+  admitTestNativeEnvironment,
+  recordTestNativeRuntimeTarget,
+} from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { mcpToolArgumentsContentDigest } from './mcp-tool-schema-snapshots.js';
@@ -58,6 +62,11 @@ function openPendingApp(agentId?: string, workerMcpGateway?: WorkerMcpGateway) {
   ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+  recordTestNativeRuntimeTarget(coreDb);
+  admitTestNativeEnvironment(
+    coreDb,
+    createTestAgentSetup({ ...(agentId ? { agentId } : {}) }).manifest
+  );
   const app = createApp({
     ...(agentId
       ? {
@@ -77,7 +86,7 @@ function openPendingApp(agentId?: string, workerMcpGateway?: WorkerMcpGateway) {
     dataRoot,
     ...(workerMcpGateway ? { workerMcpGateway } : {}),
     store,
-    turnExecutor: new SimulatedTurnExecutor(),
+    turnExecutor: new SimulatedTurnExecutor({ coreDb }),
   });
   return { app, coreDb, dataRoot, store };
 }
@@ -1572,6 +1581,17 @@ describe('pending requests', () => {
     } finally {
       recorded.sqlite.close();
     }
+    await vi.waitFor(() => {
+      const deliveredTurn = store
+        .listThreadTurns('ws_demo', 'th_demo')
+        .find((candidate) => candidate.id !== turn.id);
+      expect(deliveredTurn?.status).toBe('completed');
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT phase FROM scheduler_execution_attempts WHERE turn_id = ?')
+          .get(deliveredTurn!.id)
+      ).toEqual({ phase: 'closed' });
+    });
     const outcome = store
       .listThreadTurns('ws_demo', 'th_demo')
       .find((candidate) => candidate.id !== turn.id);
@@ -1580,7 +1600,10 @@ describe('pending requests', () => {
       triggerSource: { kind: 'approval-resolution' },
     });
     const delivered = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
-    expect(readPendingRequest(delivered.sqlite, 'ap_supply')?.delivery).toBe('frozen');
+    expect(readPendingRequest(delivered.sqlite, 'ap_supply')).toMatchObject({
+      delivery: 'delivered',
+      deliveryTurnId: outcome!.id,
+    });
     delivered.sqlite.close();
     expect(outcome?.items.some((item) => item.type === 'status')).toBe(true);
     coreDb.sqlite.close();

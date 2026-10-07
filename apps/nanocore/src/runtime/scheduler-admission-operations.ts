@@ -22,6 +22,7 @@ import {
   SchedulerAdmissionTransitionError,
 } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
+import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 /** Joins scheduler views and mutations without changing queue or audit ownership. */
 export function createSchedulerAdmissionOperationImplementations(
   dependencies: Pick<OperationInvocationDependencies, 'coreDb' | 'store' | 'repositoryWorkspaceDb'>
@@ -71,11 +72,9 @@ export function createSchedulerAdmissionOperationImplementations(
             requestedAgentId: entry.requestedAgentId,
             profileRef: entry.profileRef,
             modelId: entry.modelId,
-            priorityClass: entry.priorityClass,
+
             enqueuedAt: entry.enqueuedAt,
-            effectivePriorityAt: entry.effectivePriorityAt,
-            firstCapDeferredAt: entry.firstCapDeferredAt,
-            requiredPoolConstraints: entry.requiredPoolConstraints,
+
             status: entry.status,
             denialReason: entry.denialReason,
             queuePosition:
@@ -179,6 +178,16 @@ export function createSchedulerAdmissionOperationImplementations(
         const cancelled = cancelSchedulerAdmissionEntry(coreDb, {
           queueEntryId,
           workspaceId,
+        });
+        terminalizeGovernedWorkerTurn({
+          store,
+          turnId: cancelled.turnId,
+          agentSessionId: null,
+          requestId: cancelled.requestId,
+          completedAt: new Date().toISOString(),
+          outcome: 'cancelled',
+          errorCode: 'turn_cancelled',
+          message: 'Queued Turn was cancelled before preparation.',
         });
         const workspaceDb = repositoryWorkspaceDb!(workspaceId);
         try {

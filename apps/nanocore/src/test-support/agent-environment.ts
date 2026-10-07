@@ -12,7 +12,7 @@ import type { ActorRef } from '@openkit/protocol';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
-import type { WorkspaceDb } from '../storage/db.js';
+import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { seedWritableGitRepository } from './git-repository.js';
 import { admitTestNativeEnvironment, createTestNativeEnvironmentDb } from './native-environment.js';
 
@@ -148,6 +148,8 @@ export function createTestGatewayConfig(
 
 /** Input for one deterministic scheduler-recovery AEP fixture. */
 export interface RecordTestAgentEnvironmentPackageInput {
+  /** Actual Core owner when storage or physical runtime consumers are part of the test. */
+  readonly coreDb?: CoreDb;
   /** Stable suffix shared by the scheduler lease and AEP lineage. */
   readonly suffix: string;
   /** Exact actor whose action triggered the test package. */
@@ -171,7 +173,7 @@ export function recordTestAgentEnvironmentPackage(
 ): AgentEnvironmentPackage {
   const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-agent-environment-'));
   seedWritableGitRepository(repositoryPath);
-  const coreDb = createTestNativeEnvironmentDb();
+  const coreDb = input.coreDb ?? createTestNativeEnvironmentDb();
   admitTestNativeEnvironment(coreDb, createTestAgentSetup().manifest);
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({

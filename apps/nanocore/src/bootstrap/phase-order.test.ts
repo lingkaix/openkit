@@ -181,7 +181,7 @@ describe('NanoCore boot phase order', () => {
     const listenerConstruction = source.indexOf('const appServer = appTlsListen');
     const nanoHostListenerConstruction = source.indexOf('const nanoHostServer = nanoHostListener');
     const maintenanceStart = source.indexOf(
-      'schedulerLeaseMaintenance = startSchedulerLeaseMaintenanceService(coreDb, {'
+      'schedulerAttemptMaintenance = startSchedulerAttemptMaintenanceService({'
     );
 
     expect(listenerConstruction).toBeGreaterThan(-1);

@@ -79,7 +79,7 @@ function fixture(bootReadiness?: BootReadinessSnapshot) {
         'POST',
         `/api/workspaces/ws_demo/threads/${thread.id}/turns/${turn.id}/interrupt`,
         { workspaceId: 'ws_demo', threadId: thread.id, turnId: turn.id, requestId },
-        404,
+        409,
       ],
       [
         'turn.feedback',
@@ -160,7 +160,7 @@ describe('core command operation cutover', () => {
                   id === 'turn.start'
                     ? 'agent_not_configured'
                     : id === 'turn.interrupt'
-                      ? 'turn_interrupt_failed'
+                      ? 'recovery_required'
                       : 'quick_chat_failed',
               });
             }
@@ -173,7 +173,7 @@ describe('core command operation cutover', () => {
                 id === 'turn.start'
                   ? 'agent_not_configured'
                   : id === 'turn.interrupt'
-                    ? 'turn_interrupt_failed'
+                    ? 'recovery_required'
                     : 'quick_chat_failed',
             });
           expect(store.getTurnById(turn.id)).toEqual(before);

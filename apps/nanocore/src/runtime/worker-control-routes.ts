@@ -8,14 +8,14 @@ import {
 } from '@openkit/worker-protocol';
 import type { Context, Hono } from 'hono';
 import { z } from 'zod';
-
 import { asInvalidRequestError } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
-import {
-  listSchedulerSessionLeasesForTurn,
-  recordSchedulerSupplyRefreshAck,
-} from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
+import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
+import {
+  type NanoHostExecutionAttemptRecord,
+  requireNanoHostExecutionAttempt,
+} from './nanohost-attempt-records.js';
 import {
   type WorkerControlGateway,
   WorkerControlGatewayError,
@@ -315,21 +315,6 @@ export function registerWorkerControlRoutes({
         status: body.data.status,
       });
 
-      if (coreDb) {
-        recordSchedulerSupplyRefreshAck(coreDb, {
-          acknowledgedAt: supplyRefreshAck.acknowledgedAt,
-          agentSessionId: parsed.data.lineage.agentSessionId,
-          message: supplyRefreshAck.message,
-          packageSnapshotId: parsed.data.lineage.packageSnapshotId,
-          refreshId: supplyRefreshAck.refreshId,
-          sequence: supplyRefreshAck.sequence,
-          status: supplyRefreshAck.status,
-          threadId: parsed.data.lineage.threadId,
-          turnId: parsed.data.lineage.turnId,
-          workspaceId: parsed.data.lineage.workspaceId,
-        });
-      }
-
       const response = c.json({
         supplyRefreshAck,
       });
@@ -423,16 +408,19 @@ function observeControlRequest(
   sequence: number | null,
   arrivedAt: string
 ): (status: number, code?: string) => void {
-  let lease: ReturnType<typeof listSchedulerSessionLeasesForTurn>[number] | undefined;
+  let lease: NanoHostExecutionAttemptRecord | undefined;
   try {
     lease =
       coreDb && lineage
-        ? listSchedulerSessionLeasesForTurn(coreDb, lineage).find(
-            (candidate) =>
-              candidate.agentSessionId === lineage.agentSessionId &&
-              candidate.packageSnapshotId === lineage.packageSnapshotId
-          )
+        ? listSchedulerExecutionAttemptsForTurn(coreDb, lineage)
+            .map((attempt) => requireNanoHostExecutionAttempt(coreDb, attempt.attemptId))
+            .find(
+              (candidate) =>
+                candidate.agentSessionId === lineage.agentSessionId &&
+                candidate.inputRef === lineage.packageSnapshotId
+            )
         : undefined;
+    lease = lease && coreDb ? requireNanoHostExecutionAttempt(coreDb, lease.attemptId) : undefined;
   } catch {
     // Diagnostic lookup cannot change acceptance or substitute for the gateway's authority check.
   }
@@ -442,9 +430,9 @@ function observeControlRequest(
       : lease.startupDeadline
     : null;
   const deadline =
-    lease && workerDeadline
-      ? lease.expiresAt < workerDeadline
-        ? lease.expiresAt
+    lease && lease.deadline !== null && workerDeadline
+      ? lease.deadline < workerDeadline
+        ? lease.deadline
         : workerDeadline
       : null;
   return (status, code) => {
@@ -456,8 +444,8 @@ function observeControlRequest(
           sequence,
           turnId: lease && lease.turnId.length <= 160 ? lease.turnId : null,
           agentSessionId: lease && lease.agentSessionId.length <= 160 ? lease.agentSessionId : null,
-          leaseId: lease?.leaseId ?? null,
-          leaseStatus: lease?.status ?? null,
+          attemptId: lease?.attemptId ?? null,
+          attemptPhase: lease?.phase ?? null,
           lastAcceptedHeartbeatAt: lease?.lastAcceptedHeartbeatAt ?? null,
           lastWorkerSequence: lease?.lastWorkerSequence ?? null,
           deadlineAt: deadline,
@@ -465,8 +453,8 @@ function observeControlRequest(
           deadlineDeltaMs: deadline ? Date.parse(arrivedAt) - Date.parse(deadline) : null,
           deadlineKind:
             lease && deadline
-              ? deadline === lease.expiresAt
-                ? 'lease'
+              ? deadline === lease.deadline
+                ? 'attempt'
                 : lease.lastAcceptedHeartbeatAt
                   ? 'heartbeat'
                   : 'startup'

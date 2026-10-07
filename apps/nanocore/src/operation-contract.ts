@@ -7,7 +7,7 @@ import type {
 import type { ActorRef } from '@openkit/protocol';
 import type { Actor } from './auth/identity.js';
 import { OperationError } from './operation-error.js';
-import type { SchedulerLeaseTokenBindingLineage } from './scheduler-records.js';
+import type { SchedulerExecutionLineage } from './scheduler-records.js';
 /** Request-local facts supplied only by trusted entry assembly. */
 export interface OperationRequestFacts {
   readonly signal?: AbortSignal;
@@ -31,7 +31,7 @@ export type OperationInvocationContext = OperationRequestFacts &
     | {
         readonly kind: 'worker';
         readonly actor: ActorRef;
-        readonly lineage: SchedulerLeaseTokenBindingLineage;
+        readonly lineage: SchedulerExecutionLineage;
         readonly requestId: string;
         readonly bindings: Readonly<
           Partial<Record<'workspaceId' | 'threadId' | 'turnId' | 'requestId', string>>

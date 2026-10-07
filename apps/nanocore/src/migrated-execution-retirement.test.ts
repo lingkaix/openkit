@@ -49,6 +49,7 @@ describe('migrated execution route retirement', () => {
     });
     store.updateTurn(turn.id, { status: 'interrupted', completedAt: new Date().toISOString() });
     createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
       queueEntryId: 'queue_retirement',
       workspaceId: 'ws_demo',
       threadId: thread.id,
@@ -56,13 +57,11 @@ describe('migrated execution route retirement', () => {
       triggerActor: { kind: 'user', id: 'user_local' },
       turnInput: 'Work',
       requestedAgentId: 'agent_codex_host',
-      priorityClass: 'interactive',
-      requiredPoolConstraints: ['openshell.local'],
     });
     if (operation === 'scheduler.retry')
       denySchedulerAdmissionEntry(coreDb, {
         queueEntryId: 'queue_retirement',
-        denialReason: 'no-compatible-pool',
+        denialReason: 'authority-denied',
       });
     const beforeQueue = requireSchedulerAdmissionEntry(coreDb, 'queue_retirement');
     const beforeTurn = { ...store.getTurnById(turn.id) };

@@ -17,15 +17,16 @@ import {
   WorkspaceGitBaselineSchema,
   workerSessionInputPaths,
 } from '@openkit/worker-protocol';
-import { currentWorkerLineageWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import {
+  currentScheduledTurnWorkspaceAuthority,
+  currentWorkerLineageWorkspaceAuthority,
+} from '../auth/operation-authorizer.js';
 import { isThreadVisible } from '../auth/thread-visibility.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ArtifactAuthorityError, FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import {
-  listSchedulerSessionLeasesForTurn,
-  requireSchedulerSessionLeaseAdmissionContext,
-  resolveSchedulerLeaseTokenBinding,
+  requireSchedulerExecutionAttemptAdmissionContext,
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -36,6 +37,24 @@ import { vaultSecretMaterialToString } from '../vault/vault-backend.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import type { AgentEnvironmentPackagePreview } from './agent-environment.js';
+import {
+  acceptSchedulerExecutionObservation,
+  isSchedulerExecutionBusyRefusal,
+  listSchedulerExecutionAttemptsForTurn,
+  recordSchedulerExecutionOperation,
+  requireSchedulerExecutionAttempt,
+  schedulerExecutionCorrelation,
+} from './execution-attempt-records.js';
+import type {
+  ExecutionBackendCorrelation,
+  ExecutionBackendObservation,
+  ExecutionReleaseProof,
+} from './execution-backend.js';
+import { commandInputHash } from './idempotent-command.js';
+import {
+  requireNanoHostExecutionAttempt,
+  resolveNanoHostAttemptTokenBinding,
+} from './nanohost-attempt-records.js';
 import {
   createNanoHostEffectRequest,
   nanoHostSandboxIdFromBackendSessionId,
@@ -309,9 +328,9 @@ function createNanoHostWorkerLifecycleRuntime(
     env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
       ? new SimulatedTurnExecutor({ coreDb })
       : new WorkerGovernanceTurnExecutor({
-          awaitWorkerCompletion: (environmentPackage, leaseId) =>
+          awaitWorkerCompletion: (environmentPackage, attemptId) =>
             waitForWorkerControlFinalStatus(coreDb, {
-              leaseId,
+              attemptId: attemptId,
               lineage: {
                 agentSessionId: environmentPackage.scope.agentSessionId,
                 packageSnapshotId: environmentPackage.snapshotId,
@@ -357,7 +376,7 @@ function createNanoHostWorkerLifecycleRuntime(
     } finally {
       workspaceDb.sqlite.close();
     }
-    const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, session.leaseId);
+    const admission = requireSchedulerExecutionAttemptAdmissionContext(coreDb, session.attemptId);
     if (
       !isDeepStrictEqual(environmentPackage.scope.triggerActor, admission.triggerActor) ||
       session.backendKind !== 'openshell' ||
@@ -386,7 +405,7 @@ function createNanoHostWorkerLifecycleRuntime(
         throw new Error('The self-check executor cannot reconcile a real worker session.');
       }
       const environmentPackage = await restoreDurableSession(session);
-      backend.restoreSession(environmentPackage, session.leaseId);
+      backend.restoreSession(environmentPackage, session.attemptId);
       const store = sharedStore ?? new FsStore({ dataRoot: coreDb.dataRoot });
       const recoveredStatus = await turnExecutor.resumeAcceptedFinalStatus(
         store,
@@ -397,7 +416,7 @@ function createNanoHostWorkerLifecycleRuntime(
     },
     restoreBackendSession: async (session) => {
       const environmentPackage = await restoreDurableSession(session);
-      backend.restoreSession(environmentPackage, session.leaseId);
+      backend.restoreSession(environmentPackage, session.attemptId);
       if (turnExecutor instanceof WorkerGovernanceTurnExecutor) {
         turnExecutor.bindNativeHandleRecorder(
           sharedStore ?? new FsStore({ dataRoot: coreDb.dataRoot }),
@@ -438,7 +457,7 @@ interface NanoHostBackendTurnSession {
   readonly harnessBindingRef: string;
   readonly harnessInstanceId: string;
   readonly identity: WorkerGovernanceBackendSessionIdentity;
-  readonly leaseId: string;
+  readonly attemptId: string;
   /** Set when an accepted ready proof could not be written; cleanup must keep this binding row. */
   acceptedProofUnrecorded?: boolean;
   /** Set when a live refusal carried cleanup_required; this owner must widen cleanup. */
@@ -514,13 +533,15 @@ interface NanoHostIdleSandboxEviction {
   readonly sandboxCompatibilityKey: string;
   readonly sandboxId: string;
   readonly sandboxRuntimeId: string;
+  /** Exact retained resident owner for wider cleanup; never the incoming Turn. */
+  readonly retirementOwner: WorkerBackendSessionRecord | null;
 }
 
 /** Process-local proof that this attempt created a Sandbox before publishing its session. */
 interface LivePartialSandboxMaterialization {
   readonly attachmentGeneration: number;
   readonly expectedRevision: number;
-  readonly leaseId: string;
+  readonly attemptId: string;
   readonly originPhysicalEpoch: string;
   readonly sandboxId: string;
   readonly storageRef: string;
@@ -570,6 +591,8 @@ function workspaceMaterializationRefusalExplanation(
 
 /** NanoHost-backed effect boundary used by the sole production turn executor. */
 class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
+  /** Configured identity is shared by admission, effects and observations; deployment placement adds no target. */
+  public readonly id = 'nanohost';
   private workspaceCollectionPublisher:
     | ((
         environmentPackage: AgentEnvironmentPackage,
@@ -647,12 +670,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         throw new Error('NanoHost dispatched Turn has no live producer session.');
       }
       try {
-        const leaseId = command.body.leaseId;
+        const attemptId = command.body.leaseId;
         const workerControlToken = command.body.workerControlToken;
         const workerInferenceToken = command.body.inferenceToken;
         const workerCapabilityToken = command.body.capabilityToken;
         if (
-          leaseId !== session.leaseId ||
+          attemptId !== session.attemptId ||
           typeof workerControlToken !== 'string' ||
           typeof workerInferenceToken !== 'string' ||
           typeof workerCapabilityToken !== 'string'
@@ -664,9 +687,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         }
         const lease = this.coreDb.sqlite
           .prepare(
-            'SELECT sandbox_binding_ref AS sandboxBindingRef FROM scheduler_session_leases WHERE lease_id = ?'
+            'SELECT binding_ref AS sandboxBindingRef FROM scheduler_execution_attempts WHERE attempt_id = ?'
           )
-          .get(session.leaseId) as { readonly sandboxBindingRef: string } | undefined;
+          .get(session.attemptId) as { readonly sandboxBindingRef: string } | undefined;
         if (!lease) {
           throw new Error('NanoHost dispatched Turn lease binding is unavailable.');
         }
@@ -1028,11 +1051,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /** Restores one exact shared Harness and AgentSession binding from durable private records. */
-  public restoreSession(environmentPackage: AgentEnvironmentPackage, leaseId: string): void {
+  public restoreSession(environmentPackage: AgentEnvironmentPackage, attemptId: string): void {
     if (this.sessions.has(environmentPackage.snapshotId)) {
       return;
     }
-    const provenance = this.requireDurableAgentSessionProvenance(environmentPackage, leaseId);
+    const provenance = this.requireDurableAgentSessionProvenance(environmentPackage, attemptId);
     const expectedSandboxKey = provenance.sandboxCompatibilityKey;
     const expectedHarnessKey = provenance.harnessCompatibilityKey;
     const expectedSessionKey = provenance.agentSessionCompatibilityKey;
@@ -1059,7 +1082,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       harnessBindingRef: sharedHarness.harnessBindingRef,
       harnessInstanceId: sharedHarness.harnessInstanceId,
       identity,
-      leaseId,
+      attemptId: attemptId,
       nativeResume: null,
       nativeSessionReusable: false,
       recordNativeHandleDigest: null,
@@ -1234,6 +1257,43 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     const inspection = inspectNanoHostAgentSessionContinuity(this.coreDb, input);
     if (!inspection) {
+      if (input.environmentPackage && input.admissionAttemptId) {
+        const responsibleUserId = responsibleUserIdForActor(
+          input.environmentPackage.scope.triggerActor
+        );
+        if (!responsibleUserId) throw new Error('Idle retirement lacks requester authority.');
+        try {
+          const released = await this.evictIncompatibleIdleSandbox(
+            input.environmentPackage,
+            false,
+            this.workerStorageReplacementSelection(
+              input.environmentPackage,
+              input.workerStorageChoice,
+              responsibleUserId,
+              currentWorkerStorageAudienceAuthorizer(this.coreDb, input.environmentPackage)
+            )
+          );
+          if (released && input.workerStorageChoice?.kind === 'selected')
+            return {
+              disposition: 'closed',
+              storageRevisionAdvance: {
+                attachmentGeneration: released.attachmentGeneration,
+                previousRevision: input.workerStorageChoice.expectedRevision,
+                revision: released.revision,
+                storageRef: released.storageRef,
+              },
+            };
+        } catch (error) {
+          // This retirement is owned exclusively by the old resident. The incoming Turn has no Session or backend effect yet.
+          if (
+            this.inspectIncompatibleIdleSandbox(input.environmentPackage) === 'capacity-saturated'
+          )
+            throw new WorkerGovernanceCapacityUnavailableError(
+              'Resident retirement awaits definite cleanup or predecessor Epoch fencing and fresh readiness.'
+            );
+          throw error;
+        }
+      }
       return 'absent';
     }
     // Compatibility decides placement, never whether an already-accepted proof survives.
@@ -1254,9 +1314,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       if (
         !input.environmentPackage ||
         !input.admissionAgentSessionId ||
-        !input.admissionLeaseId ||
+        !input.admissionAttemptId ||
         input.environmentPackage.scope.agentSessionId !== input.admissionAgentSessionId ||
-        this.requireLeaseId(input.environmentPackage.snapshotId) !== input.admissionLeaseId
+        this.requireAttemptId(input.environmentPackage.snapshotId) !== input.admissionAttemptId
       ) {
         throw new Error('NanoHost restart-unproved retirement lacks admission package lineage.');
       }
@@ -1268,8 +1328,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       }
       const releasedBinding = await this.evictIncompatibleIdleSandbox(
         input.environmentPackage,
-        this.planSession(input.environmentPackage),
-        input.admissionLeaseId,
         true,
         this.workerStorageReplacementSelection(
           input.environmentPackage,
@@ -1441,7 +1499,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     identity: WorkerGovernanceBackendSessionIdentity,
     options?: { readonly failedCloseout: boolean }
   ): Promise<void> {
-    const leaseId = this.requireLeaseId(identity.packageSnapshotId);
+    const attemptId = this.requireAttemptId(identity.packageSnapshotId);
     const session = this.sessions.get(identity.packageSnapshotId);
     const durableSandbox = session ? null : this.findDurableSandboxBinding(identity);
     const durableBackend =
@@ -1542,7 +1600,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       if (widenCleanup) {
         try {
           const cleanupInput = {
-            leaseId,
+            attemptId: attemptId,
             sandboxId:
               session?.sharedHarness.sandbox.sandboxId ??
               nanoHostSandboxIdFromBackendSessionId(identity.backendSessionId),
@@ -1565,7 +1623,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             if (retained.kind === 'bridge.close') {
               await this.effect(
                 identity,
-                leaseId,
+                attemptId,
                 'sandbox.delete',
                 cleanupInput,
                 durableSandbox?.originPhysicalEpoch
@@ -1626,14 +1684,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /** Widens live cleanup through the bridge and Sandbox without returning capacity early. */
   private async deleteSandbox(
     identity: WorkerGovernanceBackendSessionIdentity,
-    cleanupInput: { readonly leaseId: string; readonly sandboxId: string },
+    cleanupInput: { readonly attemptId: string; readonly sandboxId: string },
     bridgeOpen: boolean,
     retiringSandboxOrigin?: string
   ): Promise<void> {
     if (bridgeOpen) {
       await this.effect(
         identity,
-        cleanupInput.leaseId,
+        cleanupInput.attemptId,
         'bridge.close',
         cleanupInput,
         retiringSandboxOrigin
@@ -1641,7 +1699,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     await this.effect(
       identity,
-      cleanupInput.leaseId,
+      cleanupInput.attemptId,
       'sandbox.delete',
       cleanupInput,
       retiringSandboxOrigin
@@ -1690,9 +1748,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     partial.deleteDispatched = true;
     await this.effect(
       identity,
-      partial.leaseId,
+      partial.attemptId,
       'sandbox.delete',
-      { leaseId: partial.leaseId, sandboxId: partial.sandboxId },
+      { attemptId: partial.attemptId, sandboxId: partial.sandboxId },
       partial.originPhysicalEpoch
     );
     this.releaseWorkerStorageForFailedMaterialization(pendingStorage);
@@ -1868,6 +1926,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     ) {
       return 'capacity-saturated';
     }
+    if (harnesses.some((harness) => harness.activeTurnCount !== 0)) return 'capacity-saturated';
     if (!forceRetirement && sandbox.sandboxCompatibilityKey === desiredKey && processLocalSandbox) {
       return null;
     }
@@ -1889,8 +1948,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       physicalAbsent &&
       this.coreDb.sqlite
         .prepare(
-          `SELECT 1 FROM scheduler_session_leases
-           WHERE sandbox_binding_ref = ? AND status NOT IN ('released', 'lost', 'failed')
+          `SELECT 1 FROM scheduler_execution_attempts
+           WHERE binding_ref = ? AND phase <> 'closed'
            LIMIT 1`
         )
         .get(sandbox.sandboxBindingRef)
@@ -1906,7 +1965,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
                 h.harness_compatibility_key AS harnessCompatibilityKey,
                 b.lifecycle_state AS lifecycleState,
                 b.current_turn_id AS currentTurnId,
-                b.current_lease_id AS currentLeaseId,
+                b.current_attempt_id AS currentAttemptId,
                 b.cleanup_state AS cleanupState,
                 b.native_handle_state AS nativeHandleState,
                 b.native_handle_digest AS nativeHandleDigest
@@ -1919,7 +1978,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       readonly agentSessionId: string;
       readonly agentSessionRuntimeBindingId: string;
       readonly cleanupState: string;
-      readonly currentLeaseId: string | null;
+      readonly currentAttemptId: string | null;
       readonly currentTurnId: string | null;
       readonly harnessBindingRef: string;
       readonly harnessCompatibilityKey: string;
@@ -1932,7 +1991,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       bindings.some(
         (binding) =>
           binding.currentTurnId !== null ||
-          binding.currentLeaseId !== null ||
+          binding.currentAttemptId !== null ||
           (!physicalAbsent &&
             binding.lifecycleState !== 'closed' &&
             (binding.lifecycleState !== 'open' ||
@@ -1946,18 +2005,47 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       bindings.some((binding) =>
         this.coreDb.sqlite
           .prepare(
-            `SELECT 1 FROM scheduler_session_leases
+            `SELECT 1 FROM scheduler_execution_attempts
              WHERE agent_session_id = ?
-               AND status NOT IN ('released', 'lost', 'failed')
+               AND phase <> 'closed'
+               AND NOT (workspace_id = ? AND thread_id = ? AND turn_id = ?
+                 AND backend_id = ? AND phase = 'open' AND operation_id IS NULL)
              LIMIT 1`
           )
-          .get(binding.agentSessionId)
+          .get(
+            binding.agentSessionId,
+            environmentPackage.scope.workspaceId,
+            environmentPackage.scope.threadId,
+            environmentPackage.scope.turnId,
+            this.id
+          )
       )
     ) {
       return 'capacity-saturated';
     }
     if (!forceRetirement && sandbox.sandboxCompatibilityKey === desiredKey && !physicalAbsent) {
       return null;
+    }
+    const retainedOwner = this.coreDb.sqlite
+      .prepare(
+        `SELECT attempt_id AS attemptId FROM worker_backend_sessions
+       WHERE sandbox_binding_ref = ? AND runtime_target_id = ? AND origin_physical_epoch = ?
+       ORDER BY created_at DESC, attempt_id DESC LIMIT 1`
+      )
+      .get(sandbox.sandboxBindingRef, runtimeTargetId, sandboxOriginPhysicalEpoch) as
+      | { attemptId: string }
+      | undefined;
+    const retirementOwner = retainedOwner
+      ? getWorkerBackendSession(this.coreDb, retainedOwner.attemptId)
+      : null;
+    if (
+      (!retirementOwner && !physicalAbsent) ||
+      (retirementOwner !== null &&
+        nanoHostSandboxIdFromBackendSessionId(retirementOwner.backendSessionId) !==
+          nanoHostSandboxId(sandbox.sandboxCompatibilityKey))
+    ) {
+      // A missing owner cannot authorize a synthetic idle execution or a guessed delete.
+      return 'capacity-saturated';
     }
     return {
       bindings: bindings.map((binding) => ({
@@ -1974,6 +2062,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       bridgeOpen: this.sharedSandboxes.get(sandbox.sandboxCompatibilityKey)?.bridgeOpen ?? true,
       closeAgentSessions: processLocalSandbox && !forceRetirement,
       originPhysicalEpoch: sandboxOriginPhysicalEpoch,
+      retirementOwner,
       physicalAbsent,
       sandboxBindingRef: sandbox.sandboxBindingRef,
       sandboxCompatibilityKey: sandbox.sandboxCompatibilityKey,
@@ -1982,11 +2071,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     };
   }
 
-  /** Claims and retires one idle or physically absent resident after replacement dispatch. */
+  /** Retires an incompatible idle resident through its own exact cleanup lineage, widening uncertain close to Sandbox/Epoch proof. */
   private async evictIncompatibleIdleSandbox(
     environmentPackage: AgentEnvironmentPackagePreview,
-    identity: WorkerGovernanceBackendSessionIdentity,
-    leaseId: string,
     forceRetirement = false,
     replacementSelection?: Omit<WorkerStorageSelectionInput, 'layout'> & {
       readonly reuseWorkSlotRef?: string;
@@ -2064,8 +2151,24 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           try {
             await this.closeDurableAgentSession(binding);
           } catch (error) {
-            if (!isCleanupRequiredRefusal(error)) throw error;
-            // Admission is drained; whole-Sandbox deletion also retires the remaining bindings.
+            const unknownClose = this.coreDb.sqlite
+              .prepare(
+                `SELECT operation_id AS operationId FROM harness_instance_records
+               WHERE harness_instance_id = ? AND harness_binding_ref = ?
+                 AND operation = 'session.close' AND operation_state = 'unknown'
+                 AND operation_id IS NOT NULL
+                 AND json_extract(command_body_json, '$.agentSessionId') = ?
+                 AND json_extract(command_body_json, '$.agentSessionRuntimeBindingId') = ?`
+              )
+              .get(
+                binding.harnessInstanceId,
+                binding.harnessBindingRef,
+                binding.agentSessionId,
+                binding.agentSessionRuntimeBindingId
+              );
+            if (!isCleanupRequiredRefusal(error) && !unknownClose) throw error;
+            // Preserve the unknown operation. The resident's wider delete is a distinct owned effect,
+            // not a repeat of session.close or an outcome on the incoming Turn.
             break;
           }
           for (const sharedHarness of this.sharedHarnesses.values()) {
@@ -2076,9 +2179,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         }
       }
       if (!eviction.physicalAbsent) {
+        if (!eviction.retirementOwner)
+          throw new Error('Resident deletion has no exact retained owner.');
         await this.deleteSandbox(
-          identity,
-          { leaseId, sandboxId: eviction.sandboxId },
+          this.durableBackendSessionIdentity(eviction.retirementOwner),
+          { attemptId: eviction.retirementOwner.attemptId, sandboxId: eviction.sandboxId },
           eviction.bridgeOpen,
           eviction.originPhysicalEpoch
         );
@@ -2170,7 +2275,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   ): Promise<WorkerGovernanceMaterializationRecord> {
     const identity = this.planSession(environmentPackage);
     this.failedPreSandboxPreparations.delete(identity.packageSnapshotId);
-    const leaseId = this.requireLeaseId(environmentPackage.snapshotId);
+    const attemptId = this.requireAttemptId(environmentPackage.snapshotId);
     const image = environmentPackage.runtime.image;
     const sandboxCompatibilityKey = nanoHostSandboxCompatibilityKey(environmentPackage);
     const harnessCompatibilityKey = nanoHostHarnessCompatibilityKey(environmentPackage);
@@ -2214,15 +2319,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     try {
       releasedSelectedBinding = await this.evictIncompatibleIdleSandbox(
         environmentPackage,
-        identity,
-        leaseId,
         false,
         replacementSelection
       );
-    } catch (error) {
+    } catch {
       // Eviction owns the resident's fence; this incoming attempt created no Sandbox or bridge.
       this.failedPreSandboxPreparations.add(identity.packageSnapshotId);
-      throw error;
+      throw new WorkerGovernanceCapacityUnavailableError(
+        'Incompatible resident cleanup requires exact deletion or Epoch fence proof.'
+      );
     }
     let sharedHarness = this.restoreSharedHarness(
       sandboxCompatibilityKey,
@@ -2296,8 +2401,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (sharedSandbox && replaceSharedSandbox) {
       releasedSelectedBinding = await this.evictIncompatibleIdleSandbox(
         environmentPackage,
-        identity,
-        leaseId,
         true,
         replacementSelection
       );
@@ -2317,14 +2420,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       let imageInspection: ReturnType<typeof parseNanoHostImageInspection>;
       try {
         imageResult = environmentPackage.runtime.environment
-          ? await this.effect(identity, leaseId, 'image.acquire', {
+          ? await this.effect(identity, attemptId, 'image.acquire', {
               imageReference: environmentPackage.runtime.environment.imageDigest,
             })
           : image.kind === 'reference'
-            ? await this.effect(identity, leaseId, 'image.acquire', {
+            ? await this.effect(identity, attemptId, 'image.acquire', {
                 imageReference: image.ref,
               })
-            : await this.effect(identity, leaseId, 'image.build', {
+            : await this.effect(identity, attemptId, 'image.build', {
                 arguments: image.arguments,
                 argumentsDigest: image.argumentsDigest,
                 contextDigest: image.contextDigest,
@@ -2341,7 +2444,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           throw new Error('NanoHost local image acquisition returned a different digest.');
         }
         imageInspection = parseNanoHostImageInspection(
-          await this.effect(identity, leaseId, 'image.inspect', { imageDigest })
+          await this.effect(identity, attemptId, 'image.inspect', { imageDigest })
         );
         if (
           imageInspection.imageDigest !== imageDigest ||
@@ -2408,10 +2511,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       const sandboxId = nanoHostSandboxId(sandboxCompatibilityKey);
       let sandboxResult: Record<string, unknown>;
       try {
-        sandboxResult = await this.effect(identity, leaseId, 'sandbox.create', {
+        sandboxResult = await this.effect(identity, attemptId, 'sandbox.create', {
           environment: {},
           imageDigest,
-          leaseId,
+          attemptId: attemptId,
           policyIntent: {
             additionalFilesystemGrants:
               openShellFilesystemGrantsFromPackagePolicy(environmentPackage),
@@ -2441,7 +2544,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         attachmentGeneration: storageBinding.attachmentGeneration,
         deleteDispatched: false,
         expectedRevision: storageBinding.revision,
-        leaseId,
+        attemptId: attemptId,
         originPhysicalEpoch,
         sandboxId,
         storageRef: storageBinding.storageRef,
@@ -2511,7 +2614,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       harnessBindingRef: sharedHarness.harnessBindingRef,
       harnessInstanceId: sharedHarness.harnessInstanceId,
       identity,
-      leaseId,
+      attemptId: attemptId,
       nativeResume: context.nativeResume ?? null,
       nativeSessionReusable: false,
       recordNativeHandleDigest: null,
@@ -2674,14 +2777,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     };
   }
 
-  /** Opens or inspects the exact Session, imports its Turn inputs, then starts the child. */
-  public async launch(
+  /** Opens or inspects the exact Session, imports its Turn inputs, and accepts its baseline before the submission port. */
+  public async prepareLaunch(
     materialization: WorkerGovernanceMaterializationRecord
-  ): Promise<WorkerGovernanceEvidenceRecord> {
+  ): Promise<void> {
     const session = this.requireSession(materialization.packageSnapshotId);
     const result = session.sharedHarness.sandbox.bridgeOpen
       ? { accepted: true, integrationReady: true, state: 'open' }
-      : await this.effect(session.identity, session.leaseId, 'bridge.open', {
+      : await this.effect(session.identity, session.attemptId, 'bridge.open', {
           sandboxIntegrationBindingRef: session.sharedHarness.sandbox.sandboxIntegrationBindingRef,
         });
     if (result.accepted !== true || result.integrationReady !== true || result.state !== 'open') {
@@ -2691,7 +2794,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const pendingImports = session.pendingImports;
     session.pendingImports = [];
     for (const file of pendingImports) {
-      const imported = await this.effect(session.identity, session.leaseId, 'reference.import', {
+      const imported = await this.effect(session.identity, session.attemptId, 'reference.import', {
         body: file.body,
         byteLength: file.byteLength,
         relativePath: file.relativePath,
@@ -2806,23 +2909,97 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       }
     }
     await this.ensureWorkspaceBaseline(session, opensNewBinding, workspaceGitBaseline);
-    const inputPaths = workerSessionInputPaths(session.environmentPackage.scope.agentSessionId);
-    const lease = this.coreDb.sqlite
-      .prepare(
-        'SELECT startup_deadline AS startupDeadline FROM scheduler_session_leases WHERE lease_id = ?'
+    session.evidence.push(
+      nanoHostEffectEvidence(session.environmentPackage.createdAt, result, 'bridge')
+    );
+  }
+
+  /** Submits once at native turn.start after finalized package, accepted baseline and current authority. */
+  public async submit(
+    input: ExecutionBackendCorrelation & { readonly deadline: string }
+  ): Promise<ExecutionBackendObservation> {
+    const attempt = requireSchedulerExecutionAttempt(this.coreDb, input.attemptId);
+    if (
+      attempt.backendId !== this.id ||
+      commandInputHash(schedulerExecutionCorrelation(attempt)) !==
+        commandInputHash(inputCorrelation(input)) ||
+      attempt.deadline !== input.deadline ||
+      attempt.phase !== 'open' ||
+      Date.parse(input.deadline) <= Date.now()
+    )
+      throw new Error('Native submit has no current exact attempt authority.');
+    const session = this.requireSession(input.inputRef!);
+    if (
+      session.attemptId !== attempt.attemptId ||
+      session.environmentPackage.scope.agentSessionId !== attempt.agentSessionId
+    )
+      throw new Error('Native submit binding contradicts its attempt.');
+    this.requireDurableAgentSessionProvenance(session.environmentPackage, attempt.attemptId);
+    this.requireCurrentBackendPhysicalEpoch(session.identity);
+    const workspaceDb = openWorkspaceDb(this.coreDb.dataRoot, attempt.workspaceId);
+    try {
+      const retained = requireAgentEnvironmentPackageSnapshot(
+        workspaceDb,
+        attempt.workspaceId,
+        input.inputRef!
+      ).snapshot;
+      const baseline = readWorkspaceBaselineIdentity(
+        workspaceDb,
+        this.workspaceCollectionIdentity(session, 'baseline')
+      );
+      const baselinePackage =
+        baseline &&
+        requireAgentEnvironmentPackageSnapshot(
+          workspaceDb,
+          baseline.workspaceId,
+          baseline.packageSnapshotId
+        ).snapshot;
+      if (
+        !baseline ||
+        !baselinePackage ||
+        baseline.workspaceId !== attempt.workspaceId ||
+        baselinePackage.scope.workspaceId !== baseline.workspaceId ||
+        baselinePackage.scope.threadId !== baseline.threadId ||
+        baselinePackage.scope.turnId !== baseline.turnId ||
+        baselinePackage.scope.agentSessionId !== baseline.agentSessionId
+      ) {
+        throw new Error(
+          'Native submit lacks accepted baseline provenance; explicit reconciliation is required.'
+        );
+      }
+      if (
+        !isDeepStrictEqual(retained, session.environmentPackage) ||
+        !readWorkspaceSnapshotCursor(
+          workspaceDb,
+          this.workspaceCollectionIdentity(session, 'baseline')
+        )
       )
-      .get(session.leaseId) as { readonly startupDeadline: string } | undefined;
-    if (!lease) {
-      throw new Error('NanoHost Harness Turn startup deadline is unavailable.');
+        throw new Error('Native submit lacks the immutable package or accepted baseline.');
+    } finally {
+      workspaceDb.sqlite.close();
     }
+    const binding = session.sharedHarness.bindings.get(
+      session.environmentPackage.scope.agentSessionId
+    );
+    if (!binding) throw new Error('Native submit has no prepared AgentSession binding.');
+    const inputPaths = workerSessionInputPaths(session.environmentPackage.scope.agentSessionId);
+    const native = requireNanoHostExecutionAttempt(this.coreDb, session.attemptId);
+    const livenessDeadline =
+      native.lastAcceptedHeartbeatAt === null ? native.startupDeadline : native.heartbeatDeadline;
+    if (
+      !livenessDeadline ||
+      livenessDeadline <= new Date().toISOString() ||
+      native.recoveryState !== null
+    )
+      throw new Error('Native submission liveness or adoption proof is unavailable.');
     const started = await this.queueAndWaitForHarnessOperation(session, 'turn.start', {
       aepRef: inputPaths.packagePath,
       agentSessionId: session.environmentPackage.scope.agentSessionId,
       agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
       contextPackageId: `ctxpkg_${session.environmentPackage.scope.turnId}`,
       contextRef: inputPaths.contextRoot,
-      deadline: lease.startupDeadline,
-      leaseId: session.leaseId,
+      deadline: input.deadline,
+      leaseId: session.attemptId,
       packageSnapshotId: session.environmentPackage.snapshotId,
       threadId: session.environmentPackage.scope.threadId,
       turnId: session.environmentPackage.scope.turnId,
@@ -2838,9 +3015,153 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     binding.nextTurnSequence += 1;
     session.turnStarted = true;
-    const evidence = nanoHostEffectEvidence(session.environmentPackage.createdAt, result, 'bridge');
-    session.evidence.push(evidence);
-    return evidence;
+    return {
+      ...input,
+      disposition: 'accepted',
+      execution: 'pending',
+      fenceRef: null,
+      outcomeRef: null,
+    };
+  }
+
+  /** Reads original native evidence without create, resume, replay or new execution authority. */
+  public async inspect(
+    input: ExecutionBackendCorrelation
+  ): Promise<ExecutionBackendObservation | null> {
+    const attempt = requireSchedulerExecutionAttempt(this.coreDb, input.attemptId);
+    if (
+      attempt.backendId !== this.id ||
+      commandInputHash(schedulerExecutionCorrelation(attempt)) !== commandInputHash(input)
+    )
+      return null;
+    const anchor = getWorkerBackendSession(this.coreDb, attempt.attemptId);
+    const submissionId = commandInputHash({
+      attemptId: attempt.attemptId,
+      inputRef: attempt.inputRef,
+      operation: 'submit',
+    });
+    const native =
+      attempt.operationId === submissionId
+        ? (this.coreDb.sqlite
+            .prepare(`SELECT h.operation_state AS state, h.result_json AS resultJson
+      FROM harness_instance_records h JOIN agent_session_runtime_bindings b ON b.harness_instance_id = h.harness_instance_id
+      WHERE b.agent_session_id = ? AND h.operation = 'turn.start'
+        AND json_extract(h.command_body_json, '$.leaseId') = ?
+        AND json_extract(h.command_body_json, '$.turnId') = ?
+        AND json_extract(h.command_body_json, '$.packageSnapshotId') = ?`)
+            .get(attempt.agentSessionId, attempt.attemptId, attempt.turnId, attempt.inputRef) as
+            | { state: string; resultJson: string | null }
+            | undefined)
+        : undefined;
+    const nativeAccepted =
+      native?.state === 'settled' &&
+      native.resultJson !== null &&
+      JSON.parse(native.resultJson).disposition === 'succeeded' &&
+      JSON.parse(native.resultJson).body?.state === 'started';
+    const final =
+      attempt.agentSessionId && attempt.inputRef
+        ? getWorkerControlAcceptedFinalStatus(this.coreDb, {
+            agentSessionId: attempt.agentSessionId,
+            packageSnapshotId: attempt.inputRef,
+            requestId: requireSchedulerExecutionAttemptAdmissionContext(
+              this.coreDb,
+              attempt.attemptId
+            ).requestId,
+            workspaceId: attempt.workspaceId,
+            threadId: attempt.threadId,
+            turnId: attempt.turnId,
+          })
+        : null;
+    return {
+      ...input,
+      disposition: final || nativeAccepted ? 'accepted' : attempt.disposition,
+      execution: final
+        ? 'terminal'
+        : anchor?.state === 'launching' && (nativeAccepted || attempt.disposition === 'accepted')
+          ? 'running'
+          : 'unknown',
+      fenceRef: attempt.fenceRef,
+      outcomeRef: attempt.outcomeRef,
+    };
+  }
+
+  /** Cancels only the same revoked attempt; late native acceptance cannot reopen it. */
+  public async cancel(input: ExecutionBackendCorrelation): Promise<ExecutionBackendObservation> {
+    const attempt = requireSchedulerExecutionAttempt(this.coreDb, input.attemptId);
+    if (
+      attempt.phase !== 'closing' ||
+      attempt.backendId !== this.id ||
+      commandInputHash(schedulerExecutionCorrelation(attempt)) !== commandInputHash(input)
+    )
+      throw new Error('Native cancellation has no exact revoked owner.');
+    const session = attempt.inputRef ? this.sessions.get(attempt.inputRef) : null;
+    if (session?.turnStarted) await this.interruptTurn(session.environmentPackage.snapshotId);
+    return {
+      ...input,
+      disposition: session?.turnStarted ? 'accepted' : 'unknown',
+      execution: 'unknown',
+      fenceRef: null,
+      outcomeRef: attempt.outcomeRef,
+    };
+  }
+
+  /** Proves safe residency or completed private cleanup after all supplied Core handoff barriers. */
+  public async release(
+    input: ExecutionBackendCorrelation & { readonly proof: ExecutionReleaseProof }
+  ) {
+    const correlation = inputCorrelation(input);
+    const attempt = requireSchedulerExecutionAttempt(this.coreDb, input.attemptId);
+    if (
+      attempt.phase !== 'closing' ||
+      attempt.backendId !== this.id ||
+      commandInputHash(schedulerExecutionCorrelation(attempt)) !== commandInputHash(correlation)
+    )
+      throw new Error('Native release has no exact closing owner.');
+    if (
+      !input.proof.terminalHandoff ||
+      !input.proof.output ||
+      !input.proof.evidence ||
+      !input.proof.outsideWorkspaceCollection ||
+      !input.proof.integrationDrain ||
+      !input.proof.routesRevoked
+    )
+      return { ...correlation, state: 'pending' as const, fenceRef: null };
+    const anchor = getWorkerBackendSession(this.coreDb, attempt.attemptId);
+    if (!anchor || anchor.state !== 'cleaned' || !anchor.physicalCleanedAt)
+      return { ...correlation, state: 'pending' as const, fenceRef: null };
+    const resident = this.coreDb.sqlite
+      .prepare(`SELECT b.lifecycle_state AS lifecycleState, b.cleanup_state AS cleanupState,
+      b.current_turn_id AS turnId, b.current_attempt_id AS attemptId, h.lifecycle_state AS harnessState,
+      h.drain_state AS drainState, s.cleanup_state AS sandboxCleanup
+      FROM agent_session_runtime_bindings b JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
+      JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id WHERE b.agent_session_id = ?`)
+      .get(attempt.agentSessionId) as
+      | {
+          lifecycleState: string;
+          cleanupState: string;
+          turnId: string | null;
+          attemptId: string | null;
+          harnessState: string;
+          drainState: string;
+          sandboxCleanup: string;
+        }
+      | undefined;
+    if (
+      resident &&
+      (!['open', 'closed'].includes(resident.lifecycleState) ||
+        resident.cleanupState !== 'clean' ||
+        resident.turnId !== null ||
+        resident.attemptId !== null ||
+        resident.harnessState !== 'open' ||
+        resident.drainState !== 'accepting' ||
+        resident.sandboxCleanup !== 'clean')
+    )
+      return { ...correlation, state: 'unknown' as const, fenceRef: null };
+    return {
+      ...correlation,
+      state: 'released' as const,
+      fenceRef: `worker-backend:${anchor.attemptId}:${anchor.physicalCleanedAt}`,
+    };
   }
 
   /**
@@ -2852,7 +3173,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const settlement = this.queueAndWaitForHarnessOperation(session, 'turn.interrupt', {
       agentSessionId: session.environmentPackage.scope.agentSessionId,
       agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
-      leaseId: session.leaseId,
+      leaseId: session.attemptId,
       purpose: 'interrupt',
       turnId: session.environmentPackage.scope.turnId,
     }).then((result) => {
@@ -2932,16 +3253,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const lineage = { ...scope, packageSnapshotId: input.packageSnapshotId };
     const requireLive = () => {
       input.signal?.throwIfAborted();
-      const resolution = resolveSchedulerLeaseTokenBinding(this.coreDb, {
+      const resolution = resolveNanoHostAttemptTokenBinding(this.coreDb, {
         lineage,
         sandboxBindingRef:
-          listSchedulerSessionLeasesForTurn(this.coreDb, scope).find(
-            (lease) => lease.leaseId === session.leaseId
-          )?.sandboxBindingRef ?? '',
+          listSchedulerExecutionAttemptsForTurn(this.coreDb, scope).find(
+            (lease) => lease.attemptId === session.attemptId
+          )?.bindingRef ?? '',
       });
       if (
         resolution.status !== 'accepted' ||
-        resolution.lease.leaseId !== session.leaseId ||
+        resolution.attempt.attemptId !== session.attemptId ||
         getWorkerControlAcceptedFinalStatus(this.coreDb, lineage)
       )
         throw new OperationError(
@@ -2974,7 +3295,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     );
     const result = await this.effect(
       session.identity,
-      session.leaseId,
+      session.attemptId,
       'file.export',
       {
         purpose: 'artifact-submission',
@@ -3027,7 +3348,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         session.environmentPackage,
         workerPath
       );
-      const result = await this.effect(session.identity, session.leaseId, 'file.export', {
+      const result = await this.effect(session.identity, session.attemptId, 'file.export', {
         finalStatusAccepted,
         maxByteLength: NANO_HOST_FILE_EXPORT_MAX_BYTES,
         presence: 'required',
@@ -3051,7 +3372,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           session.environmentPackage,
           workerPath
         );
-        const result = await this.effect(session.identity, session.leaseId, 'file.export', {
+        const result = await this.effect(session.identity, session.attemptId, 'file.export', {
           finalStatusAccepted,
           maxByteLength: NANO_HOST_FILE_EXPORT_MAX_BYTES,
           presence: 'required',
@@ -3113,20 +3434,25 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   ): WorkerCredentialCheckValues {
     try {
       const scope = session.environmentPackage.scope;
-      const leases = listSchedulerSessionLeasesForTurn(this.coreDb, scope).filter(
-        (lease) =>
-          lease.leaseId === session.leaseId &&
-          lease.agentSessionId === scope.agentSessionId &&
-          lease.packageSnapshotId === session.environmentPackage.snapshotId
-      );
-      const lease = leases.length === 1 ? leases[0] : null;
-      if (!lease || !lease.sandboxBindingRef)
+      const leases = listSchedulerExecutionAttemptsForTurn(this.coreDb, scope)
+        .filter(
+          (lease) =>
+            lease.attemptId === session.attemptId &&
+            lease.agentSessionId === scope.agentSessionId &&
+            lease.inputRef === session.environmentPackage.snapshotId
+        )
+        .filter((attempt) => !isSchedulerExecutionBusyRefusal(attempt));
+      const lease =
+        leases.length === 1
+          ? requireNanoHostExecutionAttempt(this.coreDb, leases[0]!.attemptId)
+          : null;
+      if (!lease || !lease.bindingRef)
         throw new Error('Original lease association is unavailable.');
       const runtime = this.collectionRuntimeCheckValues(session);
       const evidence = requireWorkerCredentialCheckValues({
         sensitiveValues: [
           ...runtime.runtimeEnv,
-          lease.sandboxBindingRef,
+          lease.bindingRef,
           ...(session.liveRouteTokens ?? []),
         ],
         loopbackDigests: runtime.loopbackDigests,
@@ -3333,10 +3659,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         else {
           const previous = this.coreDb.sqlite
             .prepare(
-              'SELECT lease_id AS leaseId, package_snapshot_id AS packageSnapshotId FROM worker_backend_sessions WHERE agent_session_id = ? AND package_snapshot_id <> ? ORDER BY created_at DESC, lease_id DESC LIMIT 1'
+              'SELECT attempt_id AS attemptId, package_snapshot_id AS packageSnapshotId FROM worker_backend_sessions WHERE agent_session_id = ? AND package_snapshot_id <> ? ORDER BY created_at DESC, attempt_id DESC LIMIT 1'
             )
             .get(identity.agentSessionId, identity.packageSnapshotId) as
-            | { leaseId: string; packageSnapshotId: string }
+            | { attemptId: string; packageSnapshotId: string }
             | undefined;
           if (previous) {
             const prior = requireAgentEnvironmentPackageSnapshot(
@@ -3348,9 +3674,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               ...session,
               environmentPackage: prior,
               identity: this.durableBackendSessionIdentity(
-                this.requireDurableAgentSessionProvenance(prior, previous.leaseId).anchor
+                this.requireDurableAgentSessionProvenance(prior, previous.attemptId).anchor
               ),
-              leaseId: previous.leaseId,
+              attemptId: previous.attemptId,
             };
             const records = await this.collectWorkspaceSnapshot(priorSession, 'turn-end');
             if (records.length) {
@@ -3389,7 +3715,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         // Git identity is the source pin; its object format need not match the private SHA-1 scan store.
         expected = null;
       }
-      const result = await this.effect(session.identity, session.leaseId, 'workspace.collect', {
+      const result = await this.effect(session.identity, session.attemptId, 'workspace.collect', {
         ...this.workspaceCollectionCommand(session, identity, 'baseline', null),
         attemptNonce: randomBytes(16).toString('hex'),
       });
@@ -3433,7 +3759,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             outcome: 'recovery_required',
             cause: 'accepted_base_unknown',
           });
-        const result = await this.effect(session.identity, session.leaseId, 'workspace.collect', {
+        const result = await this.effect(session.identity, session.attemptId, 'workspace.collect', {
           ...this.workspaceCollectionCommand(session, identity, 'capture', cursor),
           attemptNonce: randomBytes(16).toString('hex'),
         });
@@ -3460,7 +3786,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /** Dispatches one fixed effect with an identity derived from durable lineage. */
   private async effect(
     identity: WorkerGovernanceBackendSessionIdentity,
-    leaseId: string,
+    attemptId: string,
     operation: NanoHostEffectOperation,
     input: Readonly<Record<string, unknown>>,
     retiringSandboxOrigin?: string,
@@ -3476,12 +3802,30 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     ) {
       throw new Error('NanoHost retiring Sandbox physical Epoch is no longer current.');
     }
-    return requireNanoHostResultObject(
-      await this.sessionDispatch.effect({
-        ...createNanoHostEffectRequest(identity, leaseId, operation, input),
-        ...(signal ? { signal } : {}),
-      })
+    const request = createNanoHostEffectRequest(identity, attemptId, operation, input);
+    const attempt = requireSchedulerExecutionAttempt(this.coreDb, attemptId);
+    const tracksPreparation =
+      attempt.phase === 'open' &&
+      attempt.deadline === null &&
+      !['image.inspect', 'storage.inspect'].includes(operation);
+    const recorded = tracksPreparation
+      ? recordSchedulerExecutionOperation(this.coreDb, {
+          attemptId: attemptId,
+          operationId: request.requestId!,
+        })
+      : null;
+    const result = requireNanoHostResultObject(
+      await this.sessionDispatch.effect({ ...request, ...(signal ? { signal } : {}) })
     );
+    if (recorded)
+      acceptSchedulerExecutionObservation(this.coreDb, {
+        ...schedulerExecutionCorrelation(recorded),
+        disposition: 'accepted',
+        execution: 'pending',
+        fenceRef: null,
+        outcomeRef: null,
+      });
+    return result;
   }
 
   /** Creates one bounded cleanup expectation set containing no command or token. */
@@ -3493,13 +3837,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       return null;
     }
     requireStoredNanoHostPhysicalEpoch(originPhysicalEpoch);
-    const leaseId = this.requireLeaseId(identity.packageSnapshotId);
+    const attemptId = this.requireAttemptId(identity.packageSnapshotId);
     const cleanupInput = {
-      leaseId,
+      attemptId: attemptId,
       sandboxId: nanoHostSandboxIdFromBackendSessionId(identity.backendSessionId),
     };
     const expectations = (['bridge.close', 'sandbox.delete'] as const).map((operation) => {
-      const request = createNanoHostEffectRequest(identity, leaseId, operation, cleanupInput);
+      const request = createNanoHostEffectRequest(identity, attemptId, operation, cleanupInput);
       return { kind: operation, originPhysicalEpoch, requestId: request.requestId! };
     });
     return this.sessionDispatch.expectResultOnly(expectations);
@@ -3583,7 +3927,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   ): WorkerBackendSessionRecord | null {
     const session = getWorkerBackendSession(
       this.coreDb,
-      this.requireLeaseId(identity.packageSnapshotId)
+      this.requireAttemptId(identity.packageSnapshotId)
     );
     if (!session) {
       return null;
@@ -3718,7 +4062,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   ): string {
     const session = getWorkerBackendSession(
       this.coreDb,
-      this.requireLeaseId(identity.packageSnapshotId)
+      this.requireAttemptId(identity.packageSnapshotId)
     );
     if (!session || session.packageSnapshotId !== identity.packageSnapshotId) {
       throw new Error('NanoHost backend physical Epoch anchor is unavailable.');
@@ -3733,21 +4077,21 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return session.originPhysicalEpoch;
   }
 
-  /** Reads the exact scheduler lease that owns one immutable package snapshot. */
-  private requireLeaseId(packageSnapshotId: string): string {
+  /** Reads the exact execution attempt that owns one immutable package snapshot. */
+  private requireAttemptId(packageSnapshotId: string): string {
     const row = this.coreDb.sqlite
       .prepare(
-        `SELECT lease_id AS leaseId
-         FROM scheduler_session_leases
-         WHERE package_snapshot_id = ?
-         ORDER BY acquired_at DESC, lease_id DESC
+        `SELECT attempt_id AS attemptId
+         FROM scheduler_execution_attempts
+         WHERE input_ref = ?
+         ORDER BY created_at DESC, attempt_id DESC
          LIMIT 1`
       )
-      .get(packageSnapshotId) as { readonly leaseId: string } | undefined;
+      .get(packageSnapshotId) as { readonly attemptId: string } | undefined;
     if (!row) {
-      throw new Error('NanoHost effect lineage has no durable scheduler lease.');
+      throw new Error('NanoHost effect lineage has no durable execution attempt.');
     }
-    return row.leaseId;
+    return row.attemptId;
   }
 
   /** Reads the live backend session retained after successful materialization. */
@@ -3778,9 +4122,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /** Validates original admitted keys against verified retained JSON and exact package, lease and binding provenance. */
   private requireDurableAgentSessionProvenance(
     environmentPackage: AgentEnvironmentPackage,
-    leaseId: string
+    attemptId: string
   ) {
-    const anchor = getWorkerBackendSession(this.coreDb, leaseId);
+    const anchor = getWorkerBackendSession(this.coreDb, attemptId);
     const workspaceDb = openWorkspaceDb(this.coreDb.dataRoot, environmentPackage.scope.workspaceId);
     let retainedSnapshot: AgentEnvironmentPackage;
     let normalizedSnapshot: AgentEnvironmentPackage;
@@ -3835,22 +4179,22 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const lease = this.coreDb.sqlite
       .prepare(
         `SELECT workspace_id AS workspaceId, thread_id AS threadId, turn_id AS turnId,
-              agent_session_id AS agentSessionId, package_snapshot_id AS packageSnapshotId,
-              sandbox_binding_ref AS sandboxBindingRef
-       FROM scheduler_session_leases WHERE lease_id = ?`
+              agent_session_id AS agentSessionId, input_ref AS inputRef,
+              binding_ref AS bindingRef
+       FROM scheduler_execution_attempts WHERE attempt_id = ?`
       )
-      .get(leaseId) as
+      .get(attemptId) as
       | {
           workspaceId: string;
           threadId: string;
           turnId: string;
           agentSessionId: string;
-          packageSnapshotId: string;
-          sandboxBindingRef: string;
+          inputRef: string;
+          bindingRef: string;
         }
       | undefined;
     const admission = lease
-      ? requireSchedulerSessionLeaseAdmissionContext(this.coreDb, leaseId)
+      ? requireSchedulerExecutionAttemptAdmissionContext(this.coreDb, attemptId)
       : undefined;
     // First refusal wins in source order; only fixed predicate names enter App diagnostics.
     const reject: (failedCheck: WorkerNativeProofValidationError['failedCheck']) => never = (
@@ -3859,7 +4203,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw new WorkerNativeProofValidationError(failedCheck, {
         proofAgentSessionId: scope.agentSessionId,
         packageSnapshotId: environmentPackage.snapshotId,
-        leaseId,
+        attemptId: attemptId,
         originPhysicalEpoch:
           anchor && /^[0-9a-f]{64}$/.test(anchor.originPhysicalEpoch)
             ? anchor.originPhysicalEpoch
@@ -3888,7 +4232,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (!isDeepStrictEqual(scope.triggerActor, admission.triggerActor))
       reject('package-binding-lineage/actor');
     if (scope.requestId !== admission.requestId) reject('package-binding-lineage/request');
-    if (this.requireLeaseId(environmentPackage.snapshotId) !== leaseId)
+    if (this.requireAttemptId(environmentPackage.snapshotId) !== attemptId)
       reject('package-binding-lineage/snapshot-lease');
     if (anchor.workspaceId !== scope.workspaceId)
       reject('package-binding-lineage/anchor-workspace');
@@ -3903,9 +4247,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (lease.turnId !== scope.turnId) reject('package-binding-lineage/lease-turn');
     if (lease.agentSessionId !== scope.agentSessionId)
       reject('package-binding-lineage/lease-agent-session');
-    if (lease.packageSnapshotId !== environmentPackage.snapshotId)
+    if (lease.inputRef !== environmentPackage.snapshotId)
       reject('package-binding-lineage/lease-snapshot');
-    if (lease.sandboxBindingRef !== anchor.sandboxBindingRef)
+    if (lease.bindingRef !== anchor.sandboxBindingRef)
       reject('package-binding-lineage/lease-sandbox-binding');
     if (attachment.workspaceId !== scope.workspaceId)
       reject('package-binding-lineage/attachment-workspace');
@@ -3937,14 +4281,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /** Reads the immutable prior package and lease shared by proof handoff and local close. */
   private readDurableAgentSession(inspection: NanoHostAgentSessionContinuityInspection): {
     environmentPackage: AgentEnvironmentPackage;
-    leaseId: string;
+    attemptId: string;
   } {
     const latest = this.coreDb.sqlite
       .prepare(
-        'SELECT lease_id AS leaseId, workspace_id AS workspaceId, package_snapshot_id AS packageSnapshotId FROM worker_backend_sessions WHERE agent_session_id = ? ORDER BY created_at DESC, lease_id DESC LIMIT 1'
+        'SELECT attempt_id AS attemptId, workspace_id AS workspaceId, package_snapshot_id AS packageSnapshotId FROM worker_backend_sessions WHERE agent_session_id = ? ORDER BY created_at DESC, attempt_id DESC LIMIT 1'
       )
       .get(inspection.agentSessionId) as
-      | { leaseId: string; workspaceId: string; packageSnapshotId: string }
+      | { attemptId: string; workspaceId: string; packageSnapshotId: string }
       | undefined;
     if (!latest) throw new Error('Workspace release collection lineage is unavailable.');
     const workspaceDb = openWorkspaceDb(this.coreDb.dataRoot, latest.workspaceId);
@@ -3959,15 +4303,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     } finally {
       workspaceDb.sqlite.close();
     }
-    return { environmentPackage, leaseId: latest.leaseId };
+    return { environmentPackage, attemptId: latest.attemptId };
   }
 
   /** Restores a temporary Turn handle only for collection and local close. */
   private restoreDurableAgentSession(
     inspection: NanoHostAgentSessionContinuityInspection
   ): NanoHostBackendTurnSession {
-    const { environmentPackage, leaseId } = this.readDurableAgentSession(inspection);
-    this.restoreSession(environmentPackage, leaseId);
+    const { environmentPackage, attemptId } = this.readDurableAgentSession(inspection);
+    this.restoreSession(environmentPackage, attemptId);
     return this.requireSession(environmentPackage.snapshotId);
   }
 
@@ -3984,12 +4328,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       (session) => session.agentSessionRuntimeBindingId === inspection.agentSessionRuntimeBindingId
     );
     if (liveSession) liveSession.acceptedProofUnrecorded = true;
-    const { environmentPackage, leaseId } = this.readDurableAgentSession(inspection);
-    const attachment = this.requireDurableAgentSessionProvenance(environmentPackage, leaseId);
+    const { environmentPackage, attemptId } = this.readDurableAgentSession(inspection);
+    const attachment = this.requireDurableAgentSessionProvenance(environmentPackage, attemptId);
     const diagnostic = {
       proofAgentSessionId: environmentPackage.scope.agentSessionId,
       packageSnapshotId: environmentPackage.snapshotId,
-      leaseId,
+      attemptId: attemptId,
       originPhysicalEpoch: attachment.anchor.originPhysicalEpoch,
       attachmentPhysicalEpoch: attachment.originPhysicalEpoch,
     };
@@ -4108,6 +4452,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     operation: NanoHostHarnessOperation,
     body: Readonly<Record<string, unknown>>
   ): Promise<Readonly<Record<string, unknown>>> {
+    let recorded: ReturnType<typeof recordSchedulerExecutionOperation> | null = null;
+    if (operation === 'session.open')
+      recorded = recordSchedulerExecutionOperation(this.coreDb, {
+        attemptId: session.attemptId,
+        operationId: commandInputHash({ attemptId: session.attemptId, operation, body }),
+      });
     if (session.pendingHarnessOperation) {
       throw new Error('NanoHost Harness producer already has an unsettled operation.');
     }
@@ -4144,7 +4494,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       session.pendingHarnessOperation = null;
       throw error;
     }
-    return result;
+    return result.then((observation) => {
+      if (recorded)
+        acceptSchedulerExecutionObservation(this.coreDb, {
+          ...schedulerExecutionCorrelation(recorded),
+          disposition: 'accepted',
+          execution: 'pending',
+          fenceRef: null,
+          outcomeRef: null,
+        });
+      return observation;
+    });
   }
 
   /** Starts the one non-resetting enqueue-to-result budget for a Harness command. */
@@ -4316,27 +4676,38 @@ function currentWorkerStorageAudienceAuthorizer(
       !requesterUserId ||
       contributor.workspaceId !== scope.workspaceId ||
       contributor.responsibleUserId !== requesterUserId ||
-      !currentWorkerLineageWorkspaceAuthority(coreDb, lineage, 'runtime.launch', true)
+      !currentScheduledTurnWorkspaceAuthority(coreDb, lineage, 'runtime.launch', true)
     )
       return false;
-    const leases = listSchedulerSessionLeasesForTurn(coreDb, lineage).filter(
-      (lease) =>
-        lease.agentSessionId === scope.agentSessionId &&
-        lease.packageSnapshotId === environmentPackage.snapshotId
+    const attempts = listSchedulerExecutionAttemptsForTurn(coreDb, lineage).filter(
+      (attempt) => attempt.phase !== 'closed'
     );
-    const lease = leases.length === 1 ? leases[0] : null;
-    const liveLease =
-      lease &&
-      resolveSchedulerLeaseTokenBinding(coreDb, {
-        sandboxBindingRef: lease.sandboxBindingRef,
+    const attempt = attempts.length === 1 ? attempts[0] : null;
+    if (
+      !attempt ||
+      attempt.phase !== 'open' ||
+      attempt.disposition === 'unknown' ||
+      (attempt.agentSessionId !== null && attempt.agentSessionId !== scope.agentSessionId) ||
+      (attempt.inputRef !== null && attempt.inputRef !== environmentPackage.snapshotId)
+    )
+      return false;
+    if (attempt.deadline === null) {
+      // Selected old-resident retirement precedes binding; incoming storage preparation precedes
+      // submission. Both use exact current admission, never a not-yet-issued worker route token.
+      if (attempt.agentSessionId !== null) {
+        const native = requireNanoHostExecutionAttempt(coreDb, attempt.attemptId);
+        if (native.startupDeadline <= new Date().toISOString() || native.recoveryState !== null)
+          return false;
+      }
+    } else {
+      if (!currentWorkerLineageWorkspaceAuthority(coreDb, lineage, 'runtime.launch', true))
+        return false;
+      const native = requireNanoHostExecutionAttempt(coreDb, attempt.attemptId);
+      const live = resolveNanoHostAttemptTokenBinding(coreDb, {
+        sandboxBindingRef: native.bindingRef,
         lineage,
       });
-    if (
-      !liveLease ||
-      liveLease.status !== 'accepted' ||
-      liveLease.lease.leaseId !== lease?.leaseId
-    ) {
-      return false;
+      if (live.status !== 'accepted' || live.attempt.attemptId !== native.attemptId) return false;
     }
     const records = loadWorkspaceFileRecords(coreDb.dataRoot).find(
       (records) => records.workspace.id === scope.workspaceId
@@ -4703,4 +5074,15 @@ function sessionMatchesRuntimeImage(
     session.backendLineage.buildContextDigest === image.contextDigest &&
     session.backendLineage.buildInputDigest === image.input.digest
   );
+}
+
+/** Selects only durable operation correlation from a submit or release payload. */
+function inputCorrelation(input: ExecutionBackendCorrelation): ExecutionBackendCorrelation {
+  return {
+    attemptId: input.attemptId,
+    backendId: input.backendId,
+    inputRef: input.inputRef,
+    bindingRef: input.bindingRef,
+    operationId: input.operationId,
+  };
 }

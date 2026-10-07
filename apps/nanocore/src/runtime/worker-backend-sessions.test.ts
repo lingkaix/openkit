@@ -2,15 +2,13 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import {
-  completeSchedulerSessionLease,
-  createSchedulerAdmissionEntry,
-  dispatchNextSchedulerEntry,
-  upsertSchedulerCapacityRecord,
-  upsertSchedulerWorkerPool,
-} from '../scheduler-records.js';
+import { ensureLocalUser } from '../auth/identity.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import * as attemptActionOwners from './execution-attempt-records.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   upsertNanoHostRuntimeTarget,
@@ -27,57 +25,28 @@ import {
 function createFixture() {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-backend-session-')));
   applyMigrations(coreDb);
-  upsertSchedulerWorkerPool(coreDb, {
-    allowedBackendKinds: ['openshell'],
-    allowedPlacements: ['local'],
-    allowedWorkspaceScopes: ['local'],
-    budgetClass: 'interactive',
-    currentAdmittedSessionCount: 0,
-    currentQueueDepth: 1,
-    defaultTimeoutMs: 900_000,
-    healthSummary: 'ready',
-    maxConcurrentSessions: 1,
-    poolId: 'pool_backend_session',
-    queueLimit: 20,
-    status: 'active',
-  });
-  upsertSchedulerCapacityRecord(coreDb, {
-    capacityClass: 'local',
-    concurrencyCeiling: 1,
-    inUseCount: 0,
-    observationSource: 'configured',
-    observedAt: '2026-07-15T00:00:00.000Z',
-    poolId: 'pool_backend_session',
-    queueDepth: 0,
-    targetId: 'target_backend_session',
-  });
-  createSchedulerAdmissionEntry(coreDb, {
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
+  const entry = createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
     triggerActor: { kind: 'user', id: 'user_local' },
-    priorityClass: 'interactive',
     profileRef: 'profile_worker',
     queueEntryId: 'queue_backend_session',
     requestedAgentId: 'agent_codex_host',
-    requiredPoolConstraints: ['openshell.local'],
     threadId: 'thread_backend_session',
     turnId: 'turn_backend_session',
     turnInput: 'Run worker',
     workspaceId: 'ws_demo',
     now: () => '2026-07-15T00:00:01.000Z',
   });
-  dispatchNextSchedulerEntry(coreDb, {
+  recordTestExecutionAttempt(coreDb, {
+    entry,
+    attemptId: 'lease_backend_session',
     agentSessionId: 'as_backend_session',
-    expectedControlMode: 'poll',
-    expectedDataPlaneMode: 'openshell-files',
-    heartbeatIntervalMs: 10_000,
-    heartbeatTimeoutMs: 30_000,
-    leaseDurationMs: 900_000,
-    leaseId: 'lease_backend_session',
+    inputRef: 'aepsnap_backend_session',
+    bindingRef: 'lease-binding:lease_backend_session',
+    sessionCompatibilityKey: 'fixture-compatibility',
     now: () => '2026-07-15T00:00:02.000Z',
-    packageSnapshotId: 'aepsnap_backend_session',
-    planId: 'plan_backend_session',
-    sandboxBindingRef: 'lease-binding:lease_backend_session',
-    schedulerEpoch: 1,
-    startupTimeoutMs: 120_000,
   });
   const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
     deploymentId: 'deployment-test',
@@ -128,6 +97,70 @@ function materializingInput() {
 }
 
 describe('worker backend sessions', () => {
+  it.each([
+    'reference',
+    'build',
+  ] as const)('reads retained %s lineage annotations without reminting or rewriting identity', (kind) => {
+    const coreDb = createFixture();
+    try {
+      const input = materializingInput();
+      const original = recordWorkerBackendSessionMaterializing(coreDb, {
+        ...input,
+        backendLineage:
+          kind === 'reference'
+            ? { kind: 'reference', imageRef: 'registry.example/worker@sha256:image' }
+            : input.backendLineage,
+      });
+      const retained = JSON.stringify({
+        ...original.backendLineage,
+        description: { source: 'build annotation' },
+      });
+      coreDb.sqlite
+        .prepare('UPDATE worker_backend_sessions SET backend_lineage_json = ? WHERE attempt_id = ?')
+        .run(retained, original.attemptId);
+      expect(getWorkerBackendSession(coreDb, original.attemptId)).toEqual(original);
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT backend_lineage_json AS bytes FROM worker_backend_sessions WHERE attempt_id = ?'
+          )
+          .get(original.attemptId)
+      ).toEqual({ bytes: retained });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    { imageRef: 'registry.example/worker', kind: 'future-lineage' },
+    { imageRef: 'registry.example/worker', requiredFeatures: ['future-proof'] },
+    {
+      buildArgumentsDigest: 'sha256:arguments',
+      buildContextDigest: 'sha256:context',
+      buildInputDigest: 'sha256:input',
+      resultingImageDigest: null,
+    },
+  ])('refuses unknown or invalid required retained backend lineage %# without rewriting it', (lineage) => {
+    const coreDb = createFixture();
+    try {
+      const original = recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
+      const retained = JSON.stringify(lineage);
+      coreDb.sqlite
+        .prepare('UPDATE worker_backend_sessions SET backend_lineage_json = ? WHERE attempt_id = ?')
+        .run(retained, original.attemptId);
+      expect(() => getWorkerBackendSession(coreDb, original.attemptId)).toThrow();
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT backend_lineage_json AS bytes FROM worker_backend_sessions WHERE attempt_id = ?'
+          )
+          .get(original.attemptId)
+      ).toEqual({ bytes: retained });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('persists the complete package-scoped identity before materialization and accepts exact replay', () => {
     const coreDb = createFixture();
 
@@ -148,7 +181,7 @@ describe('worker backend sessions', () => {
         backendVersion: '0.0.99',
         backendSessionId: 'openkit-as_backend_session',
         createdAt: '2026-07-15T00:00:03.000Z',
-        leaseId: 'lease_backend_session',
+        attemptId: 'lease_backend_session',
         packageSnapshotId: 'aepsnap_backend_session',
         originPhysicalEpoch: 'a'.repeat(64),
         physicalCleanedAt: null,
@@ -164,7 +197,7 @@ describe('worker backend sessions', () => {
         workspaceId: 'ws_demo',
       });
       expect(replay).toEqual(first);
-      expect(getWorkerBackendSession(coreDb, first.leaseId)).toEqual(first);
+      expect(getWorkerBackendSession(coreDb, first.attemptId)).toEqual(first);
     } finally {
       coreDb.sqlite.close();
     }
@@ -262,7 +295,7 @@ describe('worker backend sessions', () => {
           ...materializingInput(),
           lineage: { ...materializingInput().lineage, turnId: 'turn_other' },
         })
-      ).toThrow('Scheduler lease binding does not match worker backend session lineage.');
+      ).toThrow('execution attempt binding does not match worker backend session lineage.');
     } finally {
       coreDb.sqlite.close();
     }
@@ -281,15 +314,8 @@ describe('worker backend sessions', () => {
             packageSnapshotId: 'aepsnap_plan_from_another_lease',
           },
         })
-      ).toThrow('Scheduler lease binding does not match worker backend session lineage.');
+      ).toThrow('execution attempt binding does not match worker backend session lineage.');
       expect(getWorkerBackendSession(coreDb, 'lease_backend_session')).toBeNull();
-      expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT backend_anchor_state AS backendAnchorState FROM scheduler_session_leases WHERE lease_id = ?'
-          )
-          .get('lease_backend_session')
-      ).toEqual({ backendAnchorState: 'unanchored' });
     } finally {
       coreDb.sqlite.close();
     }
@@ -300,20 +326,26 @@ describe('worker backend sessions', () => {
     const expiredDb = createFixture();
 
     try {
-      completeSchedulerSessionLease(terminalDb, {
-        leaseId: 'lease_backend_session',
-        releaseReason: 'turn-failed-before-materialization',
-        terminalStatus: 'failed',
+      attemptActionOwners.closeSchedulerExecutionAttemptWithoutEffects(terminalDb, {
+        attemptId: 'lease_backend_session',
+        cause: 'turn-failed-before-materialization',
+        noOutstandingEffects: true,
+      });
+      attemptActionOwners.recordSchedulerExecutionOperation(expiredDb, {
+        attemptId: 'lease_backend_session',
+        operationId: 'fixture-submit:lease_backend_session',
+        submission: true,
+        now: () => '2026-07-15T00:00:02.000Z',
       });
       expect(() =>
         recordWorkerBackendSessionMaterializing(terminalDb, materializingInput())
-      ).toThrow('Scheduler lease is not live for worker backend materialization.');
+      ).toThrow('execution attempt is not live for worker backend materialization.');
       expect(() =>
         recordWorkerBackendSessionMaterializing(expiredDb, {
           ...materializingInput(),
-          now: () => '2026-07-15T00:03:00.000Z',
+          now: () => '2026-07-15T02:00:03.000Z',
         })
-      ).toThrow('Scheduler lease is not live for worker backend materialization.');
+      ).toThrow('execution attempt is not live for worker backend materialization.');
       expect(getWorkerBackendSession(terminalDb, 'lease_backend_session')).toBeNull();
       expect(getWorkerBackendSession(expiredDb, 'lease_backend_session')).toBeNull();
     } finally {
@@ -324,15 +356,21 @@ describe('worker backend sessions', () => {
 
   it.each([
     ['terminal', '2026-07-15T00:00:04.000Z'],
-    ['deadline-expired', '2026-07-15T00:03:00.000Z'],
+    ['deadline-expired', '2026-07-15T02:00:03.000Z'],
   ] as const)('rejects an exact anchor replay after its lease becomes %s', (condition, now) => {
     const coreDb = createFixture();
 
     try {
+      attemptActionOwners.recordSchedulerExecutionOperation(coreDb, {
+        attemptId: 'lease_backend_session',
+        operationId: 'fixture-submit:lease_backend_session',
+        submission: true,
+        now: () => '2026-07-15T00:00:02.000Z',
+      });
       recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
       if (condition === 'terminal') {
         coreDb.sqlite
-          .prepare("UPDATE scheduler_session_leases SET status = 'failed' WHERE lease_id = ?")
+          .prepare("UPDATE scheduler_execution_attempts SET phase = 'closing' WHERE attempt_id = ?")
           .run('lease_backend_session');
       }
 
@@ -341,7 +379,7 @@ describe('worker backend sessions', () => {
           ...materializingInput(),
           now: () => now,
         })
-      ).toThrow('Scheduler lease is not live for worker backend materialization.');
+      ).toThrow('execution attempt is not live for worker backend materialization.');
       expect(getWorkerBackendSession(coreDb, 'lease_backend_session')).toMatchObject({
         state: 'materializing',
       });
@@ -360,7 +398,7 @@ describe('worker backend sessions', () => {
         coreDb.sqlite
           .prepare(
             `INSERT INTO worker_backend_sessions (
-               lease_id, workspace_id, thread_id, turn_id, agent_session_id,
+               attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
                package_snapshot_id, backend_kind, deployment_id, backend_version,
                runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref, backend_session_id,
                staging_directory_ref, transient_provider_instance_id, workspace_handoff_state,
@@ -373,7 +411,7 @@ describe('worker backend sessions', () => {
                     'provider-other', workspace_handoff_state,
                     state, created_at, updated_at
              FROM worker_backend_sessions
-             WHERE lease_id = 'lease_backend_session'`
+             WHERE attempt_id = 'lease_backend_session'`
           )
           .run()
       ).toThrow(/UNIQUE constraint failed/);
@@ -392,7 +430,7 @@ describe('worker backend sessions', () => {
         coreDb.sqlite
           .prepare(
             `INSERT INTO worker_backend_sessions (
-               lease_id, workspace_id, thread_id, turn_id, agent_session_id,
+               attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
                package_snapshot_id, backend_kind, deployment_id, backend_version,
                runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
                backend_session_id, staging_directory_ref, transient_provider_instance_id,
@@ -407,7 +445,7 @@ describe('worker backend sessions', () => {
                     transient_provider_instance_id, workspace_handoff_state,
                     state, created_at, updated_at
              FROM worker_backend_sessions
-             WHERE lease_id = 'lease_backend_session'`
+             WHERE attempt_id = 'lease_backend_session'`
           )
           .run()
       ).toThrow(/UNIQUE constraint failed/);
@@ -423,12 +461,12 @@ describe('worker backend sessions', () => {
       recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materializing',
-        leaseId: 'lease_backend_session',
+        attemptId: 'lease_backend_session',
         toState: 'materialized',
       });
       expect(
         markWorkerBackendWorkspaceHandoffComplete(coreDb, {
-          leaseId: 'lease_backend_session',
+          attemptId: 'lease_backend_session',
           now: () => '2026-07-15T00:00:04.500Z',
         })
       ).toMatchObject({ workspaceHandoffState: 'complete' });
@@ -467,7 +505,7 @@ describe('worker backend sessions', () => {
         coreDb.sqlite
           .prepare(
             `INSERT INTO worker_backend_sessions (
-               lease_id, workspace_id, thread_id, turn_id, agent_session_id,
+               attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
                package_snapshot_id, backend_kind, deployment_id, backend_version,
                runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref, backend_session_id,
                staging_directory_ref, transient_provider_instance_id, workspace_handoff_state,
@@ -480,7 +518,7 @@ describe('worker backend sessions', () => {
                     workspace_handoff_state,
                     state, created_at, updated_at
              FROM worker_backend_sessions
-             WHERE lease_id = 'lease_backend_session'`
+             WHERE attempt_id = 'lease_backend_session'`
           )
           .run()
       ).toThrow(/UNIQUE constraint failed/);
@@ -496,26 +534,26 @@ describe('worker backend sessions', () => {
       recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materializing',
-        leaseId: 'lease_backend_session',
+        attemptId: 'lease_backend_session',
         now: () => '2026-07-15T00:00:04.000Z',
         toState: 'cleanup-pending',
       });
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'cleanup-pending',
-        leaseId: 'lease_backend_session',
+        attemptId: 'lease_backend_session',
         now: () => '2026-07-15T00:00:05.000Z',
         toState: 'cleanup-failed',
       });
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'cleanup-failed',
-        leaseId: 'lease_backend_session',
+        attemptId: 'lease_backend_session',
         now: () => '2026-07-15T00:00:06.000Z',
         toState: 'cleanup-pending',
       });
       expect(
         transitionWorkerBackendSessionState(coreDb, {
           fromState: 'cleanup-pending',
-          leaseId: 'lease_backend_session',
+          attemptId: 'lease_backend_session',
           now: () => '2026-07-15T00:00:07.000Z',
           toState: 'physical-cleaned',
         })
@@ -527,7 +565,7 @@ describe('worker backend sessions', () => {
       expect(
         transitionWorkerBackendSessionState(coreDb, {
           fromState: 'physical-cleaned',
-          leaseId: 'lease_backend_session',
+          attemptId: 'lease_backend_session',
           now: () => '2026-07-15T00:00:08.000Z',
           toState: 'cleaned',
         })
@@ -539,7 +577,7 @@ describe('worker backend sessions', () => {
       expect(() =>
         transitionWorkerBackendSessionState(coreDb, {
           fromState: 'physical-cleaned',
-          leaseId: 'lease_backend_session',
+          attemptId: 'lease_backend_session',
           toState: 'cleaned',
         })
       ).toThrow('Worker backend session state changed before transition.');
@@ -552,21 +590,27 @@ describe('worker backend sessions', () => {
     const coreDb = createFixture();
 
     try {
+      attemptActionOwners.recordSchedulerExecutionOperation(coreDb, {
+        attemptId: 'lease_backend_session',
+        operationId: 'fixture-submit:lease_backend_session',
+        submission: true,
+        now: () => '2026-07-15T00:00:02.000Z',
+      });
       recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materializing',
-        leaseId: 'lease_backend_session',
+        attemptId: 'lease_backend_session',
         now: () => '2026-07-15T00:00:04.000Z',
         toState: 'materialized',
       });
       markWorkerBackendWorkspaceHandoffComplete(coreDb, {
-        leaseId: 'lease_backend_session',
+        attemptId: 'lease_backend_session',
         now: () => '2026-07-15T00:00:04.500Z',
       });
 
       expect(
         markWorkerBackendSessionLaunching(coreDb, {
-          leaseId: 'lease_backend_session',
+          attemptId: 'lease_backend_session',
           now: () => '2026-07-15T00:00:05.000Z',
         })
       ).toMatchObject({ state: 'launching', updatedAt: '2026-07-15T00:00:05.000Z' });
@@ -577,34 +621,40 @@ describe('worker backend sessions', () => {
 
   it.each([
     ['stale lease', '2026-07-15T00:00:05.000Z'],
-    ['expired startup deadline', '2026-07-15T00:03:00.000Z'],
+    ['expired startup deadline', '2026-07-15T00:26:00.000Z'],
   ] as const)('keeps the session materialized when the launch gate rejects a %s', (condition, now) => {
     const coreDb = createFixture();
 
     try {
+      attemptActionOwners.recordSchedulerExecutionOperation(coreDb, {
+        attemptId: 'lease_backend_session',
+        operationId: 'fixture-submit:lease_backend_session',
+        submission: true,
+        now: () => '2026-07-15T00:00:02.000Z',
+      });
       recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materializing',
-        leaseId: 'lease_backend_session',
+        attemptId: 'lease_backend_session',
         now: () => '2026-07-15T00:00:04.000Z',
         toState: 'materialized',
       });
       markWorkerBackendWorkspaceHandoffComplete(coreDb, {
-        leaseId: 'lease_backend_session',
+        attemptId: 'lease_backend_session',
         now: () => '2026-07-15T00:00:04.500Z',
       });
       if (condition === 'stale lease') {
         coreDb.sqlite
-          .prepare("UPDATE scheduler_session_leases SET status = 'stale' WHERE lease_id = ?")
+          .prepare("UPDATE scheduler_execution_attempts SET phase = 'closing' WHERE attempt_id = ?")
           .run('lease_backend_session');
       }
 
       expect(() =>
         markWorkerBackendSessionLaunching(coreDb, {
-          leaseId: 'lease_backend_session',
+          attemptId: 'lease_backend_session',
           now: () => now,
         })
-      ).toThrow('Scheduler lease is not live for worker backend launch.');
+      ).toThrow('execution attempt is not live for worker backend launch.');
       expect(getWorkerBackendSession(coreDb, 'lease_backend_session')).toMatchObject({
         state: 'materialized',
       });

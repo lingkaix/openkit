@@ -101,6 +101,8 @@ export type ApprovalDecision = 'granted' | 'denied';
  * Abstraction used by the HTTP layer to execute and interrupt turns.
  */
 export interface TurnExecutor {
+  /** Configured four-operation execution boundary supplied by runtime composition. */
+  readonly executionBackend?: import('./execution-backend.js').ExecutionBackend;
   /**
    * Product-visible capability flags for the bound runtime.
    */
@@ -180,6 +182,8 @@ export interface TurnExecutor {
 
 /** Static future-Turn inputs required for pre-lease AgentSession preparation. */
 export interface PrepareAgentSessionForTurnInput {
+  /** Exact attempt persisted before preparation effects. */
+  readonly attemptId?: string;
   /** Complete selected agent setup used by the final AEP resolution. */
   readonly agentSetup: ResolvedAgentSetup;
   /** Fresh AgentSession id reserved for replacement or first creation. */
@@ -238,8 +242,8 @@ export interface PreparedAgentSessionForTurn {
 
 /** Post-dispatch input for exact AgentSession revalidation and replacement commit. */
 export interface CommitPreparedAgentSessionForTurnInput {
-  /** Exact scheduler lease acquired from the prepared identity and key. */
-  readonly leaseId: string;
+  /** Exact scheduler attempt acquired from the prepared identity and key. */
+  readonly attemptId: string;
   /** Read-only decision and compare-and-set token produced before dispatch. */
   readonly prepared: PreparedAgentSessionForTurn;
   /** Original static inputs whose compatibility key must remain unchanged. */
@@ -314,6 +318,10 @@ export interface AgentSessionReadModel {
  * Runtime context captured when one turn is accepted.
  */
 export interface TurnStartRuntimeContext {
+  /** Exact attempt that owns preparation and native submission. */
+  /** Ends the existing preparation claim after the exact submit operation settles. */
+  readonly onSubmissionSettled?: () => void;
+  readonly attemptId?: string;
   /** Scheduler-owned AgentSession id used when a lease already reserved lineage. */
   agentSessionId?: string;
   /** Complete selected manifest and resolved provider inputs for governed workers. */
@@ -328,7 +336,7 @@ export interface TurnStartRuntimeContext {
   workspaceSourceRefs?: Record<string, string>;
   /** Scheduler-owned non-secret sandbox binding reference for worker-control auth. */
   sandboxBindingRef?: string;
-  /** Exact pre-lease SessionCompatibilityKey committed to the scheduler lease. */
+  /** Exact preparation SessionCompatibilityKey committed to the execution attempt. */
   sessionCompatibilityKey?: string;
   /** Host-local worker working directory selected for this turn. */
   workspaceCwd?: string | null;

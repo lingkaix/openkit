@@ -18,6 +18,7 @@ import {
 } from 'node:http2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setImmediate } from 'node:timers/promises';
 import { getRequestListener } from '@hono/node-server';
 import {
   CancelSchedulerAdmissionResponseSchema,
@@ -83,7 +84,12 @@ import {
 import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
 import * as workerCoordinator from './internal-agents/worker-coordinator.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
-import { createDemoWorkspaceForUser, FsStore, type FsStoreOptions } from './lib/store.js';
+import {
+  ALREADY_DECIDED_PUBLICATION_ADMISSION,
+  createDemoWorkspaceForUser,
+  FsStore,
+  type FsStoreOptions,
+} from './lib/store.js';
 import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
 import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { attachPiAiFailure } from './llm/pi-ai-failure.js';
@@ -92,10 +98,18 @@ import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
+import { resolveAgentSessionCompatibilityKey } from './runtime/agent-environment.js';
 import {
-  resolveAgentEnvironmentPackage,
-  resolveAgentSessionCompatibilityKey,
-} from './runtime/agent-environment.js';
+  acceptSchedulerExecutionObservation,
+  bindSchedulerExecutionAttemptSession,
+  closeSchedulerExecutionAttemptWithFence,
+  closeSchedulerExecutionAttemptWithoutEffects,
+  createSchedulerExecutionAttempt,
+  markSchedulerExecutionAttemptClosing,
+  recordSchedulerExecutionOperation,
+  requireSchedulerExecutionAttempt,
+  schedulerExecutionCorrelation,
+} from './runtime/execution-attempt-records.js';
 import {
   buildFilesystemWorkspaceChangeSet,
   createFilesystemSnapshotManifest,
@@ -105,6 +119,7 @@ import { commandInputHash } from './runtime/idempotent-command.js';
 import { mcpToolSchemaContentDigest } from './runtime/mcp-tool-schema-snapshots.js';
 import { getNanoHostRuntimeTarget } from './runtime/nanohost-runtime-target.js';
 import { createNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
+import { runSchedulerDispatchLoop } from './runtime/scheduler-dispatch-loop.js';
 import type {
   CommitPreparedAgentSessionForTurnInput,
   PrepareAgentSessionForTurnInput,
@@ -114,6 +129,11 @@ import type {
   TurnStartRuntimeContext,
 } from './runtime/types.js';
 import {
+  markWorkerBackendWorkspaceHandoffComplete,
+  recordWorkerBackendSessionMaterializing,
+  transitionWorkerBackendSessionState,
+} from './runtime/worker-backend-sessions.js';
+import {
   getWorkerCheckpoint,
   listExportableWorkerCheckpoints,
   parseWorkerCheckpointContextAssembly,
@@ -121,6 +141,8 @@ import {
   upsertWorkerCheckpoint,
 } from './runtime/worker-checkpoints.js';
 import { WorkerControlGateway } from './runtime/worker-control-gateway.js';
+import * as recoveryOwners from './runtime/worker-recovery.js';
+import { bindWorkerCheckpointToPreparedSession } from './runtime/worker-turn-loop.js';
 import { listWorkspaceApplyPlans } from './runtime/workspace-apply-plans.js';
 import {
   listWorkspaceApplyResults,
@@ -144,12 +166,9 @@ import {
 } from './runtime/workspace-sync-records.js';
 import {
   createSchedulerAdmissionEntry,
-  createSchedulerPlacementPlan,
-  createSchedulerSessionLease,
   denySchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
   listSchedulerAdmissionEntriesForWorkspace,
-  requireSchedulerSessionLease,
 } from './scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import {
@@ -166,9 +185,12 @@ import {
   createAppWithWorkspaceAuthority,
   createApp as createDeterministicTestApp,
 } from './test-support/app.js';
+import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
+import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
 import { startTurn as startNativeTurn } from './turn-routes.js';
 import { createVaultGrant, listVaultGrants } from './vault/vault-grants.js';
@@ -207,6 +229,8 @@ function createCoreDb(): CoreDb {
   const coreDb = openCoreDb(dataRoot);
 
   applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId: 'ws_demo' });
   return coreDb;
 }
 
@@ -229,9 +253,10 @@ function openTestWorkspaceDb(coreDb: CoreDb, workspaceId: string): WorkspaceDb {
  * @param coreDb Open Core database handle.
  * @param input Turn and lease state to record.
  */
-function recordWorkerRetryLease(
+async function recordWorkerRetryLease(
   coreDb: CoreDb,
   input: {
+    readonly effectsUnknown?: boolean;
     readonly agentSessionId: string;
     readonly recoveryState: 'awaiting-reconnect' | 'needs-evidence' | null;
     readonly releaseReason: string | null;
@@ -239,57 +264,85 @@ function recordWorkerRetryLease(
     readonly threadId: string;
     readonly turnId: string;
   }
-): void {
-  createSchedulerAdmissionEntry(coreDb, {
-    triggerActor: { kind: 'user', id: 'user_local' },
-    priorityClass: 'interactive',
+): Promise<void> {
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId: 'ws_demo' });
+  const entry = createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
+    triggerActor: { kind: 'user', id: LOCAL_USER_ID },
     profileRef: 'agent_codex_host',
     queueEntryId: `queue_${input.turnId}`,
     requestId: `request_${input.turnId}`,
     requestedAgentId: 'agent_codex_host',
-    requiredPoolConstraints: ['openshell.local'],
     threadId: input.threadId,
     turnId: input.turnId,
     turnInput: 'Run interrupted-worker retry fixture.',
     workspaceId: 'ws_demo',
   });
-  createSchedulerPlacementPlan(coreDb, {
-    degradedOptionalFeatures: [],
-    expectedControlMode: 'poll',
-    expectedDataPlaneMode: 'openshell-files',
-    heartbeatIntervalMs: 10_000,
-    heartbeatTimeoutMs: 30_000,
-    planId: `plan_${input.turnId}`,
-    plannedLeaseDurationMs: 900_000,
-    policyDecisionIds: [],
-    queueEntryId: `queue_${input.turnId}`,
-    schedulerEpoch: 1,
-    selectedPoolId: 'pool_local',
-    selectedTargetId: 'target_local',
-  });
-  createSchedulerSessionLease(coreDb, {
-    agentSessionId: input.agentSessionId,
-    expiresAt: '2099-01-01T01:00:00.000Z',
-    heartbeatDeadline: '2099-01-01T00:10:00.000Z',
-    leaseId: `lease_${input.turnId}`,
-    packageSnapshotId: `aepsnap_${input.turnId}`,
-    planId: `plan_${input.turnId}`,
-    sandboxTokenBindingRef: `lease-binding:lease_${input.turnId}`,
-    startupDeadline: '2099-01-01T00:05:00.000Z',
-  });
-  coreDb.sqlite
-    .prepare(
-      `UPDATE scheduler_session_leases
-       SET status = ?, release_reason = ?, recovery_state = ?, recovery_deadline = ?
-       WHERE lease_id = ?`
-    )
-    .run(
-      input.status,
-      input.releaseReason,
-      input.recoveryState,
-      input.recoveryState === 'awaiting-reconnect' ? '2099-01-01T00:05:00.000Z' : null,
-      `lease_${input.turnId}`
-    );
+  const attemptId = `lease_${input.turnId}`;
+  if (
+    input.status === 'failed' &&
+    input.releaseReason === 'turn-start-failed' &&
+    !input.effectsUnknown
+  ) {
+    createSchedulerExecutionAttempt(coreDb, {
+      entry,
+      attemptId,
+      preparationInput: { admission: entry },
+    });
+    bindSchedulerExecutionAttemptSession(coreDb, {
+      attemptId,
+      agentSessionId: input.agentSessionId,
+    });
+    // This explicitly pre-effect failure created no package or backend operation.
+    closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+      attemptId,
+      cause: 'turn-start-failed',
+      noOutstandingEffects: true,
+    });
+  } else {
+    recordTestExecutionAttempt(coreDb, {
+      entry,
+      attemptId,
+      agentSessionId: input.agentSessionId,
+      inputRef: `aepsnap_${input.turnId}`,
+      bindingRef: `lease-binding:${attemptId}`,
+      sessionCompatibilityKey: `compat:${input.turnId}`,
+      now: () => new Date().toISOString(),
+      operationId: `original:${input.turnId}`,
+    });
+    if (input.status !== 'active') {
+      const attempt = markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId,
+        cause: input.releaseReason ?? 'turn-failed',
+      });
+      // A modeled submission owns no physical process; retain unknown disposition while settling all model barriers.
+      const proof = {
+        terminalHandoff: true,
+        output: true,
+        evidence: true,
+        outsideWorkspaceCollection: true,
+        integrationDrain: true,
+        routesRevoked: true,
+      } as const;
+      const correlation = schedulerExecutionCorrelation(attempt);
+      const result = await new SimulatedTurnExecutor({ coreDb }).release({ ...correlation, proof });
+      closeSchedulerExecutionAttemptWithFence(coreDb, {
+        correlation,
+        proof,
+        fenceRef: result.fenceRef!,
+      });
+    }
+    coreDb.sqlite
+      .prepare(
+        'UPDATE scheduler_execution_attempts SET recovery_state = ?, recovery_deadline = ? WHERE attempt_id = ?'
+      )
+      .run(
+        input.recoveryState,
+        input.recoveryState === 'awaiting-reconnect' ? '2099-01-01T00:05:00.000Z' : null,
+        attemptId
+      );
+  }
 }
 
 /**
@@ -361,8 +414,12 @@ function seedDemoWorkspace(store: FsStore, userId = LOCAL_USER_ID): void {
  * @param options Store options.
  * @returns Store with Quick Chat plus Demo Workspace.
  */
+const demoStoreRoots = new WeakMap<FsStore, string>();
+
 function createDemoStore(options: FsStoreOptions = {}): FsStore {
-  const store = new FsStore(options);
+  const dataRoot = options.dataRoot ?? mkdtempSync(join(tmpdir(), 'openkit-server-store-'));
+  const store = new FsStore({ ...options, dataRoot });
+  demoStoreRoots.set(store, dataRoot);
   store.ensureQuickChatWorkspace(LOCAL_USER_ID);
   seedDemoWorkspace(store, LOCAL_USER_ID);
   return store;
@@ -503,8 +560,16 @@ function createApp(
   options: CreateAppOptions = {},
   canonicalAuthority = false
 ): ReturnType<typeof createNanoCoreApp> {
+  if (options.turnExecutor instanceof FakeTurnExecutor && !options.coreDb) {
+    const root = options.store ? demoStoreRoots.get(options.store) : undefined;
+    const coreDb = root ? openCoreDb(root) : createCoreDb();
+    if (root) applyMigrations(coreDb);
+    options = { ...options, coreDb };
+  }
   if (options.coreDb) {
     ensureLocalUser(options.coreDb);
+    if (options.turnExecutor instanceof FakeTurnExecutor)
+      options.turnExecutor.configureCore(options.coreDb, options);
   }
 
   const store =
@@ -790,7 +855,218 @@ class FakeTurnExecutor implements TurnExecutor {
     'error',
   ] as const;
   public readonly startContexts: TurnStartRuntimeContext[] = [];
-  private readonly continuity = new SimulatedTurnExecutor();
+  private continuity = new SimulatedTurnExecutor();
+  private fixtureOptions: { coreDb?: CoreDb } = {};
+  /** Uses the app's exact authority; this model creates no physical worker. */
+  private runtimeSnapshot?: ReturnType<typeof createInMemoryRuntimeConfigSnapshot>;
+  private completedExecutions = 0;
+  public configureCore(coreDb: CoreDb, options: CreateAppOptions): void {
+    this.runtimeSnapshot =
+      options.runtimeConfigManager?.current() ??
+      createInMemoryRuntimeConfigSnapshot({
+        agentManifests: options.agentManifests ?? [createTestAgentSetup().manifest],
+        providerRegistry: options.providerRegistry ?? testProviderRegistry(),
+        gatewayConfig: options.gatewayConfig ?? createTestGatewayConfig(),
+      });
+    this.fixtureOptions = { coreDb };
+    this.continuity = new SimulatedTurnExecutor({ coreDb });
+    recordTestNativeRuntimeTarget(coreDb);
+  }
+  /** The existing simulator owns this model's four-operation execution port. */
+  public get executionBackend() {
+    return this.continuity.executionBackend;
+  }
+  /** Observes full modeled closeout after a real dispatch tick; queued receipt gaps remain deciding failures. */
+  public async waitForFinished(store: FsStore, count = 1): Promise<void> {
+    const coreDb = this.fixtureOptions.coreDb!;
+    const config = this.runtimeSnapshot!;
+    const result = await runSchedulerDispatchLoop({
+      coreDb,
+      store,
+      turnExecutor: this,
+      executionBackend: this.executionBackend,
+      agentManifests: config.agentManifests,
+      providerRegistry: config.providerRegistry,
+      gatewayConfig: config.gatewayConfig,
+      workspaceDataSourceCatalogs: config.workspaceDataSourceCatalogs,
+      workspaceMcpServerCatalogs: config.workspaceMcpServerCatalogs,
+    });
+    if (
+      result.terminalResult.status === 'queued' &&
+      result.terminalResult.reason === 'entry-publication-pending'
+    ) {
+      console.log(
+        'server-publication-probe',
+        JSON.stringify({
+          result: result.terminalResult,
+          admissions: coreDb.sqlite
+            .prepare(
+              'SELECT queue_entry_id, request_id, thread_id, turn_id, status FROM scheduler_admission_entries'
+            )
+            .all(),
+          receipts: store.listCommandRequests(),
+        })
+      );
+    }
+    await vi.waitFor(() => expect(this.completedExecutions).toBe(count), { timeout: 1_000 });
+    await setImmediate();
+  }
+  /** Binds the exact prepared checkpoint and commits original submit intent before the modeled effect. */
+  public async beginTurn(
+    store: FsStore,
+    turnId: string,
+    context: TurnStartRuntimeContext,
+    input: string
+  ): Promise<void> {
+    const coreDb = this.fixtureOptions.coreDb;
+    if (!coreDb || !context.attemptId || !context.agentSessionId)
+      throw new Error('Worker fixture lacks exact Core preparation.');
+    const turn = store.getTurnById(turnId);
+    const db = openWorkspaceDb(coreDb.dataRoot, turn.workspaceId);
+    try {
+      bindWorkerCheckpointToPreparedSession({
+        coreDb,
+        workspaceDb: db,
+        store,
+        workspaceId: turn.workspaceId,
+        threadId: turn.threadId,
+        turnId,
+        requestId: context.requestId ?? null,
+        agentSessionId: context.agentSessionId,
+        attemptId: context.attemptId,
+      });
+      const environmentPackage = resolveAgentEnvironmentPackage({
+        coreDb,
+        agentSessionId: context.agentSessionId,
+        agentSetup: context.agentSetup!,
+        backend: { kind: 'openshell' },
+        createdAt: new Date().toISOString(),
+        requestId: context.requestId ?? null,
+        turn,
+        turnInput: input,
+        triggerActor: turn.triggerActor,
+        workspaceRoots: context.workspaceRoots,
+        ...(context.workspaceMcpServerCatalog
+          ? { workspaceMcpServerCatalog: context.workspaceMcpServerCatalog }
+          : {}),
+        ...(context.workspaceDataSourceCatalog
+          ? { workspaceDataSourceCatalog: context.workspaceDataSourceCatalog }
+          : {}),
+        ...(context.workspaceSourceRefs
+          ? { workspaceSourceRefs: context.workspaceSourceRefs }
+          : {}),
+      });
+      recordAgentEnvironmentPackageSnapshot(db, {
+        environmentPackage,
+        createdAt: new Date().toISOString(),
+      });
+      const target = recordTestNativeRuntimeTarget(coreDb);
+      const backendSession = recordWorkerBackendSessionMaterializing(coreDb, {
+        backendLineage: { imageRef: environmentPackage.runtime.image.ref, kind: 'reference' },
+        backendVersion: null,
+        identity: {
+          agentSessionId: context.agentSessionId,
+          backendKind: 'openshell',
+          backendSessionId: `modeled_${environmentPackage.snapshotId}`,
+          deploymentId: target.deploymentId,
+          packageSnapshotId: environmentPackage.snapshotId,
+          runtimeTargetId: target.targetId,
+          stagingDirectoryRef: `server/runtime/worker-backend-sessions/${environmentPackage.snapshotId}`,
+          transientProviderInstanceId: null,
+        },
+        lineage: { workspaceId: turn.workspaceId, threadId: turn.threadId, turnId },
+        sandboxBindingRef: requireSchedulerExecutionAttempt(coreDb, context.attemptId).bindingRef!,
+      });
+      markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: backendSession.attemptId });
+      const at = turn.startedAt!;
+      const sessionInput = {
+        id: context.agentSessionId,
+        agentId: turn.agentId!,
+        workspaceId: turn.workspaceId,
+        threadId: turn.threadId,
+        status: 'busy',
+        message: null,
+        createdAt: at,
+        updatedAt: at,
+        environmentPackageSnapshotId: environmentPackage.snapshotId,
+        sessionCompatibilityKey: context.sessionCompatibilityKey,
+      } as const;
+      let exists = false;
+      try {
+        store.getAgentSession(context.agentSessionId);
+        exists = true;
+      } catch {
+        /* Fresh prepared session. */
+      }
+      if (exists)
+        store.updateAgentSession(context.agentSessionId, {
+          status: sessionInput.status,
+          message: sessionInput.message,
+          updatedAt: sessionInput.updatedAt,
+          environmentPackageSnapshotId: sessionInput.environmentPackageSnapshotId,
+        });
+      else store.createAgentSession(sessionInput);
+    } finally {
+      db.sqlite.close();
+    }
+    const attempt = recordSchedulerExecutionOperation(coreDb, {
+      attemptId: context.attemptId,
+      operationId: `modeled:${turnId}`,
+      submission: true,
+    });
+    acceptSchedulerExecutionObservation(
+      coreDb,
+      await this.continuity.submit({
+        ...schedulerExecutionCorrelation(attempt),
+        deadline: attempt.deadline!,
+      })
+    );
+    context.onSubmissionSettled?.();
+  }
+
+  /** Settles this explicit model's six barriers after its held product/closeout work; it owns no physical resident. */
+  public async releaseTurn(
+    context: TurnStartRuntimeContext,
+    cause = 'turn-completed'
+  ): Promise<void> {
+    const coreDb = this.fixtureOptions.coreDb!;
+    // This test double creates no native process; its exact private cleanup projection settles alongside its owned modeled barriers.
+    transitionWorkerBackendSessionState(coreDb, {
+      attemptId: context.attemptId!,
+      fromState: 'materializing',
+      toState: 'cleanup-pending',
+    });
+    transitionWorkerBackendSessionState(coreDb, {
+      attemptId: context.attemptId!,
+      fromState: 'cleanup-pending',
+      toState: 'physical-cleaned',
+    });
+    transitionWorkerBackendSessionState(coreDb, {
+      attemptId: context.attemptId!,
+      fromState: 'physical-cleaned',
+      toState: 'cleaned',
+    });
+    const closing = markSchedulerExecutionAttemptClosing(coreDb, {
+      attemptId: context.attemptId!,
+      cause,
+    });
+    const correlation = schedulerExecutionCorrelation(closing);
+    const proof = {
+      terminalHandoff: true,
+      output: true,
+      evidence: true,
+      outsideWorkspaceCollection: true,
+      integrationDrain: true,
+      routesRevoked: true,
+    } as const;
+    const result = await this.continuity.release({ ...correlation, proof });
+    closeSchedulerExecutionAttemptWithFence(coreDb, {
+      correlation,
+      proof,
+      fenceRef: result.fenceRef!,
+    });
+    this.completedExecutions += 1;
+  }
 
   /**
    * Admits one AgentSession using the current compatibility-key preview.
@@ -815,7 +1091,7 @@ class FakeTurnExecutor implements TurnExecutor {
   public commitPreparedAgentSessionForTurn(
     store: FsStore,
     input: CommitPreparedAgentSessionForTurnInput
-  ): Promise<void> {
+  ): ReturnType<SimulatedTurnExecutor['commitPreparedAgentSessionForTurn']> {
     return this.continuity.commitPreparedAgentSessionForTurn(store, input);
   }
 
@@ -828,6 +1104,7 @@ class FakeTurnExecutor implements TurnExecutor {
     input: string,
     context: TurnStartRuntimeContext = { requestId: null, workspaceRoots: [] }
   ): Promise<void> {
+    await this.beginTurn(store, turnId, context, input);
     this.startContexts.push(context);
 
     const turn = store.getTurnById(turnId);
@@ -960,14 +1237,19 @@ class FakeTurnExecutor implements TurnExecutor {
       status: 'idle',
       updatedAt: assistantItem.completedAt ?? timestamp,
     });
-    store.emitTurnEvent(turnId, {
-      event: 'turn.completed',
-      requestId,
-      workspaceId: turn.workspaceId,
-      threadId: turn.threadId,
+    store.emitTurnEvent(
       turnId,
-      data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
-    });
+      {
+        event: 'turn.completed',
+        requestId,
+        workspaceId: turn.workspaceId,
+        threadId: turn.threadId,
+        turnId,
+        data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
+    await this.releaseTurn(context);
   }
 
   /**
@@ -1011,9 +1293,7 @@ class DelayedTurnExecutor extends FakeTurnExecutor {
    * Waits until the delayed executor has accepted the turn.
    */
   public async waitForStart(): Promise<void> {
-    while (this.starts === 0) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
+    await vi.waitFor(() => expect(this.starts).toBe(1), { timeout: 1_000 });
   }
 
   /**
@@ -1135,6 +1415,22 @@ function workspaceSyncReviewRouteItem(): Parameters<typeof recordWorkspaceSyncRe
       workspaceId: 'ws_demo',
     },
   };
+}
+
+/** Reads exact Core attempt ownership without interpreting backend-private progress. */
+function observeExecutionAttempts(
+  coreDb: ReturnType<typeof openCoreDb>
+): Record<string, unknown>[] {
+  const present = coreDb.sqlite
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduler_execution_attempts'"
+    )
+    .get();
+  return present
+    ? (coreDb.sqlite
+        .prepare('SELECT * FROM scheduler_execution_attempts ORDER BY rowid')
+        .all() as Record<string, unknown>[])
+    : [];
 }
 
 describe('nanocore server', () => {
@@ -3319,62 +3615,65 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-scheduler-admission-list-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId: 'ws_other' });
     const store = createDemoStore({ dataRoot });
     const thread = store.createThread('ws_demo', 'Scheduler admission read route');
     createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
       triggerActor: { kind: 'user', id: 'user_local' },
       queueEntryId: 'queue_read_route_1',
+      requestId: 'request_queue_read_route_1',
       workspaceId: 'ws_demo',
       threadId: thread.id,
       turnId: 'turn_scheduler_read_1',
       turnInput: 'First queued turn with /Users/private local path hidden from response.',
       requestedAgentId: 'agent_codex_host',
       profileRef: 'agent_codex_host',
-      priorityClass: 'interactive',
-      requiredPoolConstraints: ['openshell.local'],
       now: () => '2026-07-07T00:00:00.000Z',
     });
     createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
       triggerActor: { kind: 'user', id: 'user_local' },
       queueEntryId: 'queue_read_route_2',
+      requestId: 'request_queue_read_route_2',
       workspaceId: 'ws_demo',
       threadId: thread.id,
       turnId: 'turn_scheduler_read_2',
       turnInput: 'Second queued turn.',
       requestedAgentId: 'agent_codex_host',
       profileRef: 'agent_codex_host',
-      priorityClass: 'automation',
-      requiredPoolConstraints: ['openshell.local'],
       now: () => '2026-07-07T00:00:01.000Z',
     });
     createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
       triggerActor: { kind: 'user', id: 'user_local' },
       queueEntryId: 'queue_read_route_denied',
+      requestId: 'request_queue_read_route_denied',
       workspaceId: 'ws_demo',
       threadId: thread.id,
       turnId: 'turn_scheduler_read_denied',
       turnInput: 'Denied turn.',
       requestedAgentId: 'agent_codex_host',
       profileRef: 'agent_codex_host',
-      priorityClass: 'interactive',
-      requiredPoolConstraints: ['openshell.local'],
       now: () => '2026-07-07T00:00:02.000Z',
     });
     denySchedulerAdmissionEntry(coreDb, {
       queueEntryId: 'queue_read_route_denied',
-      denialReason: 'no-compatible-pool',
+      denialReason: 'authority-denied',
     });
     createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
       triggerActor: { kind: 'user', id: 'user_local' },
       queueEntryId: 'queue_other_workspace',
+      requestId: 'request_queue_other_workspace',
       workspaceId: 'ws_other',
       threadId: 'th_other',
       turnId: 'turn_other',
       turnInput: 'Other workspace turn.',
       requestedAgentId: 'agent_codex_host',
       profileRef: 'agent_codex_host',
-      priorityClass: 'interactive',
-      requiredPoolConstraints: ['openshell.local'],
     });
     const app = createApp({ coreDb, dataRoot, store });
 
@@ -3397,13 +3696,13 @@ describe('nanocore server', () => {
         workspaceId: 'ws_demo',
         status: 'queued',
         denialReason: null,
-        queuePosition: 3,
+        queuePosition: 2,
       },
       {
         queueEntryId: 'queue_read_route_denied',
         workspaceId: 'ws_demo',
         status: 'denied',
-        denialReason: 'no-compatible-pool',
+        denialReason: 'authority-denied',
         queuePosition: null,
       },
     ]);
@@ -3785,6 +4084,7 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot });
     const thread = store.createThread('ws_demo', 'Scheduler admission retry route');
     createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
       triggerActor: { kind: 'user', id: 'user_local' },
       queueEntryId: 'queue_retry_route',
       workspaceId: 'ws_demo',
@@ -3793,12 +4093,10 @@ describe('nanocore server', () => {
       turnInput: 'Retry scheduler admission.',
       requestedAgentId: 'agent_codex_host',
       profileRef: 'agent_codex_host',
-      priorityClass: 'interactive',
-      requiredPoolConstraints: ['openshell.local'],
     });
     denySchedulerAdmissionEntry(coreDb, {
       queueEntryId: 'queue_retry_route',
-      denialReason: 'no-compatible-pool',
+      denialReason: 'authority-denied',
     });
     const app = createApp({ coreDb, dataRoot, store });
 
@@ -3851,6 +4149,7 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot });
     const thread = store.createThread('ws_demo', 'Scheduler admission cancel route');
     createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
       triggerActor: { kind: 'user', id: 'user_local' },
       queueEntryId: 'queue_cancel_route',
       workspaceId: 'ws_demo',
@@ -3859,8 +4158,6 @@ describe('nanocore server', () => {
       turnInput: 'Cancel scheduler admission.',
       requestedAgentId: 'agent_codex_host',
       profileRef: 'agent_codex_host',
-      priorityClass: 'interactive',
-      requiredPoolConstraints: ['openshell.local'],
     });
     const app = createApp({ coreDb, dataRoot, store });
 
@@ -4064,7 +4361,7 @@ describe('nanocore server', () => {
     } finally {
       workspaceDb.sqlite.close();
     }
-    recordWorkerRetryLease(coreDb, {
+    await recordWorkerRetryLease(coreDb, {
       agentSessionId,
       recoveryState: 'awaiting-reconnect',
       releaseReason: null,
@@ -4074,7 +4371,7 @@ describe('nanocore server', () => {
     });
     const turnBefore = store.getTurnById(turn.id);
     const sessionBefore = store.getAgentSession(agentSessionId);
-    const leaseBefore = requireSchedulerSessionLease(coreDb, `lease_${turn.id}`);
+    const leaseBefore = requireSchedulerExecutionAttempt(coreDb, `lease_${turn.id}`);
     const checkpointDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     const checkpointBefore = getWorkerCheckpoint(checkpointDb, 'ws_demo', thread.id, turn.id);
     checkpointDb.sqlite.close();
@@ -4103,7 +4400,7 @@ describe('nanocore server', () => {
     await expect(retry.json()).resolves.toMatchObject({ code: 'worker_reconnect_pending' });
     expect(store.getTurnById(turn.id)).toEqual(turnBefore);
     expect(store.getAgentSession(agentSessionId)).toEqual(sessionBefore);
-    expect(requireSchedulerSessionLease(coreDb, `lease_${turn.id}`)).toEqual(leaseBefore);
+    expect(requireSchedulerExecutionAttempt(coreDb, `lease_${turn.id}`)).toEqual(leaseBefore);
     const reopenedDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     expect(getWorkerCheckpoint(reopenedDb, 'ws_demo', thread.id, turn.id)).toEqual(
       checkpointBefore
@@ -4521,7 +4818,7 @@ describe('nanocore server', () => {
     try {
       ensureLocalUser(coreDb);
       recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-      const store = createDemoStore();
+      const store = createDemoStore({ dataRoot: coreDb.dataRoot });
       const before = {
         turns: store.listThreadTurns('ws_demo', 'th_demo'),
         receipts: store.listCommandRequests(),
@@ -4548,7 +4845,6 @@ describe('nanocore server', () => {
               openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
               providerRegistry: testProviderRegistry(),
             }),
-          schedulerEpoch: 1,
           turnExecutor: new FakeTurnExecutor(),
           workerPlacement: 'local',
         },
@@ -4597,7 +4893,6 @@ describe('nanocore server', () => {
               openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
               providerRegistry: testProviderRegistry(),
             }),
-          schedulerEpoch: 1,
           turnExecutor: new FakeTurnExecutor(),
           workerPlacement: 'local',
         }
@@ -4654,10 +4949,11 @@ describe('nanocore server', () => {
       const turn = (await res.json()) as { id: string };
 
       expect(res.status).toBe(202);
+      await vi.waitFor(() => expect(executor.startContexts).toHaveLength(1));
       expect(executor.startContexts[0]).toMatchObject({
         agentSessionId: expect.any(String),
         requestId: '0190f4c8-0000-7000-8000-000000000216',
-        sandboxBindingRef: expect.stringMatching(/^lease-binding:/),
+        attemptId: expect.any(String),
       });
       expect(providerCredentialResolver).not.toHaveBeenCalled();
       expect(turn.id).toMatch(/^turn_0190f4c8-0000-7000-8000-000000000216/);
@@ -4676,6 +4972,7 @@ describe('nanocore server', () => {
     });
     const executor = new FakeTurnExecutor();
     let launchedContextAssembly: ReturnType<typeof parseWorkerCheckpointContextAssembly> = null;
+    const executionFinished = Promise.withResolvers<void>();
     const startTurn = executor.startTurn.bind(executor);
     vi.spyOn(executor, 'startTurn').mockImplementation(async (...args) => {
       const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
@@ -4687,7 +4984,8 @@ describe('nanocore server', () => {
       } finally {
         workspaceDb.sqlite.close();
       }
-      return startTurn(...args);
+      await startTurn(...args);
+      executionFinished.resolve();
     });
     const opaqueAgentManifest = createTestAgentSetup({
       adapter: 'fourth-runtime',
@@ -4699,7 +4997,11 @@ describe('nanocore server', () => {
       agentId: 'agent_zeta_runtime',
       displayName: 'Zeta Runtime Agent',
     }).manifest;
+    const providerRegistry = testProviderRegistry();
+    const gatewayConfig = createTestGatewayConfig();
     const app = createApp({
+      providerRegistry,
+      gatewayConfig,
       agentManifests: [laterAgentManifest, opaqueAgentManifest],
       coreDb,
       store,
@@ -4761,8 +5063,52 @@ describe('nanocore server', () => {
 
       const responseBody = await res.json();
       expect(res.status, JSON.stringify(responseBody)).toBe(202);
-      const parsed = StartTaskModeResponseSchema.parse(responseBody);
-
+      const accepted = StartTaskModeResponseSchema.parse(responseBody);
+      expect(accepted).not.toHaveProperty('decision');
+      expect(accepted.turn.id).toMatch(/^turn_0190f4c8-0000-7000-8000-000000000301/);
+      expect(['pending', 'running', 'completed']).toContain(accepted.turn.status);
+      expect(
+        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          workspaceId: 'ws_demo',
+          statuses: ['queued', 'admitted', 'denied', 'cancelled'],
+        })
+      ).toEqual([expect.objectContaining({ turnId: accepted.turn.id, requestId })]);
+      // A receipt may precede dispatch; drive a later real Core tick with the same configured producers.
+      await runSchedulerDispatchLoop({
+        coreDb,
+        store,
+        turnExecutor: executor,
+        executionBackend: executor.executionBackend,
+        agentManifests: [laterAgentManifest, opaqueAgentManifest],
+        providerRegistry,
+        gatewayConfig,
+        maxDispatches: 1,
+      });
+      // Receipt publication is independent of executor entry and terminal closeout.
+      await vi.waitFor(() => expect(executor.startContexts).toHaveLength(1));
+      await executionFinished.promise;
+      await vi.waitFor(() => {
+        expect(store.getTurnById(accepted.turn.id).status).toBe('completed');
+        expect(
+          observeExecutionAttempts(coreDb).find((attempt) => attempt.turn_id === accepted.turn.id)
+            ?.phase,
+          'Completed worker execution still requires its positively proved attempt closeout.'
+        ).toBe('closed');
+      });
+      const terminalResponse = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: JSON.stringify({ requestId, input, workerStorageChoice }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
+      expect(terminalResponse.status).toBe(202);
+      const parsed = StartTaskModeResponseSchema.parse(await terminalResponse.json());
+      expect(parsed.turn.id).toBe(accepted.turn.id);
       expect(parsed).not.toHaveProperty('decision');
       expect(parsed.state).toBe('completed');
       expect(parsed.turn.status).toBe('completed');
@@ -4876,7 +5222,12 @@ describe('nanocore server', () => {
       );
 
       expect(replayRes.status).toBe(202);
-      expect(StartTaskModeResponseSchema.parse(await replayRes.json())).toEqual(parsed);
+      expect(StartTaskModeResponseSchema.parse(await replayRes.json())).toMatchObject({
+        state: 'completed',
+        turn: { id: accepted.turn.id, status: 'completed' },
+        completion: parsed.completion,
+        evidence: parsed.evidence,
+      });
       expect(storageConflictRes.status).toBe(409);
       await expect(storageConflictRes.json()).resolves.toMatchObject({
         code: 'idempotency_key_conflict',
@@ -4894,15 +5245,19 @@ describe('nanocore server', () => {
       await expect(conflictRes.json()).resolves.toMatchObject({
         code: 'idempotency_key_conflict',
       });
+      await executor.waitForFinished(store, 1);
       expect(executor.startContexts).toHaveLength(1);
-      const sandboxBindingRef = executor.startContexts[0]!.sandboxBindingRef!;
+      const sandboxBindingRef = requireSchedulerExecutionAttempt(
+        coreDb,
+        executor.startContexts[0]!.attemptId!
+      ).bindingRef!;
       expect(
-        requireSchedulerSessionLease(coreDb, sandboxBindingRef.slice('lease-binding:'.length))
-      ).toMatchObject({
-        status: 'released',
-        releaseReason: 'turn-completed',
-        turnId: parsed.turn.id,
-      });
+        observeExecutionAttempts(coreDb).find((attempt) => attempt.turn_id === parsed.turn.id)
+          ?.phase
+      ).toBe('closed');
+      expect(
+        observeExecutionAttempts(coreDb).find((attempt) => attempt.turn_id === parsed.turn.id)
+      ).toMatchObject({ binding_ref: sandboxBindingRef });
     } finally {
       coreDb.sqlite.close();
     }
@@ -5020,14 +5375,19 @@ describe('nanocore server', () => {
       const responseBody = await response.json();
 
       expect(response.status, JSON.stringify(responseBody)).toBe(202);
+      await executor.waitForFinished(store);
       if (responseKind === 'task') {
-        expect(StartTaskModeResponseSchema.parse(responseBody).state).toBe('completed');
+        expect(StartTaskModeResponseSchema.parse(responseBody).turn.id).toBe(
+          store.listThreadTurns('ws_demo', 'th_demo')[0]!.id
+        );
+        expect(store.listThreadTurns('ws_demo', 'th_demo')[0]!.status).toBe('completed');
       } else {
         expect(SubmitConversationResponseSchema.parse(responseBody)).toMatchObject({
           outcome: 'task-handoff',
           handoff: { targetMode: 'task' },
         });
       }
+      await executor.waitForFinished(store, 1);
       expect(executor.startContexts).toHaveLength(1);
       expect(executor.startContexts[0]).toMatchObject({
         workspaceCwd: '/workspace/openkit',
@@ -5081,6 +5441,7 @@ describe('nanocore server', () => {
     const executor = new FakeTurnExecutor();
     vi.spyOn(executor, 'startTurn').mockImplementation(
       async (runtimeStore, turnId, input, context) => {
+        await executor.beginTurn(runtimeStore, turnId, context, input);
         executor.startContexts.push(context);
         const turn = runtimeStore.getTurnById(turnId);
         const completedAt = new Date().toISOString();
@@ -5088,19 +5449,7 @@ describe('nanocore server', () => {
           throw new Error('Fake worker turn requires a selected agent id.');
         }
         const agentSessionId = context.agentSessionId ?? `session_${turn.threadId}`;
-        const agentSession = runtimeStore.createAgentSession({
-          id: agentSessionId,
-          agentId: turn.agentId,
-          workspaceId: turn.workspaceId,
-          threadId: turn.threadId,
-          status: 'busy',
-          message: null,
-          ...(context.sessionCompatibilityKey
-            ? { sessionCompatibilityKey: context.sessionCompatibilityKey }
-            : {}),
-          createdAt: completedAt,
-          updatedAt: completedAt,
-        });
+        const agentSession = runtimeStore.getAgentSession(agentSessionId);
         runtimeStore.createItem({
           id: `it_user_${turnId}`,
           workspaceId: turn.workspaceId,
@@ -5124,14 +5473,19 @@ describe('nanocore server', () => {
           status: 'failed',
           updatedAt: completedAt,
         });
-        runtimeStore.emitTurnEvent(turnId, {
-          event: 'turn.completed',
-          requestId: context.requestId ?? null,
-          workspaceId: turn.workspaceId,
-          threadId: turn.threadId,
+        runtimeStore.emitTurnEvent(
           turnId,
-          data: { type: 'turn-completed', stopReason: 'error', turn: failedTurn },
-        });
+          {
+            event: 'turn.completed',
+            requestId: context.requestId ?? null,
+            workspaceId: turn.workspaceId,
+            threadId: turn.threadId,
+            turnId,
+            data: { type: 'turn-completed', stopReason: 'error', turn: failedTurn },
+          },
+          ALREADY_DECIDED_PUBLICATION_ADMISSION
+        );
+        await executor.releaseTurn(context, 'turn-failed');
       }
     );
     const app = createApp({ coreDb, store, turnExecutor: executor });
@@ -5158,9 +5512,10 @@ describe('nanocore server', () => {
         )
       );
       expect(response.status, await response.clone().text()).toBe(202);
+      await executor.waitForFinished(store);
       if (entry === 'direct Task') {
         const result = StartTaskModeResponseSchema.parse(await response.clone().json());
-        expect(result.state).toBe('failed');
+        expect(store.getTurnById(result.turn.id).status).toBe('failed');
         const checkpointDb = openTestWorkspaceDb(coreDb, 'ws_demo');
         try {
           expect(
@@ -5229,6 +5584,7 @@ describe('nanocore server', () => {
     const executor = new FakeTurnExecutor();
     vi.spyOn(executor, 'startTurn').mockImplementation(
       async (runtimeStore, turnId, input, context) => {
+        await executor.beginTurn(runtimeStore, turnId, context, input);
         executor.startContexts.push(context);
         const turn = runtimeStore.getTurnById(turnId);
         const completedAt = new Date().toISOString();
@@ -5236,19 +5592,7 @@ describe('nanocore server', () => {
           throw new Error('Fake worker turn requires a selected agent id.');
         }
         const agentSessionId = context.agentSessionId ?? `session_${turn.threadId}`;
-        const agentSession = runtimeStore.createAgentSession({
-          id: agentSessionId,
-          agentId: turn.agentId,
-          workspaceId: turn.workspaceId,
-          threadId: turn.threadId,
-          status: 'busy',
-          message: null,
-          ...(context.sessionCompatibilityKey
-            ? { sessionCompatibilityKey: context.sessionCompatibilityKey }
-            : {}),
-          createdAt: completedAt,
-          updatedAt: completedAt,
-        });
+        const agentSession = runtimeStore.getAgentSession(agentSessionId);
         runtimeStore.createItem({
           id: `it_user_${turnId}`,
           workspaceId: turn.workspaceId,
@@ -5272,14 +5616,19 @@ describe('nanocore server', () => {
           status: 'failed',
           updatedAt: completedAt,
         });
-        runtimeStore.emitTurnEvent(turnId, {
-          event: 'turn.completed',
-          requestId: context.requestId ?? null,
-          workspaceId: turn.workspaceId,
-          threadId: turn.threadId,
+        runtimeStore.emitTurnEvent(
           turnId,
-          data: { type: 'turn-completed', stopReason, turn: terminalTurn },
-        });
+          {
+            event: 'turn.completed',
+            requestId: context.requestId ?? null,
+            workspaceId: turn.workspaceId,
+            threadId: turn.threadId,
+            turnId,
+            data: { type: 'turn-completed', stopReason, turn: terminalTurn },
+          },
+          ALREADY_DECIDED_PUBLICATION_ADMISSION
+        );
+        await executor.releaseTurn(context, status === 'failed' ? 'turn-failed' : 'turn-cancelled');
       }
     );
     const app = createApp({ coreDb, store, turnExecutor: executor });
@@ -5303,7 +5652,30 @@ describe('nanocore server', () => {
         )
       );
       expect(response.status, await response.clone().text()).toBe(202);
-      const result = SubmitConversationResponseSchema.parse(await response.json());
+      const accepted = SubmitConversationResponseSchema.parse(await response.json());
+      expect(accepted.turn.status).toBe('pending');
+      await executor.waitForFinished(store);
+      const resultResponse = await app.request(
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          { body: requestBody, headers: jsonHeaders(), method: 'POST' }
+        )
+      );
+      expect(
+        requireSchedulerExecutionAttempt(coreDb, executor.startContexts[0]!.attemptId!)
+      ).toMatchObject({
+        phase: 'closed',
+        disposition: 'accepted',
+        operationId: expect.any(String),
+        fenceRef: expect.any(String),
+      });
+      expect(store.getTurnById(accepted.turn.id).status).toBe(status);
+      expect(
+        store.getTurnEvents(accepted.turn.id).filter((event) => event.event === 'turn.completed')
+      ).toHaveLength(1);
+      expect(resultResponse.status, await resultResponse.clone().text()).toBe(202);
+      const result = SubmitConversationResponseSchema.parse(await resultResponse.json());
       expect(result).toMatchObject({
         explanation,
         item: {
@@ -5332,6 +5704,7 @@ describe('nanocore server', () => {
       );
       expect(replay.status, await replay.clone().text()).toBe(202);
       expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(result);
+      await executor.waitForFinished(store, 1);
       expect(executor.startContexts).toHaveLength(1);
       expect(() => store.updateItem(result.item.id, { title: 'Worker Turn accepted' })).toThrow(
         /is terminal and does not admit this write/
@@ -5354,9 +5727,9 @@ describe('nanocore server', () => {
     seedWritableGitRepository(repositoryPath);
 
     try {
-      const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
-        throw new Error('simulated Task receipt write failure');
-      });
+      const collector = vi
+        .spyOn(recoveryOwners, 'clearWorkerCheckpointAfterTerminalState')
+        .mockResolvedValueOnce(false);
       const firstRes = await app.request(
         ...operationRequest(
           'task.start',
@@ -5368,10 +5741,23 @@ describe('nanocore server', () => {
           }
         )
       );
-      receiptWrite.mockRestore();
+      await executor.waitForFinished(store);
+      collector.mockRestore();
+      // Deliberately corrupt only the published receipt after the exact execution has closed; retained terminal owners drive recovery.
+      const receiptDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      receiptDb.sqlite
+        .prepare('DELETE FROM idempotency_requests WHERE command_name = ? AND request_id = ?')
+        .run('task.start', requestId);
+      receiptDb.sqlite.close();
 
-      expect(firstRes.status).toBe(409);
-      await expect(firstRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(firstRes.status).toBe(202);
+      expect(
+        store.getCommandRequest('task.start', requestId, {
+          actorId: LOCAL_USER_ID,
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+        })
+      ).toBeNull();
       const turns = store.listThreadTurns('ws_demo', 'th_demo');
       expect(turns).toHaveLength(1);
       const turn = turns[0]!;
@@ -5388,6 +5774,7 @@ describe('nanocore server', () => {
             requestId,
             stage: 'completed',
             stopReason: 'completed',
+            workerSessionId: expect.any(String),
           }),
         ]);
         await expect(
@@ -5406,6 +5793,10 @@ describe('nanocore server', () => {
             checkpoint: checkpoints[0]!,
           })
         ).resolves.toBe('complete');
+        expect(executor.startContexts).toHaveLength(1);
+        expect(
+          requireSchedulerExecutionAttempt(coreDb, executor.startContexts[0]!.attemptId!).phase
+        ).toBe('closed');
         expect(getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', turn.id)).toBeNull();
       } finally {
         checkpointDb.sqlite.close();
@@ -5426,6 +5817,7 @@ describe('nanocore server', () => {
       await expect(conflictRes.json()).resolves.toMatchObject({
         code: 'idempotency_key_conflict',
       });
+      await executor.waitForFinished(store, 1);
       expect(executor.startContexts).toHaveLength(1);
 
       const replayRes = await app.request(
@@ -5445,6 +5837,7 @@ describe('nanocore server', () => {
         state: 'completed',
         turn: { id: turn.id },
       });
+      await executor.waitForFinished(store, 1);
       expect(executor.startContexts).toHaveLength(1);
       expect(
         store.getCommandRequest('task.start', requestId, {
@@ -5460,6 +5853,7 @@ describe('nanocore server', () => {
         recoveredDb.sqlite.close();
       }
     } finally {
+      vi.restoreAllMocks();
       coreDb.sqlite.close();
     }
   });
@@ -5533,56 +5927,30 @@ describe('nanocore server', () => {
       turnId: turn.id,
       workspaceId: 'ws_demo',
     });
-    createSchedulerAdmissionEntry(coreDb, {
+    const entry = createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
       triggerActor: { kind: 'user', id: LOCAL_USER_ID },
-      priorityClass: 'interactive',
       profileRef: 'agent_codex_host',
       queueEntryId: `queue_${turn.id}`,
       requestId,
       requestedAgentId: 'agent_codex_host',
-      requiredPoolConstraints: ['openshell.local'],
       threadId: taskThreadId,
       turnId: turn.id,
       turnInput: 'Conversation-owned worker Turn',
       workspaceId: 'ws_demo',
     });
-    createSchedulerPlacementPlan(coreDb, {
-      degradedOptionalFeatures: [],
-      expectedControlMode: 'poll',
-      expectedDataPlaneMode: 'openshell-files',
-      heartbeatIntervalMs: 10_000,
-      heartbeatTimeoutMs: 30_000,
-      planId: `plan_${turn.id}`,
-      plannedLeaseDurationMs: 900_000,
-      policyDecisionIds: [],
-      queueEntryId: `queue_${turn.id}`,
-      schedulerEpoch: 1,
-      selectedPoolId: 'pool_local',
-      selectedTargetId: 'target_local',
+    createSchedulerExecutionAttempt(coreDb, {
+      entry,
+      attemptId: `lease_${turn.id}`,
+      preparationInput: { admission: entry },
     });
-    createSchedulerSessionLease(coreDb, {
-      agentSessionId,
-      expiresAt: '2099-01-01T01:00:00.000Z',
-      heartbeatDeadline: '2099-01-01T00:10:00.000Z',
-      leaseId: `lease_${turn.id}`,
-      packageSnapshotId: `aepsnap_${turn.id}`,
-      planId: `plan_${turn.id}`,
-      sandboxTokenBindingRef: `lease-binding:lease_${turn.id}`,
-      startupDeadline: '2099-01-01T00:05:00.000Z',
+    bindSchedulerExecutionAttemptSession(coreDb, { attemptId: `lease_${turn.id}`, agentSessionId });
+    // This boot model owns no submitted operation or package, so its complete no-effect proof is explicit.
+    closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+      attemptId: `lease_${turn.id}`,
+      cause: failed ? 'turn-failed' : 'turn-completed',
+      noOutstandingEffects: true,
     });
-    coreDb.sqlite
-      .prepare(
-        `UPDATE scheduler_session_leases
-           SET status = ?, release_reason = ?, recovery_state = ?, recovery_deadline = ?
-           WHERE lease_id = ?`
-      )
-      .run(
-        failed ? 'failed' : 'released',
-        failed ? 'turn-failed' : 'turn-completed',
-        failed ? 'needs-evidence' : null,
-        null,
-        `lease_${turn.id}`
-      );
     if (receipt !== 'missing') {
       store.recordCommandRequest({
         command: 'conversation.submit',
@@ -5673,7 +6041,7 @@ describe('nanocore server', () => {
       ...(status === 'failed'
         ? {
             error: {
-              code: 'scheduler_admission_deferred',
+              code: 'turn_start_failed',
               message: 'Turn was queued but not dispatched.',
             },
           }
@@ -5731,7 +6099,7 @@ describe('nanocore server', () => {
       error: { code: 'turn_start_failed', message: 'Worker start failed.' },
       status: 'failed',
     });
-    recordWorkerRetryLease(coreDb, {
+    await recordWorkerRetryLease(coreDb, {
       agentSessionId: 'as_stale_failed_lease',
       recoveryState: null,
       releaseReason: 'turn-start-failed',
@@ -5794,7 +6162,7 @@ describe('nanocore server', () => {
         : {}),
       status,
     });
-    recordWorkerRetryLease(coreDb, {
+    await recordWorkerRetryLease(coreDb, {
       agentSessionId,
       recoveryState: 'needs-evidence',
       releaseReason: 'turn-start-failed',
@@ -5840,7 +6208,7 @@ describe('nanocore server', () => {
       suffix: 'release',
     },
     {
-      label: 'another recovery state',
+      label: 'unknown submitted effects',
       recoveryState: null,
       releaseReason: 'turn-start-failed',
       suffix: 'recovery',
@@ -5871,7 +6239,8 @@ describe('nanocore server', () => {
       error: { code: 'turn_start_failed', message: 'Worker start failed.' },
       status: 'failed',
     });
-    recordWorkerRetryLease(coreDb, {
+    await recordWorkerRetryLease(coreDb, {
+      effectsUnknown: true,
       agentSessionId,
       recoveryState,
       releaseReason,
@@ -5942,7 +6311,7 @@ describe('nanocore server', () => {
         })
       ).rejects.toMatchObject({
         code: 'recovery_required',
-        message: 'The boot Task checkpoint has no exact scheduler lease.',
+        message: 'The boot Task checkpoint has no exact execution attempt.',
       });
       expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', threadId, turn.id)).toEqual(checkpoint);
     } finally {
@@ -6023,7 +6392,7 @@ describe('nanocore server', () => {
       error: { code: 'worker_failed', message: 'Worker failed.' },
       status: 'failed',
     });
-    recordWorkerRetryLease(coreDb, {
+    await recordWorkerRetryLease(coreDb, {
       agentSessionId: 'as_live_lease_boot',
       recoveryState: null,
       releaseReason: null,
@@ -6052,7 +6421,7 @@ describe('nanocore server', () => {
         })
       ).rejects.toMatchObject({
         code: 'recovery_required',
-        message: 'The boot Task checkpoint still has a live scheduler lease.',
+        message: 'The boot Task checkpoint still has a live execution attempt.',
       });
       expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', threadId, turn.id)).toEqual(checkpoint);
     } finally {
@@ -6100,7 +6469,7 @@ describe('nanocore server', () => {
   it('rejects Task Mode in the Quick Chat workspace', async () => {
     const coreDb = createCoreDb();
     const executor = new FakeTurnExecutor();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const thread = store.createThread('ws_quick_chat', 'Reject Task Mode');
     const app = createApp({ coreDb, store, turnExecutor: executor });
 
@@ -6246,7 +6615,29 @@ describe('nanocore server', () => {
       );
 
       expect(res.status, await res.clone().text()).toBe(202);
-      const parsed = StartTaskModeResponseSchema.parse(await res.json());
+      const accepted = StartTaskModeResponseSchema.parse(await res.json());
+      await vi.waitFor(() => expect(executor.startContexts).toHaveLength(1));
+      await vi.waitFor(() =>
+        expect(
+          requireSchedulerExecutionAttempt(coreDb, executor.startContexts[0]!.attemptId!).phase
+        ).toBe('closed')
+      );
+      const replay = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            headers: jsonHeaders(),
+            body: JSON.stringify({
+              requestId: '0190f4c8-0000-7000-8000-000000000311',
+              input: 'Implement the focused Task Mode fix.',
+            }),
+          }
+        )
+      );
+      const parsed = StartTaskModeResponseSchema.parse(await replay.json());
+      expect(parsed.turn.id).toBe(accepted.turn.id);
 
       expect(parsed.evidence.artifactIds).toContain(`ar_task_review_${parsed.turn.id}`);
       expect(parsed.evidence.reviewIds).toEqual([`swr_task_${parsed.turn.id}`]);
@@ -6281,6 +6672,7 @@ describe('nanocore server', () => {
 
       expect(res.status).toBe(202);
       const parsed = SubmitConversationResponseSchema.parse(await res.json());
+      await executor.waitForFinished(store);
       const acceptedTurnIds = store
         .listThreadTurns('ws_demo', 'th_demo')
         .map((turn) => turn.id)
@@ -6340,6 +6732,7 @@ describe('nanocore server', () => {
       expect(directTaskRes.status, await directTaskRes.clone().text()).toBe(202);
       const directTask = StartTaskModeResponseSchema.parse(await directTaskRes.json());
       expect(acceptedTurnIds).not.toContain(directTask.turn.id);
+      await executor.waitForFinished(store, 2);
       expect(executor.startContexts).toHaveLength(2);
       expect(executor.startContexts[0]).toMatchObject({
         requestId,
@@ -6416,7 +6809,9 @@ describe('nanocore server', () => {
         )
         .toBeNull();
       expect(coordinator).toHaveBeenCalledTimes(1);
-      expect(executor.startContexts).toHaveLength(1);
+      expect(executor.startContexts).toHaveLength(0);
+      expect(observeExecutionAttempts(coreDb)).toEqual([]);
+      expect(workerTurn.status).toBe('pending');
 
       const retry = await app.request(
         ...operationRequest(
@@ -6434,7 +6829,9 @@ describe('nanocore server', () => {
       expect.soft(retry.status, JSON.stringify(retryBody)).toBe(409);
       expect.soft(retryBody).toMatchObject({ code: 'recovery_required' });
       expect(coordinator).toHaveBeenCalledTimes(1);
-      expect(executor.startContexts).toHaveLength(1);
+      expect(executor.startContexts).toHaveLength(0);
+      expect(observeExecutionAttempts(coreDb)).toEqual([]);
+      expect(workerTurn.status).toBe('pending');
       expect(
         store
           .listThreadTurns('ws_demo', 'th_demo')
@@ -6508,7 +6905,9 @@ describe('nanocore server', () => {
         .map((turn) => turn.id)
         .sort();
       expect(coordinator).toHaveBeenCalledTimes(1);
-      expect(executor.startContexts).toHaveLength(1);
+      expect(executor.startContexts).toHaveLength(0);
+      expect(observeExecutionAttempts(coreDb)).toEqual([]);
+      expect(workerTurn.status).toBe('pending');
 
       const reroute = await app.request(
         ...operationRequest(
@@ -6535,7 +6934,9 @@ describe('nanocore server', () => {
         )
         .toBeNull();
       expect(coordinator).toHaveBeenCalledTimes(1);
-      expect(executor.startContexts).toHaveLength(1);
+      expect(executor.startContexts).toHaveLength(0);
+      expect(observeExecutionAttempts(coreDb)).toEqual([]);
+      expect(workerTurn.status).toBe('pending');
       expect(
         store
           .listThreadTurns('ws_demo', 'th_demo')
@@ -6548,7 +6949,7 @@ describe('nanocore server', () => {
     }
   });
 
-  it('rejects a forged Chat replay that points at the same-request direct Task Turn', async () => {
+  it('rejects a forged Chat replay that points at a same-request Task on another Thread', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
@@ -6585,10 +6986,12 @@ describe('nanocore server', () => {
       if (!outerChatTurn) {
         throw new Error('The exact-request outer Chat Turn was not created.');
       }
+
+      const directTaskThread = store.createThread('ws_demo', 'Independent same-request Task');
       const directTaskResponse = await app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          { workspaceId: 'ws_demo', threadId: directTaskThread.id },
           {
             method: 'POST',
             body: JSON.stringify({ requestId: forgedRequestId, input }),
@@ -6599,6 +7002,8 @@ describe('nanocore server', () => {
       expect(directTaskResponse.status, await directTaskResponse.clone().text()).toBe(202);
       const directTask = StartTaskModeResponseSchema.parse(await directTaskResponse.json());
       expect(directTask.turn.id).toMatch(new RegExp(`^turn_${forgedRequestId}_`));
+
+      await executor.waitForFinished(store);
 
       store.recordCommandRequest({
         command: 'conversation.submit',
@@ -6622,7 +7027,7 @@ describe('nanocore server', () => {
             targetRef: 'internal-role:assistant',
             logicalModelId: null,
             receivingWorkspaceId: 'ws_demo',
-            receivingThreadId: 'th_demo',
+            receivingThreadId: directTaskThread.id,
             resultKind: 'task-handoff',
             status: 202,
           },
@@ -6726,7 +7131,7 @@ describe('nanocore server', () => {
 
   it('allows lightweight Chat Mode in the Quick Chat workspace without starting workers', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const app = createApp({ coreDb, store, turnExecutor: executor });
     const thread = store.createThread('ws_quick_chat', 'Quick Chat thread');
@@ -6763,7 +7168,7 @@ describe('nanocore server', () => {
 
   it('rejects project work prompts in Quick Chat Chat Mode without coordinator handoff', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const app = createApp({ coreDb, store, turnExecutor: executor });
     const thread = store.createThread('ws_quick_chat', 'Quick Chat project request');
@@ -6987,7 +7392,7 @@ describe('nanocore server', () => {
 
   it('refuses Chat Mode worker handoff when no worker candidate is ready', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const app = createApp({
       agentManifests: [
@@ -7324,10 +7729,12 @@ describe('nanocore server', () => {
       expect(res.status).toBe(202);
       const accepted = StartTaskModeResponseSchema.parse(await res.json());
       expect(accepted.escalation ?? null).toBeNull();
+      await executor.waitForFinished(store, 1);
       expect(executor.startContexts).toHaveLength(1);
       const replay = await submit();
       expect(replay.status).toBe(202);
       expect(StartTaskModeResponseSchema.parse(await replay.json()).turn.id).toBe(accepted.turn.id);
+      await executor.waitForFinished(store, 1);
       expect(executor.startContexts).toHaveLength(1);
       expect(store.listCommandRequests().some((record) => record.command === 'goal.create')).toBe(
         false
@@ -7376,7 +7783,7 @@ describe('nanocore server', () => {
   it('rejects direct worker turns in the Quick Chat workspace', async () => {
     const coreDb = createCoreDb();
     const executor = new FakeTurnExecutor();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const thread = store.createThread('ws_quick_chat', 'Reject worker turn');
     const app = createApp({ coreDb, store, turnExecutor: executor });
 
@@ -7785,7 +8192,7 @@ describe('nanocore server', () => {
 
   it('deduplicates concurrent start-turn commands by request id', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new DelayedTurnExecutor();
     const app = createApp({ coreDb, store, turnExecutor: executor });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-idempotent-turn-repository-'));
@@ -7942,6 +8349,7 @@ describe('nanocore server', () => {
 
       expect(accepted.status).toBe(202);
       expect(acceptedTurn.id).not.toBe(activeTurn.id);
+      await executor.waitForFinished(store, 1);
       expect(executor.startContexts).toHaveLength(1);
       expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(2);
       expect(store.listThreadItems('ws_demo', thread.id)).toContainEqual(
@@ -8252,7 +8660,7 @@ describe('nanocore server', () => {
   });
   it('lists and reads workspace synchronization reviews from review artifacts', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     store.createTurn(
       'ws_demo',
@@ -8457,7 +8865,7 @@ describe('nanocore server', () => {
 
   it('keeps artifact-only workspace review reads free of durable side effects', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const item = workspaceSyncReviewRouteItem();
     store.createTurn(
@@ -8533,7 +8941,7 @@ describe('nanocore server', () => {
 
   it('prefers durable workspace review decisions over older artifact snapshots', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const item = workspaceSyncReviewRouteItem();
     store.createTurn(
@@ -8612,7 +9020,7 @@ describe('nanocore server', () => {
 
   it('records workspace sync decisions idempotently and blocks dual-owner replay', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const workspace = store.createWorkspace('Durable workspace review decision');
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const timestamp = new Date().toISOString();
@@ -8827,7 +9235,7 @@ describe('nanocore server', () => {
 
   it('records workspace recovery decisions idempotently', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const workspace = store.createWorkspace('Workspace recovery decision');
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const timestamp = new Date().toISOString();
@@ -8922,7 +9330,7 @@ describe('nanocore server', () => {
 
   it('resumes workspace recovery collection from durable workspace sync records', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const workspace = store.createWorkspace('Workspace recovery resume');
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const timestamp = new Date().toISOString();
@@ -9021,7 +9429,7 @@ describe('nanocore server', () => {
 
   it('reads durable Agent Environment Package snapshots through App API routes', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const workspace = store.createWorkspace('AEP snapshot readback');
     const thread = store.createThread(workspace.id, 'AEP snapshot readback');
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
@@ -9107,7 +9515,7 @@ describe('nanocore server', () => {
 
   it('denies foreign and missing workspace review child lineage before reads or decisions', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const authorizedWorkspace = store
       .listWorkspaces()
       .find((workspace) => workspace.kind === 'quick-chat');
@@ -9221,7 +9629,7 @@ describe('nanocore server', () => {
 
   it('denies foreign and missing workspace recovery child lineage without resolving the owner', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const authorizedWorkspace = store
       .listWorkspaces()
       .find((workspace) => workspace.kind === 'quick-chat');
@@ -9308,7 +9716,7 @@ describe('nanocore server', () => {
 
   it('denies foreign and missing workspace apply-result child lineage', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const authorizedWorkspace = store
       .listWorkspaces()
       .find((workspace) => workspace.kind === 'quick-chat');
@@ -9371,7 +9779,7 @@ describe('nanocore server', () => {
 
   it('denies foreign and missing Agent Environment Package snapshot child lineage', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const authorizedWorkspace = store
       .listWorkspaces()
       .find((workspace) => workspace.kind === 'quick-chat');
@@ -9898,7 +10306,7 @@ describe('nanocore server', () => {
 
   it('applies accepted filesystem workspace synchronization reviews through opaque staging', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const workspace = store.createWorkspace('Filesystem workspace sync apply');
     const thread = store.createThread(workspace.id, 'Apply filesystem workspace review');
     const turn = store.createTurn(workspace.id, thread.id, 'Produce filesystem changes', {
@@ -10175,7 +10583,7 @@ describe('nanocore server', () => {
 
   it('restores filesystem state when accepted review persistence fails', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const workspace = store.createWorkspace('Filesystem apply persistence rollback');
     const thread = store.createThread(workspace.id, 'Rollback filesystem workspace review');
     const turn = store.createTurn(workspace.id, thread.id, 'Produce filesystem changes', {
@@ -10330,12 +10738,51 @@ describe('nanocore server', () => {
   });
 
   it('routes interrupts through the turn executor', async () => {
-    const store = createDemoStore();
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const turn = store.createTurn('ws_demo', 'th_demo', 'Interrupt this running turn', {
       kind: 'user',
       id: 'user_local',
     });
-    const app = createApp({ store, turnExecutor: new FakeTurnExecutor() }, true);
+    const executor = new FakeTurnExecutor();
+    const app = createApp({ coreDb, store, turnExecutor: executor }, true);
+    const entry = createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
+      triggerActor: turn.triggerActor,
+      profileRef: 'agent_codex_host',
+      queueEntryId: 'queue_interrupt_route',
+      requestId: 'original_interrupt_route',
+      requestedAgentId: 'agent_codex_host',
+      threadId: turn.threadId,
+      turnId: turn.id,
+      turnInput: 'Interrupt this running turn',
+      workspaceId: turn.workspaceId,
+    });
+    recordTestExecutionAttempt(coreDb, {
+      entry,
+      attemptId: 'attempt_interrupt_route',
+      agentSessionId: 'as_interrupt_route',
+      inputRef: 'snapshot_interrupt_route',
+      bindingRef: 'binding_interrupt_route',
+      sessionCompatibilityKey: 'compat_interrupt_route',
+      now: () => new Date().toISOString(),
+      operationId: 'original:interrupt_route',
+    });
+    store.createAgentSession({
+      id: 'as_interrupt_route',
+      agentId: 'agent_codex_host',
+      workspaceId: turn.workspaceId,
+      threadId: turn.threadId,
+      status: 'busy',
+      message: null,
+      createdAt: turn.startedAt!,
+      updatedAt: turn.startedAt!,
+    });
+    store.updateTurn(turn.id, {
+      agentId: 'agent_codex_host',
+      agentSessionId: 'as_interrupt_route',
+      status: 'running',
+    });
     const interruptRes = await app.request(
       ...operationRequest(
         'turn.interrupt',
@@ -10357,49 +10804,19 @@ describe('nanocore server', () => {
     expect((await interruptRes.json()) as { status: string }).toMatchObject({
       status: 'interrupted',
     });
+    expect(requireSchedulerExecutionAttempt(coreDb, 'attempt_interrupt_route')).toMatchObject({
+      phase: 'closing',
+      operationId: 'original:interrupt_route',
+      fenceRef: null,
+    });
     expect(store.getTurnEvents(turn.id).at(-1)?.requestId).toBe(
       '0190f4c8-0000-7000-8000-000000000206'
     );
   });
 
-  it('passes the configured scheduler epoch to a worker lease', async () => {
-    const coreDb = createCoreDb();
-    const executor = new FakeTurnExecutor();
-
-    try {
-      const app = createApp({ coreDb, schedulerEpoch: 12, turnExecutor: executor });
-      const turnRes = await app.request(
-        ...operationRequest(
-          'turn.start',
-          {},
-          {
-            method: 'POST',
-            body: JSON.stringify({
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
-              requestId: '0190f4c8-0000-7000-8000-000000000211',
-              input: 'Work in the repository',
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-
-      expect(turnRes.status).toBe(202);
-      expect(executor.startContexts).toHaveLength(1);
-      expect(
-        coreDb.sqlite
-          .prepare('SELECT scheduler_epoch AS schedulerEpoch FROM scheduler_session_leases')
-          .get()
-      ).toEqual({ schedulerEpoch: 12 });
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
   it('lists workspace vault grant injection metadata through App API', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const workspace = store.createWorkspace('Vault injection metadata route');
     createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
@@ -10533,7 +10950,6 @@ describe('nanocore server', () => {
         dataRoot: coreDb.dataRoot,
         store,
         runtimeConfigManager,
-        schedulerEpoch: 12,
         turnExecutor: executor,
       });
       const turnRes = await app.request(
@@ -10554,6 +10970,7 @@ describe('nanocore server', () => {
       );
 
       expect(turnRes.status).toBe(202);
+      await executor.waitForFinished(store);
       expect(executor.startContexts[0]?.workspaceDataSourceCatalog).toMatchObject({
         sources: [expect.objectContaining({ id: 'main-repo' })],
       });
@@ -10614,7 +11031,6 @@ describe('nanocore server', () => {
         coreDb,
         dataRoot: coreDb.dataRoot,
         runtimeConfigManager,
-        schedulerEpoch: 12,
         store,
         turnExecutor: executor,
       });
@@ -10636,6 +11052,7 @@ describe('nanocore server', () => {
       );
 
       expect(turnRes.status).toBe(202);
+      await executor.waitForFinished(store);
       expect(executor.startContexts[0]?.workspaceMcpServerCatalog).toMatchObject({
         servers: [expect.objectContaining({ id: 'echo' })],
       });
@@ -10703,7 +11120,6 @@ describe('nanocore server', () => {
         dataRoot: coreDb.dataRoot,
         store,
         runtimeConfigManager,
-        schedulerEpoch: 12,
         turnExecutor: executor,
       });
       const turnRes = await app.request(

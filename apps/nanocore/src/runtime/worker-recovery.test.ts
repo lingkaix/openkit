@@ -325,15 +325,22 @@ describe('worker recovery materialization', () => {
     });
   });
 
-  it('accepts the scheduler-owned evidence marker for a failed terminal closeout', () => {
+  it('requires the closed Core fence and exact product terminal facts for failed closeout', () => {
     const source = readFileSync(new URL('./worker-recovery.ts', import.meta.url), 'utf8');
-    const genericCloseout = source
-      .split('const expectedLeaseStatus =')[1]
-      ?.split("throw new Error('Worker generic closeout contradicts")[0];
-
-    expect(genericCloseout).toContain(
-      "lease.recoveryState !== (expectedTurnStatus === 'failed' ? 'needs-evidence' : null)"
+    // Durable Scheduler D72 retires Core's private Native evidence-state interpretation;
+    // D97 keeps failed product state separate from the exact released execution fence.
+    expect(source).toContain(
+      "attempt.phase !== 'closed' || !attempt.fenceRef || !attempt.operationId"
     );
+    const genericCloseout = source
+      .split('const expectedAgentSessionStatus =')[1]
+      ?.split("throw new Error('Worker generic closeout contradicts")[0];
+    expect(genericCloseout).toContain("expectedTurnStatus === 'interrupted'");
+    expect(genericCloseout).toContain("'failed'");
+    expect(genericCloseout).toContain('turn.status !== expectedTurnStatus');
+    expect(genericCloseout).toContain('agentSession.status !== expectedAgentSessionStatus');
+    expect(genericCloseout).toContain("attempt.phase !== 'closed'");
+    expect(genericCloseout).toContain('terminalEvents[0].data.stopReason !== stopReason');
   });
 
   it('cleans checkpoints only after terminal worker state is durably saved', async () => {

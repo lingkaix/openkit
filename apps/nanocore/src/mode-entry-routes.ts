@@ -74,6 +74,10 @@ import { createOperationInvocation } from './operation-composition.js';
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
 import type { ProviderCredentialConfigured } from './providers/registry.js';
 import {
+  isSchedulerExecutionBusyRefusal,
+  listSchedulerExecutionAttemptsForTurn,
+} from './runtime/execution-attempt-records.js';
+import {
   executeGoalOperation,
   type GoalOwnerServices,
   listGoalsForThread,
@@ -90,6 +94,7 @@ import {
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import {
+  assistantPendingOutcomeSourceHash,
   frozenPendingOutcomeInput,
   isBlockingPendingRequest,
   listThreadPendingRequests,
@@ -119,9 +124,7 @@ import { isTerminalWorkerTurnStage, workerTurnStageForStopReason } from './runti
 import { runWorkerTurnLoop } from './runtime/worker-turn-loop.js';
 import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
 import {
-  isTerminalLeaseStatus,
-  listSchedulerSessionLeasesForTurn,
-  requireSchedulerSessionLeaseAdmissionContext,
+  requireSchedulerExecutionAttemptAdmissionContext,
   type SchedulerWorkerStorageChoice,
 } from './scheduler-records.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
@@ -376,6 +379,16 @@ function replayConversationCommand(
       throw new Error('Conversation receiving lineage is contradictory.');
     }
     if (metadata.resultKind === 'worker-turn') {
+      if (
+        coreDb &&
+        listSchedulerExecutionAttemptsForTurn(coreDb, {
+          workspaceId: currentTurn.workspaceId,
+          threadId: currentTurn.threadId,
+          turnId: currentTurn.id,
+        }).some((attempt) => attempt.phase === 'closing')
+      ) {
+        throw new Error('Conversation Worker execution requires recovery.');
+      }
       if (currentTurn.status === 'pending' || currentTurn.status === 'running') {
         if (!coreDb) throw new Error('Conversation Worker runtime owners are unavailable.');
         const workspaceDb = repositoryWorkspaceDb(currentTurn.workspaceId);
@@ -386,25 +399,29 @@ function replayConversationCommand(
             currentTurn.threadId,
             currentTurn.id
           );
-          const leases = listSchedulerSessionLeasesForTurn(coreDb, {
+          const attempts = listSchedulerExecutionAttemptsForTurn(coreDb, {
             workspaceId: currentTurn.workspaceId,
             threadId: currentTurn.threadId,
             turnId: currentTurn.id,
-          });
-          const lease = leases[0];
+          }).filter((attempt) => !isSchedulerExecutionBusyRefusal(attempt));
           if (
             !checkpoint ||
             checkpoint.requestId !== record.requestId ||
             checkpoint.requestInputHash !== record.inputHash ||
             isTerminalWorkerTurnStage(checkpoint.stage) ||
-            leases.length !== 1 ||
-            !lease ||
-            !['acquired', 'starting', 'active', 'idle'].includes(lease.status) ||
-            lease.recoveryState !== null
+            attempts.some((candidate) => candidate.phase === 'closing')
           ) {
             throw new Error('Conversation Worker execution requires recovery.');
           }
-          const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, lease.leaseId);
+          const { admission } = validateLiveProductTurnAdmission({
+            coreDb,
+            store,
+            actorId,
+            workspaceId: currentTurn.workspaceId,
+            threadId: currentTurn.threadId,
+            turnId: currentTurn.id,
+            requestId: record.requestId,
+          });
           if (
             admission.requestId !== record.requestId ||
             admission.triggerActor.kind !== 'user' ||
@@ -909,7 +926,7 @@ function validateLiveTaskAdmission(input: {
     input.threadId,
     input.turnId
   );
-  const { lease, admission } = validateLiveProductTurnAdmission(input);
+  const { attempt, admission } = validateLiveProductTurnAdmission(input);
   if (
     !checkpoint ||
     checkpoint.requestId !== input.requestId ||
@@ -923,7 +940,7 @@ function validateLiveTaskAdmission(input: {
     (input.contextDigest !== undefined && checkpoint.contextDigest !== input.contextDigest) ||
     parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary)?.contextDigest !==
       checkpoint.contextDigest ||
-    (checkpoint.workerSessionId !== null && checkpoint.workerSessionId !== lease.agentSessionId)
+    (checkpoint.workerSessionId !== null && checkpoint.workerSessionId !== attempt?.agentSessionId)
   )
     throw directTaskModeRecoveryError('The Task live admission owner tuple requires recovery.');
   const workerRequest = StructuredWorkerDelegationRequestSchema.parse(
@@ -1096,18 +1113,18 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
   readonly checkpoint: WorkerCheckpointRecord;
 }): Promise<'complete' | 'live'> {
   const { checkpoint } = input;
-  const leases = listSchedulerSessionLeasesForTurn(input.coreDb, {
+  const attempts = listSchedulerExecutionAttemptsForTurn(input.coreDb, {
     workspaceId: checkpoint.workspaceId,
     threadId: checkpoint.threadId,
     turnId: checkpoint.turnId,
-  });
-  const lease = leases[0];
-  if (leases.length !== 1 || !lease || lease.agentSessionId !== checkpoint.workerSessionId) {
-    return clearStaleDirectTaskCheckpointWithoutExactLease(input, leases);
+  }).filter((attempt) => !isSchedulerExecutionBusyRefusal(attempt));
+  const attempt = attempts[0];
+  if (attempts.length !== 1 || !attempt || attempt.agentSessionId !== checkpoint.workerSessionId) {
+    return clearStaleDirectTaskCheckpointWithoutExactAttempt(input, attempts);
   }
-  let admission: ReturnType<typeof requireSchedulerSessionLeaseAdmissionContext>;
+  let admission: ReturnType<typeof requireSchedulerExecutionAttemptAdmissionContext>;
   try {
-    admission = requireSchedulerSessionLeaseAdmissionContext(input.coreDb, lease.leaseId);
+    admission = requireSchedulerExecutionAttemptAdmissionContext(input.coreDb, attempt.attemptId);
   } catch {
     throw directTaskModeRecoveryError('The boot Task checkpoint has no scheduler admission owner.');
   }
@@ -1265,43 +1282,45 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
 }
 
 /**
- * Clears one terminal Task checkpoint that no longer has a matching scheduler lease.
+ * Clears one terminal Task checkpoint that no longer has a matching execution attempt.
  *
  * A live, interrupted, missing-Turn, or contradictory owner tuple stays fail-closed.
  * Only an already collectable terminal Turn permits checkpoint cleanup here.
- * A null-session checkpoint whose sole lease proves a failed start skips runtime provenance; every other lease tuple keeps that check.
+ * A null-session checkpoint whose sole attempt proves a failed start skips runtime provenance; every other attempt tuple keeps that check.
  *
  * @param input Exact Core, product, Workspace, and checkpoint owners.
- * @param leases Scheduler leases for the checkpoint Turn, which are already not an exact match.
+ * @param attempts execution attempts for the checkpoint Turn, which are already not an exact match.
  * @returns `complete` after terminal checkpoint cleanup.
- * @throws TurnStartValidationError when the leftover cannot be proved terminal and unleased.
+ * @throws TurnStartValidationError when the leftover cannot be proved terminal and without held execution.
  */
-async function clearStaleDirectTaskCheckpointWithoutExactLease(
+async function clearStaleDirectTaskCheckpointWithoutExactAttempt(
   input: {
     readonly coreDb: CoreDb;
     readonly store: FsStore;
     readonly workspaceDb: WorkspaceDb;
     readonly checkpoint: WorkerCheckpointRecord;
   },
-  leases: ReturnType<typeof listSchedulerSessionLeasesForTurn>
+  attempts: ReturnType<typeof listSchedulerExecutionAttemptsForTurn>
 ): Promise<'complete'> {
   const { checkpoint } = input;
   if (!isTerminalWorkerTurnStage(checkpoint.stage)) {
-    throw directTaskModeRecoveryError('The boot Task checkpoint has no exact scheduler lease.');
+    throw directTaskModeRecoveryError('The boot Task checkpoint has no exact execution attempt.');
   }
-  if (leases.some((candidate) => !isTerminalLeaseStatus(candidate.status))) {
-    throw directTaskModeRecoveryError('The boot Task checkpoint still has a live scheduler lease.');
+  if (attempts.some((candidate) => candidate.phase !== 'closed')) {
+    throw directTaskModeRecoveryError(
+      'The boot Task checkpoint still has a live execution attempt.'
+    );
   }
-  if (leases.length > 1) {
-    throw directTaskModeRecoveryError('The boot Task checkpoint has no exact scheduler lease.');
+  if (attempts.length > 1) {
+    throw directTaskModeRecoveryError('The boot Task checkpoint has no exact execution attempt.');
   }
-  const leftoverLease = leases[0];
+  const leftoverAttempt = attempts[0];
   if (
-    leftoverLease &&
+    leftoverAttempt &&
     checkpoint.workerSessionId !== null &&
-    leftoverLease.agentSessionId !== checkpoint.workerSessionId
+    leftoverAttempt.agentSessionId !== checkpoint.workerSessionId
   ) {
-    throw directTaskModeRecoveryError('The boot Task checkpoint has no exact scheduler lease.');
+    throw directTaskModeRecoveryError('The boot Task checkpoint has no exact execution attempt.');
   }
   if (checkpoint.goalId !== null || checkpoint.taskId !== null || checkpoint.iteration !== 0) {
     throw directTaskModeRecoveryError('The boot Task checkpoint contradicts its command identity.');
@@ -1332,9 +1351,10 @@ async function clearStaleDirectTaskCheckpointWithoutExactLease(
 
   const provedTurnStartFailureWithoutSession =
     checkpoint.workerSessionId === null &&
-    leftoverLease?.status === 'failed' &&
-    leftoverLease.releaseReason === 'turn-start-failed' &&
-    leftoverLease.recoveryState === 'needs-evidence';
+    leftoverAttempt?.phase === 'closed' &&
+    leftoverAttempt.disposition === 'not_accepted' &&
+    leftoverAttempt.operationId === null &&
+    leftoverAttempt.terminalCause !== null;
   if (
     !(await clearWorkerCheckpointAfterTerminalState(input.workspaceDb, {
       workspaceId: checkpoint.workspaceId,
@@ -1668,8 +1688,8 @@ function pendingRequestTaskState(
   fallback: 'awaiting-human' | 'blocked' | 'cancelled' | 'completed' | 'failed' | 'running'
 ) {
   const turns = store.listThreadTurns(workspaceId, threadId);
-  if (turns.some((turn) => turn.status === 'pending' || turn.status === 'running'))
-    return 'running';
+  if (turns.some((turn) => turn.status === 'running')) return 'running';
+  if (turns.some((turn) => turn.status === 'pending')) return 'queued';
   if (
     workspaceDb &&
     listThreadPendingRequests(workspaceDb.sqlite, workspaceId, threadId).some((record) =>
@@ -1864,7 +1884,10 @@ export function createConversationService({
     readonly requestedAgentId: string;
     readonly reservedTurnId?: string | undefined;
     readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
-    readonly onTurnCreated?: (turn: z.infer<typeof TurnSchema>, agentSessionId: string) => void;
+    readonly onTurnCreated?: (
+      turn: z.infer<typeof TurnSchema>,
+      agentSessionId: string | null
+    ) => void;
   }) => Promise<z.infer<typeof TurnSchema>>;
   readonly goalServices?: () => GoalOwnerServices;
   readonly workerCoordinatorCandidates: (
@@ -3683,23 +3706,7 @@ export function createConversationService({
               turn.id,
               'Receive pending request outcomes.'
             );
-        sourceInputHash = commandInputHash({
-          workspaceId: turn.workspaceId,
-          threadId: turn.threadId,
-          turnId: turn.id,
-          responsibleUserId: actorId,
-          input: frozen.map((record) => ({
-            requestId: record.requestId,
-            requestItemId: record.requestItemId,
-            publicationTurnId: record.publicationTurnId,
-            resolution: record.resolution,
-            ending: record.ending,
-            disposition: record.disposition,
-            answerMap: record.answerMap,
-            decidedAt: record.decidedAt,
-            endedAt: record.endedAt,
-          })),
-        });
+        sourceInputHash = assistantPendingOutcomeSourceHash(turn, frozen, actorId);
         sourceItemIds = frozen.map((record) => record.requestItemId);
         selection = quickChatSelection(actorId, turn.workspaceId);
         if (!selection)
@@ -3945,7 +3952,10 @@ export function createTaskStartOperation({
     readonly requestedAgentId: string;
     readonly reservedTurnId?: string | undefined;
     readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
-    readonly onTurnCreated?: (turn: z.infer<typeof TurnSchema>, agentSessionId: string) => void;
+    readonly onTurnCreated?: (
+      turn: z.infer<typeof TurnSchema>,
+      agentSessionId: string | null
+    ) => void;
   }) => Promise<z.infer<typeof TurnSchema>>;
   readonly workerCoordinatorCandidates: (
     store: FsStore,

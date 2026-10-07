@@ -61,7 +61,7 @@ export function workerBackendImageIdentity(lineage: WorkerBackendLineage): strin
   return 'imageRef' in lineage ? lineage.imageRef : lineage.resultingImageDigest;
 }
 
-/** Pre-effect identity owned by one scheduler lease and RuntimeTarget. */
+/** Pre-effect identity owned by one execution attempt and RuntimeTarget. */
 export interface WorkerBackendSessionIdentity {
   readonly agentSessionId: string;
   readonly backendKind: string;
@@ -75,8 +75,8 @@ export interface WorkerBackendSessionIdentity {
 
 /** Durable package-scoped physical backend session. */
 export interface WorkerBackendSessionRecord {
-  /** Scheduler lease that exclusively owns the session. */
-  readonly leaseId: string;
+  /** execution attempt that exclusively owns the session. */
+  readonly attemptId: string;
   /** Workspace lineage id. */
   readonly workspaceId: string;
   /** Thread lineage id. */
@@ -154,8 +154,8 @@ export interface RecordWorkerBackendSessionMaterializingInput {
 export interface TransitionWorkerBackendSessionStateInput {
   /** Expected current state. */
   readonly fromState: WorkerBackendSessionState;
-  /** Owning scheduler lease id. */
-  readonly leaseId: string;
+  /** Owning execution attempt id. */
+  readonly attemptId: string;
   /** Deterministic transition clock. */
   readonly now?: () => string;
   /** Required next state. */
@@ -164,23 +164,23 @@ export interface TransitionWorkerBackendSessionStateInput {
 
 /** Input for the atomic live-lease launch gate. */
 export interface MarkWorkerBackendSessionLaunchingInput {
-  /** Owning scheduler lease id. */
-  readonly leaseId: string;
+  /** Owning execution attempt id. */
+  readonly attemptId: string;
   /** Deterministic validation and transition clock. */
   readonly now?: () => string;
 }
 
 /** Input for publishing the complete workspace handoff marker. */
 export interface MarkWorkerBackendWorkspaceHandoffCompleteInput {
-  /** Owning scheduler lease id. */
-  readonly leaseId: string;
+  /** Owning execution attempt id. */
+  readonly attemptId: string;
   /** Deterministic marker clock. */
   readonly now?: () => string;
 }
 
 /** Raw SQLite worker backend session row. */
 interface WorkerBackendSessionRow {
-  readonly lease_id: string;
+  readonly attempt_id: string;
   readonly workspace_id: string;
   readonly thread_id: string;
   readonly turn_id: string;
@@ -203,20 +203,19 @@ interface WorkerBackendSessionRow {
   readonly updated_at: string;
 }
 
-/** Raw scheduler lease fields required by the pre-effect insertion gate. */
-interface WorkerBackendSessionLeaseRow {
-  readonly lease_id: string;
+/** Raw execution attempt fields required by the pre-effect insertion gate. */
+interface WorkerBackendSessionAttemptRow {
+  readonly attempt_id: string;
   readonly workspace_id: string;
   readonly thread_id: string;
   readonly turn_id: string;
   readonly agent_session_id: string;
-  readonly package_snapshot_id: string;
-  readonly status: string;
-  readonly expires_at: string;
+  readonly input_ref: string;
+  readonly phase: string;
+  readonly deadline: string | null;
   readonly heartbeat_deadline: string;
   readonly startup_deadline: string;
   readonly last_accepted_heartbeat_at: string | null;
-  readonly backend_anchor_state: 'unanchored' | 'anchored';
 }
 
 const ALLOWED_TRANSITIONS: Readonly<
@@ -244,7 +243,7 @@ export function recordWorkerBackendSessionMaterializing(
   input: RecordWorkerBackendSessionMaterializingInput
 ): WorkerBackendSessionRecord {
   const timestamp = input.now?.() ?? new Date().toISOString();
-  let leaseId = '';
+  let attemptId = '';
 
   coreDb.sqlite.exec('BEGIN IMMEDIATE');
   try {
@@ -277,33 +276,33 @@ export function recordWorkerBackendSessionMaterializing(
     const originPhysicalEpoch = runtimeTarget.physicalEpoch;
     const lease = coreDb.sqlite
       .prepare(
-        `SELECT lease_id, workspace_id, thread_id, turn_id, agent_session_id,
-                package_snapshot_id, status, expires_at, heartbeat_deadline,
-                startup_deadline, last_accepted_heartbeat_at, backend_anchor_state
-         FROM scheduler_session_leases
-         WHERE sandbox_binding_ref = ?
-         ORDER BY acquired_at DESC, lease_id DESC
+        `SELECT attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
+                input_ref, phase, deadline, heartbeat_deadline,
+                startup_deadline, last_accepted_heartbeat_at
+         FROM scheduler_execution_attempts
+         WHERE binding_ref = ?
+         ORDER BY created_at DESC, attempt_id DESC
          LIMIT 1`
       )
-      .get(input.sandboxBindingRef) as WorkerBackendSessionLeaseRow | undefined;
+      .get(input.sandboxBindingRef) as WorkerBackendSessionAttemptRow | undefined;
 
-    if (!lease || !leaseMatchesInput(lease, input)) {
-      throw new Error('Scheduler lease binding does not match worker backend session lineage.');
+    if (!lease || !attemptMatchesInput(lease, input)) {
+      throw new Error('execution attempt binding does not match worker backend session lineage.');
     }
-    leaseId = lease.lease_id;
+    attemptId = lease.attempt_id;
 
     const deadline = lease.last_accepted_heartbeat_at
       ? lease.heartbeat_deadline
       : lease.startup_deadline;
     if (
-      !['acquired', 'starting', 'active', 'idle'].includes(lease.status) ||
-      lease.expires_at <= timestamp ||
+      lease.phase !== 'open' ||
+      (lease.deadline !== null && lease.deadline <= timestamp) ||
       deadline <= timestamp
     ) {
-      throw new Error('Scheduler lease is not live for worker backend materialization.');
+      throw new Error('execution attempt is not live for worker backend materialization.');
     }
 
-    const existing = selectWorkerBackendSession(coreDb, leaseId);
+    const existing = selectWorkerBackendSession(coreDb, attemptId);
     if (existing) {
       const record = mapWorkerBackendSessionRow(existing);
       if (!workerBackendSessionMatchesInput(record, input, originPhysicalEpoch)) {
@@ -312,9 +311,6 @@ export function recordWorkerBackendSessionMaterializing(
       if (record.state !== 'materializing') {
         throw new Error('Worker backend session is not materializing.');
       }
-      if (lease.backend_anchor_state !== 'anchored') {
-        throw new Error('Scheduler lease backend anchor marker is inconsistent.');
-      }
       coreDb.sqlite.exec('COMMIT');
       return record;
     }
@@ -322,7 +318,7 @@ export function recordWorkerBackendSessionMaterializing(
     coreDb.sqlite
       .prepare(
         `INSERT INTO worker_backend_sessions (
-           lease_id, workspace_id, thread_id, turn_id, agent_session_id,
+           attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
            package_snapshot_id, backend_kind, deployment_id, backend_version,
            backend_session_id, runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
            staging_directory_ref, transient_provider_instance_id, workspace_handoff_state,
@@ -330,7 +326,7 @@ export function recordWorkerBackendSessionMaterializing(
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'materializing', NULL, ?, ?)`
       )
       .run(
-        leaseId,
+        attemptId,
         input.lineage.workspaceId,
         input.lineage.threadId,
         input.lineage.turnId,
@@ -349,23 +345,13 @@ export function recordWorkerBackendSessionMaterializing(
         timestamp,
         timestamp
       );
-    const anchorMarker = coreDb.sqlite
-      .prepare(
-        `UPDATE scheduler_session_leases
-         SET backend_anchor_state = 'anchored'
-         WHERE lease_id = ? AND backend_anchor_state = 'unanchored'`
-      )
-      .run(leaseId);
-    if (anchorMarker.changes !== 1) {
-      throw new Error('Scheduler lease backend anchor marker changed before insertion.');
-    }
     coreDb.sqlite.exec('COMMIT');
   } catch (error) {
     coreDb.sqlite.exec('ROLLBACK');
     throw error;
   }
 
-  return requireWorkerBackendSession(coreDb, leaseId);
+  return requireWorkerBackendSession(coreDb, attemptId);
 }
 
 /**
@@ -392,14 +378,14 @@ export function transitionWorkerBackendSessionState(
        SET state = ?,
            physical_cleaned_at = CASE WHEN ? = 'physical-cleaned' THEN ? ELSE physical_cleaned_at END,
            updated_at = ?
-       WHERE lease_id = ? AND state = ?`
+       WHERE attempt_id = ? AND state = ?`
     )
-    .run(input.toState, input.toState, timestamp, timestamp, input.leaseId, input.fromState);
+    .run(input.toState, input.toState, timestamp, timestamp, input.attemptId, input.fromState);
 
   if (result.changes !== 1) {
     throw new Error('Worker backend session state changed before transition.');
   }
-  return requireWorkerBackendSession(coreDb, input.leaseId);
+  return requireWorkerBackendSession(coreDb, input.attemptId);
 }
 
 /**
@@ -422,25 +408,23 @@ export function markWorkerBackendSessionLaunching(
       .prepare(
         `SELECT sessions.state,
                 sessions.workspace_handoff_state AS workspaceHandoffState,
-                leases.status,
-                leases.expires_at AS expiresAt,
+                leases.phase,
+                leases.deadline AS deadline,
                 leases.heartbeat_deadline AS heartbeatDeadline,
                 leases.startup_deadline AS startupDeadline,
-                leases.last_accepted_heartbeat_at AS lastAcceptedHeartbeatAt,
-                leases.backend_anchor_state AS backendAnchorState
+                leases.last_accepted_heartbeat_at AS lastAcceptedHeartbeatAt
          FROM worker_backend_sessions AS sessions
-         JOIN scheduler_session_leases AS leases ON leases.lease_id = sessions.lease_id
-         WHERE sessions.lease_id = ?`
+         JOIN scheduler_execution_attempts AS leases ON leases.attempt_id = sessions.attempt_id
+         WHERE sessions.attempt_id = ?`
       )
-      .get(input.leaseId) as
+      .get(input.attemptId) as
       | {
-          readonly backendAnchorState: 'unanchored' | 'anchored';
-          readonly expiresAt: string;
+          readonly deadline: string | null;
           readonly heartbeatDeadline: string;
           readonly lastAcceptedHeartbeatAt: string | null;
           readonly startupDeadline: string;
           readonly state: WorkerBackendSessionState;
-          readonly status: string;
+          readonly phase: string;
           readonly workspaceHandoffState: WorkerBackendWorkspaceHandoffState;
         }
       | undefined;
@@ -449,21 +433,21 @@ export function markWorkerBackendSessionLaunching(
       !row ||
       row.state !== 'materialized' ||
       row.workspaceHandoffState !== 'complete' ||
-      row.backendAnchorState !== 'anchored' ||
-      !['acquired', 'starting', 'active', 'idle'].includes(row.status) ||
-      row.expiresAt <= timestamp ||
+      row.phase !== 'open' ||
+      !row.deadline ||
+      row.deadline <= timestamp ||
       !deadline ||
       deadline <= timestamp
     ) {
-      throw new Error('Scheduler lease is not live for worker backend launch.');
+      throw new Error('execution attempt is not live for worker backend launch.');
     }
     const transition = coreDb.sqlite
       .prepare(
         `UPDATE worker_backend_sessions
          SET state = 'launching', updated_at = ?
-         WHERE lease_id = ? AND state = 'materialized'`
+         WHERE attempt_id = ? AND state = 'materialized'`
       )
-      .run(timestamp, input.leaseId);
+      .run(timestamp, input.attemptId);
     if (transition.changes !== 1) {
       throw new Error('Worker backend session state changed before launch.');
     }
@@ -473,7 +457,7 @@ export function markWorkerBackendSessionLaunching(
     throw error;
   }
 
-  return requireWorkerBackendSession(coreDb, input.leaseId);
+  return requireWorkerBackendSession(coreDb, input.attemptId);
 }
 
 /**
@@ -493,27 +477,27 @@ export function markWorkerBackendWorkspaceHandoffComplete(
     .prepare(
       `UPDATE worker_backend_sessions
        SET workspace_handoff_state = 'complete', updated_at = ?
-       WHERE lease_id = ? AND workspace_handoff_state = 'pending'`
+       WHERE attempt_id = ? AND workspace_handoff_state = 'pending'`
     )
-    .run(timestamp, input.leaseId);
+    .run(timestamp, input.attemptId);
   if (result.changes !== 1) {
     throw new Error('Worker backend workspace handoff changed before publication.');
   }
-  return requireWorkerBackendSession(coreDb, input.leaseId);
+  return requireWorkerBackendSession(coreDb, input.attemptId);
 }
 
 /**
- * Reads one durable backend session by scheduler lease.
+ * Reads one durable backend session by execution attempt.
  *
  * @param coreDb Open Core database handle.
- * @param leaseId Owning scheduler lease id.
+ * @param attemptId Owning execution attempt id.
  * @returns Durable session or null when no physical identity was recorded.
  */
 export function getWorkerBackendSession(
   coreDb: CoreDb,
-  leaseId: string
+  attemptId: string
 ): WorkerBackendSessionRecord | null {
-  const row = selectWorkerBackendSession(coreDb, leaseId);
+  const row = selectWorkerBackendSession(coreDb, attemptId);
   return row ? mapWorkerBackendSessionRow(row) : null;
 }
 
@@ -525,16 +509,19 @@ export function getWorkerBackendSession(
  */
 export function listWorkerBackendSessions(coreDb: CoreDb): WorkerBackendSessionRecord[] {
   const rows = coreDb.sqlite
-    .prepare(`${workerBackendSessionSelectSql()} ORDER BY lease_id ASC`)
+    .prepare(`${workerBackendSessionSelectSql()} ORDER BY attempt_id ASC`)
     .all() as WorkerBackendSessionRow[];
   return rows.map(mapWorkerBackendSessionRow);
 }
 
 /** Reads one durable backend session or throws. */
-function requireWorkerBackendSession(coreDb: CoreDb, leaseId: string): WorkerBackendSessionRecord {
-  const session = getWorkerBackendSession(coreDb, leaseId);
+function requireWorkerBackendSession(
+  coreDb: CoreDb,
+  attemptId: string
+): WorkerBackendSessionRecord {
+  const session = getWorkerBackendSession(coreDb, attemptId);
   if (!session) {
-    throw new Error(`Worker backend session not found: ${leaseId}`);
+    throw new Error(`Worker backend session not found: ${attemptId}`);
   }
   return session;
 }
@@ -542,16 +529,16 @@ function requireWorkerBackendSession(coreDb: CoreDb, leaseId: string): WorkerBac
 /** Selects one raw durable backend session row. */
 function selectWorkerBackendSession(
   coreDb: CoreDb,
-  leaseId: string
+  attemptId: string
 ): WorkerBackendSessionRow | undefined {
   return coreDb.sqlite
-    .prepare(`${workerBackendSessionSelectSql()} WHERE lease_id = ?`)
-    .get(leaseId) as WorkerBackendSessionRow | undefined;
+    .prepare(`${workerBackendSessionSelectSql()} WHERE attempt_id = ?`)
+    .get(attemptId) as WorkerBackendSessionRow | undefined;
 }
 
 /** Returns the canonical worker backend session select projection. */
 function workerBackendSessionSelectSql(): string {
-  return `SELECT lease_id, workspace_id, thread_id, turn_id, agent_session_id,
+  return `SELECT attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
                  package_snapshot_id, backend_kind, deployment_id, backend_version,
                  backend_session_id, runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
                  staging_directory_ref, transient_provider_instance_id, workspace_handoff_state,
@@ -560,8 +547,8 @@ function workerBackendSessionSelectSql(): string {
 }
 
 /** Checks complete scheduler lineage equality. */
-function leaseMatchesInput(
-  lease: WorkerBackendSessionLeaseRow,
+function attemptMatchesInput(
+  lease: WorkerBackendSessionAttemptRow,
   input: RecordWorkerBackendSessionMaterializingInput
 ): boolean {
   return (
@@ -569,7 +556,7 @@ function leaseMatchesInput(
     lease.thread_id === input.lineage.threadId &&
     lease.turn_id === input.lineage.turnId &&
     lease.agent_session_id === input.identity.agentSessionId &&
-    lease.package_snapshot_id === input.identity.packageSnapshotId
+    lease.input_ref === input.identity.packageSnapshotId
   );
 }
 
@@ -602,7 +589,7 @@ function workerBackendSessionMatchesInput(
 /** Maps a raw SQLite row to the durable public record. */
 function mapWorkerBackendSessionRow(row: WorkerBackendSessionRow): WorkerBackendSessionRecord {
   return {
-    leaseId: row.lease_id,
+    attemptId: row.attempt_id,
     workspaceId: row.workspace_id,
     threadId: row.thread_id,
     turnId: row.turn_id,
@@ -641,11 +628,32 @@ function normalizeBackendLineage(
   };
 }
 
-/** Parses one required new-column backend lineage without consulting legacy image columns. */
+/** Reads retained image lineage, dropping descriptive additions while refusing unsupported core or required semantics. */
 function parseBackendLineage(value: string): WorkerBackendLineage {
-  const parsed = JSON.parse(value) as Record<string, unknown>;
-  if (typeof parsed.imageRef === 'string' && Object.keys(parsed).length === 1) {
-    return { imageRef: parsed.imageRef };
+  const parsed: unknown = JSON.parse(value);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Worker backend session lineage is invalid.');
+  }
+  const record = parsed as Record<string, unknown>;
+  if (
+    record.kind !== undefined ||
+    (record.requiredFeatures !== undefined &&
+      (!Array.isArray(record.requiredFeatures) || record.requiredFeatures.length !== 0))
+  ) {
+    throw new Error('Worker backend session lineage is invalid.');
+  }
+  if (typeof record.imageRef === 'string') {
+    if (
+      [
+        'buildArgumentsDigest',
+        'buildContextDigest',
+        'buildInputDigest',
+        'resultingImageDigest',
+      ].some((key) => key in record)
+    ) {
+      throw new Error('Worker backend session lineage is invalid.');
+    }
+    return { imageRef: record.imageRef };
   }
   const keys = [
     'buildArgumentsDigest',
@@ -653,12 +661,12 @@ function parseBackendLineage(value: string): WorkerBackendLineage {
     'buildInputDigest',
     'resultingImageDigest',
   ] as const;
-  if (keys.every((key) => typeof parsed[key] === 'string') && Object.keys(parsed).length === 4) {
+  if (!('imageRef' in record) && keys.every((key) => typeof record[key] === 'string')) {
     return {
-      buildArgumentsDigest: parsed.buildArgumentsDigest as string,
-      buildContextDigest: parsed.buildContextDigest as string,
-      buildInputDigest: parsed.buildInputDigest as string,
-      resultingImageDigest: parsed.resultingImageDigest as string,
+      buildArgumentsDigest: record.buildArgumentsDigest as string,
+      buildContextDigest: record.buildContextDigest as string,
+      buildInputDigest: record.buildInputDigest as string,
+      resultingImageDigest: record.resultingImageDigest as string,
     };
   }
   throw new Error('Worker backend session lineage is invalid.');

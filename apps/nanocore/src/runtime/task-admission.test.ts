@@ -7,23 +7,39 @@ import { ensureLocalUser } from '../auth/identity.js';
 import * as operationAuthorizer from '../auth/operation-authorizer.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { createStructuredWorkerDelegationRequest } from '../internal-agents/delegation.js';
+import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { completeSchedulerLeaseForTerminalTurn } from '../scheduler-records.js';
+import {
+  cancelSchedulerAdmissionEntry,
+  createSchedulerAdmissionEntry,
+} from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
+import {
+  admitTestNativeEnvironment,
+  recordTestNativeRuntimeTarget,
+} from '../test-support/native-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import {
+  acceptSchedulerExecutionObservation,
+  closeSchedulerExecutionAttemptWithFence,
+  markSchedulerExecutionAttemptClosing,
+  recordSchedulerExecutionOperation,
+  schedulerExecutionCorrelation,
+} from './execution-attempt-records.js';
 import { executeGoalOperation, readGoalView } from './goal-owner.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { startProductTurn } from './product-turn-start.js';
 import { createCoordinatorTaskTool } from './task-admission.js';
+import type { TurnStartRuntimeContext } from './types.js';
 import { listThreadWorkerCheckpoints } from './worker-checkpoints.js';
-import { WorkerGovernanceCapacityUnavailableError } from './worker-governance-backend.js';
+import { bindWorkerCheckpointToPreparedSession } from './worker-turn-loop.js';
 
 it.each([
   'admitted',
@@ -58,9 +74,121 @@ it.each([
           'Capacity inspection refused before admission.',
           409
         );
+      if (outcome === 'cancelled') {
+        // Cancellation precedes product acceptance and all preparation/effects. The existing
+        // checkpoint-removal owner must decide the exact tuple and complete absence proof.
+        const entry = createSchedulerAdmissionEntry(coreDb, {
+          backendId: 'nanohost',
+          queueEntryId: `queue_cancel_${input.requestId}`,
+          requestId: input.requestId,
+          requestedAgentId: input.requestedAgentId,
+          threadId: input.threadId,
+          turnId: input.reservedTurnId,
+          turnInput: input.prompt,
+          triggerActor: input.triggerActor,
+          workspaceId: input.workspaceId,
+        });
+        cancelSchedulerAdmissionEntry(coreDb, {
+          queueEntryId: entry.queueEntryId,
+          workspaceId: entry.workspaceId,
+        });
+        throw new TurnStartValidationError(
+          'turn_cancelled',
+          'Task request cancelled before product acceptance.',
+          409
+        );
+      }
       const manifest = createTestAgentSetup().manifest;
+      admitTestNativeEnvironment(coreDb, manifest);
+      recordTestNativeRuntimeTarget(coreDb);
+      const turnExecutor = new SimulatedTurnExecutor({ coreDb });
       let result: ReturnType<FsStore['createTurn']> | undefined;
-      await startProductTurn({
+      // The interrupted variant models an admitted product interruption with no collected AEP;
+      // its checkpoint must remain inspectable. Successful closeout uses the complete real simulator.
+      if (outcome === 'interrupted')
+        turnExecutor.startTurn = async (
+          _store: FsStore,
+          turnId: string,
+          _prompt: string,
+          context?: TurnStartRuntimeContext
+        ) => {
+          const turn = store.getTurnById(turnId);
+          const at = turn.startedAt!;
+          expect(context?.attemptId).toBeTypeOf('string');
+          bindWorkerCheckpointToPreparedSession({
+            coreDb,
+            workspaceDb: db,
+            store,
+            workspaceId: ws.id,
+            threadId: input.threadId,
+            turnId,
+            requestId: input.requestId,
+            agentSessionId: context!.agentSessionId!,
+            attemptId: context!.attemptId!,
+          });
+          const submitted = recordSchedulerExecutionOperation(coreDb, {
+            attemptId: context!.attemptId!,
+            operationId: `task-fixture:${turnId}`,
+            submission: true,
+          });
+          acceptSchedulerExecutionObservation(
+            coreDb,
+            await turnExecutor.submit({
+              ...schedulerExecutionCorrelation(submitted),
+              deadline: submitted.deadline!,
+            })
+          );
+          context!.onSubmissionSettled?.();
+          store.createAgentSession({
+            id: context!.agentSessionId!,
+            agentId: manifest.id,
+            workspaceId: ws.id,
+            threadId: input.threadId,
+            status: 'busy',
+            message: null,
+            createdAt: at,
+            updatedAt: at,
+          });
+          store.createItem({
+            id: `it_user_${turnId}`,
+            workspaceId: ws.id,
+            threadId: input.threadId,
+            turnId,
+            type: 'user-message',
+            status: 'completed',
+            text: input.prompt,
+            actor: input.triggerActor,
+            createdAt: at,
+            completedAt: at,
+          });
+          result = store.updateTurn(turnId, {
+            agentSessionId: context!.agentSessionId!,
+          });
+          await turnExecutor.interruptTurn(store, turnId, { requestId: input.requestId });
+          result = store.getTurnById(turnId);
+          const attempt = markSchedulerExecutionAttemptClosing(coreDb, {
+            attemptId: submitted.attemptId,
+            cause: `turn-${result!.status}`,
+            outcomeRef: `task-fixture:${result!.id}:${result!.status}`,
+          });
+          // This modeled executor owns no Native output, evidence stream or physical resident.
+          const proof = {
+            terminalHandoff: true,
+            output: true,
+            evidence: true,
+            outsideWorkspaceCollection: true,
+            integrationDrain: true,
+            routesRevoked: true,
+          } as const;
+          const correlation = schedulerExecutionCorrelation(attempt);
+          const released = await turnExecutor.release({ ...correlation, proof });
+          closeSchedulerExecutionAttemptWithFence(coreDb, {
+            correlation,
+            proof,
+            fenceRef: released.fenceRef!,
+          });
+        };
+      const ended = await startProductTurn({
         coreDb,
         store,
         triggerActor: input.triggerActor,
@@ -80,11 +208,8 @@ it.each([
             },
           ]),
         }),
-        schedulerEpoch: 1,
-        workerPlacement: 'local',
         providerCredentialResolver: () => null,
         reservedTurnId: input.reservedTurnId,
-        cancelDeferredAdmission: true,
         input: {
           workspaceId: input.workspaceId,
           threadId: input.threadId,
@@ -93,80 +218,18 @@ it.each([
           agentId: manifest.id,
         },
         onTurnCreated: (created, agentSessionId) => {
+          expect(agentSessionId).toBeNull();
           input.onTurnCreated(created, agentSessionId);
           const checkpoint = listThreadWorkerCheckpoints(db, ws.id, input.threadId)[0]!;
           expect(checkpoint).toMatchObject({
-            stage: 'running_worker',
-            workerSessionId: agentSessionId,
+            stage: 'preparing',
+            workerSessionId: null,
             stopReason: null,
           });
         },
-        turnExecutor: {
-          capabilities: {},
-          eventFamilies: [],
-          prepareAgentSessionForTurn: async () => {
-            if (outcome === 'cancelled') throw new WorkerGovernanceCapacityUnavailableError();
-            return {
-              agentSessionId: 'as_goal_fixture',
-              currentAgentSession: null,
-              replacementRequired: false,
-              sessionCompatibilityKey: 'sha256:fixture',
-            };
-          },
-          startTurn: async (
-            _store: FsStore,
-            turnId: string,
-            _prompt: string,
-            context: { agentSessionId: string }
-          ) => {
-            const turn = store.getTurnById(turnId);
-            const at = turn.startedAt!;
-            store.createAgentSession({
-              id: context.agentSessionId,
-              agentId: manifest.id,
-              workspaceId: ws.id,
-              threadId: input.threadId,
-              status: outcome === 'interrupted' ? 'interrupted' : 'idle',
-              message: null,
-              createdAt: at,
-              updatedAt: at,
-            });
-            store.createItem({
-              id: `it_user_${turnId}`,
-              workspaceId: ws.id,
-              threadId: input.threadId,
-              turnId,
-              type: 'user-message',
-              status: 'completed',
-              text: input.prompt,
-              actor: input.triggerActor,
-              createdAt: at,
-              completedAt: at,
-            });
-            result = store.updateTurn(turnId, {
-              agentSessionId: context.agentSessionId,
-              status: outcome === 'interrupted' ? 'interrupted' : 'completed',
-              completedAt: at,
-            });
-            if (outcome === 'interrupted')
-              throw new TurnStartValidationError(
-                'workspace_access_denied',
-                'Workspace access denied.',
-                403
-              );
-            store.emitTurnEvent(turnId, {
-              event: 'turn.completed',
-              requestId: input.requestId,
-              workspaceId: ws.id,
-              threadId: input.threadId,
-              turnId,
-              data: { type: 'turn-completed', stopReason: 'completed', turn: result },
-            });
-          },
-        } as never,
+        turnExecutor,
       });
-      completeSchedulerLeaseForTerminalTurn(coreDb, result!);
-      return result!;
+      return ended.turn;
     }
   );
   try {
@@ -305,7 +368,7 @@ it.each([
         policyOperation: 'knowledge.read',
       })
     );
-    const linked = readGoalView(store, db, goal.goalId);
+    let linked = readGoalView(store, db, goal.goalId);
     if (readDenied) {
       expect(result.isError, JSON.stringify(result)).toBe(true);
       expect(linked.tasks).toEqual([]);
@@ -315,6 +378,7 @@ it.each([
     await vi.waitFor(() =>
       expect(connections.every((connection) => !connection.sqlite.open)).toBe(true)
     );
+    linked = readGoalView(store, db, goal.goalId);
     if (
       outcome === 'refused' ||
       outcome === 'recovery-required-refusal' ||
@@ -339,7 +403,7 @@ it.each([
           outcome === 'recovery-required-refusal'
             ? 'recovery_required'
             : outcome === 'cancelled'
-              ? 'scheduler_admission_deferred'
+              ? 'turn_cancelled'
               : 'scheduler_admission_denied',
       });
       // Retained pre-fix timestamps remain usable data but cannot prove a Turn was admitted.
@@ -357,7 +421,7 @@ it.each([
             .get(task.threadId)
         ).toEqual({ status: 'cancelled' });
         expect(
-          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_session_leases').get()
+          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_execution_attempts').get()
         ).toEqual({ count: 0 });
       } else
         expect(checkpoints).toMatchObject([
@@ -390,7 +454,11 @@ it.each([
     const checkpoints = listThreadWorkerCheckpoints(db, ws.id, linked.tasks[0]!.threadId);
     if (outcome === 'interrupted')
       expect(checkpoints).toMatchObject([
-        { stage: 'running_worker', stopReason: null, workerSessionId: 'as_goal_fixture' },
+        {
+          stage: 'aborted',
+          stopReason: 'aborted',
+          workerSessionId: store.getTurnById(linked.tasks[0]!.turns[0]!.turnId).agentSessionId,
+        },
       ]);
     else expect(checkpoints).toEqual([]);
     const admittedTurn = store.listThreadTurns(ws.id, linked.tasks[0]!.threadId)[0]!;

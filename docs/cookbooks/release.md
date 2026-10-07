@@ -43,7 +43,7 @@ git switch -c "release/${OPENKIT_RELEASE_TAG}"
 
 2. Create `docs/changes/<timestamp>-<version>_release/plan.md` and record the intended tag, source commit, current repository visibility, expected image set, manual-gate decision, known limitations, and publication authorization when received.
 
-3. Update user-facing notes and any accepted owner affected by the release contents.
+3. Update user-facing notes and any accepted owner affected by the release contents. For the pre-release execution-authority replacement, record the separately authorized [stopped, fenced, fresh-root cutover](persistent-live-acceptance.md#pre-release-execution-authority-cutover); no execution-graph migration is supplied.
 
 Do not mass-update package versions.
 
@@ -104,7 +104,7 @@ git merge-base --is-ancestor HEAD origin/main
 pnpm release:preflight -- --tag "${OPENKIT_RELEASE_TAG}"
 ```
 
-10. Freeze the exact release candidate and scenario revision in the release change record, then run the [first-release scenario set](#first-release-scenario-set) through the [persistent live acceptance recipe](persistent-live-acceptance.md). Apply the [Release Exit Criterion](../specs/20260829-release_management.md#release-exit-criterion) to the retained ordered rounds before seeking publication authorization. Verify that publication selects the same source commit that passed both rounds; a change of candidate commit requires a fresh sequence. The tag workflow rebuilds published artifacts from that tested commit and verifies their exact digests and assets; it does not claim byte identity with the tested deployment.
+10. For the pre-release execution-authority replacement, complete the separately authorized [fresh-root cutover](persistent-live-acceptance.md#pre-release-execution-authority-cutover) before counting acceptance. Freeze the exact release candidate and scenario revision in the release change record, then run the [first-release scenario set](#first-release-scenario-set) through the [persistent live acceptance recipe](persistent-live-acceptance.md). Apply the [Release Exit Criterion](../specs/20260829-release_management.md#release-exit-criterion) to the retained ordered rounds before seeking publication authorization. Verify that publication selects the same source commit that passed both rounds; a change of candidate commit requires a fresh sequence. The tag workflow rebuilds published artifacts from that tested commit and verifies their exact digests and assets; it does not claim byte identity with the tested deployment.
 
 ## First-Release Scenario Set
 

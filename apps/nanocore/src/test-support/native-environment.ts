@@ -8,10 +8,16 @@ import type { AgentManifest } from '../agents/manifest.js';
 import type { ResolveAgentEnvironmentPackageInput } from '../runtime/agent-environment.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import {
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  getNanoHostRuntimeTarget,
+  upsertNanoHostRuntimeTarget,
+} from '../runtime/nanohost-runtime-target.js';
+import {
   admitWorkerImageEnvironment,
   writeWorkerImageSettlement,
 } from '../runtime/worker-image-settlements.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { materializeRuntimeImage } from '../worker-environments/worker-environment-preparation.js';
 
@@ -91,4 +97,29 @@ export function withTestPreparedNativeEnvironment<
           'captureCoverage' in input ? input.captureCoverage! : { scope: 'server', value: 'off' },
       }),
   };
+}
+
+/**
+ * Records explicit fresh Native target evidence for a simulated consumer fixture.
+ * @param coreDb Caller-owned migrated Core database and deployment.
+ * @param targetId Fixture target identity, never a production default.
+ * @returns The current target record; existing evidence is left untouched.
+ */
+export function recordTestNativeRuntimeTarget(coreDb: CoreDb, targetId = 'target_local') {
+  const existing = getNanoHostRuntimeTarget(coreDb, targetId);
+  if (existing) return existing;
+  const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
+    identityId: 'identity_local',
+    observedAt: new Date().toISOString(),
+    targetId,
+  });
+  return upsertNanoHostRuntimeTarget(coreDb, {
+    ...target,
+    freshEmpty: true,
+    observedAt: new Date().toISOString(),
+    physicalEpoch: 'a'.repeat(64),
+    predecessorFenced: true,
+    ready: true,
+  });
 }

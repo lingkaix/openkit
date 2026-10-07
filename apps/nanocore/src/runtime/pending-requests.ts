@@ -28,6 +28,31 @@ export const OUTCOME_DELIVERY_BOUND = 16;
 export const PENDING_REQUEST_NEXT_STEP =
   'The outcome arrives on a later Turn. Do not call again to claim it.';
 
+/** Hashes the exact existing Assistant outcome source tuple for its receipt-free Task handoff. */
+export function assistantPendingOutcomeSourceHash(
+  turn: Turn,
+  records: readonly PendingRequestRecord[],
+  responsibleUserId: string
+): string {
+  return commandInputHash({
+    workspaceId: turn.workspaceId,
+    threadId: turn.threadId,
+    turnId: turn.id,
+    responsibleUserId,
+    input: records.map((record) => ({
+      requestId: record.requestId,
+      requestItemId: record.requestItemId,
+      publicationTurnId: record.publicationTurnId,
+      resolution: record.resolution,
+      ending: record.ending,
+      disposition: record.disposition,
+      answerMap: record.answerMap,
+      decidedAt: record.decidedAt,
+      endedAt: record.endedAt,
+    })),
+  });
+}
+
 /** Creates the existing Core actor for pending-request publication and machine input. */
 export function pendingRequestSystemActor(responsibleUserId: string | null): {
   kind: 'system';

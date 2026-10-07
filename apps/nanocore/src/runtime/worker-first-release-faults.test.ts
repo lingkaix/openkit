@@ -18,13 +18,7 @@ import {
 } from '../auth/nanohost-transport-session.js';
 import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import {
-  completeSchedulerLeaseForTerminalTurn,
-  createSchedulerAdmissionEntry,
-  requireSchedulerSessionLease,
-  upsertSchedulerCapacityRecord,
-  upsertSchedulerWorkerPool,
-} from '../scheduler-records.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -34,6 +28,12 @@ import {
 import { createDemoStore } from '../test-support/demo-store.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import {
+  markSchedulerAttemptForTerminalTurn,
+  requireSchedulerExecutionAttempt,
+} from './execution-attempt-records.js';
+import { requireNanoHostExecutionAttempt } from './nanohost-attempt-records.js';
+import { runNanoHostAttemptRecoveryMaintenance } from './nanohost-attempt-recovery.js';
 import type { NanoHostHarnessCommand } from './nanohost-harness-records.js';
 import * as harnessRecords from './nanohost-harness-records.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
@@ -49,7 +49,6 @@ import {
   readPendingRequest,
 } from './pending-requests.js';
 import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
-import { runSchedulerLeaseMaintenanceOnce } from './scheduler-lease-maintenance-service.js';
 import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
 import { registerWorkerControlRoutes } from './worker-control-routes.js';
 
@@ -159,7 +158,7 @@ function operationDouble(
   };
 }
 
-/** Composes real scheduler, lease, control routes, private poll/result routes and Turn closeout over the existing external-effect double. */
+/** Composes real scheduler, Core attempt, control routes, private poll/result routes and Turn closeout over the existing external-effect double. */
 async function faultFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-first-release-fault-'));
   const coreDb = openCoreDb(dataRoot);
@@ -259,36 +258,27 @@ async function faultFixture() {
   expect(
     await post('/api/nanohost/transport/session/readiness', { physicalEpoch: DIGEST })
   ).toEqual({ status: 204, body: '' });
-  upsertSchedulerWorkerPool(coreDb, {
-    allowedBackendKinds: ['openshell'],
-    allowedPlacements: ['local'],
-    allowedWorkspaceScopes: ['local'],
-    budgetClass: 'interactive',
-    currentAdmittedSessionCount: 0,
-    currentQueueDepth: 0,
-    defaultTimeoutMs: 900_000,
-    healthSummary: 'ready',
-    maxConcurrentSessions: 1,
-    poolId: 'fault-pool',
-    queueLimit: 20,
-    status: 'active',
-  });
-  upsertSchedulerCapacityRecord(coreDb, {
-    capacityClass: 'local',
-    concurrencyCeiling: 1,
-    inUseCount: 0,
-    observationSource: 'configured',
-    observedAt: NOW,
-    poolId: 'fault-pool',
-    queueDepth: 0,
-    targetId: target.identityId,
+  // The real dispatcher requires the exact pending Turn and initiating command receipt (D83).
+  store.createTurn(
+    'ws_demo',
+    'th_demo',
+    'Exercise a bounded worker fault',
+    { kind: 'user', id: 'user_local' },
+    null,
+    { turnId: 'fault-turn', agentId: setup.manifest.id, status: 'pending', executorKind: 'worker' }
+  );
+  store.recordCommandRequest({
+    command: 'turn.start',
+    requestId: 'fault-request',
+    scope: { actorId: 'user_local', workspaceId: 'ws_demo', threadId: 'th_demo' },
+    inputHash: 'fault-fixture',
+    response: { kind: 'turn', id: 'fault-turn' },
   });
   createSchedulerAdmissionEntry(coreDb, {
-    priorityClass: 'interactive',
+    backendId: 'nanohost',
     queueEntryId: 'fault-queue',
-    requestId: null,
+    requestId: 'fault-request',
     requestedAgentId: setup.manifest.id,
-    requiredPoolConstraints: ['openshell.local'],
     threadId: 'th_demo',
     turnId: 'fault-turn',
     turnInput: 'Exercise a bounded worker fault',
@@ -323,17 +313,10 @@ async function faultFixture() {
     agentManifests: [setup.manifest],
     coreDb,
     createAgentSessionId: () => 'fault-session',
-    createLeaseId: () => 'fault-lease',
-    createPlanId: () => 'fault-plan',
-    expectedControlMode: 'poll',
-    expectedDataPlaneMode: 'openshell-files',
+    createAttemptId: () => 'fault-lease',
+    executionBackend: runtime.turnExecutor.executionBackend!,
     gatewayConfig: createTestGatewayConfig(),
-    heartbeatIntervalMs: 10_000,
-    heartbeatTimeoutMs: 30_000,
-    leaseDurationMs: 900_000,
     maxDispatches: 1,
-    schedulerEpoch: 1,
-    startupTimeoutMs: 120_000,
     store,
     turnExecutor: runtime.turnExecutor,
     providerRegistry: new ProviderRegistry([
@@ -394,7 +377,7 @@ async function faultFixture() {
         turnId: 'fault-turn',
         agentSessionId: 'fault-session',
         packageSnapshotId: String(command.body.packageSnapshotId),
-        requestId: null,
+        requestId: 'fault-request',
       },
       fetch: async (url, { signal, ...init }) =>
         app.request(url, { ...init, ...(signal ? { signal } : {}) }),
@@ -409,6 +392,18 @@ async function faultFixture() {
   return {
     coreDb,
     store,
+    maintenance: () =>
+      runNanoHostAttemptRecoveryMaintenance(coreDb, {
+        executionBackend: runtime.turnExecutor.executionBackend!,
+        cleanupBackendSession: runtime.cleanupBackendSession,
+        prepareBackendCleanup: runtime.prepareBackendCleanup,
+        restoreBackendSession: runtime.restoreBackendSession,
+        reconcileAcceptedFinalStatus: runtime.reconcileAcceptedFinalStatus,
+        isTurnExecutionActive: runtime.isTurnExecutionActive,
+        projectRecoveredTurn: async () => {
+          throw new Error('Active worker must retain its original terminal owner.');
+        },
+      }),
     effects,
     running,
     waitQueued,
@@ -432,7 +427,7 @@ async function faultFixture() {
             turnId: 'fault-turn',
             agentSessionId: 'fault-session',
             packageSnapshotId: String(command.body.packageSnapshotId),
-            requestId: null,
+            requestId: 'fault-request',
           },
           sequence: 1,
           data: { status: 'completed', stopReason: 'completed' },
@@ -445,7 +440,7 @@ async function faultFixture() {
 const ready = { nativeHandleDigest: DIGEST, nativeHandleState: 'ready' };
 
 describe('first-release worker faults (real Core crossings)', () => {
-  it('keeps the lease live across multiple heartbeat deadlines while a Pending Request is unanswered', async () => {
+  it('keeps the Native attempt live across multiple heartbeat deadlines while a Pending Request is unanswered', async () => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     vi.setSystemTime(new Date(NOW));
     const f = await faultFixture();
@@ -462,7 +457,10 @@ describe('first-release worker faults (real Core crossings)', () => {
       const control = f.controlClient(start);
       await control.recordHeartbeat({ status: 'starting' });
       await control.recordHeartbeat({ status: 'running' });
-      const firstDeadline = requireSchedulerSessionLease(f.coreDb, 'fault-lease').heartbeatDeadline;
+      const firstDeadline = requireNanoHostExecutionAttempt(
+        f.coreDb,
+        'fault-lease'
+      ).heartbeatDeadline;
       const request = {
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
@@ -505,12 +503,8 @@ describe('first-release worker faults (real Core crossings)', () => {
       for (let interval = 0; interval < 8; interval += 1) {
         await vi.advanceTimersByTimeAsync(10_000);
         await control.recordHeartbeat({ status: 'running' });
-        runSchedulerLeaseMaintenanceOnce(f.coreDb, {
-          maxTotalLeaseMs: 900_000,
-          renewalDurationMs: 900_000,
-          renewalLeadMs: 0,
-        });
-        expect(requireSchedulerSessionLease(f.coreDb, 'fault-lease').status).toBe('active');
+        await f.maintenance();
+        expect(requireNanoHostExecutionAttempt(f.coreDb, 'fault-lease').phase).toBe('open');
         expect(readPendingRequest(workspaceDb.sqlite, request.requestId)).toEqual(pendingRecord);
         expect(f.store.getTurnById('fault-turn').status).toBe('running');
       }
@@ -635,8 +629,14 @@ describe('first-release worker faults (real Core crossings)', () => {
       expect(f.coreDb.sqlite.prepare('PRAGMA integrity_check').get()).toEqual({
         integrity_check: 'ok',
       });
-      completeSchedulerLeaseForTerminalTurn(f.coreDb, turn);
-      expect(requireSchedulerSessionLease(f.coreDb, 'fault-lease').status).toBe('failed');
+      markSchedulerAttemptForTerminalTurn(f.coreDb, turn);
+      // D97/D111: terminal failure and physical cleanup cannot prove unread output or evidence.
+      expect(requireSchedulerExecutionAttempt(f.coreDb, 'fault-lease')).toMatchObject({
+        phase: 'closing',
+        disposition: 'unknown',
+        operationId: expect.any(String),
+        fenceRef: null,
+      });
     } finally {
       await f.close();
       vi.useRealTimers();
@@ -708,8 +708,14 @@ describe('first-release worker faults (real Core crossings)', () => {
       expect(f.coreDb.sqlite.prepare('SELECT state FROM worker_backend_sessions').get()).toEqual({
         state: 'cleaned',
       });
-      completeSchedulerLeaseForTerminalTurn(f.coreDb, turn);
-      expect(requireSchedulerSessionLease(f.coreDb, 'fault-lease').status).toBe('failed');
+      markSchedulerAttemptForTerminalTurn(f.coreDb, turn);
+      // Submission was accepted, but held inspection leaves collection/evidence unproved.
+      expect(requireSchedulerExecutionAttempt(f.coreDb, 'fault-lease')).toMatchObject({
+        phase: 'closing',
+        disposition: 'accepted',
+        operationId: expect.any(String),
+        fenceRef: null,
+      });
       expect(f.coreDb.sqlite.prepare('PRAGMA integrity_check').get()).toEqual({
         integrity_check: 'ok',
       });

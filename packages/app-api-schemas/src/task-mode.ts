@@ -20,6 +20,7 @@ export const TaskModeWorkerTargetSchema = z
 
 /** Task Mode attempt state projected from the accepted worker turn. */
 export const TaskModeAttemptStateSchema = z.enum([
+  'queued',
   'running',
   'completed',
   'cancelled',

@@ -9,6 +9,7 @@ import type { FsStore } from '../lib/store.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION } from '../lib/store.js';
 import { readCommandRequestRecordsFromSqlite } from '../storage/command-request-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { projectApprovalEffect } from './pending-request-disclosure.js';
 import {
@@ -133,6 +134,24 @@ export function installPendingRequestAdmission(
       });
     },
     onTerminal(turn) {
+      const attempt = dependencies.coreDb
+        ? listSchedulerExecutionAttemptsForTurn(dependencies.coreDb, {
+            workspaceId: turn.workspaceId,
+            threadId: turn.threadId,
+            turnId: turn.id,
+          }).at(-1)
+        : undefined;
+      if (
+        attempt?.phase === 'closed' &&
+        attempt.disposition === 'not_accepted' &&
+        attempt.operationId === null &&
+        attempt.terminalCause !== 'backend-busy'
+      ) {
+        refusedOutcomeTurns.add(turn.id);
+        withWorkspace(dependencies, turn.workspaceId, (sqlite) => {
+          releaseFrozenOutcomes(sqlite, turn.id, new Date().toISOString());
+        });
+      }
       if (refusedOutcomeTurns.has(turn.id)) return;
       if (store.getThread(turn.workspaceId, turn.threadId).status === 'archived') return;
       admitNextOutcome(store, dependencies, turn.workspaceId, turn.threadId);
@@ -951,11 +970,6 @@ async function deliverWorkerOutcome(
       // The worker execution owner records delivery at native acceptance, before completion.
     } catch (error) {
       const now = new Date().toISOString();
-      if (
-        error instanceof TurnStartValidationError &&
-        error.code === 'scheduler_admission_deferred'
-      )
-        return;
       if (error instanceof TurnStartValidationError) {
         refusal = error;
         refusedOutcomeTurns.add(turnId);

@@ -67,7 +67,7 @@ const PREDECESSOR_SANDBOX_SQL = `
 
 const PREDECESSOR_BACKEND_SQL = `
   CREATE TABLE worker_backend_sessions (
-    lease_id text PRIMARY KEY NOT NULL,
+    attempt_id text PRIMARY KEY NOT NULL,
     workspace_id text NOT NULL,
     thread_id text NOT NULL,
     turn_id text NOT NULL,
@@ -490,7 +490,7 @@ function rebuildSandboxRuntimeRecords(sqlite: Database.Database): void {
 function rebuildWorkerBackendSessions(sqlite: Database.Database): void {
   sqlite.exec(`
     CREATE TABLE physical_epoch_worker_backend_sessions (
-      lease_id text PRIMARY KEY NOT NULL,
+      attempt_id text PRIMARY KEY NOT NULL,
       workspace_id text NOT NULL,
       thread_id text NOT NULL,
       turn_id text NOT NULL,
@@ -518,14 +518,14 @@ function rebuildWorkerBackendSessions(sqlite: Database.Database): void {
       sandbox_binding_ref text
     );
     INSERT INTO physical_epoch_worker_backend_sessions (
-      lease_id, workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id,
+      attempt_id, workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id,
       backend_kind, deployment_id, backend_version, worker_image, cell_target_id, placement,
       gateway_name, gateway_endpoint, backend_session_id, staging_directory_ref,
       transient_provider_instance_id, workspace_handoff_state, state, physical_cleaned_at,
       created_at, updated_at, runtime_target_id, origin_physical_epoch, backend_lineage_json,
       sandbox_binding_ref
     ) SELECT
-      lease_id, workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id,
+      attempt_id, workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id,
       backend_kind, deployment_id, backend_version, worker_image, cell_target_id, placement,
       gateway_name, gateway_endpoint, backend_session_id, staging_directory_ref,
       transient_provider_instance_id, workspace_handoff_state, state, physical_cleaned_at,

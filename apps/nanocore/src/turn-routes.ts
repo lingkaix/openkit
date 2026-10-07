@@ -6,13 +6,18 @@ import {
   TurnSchema,
 } from '@openkit/protocol';
 import type { z } from 'zod';
-
 import type { Actor } from './auth/identity.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
 import { readStrictWorkerContextPackageDigest } from './context/worker-context-projection.js';
 import type { FsStore } from './lib/store.js';
 import { QUICK_CHAT_AGENT_ID } from './mode-entry-routes.js';
 import type { ProviderCredentialResolver } from './providers/registry.js';
+import {
+  closeSchedulerExecutionAttemptWithoutEffects,
+  listSchedulerExecutionAttemptsForTurn,
+  markSchedulerAttemptForTerminalTurn,
+  markSchedulerExecutionAttemptClosing,
+} from './runtime/execution-attempt-records.js';
 import {
   commandInputHash,
   type InflightIdempotentCommand,
@@ -25,9 +30,10 @@ import {
   validateLiveProductTurnAdmission,
 } from './runtime/product-turn-start.js';
 import type { TurnExecutor } from './runtime/types.js';
+import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
 import {
-  completeSchedulerLeaseForTerminalTurn,
-  listSchedulerSessionLeasesForTurn,
+  cancelSchedulerAdmissionEntry,
+  listSchedulerAdmissionEntriesForWorkspace,
 } from './scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 
@@ -101,7 +107,6 @@ export interface TurnStartDependencies {
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly providerCredentialResolver: ProviderCredentialResolver;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
-  readonly schedulerEpoch: number;
   readonly turnExecutor: TurnExecutor;
   readonly workerPlacement: 'local' | 'remote';
 }
@@ -118,7 +123,6 @@ export async function startTurn(
     inflightCommands,
     providerCredentialResolver,
     runtimeConfig,
-    schedulerEpoch,
     turnExecutor,
     workerPlacement,
   } = dependencies;
@@ -160,7 +164,6 @@ export async function startTurn(
             input,
             requestActor: actor,
             providerCredentialResolver,
-            schedulerEpoch,
             snapshot: runtimeConfig(),
             store,
             triggerActor: { kind: 'user', id: actor.userId },
@@ -174,7 +177,7 @@ export async function startTurn(
               admit(created);
             },
           }),
-        closeout: (handle) => completeSchedulerLeaseForTerminalTurn(coreDb, handle.turn),
+        closeout: (handle) => markSchedulerAttemptForTerminalTurn(coreDb, handle.turn),
         settled: () => {
           if (admittedTurnId) closeouts.delete(admittedTurnId);
         },
@@ -194,6 +197,19 @@ export async function startTurn(
         if (current.status === 'pending' || current.status === 'running') {
           validateCoreTurnAdmission(coreDb, store, input, current.triggerActor.id, current.id);
         } else {
+          if (
+            coreDb &&
+            listSchedulerExecutionAttemptsForTurn(coreDb, {
+              workspaceId: input.workspaceId,
+              threadId: input.threadId,
+              turnId: current.id,
+            }).some((attempt) => attempt.phase !== 'closed')
+          )
+            throw new TurnStartValidationError(
+              'recovery_required',
+              'The terminal Turn attempt requires recovery.',
+              409
+            );
           const closeout = coreDb ? activeTurnCloseouts.get(coreDb)?.get(current.id) : undefined;
           if (closeout) {
             try {
@@ -208,20 +224,6 @@ export async function startTurn(
                 );
             }
           }
-          if (
-            coreDb &&
-            current.status === 'completed' &&
-            listSchedulerSessionLeasesForTurn(coreDb, {
-              workspaceId: input.workspaceId,
-              threadId: input.threadId,
-              turnId: current.id,
-            }).some((lease) => lease.status !== 'released')
-          )
-            throw new TurnStartValidationError(
-              'recovery_required',
-              'The terminal Turn lease requires recovery.',
-              409
-            );
         }
         return TurnSchema.parse(store.getTurn(input.workspaceId, input.threadId, current.id));
       } catch (error) {
@@ -239,7 +241,7 @@ export async function startTurn(
   return projectOrdinaryTurn(turn);
 }
 
-/** Interrupts one exact Turn through its existing command receipt and scheduler lease owner. */
+/** Interrupts one exact Turn through its existing command receipt and execution attempt owner. */
 export async function interruptProductTurn(input: {
   readonly store: FsStore;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
@@ -292,6 +294,70 @@ export async function interruptProductTurn(input: {
 
       if (await interruptInternalChatTurn?.(store, turnId)) {
         return TurnSchema.parse(store.getTurn(workspaceId, threadId, turnId));
+      }
+
+      if (coreDb) {
+        const entries = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          workspaceId,
+          statuses: ['queued', 'denied', 'admitted'],
+        }).filter((entry) => entry.turnId === turnId && entry.threadId === threadId);
+        if (entries.length !== 1)
+          throw new TurnStartValidationError(
+            'recovery_required',
+            'Turn cancellation has no exact admission owner.',
+            409
+          );
+        const admission = entries[0]!;
+        const attempt = listSchedulerExecutionAttemptsForTurn(coreDb, {
+          workspaceId,
+          threadId,
+          turnId,
+        }).find((candidate) => candidate.phase !== 'closed');
+        if (!attempt && (admission.status === 'queued' || admission.status === 'denied')) {
+          cancelSchedulerAdmissionEntry(coreDb, {
+            queueEntryId: admission.queueEntryId,
+            workspaceId,
+          });
+          terminalizeGovernedWorkerTurn({
+            store,
+            turnId,
+            agentSessionId: null,
+            requestId: admission.requestId,
+            completedAt: new Date().toISOString(),
+            outcome: 'cancelled',
+            errorCode: 'turn_cancelled',
+            message: 'Queued Turn was cancelled before preparation.',
+          });
+          return TurnSchema.parse(store.getTurn(workspaceId, threadId, turnId));
+        }
+        if (attempt?.phase === 'open' && attempt.operationId === null) {
+          markSchedulerExecutionAttemptClosing(coreDb, {
+            attemptId: attempt.attemptId,
+            cause: 'turn-cancelled',
+          });
+          closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+            attemptId: attempt.attemptId,
+            noOutstandingEffects: true,
+            cause: 'turn-cancelled',
+          });
+          terminalizeGovernedWorkerTurn({
+            store,
+            turnId,
+            agentSessionId: attempt.agentSessionId,
+            requestId: admission.requestId,
+            completedAt: new Date().toISOString(),
+            outcome: 'cancelled',
+            errorCode: 'turn_cancelled',
+            message: 'Turn was cancelled before any backend effect.',
+          });
+          return TurnSchema.parse(store.getTurn(workspaceId, threadId, turnId));
+        }
+        if (attempt?.phase === 'closing')
+          throw new TurnStartValidationError(
+            'recovery_required',
+            'Original cancellation or cleanup is still unresolved.',
+            409
+          );
       }
 
       if (!turnExecutor.capabilities.interrupts) {
@@ -361,7 +427,7 @@ export async function interruptProductTurn(input: {
     throw error;
   });
 
-  completeSchedulerLeaseForTerminalTurn(coreDb, turn);
+  markSchedulerAttemptForTerminalTurn(coreDb, turn);
 
   return turn;
 }

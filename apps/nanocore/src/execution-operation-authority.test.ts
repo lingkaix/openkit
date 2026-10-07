@@ -47,6 +47,7 @@ describe('execution operation authority', () => {
       privateOwnerUserId: 'user_other',
     });
     createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
       queueEntryId: 'queue_admin',
       workspaceId: 'ws_demo',
       threadId: thread.id,
@@ -54,12 +55,10 @@ describe('execution operation authority', () => {
       triggerActor: { kind: 'user', id: 'user_other' },
       turnInput: 'Work',
       requestedAgentId: 'agent_codex_host',
-      priorityClass: 'interactive',
-      requiredPoolConstraints: ['openshell.local'],
     });
     denySchedulerAdmissionEntry(coreDb, {
       queueEntryId: 'queue_admin',
-      denialReason: 'no-compatible-pool',
+      denialReason: 'authority-denied',
     });
     let actor: Actor = { kind: 'session', userId: 'user_local' };
     const app = new Hono<{ Variables: AuthVariables }>();

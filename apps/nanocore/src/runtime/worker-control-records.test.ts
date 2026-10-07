@@ -3,14 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { WorkerCanonicalEventRecord, WorkerLineage } from '@openkit/worker-protocol';
 import { describe, expect, it, vi } from 'vitest';
-import {
-  createSchedulerAdmissionEntry,
-  createSchedulerPlacementPlan,
-  createSchedulerSessionLease,
-  markSchedulerSessionLeaseReleasing,
-} from '../scheduler-records.js';
+import { ensureLocalUser } from '../auth/identity.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { markSchedulerExecutionAttemptClosing } from './execution-attempt-records.js';
 import {
   canonicalStopReasonForAcceptedWorkerFinalStatus,
   getWorkerControlAcceptedFinalStatus,
@@ -46,114 +45,85 @@ function eventRecord(sequence: number, recordLineage = lineage): WorkerCanonical
   };
 }
 
-/** Inserts one exact scheduler lease for durable completion-wait tests. */
-function insertWorkerLease(
-  coreDb: ReturnType<typeof openCoreDb>,
-  options: { expiresAt: string; status?: string } = {
-    expiresAt: '2026-07-15T00:15:00.000Z',
-  }
-): void {
-  coreDb.sqlite
-    .prepare(
-      `INSERT INTO scheduler_session_leases (
-        lease_id,
-        plan_id,
-        workspace_id,
-        thread_id,
-        turn_id,
-        agent_session_id,
-        package_snapshot_id,
-        pool_id,
-        target_id,
-        status,
-        acquired_at,
-        expires_at,
-        heartbeat_deadline,
-        startup_deadline,
-        renewal_count,
-        scheduler_epoch,
-        sandbox_binding_ref,
-        backend_anchor_state
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      'lease_events_1',
-      'plan_events_1',
-      lineage.workspaceId,
-      lineage.threadId,
-      lineage.turnId,
-      lineage.agentSessionId,
-      lineage.packageSnapshotId,
-      'pool_events_1',
-      'target_events_1',
-      options.status ?? 'active',
-      '2026-07-15T00:00:00.000Z',
-      options.expiresAt,
-      options.expiresAt,
-      options.expiresAt,
-      0,
-      1,
-      'lease-binding:events-1',
-      'anchored'
-    );
+/** Establishes exact submitted attempt authority for the durable final-status waiter. */
+function insertWorkerAttempt(coreDb: ReturnType<typeof openCoreDb>): void {
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: lineage.workspaceId,
+    ownerUserId: 'user_local',
+  });
+  const entry = createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
+    queueEntryId: 'queue_events_wait',
+    requestId: lineage.requestId,
+    workspaceId: lineage.workspaceId,
+    threadId: lineage.threadId,
+    turnId: lineage.turnId,
+    turnInput: 'Wait for the exact durable worker final status',
+    requestedAgentId: 'agent_worker',
+    triggerActor: { kind: 'user', id: 'user_local' },
+    now: () => '2026-07-15T00:00:00.000Z',
+  });
+  recordTestExecutionAttempt(coreDb, {
+    entry,
+    attemptId: 'lease_events_1',
+    agentSessionId: lineage.agentSessionId,
+    inputRef: lineage.packageSnapshotId,
+    bindingRef: 'lease-binding:events-1',
+    sessionCompatibilityKey: 'events-wait',
+    operationId: 'submit:events-wait',
+    now: () => '2026-07-15T00:00:00.000Z',
+  });
 }
 
 /**
- * Creates one admission-backed scheduler lease for final-status binding tests.
+ * Creates one admission-backed submitted Native attempt for final-status binding tests.
  *
  * @param coreDb Open Core database handle.
  */
-function createFinalStatusLease(coreDb: ReturnType<typeof openCoreDb>): void {
-  createSchedulerAdmissionEntry(coreDb, {
+function createFinalStatusAttempt(coreDb: ReturnType<typeof openCoreDb>): void {
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: lineage.workspaceId,
+    ownerUserId: 'user_local',
+  });
+  const entry = createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
     now: () => '2026-07-15T00:00:00.000Z',
-    priorityClass: 'interactive',
     profileRef: 'profile_worker',
     queueEntryId: 'queue_events_final_status',
     requestId: lineage.requestId,
     requestedAgentId: 'agent_worker',
-    requiredPoolConstraints: ['openshell.local'],
     threadId: lineage.threadId,
-    triggerActor: { kind: 'automation', id: 'automation_events', responsibleUserId: null },
+    triggerActor: { kind: 'user', id: 'user_local' },
     turnId: lineage.turnId,
     turnInput: 'Run final-status binding test',
     workspaceId: lineage.workspaceId,
   });
-  createSchedulerPlacementPlan(coreDb, {
-    capacitySnapshotRef: 'target_events:1',
-    degradedOptionalFeatures: [],
-    expectedControlMode: 'poll',
-    expectedDataPlaneMode: 'openshell-files',
-    heartbeatIntervalMs: 10_000,
-    heartbeatTimeoutMs: 30_000,
-    now: () => '2026-07-15T00:00:01.000Z',
-    planId: 'plan_events_final_status',
-    plannedLeaseDurationMs: 900_000,
-    policyDecisionIds: [],
-    queueEntryId: 'queue_events_final_status',
-    schedulerEpoch: 1,
-    selectedPoolId: 'pool_events',
-    selectedTargetId: 'target_events',
-  });
-  createSchedulerSessionLease(coreDb, {
+  recordTestExecutionAttempt(coreDb, {
+    entry,
+    attemptId: 'lease_events_final_status',
     agentSessionId: lineage.agentSessionId,
-    expiresAt: '2099-07-15T00:15:00.000Z',
-    heartbeatDeadline: '2099-07-15T00:15:00.000Z',
-    leaseId: 'lease_events_final_status',
-    now: () => '2026-07-15T00:00:02.000Z',
-    packageSnapshotId: lineage.packageSnapshotId,
-    planId: 'plan_events_final_status',
-    sandboxTokenBindingRef: 'lease-binding:events-final-status',
-    startupDeadline: '2099-07-15T00:15:00.000Z',
+    inputRef: lineage.packageSnapshotId,
+    bindingRef: 'lease-binding:events-final-status',
+    sessionCompatibilityKey: 'events-final-status',
+    operationId: 'submit:events-final-status',
+    now: () => new Date().toISOString(),
   });
 }
 
 describe('worker final-status token binding', () => {
   it('accepts exact live request lineage without projecting a physical owner', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-15T00:00:02.000Z'));
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-binding-live-')));
     applyMigrations(coreDb);
-    createFinalStatusLease(coreDb);
+    createFinalStatusAttempt(coreDb);
 
     try {
+      vi.setSystemTime(new Date('2026-07-15T00:00:10.000Z'));
       expect(
         resolveWorkerControlFinalStatusTokenBinding(coreDb, {
           lineage,
@@ -167,14 +137,17 @@ describe('worker final-status token binding', () => {
         })
       ).toEqual({ reason: 'lineage-mismatch', status: 'rejected' });
     } finally {
+      vi.useRealTimers();
       coreDb.sqlite.close();
     }
   });
 
-  it('admits release-grace replay only for an exact durable request id', () => {
+  it('admits closing replay only for an exact durable request id', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-15T00:00:02.000Z'));
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-binding-replay-')));
     applyMigrations(coreDb);
-    createFinalStatusLease(coreDb);
+    createFinalStatusAttempt(coreDb);
     recordWorkerControlAcceptedRecord(coreDb, {
       acceptedAt: '2026-07-15T00:00:03.000Z',
       lineage: { ...lineage, requestId: 'req_events_other' },
@@ -183,13 +156,14 @@ describe('worker final-status token binding', () => {
       recordKey: '8',
       sequence: 8,
     });
-    markSchedulerSessionLeaseReleasing(coreDb, {
-      leaseId: 'lease_events_final_status',
-      now: () => '2099-07-15T00:00:04.000Z',
-      releaseReason: 'worker-final-status',
+    markSchedulerExecutionAttemptClosing(coreDb, {
+      attemptId: 'lease_events_final_status',
+      now: () => '2026-07-15T00:00:04.000Z',
+      cause: 'worker-final-status',
     });
 
     try {
+      vi.setSystemTime(new Date('2026-07-15T00:00:10.000Z'));
       expect(
         resolveWorkerControlFinalStatusTokenBinding(coreDb, {
           lineage: { ...lineage, requestId: 'req_events_other' },
@@ -201,7 +175,7 @@ describe('worker final-status token binding', () => {
           lineage,
           sandboxBindingRef: 'lease-binding:events-final-status',
         })
-      ).toEqual({ reason: 'lease-not-live', status: 'rejected' });
+      ).toEqual({ reason: 'attempt-not-live', status: 'rejected' });
 
       recordWorkerControlAcceptedRecord(coreDb, {
         acceptedAt: '2026-07-15T00:00:05.000Z',
@@ -219,6 +193,7 @@ describe('worker final-status token binding', () => {
         })
       ).toEqual({ replayOnly: true, status: 'accepted' });
     } finally {
+      vi.useRealTimers();
       coreDb.sqlite.close();
     }
   });
@@ -384,11 +359,11 @@ describe('durable worker final-status wait', () => {
     vi.setSystemTime(new Date('2026-07-15T00:01:00.000Z'));
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-final-status-wait-')));
     applyMigrations(coreDb);
-    insertWorkerLease(coreDb);
+    insertWorkerAttempt(coreDb);
 
     try {
       const completion = waitForWorkerControlFinalStatus(coreDb, {
-        leaseId: 'lease_events_1',
+        attemptId: 'lease_events_1',
         lineage,
       });
       let settled = false;
@@ -419,12 +394,12 @@ describe('durable worker final-status wait', () => {
     }
   });
 
-  it('accepts only exact durable lineage and lets accepted final status outlive lease expiry', async () => {
+  it('accepts only exact durable lineage and lets accepted final status outlive attempt expiry', async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-07-15T00:00:31.000Z'));
+    vi.setSystemTime(new Date('2026-07-15T02:00:01.000Z'));
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-final-status-lineage-')));
     applyMigrations(coreDb);
-    insertWorkerLease(coreDb, { expiresAt: '2026-07-15T00:00:30.000Z' });
+    insertWorkerAttempt(coreDb);
     recordWorkerControlAcceptedRecord(coreDb, {
       acceptedAt: '2026-07-15T00:00:20.000Z',
       lineage: { ...lineage, packageSnapshotId: 'aepsnap_events_other' },
@@ -436,7 +411,7 @@ describe('durable worker final-status wait', () => {
 
     await expect(
       waitForWorkerControlFinalStatus(coreDb, {
-        leaseId: 'lease_events_1',
+        attemptId: 'lease_events_1',
         lineage,
       })
     ).rejects.toThrow('expired before durable final status');
@@ -451,7 +426,7 @@ describe('durable worker final-status wait', () => {
     });
     await expect(
       waitForWorkerControlFinalStatus(coreDb, {
-        leaseId: 'lease_events_1',
+        attemptId: 'lease_events_1',
         lineage,
       })
     ).resolves.toEqual({

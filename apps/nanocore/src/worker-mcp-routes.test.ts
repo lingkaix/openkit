@@ -39,6 +39,12 @@ import { FsStore } from './lib/store.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import {
+  acceptSchedulerExecutionObservation,
+  closeSchedulerExecutionAttemptWithFence,
+  markSchedulerExecutionAttemptClosing,
+  schedulerExecutionCorrelation,
+} from './runtime/execution-attempt-records.js';
+import {
   importMcpToolSchemaSnapshots,
   mcpToolSchemaContentDigest,
   readCurrentMcpToolSchemaSnapshot,
@@ -69,11 +75,7 @@ import {
   MCP_RESULT_TOO_LARGE_MESSAGE,
   WorkerMcpGatewayCallError,
 } from './runtime/worker-mcp-gateway.js';
-import {
-  createSchedulerAdmissionEntry,
-  createSchedulerPlacementPlan,
-  createSchedulerSessionLease,
-} from './scheduler-records.js';
+import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { lightAppDbPath } from './storage/app-db.js';
 import {
   openCoreDb,
@@ -87,6 +89,7 @@ import {
   recordTestAgentEnvironmentPackage,
 } from './test-support/agent-environment.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
 import { admitTestNativeEnvironment } from './test-support/native-environment.js';
@@ -106,9 +109,10 @@ function recordMcpWorkerLineage(
   serverAdminTokenId: string | null = null
 ): void {
   const scope = environmentPackage.scope;
-  createSchedulerAdmissionEntry(coreDb, {
+  const entry = createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
     queueEntryId: `queue_${scope.turnId}`,
-    requestId: `request_${scope.turnId}`,
+    requestId: scope.requestId,
     triggerActor: scope.triggerActor,
     serverAdminTokenId,
     workspaceId: scope.workspaceId,
@@ -116,33 +120,26 @@ function recordMcpWorkerLineage(
     turnId: scope.turnId,
     turnInput: 'Call MCP tool',
     requestedAgentId: environmentPackage.agent.agentId,
-    priorityClass: 'interactive',
-    requiredPoolConstraints: [],
   });
-  createSchedulerPlacementPlan(coreDb, {
-    planId: `plan_${scope.turnId}`,
-    queueEntryId: `queue_${scope.turnId}`,
-    selectedPoolId: 'pool_test',
-    selectedTargetId: 'target_test',
-    plannedLeaseDurationMs: 900_000,
-    heartbeatIntervalMs: 10_000,
-    heartbeatTimeoutMs: 30_000,
-    expectedControlMode: 'poll',
-    expectedDataPlaneMode: 'openshell-files',
-    degradedOptionalFeatures: [],
-    policyDecisionIds: [],
-    schedulerEpoch: 1,
-  });
-  createSchedulerSessionLease(coreDb, {
-    leaseId: `lease_${scope.turnId}`,
-    planId: `plan_${scope.turnId}`,
+  const submittedAttempt = recordTestExecutionAttempt(coreDb, {
+    entry,
+    attemptId: `lease_${scope.turnId}`,
     agentSessionId: scope.agentSessionId,
-    packageSnapshotId: environmentPackage.snapshotId,
-    expiresAt: '2099-01-01T00:00:00.000Z',
-    heartbeatDeadline: '2099-01-01T00:00:00.000Z',
-    startupDeadline: '2099-01-01T00:00:00.000Z',
-    sandboxTokenBindingRef: `binding_${scope.turnId}`,
+    inputRef: environmentPackage.snapshotId,
+    bindingRef: `binding_${scope.turnId}`,
+    sessionCompatibilityKey: 'fixture-compatibility',
+    now: () => new Date().toISOString(),
+    operationId: `fixture-submit:${`lease_${scope.turnId}`}`,
   });
+  expect(
+    acceptSchedulerExecutionObservation(coreDb, {
+      ...schedulerExecutionCorrelation(submittedAttempt),
+      disposition: 'accepted',
+      execution: 'running',
+      fenceRef: null,
+      outcomeRef: null,
+    })?.disposition
+  ).toBe('accepted');
 }
 
 describe('worker MCP routes', () => {
@@ -737,6 +734,16 @@ describe('worker MCP routes', () => {
       )
     );
     const otherWorkspace = store.createWorkspace('Unreadable peer Workspace');
+    coreDb.sqlite
+      .prepare(`INSERT INTO users
+      (id, display_name, email, email_verified, created_at, updated_at, kind, status)
+      VALUES ('user_other', 'Foreign worker owner', 'other@example.invalid', 0, ?, ?, 'human', 'active')`)
+      .run(Date.parse(timestamp), Date.parse(timestamp));
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_other',
+      workspaceId: otherWorkspace.id,
+    });
     threads.push(store.createThread(otherWorkspace.id, 'external', 'th_peers_external'));
     for (let index = 0; index < 3; index += 1) {
       const history = store.createTurn('ws_demo', threads[1]!.id, 'Earlier work', {
@@ -752,7 +759,7 @@ describe('worker MCP routes', () => {
     const turns = threads.map((thread) => {
       const turn = store.createTurn(thread.workspaceId, thread.id, 'Read peers', {
         kind: 'user',
-        id: 'user_local',
+        id: thread.workspaceId === otherWorkspace.id ? 'user_other' : 'user_local',
       });
       const sessionId = `as_native_${thread.name}`;
       store.createAgentSession({
@@ -1154,6 +1161,38 @@ describe('worker MCP routes', () => {
         timestamp,
       });
       store.updateTurn(turns[0]!.id, { status: 'completed', completedAt: timestamp });
+      // Product terminal alone does not release execution. This metadata-only worker fixture
+      // owns no Native operation or output stream; its caller binding is still unoccupied.
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT current_attempt_id, current_turn_id FROM agent_session_runtime_bindings WHERE agent_session_id = ?'
+          )
+          .get('as_native_caller')
+      ).toEqual({ current_attempt_id: null, current_turn_id: null });
+      const closedCaller = markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId: `lease_${turns[0]!.id}`,
+        cause: 'worker-final-status',
+        outcomeRef: 'fixture-caller:completed',
+      });
+      const proof = {
+        terminalHandoff: true,
+        output: true,
+        evidence: true,
+        outsideWorkspaceCollection: true,
+        integrationDrain: true,
+        routesRevoked: true,
+      } as const;
+      const correlation = schedulerExecutionCorrelation(closedCaller);
+      const release = await new SimulatedTurnExecutor({ coreDb }).release({
+        ...correlation,
+        proof,
+      });
+      closeSchedulerExecutionAttemptWithFence(coreDb, {
+        correlation,
+        proof,
+        fenceRef: release.fenceRef!,
+      });
       coreDb.sqlite
         .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status)
         VALUES ('user_peer_admin', 'Peer Admin', 'peer-admin@example.com', 0, ?, ?, 'human', 'active')`)
@@ -1193,7 +1232,20 @@ describe('worker MCP routes', () => {
         agentId: 'agent_codex_host',
         runtime: 'codex',
       });
-      expect(adminPeers.filter((entry) => !('title' in entry))).toHaveLength(2);
+      // Core Permissions' Administrator Eligibility applies to the exact bearer retained
+      // by this admission, including another user's private Thread. The Sandbox limit
+      // still excludes the foreign physical peer.
+      expect(adminPeers.find((entry) => entry.title === 'external')).toMatchObject({
+        title: 'external',
+        agentId: 'agent_codex_host',
+        runtime: 'codex',
+      });
+      expect.soft(adminPeers.find((entry) => entry.title === 'private')).toMatchObject({
+        title: 'private',
+        agentId: 'agent_codex_host',
+        runtime: 'codex',
+      });
+      expect.soft(adminPeers.filter((entry) => !('title' in entry))).toHaveLength(0);
       const adminRead = await client.callTool({
         name: 'work_read_peer',
         arguments: { handle: adminPeer!.handle, cursor: '1', limit: 1 },
@@ -1332,7 +1384,7 @@ describe('worker MCP routes', () => {
         )
         .run();
       coreDb.sqlite
-        .prepare('UPDATE scheduler_session_leases SET package_snapshot_id = ? WHERE turn_id = ?')
+        .prepare('UPDATE scheduler_execution_attempts SET input_ref = ? WHERE turn_id = ?')
         .run('pkg_other', turn.id);
       await expect(
         client.callTool({ arguments: { message: 'mismatched' }, name: 'echo' })
@@ -2191,7 +2243,6 @@ describe('worker MCP routes', () => {
       dataRoot,
       nanoHostSessionDispatch,
       runtimeConfigManager,
-      schedulerEpoch: 12,
       store,
       workerControlGateway,
       workerLifecycleRuntime,
@@ -2620,27 +2671,31 @@ describe('worker MCP routes', () => {
         const reviewDb = openWorkspaceDb(dataRoot, 'ws_demo');
         for (let n = 0; n < 2000; n++) {
           const record = readPendingRequest(reviewDb.sqlite, repositoryApprovalId!);
-          if (
-            record?.delivery === (transientPreparation ? 'delivery-unknown' : 'undelivered') &&
-            record.publicationTurnId
-          )
-            break;
+          if (record?.delivery === 'undelivered' && record.publicationTurnId) break;
           await new Promise((resolve) => setTimeout(resolve, 1));
         }
         const refused = readPendingRequest(reviewDb.sqlite, repositoryApprovalId!)!;
         if (transientPreparation) {
           expect(responded.status, await responded.clone().text()).toBe(200);
-          expect(refused.delivery).toBe('delivery-unknown');
+          // Preparation refuses before any effect-capable operation, so delivery is definitely absent.
+          expect(refused.delivery).toBe('undelivered');
           expect(store.getTurnById(refused.publicationTurnId!)).toMatchObject({
             status: 'failed',
-            error: { code: 'delivery_unknown' },
+            error: { code: 'worker_preparation_failed' },
           });
           expect(preparationFault).toHaveBeenCalledTimes(1);
           expect(
             coreDb.sqlite
               .prepare('SELECT status FROM scheduler_admission_entries WHERE turn_id = ?')
               .get(refused.publicationTurnId)
-          ).toEqual({ status: 'cancelled' });
+          ).toEqual({ status: 'admitted' });
+          expect(
+            coreDb.sqlite
+              .prepare(
+                'SELECT phase, disposition, operation_id FROM scheduler_execution_attempts WHERE turn_id = ?'
+              )
+              .get(refused.publicationTurnId)
+          ).toEqual({ phase: 'closed', disposition: 'not_accepted', operation_id: null });
           const count = store.listThreadTurns('ws_demo', 'th_demo').length;
           await new Promise((resolve) => setTimeout(resolve, 20));
           expect(store.listThreadTurns('ws_demo', 'th_demo')).toHaveLength(count);

@@ -5,13 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
-import {
-  createSchedulerAdmissionEntry,
-  createSchedulerPlacementPlan,
-  createSchedulerSessionLease,
-} from '../scheduler-records.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   createNanoHostHarnessRuntime,
   deriveNanoHostAgentSessionCompatibilityKey,
@@ -35,6 +33,56 @@ const now = '2098-08-21T00:00:00.000Z';
 const physicalEpoch = 'e'.repeat(64);
 
 describe('private NanoHost Harness records', () => {
+  it('carries the exact Core attempt id in the unchanged private leaseId field for start and interrupt', () => {
+    const coreDb = openActiveTurnDb('route-b-attempt-wire-');
+    try {
+      const table = coreDb.sqlite
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduler_execution_attempts'"
+        )
+        .get();
+      const rows = table
+        ? (coreDb.sqlite
+            .prepare('SELECT * FROM scheduler_execution_attempts WHERE turn_id = ?')
+            .all('turn-1') as Record<string, unknown>[])
+        : [];
+      expect(rows).toHaveLength(1);
+      const attemptId = rows[0]!.attempt_id;
+      const started = coreDb.sqlite
+        .prepare(
+          "SELECT command_body_json AS body FROM harness_instance_records WHERE operation = 'turn.start'"
+        )
+        .get() as { body: string };
+      expect(JSON.parse(started.body)).toMatchObject({ leaseId: attemptId, turnId: 'turn-1' });
+      expect(
+        coreDb.sqlite
+          .prepare(`SELECT current_attempt_id AS currentAttemptId,
+        current_turn_id AS currentTurnId, lifecycle_state AS lifecycleState
+        FROM agent_session_runtime_bindings WHERE agent_session_id = ?`)
+          .get('agent-session-1')
+      ).toEqual({ currentAttemptId: attemptId, currentTurnId: 'turn-1', lifecycleState: 'active' });
+      queueNanoHostHarnessOperation(coreDb, {
+        body: { ...interruptBody(), leaseId: attemptId, purpose: 'interrupt' },
+        harnessInstanceId: 'harness-1',
+        operation: 'turn.interrupt',
+        timestamp: now,
+      });
+      const interrupted = dispatchNanoHostHarnessOperation(coreDb, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        now: () => now,
+      });
+      expect(interrupted!.body).toMatchObject({ leaseId: attemptId, turnId: 'turn-1' });
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM harness_instance_records').get()
+      ).toEqual({ count: 1 });
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 1 });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('admits only workspace materialization startup failures at session open', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-open-refusal-')));
     try {
@@ -484,7 +532,7 @@ describe('private NanoHost Harness records', () => {
         timestamp: now,
         workspaceId: 'workspace-1',
       });
-      seedLease(coreDb);
+      seedSubmittedAttempt(coreDb);
       queueNanoHostHarnessOperation(coreDb, {
         body: {
           aepRef: 'sandbox://aep/1',
@@ -553,7 +601,7 @@ describe('private NanoHost Harness records', () => {
         coreDb.sqlite
           .prepare(
             `SELECT agent_session_id AS agentSessionId, lifecycle_state AS lifecycleState,
-                      current_turn_id AS currentTurnId, current_lease_id AS currentLeaseId,
+                      current_turn_id AS currentTurnId, current_attempt_id AS currentAttemptId,
                       cleanup_state AS cleanupState
                FROM agent_session_runtime_bindings
                WHERE agent_session_runtime_binding_id = ?`
@@ -562,7 +610,7 @@ describe('private NanoHost Harness records', () => {
       ).toEqual({
         agentSessionId: 'agent-session-1',
         cleanupState: 'clean',
-        currentLeaseId: 'lease-1',
+        currentAttemptId: 'lease-1',
         currentTurnId: 'turn-1',
         lifecycleState: state,
       });
@@ -590,7 +638,7 @@ describe('private NanoHost Harness records', () => {
                agent_session_runtime_binding_id, harness_instance_id, agent_session_id,
                workspace_id, thread_id, agent_session_compatibility_key,
                effective_setup_generation, native_handle_state, native_handle_digest,
-               lifecycle_state, current_turn_id, current_lease_id, next_turn_sequence, cleanup_state,
+               lifecycle_state, current_turn_id, current_attempt_id, next_turn_sequence, cleanup_state,
                created_at, updated_at, image_digest
              ) VALUES (?, 'harness-1', ?, 'workspace-1', 'thread-1', ?, 1, 'pending', NULL,
                        'opening', NULL, NULL, 0, 'clean', ?, ?, ?)`
@@ -647,7 +695,7 @@ describe('private NanoHost Harness records', () => {
         timestamp: now,
         workspaceId: 'workspace-1',
       });
-      seedLease(coreDb);
+      seedSubmittedAttempt(coreDb);
       queueNanoHostHarnessOperation(coreDb, {
         body: {
           aepRef: 'sandbox://aep/1',
@@ -688,23 +736,27 @@ describe('private NanoHost Harness records', () => {
         sequence: 0,
       });
       expect(command?.operationId).toMatch(/^[0-9a-f]{64}$/);
-      expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT worker_control_token_hash AS workerControlTokenHash, worker_inference_token_hash AS workerInferenceTokenHash, worker_capability_token_hash AS workerCapabilityTokenHash FROM scheduler_session_leases WHERE lease_id = ?'
-          )
-          .get('lease-1')
-      ).toEqual({
-        workerControlTokenHash: createHash('sha256')
+      const attempt = observeExecutionAttempts(coreDb).find((row) => row.turn_id === 'turn-1');
+      expect(attempt).toMatchObject({
+        worker_control_token_hash: createHash('sha256')
           .update(Buffer.from(workerControlToken, 'base64url'))
           .digest('hex'),
-        workerInferenceTokenHash: createHash('sha256')
+        worker_inference_token_hash: createHash('sha256')
           .update(Buffer.from(inferenceToken, 'base64url'))
           .digest('hex'),
-        workerCapabilityTokenHash: createHash('sha256')
+        worker_capability_token_hash: createHash('sha256')
           .update(Buffer.from(capabilityToken, 'base64url'))
           .digest('hex'),
       });
+      expect(
+        new Set([
+          attempt?.worker_control_token_hash,
+          attempt?.worker_inference_token_hash,
+          attempt?.worker_capability_token_hash,
+        ]).size
+      ).toBe(3);
+      for (const token of [workerControlToken, inferenceToken, capabilityToken])
+        expect(JSON.stringify(attempt)).not.toContain(token);
       const durableHarness = JSON.stringify(
         coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get()
       );
@@ -1048,16 +1100,16 @@ describe('private NanoHost Harness records', () => {
         coreDb.sqlite
           .prepare(
             `SELECT agent_session_id AS agentSessionId, current_turn_id AS currentTurnId,
-                    current_lease_id AS currentLeaseId FROM agent_session_runtime_bindings`
+                    current_attempt_id AS currentAttemptId FROM agent_session_runtime_bindings`
           )
           .all()
       ).toEqual([
         closedSession === 1
-          ? { agentSessionId: 'agent-session-2', currentTurnId: null, currentLeaseId: null }
+          ? { agentSessionId: 'agent-session-2', currentTurnId: null, currentAttemptId: null }
           : {
               agentSessionId: 'agent-session-1',
               currentTurnId: 'turn-1',
-              currentLeaseId: 'lease-1',
+              currentAttemptId: 'lease-1',
             },
       ]);
     } finally {
@@ -1118,11 +1170,11 @@ describe('private NanoHost Harness records', () => {
       expect(
         coreDb.sqlite
           .prepare(
-            `SELECT current_turn_id AS currentTurnId, current_lease_id AS currentLeaseId
+            `SELECT current_turn_id AS currentTurnId, current_attempt_id AS currentAttemptId
                FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?`
           )
           .get('agent-session-binding-1')
-      ).toEqual({ currentTurnId: 'turn-1', currentLeaseId: 'lease-1' });
+      ).toEqual({ currentTurnId: 'turn-1', currentAttemptId: 'lease-1' });
     } finally {
       coreDb.sqlite.close();
     }
@@ -1161,6 +1213,18 @@ describe('private NanoHost Harness records', () => {
     },
   ] as const)('$name', ({ expected, inspection, interruptFirst }) => {
     const coreDb = openActiveTurnDb('openkit-harness-turn-barrier-');
+    // Session credentials outlive each Turn; stopping a Turn cannot mint or revoke a binding credential.
+    const inferenceDigest = createHash('sha256')
+      .update('resident-inference-loopback')
+      .digest('hex');
+    const capabilityDigest = createHash('sha256')
+      .update('resident-capability-loopback')
+      .digest('hex');
+    coreDb.sqlite
+      .prepare(`UPDATE agent_session_runtime_bindings
+      SET inference_loopback_credential_digest = ?, capability_loopback_credential_digest = ?
+      WHERE agent_session_runtime_binding_id = ?`)
+      .run(inferenceDigest, capabilityDigest, 'agent-session-binding-1');
     const settle = (
       operation: 'session.inspect' | 'turn.interrupt',
       commandBody: Readonly<Record<string, unknown>>,
@@ -1225,6 +1289,19 @@ describe('private NanoHost Harness records', () => {
           )
           .get()
       ).toEqual(expected);
+      expect(
+        coreDb.sqlite
+          .prepare(`SELECT h.open_session_count AS openSessions,
+        b.inference_loopback_credential_digest AS inferenceDigest,
+        b.capability_loopback_credential_digest AS capabilityDigest
+        FROM agent_session_runtime_bindings b JOIN harness_instance_records h
+        ON h.harness_instance_id = b.harness_instance_id`)
+          .get()
+      ).toEqual({
+        openSessions: 1,
+        inferenceDigest,
+        capabilityDigest,
+      });
     } finally {
       coreDb.sqlite.close();
     }
@@ -1791,7 +1868,7 @@ describe('private NanoHost Harness records', () => {
         timestamp: now,
       });
 
-      seedLease(coreDb);
+      seedSubmittedAttempt(coreDb);
       const turnStartBody = {
         aepRef: 'sandbox://aep/1',
         agentSessionId: 'agent-session-1',
@@ -1973,7 +2050,7 @@ describe('private NanoHost Harness records', () => {
       };
       for (const [column, wrongValue, originalValue] of [
         ['current_turn_id', 'turn-other', 'turn-1'],
-        ['current_lease_id', 'lease-other', 'lease-1'],
+        ['current_attempt_id', 'lease-other', 'lease-1'],
       ] as const) {
         coreDb.sqlite
           .prepare(
@@ -1993,15 +2070,15 @@ describe('private NanoHost Harness records', () => {
         ['thread_id', 'thread-other', 'thread-1'],
         ['turn_id', 'turn-other', 'turn-1'],
         ['agent_session_id', 'agent-session-other', 'agent-session-1'],
-        ['package_snapshot_id', 'package-snapshot-other', 'package-snapshot-1'],
-        ['status', 'released', 'acquired'],
+        ['input_ref', 'package-snapshot-other', 'package-snapshot-1'],
+        ['phase', 'closed', 'open'],
       ] as const) {
         coreDb.sqlite
-          .prepare(`UPDATE scheduler_session_leases SET ${column} = ? WHERE lease_id = ?`)
+          .prepare(`UPDATE scheduler_execution_attempts SET ${column} = ? WHERE attempt_id = ?`)
           .run(wrongValue, 'lease-1');
         expectRejected(column);
         coreDb.sqlite
-          .prepare(`UPDATE scheduler_session_leases SET ${column} = ? WHERE lease_id = ?`)
+          .prepare(`UPDATE scheduler_execution_attempts SET ${column} = ? WHERE attempt_id = ?`)
           .run(originalValue, 'lease-1');
       }
 
@@ -2420,7 +2497,7 @@ function openActiveTurnDb(prefix: string): ReturnType<typeof openCoreDb> {
     timestamp: now,
     workspaceId: 'workspace-1',
   });
-  seedAdmissionBackedLease(coreDb);
+  seedSubmittedAttempt(coreDb);
   queueNanoHostHarnessOperation(coreDb, {
     body: {
       aepRef: 'sandbox://aep/1',
@@ -2461,76 +2538,36 @@ function openActiveTurnDb(prefix: string): ReturnType<typeof openCoreDb> {
   return coreDb;
 }
 
-/** Creates the complete admission, placement, and lease lineage for an active Turn. */
-function seedAdmissionBackedLease(coreDb: ReturnType<typeof openCoreDb>): void {
-  createSchedulerAdmissionEntry(coreDb, {
+/** Establishes exact authorized submitted Native attempt lineage for private Harness operations. */
+function seedSubmittedAttempt(coreDb: ReturnType<typeof openCoreDb>): void {
+  coreDb.sqlite
+    .prepare(`INSERT INTO users
+    (id, display_name, email, email_verified, created_at, updated_at, kind, status)
+    VALUES ('user-1', 'Harness fixture', 'harness@example.invalid', 0, ?, ?, 'human', 'active')`)
+    .run(Date.parse(now), Date.parse(now));
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'workspace-1', ownerUserId: 'user-1' });
+  const entry = createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
     now: () => now,
-    priorityClass: 'interactive',
     queueEntryId: 'queue-1',
     requestId: 'request-1',
     requestedAgentId: 'agent-1',
-    requiredPoolConstraints: ['openshell.local'],
     threadId: 'thread-1',
     triggerActor: { id: 'user-1', kind: 'user' },
     turnId: 'turn-1',
     turnInput: 'Wait for a human decision',
     workspaceId: 'workspace-1',
   });
-  createSchedulerPlacementPlan(coreDb, {
-    degradedOptionalFeatures: [],
-    expectedControlMode: 'poll',
-    expectedDataPlaneMode: 'openshell-files',
-    heartbeatIntervalMs: 10_000,
-    heartbeatTimeoutMs: 30_000,
-    now: () => now,
-    planId: 'plan-1',
-    plannedLeaseDurationMs: 900_000,
-    policyDecisionIds: [],
-    queueEntryId: 'queue-1',
-    schedulerEpoch: 1,
-    selectedPoolId: 'pool-1',
-    selectedTargetId: 'nanohost-a1',
-  });
-  createSchedulerSessionLease(coreDb, {
+  recordTestExecutionAttempt(coreDb, {
+    entry,
+    attemptId: 'lease-1',
     agentSessionId: 'agent-session-1',
-    expiresAt: '2099-01-01T00:00:00.000Z',
-    heartbeatDeadline: '2099-01-01T00:00:00.000Z',
-    leaseId: 'lease-1',
+    inputRef: 'package-snapshot-1',
+    bindingRef: 'turn-route-binding-1',
+    sessionCompatibilityKey: 'b'.repeat(64),
+    operationId: 'submit:turn-1',
     now: () => now,
-    packageSnapshotId: 'package-snapshot-1',
-    planId: 'plan-1',
-    sandboxTokenBindingRef: 'turn-route-binding-1',
-    startupDeadline: '2099-01-01T00:00:00.000Z',
   });
-}
-
-/** Seeds the existing Turn execution lease used by one private `turn.start`. */
-function seedLease(coreDb: ReturnType<typeof openCoreDb>): void {
-  coreDb.sqlite
-    .prepare(
-      `INSERT INTO scheduler_session_leases (
-         lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
-         package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
-         heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
-         sandbox_binding_ref, backend_anchor_state
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'acquired', ?, ?, ?, ?, 0, 1, ?, 'anchored')`
-    )
-    .run(
-      'lease-1',
-      'plan-1',
-      'workspace-1',
-      'thread-1',
-      'turn-1',
-      'agent-session-1',
-      'package-snapshot-1',
-      'pool-1',
-      'nanohost-a1',
-      now,
-      '2099-01-01T00:00:00.000Z',
-      '2099-01-01T00:00:00.000Z',
-      '2099-01-01T00:00:00.000Z',
-      'turn-route-binding-1'
-    );
 }
 
 /** Seeds the configured RuntimeTarget that owns one private Sandbox projection. */
@@ -2543,4 +2580,20 @@ function seedRuntimeTarget(coreDb: ReturnType<typeof openCoreDb>): void {
        ) VALUES ('nanohost-a1', 'nanohost-a1', 'deployment-a1', 1, 1, 1, 1, ?, ?, 1)`
     )
     .run(physicalEpoch, now);
+}
+
+/** Reads attempt evidence without a legacy grant projection or simulated lifecycle. */
+function observeExecutionAttempts(
+  coreDb: ReturnType<typeof openCoreDb>
+): Record<string, unknown>[] {
+  const present = coreDb.sqlite
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduler_execution_attempts'"
+    )
+    .get();
+  return present
+    ? (coreDb.sqlite
+        .prepare('SELECT * FROM scheduler_execution_attempts ORDER BY rowid')
+        .all() as Record<string, unknown>[])
+    : [];
 }

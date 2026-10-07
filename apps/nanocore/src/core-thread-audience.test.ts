@@ -7,9 +7,11 @@ import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
 import { feedbackFilePath, readTurnFeedback } from './runtime/feedback.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
+import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -142,31 +144,27 @@ function createCoreAudienceFixture() {
   const gate = { approvalId: 'ap_local_private' };
   const deniedGate = { approvalId: 'ap_other_private' };
   workspaceDb.sqlite.close();
-  coreDb.sqlite
-    .prepare(
-      `INSERT INTO scheduler_session_leases (
-         lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
-         package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
-         heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
-         sandbox_binding_ref, backend_anchor_state
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'acquired', ?, ?, ?, ?, 0, 1, ?, 'unanchored')`
-    )
-    .run(
-      `lease_${approvalTurn.id}`,
-      `plan_${approvalTurn.id}`,
-      workspace.id,
-      own.id,
-      approvalTurn.id,
-      `as_${approvalTurn.id}`,
-      `pkg_${approvalTurn.id}`,
-      `pool_${approvalTurn.id}`,
-      `target_${approvalTurn.id}`,
-      STAMP,
-      TOKEN_EXPIRY,
-      TOKEN_EXPIRY,
-      TOKEN_EXPIRY,
-      `binding_${approvalTurn.id}`
-    );
+  const entry = createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
+    queueEntryId: `queue_${approvalTurn.id}`,
+    requestId: `request_${approvalTurn.id}`,
+    workspaceId: workspace.id,
+    threadId: own.id,
+    turnId: approvalTurn.id,
+    turnInput: 'Approve private push',
+    requestedAgentId: 'agent_fixture',
+    triggerActor: approvalTurn.triggerActor,
+    now: () => new Date().toISOString(),
+  });
+  recordTestExecutionAttempt(coreDb, {
+    entry,
+    attemptId: `lease_${approvalTurn.id}`,
+    agentSessionId: `as_${approvalTurn.id}`,
+    inputRef: `pkg_${approvalTurn.id}`,
+    bindingRef: `binding_${approvalTurn.id}`,
+    sessionCompatibilityKey: 'audience-fixture',
+    now: () => new Date().toISOString(),
+  });
   const app = createApp({
     auth: {
       api: { getSession: async () => null },

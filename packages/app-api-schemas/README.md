@@ -140,3 +140,7 @@ The eleven Material definitions live in `src/material-operations.ts`, reusing co
 `src/access-token-operations.ts` declares the seven human access-token and bootstrap operations. The shared credential vocabulary admits bootstrap only as the exclusive `bootstrap-secret` credential; composition rejects a mixed credential declaration. Issuance, rotation and bootstrap truthfully declare their one-time-secret results, which exclude them from MCP.
 
 `diagnostics-operations.ts` declares the JSON product diagnostics family. `workspace-archive-operations.ts` declares the three streaming-only archive operations, which are ineligible for remote MCP and JSON invocation. Connection metadata, health, raw deployment diagnostics and OpenAPI serving are support bindings outside these declarations.
+
+Scheduler diagnostics expose the configured backend identity and execution attempt identity, phase and disposition. Admission schemas project the checked FIFO queue without priority, aging, placement or capacity accounting. Action Center uncertainty reads the existing attempt instead of an orphan-evidence owner.
+
+Task Mode's attempt state includes queued for an accepted pending Turn whose worker execution has not begun. This is a projection over the existing Turn and admission, separate from running execution; it adds no durable Task lifecycle state.

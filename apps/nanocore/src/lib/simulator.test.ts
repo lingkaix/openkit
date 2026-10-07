@@ -28,11 +28,6 @@ import {
 } from '../runtime/nanohost-runtime-target.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
 import { listWorkerBackendSessions } from '../runtime/worker-backend-sessions.js';
-import {
-  ensureConfiguredSchedulerBaseline,
-  upsertSchedulerCapacityRecord,
-  upsertSchedulerWorkerPool,
-} from '../scheduler-records.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
@@ -63,17 +58,16 @@ function createCoreDb(): CoreDb {
     ownerUserId: 'user_local',
     workspaceId: 'ws_demo',
   });
-  configureLocalSchedulerCapacity(coreDb, 3);
+  configureNativeRuntimeTarget(coreDb);
   return coreDb;
 }
 
 /**
- * Configures local scheduler capacity for multi-turn simulator route tests.
+ * Records explicit fresh Native RuntimeTarget evidence for the simulator route fixtures.
  *
  * @param coreDb Migrated Core database handles.
- * @param capacity Concurrent local lease capacity.
  */
-function configureLocalSchedulerCapacity(coreDb: CoreDb, capacity: number): void {
+function configureNativeRuntimeTarget(coreDb: CoreDb): void {
   if (!getNanoHostRuntimeTarget(coreDb, 'target_local')) {
     const runtimeTarget = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
@@ -90,31 +84,6 @@ function configureLocalSchedulerCapacity(coreDb: CoreDb, capacity: number): void
       ready: true,
     });
   }
-  ensureConfiguredSchedulerBaseline(coreDb, { placement: 'local' });
-  upsertSchedulerWorkerPool(coreDb, {
-    allowedBackendKinds: ['openshell'],
-    allowedPlacements: ['local'],
-    allowedWorkspaceScopes: ['local'],
-    budgetClass: 'interactive',
-    currentAdmittedSessionCount: 0,
-    currentQueueDepth: 0,
-    defaultTimeoutMs: 900_000,
-    healthSummary: 'ready',
-    maxConcurrentSessions: capacity,
-    poolId: 'pool_local',
-    queueLimit: 20,
-    status: 'active',
-  });
-  upsertSchedulerCapacityRecord(coreDb, {
-    capacityClass: 'local',
-    concurrencyCeiling: capacity,
-    inUseCount: 0,
-    observationSource: 'configured',
-    observedAt: new Date().toISOString(),
-    poolId: 'pool_local',
-    queueDepth: 0,
-    targetId: 'target_local',
-  });
 }
 
 /**
@@ -249,8 +218,8 @@ describe('SimulatedTurnExecutor', () => {
 
   it('records simulator input and completes the bounded Turn', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
-    const executor = new SimulatedTurnExecutor();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const executor = new SimulatedTurnExecutor({ coreDb });
     const app = createApp({
       agentManifests: [createTestAgentSetup().manifest],
       coreDb,
@@ -290,11 +259,14 @@ describe('SimulatedTurnExecutor', () => {
       const turn = (await turnResponse.json()) as { id: string };
 
       expect(turnResponse.status, JSON.stringify(turn)).toBe(202);
+      await vi.waitFor(() => expect(store.getTurnById(turn.id).status).toBe('completed'));
       const storedTurn = store.getTurnById(turn.id);
       expect(storedTurn).toMatchObject({
         agentId: 'agent_codex_host',
         agentProfileId: 'default',
-        agentSessionId: expect.stringMatching(/^as_/),
+        agentSessionId: expect.stringMatching(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+        ),
         status: 'completed',
       });
       expect(
@@ -313,10 +285,10 @@ describe('SimulatedTurnExecutor', () => {
           .map((item) => item.type)
       ).toEqual([
         'user-message',
+        'user-input-request',
         'assistant-message',
         'reasoning',
         'command-execution',
-        'user-input-request',
         'artifact-reference',
       ]);
       expect(
@@ -354,7 +326,7 @@ describe('SimulatedTurnExecutor', () => {
           triggerActor: turn.triggerActor,
           workspaceRoots: [],
         })
-      ).rejects.toThrow('scheduler lease SessionCompatibilityKey');
+      ).rejects.toThrow('execution attempt SessionCompatibilityKey');
       expect(listWorkerBackendSessions(coreDb)).toEqual([]);
       const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
       try {
@@ -408,6 +380,14 @@ describe('SimulatedTurnExecutor', () => {
       const firstBody = await firstResponse.json();
       expect(firstResponse.status, JSON.stringify(firstBody)).toBe(202);
       const first = StartTaskModeResponseSchema.parse(firstBody);
+      await vi.waitFor(() => {
+        expect(store.getTurnById(first.turn.id).status).toBe('completed');
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT phase FROM scheduler_execution_attempts WHERE turn_id = ?')
+            .get(first.turn.id)
+        ).toEqual({ phase: 'closed' });
+      });
       const storedFirstTurn = store.getTurnById(first.turn.id);
       if (!storedFirstTurn.agentSessionId) {
         throw new Error('Expected the first simulator Turn and its AgentSession.');
@@ -437,6 +417,10 @@ describe('SimulatedTurnExecutor', () => {
       );
       const secondBody = await secondResponse.clone().text();
       expect.soft(secondResponse.status, secondBody).toBe(202);
+      const acceptedSecond = StartTaskModeResponseSchema.parse(JSON.parse(secondBody));
+      await vi.waitFor(() =>
+        expect(store.getTurnById(acceptedSecond.turn.id).status).toBe('completed')
+      );
       const secondTurn = store
         .listThreadTurns('ws_demo', 'th_demo')
         .find((turn) => turn.id !== first.turn.id && turn.agentId === 'agent_codex_host');
@@ -446,8 +430,8 @@ describe('SimulatedTurnExecutor', () => {
       });
       const leases = coreDb.sqlite
         .prepare(
-          `SELECT agent_session_id AS agentSessionId, lease_id AS leaseId, turn_id AS turnId
-           FROM scheduler_session_leases
+          `SELECT agent_session_id AS agentSessionId, attempt_id AS leaseId, turn_id AS turnId
+           FROM scheduler_execution_attempts
            WHERE turn_id IN (?, ?)
            ORDER BY turn_id`
         )
@@ -520,6 +504,14 @@ describe('SimulatedTurnExecutor', () => {
       const firstBody = await firstResponse.json();
       expect(firstResponse.status, JSON.stringify(firstBody)).toBe(202);
       const first = StartTaskModeResponseSchema.parse(firstBody);
+      await vi.waitFor(() => {
+        expect(store.getTurnById(first.turn.id).status).toBe('completed');
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT phase FROM scheduler_execution_attempts WHERE turn_id = ?')
+            .get(first.turn.id)
+        ).toEqual({ phase: 'closed' });
+      });
       const storedFirstTurn = store.getTurnById(first.turn.id);
       if (!storedFirstTurn.agentSessionId) {
         throw new Error('Expected the first simulator Turn and its AgentSession.');
@@ -563,6 +555,10 @@ describe('SimulatedTurnExecutor', () => {
         );
         const secondBody = await secondResponse.clone().text();
         expect.soft(secondResponse.status, secondBody).toBe(202);
+        const acceptedSecond = StartTaskModeResponseSchema.parse(JSON.parse(secondBody));
+        await vi.waitFor(() =>
+          expect(store.getTurnById(acceptedSecond.turn.id).status).toBe('completed')
+        );
 
         const secondTurn = store
           .listThreadTurns('ws_demo', 'th_demo')
@@ -632,8 +628,8 @@ describe('SimulatedTurnExecutor', () => {
 
         const leases = coreDb.sqlite
           .prepare(
-            `SELECT agent_session_id AS agentSessionId, lease_id AS leaseId, turn_id AS turnId
-             FROM scheduler_session_leases
+            `SELECT agent_session_id AS agentSessionId, attempt_id AS leaseId, turn_id AS turnId
+             FROM scheduler_execution_attempts
              WHERE turn_id IN (?, ?)
              ORDER BY turn_id`
           )
@@ -750,6 +746,7 @@ describe('SimulatedTurnExecutor', () => {
       const turnBody = await turnResponse.json();
       expect(turnResponse.status, JSON.stringify(turnBody)).toBe(202);
       const task = StartTaskModeResponseSchema.parse(turnBody);
+      await vi.waitFor(() => expect(store.getTurnById(task.turn.id).status).toBe('completed'));
       const workerTurn = store.getTurnById(task.turn.id);
       expect(workerTurn).toMatchObject({
         status: 'completed',
@@ -1195,7 +1192,7 @@ describe('SimulatedTurnExecutor', () => {
 
   it('emits command output delta before the command item completes', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const app = createApp({
       agentManifests: [createTestAgentSetup().manifest],
       coreDb,
@@ -1211,7 +1208,7 @@ describe('SimulatedTurnExecutor', () => {
         },
       ]),
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
     });
 
     try {
@@ -1234,6 +1231,8 @@ describe('SimulatedTurnExecutor', () => {
         )
       );
       const turn = (await turnResponse.json()) as { id: string };
+      expect(turnResponse.status, JSON.stringify(turn)).toBe(202);
+      await vi.waitFor(() => expect(store.getTurnById(turn.id).status).toBe('completed'));
       const commandItemId = `it_command_${turn.id}`;
       const commandEvents = store.getTurnEvents(turn.id).filter((event) => {
         const data = event.data as { item?: { id: string }; itemId?: string };
@@ -1275,7 +1274,7 @@ describe('SimulatedTurnExecutor', () => {
   });
 
   it('admits one manifest-selected remote Git source without a WorkspaceRepository or host path', async () => {
-    const { app, coreDb, executor } = createRemoteGitProductFixture({
+    const { app, coreDb, executor, store } = createRemoteGitProductFixture({
       commit: REMOTE_GIT_COMMIT,
       url: REMOTE_GIT_URL,
     });
@@ -1300,6 +1299,8 @@ describe('SimulatedTurnExecutor', () => {
         )
       );
       const turn = (await turnResponse.json()) as { agentSessionId?: string; id?: string };
+      expect(turnResponse.status, JSON.stringify(turn)).toBe(202);
+      await vi.waitFor(() => expect(store.getTurnById(turn.id!).status).toBe('completed'));
       const admissions = coreDb.sqlite
         .prepare(
           `SELECT workspace_cwd AS workspaceCwd
@@ -1423,7 +1424,7 @@ describe('SimulatedTurnExecutor', () => {
       expect
         .soft(
           coreDb.sqlite
-            .prepare(`SELECT * FROM scheduler_session_leases WHERE workspace_id = ?`)
+            .prepare(`SELECT * FROM scheduler_execution_attempts WHERE workspace_id = ?`)
             .all('ws_demo')
         )
         .toEqual([]);

@@ -34,6 +34,12 @@ When a complete installation retirement is explicitly authorized, use the owner'
 
 Reinstall only the exact retained identity/deployment pair, obtain a fresh safe-sink token, and then start once through ordinary readiness. Supply and verify the selected Worker image before admitting its workload. Keep the retired interval's failure separate from the new installation's observation. This is an authorized initial restoration or terminal maintenance operation, never ordinary per-story setup; App data, unrelated services and scenario evidence retain their own ownership.
 
+## Pre-Release Execution Authority Cutover
+
+This procedure requires the engineer’s explicit authorization for the selected fresh-root deployment and its protected enrollment handoff. Preserve the old Core root, configuration, credentials and non-secret evidence under their existing custody. Prevent new admission and stop old NanoCore and every starter. Stop the selected NanoHost effect domain, including Gateway, backend descendants and sibling Sandbox scopes, and prove actual process, cgroup, namespace, network and socket absence through the existing [administrator stop procedure](../../skills/openkit-ops/references/nanocore-operations.en.md). Service inactivity or a Core disconnect is insufficient; unrelated services and system Docker keep their owners.
+
+Deploy the matched candidate against the selected fresh root through ordinary installation. Do not adopt the old execution baseline or restore old execution sessions. An old named-slot credential cannot authenticate without its old Core token records; enroll fresh credentials through the authorized safe-sink procedure while preserving protected old custody. Start once, verify predecessor fencing and fresh readiness, and retain exact source/artifact attribution before workload acceptance. This documentation authorizes no deployment, destruction, credential disposal or publication.
+
 ## Mode One: Work Inside OpenKit
 
 Choose a small real user task with an output that can be checked independently, or a small task set with declared inputs and outcome checks. Create identifiable scenario state through public operations. Submit it through normal Task/Goal Mode to a real Worker; preserve returned Workspace/Thread/Turn ids and follow durable progress through public reads. A request accepted by the scheduler is not a completed workload.

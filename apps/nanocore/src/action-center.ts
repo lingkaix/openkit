@@ -11,6 +11,7 @@ import type { Actor } from './auth/identity.js';
 import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
 import { isArtifactVisible, isThreadIdVisible, isThreadVisible } from './auth/thread-visibility.js';
 import type { FsStore } from './lib/store.js';
+import { listOpenSchedulerExecutionAttempts } from './runtime/execution-attempt-records.js';
 import { pendingRequestPresentation } from './runtime/pending-request-flow.js';
 import { listThreadPendingRequests, validateCanonicalLoad } from './runtime/pending-requests.js';
 import { listWorkerControlRejectedEvidenceForWorkspace } from './runtime/worker-control-rejected-evidence.js';
@@ -19,9 +20,7 @@ import { listWorkspaceReconciliationRecords } from './runtime/workspace-reconcil
 import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
 import {
   listSchedulerAdmissionEntriesForWorkspace,
-  listSchedulerOrphanWorkerEvidenceForWorkspace,
   type SchedulerAdmissionEntryRecord,
-  type SchedulerOrphanWorkerEvidenceRecord,
 } from './scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 
@@ -533,7 +532,6 @@ function schedulerAdmissionRows(
           threadId: entry.threadId,
           turnId: entry.turnId,
           requestedAgentId: entry.requestedAgentId,
-          priorityClass: entry.priorityClass,
         },
         actions: schedulerAdmissionActions(entry),
       };
@@ -584,58 +582,43 @@ function workerControlRejectedEvidenceRows(
     }));
 }
 
-/**
- * Projects scheduler orphan-worker evidence into product-visible attention rows.
- *
- * @param coreDb Open server-scope Core database handle.
- * @param store Request-scoped workspace store.
- * @param workspaceId Workspace id to project.
- * @param userId Authenticated viewer.
- * @returns Scheduler orphan-worker rows.
- */
+/** Projects held execution uncertainty from the attempt authority itself. */
 function schedulerOrphanWorkerRows(
   coreDb: CoreDb,
   store: FsStore,
   workspaceId: string,
   userId: string | undefined
 ): HumanAttentionRow[] {
-  return listSchedulerOrphanWorkerEvidenceForWorkspace(coreDb, workspaceId)
-    .filter((evidence) => isThreadIdVisible(store, evidence.workspaceId, evidence.threadId, userId))
-    .map((evidence) => ({
-      id: `scheduler-orphan-worker:${evidence.evidenceId}`,
+  return listOpenSchedulerExecutionAttempts(coreDb)
+    .filter(
+      (attempt) =>
+        attempt.workspaceId === workspaceId &&
+        (attempt.phase === 'closing' || attempt.disposition === 'unknown') &&
+        isThreadIdVisible(store, workspaceId, attempt.threadId, userId)
+    )
+    .map((attempt) => ({
+      id: `execution-attempt:${attempt.attemptId}`,
       kind: 'blocked_turn',
-      workspaceId: evidence.workspaceId,
-      threadId: evidence.threadId,
-      turnId: evidence.turnId,
+      workspaceId,
+      threadId: attempt.threadId,
+      turnId: attempt.turnId,
       title: 'Worker attempt needs recovery review',
-      summary: schedulerOrphanWorkerSummary(evidence),
+      summary: `Execution attempt is ${attempt.phase} with ${attempt.disposition} acceptance.`,
       severity: 'risk',
-      createdAt: evidence.recordedAt,
-      recommendedAction:
-        'Open the thread and decide whether to recover, retry, or abandon the work.',
+      createdAt: attempt.updatedAt,
+      recommendedAction: 'Open the thread and inspect the original execution attempt.',
       source: {
-        type: 'scheduler_orphan_worker',
-        evidenceId: evidence.evidenceId,
-        leaseId: evidence.leaseId,
-        workspaceId: evidence.workspaceId,
-        threadId: evidence.threadId,
-        turnId: evidence.turnId,
-        packageSnapshotId: evidence.packageSnapshotId,
-        reason: evidence.reason,
-        schedulerEpoch: evidence.schedulerEpoch,
+        type: 'execution_attempt',
+        attemptId: attempt.attemptId,
+        backendId: attempt.backendId,
+        phase: attempt.phase,
+        disposition: attempt.disposition,
+        workspaceId,
+        threadId: attempt.threadId,
+        turnId: attempt.turnId,
       },
-      actions: [openThreadAction(evidence.threadId)],
+      actions: [openThreadAction(attempt.threadId)],
     }));
-}
-
-/**
- * Builds a product-safe summary for one scheduler orphan-worker evidence row.
- *
- * @param evidence Scheduler orphan-worker evidence.
- * @returns Human-readable summary.
- */
-function schedulerOrphanWorkerSummary(evidence: SchedulerOrphanWorkerEvidenceRecord): string {
-  return `Scheduler restart found an orphaned worker attempt after ${evidence.heartbeatDeadline}.`;
 }
 
 /**
@@ -660,11 +643,11 @@ function schedulerAdmissionTitle(entry: SchedulerAdmissionEntryRecord): string {
  */
 function schedulerAdmissionSummary(entry: SchedulerAdmissionEntryRecord): string {
   if (entry.denialReason === 'queue-full') {
-    return 'The scheduler queue is full for the required worker pool.';
+    return 'The worker admission queue is full.';
   }
 
-  if (entry.denialReason === 'policy-cap') {
-    return 'A policy cap blocked scheduler admission for this turn.';
+  if (entry.denialReason === 'authority-denied') {
+    return 'Current launch authority is unavailable for this Turn.';
   }
 
   if (entry.status === 'denied') {

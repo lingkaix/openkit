@@ -48,6 +48,7 @@ describe('scheduler admission thread audience', () => {
       ['queue_own_private', ownPrivate.id],
     ] as const) {
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId,
         workspaceId: 'ws_demo',
@@ -56,17 +57,15 @@ describe('scheduler admission thread audience', () => {
         turnInput: `Admission for ${threadId}.`,
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',
-        priorityClass: 'interactive',
-        requiredPoolConstraints: ['openshell.local'],
       });
     }
     denySchedulerAdmissionEntry(coreDb, {
       queueEntryId: 'queue_foreign_private',
-      denialReason: 'no-compatible-pool',
+      denialReason: 'authority-denied',
     });
     denySchedulerAdmissionEntry(coreDb, {
       queueEntryId: 'queue_own_private',
-      denialReason: 'no-compatible-pool',
+      denialReason: 'authority-denied',
     });
 
     const app = new Hono<{ Variables: AuthVariables }>();

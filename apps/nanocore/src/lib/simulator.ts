@@ -19,6 +19,23 @@ import {
   resolveAgentEnvironmentPackage,
   resolveAgentSessionCompatibilityKey,
 } from '../runtime/agent-environment.js';
+import {
+  acceptSchedulerExecutionObservation,
+  closeSchedulerExecutionAttemptWithFence,
+  finalizeSchedulerExecutionAttemptInput,
+  markSchedulerExecutionAttemptClosing,
+  recordSchedulerExecutionOperation,
+  requireSchedulerExecutionAttempt,
+  schedulerExecutionCorrelation,
+} from '../runtime/execution-attempt-records.js';
+import type {
+  ExecutionBackend,
+  ExecutionBackendCorrelation,
+  ExecutionBackendObservation,
+  ExecutionReleaseProof,
+} from '../runtime/execution-backend.js';
+import { commandInputHash } from '../runtime/idempotent-command.js';
+import { bindNanoHostAttemptPreparation } from '../runtime/nanohost-attempt-records.js';
 import { dispatchOpenkitWorkTool } from '../runtime/openkit-work-mcp.js';
 import { TurnStartValidationError } from '../runtime/orchestrator.js';
 import {
@@ -61,13 +78,13 @@ import {
   workerVisibleWorkspaceCwd,
 } from '../runtime/worker-governance-turn-executor.js';
 import { preflightArtifactTuple, prepareWorkerArtifact } from '../runtime/worker-transcript.js';
+import { bindWorkerCheckpointToPreparedSession } from '../runtime/worker-turn-loop.js';
 import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
 } from '../runtime/workspace-materializer.js';
 import { recordWorkspaceBackendHandoff } from '../runtime/workspace-sync-records.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
-import { markSchedulerSessionLeaseReleasing } from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -158,7 +175,9 @@ function simulatorCurrentAgentSessionSnapshot(
 /**
  * Deterministic no-Codex turn executor used for local UI and e2e development.
  */
-export class SimulatedTurnExecutor implements TurnExecutor {
+export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
+  public readonly id = 'nanohost';
+  public readonly executionBackend: ExecutionBackend = this;
   public readonly capabilities = SIMULATOR_CAPABILITIES;
   public readonly eventFamilies = SIMULATOR_EVENT_FAMILIES;
   public readonly itemTypes = SIMULATOR_ITEM_TYPES;
@@ -172,6 +191,79 @@ export class SimulatedTurnExecutor implements TurnExecutor {
    */
   public constructor(options: { readonly coreDb?: CoreDb | undefined } = {}) {
     this.coreDb = options.coreDb ?? null;
+  }
+
+  /** Models submission only for the existing explicit self-check executor; no native effect is inferred. */
+  public async submit(
+    input: ExecutionBackendCorrelation & { readonly deadline: string }
+  ): Promise<ExecutionBackendObservation> {
+    if (!this.coreDb) throw new Error('Self-check submission requires Core authority.');
+    const attempt = requireSchedulerExecutionAttempt(this.coreDb, input.attemptId);
+    if (
+      attempt.phase !== 'open' ||
+      attempt.deadline !== input.deadline ||
+      commandInputHash(schedulerExecutionCorrelation(attempt)) !==
+        commandInputHash({
+          attemptId: input.attemptId,
+          backendId: input.backendId,
+          bindingRef: input.bindingRef,
+          inputRef: input.inputRef,
+          operationId: input.operationId,
+        })
+    )
+      throw new Error('Self-check submission has no exact authority.');
+    return {
+      ...input,
+      disposition: 'accepted',
+      execution: 'pending',
+      fenceRef: null,
+      outcomeRef: null,
+    };
+  }
+  /** Reads the original modeled owner without replay or a native resource probe. */
+  public async inspect(
+    input: ExecutionBackendCorrelation
+  ): Promise<ExecutionBackendObservation | null> {
+    if (!this.coreDb) return null;
+    const attempt = requireSchedulerExecutionAttempt(this.coreDb, input.attemptId);
+    if (commandInputHash(schedulerExecutionCorrelation(attempt)) !== commandInputHash(input))
+      return null;
+    return {
+      ...input,
+      disposition: attempt.disposition,
+      execution: attempt.phase === 'closed' ? 'terminal' : 'unknown',
+      fenceRef: attempt.fenceRef,
+      outcomeRef: attempt.outcomeRef,
+    };
+  }
+  /** Models cancellation acknowledgement without making it a release fence. */
+  public async cancel(input: ExecutionBackendCorrelation): Promise<ExecutionBackendObservation> {
+    return {
+      ...input,
+      disposition: 'accepted',
+      execution: 'unknown',
+      fenceRef: null,
+      outcomeRef: null,
+    };
+  }
+  /** Returns the explicit modeled fence after the self-check's ordinary closeout succeeds. */
+  public async release(
+    input: ExecutionBackendCorrelation & { readonly proof: ExecutionReleaseProof }
+  ) {
+    const { proof, ...correlation } = input;
+    const complete = [
+      proof.terminalHandoff,
+      proof.output,
+      proof.evidence,
+      proof.outsideWorkspaceCollection,
+      proof.integrationDrain,
+      proof.routesRevoked,
+    ].every((value) => value === true);
+    return {
+      ...correlation,
+      state: complete ? ('released' as const) : ('pending' as const),
+      fenceRef: complete ? `self-check:${input.attemptId}` : null,
+    };
   }
 
   /** Previews one exact simulator AgentSession decision without Store or backend effects. */
@@ -230,9 +322,9 @@ export class SimulatedTurnExecutor implements TurnExecutor {
           this.coreDb.sqlite
             .prepare(
               `SELECT 1
-               FROM scheduler_session_leases
+               FROM scheduler_execution_attempts
                WHERE agent_session_id = ?
-                 AND status NOT IN ('released', 'lost', 'failed')
+                 AND phase <> 'closed'
                LIMIT 1`
             )
             .get(current.id)
@@ -304,15 +396,22 @@ export class SimulatedTurnExecutor implements TurnExecutor {
           : {}),
       });
     if (this.coreDb) {
+      bindNanoHostAttemptPreparation(this.coreDb, {
+        attemptId: input.attemptId,
+        agentSessionId: input.prepared.agentSessionId,
+        inputRef: `aepsnap_${input.preparation.turn.id}_${input.prepared.agentSessionId}`,
+        bindingRef: `attempt-binding:${input.attemptId}`,
+        sessionCompatibilityKey: input.prepared.sessionCompatibilityKey,
+      });
       const lease = this.coreDb.sqlite
         .prepare(
           `SELECT workspace_id AS workspaceId, thread_id AS threadId,
                   agent_session_id AS agentSessionId
-           FROM scheduler_session_leases
-           WHERE lease_id = ?
-             AND status NOT IN ('released', 'lost', 'failed')`
+           FROM scheduler_execution_attempts
+           WHERE attempt_id = ?
+             AND phase <> 'closed'`
         )
-        .get(input.leaseId) as
+        .get(input.attemptId) as
         | {
             readonly agentSessionId: string;
             readonly threadId: string;
@@ -371,13 +470,13 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       ? Boolean(
           this.coreDb.sqlite
             .prepare(
-              `SELECT 1 FROM scheduler_session_leases
+              `SELECT 1 FROM scheduler_execution_attempts
                WHERE agent_session_id = ?
-                 AND status NOT IN ('released', 'lost', 'failed')
-                 AND lease_id <> ?
+                 AND phase <> 'closed'
+                 AND attempt_id <> ?
                LIMIT 1`
             )
-            .get(current.id, input.leaseId)
+            .get(current.id, input.attemptId)
         )
       : false;
     const backendSessions = this.coreDb
@@ -447,6 +546,12 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       workspaceRoots: [],
     }
   ): Promise<void> {
+    if (this.coreDb && context.attemptId)
+      context = {
+        ...context,
+        sandboxBindingRef: requireSchedulerExecutionAttempt(this.coreDb, context.attemptId)
+          .bindingRef!,
+      };
     const turn = store.getTurnById(turnId);
     if (!context.agentSetup) {
       throw new Error('Simulator execution requires one resolved agent setup.');
@@ -485,7 +590,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       if (context.sessionCompatibilityKey !== launchCompatibilityKey) {
         throw new TurnStartValidationError(
           'recovery_required',
-          'The scheduler lease SessionCompatibilityKey does not match final launch inputs.',
+          'The execution attempt SessionCompatibilityKey does not match final launch inputs.',
           409
         );
       }
@@ -499,6 +604,18 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       if (workspaceDb) {
         applyScopedMigrations(workspaceDb);
       }
+      if (this.coreDb && workspaceDb && context.attemptId && context.agentSessionId)
+        bindWorkerCheckpointToPreparedSession({
+          coreDb: this.coreDb,
+          workspaceDb,
+          store,
+          workspaceId: turn.workspaceId,
+          threadId: turn.threadId,
+          turnId,
+          requestId: context.requestId ?? null,
+          agentSessionId: context.agentSessionId,
+          attemptId: context.attemptId,
+        });
       const checkpoint = workspaceDb
         ? getWorkerCheckpoint(workspaceDb, turn.workspaceId, turn.threadId, turn.id)
         : null;
@@ -593,7 +710,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       ) {
         throw new TurnStartValidationError(
           'recovery_required',
-          'The final Agent Environment Package changed the scheduler lease compatibility key.',
+          'The final Agent Environment Package changed the execution attempt compatibility key.',
           409
         );
       }
@@ -700,12 +817,8 @@ export class SimulatedTurnExecutor implements TurnExecutor {
           environmentPackage.runtime.image
         );
         const runtimeTarget = this.coreDb.sqlite
-          .prepare(
-            `SELECT target_id AS targetId
-             FROM scheduler_session_leases
-             WHERE sandbox_binding_ref = ?`
-          )
-          .get(context.sandboxBindingRef) as { readonly targetId: string } | undefined;
+          .prepare(`SELECT target_id AS targetId FROM nanohost_runtime_targets LIMIT 1`)
+          .get() as { readonly targetId: string } | undefined;
         if (!runtimeTarget) {
           throw new Error('Internal self-check scheduler RuntimeTarget is unavailable.');
         }
@@ -753,13 +866,13 @@ export class SimulatedTurnExecutor implements TurnExecutor {
         });
         transitionWorkerBackendSessionState(this.coreDb, {
           fromState: 'materializing',
-          leaseId: backendSession.leaseId,
+          attemptId: backendSession.attemptId,
           now: () => timestamp,
           toState: 'materialized',
         });
         recordWorkspaceBackendHandoff(workspaceDb, inputSnapshots, materializationRecords);
         markWorkerBackendWorkspaceHandoffComplete(this.coreDb, {
-          leaseId: backendSession.leaseId,
+          attemptId: backendSession.attemptId,
           now: () => timestamp,
         });
         if (preparedContext) {
@@ -778,6 +891,29 @@ export class SimulatedTurnExecutor implements TurnExecutor {
             timestamp
           );
         }
+        if (!context.attemptId) throw new Error('Self-check has no exact attempt identity.');
+        finalizeSchedulerExecutionAttemptInput(this.coreDb, {
+          attemptId: context.attemptId,
+          inputRef: environmentPackage.snapshotId,
+          bindingRef: context.sandboxBindingRef,
+        });
+        const submission = recordSchedulerExecutionOperation(this.coreDb, {
+          attemptId: context.attemptId,
+          operationId: commandInputHash({
+            attemptId: context.attemptId,
+            inputRef: environmentPackage.snapshotId,
+            operation: 'submit',
+          }),
+          submission: true,
+        });
+        acceptSchedulerExecutionObservation(
+          this.coreDb,
+          await this.submit({
+            ...schedulerExecutionCorrelation(submission),
+            deadline: submission.deadline!,
+          })
+        );
+        context.onSubmissionSettled?.();
         // This deterministic executor accepts the same frozen input at its modeled native start.
         proveFrozenDelivery(workspaceDb.sqlite, turn.id, timestamp);
         if (workerInput === input) {
@@ -799,20 +935,20 @@ export class SimulatedTurnExecutor implements TurnExecutor {
           recordKey: '1',
           sequence: 1,
         });
-        markSchedulerSessionLeaseReleasing(this.coreDb, {
-          leaseId: backendSession.leaseId,
+        markSchedulerExecutionAttemptClosing(this.coreDb, {
+          attemptId: backendSession.attemptId,
           now: () => finalTimestamp,
-          releaseReason: 'worker-final-status',
+          cause: 'worker-final-status',
         });
         transitionWorkerBackendSessionState(this.coreDb, {
           fromState: 'materialized',
-          leaseId: backendSession.leaseId,
+          attemptId: backendSession.attemptId,
           now: () => finalTimestamp,
           toState: 'cleanup-pending',
         });
         transitionWorkerBackendSessionState(this.coreDb, {
           fromState: 'cleanup-pending',
-          leaseId: backendSession.leaseId,
+          attemptId: backendSession.attemptId,
           now: () => finalTimestamp,
           toState: 'physical-cleaned',
         });
@@ -834,7 +970,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
         });
         transitionWorkerBackendSessionState(this.coreDb, {
           fromState: 'physical-cleaned',
-          leaseId: backendSession.leaseId,
+          attemptId: backendSession.attemptId,
           now: () => finalTimestamp,
           toState: 'cleaned',
         });
@@ -885,6 +1021,35 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       }
     } finally {
       workspaceDb?.sqlite.close();
+      context.onSubmissionSettled?.();
+      if (
+        this.coreDb &&
+        context.attemptId &&
+        ['completed', 'interrupted', 'cancelled'].includes(store.getTurnById(turnId).status)
+      ) {
+        const attempt = markSchedulerExecutionAttemptClosing(this.coreDb, {
+          attemptId: context.attemptId,
+          cause: `turn-${store.getTurnById(turnId).status}`,
+        });
+        if (attempt.operationId) {
+          const correlation = schedulerExecutionCorrelation(attempt);
+          const proof = {
+            terminalHandoff: true,
+            output: true,
+            evidence: true,
+            outsideWorkspaceCollection: true,
+            integrationDrain: true,
+            routesRevoked: true,
+          } as const;
+          const release = await this.release({ ...correlation, proof });
+          if (release.state === 'released' && release.fenceRef)
+            closeSchedulerExecutionAttemptWithFence(this.coreDb, {
+              correlation,
+              proof,
+              fenceRef: release.fenceRef,
+            });
+        }
+      }
     }
   }
 

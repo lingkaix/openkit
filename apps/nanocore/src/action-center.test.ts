@@ -1149,6 +1149,7 @@ describe('action center app API', () => {
 
     try {
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_action_center',
         workspaceId: 'ws_demo',
@@ -1157,11 +1158,10 @@ describe('action center app API', () => {
         turnInput: 'Run when capacity is available.',
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',
-        priorityClass: 'interactive',
-        requiredPoolConstraints: ['openshell.local'],
         now: () => timestamp,
       });
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_denied_action_center',
         workspaceId: 'ws_demo',
@@ -1170,13 +1170,11 @@ describe('action center app API', () => {
         turnInput: 'Run after pool configuration.',
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',
-        priorityClass: 'interactive',
-        requiredPoolConstraints: ['openshell.local'],
         now: () => timestamp,
       });
       denySchedulerAdmissionEntry(coreDb, {
         queueEntryId: 'queue_denied_action_center',
-        denialReason: 'no-compatible-pool',
+        denialReason: 'authority-denied',
       });
 
       const app = createAuthorizedCoreApp(coreDb, store);
@@ -1200,7 +1198,6 @@ describe('action center app API', () => {
           threadId: queuedThread.id,
           turnId: 'turn_queued_scheduler',
           requestedAgentId: 'agent_codex_host',
-          priorityClass: 'interactive',
         },
         actions: expect.arrayContaining([
           expect.objectContaining({
@@ -1210,17 +1207,21 @@ describe('action center app API', () => {
           }),
         ]),
       });
+      // Public attention preserves product lineage while retired scheduling policy stays absent.
+      expect(byId.get('scheduler-admission:queue_action_center')?.source).not.toHaveProperty(
+        'priorityClass'
+      );
       expect(byId.get('scheduler-admission:queue_denied_action_center')).toMatchObject({
         kind: 'blocked_turn',
         severity: 'blocked',
         threadId: deniedThread.id,
         turnId: 'turn_denied_scheduler',
-        summary: 'The scheduler denied this worker turn.',
+        summary: expect.stringMatching(/authority/i),
         source: {
           type: 'scheduler_admission',
           queueEntryId: 'queue_denied_action_center',
           status: 'denied',
-          denialReason: 'no-compatible-pool',
+          denialReason: 'authority-denied',
         },
         actions: expect.arrayContaining([
           expect.objectContaining({
@@ -1247,6 +1248,7 @@ describe('action center app API', () => {
 
     try {
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         queueEntryId: 'queue_other_user_action_center',
         triggerActor: { kind: 'user', id: 'user_victim' },
         workspaceId: 'ws_demo',
@@ -1255,8 +1257,6 @@ describe('action center app API', () => {
         turnInput: 'Show the Workspace admission to current authorized editors.',
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',
-        priorityClass: 'interactive',
-        requiredPoolConstraints: ['openshell.local'],
         now: () => timestamp,
       });
 
@@ -1322,43 +1322,14 @@ describe('action center app API', () => {
           timestamp
         );
       coreDb.sqlite
-        .prepare(
-          `
-          INSERT INTO scheduler_orphan_worker_evidence (
-            evidence_id,
-            lease_id,
-            workspace_id,
-            thread_id,
-            turn_id,
-            agent_session_id,
-            package_snapshot_id,
-            pool_id,
-            target_id,
-            reason,
-            scheduler_epoch,
-            heartbeat_deadline,
-            last_accepted_heartbeat_at,
-            recorded_at
-          )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `
-        )
-        .run(
-          'orphan_action_center',
-          'lease_action_center',
-          'ws_demo',
-          thread.id,
-          turn.id,
-          'as_orphan',
-          'pkg_orphan',
-          'pool_local',
-          'target_local',
-          'restart-heartbeat-timeout',
-          9,
-          timestamp,
-          null,
-          timestamp
-        );
+        .prepare(`INSERT INTO scheduler_execution_attempts
+        (attempt_id, queue_entry_id, backend_id, workspace_id, thread_id, turn_id,
+         agent_session_id, input_ref, binding_ref, preparation_input_json, phase, disposition,
+         operation_id, terminal_cause, created_at, updated_at)
+        VALUES ('attempt_action_center', 'queue_action_center', 'nanohost', ?, ?, ?,
+          'as_orphan', 'pkg_orphan', 'binding_action_center', '{}', 'closing', 'unknown',
+          'operation_action_center', 'native-liveness-expired', ?, ?)`)
+        .run('ws_demo', thread.id, turn.id, timestamp, timestamp);
 
       const app = createAuthorizedCoreApp(coreDb, store);
       const res = await app.request(
@@ -1385,18 +1356,18 @@ describe('action center app API', () => {
       expect(JSON.stringify(rejection)).not.toContain('as_rejected');
       expect(rejection?.source).not.toHaveProperty('agentSessionId');
 
-      const orphan = byId.get('scheduler-orphan-worker:orphan_action_center');
+      const orphan = byId.get('execution-attempt:attempt_action_center');
       expect(orphan).toMatchObject({
         kind: 'blocked_turn',
         severity: 'risk',
         threadId: thread.id,
         turnId: turn.id,
         source: {
-          type: 'scheduler_orphan_worker',
-          evidenceId: 'orphan_action_center',
-          leaseId: 'lease_action_center',
-          reason: 'restart-heartbeat-timeout',
-          schedulerEpoch: 9,
+          type: 'execution_attempt',
+          attemptId: 'attempt_action_center',
+          backendId: 'nanohost',
+          phase: 'closing',
+          disposition: 'unknown',
         },
         actions: [expect.objectContaining({ kind: 'open_thread' })],
       });

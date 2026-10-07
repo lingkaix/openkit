@@ -107,7 +107,7 @@ export function adjudicateNanoHostUnitFScenario(
   const lineageComplete = [
     lineage?.agentSessionId,
     lineage?.backendSessionId,
-    lineage?.leaseId,
+    lineage?.attemptId,
     lineage?.turnId,
   ].every((value) => typeof value === 'string' && value.length > 0);
   const proof = evidence?.proof;
@@ -178,7 +178,7 @@ export function adjudicateNanoHostUnitFScenario(
         typeof lineage?.agentSessionId === 'string' ? digest(lineage.agentSessionId) : null,
       backendSession:
         typeof lineage?.backendSessionId === 'string' ? digest(lineage.backendSessionId) : null,
-      lease: typeof lineage?.leaseId === 'string' ? digest(lineage.leaseId) : null,
+      attempt: typeof lineage?.attemptId === 'string' ? digest(lineage.attemptId) : null,
       turn: typeof lineage?.turnId === 'string' ? digest(lineage.turnId) : null,
     },
     observations,
@@ -683,7 +683,8 @@ async function readNanoCoreOwnerSnapshot(config, lineage) {
     const { FsStore } = await import(root + '/lib/store.js');
     const { listWorkspaceCapabilityCalls, listWorkspaceUsageRecords } = await import(root + '/capability/usage-ledger.js');
     const { listWorkerControlAcceptedEvents, getWorkerControlAcceptedFinalStatus } = await import(root + '/runtime/worker-control-records.js');
-    const { listSchedulerSessionLeasesForTurn } = await import(root + '/scheduler-records.js');
+    const { listSchedulerExecutionAttemptsForTurn } = await import(root + '/runtime/execution-attempt-records.js');
+    const { requireNanoHostExecutionAttempt } = await import(root + '/runtime/nanohost-attempt-records.js');
     const { getWorkerBackendSession } = await import(root + '/runtime/worker-backend-sessions.js');
     const { getNanoHostRuntimeTarget } = await import(root + '/runtime/nanohost-runtime-target.js');
     const { listWorkspaceRuntimeEvidence } = await import(root + '/runtime/runtime-evidence.js');
@@ -693,8 +694,8 @@ async function readNanoCoreOwnerSnapshot(config, lineage) {
       const store = new FsStore({ dataRoot: input.dataRoot });
       const turn = store.getTurn(input.lineage.workspaceId, input.lineage.threadId, input.lineage.turnId);
       const agentSession = store.getAgentSession(input.lineage.agentSessionId);
-      const leases = listSchedulerSessionLeasesForTurn(coreDb, input.lineage).filter((row) => row.agentSessionId === input.lineage.agentSessionId && row.packageSnapshotId === input.lineage.packageSnapshotId);
-      const backends = leases.map((lease) => getWorkerBackendSession(coreDb, lease.leaseId)).filter(Boolean);
+      const attempts = listSchedulerExecutionAttemptsForTurn(coreDb, input.lineage).filter((row) => row.agentSessionId === input.lineage.agentSessionId && row.inputRef === input.lineage.packageSnapshotId).map((row) => requireNanoHostExecutionAttempt(coreDb, row.attemptId));
+      const backends = attempts.map((attempt) => getWorkerBackendSession(coreDb, attempt.attemptId)).filter(Boolean);
       const runtimeTarget = backends.length === 1 && typeof backends[0].runtimeTargetId === 'string' ? getNanoHostRuntimeTarget(coreDb, backends[0].runtimeTargetId) : null;
       const events = listWorkerControlAcceptedEvents(coreDb, input.lineage);
       const acceptedFinalStatus = getWorkerControlAcceptedFinalStatus(coreDb, input.lineage);
@@ -752,10 +753,10 @@ async function readNanoCoreOwnerSnapshot(config, lineage) {
       };
       const projectionCounts = {
         activeBackend: backends.filter((row) => !['cleaned', 'physical-cleaned'].includes(row.state)).length,
-        activeLease: leases.filter((row) => !['released', 'lost', 'failed'].includes(row.status)).length,
+        activeAttempt: attempts.filter((row) => row.phase !== 'closed').length,
         workerReady: events.filter((row) => row.event?.type === 'worker.ready').length,
       };
-      process.stdout.write(JSON.stringify({ agentSession, backends, events, finalStatus, leases, projectionCounts, projectionOwners, runtimeEvidence, runtimeTarget, turn }));
+      process.stdout.write(JSON.stringify({ agentSession, backends, events, finalStatus, attempts, projectionCounts, projectionOwners, runtimeEvidence, runtimeTarget, turn }));
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -1137,39 +1138,37 @@ export async function completeNanoHostFirstFenceRecovery({
   return target;
 }
 
-/** Returns one exact backend/lease lineage or fails closed. */
+/** Returns one exact backend/attempt lineage or fails closed. */
 function requireOwnerTuple(snapshot, lineage) {
   if (
-    snapshot.leases?.length !== 1 ||
+    snapshot.attempts?.length !== 1 ||
     snapshot.backends?.length !== 1 ||
-    snapshot.leases[0].agentSessionId !== lineage.agentSessionId ||
+    snapshot.attempts[0].agentSessionId !== lineage.agentSessionId ||
     snapshot.backends[0].agentSessionId !== lineage.agentSessionId ||
-    snapshot.leases[0].packageSnapshotId !== lineage.packageSnapshotId ||
+    snapshot.attempts[0].inputRef !== lineage.packageSnapshotId ||
     snapshot.backends[0].packageSnapshotId !== lineage.packageSnapshotId
   ) {
     throw new Error('Unit F durable owner tuple is not singular.');
   }
-  return { backend: snapshot.backends[0], lease: snapshot.leases[0] };
+  return { backend: snapshot.backends[0], attempt: snapshot.attempts[0] };
 }
 
-/** Requires one exact live lease/backend/RuntimeTarget capacity tuple. */
+/** Requires one exact live attempt/backend/RuntimeTarget capacity tuple. */
 function requireBlockedCreateLiveOwner(snapshot, lineage, generation) {
   const tuple = requireOwnerTuple(snapshot, lineage);
   const runtimeTarget = snapshot.runtimeTarget;
   const activeBackend = snapshot.backends.filter(
     (record) => !['cleaned', 'physical-cleaned'].includes(record.state)
   ).length;
-  const activeLease = snapshot.leases.filter(
-    (record) => !['released', 'lost', 'failed'].includes(record.status)
-  ).length;
+  const activeAttempt = snapshot.attempts.filter((record) => record.phase !== 'closed').length;
   if (
     ['cleaned', 'physical-cleaned'].includes(tuple.backend.state) ||
-    ['released', 'lost', 'failed'].includes(tuple.lease.status) ||
+    tuple.attempt.phase === 'closed' ||
     activeBackend !== 1 ||
-    activeLease !== 1 ||
+    activeAttempt !== 1 ||
     (snapshot.projectionCounts !== undefined &&
       (snapshot.projectionCounts.activeBackend !== 1 ||
-        snapshot.projectionCounts.activeLease !== 1)) ||
+        snapshot.projectionCounts.activeAttempt !== 1)) ||
     runtimeTarget?.targetId !== tuple.backend.runtimeTargetId ||
     runtimeTarget?.connectionGeneration !== generation ||
     runtimeTarget?.slotCount !== 1 ||
@@ -1182,7 +1181,7 @@ function requireBlockedCreateLiveOwner(snapshot, lineage, generation) {
   return {
     backendSessionId: tuple.backend.backendSessionId,
     connectionGeneration: runtimeTarget.connectionGeneration,
-    leaseId: tuple.lease.leaseId,
+    attemptId: tuple.attempt.attemptId,
     runtimeTargetId: tuple.backend.runtimeTargetId,
     tuple,
   };
@@ -1192,7 +1191,7 @@ function requireBlockedCreateLiveOwner(snapshot, lineage, generation) {
 function requireSameBlockedCreateOwner(snapshot, lineage, expected) {
   const current = requireBlockedCreateLiveOwner(snapshot, lineage, expected.connectionGeneration);
   if (
-    current.leaseId !== expected.leaseId ||
+    current.attemptId !== expected.attemptId ||
     current.backendSessionId !== expected.backendSessionId ||
     current.runtimeTargetId !== expected.runtimeTargetId
   ) {
@@ -1280,7 +1279,7 @@ export function adjudicateNanoHostF1Continuation({
   const finalTuple = requireOwnerTuple(final, lineage);
   const beforeSequences = before.events.map((event) => event.sequence);
   const adoptedSequences = adopted.events.map((event) => event.sequence);
-  const beforeHeartbeatSequence = beforeTuple.lease.lastWorkerSequence;
+  const beforeHeartbeatSequence = beforeTuple.attempt.lastWorkerSequence;
   const beforeTranscriptSequence = beforeSequences.at(-1);
   const adoptedTranscriptSequence = adoptedSequences.at(-1);
   const beforeOwners = before.projectionOwners;
@@ -1333,16 +1332,16 @@ export function adjudicateNanoHostF1Continuation({
     !Number.isSafeInteger(beforeTranscriptSequence) ||
     before.projectionCounts.workerReady !== 1 ||
     before.projectionCounts.activeBackend !== 1 ||
-    before.projectionCounts.activeLease !== 1 ||
+    before.projectionCounts.activeAttempt !== 1 ||
     before.finalStatus !== null ||
     adoptedTuple.backend.backendSessionId !== beforeTuple.backend.backendSessionId ||
-    adoptedTuple.lease.workerProcessKeyHash !== beforeTuple.lease.workerProcessKeyHash ||
-    adoptedTuple.lease.packageSnapshotId !== beforeTuple.lease.packageSnapshotId ||
+    adoptedTuple.attempt.workerProcessKeyHash !== beforeTuple.attempt.workerProcessKeyHash ||
+    adoptedTuple.attempt.inputRef !== beforeTuple.attempt.inputRef ||
     adoptedSequences.length <= beforeSequences.length ||
     !Number.isSafeInteger(adoptedTranscriptSequence) ||
     adoptedTranscriptSequence <= beforeTranscriptSequence ||
-    !Number.isSafeInteger(adoptedTuple.lease.lastWorkerSequence) ||
-    adoptedTuple.lease.lastWorkerSequence <= beforeHeartbeatSequence ||
+    !Number.isSafeInteger(adoptedTuple.attempt.lastWorkerSequence) ||
+    adoptedTuple.attempt.lastWorkerSequence <= beforeHeartbeatSequence ||
     !hasExactWorkerSequence(adopted.events) ||
     !hasExactProjectionPrefix(before.events, adopted.events) ||
     !ownerNames.every((name) =>
@@ -1355,12 +1354,12 @@ export function adjudicateNanoHostF1Continuation({
     ) ||
     adopted.projectionCounts.workerReady !== 1 ||
     adopted.projectionCounts.activeBackend !== 1 ||
-    adopted.projectionCounts.activeLease !== 1 ||
+    adopted.projectionCounts.activeAttempt !== 1 ||
     final.finalStatus?.status !== 'completed' ||
     finalTuple.backend.backendSessionId !== beforeTuple.backend.backendSessionId ||
-    finalTuple.lease.leaseId !== beforeTuple.lease.leaseId ||
-    !Number.isSafeInteger(finalTuple.lease.lastWorkerSequence) ||
-    finalTuple.lease.lastWorkerSequence < adoptedTuple.lease.lastWorkerSequence ||
+    finalTuple.attempt.attemptId !== beforeTuple.attempt.attemptId ||
+    !Number.isSafeInteger(finalTuple.attempt.lastWorkerSequence) ||
+    finalTuple.attempt.lastWorkerSequence < adoptedTuple.attempt.lastWorkerSequence ||
     !Number.isSafeInteger(final.finalStatus?.sequence) ||
     final.finalStatus.sequence < adoptedTranscriptSequence ||
     final.events.at(-1)?.sequence !== final.finalStatus.sequence ||
@@ -1404,7 +1403,7 @@ export function adjudicateNanoHostF1Continuation({
     finalSuffixSequences.some((sequence, index) => sequence !== expectedFinalSuffix[index]) ||
     final.projectionCounts.workerReady !== 1 ||
     final.projectionCounts.activeBackend !== 0 ||
-    final.projectionCounts.activeLease !== 0 ||
+    final.projectionCounts.activeAttempt !== 0 ||
     final.runtimeEvidence.filter((record) => record.phase === 'teardown').length !== 1
   ) {
     throw new Error('Unit F F1 continuation proof failed.');
@@ -1477,13 +1476,13 @@ async function waitForSequencedOwnerSnapshot(ports, lineage, predicate) {
 /** Returns whether one exact fault owner released its backend capacity. */
 function sequencedFaultCapacityReleased(candidate) {
   const backend = candidate.backends?.[0];
-  const lease = candidate.leases?.[0];
+  const attempt = candidate.attempts?.[0];
   return (
     candidate.backends?.length === 1 &&
-    candidate.leases?.length === 1 &&
+    candidate.attempts?.length === 1 &&
     ['cleaned', 'physical-cleaned'].includes(backend?.state) &&
     typeof backend?.physicalCleanedAt === 'string' &&
-    ['released', 'lost', 'failed'].includes(lease?.status) &&
+    attempt?.phase === 'closed' &&
     candidate.runtimeEvidence.filter((record) => record.phase === 'teardown').length === 1
   );
 }
@@ -1496,17 +1495,17 @@ function sequencedFaultTurnFenced(candidate) {
   );
 }
 
-/** Proves exact-lineage backend, lease, Turn, and target cleanup. */
+/** Proves exact-lineage backend, attempt, Turn, and target cleanup. */
 async function proveSequencedTurnCleanup(ports, lineage) {
   const snapshot = await waitForSequencedOwnerSnapshot(ports, lineage, (candidate) => {
     const backend = candidate.backends?.[0];
-    const lease = candidate.leases?.[0];
+    const attempt = candidate.attempts?.[0];
     return (
       candidate.backends?.length === 1 &&
-      candidate.leases?.length === 1 &&
+      candidate.attempts?.length === 1 &&
       ['cleaned', 'physical-cleaned'].includes(backend?.state) &&
       typeof backend?.physicalCleanedAt === 'string' &&
-      ['released', 'lost', 'failed'].includes(lease?.status) &&
+      attempt?.phase === 'closed' &&
       candidate.runtimeEvidence.filter((record) => record.phase === 'teardown').length === 1 &&
       !['pending', 'running', 'awaiting_human'].includes(candidate.turn?.status)
     );
@@ -1756,7 +1755,7 @@ export async function sequenceNanoHostF1(ports) {
         ({ family, serviceRef }) => family === 'llm' && serviceRef === 'worker-inference-gateway'
       );
       return snapshot.projectionCounts?.workerReady === 1 &&
-        snapshot.leases?.length === 1 &&
+        snapshot.attempts?.length === 1 &&
         snapshot.backends?.length === 1 &&
         inference.some(({ capabilityCallId }) =>
           inferenceCalls.some(({ id, status }) => id === capabilityCallId && status === 'succeeded')
@@ -1771,7 +1770,7 @@ export async function sequenceNanoHostF1(ports) {
     const before = beforeObservation.snapshot;
     const beforeTuple = requireOwnerTuple(before, lineage);
     const beforeSequences = before.events.map((event) => event.sequence);
-    const beforeHeartbeatSequence = beforeTuple.lease.lastWorkerSequence;
+    const beforeHeartbeatSequence = beforeTuple.attempt.lastWorkerSequence;
     const beforeTranscriptSequence = beforeSequences.at(-1);
     if (
       !hasExactWorkerSequence(before.events) ||
@@ -1779,7 +1778,7 @@ export async function sequenceNanoHostF1(ports) {
       !Number.isSafeInteger(beforeTranscriptSequence) ||
       before.projectionCounts.workerReady !== 1 ||
       before.projectionCounts.activeBackend !== 1 ||
-      before.projectionCounts.activeLease !== 1 ||
+      before.projectionCounts.activeAttempt !== 1 ||
       before.finalStatus !== null
     ) {
       throw new Error('Unit F F1 post-launch sequence barrier is incomplete.');
@@ -1802,13 +1801,13 @@ export async function sequenceNanoHostF1(ports) {
       invocationId: epochBefore.invocationId,
     });
     const adopted = await waitForSequencedOwnerSnapshot(ports, lineage, (snapshot) => {
-      const lease = snapshot.leases?.[0];
+      const attempt = snapshot.attempts?.[0];
       return (
-        snapshot.leases?.length === 1 &&
+        snapshot.attempts?.length === 1 &&
         snapshot.backends?.length === 1 &&
-        lease?.leaseId === beforeTuple.lease.leaseId &&
-        Number.isSafeInteger(lease?.lastWorkerSequence) &&
-        lease?.lastWorkerSequence > beforeHeartbeatSequence &&
+        attempt?.attemptId === beforeTuple.attempt.attemptId &&
+        Number.isSafeInteger(attempt?.lastWorkerSequence) &&
+        attempt?.lastWorkerSequence > beforeHeartbeatSequence &&
         Number.isSafeInteger(snapshot.events?.at(-1)?.sequence) &&
         snapshot.events?.at(-1)?.sequence > beforeTranscriptSequence
       );
@@ -1819,7 +1818,7 @@ export async function sequenceNanoHostF1(ports) {
       (snapshot) =>
         snapshot.finalStatus !== null &&
         snapshot.projectionCounts?.activeBackend === 0 &&
-        snapshot.projectionCounts?.activeLease === 0 &&
+        snapshot.projectionCounts?.activeAttempt === 0 &&
         snapshot.runtimeEvidence.filter((record) => record.phase === 'teardown').length === 1
     );
     adjudicateNanoHostF1Continuation({
@@ -1845,7 +1844,7 @@ export async function sequenceNanoHostF1(ports) {
       lineage: {
         agentSessionId: lineage.agentSessionId,
         backendSessionId: beforeTuple.backend.backendSessionId,
-        leaseId: beforeTuple.lease.leaseId,
+        attemptId: beforeTuple.attempt.attemptId,
         turnId: lineage.turnId,
       },
       proof: {
@@ -1974,7 +1973,7 @@ export async function sequenceNanoHostBlockedCreate(scenarioId, ports) {
     const ownerBefore = await waitForSequencedOwnerSnapshot(
       ports,
       lineage,
-      (snapshot) => snapshot.leases?.length === 1 && snapshot.backends?.length === 1
+      (snapshot) => snapshot.attempts?.length === 1 && snapshot.backends?.length === 1
     );
     const owner = requireBlockedCreateLiveOwner(
       ownerBefore,
@@ -2110,7 +2109,7 @@ export async function sequenceNanoHostBlockedCreate(scenarioId, ports) {
       lineage: {
         agentSessionId: lineage.agentSessionId,
         backendSessionId: tuple.backend.backendSessionId,
-        leaseId: tuple.lease.leaseId,
+        attemptId: tuple.attempt.attemptId,
         turnId: lineage.turnId,
       },
       proof: {

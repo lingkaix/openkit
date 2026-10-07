@@ -239,7 +239,14 @@ export async function dispatchOpenkitWorkTool(
           { ...admission, workspaceId: peer.workspaceId },
           'thread.read',
           true
-        ) && isThreadIdVisible(input.store, peer.workspaceId, peer.threadId, responsibleUserId)
+        ) &&
+          isThreadIdVisible(
+            input.store,
+            peer.workspaceId,
+            peer.threadId,
+            responsibleUserId,
+            admission.serverAdminTokenId !== null
+          )
       );
     let projection: Record<string, unknown>;
     if (toolName === 'work_list_peers') {

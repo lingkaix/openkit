@@ -1,15 +1,16 @@
 import type { FsStore } from '../lib/store.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
+import {
+  isSchedulerExecutionBusyRefusal,
+  listSchedulerExecutionAttemptsForTurn,
+} from '../runtime/execution-attempt-records.js';
 import { getWorkerBackendSession } from '../runtime/worker-backend-sessions.js';
 import {
   listWorkspaceInputSnapshots,
   listWorkspaceMaterializationRecords,
   requireCompleteBackendWorkspaceHandleHandoff,
 } from '../runtime/workspace-sync-records.js';
-import {
-  listSchedulerAdmissionEntriesForWorkspace,
-  listSchedulerSessionLeasesForTurn,
-} from '../scheduler-records.js';
+import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { getWorkspaceMaterial, getWorkspaceMaterialRevision } from '../workspace-materials.js';
 import type { WorkerContextPackageAuthorityReader } from './worker-context-package.js';
@@ -91,19 +92,21 @@ export function createWorkerContextPackageAuthorityReader(
         if (!environmentPackage) {
           return null;
         }
-        const leases = listSchedulerSessionLeasesForTurn(coreDb, {
+        const leases = listSchedulerExecutionAttemptsForTurn(coreDb, {
           workspaceId,
           threadId: environmentPackage.scope.threadId,
           turnId: environmentPackage.scope.turnId,
-        }).filter(
-          (lease) =>
-            lease.agentSessionId === environmentPackage.scope.agentSessionId &&
-            lease.packageSnapshotId === packageSnapshotId
-        );
+        })
+          .filter(
+            (lease) =>
+              lease.agentSessionId === environmentPackage.scope.agentSessionId &&
+              lease.inputRef === packageSnapshotId
+          )
+          .filter((attempt) => !isSchedulerExecutionBusyRefusal(attempt));
         if (leases.length !== 1) {
           return null;
         }
-        const session = getWorkerBackendSession(coreDb, leases[0]!.leaseId);
+        const session = getWorkerBackendSession(coreDb, leases[0]!.attemptId);
         if (
           !session ||
           session.workspaceId !== workspaceId ||

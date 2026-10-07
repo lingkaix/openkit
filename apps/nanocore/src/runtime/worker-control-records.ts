@@ -9,10 +9,7 @@ import {
   WorkerObservationDataSchema,
 } from '@openkit/worker-protocol';
 import { stageWorkObservationChunk, workObservationBodyBundleId } from '../evidence-bundles.js';
-import {
-  requireSchedulerSessionLeaseAdmissionContext,
-  resolveSchedulerLeaseTokenBinding,
-} from '../scheduler-records.js';
+import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -21,6 +18,7 @@ import {
   readWorkObservationTurnBinding,
   type WorkObservationDraft,
 } from '../storage/work-observations.js';
+import { resolveNanoHostAttemptTokenBinding } from './nanohost-attempt-records.js';
 import type {
   WorkerControlAcceptedRecordRecorder,
   WorkerControlAcceptedRecordRecorderInput,
@@ -36,8 +34,8 @@ const WORKER_FINAL_STATUS_POLL_INTERVAL_MS = 100;
 
 /** Inputs for waiting until one exact scheduler-owned worker has durably completed. */
 export interface WaitForWorkerControlFinalStatusInput {
-  /** Scheduler lease that owns the worker. */
-  readonly leaseId: string;
+  /** execution attempt that owns the worker. */
+  readonly attemptId: string;
   /** Complete worker-control lineage that the final status must match. */
   readonly lineage: WorkerControlLineage;
 }
@@ -423,11 +421,11 @@ export function getWorkerControlAcceptedFinalStatus(
 /**
  * Waits until one exact worker final status is durable or its lease can no longer complete.
  *
- * A final status accepted before lease expiry remains authoritative after expiry. Without that
- * record, only pre-terminal live lease states may continue waiting.
+ * Accepted evidence remains authoritative after expiry. Cancellation revokes effects but leaves
+ * the exact terminal stream available until liveness or the absolute deadline expires.
  *
  * @param coreDb Server-scope Core database.
- * @param input Exact lease, worker lineage, clock, and optional poll interval.
+ * @param input Exact attempt identity and worker lineage.
  * @throws Error when lineage is absent, the lease expires, or its state becomes non-waitable.
  */
 export async function waitForWorkerControlFinalStatus(
@@ -437,23 +435,34 @@ export async function waitForWorkerControlFinalStatus(
   for (;;) {
     const lease = coreDb.sqlite
       .prepare(
-        `SELECT status, expires_at AS expiresAt
-         FROM scheduler_session_leases
-         WHERE lease_id = ?
+        `SELECT phase, deadline, terminal_cause AS terminalCause,
+                recovery_state AS recoveryState,
+                CASE WHEN last_accepted_heartbeat_at IS NULL THEN startup_deadline
+                     ELSE heartbeat_deadline END AS workerDeadline
+         FROM scheduler_execution_attempts
+         WHERE attempt_id = ?
            AND workspace_id = ?
            AND thread_id = ?
            AND turn_id = ?
            AND agent_session_id = ?
-           AND package_snapshot_id = ?`
+           AND input_ref = ?`
       )
       .get(
-        input.leaseId,
+        input.attemptId,
         input.lineage.workspaceId,
         input.lineage.threadId,
         input.lineage.turnId,
         input.lineage.agentSessionId,
         input.lineage.packageSnapshotId
-      ) as { readonly expiresAt: string; readonly status: string } | undefined;
+      ) as
+      | {
+          readonly deadline: string | null;
+          readonly phase: string;
+          readonly terminalCause: string | null;
+          readonly recoveryState: string | null;
+          readonly workerDeadline: string | null;
+        }
+      | undefined;
 
     if (!lease) {
       throw new Error('Worker completion lease does not match the exact durable lineage.');
@@ -462,10 +471,16 @@ export async function waitForWorkerControlFinalStatus(
     if (accepted) {
       return accepted;
     }
-    if (!['acquired', 'starting', 'active', 'idle'].includes(lease.status)) {
-      throw new Error(`Worker lease became ${lease.status} before durable final status.`);
+    const cancelled =
+      lease.phase === 'closing' &&
+      lease.terminalCause === 'turn-cancelled' &&
+      lease.recoveryState === null &&
+      lease.workerDeadline !== null &&
+      lease.workerDeadline > new Date().toISOString();
+    if (lease.phase !== 'open' && !cancelled) {
+      throw new Error(`Worker lease became ${lease.phase} before durable final status.`);
     }
-    if (lease.expiresAt <= new Date().toISOString()) {
+    if (lease.deadline === null || lease.deadline <= new Date().toISOString()) {
       throw new Error('Worker lease expired before durable final status.');
     }
 
@@ -495,20 +510,23 @@ function sameWorkerControlLineage(
 }
 
 /**
- * Resolves live final-status acceptance or exact replay during release grace.
+ * Resolves live or cancellation-owned terminal evidence, or exact replay during release grace.
  *
  * @param coreDb Server-scope Core database.
  * @param input Sandbox binding and worker lineage.
- * @returns Live acceptance, replay-only acceptance, or a stable rejection.
+ * @returns First terminal evidence, replay-only acceptance, or a stable rejection.
  */
 export function resolveWorkerControlFinalStatusTokenBinding(
   coreDb: CoreDb,
   input: WorkerControlTokenBindingInput
 ): WorkerControlFinalStatusTokenBindingResolution {
-  const live = resolveSchedulerLeaseTokenBinding(coreDb, input);
+  const live = resolveNanoHostAttemptTokenBinding(coreDb, input);
 
   if (live.status === 'accepted') {
-    const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, live.lease.leaseId);
+    const admission = requireSchedulerExecutionAttemptAdmissionContext(
+      coreDb,
+      live.attempt.attemptId
+    );
 
     if ((admission.requestId ?? null) !== (input.lineage.requestId ?? null)) {
       return { reason: 'lineage-mismatch', status: 'rejected' };
@@ -517,52 +535,66 @@ export function resolveWorkerControlFinalStatusTokenBinding(
     return { replayOnly: false, status: 'accepted' };
   }
 
-  if (live.reason !== 'lease-not-live') {
+  if (live.reason !== 'attempt-not-live') {
     return live;
   }
 
   const row = coreDb.sqlite
     .prepare(
-      `SELECT lease_id AS leaseId, expires_at AS expiresAt
-         FROM scheduler_session_leases
-        WHERE sandbox_binding_ref = ?
+      `SELECT attempt_id AS attemptId, deadline AS expiresAt, phase,
+              terminal_cause AS terminalCause,
+              EXISTS (
+                SELECT 1 FROM worker_control_records
+                 WHERE worker_control_records.workspace_id = scheduler_execution_attempts.workspace_id
+                   AND worker_control_records.thread_id = scheduler_execution_attempts.thread_id
+                   AND worker_control_records.turn_id = scheduler_execution_attempts.turn_id
+                   AND worker_control_records.agent_session_id = scheduler_execution_attempts.agent_session_id
+                   AND worker_control_records.package_snapshot_id = scheduler_execution_attempts.input_ref
+                   AND worker_control_records.request_id IS ?
+                   AND worker_control_records.operation = 'final_status'
+              ) AS finalStatusRecorded
+         FROM scheduler_execution_attempts
+        WHERE binding_ref = ?
           AND workspace_id = ?
           AND thread_id = ?
           AND turn_id = ?
           AND agent_session_id = ?
-          AND package_snapshot_id = ?
-          AND status = 'releasing'
-          AND EXISTS (
-            SELECT 1
-              FROM worker_control_records
-             WHERE worker_control_records.workspace_id = scheduler_session_leases.workspace_id
-               AND worker_control_records.thread_id = scheduler_session_leases.thread_id
-               AND worker_control_records.turn_id = scheduler_session_leases.turn_id
-               AND worker_control_records.agent_session_id = scheduler_session_leases.agent_session_id
-               AND worker_control_records.package_snapshot_id = scheduler_session_leases.package_snapshot_id
-               AND worker_control_records.request_id IS ?
-               AND worker_control_records.operation = 'final_status'
-          )`
+          AND input_ref = ?
+          AND phase IN ('closing', 'closed')`
     )
     .get(
+      input.lineage.requestId ?? null,
       input.sandboxBindingRef,
       input.lineage.workspaceId,
       input.lineage.threadId,
       input.lineage.turnId,
       input.lineage.agentSessionId,
-      input.lineage.packageSnapshotId,
-      input.lineage.requestId ?? null
-    ) as { expiresAt: string; leaseId: string } | undefined;
+      input.lineage.packageSnapshotId
+    ) as
+    | {
+        expiresAt: string | null;
+        attemptId: string;
+        phase: string;
+        terminalCause: string | null;
+        finalStatusRecorded: number;
+      }
+    | undefined;
 
-  if (!row || row.expiresAt <= new Date().toISOString()) {
+  const timestamp = new Date().toISOString();
+  if (!row || !row.expiresAt || row.expiresAt <= timestamp) {
     return live;
   }
 
-  const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, row.leaseId);
+  const admission = requireSchedulerExecutionAttemptAdmissionContext(coreDb, row.attemptId);
 
   if ((admission.requestId ?? null) !== (input.lineage.requestId ?? null)) {
     return { reason: 'lineage-mismatch', status: 'rejected' };
   }
 
-  return { replayOnly: true, status: 'accepted' };
+  if (row.finalStatusRecorded) return { replayOnly: true, status: 'accepted' };
+  // The live resolver already authenticated the exact token and binding before refusing effects.
+  // Only cancellation retains a first terminal report; cleanup and closed attempts permit replay.
+  if (row.phase === 'closing' && row.terminalCause === 'turn-cancelled')
+    return { replayOnly: false, status: 'accepted' };
+  return live;
 }

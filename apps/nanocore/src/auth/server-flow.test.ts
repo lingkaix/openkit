@@ -2,29 +2,26 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import type {
-  CommitPreparedAgentSessionForTurnInput,
-  PrepareAgentSessionForTurnInput,
-  PreparedAgentSessionForTurn,
-  TurnExecutor,
-  TurnStartRuntimeContext,
-} from '../runtime/types.js';
+  ExecutionBackendCorrelation,
+  ExecutionReleaseProof,
+} from '../runtime/execution-backend.js';
 import {
-  ensureConfiguredSchedulerBaseline,
-  upsertSchedulerCapacityRecord,
-  upsertSchedulerWorkerPool,
-} from '../scheduler-records.js';
-import type { CoreDb } from '../storage/db.js';
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  upsertNanoHostRuntimeTarget,
+} from '../runtime/nanohost-runtime-target.js';
+import type { TurnStartRuntimeContext } from '../runtime/types.js';
 import { openCoreDb } from '../storage/db.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { seedWritableGitRepository } from '../test-support/git-repository.js';
 import { operationRequest } from '../test-support/operation-request.js';
-import { resolveAgentSessionCompatibilityKey } from '../test-support/prepared-agent-environment.js';
 import { importUnboundWorkspaceVaultReference } from '../vault/vault-references.js';
 import { ensureUserQuickChatWorkspace } from '../workspace-membership.js';
 import { createBetterAuth } from './better-auth.js';
@@ -48,7 +45,7 @@ function sessionCookie(response: Response): string {
 /**
  * Server-flow test executor that keeps accepted turns in flight until released.
  */
-class DelayedServerTurnExecutor implements TurnExecutor {
+class DelayedServerTurnExecutor extends SimulatedTurnExecutor {
   /** Product-visible capabilities for server scoping tests. */
   public readonly capabilities = {
     approvals: false,
@@ -71,53 +68,14 @@ class DelayedServerTurnExecutor implements TurnExecutor {
   });
 
   /**
-   * Releases all blocked turn starts.
+   * Releases the modeled closeout fence for both accepted Turns.
    */
-  public release(): void {
+  public releaseCloseout(): void {
     this.releaseStart?.();
   }
 
   /**
-   * Admits one fresh AgentSession for a Thread that has no current runtime owner.
-   */
-  public async prepareAgentSessionForTurn(
-    _store: FsStore,
-    input: PrepareAgentSessionForTurnInput
-  ): Promise<PreparedAgentSessionForTurn> {
-    return {
-      agentSessionId: input.freshAgentSessionId,
-      currentAgentSession: null,
-      replacementRequired: false,
-      sessionCompatibilityKey: resolveAgentSessionCompatibilityKey({
-        agentSessionId: input.freshAgentSessionId,
-        agentSetup: input.agentSetup,
-        backend: { kind: 'openshell' },
-        requestId: input.requestId,
-        turn: input.turn,
-        turnInput: input.turnInput,
-        triggerActor: input.turn.triggerActor,
-        workspaceCwd: input.workspaceCwd,
-        workspaceRoots: input.workspaceRoots,
-        ...(input.workspaceDataSourceCatalog
-          ? { workspaceDataSourceCatalog: input.workspaceDataSourceCatalog }
-          : {}),
-        ...(input.workspaceSourceRefs ? { workspaceSourceRefs: input.workspaceSourceRefs } : {}),
-      }),
-    };
-  }
-
-  /**
-   * No-op post-dispatch commit for this delayed executor, which never replaces a predecessor.
-   */
-  public async commitPreparedAgentSessionForTurn(
-    _store: FsStore,
-    _input: CommitPreparedAgentSessionForTurnInput
-  ): Promise<void> {
-    return;
-  }
-
-  /**
-   * Starts one delayed turn.
+   * Starts one Turn whose release fence remains held by the fixture.
    */
   public async startTurn(
     store: FsStore,
@@ -126,28 +84,15 @@ class DelayedServerTurnExecutor implements TurnExecutor {
     context: TurnStartRuntimeContext = { requestId: null, workspaceRoots: [] }
   ): Promise<void> {
     this.startedTurnIds.push(turnId);
-    const turn = store.getTurnById(turnId);
-    store.emitTurnEvent(turnId, {
-      event: 'turn.started',
-      requestId: context.requestId,
-      workspaceId: turn.workspaceId,
-      threadId: turn.threadId,
-      turnId,
-      data: { type: 'turn-started', turnId, status: 'running' },
-    });
+    await super.startTurn(store, turnId, _input, context);
+  }
+
+  /** Holds only the post-submission modeled fence, allowing the preparation claim to settle. */
+  public override async release(
+    input: ExecutionBackendCorrelation & { readonly proof: ExecutionReleaseProof }
+  ) {
     await this.startGate;
-    const completedTurn = store.updateTurn(turnId, {
-      status: 'completed',
-      completedAt: new Date().toISOString(),
-    });
-    store.emitTurnEvent(turnId, {
-      event: 'turn.completed',
-      requestId: context.requestId,
-      workspaceId: turn.workspaceId,
-      threadId: turn.threadId,
-      turnId,
-      data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
-    });
+    return super.release(input);
   }
 
   /**
@@ -174,40 +119,6 @@ async function waitForStartCount(
   while (executor.startedTurnIds.length < count && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
-}
-
-/**
- * Configures local scheduler capacity for concurrent server-mode user tests.
- *
- * @param coreDb Migrated Core database handles.
- * @param capacity Concurrent local lease capacity.
- */
-function configureLocalSchedulerCapacity(coreDb: CoreDb, capacity: number): void {
-  ensureConfiguredSchedulerBaseline(coreDb, { placement: 'local' });
-  upsertSchedulerWorkerPool(coreDb, {
-    allowedBackendKinds: ['openshell'],
-    allowedPlacements: ['local'],
-    allowedWorkspaceScopes: ['local'],
-    budgetClass: 'interactive',
-    currentAdmittedSessionCount: 0,
-    currentQueueDepth: 0,
-    defaultTimeoutMs: 900_000,
-    healthSummary: 'ready',
-    maxConcurrentSessions: capacity,
-    poolId: 'pool_local',
-    queueLimit: 20,
-    status: 'active',
-  });
-  upsertSchedulerCapacityRecord(coreDb, {
-    capacityClass: 'local',
-    concurrencyCeiling: capacity,
-    inUseCount: 0,
-    observationSource: 'configured',
-    observedAt: new Date().toISOString(),
-    poolId: 'pool_local',
-    queueDepth: 0,
-    targetId: 'target_local',
-  });
 }
 
 /**
@@ -540,10 +451,24 @@ describe('server auth flow', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-server-inflight-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    configureLocalSchedulerCapacity(coreDb, 2);
+    const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      deploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
+      identityId: 'identity_server_fixture',
+      observedAt: new Date().toISOString(),
+      targetId: 'target_server_fixture',
+    });
+    upsertNanoHostRuntimeTarget(coreDb, {
+      ...target,
+      freshEmpty: true,
+      observedAt: new Date().toISOString(),
+      physicalEpoch: 'a'.repeat(64),
+      predecessorFenced: true,
+      ready: true,
+    });
 
     try {
-      const executor = new DelayedServerTurnExecutor();
+      const executor = new DelayedServerTurnExecutor({ coreDb });
+      const store = new FsStore({ dataRoot });
       const app = createApp({
         agentManifests: [createTestAgentSetup().manifest],
         auth: createBetterAuth(coreDb),
@@ -559,6 +484,7 @@ describe('server auth flow', () => {
           },
         ]),
         turnExecutor: executor,
+        store,
       });
       const firstSignUp = await app.request('/api/auth/sign-up/email', {
         method: 'POST',
@@ -617,7 +543,7 @@ describe('server auth flow', () => {
       );
 
       await waitForStartCount(executor, 2);
-      executor.release();
+      executor.releaseCloseout();
 
       const [firstResponse, secondResponse] = await Promise.all([firstRequest, secondRequest]);
       const firstTurn = (await firstResponse.json()) as { id: string };
@@ -627,6 +553,13 @@ describe('server auth flow', () => {
       expect(secondResponse.status).toBe(202);
       expect(executor.startedTurnIds).toHaveLength(2);
       expect(new Set(executor.startedTurnIds)).toEqual(new Set([firstTurn.id, secondTurn.id]));
+      await vi.waitFor(() => {
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT phase FROM scheduler_execution_attempts ORDER BY rowid')
+            .all()
+        ).toEqual([{ phase: 'closed' }, { phase: 'closed' }]);
+      });
     } finally {
       coreDb.sqlite.close();
     }

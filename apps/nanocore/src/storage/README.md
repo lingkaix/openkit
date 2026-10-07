@@ -33,7 +33,7 @@ One record family must have one durable authority. Do not add aggregate workspac
 - `index-rebuild.ts` consumes canonical records and authoritative ledgers but must never become their source of truth.
 - Knowledge Page enumeration excludes `index.md` and `log.md` at every bundle depth while native portability keeps every Markdown file byte-for-byte.
 - Secret material belongs to `../vault/` backends and credential consumers; storage may retain only explicitly allowed non-secret metadata and redacted evidence.
-- The scheduler lease is the narrow exception for worker route authentication: it retains exactly three nullable lowercase SHA-256 projections for the control, inference, and capability families, never a raw token or a derived sandbox-binding credential.
+- The NanoHost-private attempt projection is the narrow exception for worker route authentication: it retains exactly three nullable lowercase SHA-256 projections for the control, inference, and capability families, never a raw token or a derived sandbox-binding credential.
 
 `work-observations.ts` is the entry point for Turn observation append, validated reads and safe timeline projection using the shared App API presentation bounds. It validates immutable capture admission and separates expected facts from successful evidence publication. `../evidence-bundles.ts` owns restricted body staging, retention and expiry; callers never construct content paths or store bodies in control receipts. Portable consumers reuse the observation parser and existing exact reference maps.
 
@@ -71,6 +71,8 @@ Pending requests live in the Workspace SQLite `pending_requests` family. Canonic
 Snapshot cursors and exact collection receipts (including private candidate bytes) are operational state bound to the source storage attachment and NanoHost scan store. Complete same-deployment backup retains them; portable Workspace export carries the existing output manifests, change sets, reviews, and apply history without importing live scan or replay authority.
 
 Scheduler admission rows carry optional canonical `reasoning_effort` through delayed Worker dispatch. The pre-release Core baseline includes this nullable column; absent values project as an omitted preference. Work observation sampling uses the shared Protocol effort validator rather than a second enum.
+
+Retained scheduler storage selection, backend image lineage, and Worker storage targets permit descriptive additions at their existing readers. Reads preserve the durable JSON bytes and return only validated known fields; unknown core or required semantics remain refusals. Authored storage-selection commands remain exact.
 
 CapabilityCall archives use the ledger’s canonical extension validation to preserve safe stored namespaces across scope remapping and import. Live protocol and App audit projections retain their stricter unknown-namespace omission; this does not add an archive format or a second persistence path.
 

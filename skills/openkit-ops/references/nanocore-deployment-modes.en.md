@@ -10,7 +10,7 @@ NanoCore has one product-mode axis:
 - `local` uses one implicit local user for personal operation and development.
 - `server` protects product APIs with configured authentication for shared or remote operation.
 
-Real Worker Agent execution uses one configured NanoHost RuntimeTarget in both modes. NanoHost owns the stock OpenShell Gateway, private container backend, Runtime Epoch, shared Harness and Sandbox, and private Harness operations. NanoCore owns product admission, Turn leases, AgentSession continuity, durable runtime projections, and public APIs. NanoCore has no worker-runtime, placement, SSH lifecycle, Gateway-forward, direct Gateway, or sandbox-direct endpoint selector.
+Real Worker Agent execution uses one configured NanoHost RuntimeTarget in both modes. NanoHost owns the stock OpenShell Gateway, private container backend, Runtime Epoch, shared Harness and Sandbox, and private Harness operations. NanoCore owns product admission, execution attempts, AgentSession continuity, durable runtime projections, and public APIs. NanoCore has no worker-runtime, placement, SSH lifecycle, Gateway-forward, direct Gateway, or sandbox-direct endpoint selector.
 
 ## Release Images And Container Catalog
 

@@ -12,23 +12,26 @@ import { join } from 'node:path';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-
+import { ensureLocalUser } from '../auth/identity.js';
 import { acquireDataRootLock } from '../bootstrap/lock.js';
 import { FsStore } from '../lib/store.js';
 import {
   cancelSchedulerAdmissionEntry,
   createSchedulerAdmissionEntry,
-  createSchedulerPlacementPlan,
-  createSchedulerSessionLease,
-  ensureConfiguredSchedulerBaseline,
 } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { cleanCancelledAdmissionTaskCheckpoints } from './cancelled-admission-checkpoint-cleanup.js';
+import {
+  bindSchedulerExecutionAttemptSession,
+  closeSchedulerExecutionAttemptWithoutEffects,
+  createSchedulerExecutionAttempt,
+} from './execution-attempt-records.js';
 import { getWorkerCheckpoint, upsertWorkerCheckpoint } from './worker-checkpoints.js';
 
 const ACTOR = { kind: 'user' as const, id: LOCAL_USER_ID };
@@ -47,9 +50,11 @@ function createFixture(): {
   const backupRoot = mkdtempSync(join(tmpdir(), 'openkit-checkpoint-cleanup-backup-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
-  ensureConfiguredSchedulerBaseline(coreDb, { placement: 'local' });
+
   const store = new FsStore({ dataRoot });
   const workspace = store.createWorkspace('Checkpoint cleanup');
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: LOCAL_USER_ID });
   const thread = store.createThread(workspace.id, 'Checkpoint cleanup thread');
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(workspaceDb);
@@ -103,7 +108,7 @@ function writeFailedCheckpoint(
   });
 }
 
-/** Records one cancelled admission and no lease for a missing Turn. */
+/** Records one cancelled admission and no attempt for a missing Turn. */
 function writeCancelledAdmission(
   coreDb: CoreDb,
   input: {
@@ -115,12 +120,11 @@ function writeCancelledAdmission(
 ): void {
   const queueEntryId = `queue_${input.turnId}`;
   createSchedulerAdmissionEntry(coreDb, {
-    priorityClass: 'interactive',
+    backendId: 'nanohost',
     profileRef: 'agent_codex_host',
     queueEntryId,
     requestId: input.requestId,
     requestedAgentId: 'agent_codex_host',
-    requiredPoolConstraints: ['openshell.local'],
     threadId: input.threadId,
     triggerActor: ACTOR,
     turnId: input.turnId,
@@ -133,7 +137,7 @@ function writeCancelledAdmission(
   });
 }
 
-/** Records one admitted lease that failed before Turn persistence. */
+/** Records one admitted attempt that failed before Turn persistence. */
 function writeStartFailureLease(
   coreDb: CoreDb,
   input: {
@@ -144,57 +148,39 @@ function writeStartFailureLease(
   }
 ): void {
   const queueEntryId = `queue_${input.turnId}`;
-  createSchedulerAdmissionEntry(coreDb, {
-    priorityClass: 'interactive',
+  const entry = createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
     profileRef: 'agent_codex_host',
     queueEntryId,
     requestId: input.requestId,
     requestedAgentId: 'agent_codex_host',
-    requiredPoolConstraints: ['openshell.local'],
     threadId: input.threadId,
     triggerActor: ACTOR,
     turnId: input.turnId,
     turnInput: 'Start failed before Turn persistence.',
     workspaceId: input.workspaceId,
   });
-  createSchedulerPlacementPlan(coreDb, {
-    degradedOptionalFeatures: [],
-    expectedControlMode: 'poll',
-    expectedDataPlaneMode: 'openshell-files',
-    heartbeatIntervalMs: 10_000,
-    heartbeatTimeoutMs: 30_000,
-    planId: `plan_${input.turnId}`,
-    plannedLeaseDurationMs: 900_000,
-    policyDecisionIds: [],
-    queueEntryId,
-    schedulerEpoch: 1,
-    selectedPoolId: 'pool_local',
-    selectedTargetId: 'target_local',
+  createSchedulerExecutionAttempt(coreDb, {
+    entry,
+    attemptId: `lease_${input.turnId}`,
+    preparationInput: { admission: entry },
   });
-  createSchedulerSessionLease(coreDb, {
+  bindSchedulerExecutionAttemptSession(coreDb, {
+    attemptId: `lease_${input.turnId}`,
     agentSessionId: `as_${input.turnId}`,
-    expiresAt: '2099-01-01T01:00:00.000Z',
-    heartbeatDeadline: '2099-01-01T00:10:00.000Z',
-    leaseId: `lease_${input.turnId}`,
-    packageSnapshotId: `aepsnap_${input.turnId}`,
-    planId: `plan_${input.turnId}`,
-    sandboxTokenBindingRef: `lease-binding:lease_${input.turnId}`,
-    startupDeadline: '2099-01-01T00:05:00.000Z',
   });
-  coreDb.sqlite
-    .prepare(
-      `UPDATE scheduler_session_leases
-       SET status = 'failed', release_reason = 'turn-start-failed', recovery_state = 'needs-evidence'
-       WHERE lease_id = ?`
-    )
-    .run(`lease_${input.turnId}`);
+  // No preparation or backend operation occurred in this missing-Turn fixture.
+  closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+    attemptId: `lease_${input.turnId}`,
+    cause: 'turn-start-failed',
+    noOutstandingEffects: true,
+  });
 }
 
 /** Reads scheduler rows that this cleanup must preserve. */
 function schedulerSnapshot(dataRoot: string): {
   readonly admissions: unknown[];
-  readonly capacity: unknown[];
-  readonly leases: unknown[];
+  readonly attempts: unknown[];
 } {
   const coreDb = openCoreDb(dataRoot);
   try {
@@ -205,18 +191,13 @@ function schedulerSnapshot(dataRoot: string): {
            FROM scheduler_admission_entries ORDER BY queue_entry_id`
         )
         .all(),
-      capacity: coreDb.sqlite
+      attempts: coreDb.sqlite
         .prepare(
-          `SELECT target_id, pool_id, in_use_count, version
-           FROM scheduler_capacity_records ORDER BY target_id, pool_id`
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduler_execution_attempts'"
         )
-        .all(),
-      leases: coreDb.sqlite
-        .prepare(
-          `SELECT lease_id, release_reason, status, turn_id
-           FROM scheduler_session_leases ORDER BY lease_id`
-        )
-        .all(),
+        .get()
+        ? coreDb.sqlite.prepare('SELECT * FROM scheduler_execution_attempts ORDER BY rowid').all()
+        : [],
     };
   } finally {
     coreDb.sqlite.close();
@@ -466,27 +447,22 @@ describe('cancelled-admission Task checkpoint cleanup', () => {
     if (mutate === 'live-lease') {
       fixture.coreDb.sqlite
         .prepare(
-          `UPDATE scheduler_session_leases
-           SET status = 'active', release_reason = NULL, recovery_state = NULL
-           WHERE lease_id = ?`
+          `UPDATE scheduler_execution_attempts
+           SET phase = 'open', terminal_cause = NULL, recovery_state = NULL
+           WHERE attempt_id = ?`
         )
         .run(`lease_${turnId}`);
     }
     if (mutate === 'multiple-leases') {
       fixture.coreDb.sqlite
         .prepare(
-          `INSERT INTO scheduler_session_leases (
-             lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
-             package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
-             heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
-             sandbox_binding_ref, backend_anchor_state, release_reason, recovery_state
+          `INSERT INTO scheduler_execution_attempts (
+             attempt_id, queue_entry_id, backend_id, workspace_id, thread_id, turn_id,
+             preparation_input_json, phase, disposition, terminal_cause, created_at, updated_at
            )
-           SELECT 'lease_extra_' || turn_id, plan_id, workspace_id, thread_id, turn_id,
-                  agent_session_id, package_snapshot_id, pool_id, target_id, status,
-                  acquired_at, expires_at, heartbeat_deadline, startup_deadline, renewal_count,
-                  scheduler_epoch, 'lease-binding:extra_' || turn_id, backend_anchor_state,
-                  release_reason, recovery_state
-           FROM scheduler_session_leases WHERE lease_id = ?`
+           SELECT 'lease_extra_' || turn_id, queue_entry_id, backend_id, workspace_id, thread_id,
+                  turn_id, preparation_input_json, phase, disposition, terminal_cause, created_at, updated_at
+           FROM scheduler_execution_attempts WHERE attempt_id = ?`
         )
         .run(`lease_${turnId}`);
     }
@@ -847,65 +823,6 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
       expect.objectContaining({ decision: 'removed', reason: 'cancelled-admission' }),
     ]);
     expect(readCheckpoint(fixture.dataRoot, identity)).toBeNull();
-  });
-
-  it.each([
-    'workspace_id',
-    'thread_id',
-  ] as const)('refuses a placement plan whose %s disagrees with the proof', async (column) => {
-    const fixture = createFixture();
-    const identity = identityFor(fixture, `turn_plan_${column}`);
-    const requestId = '0190f4c8-0000-7000-8000-000000000999';
-    writeStartFailureLease(fixture.coreDb, { ...identity, requestId });
-    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
-    fixture.coreDb.sqlite
-      .prepare(`UPDATE scheduler_placement_plans SET ${column} = ? WHERE turn_id = ?`)
-      .run(column === 'workspace_id' ? 'ws_foreign' : 'th_foreign', identity.turnId);
-    const plansBefore = fixture.coreDb.sqlite
-      .prepare(
-        `SELECT plan_id, queue_entry_id, workspace_id, thread_id, turn_id
-           FROM scheduler_placement_plans ORDER BY plan_id`
-      )
-      .all();
-    const schedulerBefore = schedulerSnapshot(fixture.dataRoot);
-    const checkpointBefore = getWorkerCheckpoint(
-      fixture.workspaceDb,
-      fixture.workspaceId,
-      fixture.threadId,
-      identity.turnId
-    );
-    closeFixture(fixture);
-
-    const result = await cleanCancelledAdmissionTaskCheckpoints({
-      apply: true,
-      backupRoot: fixture.backupRoot,
-      checkpoints: [identity],
-      dataRoot: fixture.dataRoot,
-    });
-
-    expect(result.removedCount).toBe(0);
-    expect(result.rows).toEqual([
-      expect.objectContaining({
-        decision: 'refused',
-        reason: 'missing-provenance',
-        turnId: identity.turnId,
-      }),
-    ]);
-    expect(readCheckpoint(fixture.dataRoot, identity)).toEqual(checkpointBefore);
-    expect(schedulerSnapshot(fixture.dataRoot)).toEqual(schedulerBefore);
-    const coreDb = openCoreDb(fixture.dataRoot);
-    try {
-      expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT plan_id, queue_entry_id, workspace_id, thread_id, turn_id
-               FROM scheduler_placement_plans ORDER BY plan_id`
-          )
-          .all()
-      ).toEqual(plansBefore);
-    } finally {
-      coreDb.sqlite.close();
-    }
   });
 
   it('refuses a runtime evidence row without using context digest as a shortcut', async () => {

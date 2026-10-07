@@ -78,7 +78,7 @@ const instrumentDigest = digest('unit-f-runner-instrument');
 const privateLineage = Object.freeze({
   agentSessionId: 'agent-session-full-unique-id',
   backendSessionId: 'backend-session-full-unique-id',
-  leaseId: 'lease-full-unique-id',
+  attemptId: 'lease-full-unique-id',
   turnId: 'turn-full-unique-id',
 });
 const secretCanary = 'raw-secret-token-canary';
@@ -459,7 +459,7 @@ function sequencedF1Fixture() {
   const cleanupSnapshot = structuredClone(evidence.final);
   cleanupSnapshot.backends[0].state = 'cleaned';
   cleanupSnapshot.backends[0].physicalCleanedAt = '2026-08-23T00:00:04.000Z';
-  cleanupSnapshot.leases[0].status = 'released';
+  cleanupSnapshot.attempts[0].phase = 'closed';
   cleanupSnapshot.turn = { id: lineage.turnId, status: 'completed' };
   const snapshots = [evidence.before, evidence.adopted, evidence.final];
   const actions = [];
@@ -562,7 +562,7 @@ test('sequences one complete F1 restart and derives lineage and proof from owner
   assert.deepEqual(result.lineage, {
     agentSessionId: fixture.lineage.agentSessionId,
     backendSessionId: 'backend-f1',
-    leaseId: 'lease-f1',
+    attemptId: 'lease-f1',
     turnId: fixture.lineage.turnId,
   });
   assert.equal(result.proof.instrument, instrumentDigest);
@@ -780,12 +780,12 @@ function sequencedBlockedFixture(scenarioId) {
         state: 'launching',
       },
     ],
-    leases: [
+    attempts: [
       {
         agentSessionId: lineage.agentSessionId,
-        leaseId: 'lease-blocked',
-        packageSnapshotId: lineage.packageSnapshotId,
-        status: 'releasing',
+        attemptId: 'lease-blocked',
+        inputRef: lineage.packageSnapshotId,
+        phase: 'closing',
       },
     ],
     runtimeTarget: {
@@ -799,11 +799,11 @@ function sequencedBlockedFixture(scenarioId) {
   const fencedOwner = structuredClone(ownerBefore);
   fencedOwner.backends[0].state = 'cleaned';
   fencedOwner.backends[0].physicalCleanedAt = '2026-08-23T00:00:05.000Z';
-  fencedOwner.leases[0].status = 'released';
+  fencedOwner.attempts[0].phase = 'closed';
   fencedOwner.runtimeEvidence = [{ phase: 'teardown' }];
   fencedOwner.turn = { id: lineage.turnId, status: 'failed' };
-  const capacityReleasedOwner = structuredClone(fencedOwner);
-  capacityReleasedOwner.turn = { id: lineage.turnId, status: 'running' };
+  const fencedWithIndependentOutcome = structuredClone(fencedOwner);
+  fencedWithIndependentOutcome.turn = { id: lineage.turnId, status: 'running' };
   const cleanedOwner = structuredClone(fencedOwner);
   const state = {
     coreStarted: false,
@@ -924,7 +924,7 @@ function sequencedBlockedFixture(scenarioId) {
       }
       if (recoveryStarts === 2) {
         state.successorFailed = true;
-        return structuredClone(scenarioId === 'F4' ? fencedOwner : capacityReleasedOwner);
+        return structuredClone(scenarioId === 'F4' ? fencedOwner : fencedWithIndependentOutcome);
       }
       if (scenarioId === 'F4' && state.faultDelivered) return structuredClone(ownerBefore);
       return structuredClone(ownerBefore);
@@ -1060,7 +1060,7 @@ for (const scenarioId of ['F2', 'F3', 'F4']) {
     assert.deepEqual(result.lineage, {
       agentSessionId: fixture.lineage.agentSessionId,
       backendSessionId: fixture.backendSessionId,
-      leaseId: 'lease-blocked',
+      attemptId: 'lease-blocked',
       turnId: fixture.lineage.turnId,
     });
     assert.equal(result.proof.instrument, instrumentDigest);
@@ -1589,7 +1589,7 @@ function f1ContinuationEvidence() {
     ],
     items: [{ fingerprint: 'item-original', id: 'item-original', type: 'user-message' }],
   };
-  const snapshot = (sequences, leaseSequence, projectionOwners, overrides = {}) => ({
+  const snapshot = (sequences, attemptSequence, projectionOwners, overrides = {}) => ({
     backends: [
       {
         agentSessionId: lineage.agentSessionId,
@@ -1599,18 +1599,19 @@ function f1ContinuationEvidence() {
     ],
     events: sequences.map((sequence) => ({ event: { type: 'worker.output' }, sequence })),
     finalStatus: null,
-    leases: [
+    attempts: [
       {
         agentSessionId: lineage.agentSessionId,
-        lastWorkerSequence: leaseSequence,
-        leaseId: 'lease-f1',
-        packageSnapshotId: lineage.packageSnapshotId,
+        lastWorkerSequence: attemptSequence,
+        attemptId: 'lease-f1',
+        phase: 'open',
+        inputRef: lineage.packageSnapshotId,
         workerProcessKeyHash: 'process-key-f1',
       },
     ],
     projectionCounts: {
       activeBackend: 1,
-      activeLease: 1,
+      activeAttempt: 1,
       workerReady: 1,
     },
     projectionOwners,
@@ -1658,18 +1659,19 @@ function f1ContinuationEvidence() {
   });
   const final = snapshot([1, 2, 5], 1, finalOwners, {
     finalStatus: { sequence: 5, status: 'completed' },
-    leases: [
+    attempts: [
       {
         agentSessionId: lineage.agentSessionId,
         lastWorkerSequence: 1,
-        leaseId: 'lease-f1',
-        packageSnapshotId: lineage.packageSnapshotId,
+        attemptId: 'lease-f1',
+        phase: 'open',
+        inputRef: lineage.packageSnapshotId,
         workerProcessKeyHash: 'process-key-f1',
       },
     ],
     projectionCounts: {
       activeBackend: 0,
-      activeLease: 0,
+      activeAttempt: 0,
       workerReady: 1,
     },
     runtimeEvidence: [{ phase: 'teardown' }],
@@ -1730,13 +1732,13 @@ test('accepts batched monotonic F1 successor progress', () => {
   evidence.final.projectionOwners.capabilityCalls.splice(2, 0, resumedCapability);
   evidence.final.projectionOwners.inference.splice(1, 0, resumedInference);
   evidence.adopted.events.push({ event: { type: 'worker.output' }, sequence: 3 });
-  evidence.adopted.leases[0].lastWorkerSequence = 2;
+  evidence.adopted.attempts[0].lastWorkerSequence = 2;
   evidence.final.events = [
     ...structuredClone(evidence.adopted.events),
     { event: { type: 'turn.completed' }, sequence: 6 },
   ];
   evidence.final.finalStatus.sequence = 6;
-  evidence.final.leases[0].lastWorkerSequence = 2;
+  evidence.final.attempts[0].lastWorkerSequence = 2;
   evidence.final.projectionOwners.items[1].id = 'it_worker_turn-f1_4';
   evidence.final.projectionOwners.items[1].transcriptSequence = 4;
   evidence.final.projectionOwners.items[2].artifactId = 'worker-artifact-snapshot-f1-5';
@@ -1797,9 +1799,9 @@ for (const intervention of [
   },
   {
     mutate(evidence) {
-      evidence.adopted.leases[0].lastWorkerSequence = 0;
+      evidence.adopted.attempts[0].lastWorkerSequence = 0;
     },
-    name: 'heartbeat lease sequence did not advance',
+    name: 'heartbeat attempt sequence did not advance',
   },
   {
     mutate(evidence) {
@@ -1963,7 +1965,7 @@ test('adjudicates the exact four Unit F scenarios and one aggregate from complet
     assert.equal(scenario.baseline.pre, scenario.baseline.post);
     assert.equal(scenario.lineage.agentSession, digest(privateLineage.agentSessionId));
     assert.equal(scenario.lineage.backendSession, digest(privateLineage.backendSessionId));
-    assert.equal(scenario.lineage.lease, digest(privateLineage.leaseId));
+    assert.equal(scenario.lineage.attempt, digest(privateLineage.attemptId));
     assert.equal(scenario.lineage.turn, digest(privateLineage.turnId));
   }
   assert.deepEqual(result.aggregate, {

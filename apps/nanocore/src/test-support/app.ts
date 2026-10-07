@@ -41,6 +41,8 @@ export function createApp(options: CreateAppOptions = {}): ReturnType<typeof cre
   const providerSupportsDefaultGateway =
     !options.providerRegistry ||
     options.providerRegistry.get('agent-openrouter')?.models.includes('openai/gpt-5.2') === true;
+  const turnExecutor =
+    options.turnExecutor ?? new SimulatedTurnExecutor({ coreDb: options.coreDb });
   return createNanoCoreApp({
     ...(ownsRuntimeConfig && providerSupportsDefaultGateway
       ? { gatewayConfig: createTestGatewayConfig() }
@@ -48,8 +50,8 @@ export function createApp(options: CreateAppOptions = {}): ReturnType<typeof cre
     ...(ownsRuntimeConfig && !options.providerRegistry
       ? { providerRegistry: defaultProviderRegistry }
       : {}),
-    turnExecutor: new SimulatedTurnExecutor(),
     ...options,
+    turnExecutor,
   });
 }
 

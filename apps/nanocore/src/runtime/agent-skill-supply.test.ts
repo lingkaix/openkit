@@ -105,13 +105,18 @@ describe('release-declared catalog Skill supply', () => {
       throw new Error('Unexpected backend effect');
     });
     const backend: WorkerGovernanceBackend = {
+      id: 'nanohost',
+      submit: unexpectedBackendCall,
+      inspect: unexpectedBackendCall,
+      cancel: unexpectedBackendCall,
+      release: unexpectedBackendCall,
       describeCapabilities: unexpectedBackendCall,
       validatePackage: unexpectedBackendCall,
       planSession: unexpectedBackendCall,
       prepareAgentSessionContinuity: unexpectedBackendCall,
       cleanupSession: unexpectedBackendCall,
       materialize: unexpectedBackendCall,
-      launch: unexpectedBackendCall,
+      prepareLaunch: unexpectedBackendCall,
       update: unexpectedBackendCall,
       collectEvidence: unexpectedBackendCall,
       collectProviderRefreshStatuses: unexpectedBackendCall,

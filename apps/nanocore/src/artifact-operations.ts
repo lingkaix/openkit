@@ -501,30 +501,53 @@ export function createArtifactOperationImplementations(
                 stage: 'preparing',
                 iteration: 0,
               });
-              const followUpTurn = await startModeWorkerTurn({
-                store,
-                triggerActor: { kind: 'user', id: actorId },
-                workspaceId,
-                threadId: review.sourceThreadId,
-                prompt,
-                requestId: workerRequestId,
-                requestedAgentId: review.sourceAgentId,
-                reservedTurnId: followUpTurnId,
-              });
-              updateWorkerCheckpoint(workspaceDb, {
-                authorityActor: followUpTurn.triggerActor,
-                workspaceId,
-                threadId: review.sourceThreadId,
-                turnId: followUpTurnId,
-                stage:
-                  followUpTurn.status === 'completed'
-                    ? 'completed'
-                    : followUpTurn.status === 'cancelled'
-                      ? 'aborted'
-                      : followUpTurn.status === 'failed' || followUpTurn.status === 'interrupted'
-                        ? 'failed'
-                        : 'running_worker',
-                workerSessionId: followUpTurn.agentSessionId ?? null,
+              const sourceThreadId = review.sourceThreadId;
+              const sourceAgentId = review.sourceAgentId;
+              let accepted = false;
+              await new Promise<void>((resolve, reject) => {
+                void startModeWorkerTurn({
+                  store,
+                  triggerActor: { kind: 'user', id: actorId },
+                  ...(context.kind === 'public' ? { requestActor: context.actor } : {}),
+                  workspaceId,
+                  threadId: sourceThreadId,
+                  prompt,
+                  requestId: workerRequestId,
+                  requestedAgentId: sourceAgentId,
+                  reservedTurnId: followUpTurnId,
+                  onTurnCreated: () => {
+                    accepted = true;
+                    resolve();
+                  },
+                })
+                  .then((followUpTurn) => {
+                    const completionDb = openReceiptDb(workspaceId);
+                    try {
+                      updateWorkerCheckpoint(completionDb, {
+                        authorityActor: followUpTurn.triggerActor,
+                        workspaceId,
+                        threadId: sourceThreadId,
+                        turnId: followUpTurnId,
+                        stage:
+                          followUpTurn.status === 'completed'
+                            ? 'completed'
+                            : followUpTurn.status === 'cancelled'
+                              ? 'aborted'
+                              : followUpTurn.status === 'failed' ||
+                                  followUpTurn.status === 'interrupted'
+                                ? 'failed'
+                                : 'running_worker',
+                        workerSessionId: followUpTurn.agentSessionId ?? null,
+                      });
+                    } finally {
+                      completionDb.sqlite.close();
+                    }
+                  })
+                  .catch((error: unknown) => {
+                    if (accepted)
+                      console.error('artifact_review_follow_up_closeout_failed_after_admission');
+                    else reject(error);
+                  });
               });
               assertArtifactReviewFollowUpProof({
                 coreDb,
@@ -730,7 +753,7 @@ function assertArtifactReviewFollowUpProof(input: {
   }
   const admissions = listSchedulerAdmissionEntriesForWorkspace(input.coreDb, {
     workspaceId: input.review.workspaceId,
-    statuses: ['admitted'],
+    statuses: ['queued', 'admitted'],
   }).filter((entry) => entry.turnId === turnId);
   if (
     turn.workspaceId !== input.review.workspaceId ||

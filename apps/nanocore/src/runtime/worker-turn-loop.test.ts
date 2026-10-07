@@ -7,9 +7,15 @@ import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { serializeStructuredWorkerDelegationRequest } from '../internal-agents/delegation.js';
+import { SimulatedTurnExecutor } from '../lib/simulator.js';
+import { ALREADY_DECIDED_PUBLICATION_ADMISSION } from '../lib/store.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { createSchedulerPlacementPlan, createSchedulerSessionLease } from '../scheduler-records.js';
+import {
+  cancelSchedulerAdmissionEntry,
+  createSchedulerAdmissionEntry,
+  requireSchedulerAdmissionEntry,
+} from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -18,22 +24,31 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import {
+  admitTestNativeEnvironment,
+  recordTestNativeRuntimeTarget,
+} from '../test-support/native-environment.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import * as attempts from './execution-attempt-records.js';
+import { bindNanoHostAttemptPreparation } from './nanohost-attempt-records.js';
 import {
   createNanoHostHarnessRuntime,
   openNanoHostAgentSessionBinding,
 } from './nanohost-harness-records.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { startProductTurn } from './product-turn-start.js';
+import type { TurnStartRuntimeContext } from './types.js';
 import {
   clearWorkerCheckpoint,
   getWorkerCheckpoint,
   updateWorkerCheckpoint,
 } from './worker-checkpoints.js';
-import { WorkerGovernanceCapacityUnavailableError } from './worker-governance-backend.js';
 import { resolveInterruptedWorkerRetryDecision } from './worker-recovery.js';
 import type { RunWorkerTurnLoopInput, WorkerTurnLoopStartWorkerInput } from './worker-turn-loop.js';
-import { runWorkerTurnLoop } from './worker-turn-loop.js';
+import { bindWorkerCheckpointToPreparedSession, runWorkerTurnLoop } from './worker-turn-loop.js';
 
 /**
  * Opens a migrated Core database for worker-turn loop tests.
@@ -484,73 +499,187 @@ function admittedWorker(
 ) {
   return async ({ turnId, prepared, onAdmitted }: WorkerTurnLoopStartWorkerInput) => {
     const manifest = createTestAgentSetup().manifest;
-    await startProductTurn({
-      coreDb,
-      store,
-      triggerActor: { kind: 'user', id: actorId },
-      requestActor,
-      snapshot: createInMemoryRuntimeConfigSnapshot({
-        agentManifests: [manifest],
-        dataRoot: null,
-        gatewayConfig: createTestGatewayConfig(),
-        providerRegistry: new ProviderRegistry([
-          {
-            id: 'agent-openrouter',
-            displayName: 'Fixture',
-            kind: 'local',
-            baseUrl: 'http://127.0.0.1:11434/v1',
-            defaultModel: 'openai/gpt-5.2',
-            models: ['openai/gpt-5.2'],
-            modelMetadata: { 'openai/gpt-5.2': { temperature: false } },
-          },
-        ]),
-      }),
-      schedulerEpoch: 1,
-      workerPlacement: 'local',
-      providerCredentialResolver: () => null,
-      reservedTurnId: turnId,
-      cancelDeferredAdmission: true,
-      input: {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        agentId: manifest.id,
-        requestId,
-        input: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
-      },
-      onTurnCreated: (created, sessionId) => {
-        onAdmitted(created, sessionId);
-        hooks.observe?.(created, sessionId);
-      },
-      turnExecutor: {
-        capabilities: {},
-        eventFamilies: [],
-        prepareAgentSessionForTurn: async () => {
-          hooks.prepare?.();
-          const current = store
-            .listThreadAgentSessions('ws_demo', 'th_demo')
-            .find((session) => session.id === agentSessionId);
-          return {
-            agentSessionId,
-            sessionCompatibilityKey: 'sha256:fixture',
-            currentAgentSession: current
-              ? {
-                  agentId: current.agentId,
-                  id: current.id,
-                  policySnapshotId: current.policySnapshotId,
-                  sessionCompatibilityKey: current.sessionCompatibilityKey,
-                  stale: current.stale,
-                  status: current.status,
-                  updatedAt: current.updatedAt,
-                }
-              : null,
-            replacementRequired: false,
-          };
-        },
-        startTurn: async (_store: unknown, id: string) => {
+    admitTestNativeEnvironment(coreDb, manifest);
+    recordTestNativeRuntimeTarget(coreDb);
+    const executor = new SimulatedTurnExecutor({ coreDb });
+    let workerFailure: unknown;
+    let workerCompletion: Promise<void> | undefined;
+    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    executor.prepareAgentSessionForTurn = async () => {
+      hooks.prepare?.();
+      return {
+        agentSessionId,
+        sessionCompatibilityKey: 'sha256:fixture',
+        currentAgentSession: null,
+        replacementRequired: false,
+      };
+    };
+    executor.commitPreparedAgentSessionForTurn = async (_store, input) => {
+      bindNanoHostAttemptPreparation(coreDb, {
+        attemptId: input.attemptId,
+        agentSessionId,
+        inputRef: `aepsnap_${turnId}_${agentSessionId}`,
+        bindingRef: `worker-loop:${input.attemptId}`,
+        sessionCompatibilityKey: input.prepared.sessionCompatibilityKey,
+      });
+      return undefined;
+    };
+    executor.startTurn = (_store, id, prompt, context?: TurnStartRuntimeContext) => {
+      workerCompletion = (async () => {
+        const turn = store.getTurnById(id);
+        bindWorkerCheckpointToPreparedSession({
+          coreDb,
+          workspaceDb: db,
+          store,
+          workspaceId: turn.workspaceId,
+          threadId: turn.threadId,
+          turnId: id,
+          requestId,
+          agentSessionId,
+          attemptId: context!.attemptId!,
+        });
+        hooks.observe?.(store.getTurnById(id), agentSessionId);
+        const environmentPackage = resolveAgentEnvironmentPackage({
+          coreDb,
+          agentSessionId,
+          agentSetup: context!.agentSetup!,
+          backend: { kind: 'openshell' },
+          createdAt: new Date().toISOString(),
+          requestId,
+          turn,
+          turnInput: prompt,
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [],
+        });
+        recordAgentEnvironmentPackageSnapshot(db, {
+          environmentPackage,
+          createdAt: new Date().toISOString(),
+        });
+        const submitted = attempts.recordSchedulerExecutionOperation(coreDb, {
+          attemptId: context!.attemptId!,
+          operationId: `worker-loop:${id}`,
+          submission: true,
+        });
+        attempts.acceptSchedulerExecutionObservation(
+          coreDb,
+          await executor.submit({
+            ...attempts.schedulerExecutionCorrelation(submitted),
+            deadline: submitted.deadline!,
+          })
+        );
+        context!.onSubmissionSettled?.();
+        try {
           await hooks.execute?.(id);
+        } catch (error) {
+          workerFailure = error;
+          throw error;
+        }
+        const existing = store
+          .listThreadAgentSessions(turn.workspaceId, turn.threadId)
+          .find((session) => session.id === agentSessionId);
+        if (!existing)
+          store.createAgentSession({
+            id: agentSessionId,
+            agentId: manifest.id,
+            workspaceId: turn.workspaceId,
+            threadId: turn.threadId,
+            status: 'idle',
+            message: null,
+            sessionCompatibilityKey: context!.sessionCompatibilityKey!,
+            environmentPackageSnapshotId: environmentPackage.snapshotId,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          });
+        const terminal = store.updateTurn(id, {
+          status: 'completed',
+          agentSessionId,
+          completedAt: new Date().toISOString(),
+        });
+        store.emitTurnEvent(
+          id,
+          {
+            event: 'turn.completed',
+            requestId,
+            workspaceId: turn.workspaceId,
+            threadId: turn.threadId,
+            turnId: id,
+            data: { type: 'turn-completed', stopReason: 'completed', turn: terminal },
+          },
+          ALREADY_DECIDED_PUBLICATION_ADMISSION
+        );
+        // This controlled executor owns no physical process or additional output/collection streams.
+        const closing = attempts.markSchedulerExecutionAttemptClosing(coreDb, {
+          attemptId: submitted.attemptId,
+          cause: 'turn-completed',
+        });
+        const proof = {
+          terminalHandoff: true,
+          output: true,
+          evidence: true,
+          outsideWorkspaceCollection: true,
+          integrationDrain: true,
+          routesRevoked: true,
+        } as const;
+        const correlation = attempts.schedulerExecutionCorrelation(closing);
+        const released = await executor.release({ ...correlation, proof });
+        attempts.closeSchedulerExecutionAttemptWithFence(coreDb, {
+          correlation,
+          proof,
+          fenceRef: released.fenceRef!,
+        });
+      })();
+      return workerCompletion;
+    };
+    try {
+      const completed = await startProductTurn({
+        coreDb,
+        store,
+        triggerActor: { kind: 'user', id: actorId },
+        requestActor,
+        snapshot: createInMemoryRuntimeConfigSnapshot({
+          agentManifests: [manifest],
+          dataRoot: null,
+          gatewayConfig: createTestGatewayConfig(),
+          providerRegistry: new ProviderRegistry([
+            {
+              id: 'agent-openrouter',
+              displayName: 'Fixture',
+              kind: 'local',
+              baseUrl: 'http://127.0.0.1:11434/v1',
+              defaultModel: 'openai/gpt-5.2',
+              models: ['openai/gpt-5.2'],
+              modelMetadata: { 'openai/gpt-5.2': { temperature: false } },
+            },
+          ]),
+        }),
+        providerCredentialResolver: () => null,
+        reservedTurnId: turnId,
+        input: {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          agentId: manifest.id,
+          requestId,
+          input: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
         },
-      } as never,
-    });
+        onTurnCreated: (created, sessionId) => {
+          expect(sessionId).toBeNull();
+          onAdmitted(created, sessionId);
+          store.recordCommandRequest({
+            command: 'turn.start',
+            requestId,
+            inputHash: `fixture:${requestId}`,
+            scope: { actorId, workspaceId: created.workspaceId, threadId: created.threadId },
+            response: { kind: 'turn', id: created.id },
+          });
+        },
+        turnExecutor: executor,
+      });
+      if (workerCompletion) await workerCompletion;
+      if (workerFailure) throw workerFailure;
+      expect(completed.turn.status, JSON.stringify(completed.turn.error)).toBe('completed');
+    } finally {
+      db.sqlite.close();
+    }
     return { workerSessionId: agentSessionId };
   };
 }
@@ -679,11 +808,23 @@ it.each([
                 createdAt: at,
                 updatedAt: at,
               });
-              store.updateTurn(turnId, {
+              const terminal = store.updateTurn(turnId, {
                 status: 'interrupted',
                 agentSessionId: sessionId,
                 completedAt: at,
               });
+              store.emitTurnEvent(
+                turnId,
+                {
+                  event: 'turn.completed',
+                  requestId: 'req_interrupted',
+                  workspaceId: 'ws_demo',
+                  threadId: 'th_demo',
+                  turnId,
+                  data: { type: 'turn-completed', stopReason: 'aborted', turn: terminal },
+                },
+                ALREADY_DECIDED_PUBLICATION_ADMISSION
+              );
               throw error;
             },
           }
@@ -697,15 +838,34 @@ it.each([
       stopReason: null,
       workerSessionId: sessionId,
     });
-    if (failure !== 'authority-denial')
-      coreDb.sqlite
-        .prepare(
-          "UPDATE scheduler_session_leases SET status='released', recovery_state=NULL, release_reason='scheduler-restart-backend-cleanup' WHERE turn_id=?"
-        )
-        .run(checkpoint.turnId);
+    if (failure !== 'authority-denial') {
+      const row = attempts.listSchedulerExecutionAttemptsForTurn(coreDb, {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: checkpoint.turnId,
+      })[0]!;
+      const correlation = attempts.schedulerExecutionCorrelation(row);
+      const proof = {
+        terminalHandoff: true,
+        output: true,
+        evidence: true,
+        outsideWorkspaceCollection: true,
+        integrationDrain: true,
+        routesRevoked: true,
+      } as const;
+      const released = await new SimulatedTurnExecutor({ coreDb }).release({
+        ...correlation,
+        proof,
+      });
+      attempts.closeSchedulerExecutionAttemptWithFence(coreDb, {
+        correlation,
+        proof,
+        fenceRef: released.fenceRef!,
+      });
+    }
     if (failure === 'incomplete-lease')
       coreDb.sqlite
-        .prepare('UPDATE scheduler_session_leases SET agent_session_id=? WHERE turn_id=?')
+        .prepare('UPDATE scheduler_execution_attempts SET agent_session_id=? WHERE turn_id=?')
         .run('as_wrong', checkpoint.turnId);
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
@@ -723,7 +883,13 @@ it.each([
           reopenedWorkspace,
           checkpoint
         ).status
-      ).toBe(failure === 'restart-cleanup' ? 'eligible' : 'recovery-required');
+      ).toBe(
+        failure === 'restart-cleanup'
+          ? 'eligible'
+          : failure === 'authority-denial'
+            ? 'stale'
+            : 'recovery-required'
+      );
       await expect(
         classifyDirectTaskCheckpointAfterSchedulerRecovery({
           coreDb: reopenedCore,
@@ -924,27 +1090,12 @@ it('removes only its live never-leased cancelled preparation and retains cancell
         prepare: () => preparedWorkerTurn(false),
         reservedTurnId: 'tu_cancelled',
         reserveTurn: () => ({ turnId: 'tu_cancelled' }),
-        startWorker: admittedWorker(
-          coreDb,
-          store,
-          'req_cancelled',
-          'as_unused',
-          'user_local',
-          undefined,
-          {
-            prepare: () => {
-              throw new WorkerGovernanceCapacityUnavailableError();
-            },
-            execute: async () => {
-              throw new Error('Never leased work must not launch.');
-            },
-          }
-        ),
+        startWorker: cancelledWorker(coreDb, 'req_cancelled'),
         awaitWorker: () => {
           throw new Error('No worker outcome exists.');
         },
       })
-    ).rejects.toMatchObject({ code: 'scheduler_admission_deferred', status: 409 });
+    ).rejects.toThrow('Controlled pre-admission preparation refusal.');
     expect(
       coreDb.sqlite
         .prepare('SELECT status FROM scheduler_admission_entries WHERE request_id=?')
@@ -955,12 +1106,7 @@ it('removes only its live never-leased cancelled preparation and retains cancell
       independent
     );
     expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
-    for (const table of [
-      'scheduler_placement_plans',
-      'scheduler_session_leases',
-      'worker_backend_sessions',
-      'worker_control_records',
-    ])
+    for (const table of ['worker_backend_sessions', 'worker_control_records'])
       expect(coreDb.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).toEqual({
         count: 0,
       });
@@ -977,8 +1123,30 @@ it('removes only its live never-leased cancelled preparation and retains cancell
   }
 });
 
+/** Cancels exact never-attempted intent before product publication; no Native effects exist. */
+function cancelledWorker(coreDb: CoreDb, requestId: string) {
+  return ({ turnId, prepared }: WorkerTurnLoopStartWorkerInput): never => {
+    const entry = createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
+      queueEntryId: `queue_cancel_${turnId}`,
+      requestId,
+      turnId,
+      threadId: 'th_demo',
+      workspaceId: 'ws_demo',
+      requestedAgentId: createTestAgentSetup().manifest.id,
+      triggerActor: { kind: 'user', id: 'user_local' },
+      turnInput: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
+    });
+    cancelSchedulerAdmissionEntry(coreDb, {
+      queueEntryId: entry.queueEntryId,
+      workspaceId: entry.workspaceId,
+    });
+    throw new Error('Controlled pre-admission preparation refusal.');
+  };
+}
+
 /**
- * Builds a real loop, scheduler and storage invocation with one pre-lease capacity refusal.
+ * Builds a real loop, scheduler and storage invocation with one controlled pre-admission preparation refusal.
  * @param coreDb Core admission owner.
  * @param workspaceDb Workspace checkpoint owner.
  * @param store Canonical product history owner.
@@ -1006,19 +1174,7 @@ function cancelledLoopInput(
     reserveTurn: () => ({ turnId: 'tu_refusal' }),
     startWorker: async (input) => {
       try {
-        return await admittedWorker(
-          coreDb,
-          store,
-          'req_refusal',
-          'as_unused',
-          'user_local',
-          undefined,
-          {
-            prepare: () => {
-              throw new WorkerGovernanceCapacityUnavailableError();
-            },
-          }
-        )(input);
+        return cancelledWorker(coreDb, 'req_refusal')(input);
       } catch (error) {
         mutate();
         throw error;
@@ -1031,7 +1187,6 @@ function cancelledLoopInput(
 }
 
 it.each([
-  'plan',
   'lease',
   'turn',
   'global-turn',
@@ -1055,42 +1210,25 @@ it.each([
       BEFORE UPDATE OF status ON scheduler_admission_entries WHEN NEW.status='cancelled'
       BEGIN SELECT RAISE(ABORT, 'Cancellation storage failure'); END`);
   const input = cancelledLoopInput(coreDb, workspaceDb, store, () => {
-    if (kind === 'plan' || kind === 'lease') {
+    if (kind === 'lease') {
       const row = coreDb.sqlite
         .prepare('SELECT queue_entry_id AS id FROM scheduler_admission_entries WHERE turn_id=?')
         .get('tu_refusal') as { id: string };
       coreDb.sqlite
         .prepare("UPDATE scheduler_admission_entries SET status='queued' WHERE queue_entry_id=?")
         .run(row.id);
-      createSchedulerPlacementPlan(coreDb, {
-        degradedOptionalFeatures: [],
-        expectedControlMode: 'poll',
-        expectedDataPlaneMode: 'openshell-files',
-        heartbeatIntervalMs: 10000,
-        heartbeatTimeoutMs: 30000,
-        planId: 'plan_refusal',
-        plannedLeaseDurationMs: 900000,
-        policyDecisionIds: [],
-        queueEntryId: row.id,
-        schedulerEpoch: 1,
-        selectedPoolId: 'pool_local',
-        selectedTargetId: 'target_local',
+      recordTestExecutionAttempt(coreDb, {
+        entry: requireSchedulerAdmissionEntry(coreDb, row.id),
+        attemptId: 'attempt_refusal',
+        agentSessionId: 'as_refusal',
+        inputRef: 'aepsnap_refusal',
+        bindingRef: 'attempt-binding:refusal',
+        sessionCompatibilityKey: `sha256:${'b'.repeat(64)}`,
+        now: () => at,
       });
-      if (kind === 'lease')
-        createSchedulerSessionLease(coreDb, {
-          agentSessionId: 'as_refusal',
-          expiresAt: '2099-01-01T01:00:00.000Z',
-          heartbeatDeadline: '2099-01-01T00:10:00.000Z',
-          leaseId: 'lease_refusal',
-          packageSnapshotId: 'aepsnap_refusal',
-          planId: 'plan_refusal',
-          sandboxTokenBindingRef: 'lease-binding:refusal',
-          startupDeadline: '2099-01-01T00:05:00.000Z',
-        });
       coreDb.sqlite
         .prepare("UPDATE scheduler_admission_entries SET status='cancelled' WHERE queue_entry_id=?")
         .run(row.id);
-      if (kind === 'lease') coreDb.sqlite.prepare('DELETE FROM scheduler_placement_plans').run();
     }
     if (kind === 'turn' || kind === 'global-turn') {
       const threadId =
@@ -1151,7 +1289,7 @@ it.each([
     if (kind === 'backend')
       coreDb.sqlite
         .prepare(`INSERT INTO worker_backend_sessions (
-        lease_id, workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id, backend_kind, deployment_id,
+        attempt_id, workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id, backend_kind, deployment_id,
         backend_session_id, staging_directory_ref, workspace_handoff_state, state, created_at, updated_at, origin_physical_epoch
         ) VALUES ('lease_refusal', 'ws_demo', 'th_demo', 'tu_refusal', 'as_refusal', 'aepsnap_refusal', 'openshell', 'deployment',
         'backend', 'staging', 'pending', 'materializing', ?, ?, ?)`)
@@ -1189,10 +1327,22 @@ it.each([
   try {
     if (kind === 'rollback')
       await expect(runWorkerTurnLoop(input)).rejects.toThrow('Workspace removal failure');
-    else
-      await expect(runWorkerTurnLoop(input)).rejects.toMatchObject({
-        code: 'scheduler_admission_deferred',
-      });
+    else await expect(runWorkerTurnLoop(input)).rejects.toThrow();
+    if (kind === 'lease') {
+      // Retained execution contradicts the cancelled admission's no-execution claim.
+      // Placement plans have no successor relation; keep the exact attempt/admission link.
+      const exists = coreDb.sqlite
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduler_execution_attempts'"
+        )
+        .get();
+      expect(exists, 'This fault must positively retain execution evidence.').toBeDefined();
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT turn_id FROM scheduler_execution_attempts WHERE turn_id = ?')
+          .all('tu_refusal')
+      ).toEqual([{ turn_id: 'tu_refusal' }]);
+    }
     expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_refusal')).toEqual(before!);
     expect(before!).toMatchObject({ stage: 'preparing', workerSessionId: null, stopReason: null });
     expect(
@@ -1243,9 +1393,7 @@ it('cancelled request replay cannot prepare or launch again after checkpoint rem
   const coreDb = createCoreDb();
   const workspaceDb = createWorkspaceDb(coreDb);
   const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-  await expect(
-    runWorkerTurnLoop(cancelledLoopInput(coreDb, workspaceDb, store))
-  ).rejects.toMatchObject({ code: 'scheduler_admission_deferred' });
+  await expect(runWorkerTurnLoop(cancelledLoopInput(coreDb, workspaceDb, store))).rejects.toThrow();
   workspaceDb.sqlite.close();
   coreDb.sqlite.close();
   const reopenedCore = openCoreDb(coreDb.dataRoot);
@@ -1281,21 +1429,30 @@ it.each([
   const workspaceDb = createWorkspaceDb(coreDb);
   const store = createDemoStore({ dataRoot: coreDb.dataRoot });
   try {
-    await expect(
-      runWorkerTurnLoop(cancelledLoopInput(coreDb, workspaceDb, store))
-    ).rejects.toMatchObject({ code: 'scheduler_admission_deferred' });
-    // Retain another actor or command's cancelled admission under its distinct queue and Turn identity.
-    coreDb.sqlite
-      .prepare(
-        "UPDATE scheduler_admission_entries SET queue_entry_id='queue_other', turn_id='tu_other', trigger_actor_json=?"
-      )
-      .run(JSON.stringify({ kind: 'user', id: actorId }));
+    // Request UUID alone is not command identity: actor and Thread scope remain exact.
+    const unrelated = createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
+      queueEntryId: 'queue_other',
+      requestId: 'req_refusal',
+      turnId: 'tu_other',
+      threadId: actorId === 'user_local' ? 'th_other' : 'th_demo',
+      workspaceId: 'ws_demo',
+      requestedAgentId: createTestAgentSetup().manifest.id,
+      triggerActor: { kind: 'user', id: actorId },
+      turnInput: serializeStructuredWorkerDelegationRequest(
+        preparedWorkerTurn(false).delegationRequest
+      ),
+    });
+    cancelSchedulerAdmissionEntry(coreDb, {
+      queueEntryId: unrelated.queueEntryId,
+      workspaceId: unrelated.workspaceId,
+    });
     const other = coreDb.sqlite
       .prepare("SELECT * FROM scheduler_admission_entries WHERE turn_id='tu_other'")
       .get();
     await expect(
       runWorkerTurnLoop(cancelledLoopInput(coreDb, workspaceDb, store))
-    ).rejects.toMatchObject({ code: 'scheduler_admission_deferred' });
+    ).rejects.toThrow();
     expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_refusal')).toBeNull();
     expect(
       coreDb.sqlite
@@ -1356,9 +1513,7 @@ it('process loss after durable cancellation leaves preparation for fail-closed r
     expect(getWorkerCheckpoint(reopenedWorkspace, 'ws_demo', 'th_demo', 'tu_refusal')).toEqual(
       before
     );
-    expect(
-      reopenedCore.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_session_leases').get()
-    ).toEqual({ count: 0 });
+
     expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
   } finally {
     reopenedWorkspace.sqlite.close();

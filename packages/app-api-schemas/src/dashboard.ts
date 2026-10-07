@@ -158,18 +158,10 @@ export const CancelSchedulerAdmissionResponseSchema = z.object({
 /** Product-safe scheduler admission status returned by App API read models. */
 export const SchedulerAdmissionStatusSchema = z.enum(['queued', 'denied']);
 
-/** Product-safe scheduler admission priority class returned by App API read models. */
-export const SchedulerAdmissionPriorityClassSchema = z.enum([
-  'interactive',
-  'automation',
-  'maintenance',
-]);
-
 /** Product-safe typed scheduler admission denial reason. */
 export const SchedulerAdmissionDenialReasonSchema = z.enum([
   'queue-full',
-  'policy-cap',
-  'no-compatible-pool',
+  'authority-denied',
   'invalid-request',
 ]);
 
@@ -183,11 +175,7 @@ export const SchedulerAdmissionReadModelSchema = z.object({
   requestedAgentId: z.string().min(1),
   profileRef: z.string().min(1).nullable(),
   modelId: z.string().min(1).nullable(),
-  priorityClass: SchedulerAdmissionPriorityClassSchema,
   enqueuedAt: TimestampSchema,
-  effectivePriorityAt: TimestampSchema,
-  firstCapDeferredAt: TimestampSchema.nullable(),
-  requiredPoolConstraints: z.array(z.string().min(1)),
   status: SchedulerAdmissionStatusSchema,
   denialReason: SchedulerAdmissionDenialReasonSchema.nullable(),
   queuePosition: z.number().int().positive().nullable(),

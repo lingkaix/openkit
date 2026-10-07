@@ -37,17 +37,14 @@ import {
 } from './runtime/openkit-generative-mcp.js';
 import type { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
-import {
-  createSchedulerAdmissionEntry,
-  createSchedulerPlacementPlan,
-  createSchedulerSessionLease,
-} from './scheduler-records.js';
+import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { openExistingAppDb } from './storage/app-db.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { registerWorkerMcpRoutes } from './worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -414,7 +411,8 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
     workspaceIds: [],
     expiresAt: '2099-01-01T00:00:00.000Z',
   });
-  createSchedulerAdmissionEntry(f.coreDb, {
+  const entry = createSchedulerAdmissionEntry(f.coreDb, {
+    backendId: 'nanohost',
     queueEntryId: 'queue_operation',
     requestId: 'request_operation',
     triggerActor: turn.triggerActor,
@@ -424,32 +422,16 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
     turnId: turn.id,
     turnInput: 'Operation invariant',
     requestedAgentId: environmentPackage.agent.agentId,
-    priorityClass: 'interactive',
-    requiredPoolConstraints: [],
   });
-  createSchedulerPlacementPlan(f.coreDb, {
-    planId: 'plan_operation',
-    queueEntryId: 'queue_operation',
-    selectedPoolId: 'pool_test',
-    selectedTargetId: 'target_test',
-    plannedLeaseDurationMs: 900_000,
-    heartbeatIntervalMs: 10_000,
-    heartbeatTimeoutMs: 30_000,
-    expectedControlMode: 'poll',
-    expectedDataPlaneMode: 'openshell-files',
-    degradedOptionalFeatures: [],
-    policyDecisionIds: [],
-    schedulerEpoch: 1,
-  });
-  createSchedulerSessionLease(f.coreDb, {
-    leaseId: 'lease_operation',
-    planId: 'plan_operation',
+  recordTestExecutionAttempt(f.coreDb, {
+    entry,
+    attemptId: 'lease_operation',
     agentSessionId: 'as_operation',
-    packageSnapshotId: environmentPackage.snapshotId,
-    expiresAt: '2099-01-01T00:00:00.000Z',
-    heartbeatDeadline: '2099-01-01T00:00:00.000Z',
-    startupDeadline: '2099-01-01T00:00:00.000Z',
-    sandboxTokenBindingRef: 'binding_operation',
+    inputRef: environmentPackage.snapshotId,
+    bindingRef: 'binding_operation',
+    sessionCompatibilityKey: 'operation-projection-session',
+    now: () => new Date().toISOString(),
+    operationId: 'submit_operation',
   });
   const mcp = new Hono();
   registerWorkerMcpRoutes({

@@ -88,7 +88,6 @@ export const SchedulerAdmissionHumanAttentionSourceSchema = z
     threadId: z.string().min(1),
     turnId: z.string().min(1),
     requestedAgentId: z.string().min(1),
-    priorityClass: z.enum(['interactive', 'automation', 'maintenance']),
   })
   .strict();
 
@@ -108,18 +107,17 @@ export const WorkerControlRejectionHumanAttentionSourceSchema = z
   })
   .strict();
 
-/** Stable reference to one scheduler orphan-worker evidence source. */
-export const SchedulerOrphanWorkerHumanAttentionSourceSchema = z
+/** Exact execution attempt authority behind an unresolved worker attention row. */
+export const ExecutionAttemptHumanAttentionSourceSchema = z
   .object({
-    type: z.literal('scheduler_orphan_worker'),
-    evidenceId: z.string().min(1),
-    leaseId: z.string().min(1),
+    type: z.literal('execution_attempt'),
+    attemptId: z.string().min(1),
+    backendId: z.string().min(1),
+    phase: z.enum(['open', 'closing', 'closed']),
+    disposition: z.enum(['not_accepted', 'accepted', 'unknown']),
     workspaceId: z.string().min(1),
     threadId: z.string().min(1),
     turnId: z.string().min(1),
-    packageSnapshotId: z.string().min(1),
-    reason: z.string().min(1),
-    schedulerEpoch: z.number().int().nonnegative(),
   })
   .strict();
 
@@ -201,7 +199,7 @@ export const HumanAttentionSourceSchema = z.discriminatedUnion('type', [
   ApprovalHumanAttentionSourceSchema,
   SchedulerAdmissionHumanAttentionSourceSchema,
   WorkerControlRejectionHumanAttentionSourceSchema,
-  SchedulerOrphanWorkerHumanAttentionSourceSchema,
+  ExecutionAttemptHumanAttentionSourceSchema,
   WorkerCheckpointHumanAttentionSourceSchema,
   AgentReadinessHumanAttentionSourceSchema,
   ArtifactReviewHumanAttentionSourceSchema,

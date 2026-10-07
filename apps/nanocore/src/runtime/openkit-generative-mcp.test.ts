@@ -6,14 +6,11 @@ import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { describe, expect, it } from 'vitest';
 import { ensureLocalUser } from '../auth/identity.js';
-import {
-  createSchedulerAdmissionEntry,
-  createSchedulerPlacementPlan,
-  createSchedulerSessionLease,
-} from '../scheduler-records.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
@@ -58,13 +55,14 @@ const SCHEMA: LightAppSchemaInput = {
   ],
 };
 
-/** Records the exact lease/package authority used by the selected Worker projection. */
+/** Records the exact attempt/package authority used by the selected Worker projection. */
 function workerAuthority(dataRoot: string, turnId: string) {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-  createSchedulerAdmissionEntry(coreDb, {
+  const entry = createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
     queueEntryId: 'queue_test',
     requestId: 'request_test',
     triggerActor: { kind: 'user', id: 'user_local' },
@@ -73,32 +71,15 @@ function workerAuthority(dataRoot: string, turnId: string) {
     turnId,
     turnInput: 'Proof',
     requestedAgentId: 'agent_codex_host',
-    priorityClass: 'interactive',
-    requiredPoolConstraints: [],
   });
-  createSchedulerPlacementPlan(coreDb, {
-    planId: 'plan_test',
-    queueEntryId: 'queue_test',
-    selectedPoolId: 'pool_test',
-    selectedTargetId: 'target_test',
-    plannedLeaseDurationMs: 900000,
-    heartbeatIntervalMs: 10000,
-    heartbeatTimeoutMs: 30000,
-    expectedControlMode: 'poll',
-    expectedDataPlaneMode: 'openshell-files',
-    degradedOptionalFeatures: [],
-    policyDecisionIds: [],
-    schedulerEpoch: 1,
-  });
-  createSchedulerSessionLease(coreDb, {
-    leaseId: 'lease_test',
-    planId: 'plan_test',
+  recordTestExecutionAttempt(coreDb, {
+    entry,
+    attemptId: 'lease_test',
     agentSessionId: 'session_demo',
-    packageSnapshotId: 'package_test',
-    expiresAt: '2999-01-01T00:00:00.000Z',
-    heartbeatDeadline: '2999-01-01T00:00:00.000Z',
-    startupDeadline: '2999-01-01T00:00:00.000Z',
-    sandboxTokenBindingRef: 'binding_test',
+    inputRef: 'package_test',
+    bindingRef: 'binding_test',
+    sessionCompatibilityKey: 'generative-test',
+    now: () => new Date().toISOString(),
   });
   return coreDb;
 }

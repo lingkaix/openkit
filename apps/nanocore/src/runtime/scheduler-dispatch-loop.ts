@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { ActivateWorkerEnvironmentResponseSchema } from '@openkit/app-api-schemas';
 import type {
   GatewayConfig,
   UserConfig,
@@ -6,29 +7,39 @@ import type {
   WorkspaceDataSourceCatalog,
   WorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
-import { TurnSchema } from '@openkit/protocol';
+import { responsibleUserIdForActor, type TurnSchema } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { AgentManifest } from '../agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from '../agents/readiness.js';
 import { resolveAgentSetup } from '../agents/setup-resolver.js';
+import { deriveArtifactReviewWorkerRequestId } from '../artifact-reviews.js';
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
-import type { FsStore } from '../lib/store.js';
+import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
+import { type FsStore, StoreRecordNotFoundError } from '../lib/store.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import {
-  cancelSchedulerAdmissionEntry,
-  completeSchedulerTurnLease,
   denySchedulerAdmissionEntry,
-  dispatchNextSchedulerEntry,
   findNextDispatchableSchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
+  requireSchedulerAdmissionEntry,
   type SchedulerAdmissionEntryRecord,
-  type SchedulerDispatchResult,
 } from '../scheduler-records.js';
-import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
+import {
+  type CoreDb,
+  listExistingWorkspaceDatabaseScopes,
+  openWorkspaceDb,
+} from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
-import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
-import { resolveAgentSessionCompatibilityKey } from './agent-environment.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
+import {
+  bindSchedulerExecutionAttemptSession,
+  closeSchedulerExecutionAttemptWithoutEffects,
+  createSchedulerExecutionAttempt,
+  markSchedulerExecutionAttemptClosing,
+  requireSchedulerExecutionAttempt,
+  type SchedulerExecutionAttemptRecord,
+} from './execution-attempt-records.js';
+import type { ExecutionBackend } from './execution-backend.js';
 import {
   type StartTurnDependencies,
   startTurn,
@@ -36,137 +47,76 @@ import {
   TurnStartValidationError,
   workspaceSourceRefsFromAgentManifest,
 } from './orchestrator.js';
+import {
+  assistantPendingOutcomeSourceHash,
+  listThreadPendingRequests,
+} from './pending-requests.js';
 import { generateUuidV7 } from './session-id.js';
-import type {
-  PrepareAgentSessionForTurnInput,
-  PreparedAgentSessionForTurn,
-  TurnExecutor,
-} from './types.js';
+import type { PrepareAgentSessionForTurnInput, TurnExecutor } from './types.js';
 import { WorkerGovernanceCapacityUnavailableError } from './worker-governance-backend.js';
+import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 
-/** Input for one scheduler dispatch loop run. */
+/** Current composition and the exact selected admission; no placement or native proof policy lives here. */
 export interface RunSchedulerDispatchLoopInput {
-  /** Available agent manifests used by start-turn orchestration. */
   agentManifests: AgentManifest[];
-  /** Open Core database handle. */
   coreDb: CoreDb;
-  /** Exact synchronous caller admission whose in-flight outcome may be joined. */
   callerQueueEntryId?: string;
-  /** Deterministic AgentSession id factory for tests. */
   createAgentSessionId?: () => string;
-  /** Deterministic lease id factory for tests. */
-  createLeaseId?: () => string;
-  /** Deterministic plan id factory for tests. */
-  createPlanId?: () => string;
-  /** Optional orchestration dependencies. */
+  createAttemptId?: () => string;
   dependencies?: StartTurnDependencies;
-  /** Expected worker control mode for placement plans. */
-  expectedControlMode: string;
-  /** Expected worker data-plane mode for placement plans. */
-  expectedDataPlaneMode: string;
-  /** Heartbeat interval in milliseconds. */
-  heartbeatIntervalMs: number;
-  /** Heartbeat timeout in milliseconds. */
-  heartbeatTimeoutMs: number;
-  /** Lease duration in milliseconds. */
-  leaseDurationMs: number;
-  /** Maximum turns to dispatch in this loop run. */
   maxDispatches?: number;
-  /** Optional deterministic clock. */
   now?: () => string;
-  /** Provider registry used by start-turn orchestration. */
   providerRegistry: ProviderRegistry;
-  /** Gateway logical model catalog used by setup composition. */
   gatewayConfig: GatewayConfig;
-  /** Workspace Agent composition inventory used by setup resolution. */
   workspaceConfigs?: readonly { workspaceId: string; config: WorkspaceConfig }[];
-  /** Personal Agent preference inventory used by setup resolution. */
   userConfigs?: readonly { userId: string; config: UserConfig }[];
-  /** Scheduler epoch recorded on placement and lease records. */
-  schedulerEpoch: number;
-  /** Startup timeout in milliseconds. */
-  startupTimeoutMs: number;
-  /** File-backed product store. */
   store: FsStore;
-  /** Runtime executor used to start worker turns. */
   turnExecutor: TurnExecutor;
-  /** Runtime config snapshot version captured for started turns. */
+  executionBackend: ExecutionBackend;
   configVersion?: number | null;
-  /** Workspace data source catalogs available for queued turns. */
   workspaceDataSourceCatalogs?: readonly {
-    readonly workspaceId: string;
-    readonly catalog: WorkspaceDataSourceCatalog;
+    workspaceId: string;
+    catalog: WorkspaceDataSourceCatalog;
   }[];
-  /** Workspace MCP server catalogs available for queued turns. */
   workspaceMcpServerCatalogs?: readonly {
-    readonly workspaceId: string;
-    readonly catalog: WorkspaceMcpServerCatalog;
+    workspaceId: string;
+    catalog: WorkspaceMcpServerCatalog;
   }[];
-  /**
-   * Optional callback once Turn and resolved setup are durable, carrying the validated lease AgentSession; the owning dispatcher invokes it before executor start, and a late join observes that same binding immediately.
-   *
-   * Product callers must filter this to the exact requested admission Turn.
-   */
   onTurnCreated?: (turn: z.infer<typeof TurnSchema>, agentSessionId: string) => void;
-  /** Reports the admission owning subsequent failures, or null during shared acquisition. */
   onDispatchAttribution?: (queueEntryId: string | null) => void;
 }
 
-/** One turn started by a scheduler dispatch loop run. */
+/** One exact acquisition and its existing executor's full closeout. */
 export interface SchedulerDispatchLoopStartedTurn {
-  /** Dispatch result that acquired the lease. */
-  dispatch: Extract<SchedulerDispatchResult, { status: 'dispatched' }>;
-  /** Start-turn handle returned by the orchestrator. */
+  dispatch: {
+    status: 'dispatched';
+    entry: SchedulerAdmissionEntryRecord;
+    attempt: SchedulerExecutionAttemptRecord;
+  };
   handle: TurnHandle;
 }
 
-/** Result of one scheduler dispatch loop run. */
+/** Backend busy remains accepted queued work; another Thread's fence is not a global admission veto. */
 export interface SchedulerDispatchLoopResult {
-  /** Started turns in dispatch order. */
   startedTurns: SchedulerDispatchLoopStartedTurn[];
-  /** Result that stopped the loop. */
-  terminalResult: Exclude<SchedulerDispatchResult, { status: 'dispatched' }> | LoopLimitResult;
+  terminalResult:
+    | {
+        status: 'queued';
+        reason:
+          | 'no-queued-entry'
+          | 'thread-busy'
+          | 'backend-busy'
+          | 'entry-publication-pending'
+          | 'max-dispatches';
+      }
+    | { status: 'denied'; entry: SchedulerAdmissionEntryRecord };
 }
 
-interface LoopLimitResult {
-  /** Loop stopped because it reached maxDispatches. */
-  readonly status: 'queued';
-  /** Stable loop stop reason. */
-  readonly reason: 'max-dispatches';
-}
-
-/** Outcome of one exact admission attempt, including shared-acquisition attribution. */
-type SchedulerPreparationOutcome =
-  | {
-      readonly result: SchedulerDispatchLoopResult;
-      readonly error?: never;
-      readonly attributedQueueEntryId: string | null;
-    }
-  | {
-      readonly result?: never;
-      readonly error: unknown;
-      readonly attributedQueueEntryId: string | null;
-    };
-
-/** In-flight attempt and Turn-created subscribers for its synchronous caller. */
-interface SchedulerPreparationClaim {
-  readonly outcome: Promise<SchedulerPreparationOutcome>;
-  readonly turnCreatedListeners: Set<NonNullable<RunSchedulerDispatchLoopInput['onTurnCreated']>>;
-  createdTurn?: { turn: z.infer<typeof TurnSchema>; agentSessionId: string };
-}
-
-/** Non-durable preparation ownership shared by all dispatch paths for one data root. */
-export type SchedulerPreparationClaims = Map<string, SchedulerPreparationClaim>;
-
+/** Existing process-local invocation claim joins full closeout; no receipt, result, or claim survives its attempt. */
+export type SchedulerPreparationClaims = Map<string, Promise<SchedulerDispatchLoopResult>>;
 const preparationClaimsByDataRoot = new Map<string, SchedulerPreparationClaims>();
 
-/**
- * Returns the one process-local claim owner for an absolute Core data root.
- *
- * Every dispatch run uses this data-root accessor as its sole claim owner. Distinct test databases have distinct data roots and cannot share claims.
- * @param coreDb Core database whose data root owns dispatch.
- * @returns In-flight claims only; no result or claim survives its attempt.
- */
+/** Returns the existing single-flight preparation owner for this Core data root. */
 export function getSchedulerPreparationClaims(coreDb: CoreDb): SchedulerPreparationClaims {
   let claims = preparationClaimsByDataRoot.get(coreDb.dataRoot);
   if (!claims) {
@@ -176,361 +126,458 @@ export function getSchedulerPreparationClaims(coreDb: CoreDb): SchedulerPreparat
   return claims;
 }
 
-/**
- * Joins only the synchronous caller's exact admission and preserves the attempt's error attribution.
- */
-async function waitForSchedulerPreparation(
-  input: RunSchedulerDispatchLoopInput,
-  claim: SchedulerPreparationClaim
-): Promise<SchedulerDispatchLoopResult> {
-  input.onDispatchAttribution?.(input.callerQueueEntryId ?? null);
-  if (input.onTurnCreated) {
-    if (claim.createdTurn)
-      input.onTurnCreated(claim.createdTurn.turn, claim.createdTurn.agentSessionId);
-    else claim.turnCreatedListeners.add(input.onTurnCreated);
-  }
-  const outcome = await claim.outcome;
-  input.onDispatchAttribution?.(outcome.attributedQueueEntryId);
-  if ('error' in outcome) throw outcome.error;
-  return outcome.result;
-}
-
-/**
- * Dispatches queued scheduler entries and starts their worker turns through the normal orchestrator.
- *
- * @param input Dispatch loop input.
- * @returns Started turns plus the result that stopped this loop run.
- * @throws DeterministicAgentPreparationError after cancelling the exact pre-lease admission; capacity and transient dependency failures leave it queued.
- */
+/** Dispatches eligible FIFO work through an attempt persisted before its preparation effects. */
 export async function runSchedulerDispatchLoop(
   input: RunSchedulerDispatchLoopInput
 ): Promise<SchedulerDispatchLoopResult> {
-  const maxDispatches = input.maxDispatches ?? 1;
-  const startedTurns: SchedulerDispatchLoopStartedTurn[] = [];
-
   const claims = getSchedulerPreparationClaims(input.coreDb);
-  while (startedTurns.length < maxDispatches) {
-    const ownClaim = input.callerQueueEntryId ? claims.get(input.callerQueueEntryId) : undefined;
-    if (ownClaim) return waitForSchedulerPreparation(input, ownClaim);
-    const queuedEntries = listQueuedSchedulerAdmissionEntries(input.coreDb);
-    const staleEntry = queuedEntries.find(
-      (entry) =>
-        !currentSchedulerAdmissionWorkspaceAuthority(input.coreDb, entry, 'runtime.launch', true)
+  const joined = input.callerQueueEntryId ? claims.get(input.callerQueueEntryId) : undefined;
+  if (joined) return joined;
+  // Preparation is single-flight. Keep its invocation promise through closeout so product observers cannot mistake a terminal row for finished output and backend handoff.
+  if (
+    [...claims.keys()].some((queueEntryId) =>
+      input.coreDb.sqlite
+        .prepare(
+          "SELECT 1 FROM scheduler_execution_attempts WHERE queue_entry_id = ? AND phase = 'open' AND operation_id IS NULL"
+        )
+        .get(queueEntryId)
+    )
+  )
+    return { startedTurns: [], terminalResult: { status: 'queued', reason: 'thread-busy' } };
+  const startedTurns: SchedulerDispatchLoopStartedTurn[] = [];
+  const unpublishedQueueEntryIds = new Set<string>();
+  for (let count = 0; count < (input.maxDispatches ?? 1); count++) {
+    const entry = findNextDispatchableSchedulerAdmissionEntry(
+      input.coreDb,
+      unpublishedQueueEntryIds
     );
-    const selectedEntry = staleEntry ?? findNextDispatchableSchedulerAdmissionEntry(input.coreDb);
-    if (selectedEntry && claims.has(selectedEntry.queueEntryId)) {
-      // A scheduled pass leaves the claimed FIFO head to its owner and retries on the existing timer.
-      return { startedTurns, terminalResult: { status: 'queued', reason: 'thread-busy' } };
-    }
-    if (staleEntry) {
-      return {
-        startedTurns,
-        terminalResult: {
-          status: 'denied',
-          entry: denySchedulerAdmissionEntry(input.coreDb, {
-            queueEntryId: staleEntry.queueEntryId,
-            denialReason: 'policy-cap',
-          }),
-        },
-      };
-    }
-    const entry = selectedEntry;
-    if (!entry) {
+    if (!entry)
       return {
         startedTurns,
         terminalResult: {
           status: 'queued',
-          reason: queuedEntries.length === 0 ? 'no-queued-entry' : 'thread-busy',
+          reason: unpublishedQueueEntryIds.size
+            ? 'entry-publication-pending'
+            : listQueuedSchedulerAdmissionEntries(input.coreDb).length
+              ? 'thread-busy'
+              : 'no-queued-entry',
         },
       };
-    }
-    let complete!: (outcome: SchedulerPreparationOutcome) => void;
-    const outcome = new Promise<SchedulerPreparationOutcome>((resolve) => {
-      complete = resolve;
-    });
-    const claim: SchedulerPreparationClaim = {
-      outcome,
-      turnCreatedListeners: new Set(),
-    };
-    claims.set(entry.queueEntryId, claim);
-    let attributedQueueEntryId: string | null = null;
-    try {
-      const result = await dispatchSchedulerAdmission(
-        {
-          ...input,
-          onDispatchAttribution: (queueEntryId) => {
-            attributedQueueEntryId = queueEntryId;
-            input.onDispatchAttribution?.(queueEntryId);
-          },
-          onTurnCreated: (turn, agentSessionId) => {
-            claim.createdTurn = { turn, agentSessionId };
-            input.onTurnCreated?.(turn, agentSessionId);
-            for (const listener of claim.turnCreatedListeners) listener(turn, agentSessionId);
-            claim.turnCreatedListeners.clear();
-          },
-        },
-        entry,
-        claims
-      );
-      complete({ result, attributedQueueEntryId });
-      startedTurns.push(...result.startedTurns);
-      if (
-        result.terminalResult.status !== 'queued' ||
-        result.terminalResult.reason !== 'max-dispatches'
-      ) {
-        return { startedTurns, terminalResult: result.terminalResult };
-      }
-    } catch (error) {
-      // Resolve rather than reject: a background failure need not have a synchronous waiter.
-      complete({ error, attributedQueueEntryId });
-      throw error;
-    }
-  }
-  return { startedTurns, terminalResult: { status: 'queued', reason: 'max-dispatches' } };
-}
-
-/** Runs one claimed admission through the existing preparation, durable lease, and Turn-start owners. */
-async function dispatchSchedulerAdmission(
-  input: RunSchedulerDispatchLoopInput,
-  entry: SchedulerAdmissionEntryRecord,
-  claims: SchedulerPreparationClaims
-): Promise<SchedulerDispatchLoopResult> {
-  try {
-    const startedTurns: SchedulerDispatchLoopStartedTurn[] = [];
-    input.onDispatchAttribution?.(entry.queueEntryId);
-    const freshAgentSessionId = (input.createAgentSessionId ?? generateUuidV7)();
-    const timestamp = input.now?.() ?? new Date().toISOString();
-    const responsibleUserId =
-      entry.triggerActor.kind === 'user'
-        ? entry.triggerActor.id
-        : entry.triggerActor.responsibleUserId;
-    const workspaceConfig = input.workspaceConfigs?.find(
-      (candidate) => candidate.workspaceId === entry.workspaceId
-    )?.config;
-    const userConfig = input.userConfigs?.find(
-      (candidate) => candidate.userId === responsibleUserId
-    )?.config;
-    const workspaceRoots = entry.workspaceRoots;
-    const workspaceDataSourceCatalog = input.workspaceDataSourceCatalogs?.find(
-      (candidate) => candidate.workspaceId === entry.workspaceId
-    )?.catalog;
-    const workspaceMcpServerCatalog = input.workspaceMcpServerCatalogs?.find(
-      (candidate) => candidate.workspaceId === entry.workspaceId
-    )?.catalog;
-    let futureTurn = TurnSchema.parse({
-      completedAt: null,
-      configVersion: input.configVersion ?? null,
-      durationMs: null,
-      error: null,
-      id: entry.turnId,
-      items: [],
-      startedAt: timestamp,
-      status: 'running',
-      threadId: entry.threadId,
-      triggerActor: entry.triggerActor,
-      workspaceId: entry.workspaceId,
-    });
-    let workspaceSourceRefs: ReturnType<typeof workspaceSourceRefsFromAgentManifest>;
-    let prepareInput: PrepareAgentSessionForTurnInput;
-    let preparedAgentSession: PreparedAgentSessionForTurn;
-    try {
-      const setup = resolveDispatchAgentSetup(
-        input,
-        entry.requestedAgentId,
-        entry.profileRef,
-        entry.modelId,
-        entry.workspaceId,
-        workspaceConfig,
-        userConfig
-      );
-      const reasoningEffort = entry.reasoningEffort ?? setup.manifest.models.reasoningEffort;
-      futureTurn = TurnSchema.parse({
-        ...futureTurn,
-        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-      });
-      workspaceSourceRefs = workspaceSourceRefsFromAgentManifest(setup.manifest, workspaceRoots);
-      prepareInput = {
-        agentSetup: setup,
-        freshAgentSessionId,
-        requestId: entry.requestId,
-        turn: futureTurn,
-        turnInput: entry.turnInput,
-        ...(entry.workerStorageChoice ? { workerStorageChoice: entry.workerStorageChoice } : {}),
-        workspaceCwd: entry.workspaceCwd,
-        workspaceRoots,
-        ...(workspaceDataSourceCatalog ? { workspaceDataSourceCatalog } : {}),
-        ...(workspaceMcpServerCatalog ? { workspaceMcpServerCatalog } : {}),
-        ...(workspaceSourceRefs ? { workspaceSourceRefs } : {}),
-      };
-      preparedAgentSession = input.turnExecutor.prepareAgentSessionForTurn
-        ? await input.turnExecutor.prepareAgentSessionForTurn(input.store, prepareInput)
-        : prepareFreshAgentSessionWithoutRuntimeOwner(input, prepareInput);
-    } catch (error) {
-      if (error instanceof WorkerGovernanceCapacityUnavailableError) {
-        return {
-          startedTurns,
-          terminalResult: { status: 'queued', reason: 'capacity-saturated' },
-        };
-      }
-      if (error instanceof DeterministicAgentPreparationError) {
-        cancelSchedulerAdmissionEntry(input.coreDb, {
-          queueEntryId: entry.queueEntryId,
-          workspaceId: entry.workspaceId,
-        });
-      }
-      throw error;
-    }
-    if (!currentSchedulerAdmissionWorkspaceAuthority(input.coreDb, entry, 'runtime.launch', true)) {
+    if (claims.has(entry.queueEntryId))
+      return { startedTurns, terminalResult: { status: 'queued', reason: 'thread-busy' } };
+    if (!currentSchedulerAdmissionWorkspaceAuthority(input.coreDb, entry, 'runtime.launch', true))
       return {
         startedTurns,
         terminalResult: {
           status: 'denied',
           entry: denySchedulerAdmissionEntry(input.coreDb, {
             queueEntryId: entry.queueEntryId,
-            denialReason: 'policy-cap',
+            denialReason: 'authority-denied',
           }),
         },
       };
+    if (entry.backendId !== input.executionBackend.id)
+      throw new Error('Queued admission does not name the configured execution backend.');
+    // An incomplete cross-store publication fences only its own request/Thread. Continue
+    // selecting eligible FIFO work; a receipt gap on A cannot veto independent Thread B.
+    if (!schedulerEntryPublicationComplete(input, entry)) {
+      unpublishedQueueEntryIds.add(entry.queueEntryId);
+      count--;
+      continue;
     }
-    const leaseId = (input.createLeaseId ?? createLeaseId)();
-    input.onDispatchAttribution?.(null);
-    const dispatch = dispatchNextSchedulerEntry(input.coreDb, {
-      agentSessionId: preparedAgentSession.agentSessionId,
-      expectedControlMode: input.expectedControlMode,
-      expectedDataPlaneMode: input.expectedDataPlaneMode,
-      expectedQueueEntryId: entry.queueEntryId,
-      heartbeatIntervalMs: input.heartbeatIntervalMs,
-      heartbeatTimeoutMs: input.heartbeatTimeoutMs,
-      leaseDurationMs: input.leaseDurationMs,
-      leaseId,
-      planId: (input.createPlanId ?? createPlanId)(),
-      sandboxBindingRef: `lease-binding:${leaseId}`,
-      schedulerEpoch: input.schedulerEpoch,
-      sessionCompatibilityKey: preparedAgentSession.sessionCompatibilityKey,
-      startupTimeoutMs: input.startupTimeoutMs,
-      ...(input.now ? { now: input.now } : {}),
+    let acknowledgeSubmission!: (result: SchedulerDispatchLoopResult) => void;
+    let submissionResult: SchedulerDispatchLoopResult | undefined;
+    const submitted = new Promise<SchedulerDispatchLoopResult>((resolve) => {
+      acknowledgeSubmission = (result) => {
+        submissionResult = result;
+        resolve(result);
+      };
     });
-
-    if (dispatch.status !== 'dispatched') {
-      return { startedTurns, terminalResult: dispatch };
-    }
-    input.onDispatchAttribution?.(entry.queueEntryId);
-
-    const store = input.store;
-    try {
-      if (
-        dispatch.entry.queueEntryId !== entry.queueEntryId ||
-        dispatch.lease.agentSessionId !== preparedAgentSession.agentSessionId ||
-        dispatch.lease.sessionCompatibilityKey !== preparedAgentSession.sessionCompatibilityKey
-      ) {
-        throw new TurnStartValidationError(
-          'recovery_required',
-          'Scheduler dispatch changed the prepared AgentSession lineage.',
-          409
-        );
-      }
-      let workerStorageChoice = dispatch.entry.workerStorageChoice ?? undefined;
-      if (input.turnExecutor.commitPreparedAgentSessionForTurn) {
-        const committed = await input.turnExecutor.commitPreparedAgentSessionForTurn(store, {
-          leaseId: dispatch.lease.leaseId,
-          prepared: preparedAgentSession,
-          preparation: prepareInput,
-        });
-        if (committed) {
-          workerStorageChoice = committed;
-        }
-      } else if (preparedAgentSession.replacementRequired) {
-        throw new TurnStartValidationError(
-          'recovery_required',
-          'The runtime cannot commit prepared AgentSession replacement.',
-          409
-        );
-      }
-      if (
-        !currentSchedulerAdmissionWorkspaceAuthority(
-          input.coreDb,
-          dispatch.entry,
-          'runtime.launch',
-          true
+    const promise = dispatchSchedulerAdmission(input, entry, acknowledgeSubmission);
+    claims.set(entry.queueEntryId, promise);
+    const forget = () => {
+      if (claims.get(entry.queueEntryId) === promise) claims.delete(entry.queueEntryId);
+    };
+    void promise.then(forget, forget);
+    const result = await Promise.race([promise, submitted]);
+    if (result === submissionResult)
+      void promise.catch((error: unknown) =>
+        console.error(
+          'scheduler_dispatch_failed_after_admission',
+          error instanceof Error ? error.message : 'unknown'
         )
-      ) {
-        throw new TurnStartValidationError(
-          'workspace_access_denied',
-          'Workspace access denied.',
-          403
-        );
-      }
-      const agentSetupWorkspaceDb = openWorkspaceDb(
-        input.coreDb.dataRoot,
-        dispatch.entry.workspaceId
       );
-      applyScopedMigrations(agentSetupWorkspaceDb);
-      try {
-        const handle = await startTurn({
-          agentId: dispatch.entry.requestedAgentId,
-          agentManifests: input.agentManifests,
-          agentSetupWorkspaceDb,
-          agentSessionId: dispatch.lease.agentSessionId,
-          gatewayConfig: input.gatewayConfig,
-          input: dispatch.entry.turnInput,
-          modelId: dispatch.entry.modelId,
-          ...(futureTurn.reasoningEffort !== undefined
-            ? { reasoningEffort: futureTurn.reasoningEffort }
-            : {}),
-          profileId: dispatch.entry.profileRef,
-          providerRegistry: input.providerRegistry,
-          requestId: dispatch.entry.requestId,
-          sandboxBindingRef: dispatch.lease.sandboxBindingRef,
-          sessionCompatibilityKey: preparedAgentSession.sessionCompatibilityKey,
-          store,
-          threadId: dispatch.entry.threadId,
-          triggerActor: dispatch.entry.triggerActor,
-          turnExecutor: input.turnExecutor,
-          turnId: dispatch.entry.turnId,
-          workspaceCwd: dispatch.entry.workspaceCwd,
-          ...(workerStorageChoice ? { workerStorageChoice } : {}),
-          workspaceId: dispatch.entry.workspaceId,
-          ...(workspaceConfig ? { workspaceConfig } : {}),
-          ...(userConfig ? { userConfig } : {}),
-          workspaceRoots: dispatch.entry.workspaceRoots,
-          ...(workspaceDataSourceCatalog ? { workspaceDataSourceCatalog } : {}),
-          ...(workspaceMcpServerCatalog ? { workspaceMcpServerCatalog } : {}),
-          ...(workspaceSourceRefs ? { workspaceSourceRefs } : {}),
-          ...(input.configVersion !== undefined ? { configVersion: input.configVersion } : {}),
-          ...(input.dependencies ? { dependencies: input.dependencies } : {}),
-          ...(input.onTurnCreated
-            ? {
-                onTurnCreated: (turn: z.infer<typeof TurnSchema>) =>
-                  input.onTurnCreated!(turn, dispatch.lease.agentSessionId),
-              }
-            : {}),
-        });
-        startedTurns.push({ dispatch, handle });
-      } finally {
-        agentSetupWorkspaceDb.sqlite.close();
-      }
-    } catch (error) {
-      completeSchedulerTurnLease(input.coreDb, {
-        workspaceId: dispatch.entry.workspaceId,
-        threadId: dispatch.entry.threadId,
-        turnId: dispatch.entry.turnId,
-        recoveryState: 'needs-evidence',
-        releaseReason: 'turn-start-failed',
-        terminalStatus: 'failed',
-      });
-      throw error;
-    }
-    return { startedTurns, terminalResult: { status: 'queued', reason: 'max-dispatches' } };
+    startedTurns.push(...result.startedTurns);
+    if (
+      result.terminalResult.status !== 'queued' ||
+      result.terminalResult.reason !== 'max-dispatches'
+    )
+      return { startedTurns, terminalResult: result.terminalResult };
+  }
+  return { startedTurns, terminalResult: { status: 'queued', reason: 'max-dispatches' } };
+}
+
+/** Checks the existing receipt or receipt-free source tuple without inventing a second ready flag. */
+function schedulerEntryPublicationComplete(
+  input: RunSchedulerDispatchLoopInput,
+  entry: SchedulerAdmissionEntryRecord
+): boolean {
+  try {
+    const turn = input.store.getTurn(entry.workspaceId, entry.threadId, entry.turnId);
+    if (turn.status !== 'pending' || turn.agentId !== entry.requestedAgentId) return false;
+  } catch (error) {
+    if (error instanceof StoreRecordNotFoundError) return false;
+    throw error;
+  }
+  const workspaceDb = openWorkspaceDb(input.coreDb.dataRoot, entry.workspaceId);
+  try {
+    applyScopedMigrations(workspaceDb);
+    const receipts = workspaceDb.sqlite
+      .prepare(
+        'SELECT response_id AS responseId, response_json AS responseJson FROM idempotency_requests WHERE request_id = ?'
+      )
+      .all(entry.requestId) as Array<{ responseId: string; responseJson: string | null }>;
+    if (
+      receipts.some(
+        (receipt) =>
+          receipt.responseId === entry.turnId ||
+          (receipt.responseJson &&
+            JSON.parse(receipt.responseJson)?.downstream?.turnId === entry.turnId)
+      )
+    )
+      return true;
+    const reviewReceipts = workspaceDb.sqlite
+      .prepare(`SELECT review.decision_request_id AS decisionRequestId FROM artifact_reviews AS review
+      JOIN idempotency_requests AS receipt ON receipt.request_id = review.decision_request_id
+        AND receipt.command_name = 'artifact.review.decide' AND receipt.response_kind = 'artifact_review'
+        AND receipt.response_id = review.review_id
+      WHERE review.workspace_id = ? AND review.source_thread_id = ? AND review.follow_up_turn_id = ?
+        AND review.source_agent_id = ?`)
+      .all(entry.workspaceId, entry.threadId, entry.turnId, entry.requestedAgentId) as Array<{
+      decisionRequestId: string;
+    }>;
+    if (
+      reviewReceipts.some(
+        (receipt) =>
+          deriveArtifactReviewWorkerRequestId(receipt.decisionRequestId) === entry.requestId
+      )
+    )
+      return true;
+    if (assistantOutcomePublicationComplete(input.store, workspaceDb, entry)) return true;
+    if (activationPublicationComplete(input, entry)) return true;
+    const checkpoint = workspaceDb.sqlite
+      .prepare(
+        'SELECT goal_id AS goalId, task_id AS taskId FROM worker_turn_checkpoints WHERE workspace_id = ? AND thread_id = ? AND turn_id = ? AND request_id = ?'
+      )
+      .get(entry.workspaceId, entry.threadId, entry.turnId, entry.requestId) as
+      | { goalId: string | null; taskId: string | null }
+      | undefined;
+    if (checkpoint?.goalId && checkpoint.taskId) return true;
+    return Boolean(
+      workspaceDb.sqlite
+        .prepare(
+          "SELECT 1 FROM pending_requests WHERE workspace_id = ? AND thread_id = ? AND delivery_turn_id = ? AND delivery_cause = 'outcome' LIMIT 1"
+        )
+        .get(entry.workspaceId, entry.threadId, entry.turnId)
+    );
   } finally {
-    claims.delete(entry.queueEntryId);
+    workspaceDb.sqlite.close();
   }
 }
 
-/**
- * Resolves the exact authored setup needed by pre-lease static AEP planning.
- *
- * @throws DeterministicAgentPreparationError for input-bound composition diagnostics; missing model-catalog dependencies retain the existing retry behavior.
- */
+/** Joins an Assistant handoff to its original decided outcome tuple, which has no command receipt. */
+function assistantOutcomePublicationComplete(
+  store: FsStore,
+  workspaceDb: import('../storage/db.js').WorkspaceDb,
+  entry: SchedulerAdmissionEntryRecord
+): boolean {
+  const userId = responsibleUserIdForActor(entry.triggerActor);
+  if (!userId || !entry.requestId?.startsWith('pending_')) return false;
+  let value: unknown;
+  try {
+    value = JSON.parse(entry.turnInput);
+  } catch {
+    return false;
+  }
+  const parsed = StructuredWorkerDelegationRequestSchema.safeParse(value);
+  if (!parsed.success) return false;
+  const itemIds = parsed.data.contextRefs.filter((ref) => ref.kind === 'item').map((ref) => ref.id);
+  if (!itemIds.length) return false;
+  const sources = workspaceDb.sqlite
+    .prepare(`SELECT DISTINCT thread_id AS threadId, delivery_turn_id AS turnId
+    FROM pending_requests WHERE workspace_id = ? AND requester_kind = 'assistant'
+      AND delivery_cause = 'outcome' AND delivery = 'delivered'
+      AND request_item_id IN (${itemIds.map(() => '?').join(',')})`)
+    .all(entry.workspaceId, ...itemIds) as Array<{ threadId: string; turnId: string }>;
+  return sources.some((source) => {
+    const records = listThreadPendingRequests(
+      workspaceDb.sqlite,
+      entry.workspaceId,
+      source.threadId
+    ).filter(
+      (record) => record.deliveryTurnId === source.turnId && record.requesterKind === 'assistant'
+    );
+    if (!records.length || records.some((record) => !itemIds.includes(record.requestItemId)))
+      return false;
+    const turn = store.getTurn(entry.workspaceId, source.threadId, source.turnId);
+    const hash = assistantPendingOutcomeSourceHash(turn, records, userId);
+    return (
+      entry.requestId === `pending_${hash}` &&
+      entry.threadId === `th_task_${hash.slice(0, 24)}` &&
+      entry.turnId === `tu_task_${hash.slice(0, 24)}`
+    );
+  });
+}
+
+/** Resolves the existing administrator-home activation receipt and immutable result for its queued successor. */
+function activationPublicationComplete(
+  input: RunSchedulerDispatchLoopInput,
+  entry: SchedulerAdmissionEntryRecord
+): boolean {
+  for (const workspace of listExistingWorkspaceDatabaseScopes(input.coreDb.dataRoot)) {
+    const db = openWorkspaceDb(input.coreDb.dataRoot, workspace.workspaceId);
+    try {
+      applyScopedMigrations(db);
+      const receipts = db.sqlite
+        .prepare(`SELECT response_id AS artifactId FROM idempotency_requests
+        WHERE command_name = 'worker_environment.activate' AND request_id = ? AND response_kind = 'artifact'
+        AND json_extract(scope_json, '$.actorId') = ?`)
+        .all(entry.requestId, responsibleUserIdForActor(entry.triggerActor)) as Array<{
+        artifactId: string;
+      }>;
+      for (const receipt of receipts) {
+        const artifact = input.store.getArtifact(workspace.workspaceId, receipt.artifactId);
+        if (
+          artifact.content.format !== 'json' ||
+          artifact.lastMutationRequestId !== entry.requestId
+        )
+          continue;
+        const result = ActivateWorkerEnvironmentResponseSchema.safeParse(
+          JSON.parse(artifact.content.body)
+        );
+        if (
+          result.success &&
+          result.data.requestId === entry.requestId &&
+          result.data.replaceNow?.workspaceId === entry.workspaceId &&
+          result.data.replaceNow.threadId === entry.threadId &&
+          result.data.replaceNow.prompt === entry.turnInput &&
+          result.data.target.agentId === entry.requestedAgentId
+        )
+          return true;
+      }
+    } finally {
+      db.sqlite.close();
+    }
+  }
+  return false;
+}
+
+/** Keeps preparation, submission, and Turn closeout with their current executor owner. */
+async function dispatchSchedulerAdmission(
+  input: RunSchedulerDispatchLoopInput,
+  entry: SchedulerAdmissionEntryRecord,
+  acknowledgeSubmission: (result: SchedulerDispatchLoopResult) => void
+): Promise<SchedulerDispatchLoopResult> {
+  input.onDispatchAttribution?.(entry.queueEntryId);
+  const responsibleUserId =
+    entry.triggerActor.kind === 'user'
+      ? entry.triggerActor.id
+      : entry.triggerActor.responsibleUserId;
+  const workspaceConfig = input.workspaceConfigs?.find(
+    (candidate) => candidate.workspaceId === entry.workspaceId
+  )?.config;
+  const userConfig = input.userConfigs?.find(
+    (candidate) => candidate.userId === responsibleUserId
+  )?.config;
+  const workspaceDataSourceCatalog = input.workspaceDataSourceCatalogs?.find(
+    (candidate) => candidate.workspaceId === entry.workspaceId
+  )?.catalog;
+  const workspaceMcpServerCatalog = input.workspaceMcpServerCatalogs?.find(
+    (candidate) => candidate.workspaceId === entry.workspaceId
+  )?.catalog;
+  const attempt = createSchedulerExecutionAttempt(input.coreDb, {
+    entry,
+    attemptId: (input.createAttemptId ?? (() => `attempt_${randomUUID()}`))(),
+    preparationInput: {
+      admission: entry,
+      configVersion: input.configVersion ?? null,
+      manifest: input.agentManifests.find((manifest) => manifest.id === entry.requestedAgentId),
+      workspaceConfig,
+      userConfig,
+      workspaceDataSourceCatalog,
+      workspaceMcpServerCatalog,
+    },
+    ...(input.now ? { now: input.now } : {}),
+  });
+  try {
+    const setup = resolveDispatchAgentSetup(
+      input,
+      entry.requestedAgentId,
+      entry.profileRef,
+      entry.modelId,
+      entry.workspaceId,
+      workspaceConfig,
+      userConfig
+    );
+    const workspaceSourceRefs = workspaceSourceRefsFromAgentManifest(
+      setup.manifest,
+      entry.workspaceRoots
+    );
+    const preparation: PrepareAgentSessionForTurnInput = {
+      attemptId: attempt.attemptId,
+      agentSetup: setup,
+      freshAgentSessionId: (input.createAgentSessionId ?? generateUuidV7)(),
+      requestId: entry.requestId,
+      turn: input.store.getTurnById(entry.turnId),
+      turnInput: entry.turnInput,
+      workspaceCwd: entry.workspaceCwd,
+      workspaceRoots: entry.workspaceRoots,
+      ...(entry.workerStorageChoice ? { workerStorageChoice: entry.workerStorageChoice } : {}),
+      ...(workspaceDataSourceCatalog ? { workspaceDataSourceCatalog } : {}),
+      ...(workspaceMcpServerCatalog ? { workspaceMcpServerCatalog } : {}),
+      ...(workspaceSourceRefs ? { workspaceSourceRefs } : {}),
+    };
+    if (!input.turnExecutor.prepareAgentSessionForTurn)
+      throw new Error('Configured executor has no AgentSession preparation owner.');
+    const prepared = await input.turnExecutor.prepareAgentSessionForTurn(input.store, preparation);
+    bindSchedulerExecutionAttemptSession(input.coreDb, {
+      attemptId: attempt.attemptId,
+      agentSessionId: prepared.agentSessionId,
+    });
+    const committed = await input.turnExecutor.commitPreparedAgentSessionForTurn?.(input.store, {
+      attemptId: attempt.attemptId,
+      prepared,
+      preparation,
+    });
+    if (prepared.replacementRequired && !input.turnExecutor.commitPreparedAgentSessionForTurn)
+      throw new Error('Configured executor has no AgentSession replacement owner.');
+    const current = requireSchedulerAdmissionEntry(input.coreDb, entry.queueEntryId);
+    if (!currentSchedulerAdmissionWorkspaceAuthority(input.coreDb, current, 'runtime.launch', true))
+      throw new TurnStartValidationError(
+        'workspace_access_denied',
+        'Workspace access denied.',
+        403
+      );
+    const workspaceDb = openWorkspaceDb(input.coreDb.dataRoot, entry.workspaceId);
+    try {
+      applyScopedMigrations(workspaceDb);
+      const handle = await startTurn({
+        onSubmissionSettled: () => {
+          const settled = requireSchedulerExecutionAttempt(input.coreDb, attempt.attemptId);
+          // Preparation effects can also be accepted; only submit fixes the absolute deadline.
+          if (
+            settled.phase !== 'open' ||
+            settled.disposition !== 'accepted' ||
+            settled.deadline === null
+          )
+            return;
+          acknowledgeSubmission({
+            startedTurns: [
+              {
+                dispatch: { status: 'dispatched', entry: current, attempt: settled },
+                handle: {
+                  turn: input.store.getTurnById(entry.turnId),
+                  agent: setup.manifest,
+                  agentSetup: setup,
+                  agentSetupRecordId: `ras_${entry.turnId}`,
+                  agentSetupDiagnostics: [],
+                  modelId: setup.logicalModels.preferredLogicalModelId ?? null,
+                  readiness: computeReadiness(setup.manifest),
+                },
+              },
+            ],
+            terminalResult: { status: 'queued', reason: 'max-dispatches' },
+          });
+        },
+        attemptId: attempt.attemptId,
+        agentSessionId: prepared.agentSessionId,
+        agentId: entry.requestedAgentId,
+        agentManifests: input.agentManifests,
+        agentSetupWorkspaceDb: workspaceDb,
+        gatewayConfig: input.gatewayConfig,
+        input: entry.turnInput,
+        modelId: entry.modelId,
+        ...(entry.reasoningEffort !== undefined ? { reasoningEffort: entry.reasoningEffort } : {}),
+        profileId: entry.profileRef,
+        providerRegistry: input.providerRegistry,
+        requestId: entry.requestId,
+        sessionCompatibilityKey: prepared.sessionCompatibilityKey,
+        store: input.store,
+        threadId: entry.threadId,
+        triggerActor: entry.triggerActor,
+        turnExecutor: input.turnExecutor,
+        turnId: entry.turnId,
+        workspaceCwd: entry.workspaceCwd,
+        workerStorageChoice: committed ?? entry.workerStorageChoice ?? undefined,
+        workspaceId: entry.workspaceId,
+        ...(workspaceConfig ? { workspaceConfig } : {}),
+        ...(userConfig ? { userConfig } : {}),
+        workspaceRoots: entry.workspaceRoots,
+        ...(workspaceDataSourceCatalog ? { workspaceDataSourceCatalog } : {}),
+        ...(workspaceMcpServerCatalog ? { workspaceMcpServerCatalog } : {}),
+        ...(workspaceSourceRefs ? { workspaceSourceRefs } : {}),
+        configVersion: input.configVersion ?? null,
+        ...(input.dependencies ? { dependencies: input.dependencies } : {}),
+      });
+      return {
+        startedTurns: [
+          {
+            dispatch: {
+              status: 'dispatched',
+              entry: current,
+              attempt: requireSchedulerExecutionAttempt(input.coreDb, attempt.attemptId),
+            },
+            handle,
+          },
+        ],
+        terminalResult: { status: 'queued', reason: 'max-dispatches' },
+      };
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  } catch (error) {
+    const current = requireSchedulerExecutionAttempt(input.coreDb, attempt.attemptId);
+    if (
+      error instanceof WorkerGovernanceCapacityUnavailableError &&
+      current.operationId === null &&
+      !input.store
+        .listThreadAgentSessions(entry.workspaceId, entry.threadId)
+        .some((session) => session.id === current.agentSessionId && session.status === 'busy')
+    ) {
+      closeSchedulerExecutionAttemptWithoutEffects(input.coreDb, {
+        attemptId: attempt.attemptId,
+        noOutstandingEffects: true,
+        cause: 'backend-busy',
+        requeue: true,
+      });
+      return { startedTurns: [], terminalResult: { status: 'queued', reason: 'backend-busy' } };
+    }
+    if (current.operationId === null)
+      closeSchedulerExecutionAttemptWithoutEffects(input.coreDb, {
+        attemptId: attempt.attemptId,
+        noOutstandingEffects: true,
+        cause: 'turn-start-failed',
+      });
+    else
+      markSchedulerExecutionAttemptClosing(input.coreDb, {
+        attemptId: attempt.attemptId,
+        cause: 'preparation-or-execution-failed',
+      });
+    const turn = input.store.getTurnById(entry.turnId);
+    if (turn.status === 'pending' || turn.status === 'running')
+      terminalizeGovernedWorkerTurn({
+        store: input.store,
+        turnId: turn.id,
+        agentSessionId: current.agentSessionId,
+        requestId: entry.requestId,
+        outcome: 'failed',
+        completedAt: input.now?.() ?? new Date().toISOString(),
+        errorCode: 'worker_preparation_failed',
+        message: error instanceof Error ? error.message : 'Worker preparation failed.',
+      });
+    throw error;
+  }
+}
 function resolveDispatchAgentSetup(
   input: RunSchedulerDispatchLoopInput,
   requestedAgentId: string,
@@ -585,67 +632,4 @@ function resolveDispatchAgentSetup(
     throw new TurnStartValidationError('agent_not_ready', message, 409);
   }
   return resolved.setup;
-}
-
-/**
- * Prepares a fresh AgentSession only when no current runtime-owned continuity needs inspection.
- */
-function prepareFreshAgentSessionWithoutRuntimeOwner(
-  input: RunSchedulerDispatchLoopInput,
-  preparation: PrepareAgentSessionForTurnInput
-): PreparedAgentSessionForTurn {
-  const current = input.store
-    .listThreadAgentSessions(preparation.turn.workspaceId, preparation.turn.threadId)
-    .find((candidate) => isCurrentAgentSessionStatus(candidate.status));
-  if (current) {
-    throw new TurnStartValidationError(
-      'recovery_required',
-      'The current AgentSession requires runtime-owned reuse or replacement preparation.',
-      409
-    );
-  }
-  return {
-    agentSessionId: preparation.freshAgentSessionId,
-    currentAgentSession: null,
-    replacementRequired: false,
-    sessionCompatibilityKey: resolveAgentSessionCompatibilityKey({
-      agentSessionId: preparation.freshAgentSessionId,
-      agentSetup: preparation.agentSetup,
-      backend: { kind: 'openshell' },
-      coreDb: input.coreDb,
-      requestId: preparation.requestId,
-      turn: preparation.turn,
-      turnInput: preparation.turnInput,
-      triggerActor: preparation.turn.triggerActor,
-      workspaceCwd: preparation.workspaceCwd,
-      workspaceRoots: preparation.workspaceRoots,
-      ...(preparation.workspaceDataSourceCatalog
-        ? { workspaceDataSourceCatalog: preparation.workspaceDataSourceCatalog }
-        : {}),
-      ...(preparation.workspaceMcpServerCatalog
-        ? { workspaceMcpServerCatalog: preparation.workspaceMcpServerCatalog }
-        : {}),
-      ...(preparation.workspaceSourceRefs
-        ? { workspaceSourceRefs: preparation.workspaceSourceRefs }
-        : {}),
-    }),
-  };
-}
-
-/**
- * Creates a placement plan id.
- *
- * @returns Stable plan id.
- */
-function createPlanId(): string {
-  return `plan_${randomUUID()}`;
-}
-
-/**
- * Creates a scheduler lease id.
- *
- * @returns Stable lease id.
- */
-function createLeaseId(): string {
-  return `lease_${randomUUID()}`;
 }

@@ -1,14 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-
 import { acquireDataRootLock, type DataRootLock, DataRootLockError } from '../bootstrap/lock.js';
-import {
-  isTerminalLeaseStatus,
-  listSchedulerSessionLeasesForTurn,
-  requireSchedulerSessionLeaseAdmissionContext,
-  type SchedulerSessionLeaseRecord,
-} from '../scheduler-records.js';
 import {
   type DurableCommandRequestRead,
   readDurableCommandRequestRecords,
@@ -25,6 +18,11 @@ import {
   readPublishedTurnIdentities,
 } from '../storage/workspace-file-records.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from './aep-snapshot-ledger.js';
+import {
+  listSchedulerExecutionAttemptsForTurn,
+  type SchedulerExecutionAttemptRecord,
+} from './execution-attempt-records.js';
+import { hasNanoHostAttemptOwnershipEvidence } from './nanohost-attempt-records.js';
 import { getWorkerCheckpoint, type WorkerCheckpointRecord } from './worker-checkpoints.js';
 import { clearWorkerCheckpointAfterTerminalState } from './worker-recovery.js';
 import { isTerminalWorkerTurnStage } from './worker-stage.js';
@@ -399,7 +397,7 @@ function classifyCheckpoint(input: {
   if (leases === 'unreadable') {
     return { decision: 'refused', reason: 'unreadable-history' };
   }
-  if (leases.some((lease) => !isTerminalLeaseStatus(lease.status))) {
+  if (leases.some((lease) => lease.phase !== 'closed')) {
     return { decision: 'refused', reason: 'live-lease' };
   }
   if (leases.length > 1) {
@@ -482,7 +480,7 @@ function classifyExecutionEvidence(input: {
   readonly checkpoint: WorkerCheckpointRecord;
   readonly coreDb: CoreDb;
   readonly dataRoot: string;
-  readonly lease: SchedulerSessionLeaseRecord | undefined;
+  readonly lease: SchedulerExecutionAttemptRecord | undefined;
   readonly receipts: ReadableReceipts;
   readonly workspaceDb: WorkspaceDb;
 }): Classification | null {
@@ -499,14 +497,14 @@ function classifyExecutionEvidence(input: {
          UNION ALL SELECT 1 FROM agent_session_runtime_bindings
            WHERE current_turn_id = @turn
               OR (@session IS NOT NULL AND agent_session_id = @session)
-              OR (@lease IS NOT NULL AND current_lease_id = @lease)
+              OR (@lease IS NOT NULL AND current_attempt_id = @lease)
          UNION ALL SELECT 1 FROM sandbox_runtime_records
            WHERE @binding IS NOT NULL AND sandbox_binding_ref = @binding
          LIMIT 1`
       )
       .get({
-        binding: lease?.sandboxBindingRef ?? null,
-        lease: lease?.leaseId ?? null,
+        binding: lease?.bindingRef ?? null,
+        lease: lease?.attemptId ?? null,
         session: lease?.agentSessionId ?? null,
         turn: checkpoint.turnId,
       }) as { found: number } | undefined;
@@ -530,7 +528,10 @@ function classifyExecutionEvidence(input: {
     if (sessions.status === 'unreadable') {
       return { decision: 'refused', reason: 'unreadable-history' };
     }
-    const sessionHit = lease !== undefined && sessions.sessionIds.includes(lease.agentSessionId);
+    const sessionHit =
+      lease !== undefined &&
+      lease.agentSessionId !== null &&
+      sessions.sessionIds.includes(lease.agentSessionId);
     if (execution || runtime || packageHit || sessionHit) {
       return { decision: 'refused', reason: 'runtime-evidence' };
     }
@@ -548,87 +549,55 @@ function classifyExecutionEvidence(input: {
   return null;
 }
 
+/** Requires a complete cancelled entry or an exact closed no-effect attempt; absence never substitutes for execution proof. */
 function classifyProof(
   coreDb: CoreDb,
   checkpoint: WorkerCheckpointRecord,
-  lease: SchedulerSessionLeaseRecord | undefined
+  attempt: SchedulerExecutionAttemptRecord | undefined
 ): Classification {
   const admissions = listAdmissions(coreDb, checkpoint);
-  const plans = listPlans(
-    coreDb,
-    checkpoint.turnId,
-    admissions === 'unreadable' ? [] : admissions.map((admission) => admission.queueEntryId)
-  );
-  if (admissions === 'unreadable' || plans === 'unreadable') {
-    return { decision: 'refused', reason: 'unreadable-history' };
-  }
-  if (!lease) {
-    const admission = admissions.length === 1 ? admissions[0] : undefined;
-    if (
-      plans.length === 0 &&
-      admission &&
-      admission.status === 'cancelled' &&
-      admission.requestId === checkpoint.requestId &&
-      admission.workspaceId === checkpoint.workspaceId &&
-      admission.threadId === checkpoint.threadId &&
-      admission.turnId === checkpoint.turnId
-    ) {
-      return { decision: 'removable', reason: 'cancelled-admission' };
-    }
-    return { decision: 'refused', reason: 'missing-provenance' };
-  }
-
-  const anchor = readLeaseAnchor(coreDb, lease.leaseId);
-  let admissionContext: ReturnType<typeof requireSchedulerSessionLeaseAdmissionContext> | null =
-    null;
-  try {
-    admissionContext = requireSchedulerSessionLeaseAdmissionContext(coreDb, lease.leaseId);
-  } catch {
-    admissionContext = null;
-  }
+  if (admissions === 'unreadable') return { decision: 'refused', reason: 'unreadable-history' };
   const admission = admissions.length === 1 ? admissions[0] : undefined;
-  const plan = plans.length === 1 ? plans[0] : undefined;
   if (
-    lease.status === 'failed' &&
-    lease.releaseReason === 'turn-start-failed' &&
-    lease.recoveryState === 'needs-evidence' &&
-    lease.lastAcceptedHeartbeatAt === null &&
-    lease.lastWorkerSequence === null &&
-    lease.renewalCount === 0 &&
-    lease.workerProcessKeyHash === null &&
-    lease.workerControlTokenHash === null &&
-    lease.workerInferenceTokenHash === null &&
-    lease.workerCapabilityTokenHash === null &&
-    anchor === 'unanchored' &&
-    admissionContext?.requestId === checkpoint.requestId &&
-    admission?.status === 'admitted' &&
-    admission.requestId === checkpoint.requestId &&
-    admission.workspaceId === checkpoint.workspaceId &&
-    admission.threadId === checkpoint.threadId &&
-    admission.turnId === checkpoint.turnId &&
-    plan !== undefined &&
-    planMatchesLineage(plan, checkpoint, lease, admission)
-  ) {
-    return { decision: 'removable', reason: 'turn-start-failed' };
-  }
-  return { decision: 'refused', reason: 'missing-provenance' };
+    !admission ||
+    admission.requestId !== checkpoint.requestId ||
+    admission.workspaceId !== checkpoint.workspaceId ||
+    admission.threadId !== checkpoint.threadId ||
+    admission.turnId !== checkpoint.turnId
+  )
+    return { decision: 'refused', reason: 'missing-provenance' };
+  if (!attempt)
+    return admission.status === 'cancelled'
+      ? { decision: 'removable', reason: 'cancelled-admission' }
+      : { decision: 'refused', reason: 'missing-provenance' };
+  if (
+    attempt.queueEntryId !== admission.queueEntryId ||
+    attempt.phase !== 'closed' ||
+    attempt.disposition !== 'not_accepted' ||
+    attempt.operationId !== null ||
+    attempt.terminalCause !== 'turn-start-failed'
+  )
+    return { decision: 'refused', reason: 'missing-provenance' };
+  if (hasNanoHostAttemptOwnershipEvidence(coreDb, attempt.attemptId))
+    return { decision: 'refused', reason: 'runtime-evidence' };
+  return { decision: 'removable', reason: 'turn-start-failed' };
 }
 
 function listLeasesForTurn(
   coreDb: CoreDb,
   turnId: string
-): readonly SchedulerSessionLeaseRecord[] | 'unreadable' {
+): readonly SchedulerExecutionAttemptRecord[] | 'unreadable' {
   try {
     const rows = coreDb.sqlite
       .prepare(
         `SELECT DISTINCT workspace_id AS workspaceId, thread_id AS threadId
-         FROM scheduler_session_leases WHERE turn_id = ?`
+         FROM scheduler_execution_attempts WHERE turn_id = ?`
       )
       .all(turnId) as { readonly threadId: string; readonly workspaceId: string }[];
-    const leases: SchedulerSessionLeaseRecord[] = [];
+    const leases: SchedulerExecutionAttemptRecord[] = [];
     for (const row of rows) {
       leases.push(
-        ...listSchedulerSessionLeasesForTurn(coreDb, {
+        ...listSchedulerExecutionAttemptsForTurn(coreDb, {
           threadId: row.threadId,
           turnId,
           workspaceId: row.workspaceId,
@@ -642,7 +611,7 @@ function listLeasesForTurn(
 }
 
 function leaseMatches(
-  lease: SchedulerSessionLeaseRecord,
+  lease: SchedulerExecutionAttemptRecord,
   checkpoint: WorkerCheckpointRecord
 ): boolean {
   return (
@@ -685,72 +654,6 @@ function listAdmissions(
   } catch {
     return 'unreadable';
   }
-}
-
-interface PlacementPlanLineage {
-  readonly planId: string;
-  readonly queueEntryId: string;
-  readonly threadId: string;
-  readonly turnId: string;
-  readonly workspaceId: string;
-}
-
-function planMatchesLineage(
-  plan: PlacementPlanLineage,
-  checkpoint: WorkerCheckpointRecord,
-  lease: SchedulerSessionLeaseRecord,
-  admission: {
-    readonly queueEntryId: string;
-    readonly threadId: string;
-    readonly turnId: string;
-    readonly workspaceId: string;
-  }
-): boolean {
-  return (
-    plan.planId === lease.planId &&
-    plan.queueEntryId === admission.queueEntryId &&
-    plan.workspaceId === checkpoint.workspaceId &&
-    plan.threadId === checkpoint.threadId &&
-    plan.turnId === checkpoint.turnId &&
-    plan.workspaceId === lease.workspaceId &&
-    plan.threadId === lease.threadId &&
-    plan.turnId === lease.turnId &&
-    plan.workspaceId === admission.workspaceId &&
-    plan.threadId === admission.threadId &&
-    plan.turnId === admission.turnId
-  );
-}
-
-function listPlans(
-  coreDb: CoreDb,
-  turnId: string,
-  queueEntryIds: readonly string[]
-): readonly PlacementPlanLineage[] | 'unreadable' {
-  try {
-    const queueClause =
-      queueEntryIds.length === 0
-        ? 'turn_id = ?'
-        : `turn_id = ? OR queue_entry_id IN (${queueEntryIds.map(() => '?').join(', ')})`;
-    return coreDb.sqlite
-      .prepare(
-        `SELECT plan_id AS planId, queue_entry_id AS queueEntryId,
-                workspace_id AS workspaceId, thread_id AS threadId, turn_id AS turnId
-         FROM scheduler_placement_plans WHERE ${queueClause}
-         ORDER BY plan_id ASC`
-      )
-      .all(turnId, ...queueEntryIds) as PlacementPlanLineage[];
-  } catch {
-    return 'unreadable';
-  }
-}
-
-function readLeaseAnchor(coreDb: CoreDb, leaseId: string): 'unanchored' | 'anchored' | null {
-  const row = coreDb.sqlite
-    .prepare(
-      'SELECT backend_anchor_state AS state FROM scheduler_session_leases WHERE lease_id = ?'
-    )
-    .get(leaseId) as { readonly state: 'unanchored' | 'anchored' } | undefined;
-  return row?.state ?? null;
 }
 
 function readWorkspaceThreadOwner(

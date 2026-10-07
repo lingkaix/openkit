@@ -200,7 +200,7 @@ export interface WorkerControlSessionSnapshot {
 
 /** Restored worker-control session state loaded from durable records. */
 export interface WorkerControlSessionRestoreInput {
-  /** Durable non-secret sandbox binding owned by the scheduler lease. */
+  /** Durable non-secret sandbox binding owned by the execution attempt. */
   readonly sandboxBindingRef: string;
   /** Durable lowercase SHA-256 projection of the worker-control token. */
   readonly workerControlTokenHash: string;
@@ -316,7 +316,7 @@ export type WorkerControlTokenBindingResolution =
       readonly reason:
         | 'binding-not-found'
         | 'lineage-mismatch'
-        | 'lease-not-live'
+        | 'attempt-not-live'
         | 'reconnect-required';
     };
 
@@ -348,7 +348,7 @@ export type WorkerControlFinalStatusTokenBindingResolution =
       readonly reason:
         | 'binding-not-found'
         | 'lineage-mismatch'
-        | 'lease-not-live'
+        | 'attempt-not-live'
         | 'reconnect-required';
     };
 
@@ -464,7 +464,7 @@ interface WorkerControlSessionState {
   readonly environmentPackage: AgentEnvironmentPackage | null;
   /** Stable worker-control lineage for request matching. */
   readonly lineage: WorkerControlLineage;
-  /** Durable non-secret sandbox binding associated with the scheduler lease. */
+  /** Durable non-secret sandbox binding associated with the execution attempt. */
   readonly sandboxBindingRef: string | null;
   /** Lowercase SHA-256 projection of the worker-control token. */
   readonly workerControlTokenHash: string;
@@ -1082,7 +1082,7 @@ export class WorkerControlGateway {
     if (!state.sandboxBindingRef || !this.resolveTokenBinding) {
       throw new WorkerControlGatewayError(
         'worker_control_lease_binding_required',
-        'Worker package token authentication requires a durable scheduler lease binding.',
+        'Worker package token authentication requires a durable execution attempt binding.',
         403
       );
     }
@@ -1594,7 +1594,7 @@ export class WorkerControlGateway {
    * @throws WorkerControlGatewayError Always.
    */
   private throwTokenBindingRejection(
-    reason: 'binding-not-found' | 'lineage-mismatch' | 'lease-not-live' | 'reconnect-required'
+    reason: 'binding-not-found' | 'lineage-mismatch' | 'attempt-not-live' | 'reconnect-required'
   ): never {
     if (reason === 'binding-not-found') {
       throw new WorkerControlGatewayError(

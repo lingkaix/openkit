@@ -9,7 +9,8 @@ This directory defines the Drizzle table schemas for NanoCore's Core, User, and 
 - Add constraints and indexes that enforce present access, lineage, or query requirements. Do not add speculative columns or generic metadata bags.
 - Workspace snapshot cursors keep the accepted tree/manifest pair separate from the captured pair and contextual Core Git commit. Immutable collection rows retain exact lineage, candidate bytes, successful credential-check evidence, and the actual review association; operational volume identities do not become portable attachment authority. Runtime bindings retain exact Vault reference/version/name evidence, never runtime credential values.
 - The pre-release Core baseline has no generic scheduler target-health table or index; configured NanoHost readiness remains in its own RuntimeTarget schema.
-- Scheduler session leases retain only the three nullable worker-control, inference, and capability SHA-256 projections needed for restart authentication; raw route tokens and sandbox-binding-derived credentials are outside durable schema scope.
+- Retained backend image lineage, Worker storage target observations, and scheduler storage selection JSON allow inert descriptive additions. Their readers validate the closed core and required-feature gate without rewriting stored bytes; effect-admitting storage commands remain exact.
+- NanoHost-private execution attempt columns retain only the three nullable worker-control, inference, and capability SHA-256 projections needed for restart authentication; raw route tokens and sandbox-binding-derived credentials are outside durable schema scope.
 - Update the matching `apps/nanocore/drizzle/<scope>/` SQL journal and its setup tests whenever a persisted schema changes. Do not run Drizzle Kit generate against this mixed TypeScript schema tree.
 
 ## Verification

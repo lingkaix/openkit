@@ -17,10 +17,17 @@ import { ensureLocalUser } from './auth/identity.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
+import {
+  closeSchedulerExecutionAttemptWithFence,
+  markSchedulerExecutionAttemptClosing,
+  schedulerExecutionCorrelation,
+} from './runtime/execution-attempt-records.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
+import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createVerifiedWorkspaceExport } from './storage/workspace-transfer-routes.js';
+import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { operationRequest } from './test-support/operation-request.js';
 import {
   createWorkspaceDeletionClosure,
@@ -378,27 +385,17 @@ it.each([
     });
     const timestamp = new Date().toISOString();
     if (blocker === 'scheduler recovery evidence') {
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO scheduler_session_leases (
-             lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
-             package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
-             heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
-             sandbox_binding_ref, backend_anchor_state, recovery_state
-           ) VALUES (
-             'lease_deletion_recovery', 'plan_deletion_recovery', ?,
-             'thread_deletion_recovery', 'turn_deletion_recovery',
-             'session_deletion_recovery', 'package_deletion_recovery',
-             'pool_deletion_recovery', 'target_deletion_recovery', 'lost', ?, ?, ?, ?,
-             0, 1, 'sandbox_deletion_recovery', 'unanchored', 'needs-evidence'
-           )`
-        )
-        .run(workspace.id, timestamp, timestamp, timestamp, timestamp);
+      insertDeletionQuiescenceLease(coreDb, {
+        recoveryState: 'needs-evidence',
+        status: 'closing',
+        suffix: 'deletion_recovery',
+        workspaceId: workspace.id,
+      });
     } else if (blocker === 'physical worker cleanup') {
       coreDb.sqlite
         .prepare(
           `INSERT INTO worker_backend_sessions (
-             lease_id, workspace_id, thread_id, turn_id, agent_session_id,
+             attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
              package_snapshot_id, backend_kind, deployment_id, backend_session_id,
              runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
              staging_directory_ref, workspace_handoff_state, state,
@@ -493,35 +490,41 @@ function insertDeletionQuiescenceLease(
   const turnId = input.turnId ?? `turn_${input.suffix}`;
   const agentSessionId = input.agentSessionId ?? `session_${input.suffix}`;
   const packageSnapshotId = input.packageSnapshotId ?? `package_${input.suffix}`;
+  const entry = createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
+    queueEntryId: `queue_${input.suffix}`,
+    triggerActor: { kind: 'user', id: 'user_local' },
+    workspaceId: input.workspaceId,
+    threadId,
+    turnId,
+    turnInput: 'Deletion quiescence fixture',
+    requestedAgentId: 'agent_codex_host',
+    now: () => timestamp,
+  });
+  const attempt = recordTestExecutionAttempt(coreDb, {
+    entry,
+    attemptId: `lease_${input.suffix}`,
+    agentSessionId,
+    inputRef: packageSnapshotId,
+    bindingRef: `sandbox_${input.suffix}`,
+    sessionCompatibilityKey: 'c'.repeat(64),
+    operationId: `original:${input.suffix}`,
+    now: () => timestamp,
+  });
+  markSchedulerExecutionAttemptClosing(coreDb, {
+    attemptId: attempt.attemptId,
+    cause:
+      input.status === 'failed'
+        ? 'turn-failed'
+        : input.status === 'lost'
+          ? 'restart-native-recovery'
+          : 'native-liveness-expired',
+    outcomeRef: `turn:${turnId}:failed`,
+    now: () => timestamp,
+  });
   coreDb.sqlite
-    .prepare(
-      `INSERT INTO scheduler_session_leases (
-         lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
-         package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
-         heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
-         sandbox_binding_ref, backend_anchor_state, recovery_state
-       ) VALUES (
-         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, 'unanchored', ?
-       )`
-    )
-    .run(
-      `lease_${input.suffix}`,
-      `plan_${input.suffix}`,
-      input.workspaceId,
-      threadId,
-      turnId,
-      agentSessionId,
-      packageSnapshotId,
-      `pool_${input.suffix}`,
-      `target_${input.suffix}`,
-      input.status,
-      timestamp,
-      timestamp,
-      timestamp,
-      timestamp,
-      `sandbox_${input.suffix}`,
-      input.recoveryState
-    );
+    .prepare('UPDATE scheduler_execution_attempts SET recovery_state = ? WHERE attempt_id = ?')
+    .run(input.recoveryState, attempt.attemptId);
   return { agentSessionId, packageSnapshotId, threadId, turnId };
 }
 
@@ -542,7 +545,7 @@ function insertDeletionQuiescenceBackend(
   coreDb.sqlite
     .prepare(
       `INSERT INTO worker_backend_sessions (
-         lease_id, workspace_id, thread_id, turn_id, agent_session_id,
+         attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
          package_snapshot_id, backend_kind, deployment_id, backend_session_id,
          runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
          staging_directory_ref, workspace_handoff_state, state,
@@ -573,7 +576,37 @@ function insertDeletionQuiescenceBackend(
     );
 }
 
-it('lets deletion proceed for five failed needs-evidence leases with matching cleaned backend proof', async () => {
+/**
+ * Models completed closeout before testing deletion's independent retained cleanup evidence check.
+ * This backend double owns no physical process, output stream or live route; all six modeled barriers settle.
+ * Malformed private rows are introduced only after this exact fence, never used to manufacture its proof.
+ */
+async function closeDeletionQuiescenceAttempt(
+  coreDb: ReturnType<typeof openCoreDb>,
+  suffix: string
+): Promise<void> {
+  const attempt = markSchedulerExecutionAttemptClosing(coreDb, {
+    attemptId: `lease_${suffix}`,
+    cause: 'turn-failed',
+  });
+  const correlation = schedulerExecutionCorrelation(attempt);
+  const proof = {
+    terminalHandoff: true,
+    output: true,
+    evidence: true,
+    outsideWorkspaceCollection: true,
+    integrationDrain: true,
+    routesRevoked: true,
+  } as const;
+  const released = await new SimulatedTurnExecutor({ coreDb }).release({ ...correlation, proof });
+  closeSchedulerExecutionAttemptWithFence(coreDb, {
+    correlation,
+    proof,
+    fenceRef: released.fenceRef!,
+  });
+}
+
+it('lets deletion proceed for five closed failed attempts with exact fences and matching cleaned backend proof', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-deletion-cleaned-failed-'));
   const coreDb = openCoreDb(dataRoot);
   const requestId = '00000000-0000-4000-8000-000000000030';
@@ -610,6 +643,7 @@ it('lets deletion proceed for five failed needs-evidence leases with matching cl
         suffix,
         workspaceId: workspace.id,
       });
+      await closeDeletionQuiescenceAttempt(coreDb, suffix);
     }
     const app = createApp({
       coreDb,
@@ -642,20 +676,26 @@ it('lets deletion proceed for five failed needs-evidence leases with matching cl
     expect(
       coreDb.sqlite
         .prepare(
-          `SELECT status, recovery_state AS recoveryState
-           FROM scheduler_session_leases
-           WHERE lease_id LIKE 'lease_cleaned_failed_%'
-           ORDER BY lease_id`
+          `SELECT phase, recovery_state AS recoveryState, fence_ref AS fenceRef
+           FROM scheduler_execution_attempts
+           WHERE attempt_id LIKE 'lease_cleaned_failed_%'
+           ORDER BY attempt_id`
         )
         .all()
-    ).toEqual(suffixes.map(() => ({ recoveryState: 'needs-evidence', status: 'failed' })));
+    ).toEqual(
+      suffixes.map((suffix) => ({
+        recoveryState: 'needs-evidence',
+        phase: 'closed',
+        fenceRef: `self-check:lease_${suffix}`,
+      }))
+    );
     expect(
       coreDb.sqlite
         .prepare(
           `SELECT state, physical_cleaned_at AS physicalCleanedAt
            FROM worker_backend_sessions
-           WHERE lease_id LIKE 'lease_cleaned_failed_%'
-           ORDER BY lease_id`
+           WHERE attempt_id LIKE 'lease_cleaned_failed_%'
+           ORDER BY attempt_id`
         )
         .all()
     ).toEqual(suffixes.map(() => ({ physicalCleanedAt, state: 'cleaned' })));
@@ -665,7 +705,7 @@ it('lets deletion proceed for five failed needs-evidence leases with matching cl
   }
 });
 
-it('keeps deletion fenced when one of five failed needs-evidence leases lacks matching cleaned backend proof', async () => {
+it('keeps deletion fenced when one of five failed attempts remains closing without release proof', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-deletion-sibling-unproved-'));
   const coreDb = openCoreDb(dataRoot);
   const requestId = '00000000-0000-4000-8000-000000000037';
@@ -697,6 +737,7 @@ it('keeps deletion fenced when one of five failed needs-evidence leases lacks ma
           suffix,
           workspaceId: workspace.id,
         });
+        await closeDeletionQuiescenceAttempt(coreDb, suffix);
       }
     }
     const app = createApp({
@@ -733,13 +774,19 @@ it('keeps deletion fenced when one of five failed needs-evidence leases lacks ma
     expect(
       coreDb.sqlite
         .prepare(
-          `SELECT status, recovery_state AS recoveryState
-           FROM scheduler_session_leases
-           WHERE lease_id LIKE 'lease_sibling_%'
-           ORDER BY lease_id`
+          `SELECT phase, recovery_state AS recoveryState, fence_ref AS fenceRef
+           FROM scheduler_execution_attempts
+           WHERE attempt_id LIKE 'lease_sibling_%'
+           ORDER BY attempt_id`
         )
         .all()
-    ).toEqual(suffixes.map(() => ({ recoveryState: 'needs-evidence', status: 'failed' })));
+    ).toEqual(
+      suffixes.map((suffix) => ({
+        recoveryState: 'needs-evidence',
+        phase: suffix === 'sibling_unproved' ? 'closing' : 'closed',
+        fenceRef: suffix === 'sibling_unproved' ? null : `self-check:lease_${suffix}`,
+      }))
+    );
   } finally {
     coreDb.sqlite.close();
     rmSync(dataRoot, { force: true, recursive: true });
@@ -750,42 +797,42 @@ it.each([
   {
     backend: 'missing' as const,
     leaseStatus: 'failed',
-    name: 'a failed needs-evidence lease has no backend row',
+    name: 'a closed failed needs-evidence attempt has no backend row',
     requestId: '00000000-0000-4000-8000-000000000031',
     suffix: 'missing_backend',
   },
   {
     backend: 'mismatched-thread' as const,
     leaseStatus: 'failed',
-    name: 'a failed needs-evidence lease has mismatched thread lineage',
+    name: 'a closed failed needs-evidence attempt has mismatched thread lineage',
     requestId: '00000000-0000-4000-8000-000000000032',
     suffix: 'mismatch_thread',
   },
   {
     backend: 'physical-cleaned' as const,
     leaseStatus: 'failed',
-    name: 'a failed needs-evidence lease is only physical-cleaned',
+    name: 'a closed failed needs-evidence attempt is only physical-cleaned',
     requestId: '00000000-0000-4000-8000-000000000033',
     suffix: 'physical_cleaned',
   },
   {
     backend: 'cleaned-without-timestamp' as const,
     leaseStatus: 'failed',
-    name: 'a failed needs-evidence lease is cleaned without physical_cleaned_at',
+    name: 'a closed failed needs-evidence attempt is cleaned without physical_cleaned_at',
     requestId: '00000000-0000-4000-8000-000000000034',
     suffix: 'cleaned_no_ts',
   },
   {
     backend: 'cleaned' as const,
     leaseStatus: 'lost',
-    name: 'a lost needs-evidence lease has matching cleaned backend proof',
+    name: 'a closing unknown attempt has matching cleaned backend proof',
     requestId: '00000000-0000-4000-8000-000000000035',
     suffix: 'lost_cleaned',
   },
   {
     backend: 'cleaned' as const,
     leaseStatus: 'stale',
-    name: 'a stale needs-evidence lease has matching cleaned backend proof',
+    name: 'a closing expired attempt has matching cleaned backend proof',
     requestId: '00000000-0000-4000-8000-000000000036',
     suffix: 'stale_cleaned',
   },
@@ -809,19 +856,49 @@ it.each([
       suffix: fixture.suffix,
       workspaceId: workspace.id,
     });
-    if (fixture.backend !== 'missing') {
-      insertDeletionQuiescenceBackend(coreDb, {
-        ...lineage,
-        physicalCleanedAt:
-          fixture.backend === 'cleaned-without-timestamp' ? null : new Date().toISOString(),
-        state: fixture.backend === 'physical-cleaned' ? 'physical-cleaned' : 'cleaned',
-        suffix: fixture.suffix,
-        threadId:
-          fixture.backend === 'mismatched-thread'
-            ? `thread_other_${fixture.suffix}`
-            : lineage.threadId,
-        workspaceId: workspace.id,
+    // Establish an intact private cleanup observation before any deliberate corruption.
+    insertDeletionQuiescenceBackend(coreDb, {
+      ...lineage,
+      physicalCleanedAt: new Date().toISOString(),
+      state: 'cleaned',
+      suffix: fixture.suffix,
+      workspaceId: workspace.id,
+    });
+    if (fixture.leaseStatus === 'failed') {
+      await closeDeletionQuiescenceAttempt(coreDb, fixture.suffix);
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT phase, fence_ref AS fenceRef, disposition, terminal_cause AS cause FROM scheduler_execution_attempts WHERE attempt_id = ?'
+          )
+          .get(`lease_${fixture.suffix}`)
+      ).toEqual({
+        phase: 'closed',
+        fenceRef: `self-check:lease_${fixture.suffix}`,
+        disposition: 'unknown',
+        cause: 'turn-failed',
       });
+    }
+    if (fixture.backend === 'missing') {
+      coreDb.sqlite
+        .prepare('DELETE FROM worker_backend_sessions WHERE attempt_id = ?')
+        .run(`lease_${fixture.suffix}`);
+    } else if (fixture.backend === 'mismatched-thread') {
+      coreDb.sqlite
+        .prepare('UPDATE worker_backend_sessions SET thread_id = ? WHERE attempt_id = ?')
+        .run(`thread_other_${fixture.suffix}`, `lease_${fixture.suffix}`);
+    } else if (fixture.backend === 'physical-cleaned') {
+      coreDb.sqlite
+        .prepare(
+          "UPDATE worker_backend_sessions SET state = 'physical-cleaned' WHERE attempt_id = ?"
+        )
+        .run(`lease_${fixture.suffix}`);
+    } else if (fixture.backend === 'cleaned-without-timestamp') {
+      coreDb.sqlite
+        .prepare(
+          'UPDATE worker_backend_sessions SET physical_cleaned_at = NULL WHERE attempt_id = ?'
+        )
+        .run(`lease_${fixture.suffix}`);
     }
     const app = createApp({
       coreDb,
@@ -859,12 +936,15 @@ it.each([
     expect(
       coreDb.sqlite
         .prepare(
-          `SELECT status, recovery_state AS recoveryState
-           FROM scheduler_session_leases
-           WHERE lease_id = ?`
+          `SELECT phase, recovery_state AS recoveryState
+           FROM scheduler_execution_attempts
+           WHERE attempt_id = ?`
         )
         .get(`lease_${fixture.suffix}`)
-    ).toEqual({ recoveryState: 'needs-evidence', status: fixture.leaseStatus });
+    ).toEqual({
+      recoveryState: 'needs-evidence',
+      phase: fixture.leaseStatus === 'failed' ? 'closed' : 'closing',
+    });
   } finally {
     coreDb.sqlite.close();
     rmSync(dataRoot, { force: true, recursive: true });

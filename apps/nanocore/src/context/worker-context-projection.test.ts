@@ -133,6 +133,7 @@ describe('worker Context Package read projection', () => {
         store.updateTurn(turn.id, { agentSessionId: 'as_missing_context_trace' });
       } else {
         createSchedulerAdmissionEntry(coreDb, {
+          backendId: 'nanohost',
           queueEntryId: 'queue_missing_context_trace',
           requestId: 'request_missing_context_trace',
           triggerActor: { kind: 'user', id: 'user_local' },
@@ -142,8 +143,6 @@ describe('worker Context Package read projection', () => {
           turnInput: 'Run accepted worker turn.',
           requestedAgentId: 'agent_codex_host',
           profileRef: 'agent_codex_host',
-          priorityClass: 'interactive',
-          requiredPoolConstraints: [],
         });
         coreDb.sqlite
           .prepare(

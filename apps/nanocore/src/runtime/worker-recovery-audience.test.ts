@@ -6,23 +6,21 @@ import { describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
-import {
-  createSchedulerAdmissionEntry,
-  createSchedulerPlacementPlan,
-  createSchedulerSessionLease,
-} from '../scheduler-records.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { closeSchedulerExecutionAttemptWithoutEffects } from './execution-attempt-records.js';
 import { getWorkerCheckpoint, upsertWorkerCheckpoint } from './worker-checkpoints.js';
 
 const PRIVATE_DIAGNOSTICS = 'Secret private interrupted needle';
 const SHARED_DIAGNOSTICS = 'Shared interrupted recovery';
 
 /**
- * Records one released restart-cleanup lease so the interrupted worker list can materialize.
+ * Records one closed effect-free restart attempt so the interrupted worker list can materialize.
  *
  * @param coreDb Open Core database handle.
  * @param input Exact Workspace, Thread, Turn, and AgentSession lineage.
@@ -36,50 +34,33 @@ function recordReleasedRestartLease(
     readonly workspaceId: string;
   }
 ): void {
-  createSchedulerAdmissionEntry(coreDb, {
+  const entry = createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
     triggerActor: { kind: 'user', id: 'user_local' },
-    priorityClass: 'interactive',
     profileRef: 'agent_codex_host',
     queueEntryId: `queue_${input.turnId}`,
     requestId: `request_${input.turnId}`,
     requestedAgentId: 'agent_codex_host',
-    requiredPoolConstraints: ['openshell.local'],
     threadId: input.threadId,
     turnId: input.turnId,
     turnInput: 'Run interrupted-worker audience fixture.',
     workspaceId: input.workspaceId,
   });
-  createSchedulerPlacementPlan(coreDb, {
-    degradedOptionalFeatures: [],
-    expectedControlMode: 'poll',
-    expectedDataPlaneMode: 'openshell-files',
-    heartbeatIntervalMs: 10_000,
-    heartbeatTimeoutMs: 30_000,
-    planId: `plan_${input.turnId}`,
-    plannedLeaseDurationMs: 900_000,
-    policyDecisionIds: [],
-    queueEntryId: `queue_${input.turnId}`,
-    schedulerEpoch: 1,
-    selectedPoolId: 'pool_local',
-    selectedTargetId: 'target_local',
-  });
-  createSchedulerSessionLease(coreDb, {
+  recordTestExecutionAttempt(coreDb, {
+    entry,
+    attemptId: `lease_${input.turnId}`,
     agentSessionId: input.agentSessionId,
-    expiresAt: '2099-01-01T01:00:00.000Z',
-    heartbeatDeadline: '2099-01-01T00:10:00.000Z',
-    leaseId: `lease_${input.turnId}`,
-    packageSnapshotId: `aepsnap_${input.turnId}`,
-    planId: `plan_${input.turnId}`,
-    sandboxTokenBindingRef: `lease-binding:lease_${input.turnId}`,
-    startupDeadline: '2099-01-01T00:05:00.000Z',
+    inputRef: `aepsnap_${input.turnId}`,
+    bindingRef: `lease-binding:lease_${input.turnId}`,
+    sessionCompatibilityKey: 'recovery-audience',
+    now: () => new Date().toISOString(),
   });
-  coreDb.sqlite
-    .prepare(
-      `UPDATE scheduler_session_leases
-       SET status = ?, release_reason = ?, recovery_state = ?, recovery_deadline = ?
-       WHERE lease_id = ?`
-    )
-    .run('released', 'scheduler-restart-backend-cleanup', null, null, `lease_${input.turnId}`);
+  // This read-model fixture never invokes a backend; restart closes that whole no-effect attempt.
+  closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+    attemptId: `lease_${input.turnId}`,
+    cause: 'restart-before-effects',
+    noOutstandingEffects: true,
+  });
 }
 
 /**
@@ -150,6 +131,22 @@ function seedInterruptedWorker(input: {
     workspaceId: input.workspaceId,
   });
   return turn.id;
+}
+
+/** Reads exact Core attempt ownership without interpreting NanoHost liveness or cleanup. */
+function observeExecutionAttempts(
+  coreDb: ReturnType<typeof openCoreDb>
+): Record<string, unknown>[] {
+  const exists = coreDb.sqlite
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduler_execution_attempts'"
+    )
+    .get();
+  return exists
+    ? (coreDb.sqlite
+        .prepare('SELECT * FROM scheduler_execution_attempts ORDER BY rowid')
+        .all() as Record<string, unknown>[])
+    : [];
 }
 
 describe('interrupted worker list Thread audience', () => {
@@ -441,10 +438,11 @@ describe('interrupted worker list Thread audience', () => {
     const scope = { workspaceId: workspace.id, threadId: thread.id, turnId };
     const requestId = 'req_b9_exact_receipt';
     const app = createApp({ coreDb, dataRoot, store });
-    const beforeLease = coreDb.sqlite
-      .prepare('SELECT * FROM scheduler_session_leases WHERE lease_id = ?')
-      .get(`lease_${turnId}`);
+    const beforeAttempt = observeExecutionAttempts(coreDb).find(
+      (attempt) => attempt.turn_id === turnId
+    );
     try {
+      expect(beforeAttempt).toBeDefined();
       expect(getWorkerCheckpoint(db, workspace.id, thread.id, turnId)).toMatchObject({
         stage: 'running_worker',
         stopReason: null,
@@ -477,10 +475,8 @@ describe('interrupted worker list Thread audience', () => {
       expect(store.getTurnById(turnId)).toEqual(turnBefore);
       expect(store.getAgentSession(`as_${turnId}`)).toEqual(sessionBefore);
       expect(
-        coreDb.sqlite
-          .prepare('SELECT * FROM scheduler_session_leases WHERE lease_id = ?')
-          .get(`lease_${turnId}`)
-      ).toEqual(beforeLease);
+        observeExecutionAttempts(coreDb).find((attempt) => attempt.turn_id === turnId)
+      ).toEqual(beforeAttempt);
       expect(store.listThreadTurns(workspace.id, thread.id)).toHaveLength(1);
     } finally {
       db.sqlite.close();

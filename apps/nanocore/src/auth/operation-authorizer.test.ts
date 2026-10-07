@@ -20,14 +20,11 @@ import { quickChatWorkspaceIdForUser } from '../lib/store.js';
 import type { createConversationService } from '../mode-entry-routes.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { registerRemoteMcpRoutes } from '../remote-mcp-routes.js';
-import {
-  createSchedulerAdmissionEntry,
-  createSchedulerPlacementPlan,
-  createSchedulerSessionLease,
-} from '../scheduler-records.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { createWorkerEnvironmentOperations } from '../worker-environments/worker-environment-operations.js';
 import {
@@ -509,7 +506,7 @@ describe('central Workspace operation authorizer', () => {
     ).toBeNull();
   });
 
-  it('binds worker authority to the exact durable lease and package actor', () => {
+  it('binds worker authority to the exact durable attempt and package actor', () => {
     createOpenKitAccessTokenRecord(fixture.coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',
       ownerUserId: 'user_missing',
@@ -517,7 +514,8 @@ describe('central Workspace operation authorizer', () => {
       tokenId: 'token_admin_worker',
       workspaceIds: [],
     });
-    createSchedulerAdmissionEntry(fixture.coreDb, {
+    const entry = createSchedulerAdmissionEntry(fixture.coreDb, {
+      backendId: 'nanohost',
       queueEntryId: 'queue_worker_admin',
       triggerActor: { kind: 'user', id: 'user_missing' },
       serverAdminTokenId: 'token_admin_worker',
@@ -526,8 +524,6 @@ describe('central Workspace operation authorizer', () => {
       turnId: 'turn_worker_admin',
       turnInput: 'Run worker',
       requestedAgentId: 'agent_worker',
-      priorityClass: 'interactive',
-      requiredPoolConstraints: [],
     });
     const turnLineage = {
       workspaceId: fixture.workspace.id,
@@ -546,32 +542,14 @@ describe('central Workspace operation authorizer', () => {
         true
       )
     ).toBeNull();
-    createSchedulerPlacementPlan(fixture.coreDb, {
-      planId: 'plan_worker_admin',
-      queueEntryId: 'queue_worker_admin',
-      selectedPoolId: 'pool_worker_admin',
-      selectedTargetId: 'target_worker_admin',
-      plannedLeaseDurationMs: 900_000,
-      heartbeatIntervalMs: 10_000,
-      heartbeatTimeoutMs: 30_000,
-      expectedControlMode: 'poll',
-      expectedDataPlaneMode: 'openshell-files',
-      degradedOptionalFeatures: [],
-      failoverTargetId: null,
-      policyDecisionIds: [],
-      capacitySnapshotRef: 'target_worker_admin:1',
-      schedulerEpoch: 1,
-    });
-    createSchedulerSessionLease(fixture.coreDb, {
-      leaseId: 'lease_worker_admin',
-      planId: 'plan_worker_admin',
+    recordTestExecutionAttempt(fixture.coreDb, {
+      entry,
+      attemptId: 'lease_worker_admin',
       agentSessionId: 'as_worker_admin',
-      packageSnapshotId: 'snapshot_worker_admin',
+      inputRef: 'snapshot_worker_admin',
+      bindingRef: 'lease-token:worker-admin',
       sessionCompatibilityKey: 'sha256:worker-admin',
-      expiresAt: '2099-01-01T00:00:00.000Z',
-      heartbeatDeadline: '2099-01-01T00:00:00.000Z',
-      startupDeadline: '2099-01-01T00:00:00.000Z',
-      sandboxTokenBindingRef: 'lease-token:worker-admin',
+      now: () => new Date().toISOString(),
     });
     const lineage = {
       workspaceId: fixture.workspace.id,

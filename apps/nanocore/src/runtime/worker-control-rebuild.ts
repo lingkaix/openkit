@@ -5,15 +5,15 @@ import type {
   WorkerCanonicalEventRecord,
   WorkerCapabilityCallSummary,
 } from '@openkit/worker-protocol';
-import {
-  listRestorableSchedulerSessionLeases,
-  requireSchedulerSessionLease,
-  requireSchedulerSessionLeaseAdmissionContext,
-  type SchedulerSessionLeaseRecord,
-} from '../scheduler-records.js';
+import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import {
+  listRestorableNanoHostExecutionAttempts,
+  type NanoHostExecutionAttemptRecord,
+  requireNanoHostExecutionAttempt,
+} from './nanohost-attempt-records.js';
 import type {
   WorkerControlArtifactNotice,
   WorkerControlGateway,
@@ -39,13 +39,13 @@ export function rebuildWorkerControlGatewaySessions(
   gateway: WorkerControlGateway
 ): void {
   const leases = [
-    ...listRestorableSchedulerSessionLeases(coreDb),
+    ...listRestorableNanoHostExecutionAttempts(coreDb),
     ...listFinalStatusReplayLeases(coreDb),
   ];
 
   for (const lease of leases) {
     if (
-      !lease.sandboxBindingRef ||
+      !lease.bindingRef ||
       !lease.workerControlTokenHash ||
       !lease.workerInferenceTokenHash ||
       !lease.workerCapabilityTokenHash
@@ -53,7 +53,7 @@ export function rebuildWorkerControlGatewaySessions(
       continue;
     }
 
-    const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, lease.leaseId);
+    const admission = requireSchedulerExecutionAttemptAdmissionContext(coreDb, lease.attemptId);
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lease.workspaceId);
     let environmentPackage: AgentEnvironmentPackage;
 
@@ -62,7 +62,7 @@ export function rebuildWorkerControlGatewaySessions(
       environmentPackage = requireAgentEnvironmentPackageSnapshot(
         workspaceDb,
         lease.workspaceId,
-        lease.packageSnapshotId
+        lease.inputRef
       ).snapshot;
     } finally {
       workspaceDb.sqlite.close();
@@ -82,8 +82,8 @@ export function rebuildWorkerControlGatewaySessions(
       ...records,
       environmentPackage,
       lineage,
-      registeredAt: lease.acquiredAt,
-      sandboxBindingRef: lease.sandboxBindingRef,
+      registeredAt: lease.createdAt,
+      sandboxBindingRef: lease.bindingRef,
       workerControlTokenHash: lease.workerControlTokenHash,
       workerInferenceTokenHash: lease.workerInferenceTokenHash,
       workerCapabilityTokenHash: lease.workerCapabilityTokenHash,
@@ -97,10 +97,10 @@ export function rebuildWorkerControlGatewaySessions(
  * @param coreDb Server-scope Core database.
  * @returns Leases restorable only for exact final-status replay.
  */
-function listFinalStatusReplayLeases(coreDb: CoreDb): SchedulerSessionLeaseRecord[] {
+function listFinalStatusReplayLeases(coreDb: CoreDb): NanoHostExecutionAttemptRecord[] {
   const table = coreDb.sqlite
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
-    .get('scheduler_session_leases');
+    .get('scheduler_execution_attempts');
 
   if (!table) {
     return [];
@@ -108,13 +108,13 @@ function listFinalStatusReplayLeases(coreDb: CoreDb): SchedulerSessionLeaseRecor
 
   const rows = coreDb.sqlite
     .prepare(
-      `SELECT lease_id AS leaseId
-         FROM scheduler_session_leases AS lease
-         WHERE lease.status = 'releasing'
-           AND lease.sandbox_binding_ref IS NOT NULL
+      `SELECT attempt_id AS attemptId
+         FROM scheduler_execution_attempts AS lease
+         WHERE lease.phase IN ('closing', 'closed')
+           AND lease.binding_ref IS NOT NULL
            AND lease.worker_control_token_hash IS NOT NULL
            AND lease.worker_inference_token_hash IS NOT NULL
-           AND lease.expires_at > ?
+           AND lease.deadline > ?
           AND EXISTS (
             SELECT 1
               FROM worker_control_records AS record
@@ -122,33 +122,33 @@ function listFinalStatusReplayLeases(coreDb: CoreDb): SchedulerSessionLeaseRecor
                AND record.thread_id = lease.thread_id
                AND record.turn_id = lease.turn_id
                AND record.agent_session_id = lease.agent_session_id
-               AND record.package_snapshot_id = lease.package_snapshot_id
+               AND record.package_snapshot_id = lease.input_ref
                AND record.operation = 'final_status'
           )
-        ORDER BY lease.acquired_at ASC, lease.lease_id ASC`
+        ORDER BY lease.created_at ASC, lease.attempt_id ASC`
     )
-    .all(new Date().toISOString()) as Array<{ leaseId: string }>;
+    .all(new Date().toISOString()) as Array<{ attemptId: string }>;
 
-  return rows.map((row) => requireSchedulerSessionLease(coreDb, row.leaseId));
+  return rows.map((row) => requireNanoHostExecutionAttempt(coreDb, row.attemptId));
 }
 
 /**
- * Verifies that a durable AEP belongs to the scheduler lease and admission actor being restored.
+ * Verifies that a durable AEP belongs to the execution attempt and admission actor being restored.
  *
  * @param environmentPackage Durable redacted AEP snapshot.
- * @param lease Restorable scheduler lease.
+ * @param lease Restorable execution attempt.
  * @param admission Admission authority resolved through the scheduler chain.
  * @throws Error when any authority-bearing lineage field disagrees.
  */
 function assertRestoredPackageLineage(
   environmentPackage: AgentEnvironmentPackage,
-  lease: SchedulerSessionLeaseRecord,
-  admission: ReturnType<typeof requireSchedulerSessionLeaseAdmissionContext>
+  lease: NanoHostExecutionAttemptRecord,
+  admission: ReturnType<typeof requireSchedulerExecutionAttemptAdmissionContext>
 ): void {
   const scope = environmentPackage.scope;
 
   if (
-    environmentPackage.snapshotId !== lease.packageSnapshotId ||
+    environmentPackage.snapshotId !== lease.inputRef ||
     scope.agentSessionId !== lease.agentSessionId ||
     scope.workspaceId !== lease.workspaceId ||
     scope.threadId !== lease.threadId ||
@@ -156,7 +156,7 @@ function assertRestoredPackageLineage(
     !isDeepStrictEqual(scope.triggerActor, admission.triggerActor) ||
     scope.requestId !== admission.requestId
   ) {
-    throw new Error(`Restored worker-control package lineage mismatch: ${lease.leaseId}`);
+    throw new Error(`Restored worker-control package lineage mismatch: ${lease.attemptId}`);
   }
 }
 

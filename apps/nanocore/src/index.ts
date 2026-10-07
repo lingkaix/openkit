@@ -54,6 +54,12 @@ import {
   createProviderCredentialConfigured,
   createVaultProviderCredentialResolver,
 } from './providers/vault-credential-resolver.js';
+import { markSchedulerAttemptForTerminalTurn } from './runtime/execution-attempt-records.js';
+import {
+  classifyNanoHostAttemptsAfterRestart,
+  type RunNanoHostAttemptRecoveryInput,
+  runNanoHostAttemptRecoveryMaintenance,
+} from './runtime/nanohost-attempt-recovery.js';
 import { fenceNanoHostRuntimeTargetAfterRestart } from './runtime/nanohost-runtime-target.js';
 import { createNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
 import {
@@ -66,15 +72,14 @@ import {
   recoverPendingRequestsAtBoot,
 } from './runtime/pending-request-flow.js';
 import {
+  type SchedulerAttemptMaintenanceService,
+  startSchedulerAttemptMaintenanceService,
+} from './runtime/scheduler-attempt-maintenance-service.js';
+import {
   type SchedulerDispatchRetryService,
   startSchedulerDispatchRetryService,
 } from './runtime/scheduler-dispatch-service.js';
 import {
-  type SchedulerLeaseMaintenanceService,
-  startSchedulerLeaseMaintenanceService,
-} from './runtime/scheduler-lease-maintenance-service.js';
-import {
-  type RunSchedulerRestartRecoveryInput,
   runSchedulerRecoveryMaintenance,
   runSchedulerRestartRecovery,
 } from './runtime/scheduler-restart-recovery.js';
@@ -87,12 +92,7 @@ import { listExportableWorkerCheckpoints } from './runtime/worker-checkpoints.js
 import type { WorkerControlFinalStatusAcceptedInput } from './runtime/worker-control-gateway.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
-import {
-  CONFIGURED_WORKER_INITIAL_LEASE_DURATION_MS,
-  CONFIGURED_WORKER_STARTUP_TIMEOUT_MS,
-  completeSchedulerLeaseForTerminalTurn,
-  requireSchedulerSessionLeaseAdmissionContext,
-} from './scheduler-records.js';
+import { requireSchedulerExecutionAttemptAdmissionContext } from './scheduler-records.js';
 import {
   type CoreDb,
   listExistingWorkspaceDatabaseScopes,
@@ -118,18 +118,14 @@ import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 const dataRoot = resolveDataRoot(process.env);
 const bootId = createBootId();
 const SHUTDOWN_DEADLINE_MS = 5_000;
-const SCHEDULER_LEASE_MAINTENANCE_INTERVAL_MS = 30_000;
-const SCHEDULER_LEASE_RENEWAL_LEAD_MS = 300_000;
-const SCHEDULER_LEASE_RENEWAL_DURATION_MS = 900_000;
-const SCHEDULER_LEASE_MAX_TOTAL_MS = 7_200_000;
+const SCHEDULER_ATTEMPT_MAINTENANCE_INTERVAL_MS = 30_000;
 const OPENSHELL_REFRESH_STATUS_POLL_INTERVAL_MS = 60_000;
 const SCHEDULER_DISPATCH_RETRY_INTERVAL_MS = 30_000;
 const SCHEDULER_DISPATCH_RETRY_MAX_DISPATCHES = 5;
 let dataRootLock: DataRootLock | null = null;
 let openshellRefreshStatusPolling: OpenShellRefreshStatusPollingService | null = null;
 let schedulerDispatchRetry: SchedulerDispatchRetryService | null = null;
-let schedulerLeaseMaintenance: SchedulerLeaseMaintenanceService | null = null;
-let schedulerEpoch = 1;
+let schedulerAttemptMaintenance: SchedulerAttemptMaintenanceService | null = null;
 let runtimeConfigSnapshot: RuntimeConfigSnapshot | undefined;
 let mode: ReturnType<typeof resolveMode> | undefined;
 let bindHost: string | undefined;
@@ -327,13 +323,18 @@ const bootResult = await runBootPhases({
         });
         const recoveryRuntime = workerLifecycleRuntime;
         const recoveryInput = {
+          executionBackend: requireBootValue(
+            recoveryRuntime.turnExecutor.executionBackend,
+            'Execution backend was not initialized.'
+          ),
+          reconcileAcceptedFinalStatus: recoveryRuntime.reconcileAcceptedFinalStatus,
           store: recoveryStore,
           cleanupBackendSession: recoveryRuntime.cleanupBackendSession,
           isTurnExecutionActive: recoveryRuntime.isTurnExecutionActive,
           projectRecoveredTurn: async (subject) => {
-            const admission = requireSchedulerSessionLeaseAdmissionContext(
+            const admission = requireSchedulerExecutionAttemptAdmissionContext(
               recoveryCoreDb,
-              subject.leaseId
+              subject.attemptId
             );
             const anchored = 'state' in subject;
             const result = terminalizeGovernedWorkerTurn({
@@ -377,9 +378,9 @@ const bootResult = await runBootPhases({
           },
           prepareBackendCleanup: recoveryRuntime.prepareBackendCleanup,
           restoreBackendSession: recoveryRuntime.restoreBackendSession,
-        } satisfies RunSchedulerRestartRecoveryInput;
-        schedulerEpoch = (await runSchedulerRestartRecovery(recoveryCoreDb, recoveryInput))
-          .schedulerEpoch;
+        } satisfies RunNanoHostAttemptRecoveryInput;
+        await runSchedulerRestartRecovery(recoveryCoreDb, recoveryInput);
+        await classifyNanoHostAttemptsAfterRestart(recoveryCoreDb, recoveryInput);
         const checkpointRecoveryFailures =
           await classifyWorkerCheckpointsAfterSchedulerRecovery(recoveryCoreDb);
         const pendingWorkspace = {
@@ -393,12 +394,15 @@ const bootResult = await runBootPhases({
         };
         installPendingRequestAdmission(recoveryStore, pendingWorkspace);
         recoverPendingRequestsAtBoot(recoveryStore, pendingWorkspace);
-        runRecoveryMaintenance = () =>
-          runSchedulerRecoveryMaintenance(recoveryCoreDb, schedulerEpoch, recoveryInput);
+        runRecoveryMaintenance = async () => {
+          await runSchedulerRecoveryMaintenance(recoveryCoreDb, recoveryInput);
+          await runNanoHostAttemptRecoveryMaintenance(recoveryCoreDb, recoveryInput);
+          await classifyWorkerCheckpointsAfterSchedulerRecovery(recoveryCoreDb);
+        };
         for (const row of recoveryCoreDb.sqlite
           .prepare(
-            `SELECT package_snapshot_id AS packageSnapshotId
-             FROM scheduler_session_leases
+            `SELECT input_ref AS packageSnapshotId
+             FROM scheduler_execution_attempts
              WHERE recovery_state = 'awaiting-reconnect'`
           )
           .all() as Array<{ readonly packageSnapshotId: string }>) {
@@ -530,7 +534,6 @@ const app = createApp({
   nanohostTransportSessionAuthority,
   runtimeConfigManager,
   providerSubscriptionAccountManager,
-  schedulerEpoch,
   store,
   turnExecutor,
   vaultUnlockState: activeVaultUnlockState,
@@ -627,36 +630,30 @@ const nanoHostServer = nanoHostListener
 schedulerDispatchRetry = startSchedulerDispatchRetryService({
   coreDb,
   dependencies: { providerCredentialResolver: schedulerProviderCredentialResolver },
-  expectedControlMode: 'poll',
-  expectedDataPlaneMode: 'openshell-files',
-  heartbeatIntervalMs: 10_000,
-  heartbeatTimeoutMs: 30_000,
   intervalMs: SCHEDULER_DISPATCH_RETRY_INTERVAL_MS,
-  leaseDurationMs: CONFIGURED_WORKER_INITIAL_LEASE_DURATION_MS,
   maxDispatches: SCHEDULER_DISPATCH_RETRY_MAX_DISPATCHES,
   runtimeConfigSnapshot: () => runtimeConfigManager.current(),
-  schedulerEpoch,
-  startupTimeoutMs: CONFIGURED_WORKER_STARTUP_TIMEOUT_MS,
   store,
   turnExecutor,
+  executionBackend: requireBootValue(
+    turnExecutor.executionBackend,
+    'Execution backend was not initialized.'
+  ),
   onError: (error) => {
     console.warn(
       `Scheduler dispatch retry failed: ${error instanceof Error ? error.message : String(error)}`
     );
   },
 });
-schedulerLeaseMaintenance = startSchedulerLeaseMaintenanceService(coreDb, {
+schedulerAttemptMaintenance = startSchedulerAttemptMaintenanceService({
   runRecoveryMaintenance: requireBootValue(
     runRecoveryMaintenance,
     'Scheduler recovery maintenance was not initialized.'
   ),
-  intervalMs: SCHEDULER_LEASE_MAINTENANCE_INTERVAL_MS,
-  maxTotalLeaseMs: SCHEDULER_LEASE_MAX_TOTAL_MS,
-  renewalDurationMs: SCHEDULER_LEASE_RENEWAL_DURATION_MS,
-  renewalLeadMs: SCHEDULER_LEASE_RENEWAL_LEAD_MS,
+  intervalMs: SCHEDULER_ATTEMPT_MAINTENANCE_INTERVAL_MS,
   onError: (error) => {
     console.warn(
-      `Scheduler lease maintenance failed: ${error instanceof Error ? error.message : String(error)}`
+      `Scheduler attempt maintenance failed: ${error instanceof Error ? error.message : String(error)}`
     );
   },
 });
@@ -685,15 +682,15 @@ function scheduleCommittedFinalStatusCloseout(input: WorkerControlFinalStatusAcc
   void (async () => {
     const lease = database.sqlite
       .prepare(
-        'SELECT lease_id AS leaseId FROM scheduler_session_leases WHERE sandbox_binding_ref = ?'
+        'SELECT attempt_id AS attemptId FROM scheduler_execution_attempts WHERE binding_ref = ?'
       )
-      .get(input.sandboxBindingRef) as { readonly leaseId: string } | undefined;
-    const session = lease ? getWorkerBackendSession(database, lease.leaseId) : null;
+      .get(input.sandboxBindingRef) as { readonly attemptId: string } | undefined;
+    const session = lease ? getWorkerBackendSession(database, lease.attemptId) : null;
     if (!session) {
       throw new Error('Accepted worker final status has no durable backend session.');
     }
     const result = await runtime.reconcileAcceptedFinalStatus(session);
-    completeSchedulerLeaseForTerminalTurn(database, result.turn);
+    markSchedulerAttemptForTerminalTurn(database, result.turn);
   })().catch((error) => {
     restartCloseoutPackageSnapshots.add(packageSnapshotId);
     console.warn(
@@ -713,11 +710,11 @@ function shutdown(signal: NodeJS.Signals): void {
   console.log(`Received ${signal}; shutting down NanoCore.`);
   bootReadiness = createShutdownReadinessSnapshot(bootReadiness);
   schedulerDispatchRetry?.stop();
-  schedulerLeaseMaintenance?.stop();
+  schedulerAttemptMaintenance?.stop();
   openshellRefreshStatusPolling?.stop();
   const stepsCompleted = [
     'scheduler.dispatch-retry.stop',
-    'scheduler.lease-maintenance.stop',
+    'scheduler.attempt-maintenance.stop',
     'openshell.refresh-status-polling.stop',
   ];
   closeWithDeadline({

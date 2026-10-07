@@ -81,6 +81,60 @@ function selection(binding: ReturnType<typeof createBinding>) {
 }
 
 describe('Worker storage bindings', () => {
+  it('reads inert retained target additions without changing storage, volume or layout identity', () => {
+    const coreDb = createCoreDb();
+    try {
+      const original = createBinding(coreDb);
+      const retained = JSON.stringify(
+        original.targets.map((target) => ({
+          ...target,
+          description: { note: 'volume annotation' },
+        }))
+      );
+      coreDb.sqlite
+        .prepare('UPDATE worker_storage_bindings SET targets_json = ? WHERE storage_ref = ?')
+        .run(retained, original.storageRef);
+      expect(getWorkerStorageBinding(coreDb, { storageRef: original.storageRef })).toEqual(
+        original
+      );
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT targets_json AS bytes FROM worker_storage_bindings WHERE storage_ref = ?'
+          )
+          .get(original.storageRef)
+      ).toEqual({ bytes: retained });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    { active: 'true' },
+    { initialized: null },
+    { target: 'relative-path' },
+    { requiredFeatures: ['future-attachment'] },
+  ])('refuses invalid or unsupported required retained target semantics %# without changing bytes', (change) => {
+    const coreDb = createCoreDb();
+    try {
+      const original = createBinding(coreDb);
+      const retained = JSON.stringify(original.targets.map((target) => ({ ...target, ...change })));
+      coreDb.sqlite
+        .prepare('UPDATE worker_storage_bindings SET targets_json = ? WHERE storage_ref = ?')
+        .run(retained, original.storageRef);
+      expect(() => getWorkerStorageBinding(coreDb, { storageRef: original.storageRef })).toThrow();
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT targets_json AS bytes FROM worker_storage_bindings WHERE storage_ref = ?'
+          )
+          .get(original.storageRef)
+      ).toEqual({ bytes: retained });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('refuses attachment generation exhaustion before changing storage or contributors', () => {
     const coreDb = createCoreDb();
     try {

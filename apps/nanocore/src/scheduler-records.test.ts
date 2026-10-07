@@ -2,44 +2,39 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { z } from 'zod';
+import { ensureLocalUser } from './auth/identity.js';
+import { SimulatedTurnExecutor } from './lib/simulator.js';
+import * as attemptActionOwners from './runtime/execution-attempt-records.js';
+import {
+  acceptNanoHostAttemptHeartbeat,
+  requireNanoHostExecutionAttempt,
+  resolveNanoHostAttemptTokenBinding,
+} from './runtime/nanohost-attempt-records.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   getNanoHostRuntimeTarget,
   upsertNanoHostRuntimeTarget,
 } from './runtime/nanohost-runtime-target.js';
+import { runSchedulerRecoveryMaintenance } from './runtime/scheduler-restart-recovery.js';
+import { createConfiguredWorkerLifecycleRuntime } from './runtime/turn-executor-factory.js';
 import {
   recordWorkerBackendSessionMaterializing,
   transitionWorkerBackendSessionState,
 } from './runtime/worker-backend-sessions.js';
 import {
-  acceptSchedulerLeaseHeartbeat,
   cancelSchedulerAdmissionEntry,
-  completeSchedulerLeaseForTerminalTurn,
-  completeSchedulerSessionLease,
   createSchedulerAdmissionEntry,
-  createSchedulerPlacementPlan,
-  createSchedulerSessionLease,
   denySchedulerAdmissionEntry,
-  dispatchNextSchedulerEntry,
-  ensureConfiguredSchedulerBaseline,
-  expireReleasingSchedulerLeases,
+  findNextDispatchableSchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
   listSchedulerAdmissionEntriesForWorkspace,
-  listSchedulerLeasesNeedingWorkspaceRecovery,
-  markExpiredSchedulerLeasesStale,
-  markSchedulerSessionLeaseReleasing,
-  recordSchedulerSupplyRefreshAck,
-  renewSchedulerSessionLease,
-  resolveSchedulerLeaseTokenBinding,
+  requireSchedulerAdmissionEntry,
   retryDeniedSchedulerAdmissionEntry,
-  schedulerLeaseHasAppliedSupplyRefreshAck,
-  transitionStartupTimedOutSchedulerLeases,
-  upsertSchedulerCapacityRecord,
-  upsertSchedulerWorkerPool,
 } from './scheduler-records';
 import { openCoreDb } from './storage/db';
 import { applyMigrations } from './storage/migrate';
+import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
  * Creates an isolated migrated Core database for scheduler tests.
@@ -49,6 +44,8 @@ import { applyMigrations } from './storage/migrate';
 function createMigratedCoreDb() {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-scheduler-')));
   applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
   return coreDb;
 }
 
@@ -71,126 +68,34 @@ function seedBackendRuntimeTarget(coreDb: ReturnType<typeof createMigratedCoreDb
   });
 }
 
-/**
- * Creates a queued entry, planned placement, and acquired lease for lease lifecycle tests.
- *
- * @param coreDb Open Core database handle.
- * @param leaseId Stable lease id.
- * @returns Stored acquired lease.
- */
-function createAcquiredLease(coreDb: ReturnType<typeof createMigratedCoreDb>, leaseId: string) {
-  const suffix = leaseId.replace('lease_', '');
-
-  createSchedulerAdmissionEntry(coreDb, {
+/** Establishes prepared and submitted Native authority for record-owner regressions. */
+function createPreparedAttempt(coreDb: ReturnType<typeof createMigratedCoreDb>, attemptId: string) {
+  const suffix = attemptId.replace('lease_', '');
+  const entry = createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
     triggerActor: { kind: 'user', id: 'user_local' },
     queueEntryId: `queue_${suffix}`,
     workspaceId: 'ws_demo',
     threadId: `thread_${suffix}`,
     turnId: `turn_${suffix}`,
-    turnInput: `Run lease ${suffix}`,
+    turnInput: `Run Native attempt ${suffix}`,
     requestedAgentId: 'agent_worker',
-    profileRef: null,
-    priorityClass: 'interactive',
-    requiredPoolConstraints: ['openshell.local'],
     now: () => '2026-07-05T00:00:00.000Z',
   });
-  createSchedulerPlacementPlan(coreDb, {
-    planId: `plan_${suffix}`,
-    queueEntryId: `queue_${suffix}`,
-    selectedPoolId: 'pool_local',
-    selectedTargetId: 'target_local',
-    plannedLeaseDurationMs: 900_000,
-    heartbeatIntervalMs: 10_000,
-    heartbeatTimeoutMs: 30_000,
-    expectedControlMode: 'poll',
-    expectedDataPlaneMode: 'openshell-files',
-    degradedOptionalFeatures: [],
-    failoverTargetId: null,
-    policyDecisionIds: [],
-    capacitySnapshotRef: 'target_local:1',
-    schedulerEpoch: 7,
-    now: () => '2026-07-05T00:00:01.000Z',
-  });
-
-  return createSchedulerSessionLease(coreDb, {
-    leaseId,
-    planId: `plan_${suffix}`,
+  recordTestExecutionAttempt(coreDb, {
+    entry,
+    attemptId,
     agentSessionId: `session_${suffix}`,
-    packageSnapshotId: 'pkg_demo',
+    inputRef: 'pkg_demo',
+    bindingRef: `lease-binding:${attemptId}`,
     sessionCompatibilityKey: `sha256:${suffix}`,
-    expiresAt: '2026-07-05T00:15:01.000Z',
-    heartbeatDeadline: '2026-07-05T00:00:31.000Z',
-    startupDeadline: '2026-07-05T00:02:01.000Z',
-    sandboxTokenBindingRef: `lease-token:${leaseId}`,
     now: () => '2026-07-05T00:00:02.000Z',
+    operationId: `fixture-submit:${attemptId}`,
   });
+  return requireNanoHostExecutionAttempt(coreDb, attemptId);
 }
 
-/**
- * Creates one dispatched scheduler lease with claimed capacity.
- *
- * @param coreDb Open Core database handle.
- * @param leaseId Stable lease id.
- */
-function createDispatchedLease(coreDb: ReturnType<typeof createMigratedCoreDb>, leaseId: string) {
-  const suffix = leaseId.replace('lease_', '');
-
-  upsertSchedulerWorkerPool(coreDb, {
-    poolId: `pool_${suffix}`,
-    allowedBackendKinds: ['openshell'],
-    allowedPlacements: ['local'],
-    maxConcurrentSessions: 2,
-    queueLimit: 20,
-    defaultTimeoutMs: 900_000,
-    allowedWorkspaceScopes: ['local'],
-    budgetClass: 'interactive',
-    healthSummary: 'ready',
-    currentAdmittedSessionCount: 0,
-    currentQueueDepth: 1,
-    status: 'active',
-  });
-  upsertSchedulerCapacityRecord(coreDb, {
-    targetId: `target_${suffix}`,
-    poolId: `pool_${suffix}`,
-    capacityClass: 'local',
-    concurrencyCeiling: 2,
-    inUseCount: 0,
-    queueDepth: 0,
-    observationSource: 'configured',
-    observedAt: '2026-07-05T00:00:00.000Z',
-  });
-  createSchedulerAdmissionEntry(coreDb, {
-    triggerActor: { kind: 'user', id: 'user_local' },
-    queueEntryId: `queue_${suffix}`,
-    workspaceId: 'ws_demo',
-    threadId: `thread_${suffix}`,
-    turnId: `turn_${suffix}`,
-    turnInput: `Run dispatched lease ${suffix}`,
-    requestedAgentId: 'agent_worker',
-    profileRef: null,
-    priorityClass: 'interactive',
-    requiredPoolConstraints: ['openshell.local'],
-    now: () => '2026-07-05T00:00:01.000Z',
-  });
-
-  dispatchNextSchedulerEntry(coreDb, {
-    planId: `plan_${suffix}`,
-    leaseId,
-    agentSessionId: `session_${suffix}`,
-    packageSnapshotId: 'pkg_demo',
-    schedulerEpoch: 8,
-    leaseDurationMs: 900_000,
-    heartbeatIntervalMs: 10_000,
-    heartbeatTimeoutMs: 30_000,
-    startupTimeoutMs: 120_000,
-    expectedControlMode: 'poll',
-    expectedDataPlaneMode: 'openshell-files',
-    sandboxBindingRef: `lease-binding:${leaseId}`,
-    now: () => '2026-07-05T00:00:02.000Z',
-  });
-}
-
-/** Reads every row participating in one terminal scheduler accounting transaction. */
+/** Observes exact admission and attempt bytes when terminal ownership is contradictory. */
 function terminalAccountingSnapshot(
   coreDb: ReturnType<typeof createMigratedCoreDb>,
   suffix: string
@@ -199,18 +104,9 @@ function terminalAccountingSnapshot(
     admission: coreDb.sqlite
       .prepare('SELECT * FROM scheduler_admission_entries WHERE queue_entry_id = ?')
       .get(`queue_${suffix}`),
-    capacity: coreDb.sqlite
-      .prepare('SELECT * FROM scheduler_capacity_records WHERE target_id = ?')
-      .get(`target_${suffix}`),
-    lease: coreDb.sqlite
-      .prepare('SELECT * FROM scheduler_session_leases WHERE lease_id = ?')
-      .get(`lease_${suffix}`),
-    plan: coreDb.sqlite
-      .prepare('SELECT * FROM scheduler_placement_plans WHERE plan_id = ?')
-      .get(`plan_${suffix}`),
-    pool: coreDb.sqlite
-      .prepare('SELECT * FROM scheduler_worker_pools WHERE pool_id = ?')
-      .get(`pool_${suffix}`),
+    attempt: observeExecutionAttempts(coreDb).find(
+      (attempt) => attempt.attempt_id === `lease_${suffix}`
+    ),
   };
 }
 
@@ -222,69 +118,42 @@ const terminalAccountingCorruptions: ReadonlyArray<{
   {
     apply: (coreDb, suffix) => {
       coreDb.sqlite
-        .prepare('DELETE FROM scheduler_placement_plans WHERE plan_id = ?')
-        .run(`plan_${suffix}`);
-    },
-    expectedError: /placement plan/i,
-    name: 'missing placement plan',
-  },
-  {
-    apply: (coreDb, suffix) => {
-      coreDb.sqlite
-        .prepare("UPDATE scheduler_placement_plans SET status = 'completed' WHERE plan_id = ?")
-        .run(`plan_${suffix}`);
-    },
-    expectedError: /placement plan/i,
-    name: 'changed placement plan state',
-  },
-  {
-    apply: (coreDb, suffix) => {
-      coreDb.sqlite
         .prepare('DELETE FROM scheduler_admission_entries WHERE queue_entry_id = ?')
         .run(`queue_${suffix}`);
     },
     expectedError: /admission/i,
     name: 'missing admission',
   },
-  {
-    apply: (coreDb, suffix) => {
-      coreDb.sqlite
-        .prepare('DELETE FROM scheduler_capacity_records WHERE target_id = ?')
-        .run(`target_${suffix}`);
-    },
-    expectedError: /capacity/i,
-    name: 'missing capacity row',
-  },
-  {
-    apply: (coreDb, suffix) => {
-      coreDb.sqlite
-        .prepare('UPDATE scheduler_capacity_records SET in_use_count = 0 WHERE target_id = ?')
-        .run(`target_${suffix}`);
-    },
-    expectedError: /capacity/i,
-    name: 'zero capacity counter',
-  },
-  {
-    apply: (coreDb, suffix) => {
-      coreDb.sqlite
-        .prepare('DELETE FROM scheduler_worker_pools WHERE pool_id = ?')
-        .run(`pool_${suffix}`);
-    },
-    expectedError: /pool/i,
-    name: 'missing worker pool',
-  },
-  {
-    apply: (coreDb, suffix) => {
-      coreDb.sqlite
-        .prepare(
-          'UPDATE scheduler_worker_pools SET current_admitted_session_count = 0 WHERE pool_id = ?'
-        )
-        .run(`pool_${suffix}`);
-    },
-    expectedError: /pool/i,
-    name: 'zero pool counter',
-  },
 ];
+
+/** Observes the Core attempt phase without projecting the retired grant or physical accounting. */
+function observeExecutionAttempts(
+  coreDb: ReturnType<typeof openCoreDb>
+): Record<string, unknown>[] {
+  const present = coreDb.sqlite
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduler_execution_attempts'"
+    )
+    .get();
+  return present
+    ? (coreDb.sqlite
+        .prepare('SELECT * FROM scheduler_execution_attempts ORDER BY rowid')
+        .all() as Record<string, unknown>[])
+    : [];
+}
+
+/** Exercises the current attempt closeout owner, never the deleted SessionLease grant action. */
+function completeTerminalAttempt(
+  coreDb: ReturnType<typeof openCoreDb>,
+  turn: {
+    readonly id: string;
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly status: string;
+  }
+) {
+  return attemptActionOwners.markSchedulerAttemptForTerminalTurn(coreDb, turn);
+}
 
 describe('scheduler records', () => {
   it('retains only the non-secret presented administrator token id across a database reopen', () => {
@@ -293,6 +162,7 @@ describe('scheduler records', () => {
     applyMigrations(first);
     try {
       const input = {
+        backendId: 'nanohost',
         queueEntryId: 'queue_admin_token',
         serverAdminTokenId: 'token_admin_1',
         triggerActor: { kind: 'user' as const, id: 'user_admin' },
@@ -301,8 +171,6 @@ describe('scheduler records', () => {
         turnId: 'turn_1',
         turnInput: 'Run task',
         requestedAgentId: 'assistant',
-        priorityClass: 'interactive' as const,
-        requiredPoolConstraints: [],
       };
       createSchedulerAdmissionEntry(first, input);
       expect(() =>
@@ -310,7 +178,7 @@ describe('scheduler records', () => {
           ...input,
           serverAdminTokenId: 'token_admin_2',
         })
-      ).toThrow('already has a non-terminal scheduler admission entry');
+      ).toThrow('conflicts with its retained input');
     } finally {
       first.sqlite.close();
     }
@@ -330,60 +198,12 @@ describe('scheduler records', () => {
     }
   });
 
-  it('records supply refresh acknowledgements as durable renewal declarations', () => {
-    const coreDb = createMigratedCoreDb();
-
-    try {
-      const unsupported = recordSchedulerSupplyRefreshAck(coreDb, {
-        agentSessionId: 'as_refresh',
-        acknowledgedAt: '2026-07-05T00:00:00.000Z',
-        message: 'Sidecar cannot refresh this package.',
-        packageSnapshotId: 'pkg_refresh',
-        refreshId: 'refresh_1',
-        sequence: 1,
-        status: 'unsupported',
-        threadId: 'thread_refresh',
-        turnId: 'turn_refresh',
-        workspaceId: 'ws_demo',
-      });
-
-      expect(unsupported.status).toBe('unsupported');
-      expect(
-        schedulerLeaseHasAppliedSupplyRefreshAck(coreDb, {
-          agentSessionId: 'as_refresh',
-          packageSnapshotId: 'pkg_refresh',
-        })
-      ).toBe(false);
-
-      recordSchedulerSupplyRefreshAck(coreDb, {
-        agentSessionId: 'as_refresh',
-        acknowledgedAt: '2026-07-05T00:00:01.000Z',
-        message: null,
-        packageSnapshotId: 'pkg_refresh',
-        refreshId: 'refresh_1',
-        sequence: 2,
-        status: 'applied',
-        threadId: 'thread_refresh',
-        turnId: 'turn_refresh',
-        workspaceId: 'ws_demo',
-      });
-
-      expect(
-        schedulerLeaseHasAppliedSupplyRefreshAck(coreDb, {
-          agentSessionId: 'as_refresh',
-          packageSnapshotId: 'pkg_refresh',
-        })
-      ).toBe(true);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('persists admission queue entries in priority and FIFO order', () => {
+  it('persists admission queue entries in committed FIFO order without priority policy', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_automation',
         workspaceId: 'ws_b',
@@ -392,11 +212,10 @@ describe('scheduler records', () => {
         turnInput: 'Run automation work',
         requestedAgentId: 'agent_worker',
         profileRef: null,
-        priorityClass: 'automation',
-        requiredPoolConstraints: ['openshell.local'],
         now: () => '2026-07-05T00:00:02.000Z',
       });
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         queueEntryId: 'queue_goal_fresh',
         triggerActor: { kind: 'user', id: 'user_local' },
         workspaceId: 'ws_goal',
@@ -404,8 +223,6 @@ describe('scheduler records', () => {
         turnId: 'turn_goal',
         turnInput: 'Run fresh Goal work',
         requestedAgentId: 'agent_worker',
-        priorityClass: 'interactive',
-        requiredPoolConstraints: ['openshell.local'],
         workerStorageChoice: {
           goalId: 'goal_fresh',
           kind: 'fresh',
@@ -414,6 +231,7 @@ describe('scheduler records', () => {
         now: () => '2026-07-05T00:00:04.000Z',
       });
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         queueEntryId: 'queue_interactive',
         triggerActor: {
           kind: 'automation',
@@ -426,8 +244,6 @@ describe('scheduler records', () => {
         turnInput: 'Run interactive work',
         requestedAgentId: 'agent_worker',
         profileRef: null,
-        priorityClass: 'interactive',
-        requiredPoolConstraints: ['openshell.local'],
         workspaceCwd: '/workspace/project',
         workspaceRoots: [
           {
@@ -451,6 +267,7 @@ describe('scheduler records', () => {
         now: () => '2026-07-05T00:00:03.000Z',
       });
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_maintenance',
         workspaceId: 'ws_c',
@@ -459,26 +276,36 @@ describe('scheduler records', () => {
         turnInput: 'Run maintenance work',
         requestedAgentId: 'agent_worker',
         profileRef: null,
-        priorityClass: 'maintenance',
-        requiredPoolConstraints: ['openshell.local'],
         now: () => '2026-07-05T00:00:01.000Z',
       });
 
       expect(
         listQueuedSchedulerAdmissionEntries(coreDb).map((entry) => entry.queueEntryId)
-      ).toEqual(['queue_interactive', 'queue_goal_fresh', 'queue_automation', 'queue_maintenance']);
-      expect(listQueuedSchedulerAdmissionEntries(coreDb)[0]?.turnInput).toBe(
-        'Run interactive work'
-      );
-      expect(listQueuedSchedulerAdmissionEntries(coreDb)[0]?.triggerActor).toEqual({
+      ).toEqual(['queue_automation', 'queue_goal_fresh', 'queue_interactive', 'queue_maintenance']);
+      expect(
+        listQueuedSchedulerAdmissionEntries(coreDb).find(
+          (entry) => entry.queueEntryId === 'queue_interactive'
+        )?.turnInput
+      ).toBe('Run interactive work');
+      expect(
+        listQueuedSchedulerAdmissionEntries(coreDb).find(
+          (entry) => entry.queueEntryId === 'queue_interactive'
+        )?.triggerActor
+      ).toEqual({
         kind: 'automation',
         id: 'automation_interactive',
         responsibleUserId: 'user_interactive',
       });
-      expect(listQueuedSchedulerAdmissionEntries(coreDb)[0]?.workspaceCwd).toBe(
-        '/workspace/project'
-      );
-      expect(listQueuedSchedulerAdmissionEntries(coreDb)[0]?.workspaceRoots).toEqual([
+      expect(
+        listQueuedSchedulerAdmissionEntries(coreDb).find(
+          (entry) => entry.queueEntryId === 'queue_interactive'
+        )?.workspaceCwd
+      ).toBe('/workspace/project');
+      expect(
+        listQueuedSchedulerAdmissionEntries(coreDb).find(
+          (entry) => entry.queueEntryId === 'queue_interactive'
+        )?.workspaceRoots
+      ).toEqual([
         {
           access: 'read-write',
           id: 'repo',
@@ -487,7 +314,11 @@ describe('scheduler records', () => {
           workerPath: '/workspace/project',
         },
       ]);
-      expect(listQueuedSchedulerAdmissionEntries(coreDb)[0]?.workerStorageChoice).toEqual({
+      expect(
+        listQueuedSchedulerAdmissionEntries(coreDb).find(
+          (entry) => entry.queueEntryId === 'queue_interactive'
+        )?.workerStorageChoice
+      ).toEqual({
         adjudicatedThreadIds: ['thread_predecessor'],
         expectedRevision: 7,
         goalId: 'goal_a',
@@ -512,6 +343,7 @@ describe('scheduler records', () => {
 
     try {
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_bad_storage_choice',
         workspaceId: 'ws_demo',
@@ -520,8 +352,6 @@ describe('scheduler records', () => {
         turnInput: 'Reject malformed storage choice',
         requestedAgentId: 'agent_worker',
         profileRef: null,
-        priorityClass: 'interactive',
-        requiredPoolConstraints: [],
         now: () => '2026-07-05T00:00:00.000Z',
       });
       coreDb.sqlite
@@ -548,6 +378,7 @@ describe('scheduler records', () => {
 
     try {
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_one',
         workspaceId: 'ws_demo',
@@ -556,13 +387,12 @@ describe('scheduler records', () => {
         turnInput: 'Run first queued turn',
         requestedAgentId: 'agent_worker',
         profileRef: null,
-        priorityClass: 'interactive',
-        requiredPoolConstraints: [],
         now: () => '2026-07-05T00:00:00.000Z',
       });
 
       expect(() =>
         createSchedulerAdmissionEntry(coreDb, {
+          backendId: 'nanohost',
           triggerActor: { kind: 'user', id: 'user_local' },
           queueEntryId: 'queue_two',
           workspaceId: 'ws_demo',
@@ -571,11 +401,9 @@ describe('scheduler records', () => {
           turnInput: 'Run duplicate queued turn',
           requestedAgentId: 'agent_worker',
           profileRef: null,
-          priorityClass: 'interactive',
-          requiredPoolConstraints: [],
           now: () => '2026-07-05T00:00:01.000Z',
         })
-      ).toThrow('already has a non-terminal scheduler admission entry');
+      ).toThrow('conflicts with its retained input');
     } finally {
       coreDb.sqlite.close();
     }
@@ -586,6 +414,7 @@ describe('scheduler records', () => {
 
     try {
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_denied',
         workspaceId: 'ws_demo',
@@ -594,8 +423,6 @@ describe('scheduler records', () => {
         turnInput: 'Run denied turn',
         requestedAgentId: 'agent_worker',
         profileRef: null,
-        priorityClass: 'interactive',
-        requiredPoolConstraints: [],
         now: () => '2026-07-05T00:00:00.000Z',
       });
 
@@ -617,6 +444,7 @@ describe('scheduler records', () => {
 
     try {
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         queueEntryId: 'queue_retry_denied',
         triggerActor: { kind: 'user', id: 'user_original_trigger' },
         workspaceId: 'ws_demo',
@@ -625,13 +453,11 @@ describe('scheduler records', () => {
         turnInput: 'Run denied turn again',
         requestedAgentId: 'agent_worker',
         profileRef: null,
-        priorityClass: 'interactive',
-        requiredPoolConstraints: [],
         now: () => '2026-07-05T00:00:00.000Z',
       });
       denySchedulerAdmissionEntry(coreDb, {
         queueEntryId: 'queue_retry_denied',
-        denialReason: 'no-compatible-pool',
+        denialReason: 'authority-denied',
       });
 
       const retried = retryDeniedSchedulerAdmissionEntry(coreDb, {
@@ -664,6 +490,7 @@ describe('scheduler records', () => {
 
     try {
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         queueEntryId: 'queue_cancel',
         triggerActor: { kind: 'user', id: 'user_original_trigger' },
         workspaceId: 'ws_demo',
@@ -672,8 +499,6 @@ describe('scheduler records', () => {
         turnInput: 'Cancel this turn',
         requestedAgentId: 'agent_worker',
         profileRef: null,
-        priorityClass: 'interactive',
-        requiredPoolConstraints: [],
         now: () => '2026-07-05T00:00:00.000Z',
       });
 
@@ -690,259 +515,21 @@ describe('scheduler records', () => {
     }
   });
 
-  it('creates placement plans from queued admission entries', () => {
-    const coreDb = createMigratedCoreDb();
-
-    try {
-      createSchedulerAdmissionEntry(coreDb, {
-        triggerActor: { kind: 'user', id: 'user_local' },
-        queueEntryId: 'queue_plan',
-        workspaceId: 'ws_demo',
-        threadId: 'thread_demo',
-        turnId: 'turn_demo',
-        turnInput: 'Run planned turn',
-        requestedAgentId: 'agent_worker',
-        profileRef: null,
-        priorityClass: 'interactive',
-        requiredPoolConstraints: ['openshell.local'],
-        now: () => '2026-07-05T00:00:00.000Z',
-      });
-
-      const plan = createSchedulerPlacementPlan(coreDb, {
-        planId: 'plan_demo',
-        queueEntryId: 'queue_plan',
-        selectedPoolId: 'pool_local',
-        selectedTargetId: 'target_local',
-        plannedLeaseDurationMs: 900_000,
-        heartbeatIntervalMs: 10_000,
-        heartbeatTimeoutMs: 30_000,
-        expectedControlMode: 'poll',
-        expectedDataPlaneMode: 'openshell-files',
-        degradedOptionalFeatures: ['gpu'],
-        failoverTargetId: null,
-        policyDecisionIds: ['decision_1'],
-        capacitySnapshotRef: 'target_local:1',
-        schedulerEpoch: 7,
-        now: () => '2026-07-05T00:00:01.000Z',
-      });
-
-      expect(plan).toMatchObject({
-        planId: 'plan_demo',
-        queueEntryId: 'queue_plan',
-        workspaceId: 'ws_demo',
-        threadId: 'thread_demo',
-        turnId: 'turn_demo',
-        selectedPoolId: 'pool_local',
-        selectedTargetId: 'target_local',
-        status: 'planned',
-        schedulerEpoch: 7,
-      });
-      expect(plan.degradedOptionalFeatures).toEqual(['gpu']);
-      expect(plan.policyDecisionIds).toEqual(['decision_1']);
-      expect(listQueuedSchedulerAdmissionEntries(coreDb)).toEqual([]);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('rejects placement plans for terminal admission entries', () => {
-    const coreDb = createMigratedCoreDb();
-
-    try {
-      createSchedulerAdmissionEntry(coreDb, {
-        triggerActor: { kind: 'user', id: 'user_local' },
-        queueEntryId: 'queue_denied_plan',
-        workspaceId: 'ws_demo',
-        threadId: 'thread_demo',
-        turnId: 'turn_demo',
-        turnInput: 'Run denied placement turn',
-        requestedAgentId: 'agent_worker',
-        profileRef: null,
-        priorityClass: 'interactive',
-        requiredPoolConstraints: [],
-        now: () => '2026-07-05T00:00:00.000Z',
-      });
-      denySchedulerAdmissionEntry(coreDb, {
-        queueEntryId: 'queue_denied_plan',
-        denialReason: 'no-compatible-pool',
-      });
-
-      expect(() =>
-        createSchedulerPlacementPlan(coreDb, {
-          planId: 'plan_denied',
-          queueEntryId: 'queue_denied_plan',
-          selectedPoolId: 'pool_local',
-          selectedTargetId: 'target_local',
-          plannedLeaseDurationMs: 900_000,
-          heartbeatIntervalMs: 10_000,
-          heartbeatTimeoutMs: 30_000,
-          expectedControlMode: 'poll',
-          expectedDataPlaneMode: 'openshell-files',
-          degradedOptionalFeatures: [],
-          failoverTargetId: null,
-          policyDecisionIds: [],
-          capacitySnapshotRef: null,
-          schedulerEpoch: 7,
-          now: () => '2026-07-05T00:00:01.000Z',
-        })
-      ).toThrow('is not queued');
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('acquires session leases from planned placement plans', () => {
-    const coreDb = createMigratedCoreDb();
-
-    try {
-      createSchedulerAdmissionEntry(coreDb, {
-        triggerActor: { kind: 'user', id: 'user_local' },
-        queueEntryId: 'queue_lease',
-        workspaceId: 'ws_demo',
-        threadId: 'thread_demo',
-        turnId: 'turn_demo',
-        turnInput: 'Run lease turn',
-        requestedAgentId: 'agent_worker',
-        profileRef: null,
-        priorityClass: 'interactive',
-        requiredPoolConstraints: ['openshell.local'],
-        now: () => '2026-07-05T00:00:00.000Z',
-      });
-      createSchedulerPlacementPlan(coreDb, {
-        planId: 'plan_lease',
-        queueEntryId: 'queue_lease',
-        selectedPoolId: 'pool_local',
-        selectedTargetId: 'target_local',
-        plannedLeaseDurationMs: 900_000,
-        heartbeatIntervalMs: 10_000,
-        heartbeatTimeoutMs: 30_000,
-        expectedControlMode: 'poll',
-        expectedDataPlaneMode: 'openshell-files',
-        degradedOptionalFeatures: [],
-        failoverTargetId: null,
-        policyDecisionIds: [],
-        capacitySnapshotRef: 'target_local:1',
-        schedulerEpoch: 7,
-        now: () => '2026-07-05T00:00:01.000Z',
-      });
-
-      const lease = createSchedulerSessionLease(coreDb, {
-        leaseId: 'lease_demo',
-        planId: 'plan_lease',
-        agentSessionId: 'session_demo',
-        packageSnapshotId: 'pkg_demo',
-        sessionCompatibilityKey: 'sha256:planned-lease-compatible',
-        expiresAt: '2026-07-05T00:15:01.000Z',
-        heartbeatDeadline: '2026-07-05T00:00:31.000Z',
-        startupDeadline: '2026-07-05T00:02:01.000Z',
-        sandboxTokenBindingRef: 'lease-token:lease_demo',
-        now: () => '2026-07-05T00:00:02.000Z',
-      });
-      const planRow = coreDb.sqlite
-        .prepare('SELECT status FROM scheduler_placement_plans WHERE plan_id = ?')
-        .get('plan_lease') as { status: string };
-
-      expect(lease).toMatchObject({
-        leaseId: 'lease_demo',
-        planId: 'plan_lease',
-        workspaceId: 'ws_demo',
-        threadId: 'thread_demo',
-        turnId: 'turn_demo',
-        agentSessionId: 'session_demo',
-        packageSnapshotId: 'pkg_demo',
-        sessionCompatibilityKey: 'sha256:planned-lease-compatible',
-        poolId: 'pool_local',
-        targetId: 'target_local',
-        status: 'acquired',
-        schedulerEpoch: 7,
-        renewalCount: 0,
-      });
-      expect(planRow.status).toBe('executing');
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('rejects session leases for non-planned placement plans', () => {
-    const coreDb = createMigratedCoreDb();
-
-    try {
-      createSchedulerAdmissionEntry(coreDb, {
-        triggerActor: { kind: 'user', id: 'user_local' },
-        queueEntryId: 'queue_double_lease',
-        workspaceId: 'ws_demo',
-        threadId: 'thread_demo',
-        turnId: 'turn_demo',
-        turnInput: 'Run double lease turn',
-        requestedAgentId: 'agent_worker',
-        profileRef: null,
-        priorityClass: 'interactive',
-        requiredPoolConstraints: ['openshell.local'],
-        now: () => '2026-07-05T00:00:00.000Z',
-      });
-      createSchedulerPlacementPlan(coreDb, {
-        planId: 'plan_double_lease',
-        queueEntryId: 'queue_double_lease',
-        selectedPoolId: 'pool_local',
-        selectedTargetId: 'target_local',
-        plannedLeaseDurationMs: 900_000,
-        heartbeatIntervalMs: 10_000,
-        heartbeatTimeoutMs: 30_000,
-        expectedControlMode: 'poll',
-        expectedDataPlaneMode: 'openshell-files',
-        degradedOptionalFeatures: [],
-        failoverTargetId: null,
-        policyDecisionIds: [],
-        capacitySnapshotRef: null,
-        schedulerEpoch: 7,
-        now: () => '2026-07-05T00:00:01.000Z',
-      });
-      createSchedulerSessionLease(coreDb, {
-        leaseId: 'lease_one',
-        planId: 'plan_double_lease',
-        agentSessionId: 'session_demo',
-        packageSnapshotId: 'pkg_demo',
-        expiresAt: '2026-07-05T00:15:01.000Z',
-        heartbeatDeadline: '2026-07-05T00:00:31.000Z',
-        startupDeadline: '2026-07-05T00:02:01.000Z',
-        sandboxTokenBindingRef: 'lease-token:lease_one',
-        now: () => '2026-07-05T00:00:02.000Z',
-      });
-
-      expect(() =>
-        createSchedulerSessionLease(coreDb, {
-          leaseId: 'lease_two',
-          planId: 'plan_double_lease',
-          agentSessionId: 'session_demo',
-          packageSnapshotId: 'pkg_demo',
-          expiresAt: '2026-07-05T00:15:02.000Z',
-          heartbeatDeadline: '2026-07-05T00:00:32.000Z',
-          startupDeadline: '2026-07-05T00:02:02.000Z',
-          sandboxTokenBindingRef: 'lease-token:lease_two',
-          now: () => '2026-07-05T00:00:03.000Z',
-        })
-      ).toThrow('is not planned');
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
   it('accepts lease heartbeats and advances heartbeat deadlines', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createAcquiredLease(coreDb, 'lease_heartbeat');
+      createPreparedAttempt(coreDb, 'lease_heartbeat');
 
-      const lease = acceptSchedulerLeaseHeartbeat(coreDb, {
-        leaseId: 'lease_heartbeat',
+      const lease = acceptNanoHostAttemptHeartbeat(coreDb, {
+        attemptId: 'lease_heartbeat',
         workerSequence: 4,
         heartbeatTimeoutMs: 30_000,
         now: () => '2026-07-05T00:00:10.000Z',
       });
 
       expect(lease).toMatchObject({
-        leaseId: 'lease_heartbeat',
-        status: 'active',
+        attemptId: 'lease_heartbeat',
         lastAcceptedHeartbeatAt: '2026-07-05T00:00:10.000Z',
         lastWorkerSequence: 4,
         heartbeatDeadline: '2026-07-05T00:00:40.000Z',
@@ -956,16 +543,16 @@ describe('scheduler records', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createAcquiredLease(coreDb, 'lease_heartbeat_retry');
-      const first = acceptSchedulerLeaseHeartbeat(coreDb, {
+      createPreparedAttempt(coreDb, 'lease_heartbeat_retry');
+      const first = acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        leaseId: 'lease_heartbeat_retry',
+        attemptId: 'lease_heartbeat_retry',
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 4,
       });
-      const retry = acceptSchedulerLeaseHeartbeat(coreDb, {
+      const retry = acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        leaseId: 'lease_heartbeat_retry',
+        attemptId: 'lease_heartbeat_retry',
         now: () => '2026-07-05T00:00:20.000Z',
         workerSequence: 4,
       });
@@ -980,15 +567,15 @@ describe('scheduler records', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createAcquiredLease(coreDb, 'lease_heartbeat_concurrent_retry');
-      let winner: ReturnType<typeof acceptSchedulerLeaseHeartbeat> | null = null;
-      const retry = acceptSchedulerLeaseHeartbeat(coreDb, {
+      createPreparedAttempt(coreDb, 'lease_heartbeat_concurrent_retry');
+      let winner: ReturnType<typeof acceptNanoHostAttemptHeartbeat> | null = null;
+      const retry = acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        leaseId: 'lease_heartbeat_concurrent_retry',
+        attemptId: 'lease_heartbeat_concurrent_retry',
         now: () => {
-          winner = acceptSchedulerLeaseHeartbeat(coreDb, {
+          winner = acceptNanoHostAttemptHeartbeat(coreDb, {
             heartbeatTimeoutMs: 30_000,
-            leaseId: 'lease_heartbeat_concurrent_retry',
+            attemptId: 'lease_heartbeat_concurrent_retry',
             now: () => '2026-07-05T00:00:10.000Z',
             workerSequence: 4,
           });
@@ -1007,16 +594,16 @@ describe('scheduler records', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createAcquiredLease(coreDb, 'lease_heartbeat_concurrent_newer');
+      createPreparedAttempt(coreDb, 'lease_heartbeat_concurrent_newer');
 
       expect(() =>
-        acceptSchedulerLeaseHeartbeat(coreDb, {
+        acceptNanoHostAttemptHeartbeat(coreDb, {
           heartbeatTimeoutMs: 30_000,
-          leaseId: 'lease_heartbeat_concurrent_newer',
+          attemptId: 'lease_heartbeat_concurrent_newer',
           now: () => {
-            acceptSchedulerLeaseHeartbeat(coreDb, {
+            acceptNanoHostAttemptHeartbeat(coreDb, {
               heartbeatTimeoutMs: 30_000,
-              leaseId: 'lease_heartbeat_concurrent_newer',
+              attemptId: 'lease_heartbeat_concurrent_newer',
               now: () => '2026-07-05T00:00:10.000Z',
               workerSequence: 5,
             });
@@ -1034,33 +621,25 @@ describe('scheduler records', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createAcquiredLease(coreDb, 'lease_heartbeat_stale_sequence');
-      const accepted = acceptSchedulerLeaseHeartbeat(coreDb, {
+      createPreparedAttempt(coreDb, 'lease_heartbeat_stale_sequence');
+      const accepted = acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        leaseId: 'lease_heartbeat_stale_sequence',
+        attemptId: 'lease_heartbeat_stale_sequence',
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 4,
       });
 
       expect(() =>
-        acceptSchedulerLeaseHeartbeat(coreDb, {
+        acceptNanoHostAttemptHeartbeat(coreDb, {
           heartbeatTimeoutMs: 30_000,
-          leaseId: 'lease_heartbeat_stale_sequence',
+          attemptId: 'lease_heartbeat_stale_sequence',
           now: () => '2026-07-05T00:00:20.000Z',
           workerSequence: 3,
         })
       ).toThrow();
       expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT heartbeat_deadline AS heartbeatDeadline,
-                    last_accepted_heartbeat_at AS lastAcceptedHeartbeatAt,
-                    last_worker_sequence AS lastWorkerSequence
-             FROM scheduler_session_leases
-             WHERE lease_id = ?`
-          )
-          .get('lease_heartbeat_stale_sequence')
-      ).toEqual({
+        requireNanoHostExecutionAttempt(coreDb, 'lease_heartbeat_stale_sequence')
+      ).toMatchObject({
         heartbeatDeadline: accepted.heartbeatDeadline,
         lastAcceptedHeartbeatAt: accepted.lastAcceptedHeartbeatAt,
         lastWorkerSequence: accepted.lastWorkerSequence,
@@ -1074,18 +653,18 @@ describe('scheduler records', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createAcquiredLease(coreDb, 'lease_heartbeat_newer_sequence');
-      acceptSchedulerLeaseHeartbeat(coreDb, {
+      createPreparedAttempt(coreDb, 'lease_heartbeat_newer_sequence');
+      acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        leaseId: 'lease_heartbeat_newer_sequence',
+        attemptId: 'lease_heartbeat_newer_sequence',
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 4,
       });
 
       expect(
-        acceptSchedulerLeaseHeartbeat(coreDb, {
+        acceptNanoHostAttemptHeartbeat(coreDb, {
           heartbeatTimeoutMs: 30_000,
-          leaseId: 'lease_heartbeat_newer_sequence',
+          attemptId: 'lease_heartbeat_newer_sequence',
           now: () => '2026-07-05T00:00:20.000Z',
           workerSequence: 5,
         })
@@ -1103,16 +682,16 @@ describe('scheduler records', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createAcquiredLease(coreDb, 'lease_heartbeat_race');
+      createPreparedAttempt(coreDb, 'lease_heartbeat_race');
 
       expect(() =>
-        acceptSchedulerLeaseHeartbeat(coreDb, {
+        acceptNanoHostAttemptHeartbeat(coreDb, {
           heartbeatTimeoutMs: 30_000,
-          leaseId: 'lease_heartbeat_race',
+          attemptId: 'lease_heartbeat_race',
           now: () => {
-            markSchedulerSessionLeaseReleasing(coreDb, {
-              leaseId: 'lease_heartbeat_race',
-              releaseReason: 'worker-final-status',
+            beginOwnedAttemptCloseout(coreDb, {
+              attemptId: 'lease_heartbeat_race',
+              firstTerminalCause: 'worker-final-status',
             });
             return '2026-07-05T00:00:10.000Z';
           },
@@ -1120,96 +699,54 @@ describe('scheduler records', () => {
         })
       ).toThrow('cannot accept heartbeat');
       expect(
-        coreDb.sqlite
-          .prepare('SELECT status FROM scheduler_session_leases WHERE lease_id = ?')
-          .get('lease_heartbeat_race')
-      ).toEqual({ status: 'releasing' });
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'lease_heartbeat_race'
+        )?.phase
+      ).toBe('closing');
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('marks expired live leases stale without reviving terminal leases', () => {
+  it('refuses expired Native heartbeats without reviving closed attempts or releasing unknown execution', async () => {
     const coreDb = createMigratedCoreDb();
-
     try {
-      createAcquiredLease(coreDb, 'lease_expired');
-      createAcquiredLease(coreDb, 'lease_terminal');
-      acceptSchedulerLeaseHeartbeat(coreDb, {
+      createPreparedAttempt(coreDb, 'lease_expired');
+      createPreparedAttempt(coreDb, 'lease_terminal');
+      acceptNanoHostAttemptHeartbeat(coreDb, {
+        attemptId: 'lease_expired',
         heartbeatTimeoutMs: 30_000,
-        leaseId: 'lease_expired',
-        now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
+        now: () => '2026-07-05T00:00:10.000Z',
       });
-      coreDb.sqlite
-        .prepare(
-          "UPDATE scheduler_session_leases SET status = 'released', release_reason = 'completed' WHERE lease_id = ?"
-        )
-        .run('lease_terminal');
-
-      const stale = markExpiredSchedulerLeasesStale(coreDb, {
-        now: () => '2026-07-05T00:01:00.000Z',
+      beginOwnedAttemptCloseout(coreDb, {
+        attemptId: 'lease_terminal',
+        firstTerminalCause: 'turn-completed',
       });
-
-      expect(stale.map((lease) => lease.leaseId)).toEqual(['lease_expired']);
-      expect(stale[0]).toMatchObject({
-        status: 'stale',
-        releaseReason: 'heartbeat-timeout',
-        recoveryState: 'needs-evidence',
+      await releaseModeledAttempt(coreDb, 'lease_terminal');
+      expect(resolveAttemptRoute(coreDb, 'lease_expired', '2026-07-05T00:01:00.000Z')).toEqual({
+        status: 'rejected',
+        reason: 'attempt-not-live',
       });
       expect(
-        coreDb.sqlite
-          .prepare('SELECT status FROM scheduler_session_leases WHERE lease_id = ?')
-          .get('lease_terminal')
-      ).toEqual({ status: 'released' });
+        attemptActionOwners.requireSchedulerExecutionAttempt(coreDb, 'lease_expired')
+      ).toMatchObject({
+        phase: 'open',
+        disposition: 'unknown',
+        fenceRef: null,
+        operationId: 'fixture-submit:lease_expired',
+      });
+      expect(
+        attemptActionOwners.requireSchedulerExecutionAttempt(coreDb, 'lease_terminal').phase
+      ).toBe('closed');
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('completes leases and releases pool capacity in one terminal transition', () => {
-    const coreDb = createMigratedCoreDb();
-
-    try {
-      createDispatchedLease(coreDb, 'lease_terminal_release');
-
-      const lease = completeSchedulerSessionLease(coreDb, {
-        leaseId: 'lease_terminal_release',
-        terminalStatus: 'released',
-        releaseReason: 'final-status-collected',
-        recoveryState: 'evidence-collected',
-      });
-
-      expect(lease).toMatchObject({
-        status: 'released',
-        releaseReason: 'final-status-collected',
-        recoveryState: 'evidence-collected',
-      });
-      expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT in_use_count, version FROM scheduler_capacity_records WHERE target_id = ?'
-          )
-          .get('target_terminal_release')
-      ).toEqual({ in_use_count: 0, version: 3 });
-      expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT current_admitted_session_count FROM scheduler_worker_pools WHERE pool_id = ?'
-          )
-          .get('pool_terminal_release')
-      ).toEqual({ current_admitted_session_count: 0 });
-      expect(
-        coreDb.sqlite
-          .prepare('SELECT status FROM scheduler_placement_plans WHERE plan_id = ?')
-          .get('plan_terminal_release')
-      ).toEqual({ status: 'completed' });
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it.each(terminalAccountingCorruptions)('rolls back every terminal accounting write for $name', ({
+  it.each(
+    terminalAccountingCorruptions
+  )('refuses Native terminal inspection without changing either owner for $name', async ({
     apply,
     expectedError,
     name,
@@ -1218,29 +755,30 @@ describe('scheduler records', () => {
     const suffix = `terminal_corrupt_${name.replaceAll(' ', '_')}`;
 
     try {
-      createDispatchedLease(coreDb, `lease_${suffix}`);
+      createPreparedAttempt(coreDb, `lease_${suffix}`);
       apply(coreDb, suffix);
       const before = terminalAccountingSnapshot(coreDb, suffix);
 
-      expect(() =>
-        completeSchedulerSessionLease(coreDb, {
-          leaseId: `lease_${suffix}`,
-          releaseReason: 'terminal-corruption-test',
-          schedulerEpoch: 9,
-          terminalStatus: 'failed',
-        })
-      ).toThrow(expectedError);
+      const backend = createConfiguredWorkerLifecycleRuntime({ coreDb, env: {} }).turnExecutor
+        .executionBackend!;
+      await expect(
+        backend.inspect(
+          attemptActionOwners.schedulerExecutionCorrelation(
+            attemptActionOwners.requireSchedulerExecutionAttempt(coreDb, `lease_${suffix}`)
+          )
+        )
+      ).rejects.toThrow(expectedError);
       expect(terminalAccountingSnapshot(coreDb, suffix)).toEqual(before);
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('blocks every terminal capacity release until the backend session is durably cleaned', () => {
+  it('blocks attempt closeout until the backend session is durably cleaned', async () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createDispatchedLease(coreDb, 'lease_cleanup_barrier');
+      createPreparedAttempt(coreDb, 'lease_cleanup_barrier');
       seedBackendRuntimeTarget(coreDb);
       recordWorkerBackendSessionMaterializing(coreDb, {
         backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
@@ -1264,77 +802,69 @@ describe('scheduler records', () => {
         sandboxBindingRef: 'lease-binding:lease_cleanup_barrier',
       });
 
-      expect(() =>
-        completeSchedulerSessionLease(coreDb, {
-          leaseId: 'lease_cleanup_barrier',
-          releaseReason: 'turn-failed',
-          terminalStatus: 'failed',
+      expect(
+        await closeOwnedExecutionAttempt(coreDb, {
+          attemptId: 'lease_cleanup_barrier',
+          firstTerminalCause: 'turn-failed',
+          outcome: 'failed',
         })
-      ).toThrow('Worker backend session must be cleaned before scheduler lease completion.');
-      completeSchedulerLeaseForTerminalTurn(coreDb, {
+      ).toMatchObject({ state: 'pending', fenceRef: null });
+      completeTerminalAttempt(coreDb, {
         id: 'turn_cleanup_barrier',
         status: 'failed',
         threadId: 'thread_cleanup_barrier',
         workspaceId: 'ws_demo',
       });
-      expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT leases.status, capacity.in_use_count AS inUseCount
-             FROM scheduler_session_leases AS leases
-             JOIN scheduler_capacity_records AS capacity ON capacity.target_id = leases.target_id
-             WHERE leases.lease_id = ?`
-          )
-          .get('lease_cleanup_barrier')
-      ).toEqual({ inUseCount: 1, status: 'acquired' });
+      expect(['open', 'closing']).toContain(
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'lease_cleanup_barrier'
+        )?.phase
+      );
 
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materializing',
-        leaseId: 'lease_cleanup_barrier',
+        attemptId: 'lease_cleanup_barrier',
         toState: 'cleanup-pending',
       });
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'cleanup-pending',
-        leaseId: 'lease_cleanup_barrier',
+        attemptId: 'lease_cleanup_barrier',
         toState: 'physical-cleaned',
       });
-      completeSchedulerLeaseForTerminalTurn(coreDb, {
+      completeTerminalAttempt(coreDb, {
         id: 'turn_cleanup_barrier',
         status: 'failed',
         threadId: 'thread_cleanup_barrier',
         workspaceId: 'ws_demo',
       });
-      expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT leases.status, capacity.in_use_count AS inUseCount
-             FROM scheduler_session_leases AS leases
-             JOIN scheduler_capacity_records AS capacity ON capacity.target_id = leases.target_id
-             WHERE leases.lease_id = ?`
-          )
-          .get('lease_cleanup_barrier')
-      ).toEqual({ inUseCount: 1, status: 'acquired' });
+      expect(['open', 'closing']).toContain(
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'lease_cleanup_barrier'
+        )?.phase
+      );
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'physical-cleaned',
-        leaseId: 'lease_cleanup_barrier',
+        attemptId: 'lease_cleanup_barrier',
         toState: 'cleaned',
       });
-      completeSchedulerLeaseForTerminalTurn(coreDb, {
+      completeTerminalAttempt(coreDb, {
         id: 'turn_cleanup_barrier',
         status: 'failed',
         threadId: 'thread_cleanup_barrier',
         workspaceId: 'ws_demo',
       });
       expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT leases.status, capacity.in_use_count AS inUseCount
-             FROM scheduler_session_leases AS leases
-             JOIN scheduler_capacity_records AS capacity ON capacity.target_id = leases.target_id
-             WHERE leases.lease_id = ?`
-          )
-          .get('lease_cleanup_barrier')
-      ).toEqual({ inUseCount: 0, status: 'failed' });
+        await closeOwnedExecutionAttempt(coreDb, {
+          attemptId: 'lease_cleanup_barrier',
+          firstTerminalCause: 'turn-failed',
+          outcome: 'failed',
+        })
+      ).toMatchObject({ state: 'released' });
+      expect(
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'lease_cleanup_barrier'
+        )?.phase
+      ).toBe('closed');
     } finally {
       coreDb.sqlite.close();
     }
@@ -1343,77 +873,48 @@ describe('scheduler records', () => {
   it.each([
     'active',
     'releasing',
-  ] as const)('blocks terminal capacity release for %s leases that are missing their durable backend anchor', (status) => {
+  ] as const)('holds exclusion for %s NanoHost observations that are missing their durable backend anchor', async (status) => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createDispatchedLease(coreDb, `lease_missing_anchor_${status}`);
+      createPreparedAttempt(coreDb, `lease_missing_anchor_${status}`);
       if (status === 'active') {
-        acceptSchedulerLeaseHeartbeat(coreDb, {
+        acceptNanoHostAttemptHeartbeat(coreDb, {
           heartbeatTimeoutMs: 30_000,
-          leaseId: `lease_missing_anchor_${status}`,
+          attemptId: `lease_missing_anchor_${status}`,
           now: () => '2026-07-05T00:00:10.000Z',
           workerSequence: 1,
         });
       } else {
-        markSchedulerSessionLeaseReleasing(coreDb, {
-          leaseId: `lease_missing_anchor_${status}`,
+        beginOwnedAttemptCloseout(coreDb, {
+          attemptId: `lease_missing_anchor_${status}`,
           now: () => '2026-07-05T00:00:10.000Z',
-          releaseReason: 'worker-final-status',
+          firstTerminalCause: 'worker-final-status',
         });
       }
 
-      expect(() =>
-        completeSchedulerSessionLease(coreDb, {
-          leaseId: `lease_missing_anchor_${status}`,
-          releaseReason: 'turn-failed',
-          terminalStatus: 'failed',
+      expect(
+        await closeOwnedExecutionAttempt(coreDb, {
+          attemptId: `lease_missing_anchor_${status}`,
+          firstTerminalCause: 'turn-failed',
+          outcome: 'failed',
         })
-      ).toThrow('requires a durable backend session anchor before completion');
-      expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT leases.status, capacity.in_use_count AS inUseCount
-               FROM scheduler_session_leases AS leases
-               JOIN scheduler_capacity_records AS capacity ON capacity.target_id = leases.target_id
-               WHERE leases.lease_id = ?`
-          )
-          .get(`lease_missing_anchor_${status}`)
-      ).toEqual({ inUseCount: 1, status });
+      ).toMatchObject({ state: 'pending', fenceRef: null });
+      expect(['open', 'closing']).toContain(
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === `lease_missing_anchor_${status}`
+        )?.phase
+      );
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('requires every scheduler lease to own a unique sandbox binding', () => {
+  it('preserves closing exclusion while backend cleanup is incomplete', async () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createDispatchedLease(coreDb, 'lease_binding_owner');
-      createDispatchedLease(coreDb, 'lease_binding_conflict');
-
-      expect(() =>
-        coreDb.sqlite
-          .prepare('UPDATE scheduler_session_leases SET sandbox_binding_ref = ? WHERE lease_id = ?')
-          .run('lease-binding:lease_binding_owner', 'lease_binding_conflict')
-      ).toThrow(/unique constraint failed/i);
-      expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT sandbox_binding_ref AS sandboxBindingRef FROM scheduler_session_leases WHERE lease_id = ?'
-          )
-          .get('lease_binding_conflict')
-      ).toEqual({ sandboxBindingRef: 'lease-binding:lease_binding_conflict' });
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('skips release-grace expiry while backend cleanup is incomplete', () => {
-    const coreDb = createMigratedCoreDb();
-
-    try {
-      createDispatchedLease(coreDb, 'lease_cleanup_grace');
+      createPreparedAttempt(coreDb, 'lease_cleanup_grace');
       seedBackendRuntimeTarget(coreDb);
       recordWorkerBackendSessionMaterializing(coreDb, {
         backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
@@ -1436,186 +937,181 @@ describe('scheduler records', () => {
         now: () => '2026-07-05T00:00:03.000Z',
         sandboxBindingRef: 'lease-binding:lease_cleanup_grace',
       });
-      markSchedulerSessionLeaseReleasing(coreDb, {
-        leaseId: 'lease_cleanup_grace',
+      beginOwnedAttemptCloseout(coreDb, {
+        attemptId: 'lease_cleanup_grace',
         now: () => '2026-07-05T00:00:10.000Z',
-        releaseReason: 'worker-final-status',
+        firstTerminalCause: 'worker-final-status',
       });
 
-      expect(
-        expireReleasingSchedulerLeases(coreDb, {
-          now: () => '2026-07-05T00:05:11.000Z',
-        })
-      ).toEqual([]);
+      await runSchedulerRecoveryMaintenance(coreDb, {
+        executionBackend: createConfiguredWorkerLifecycleRuntime({ coreDb, env: {} }).turnExecutor
+          .executionBackend!,
+        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+        now: () => '2026-07-05T00:05:11.000Z',
+      });
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materializing',
-        leaseId: 'lease_cleanup_grace',
+        attemptId: 'lease_cleanup_grace',
         toState: 'cleanup-pending',
       });
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'cleanup-pending',
-        leaseId: 'lease_cleanup_grace',
+        attemptId: 'lease_cleanup_grace',
         toState: 'physical-cleaned',
       });
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'physical-cleaned',
-        leaseId: 'lease_cleanup_grace',
+        attemptId: 'lease_cleanup_grace',
         toState: 'cleaned',
       });
+      await runSchedulerRecoveryMaintenance(coreDb, {
+        executionBackend: createConfiguredWorkerLifecycleRuntime({ coreDb, env: {} }).turnExecutor
+          .executionBackend!,
+        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+        now: () => '2026-07-05T00:05:12.000Z',
+      });
       expect(
-        expireReleasingSchedulerLeases(coreDb, {
-          now: () => '2026-07-05T00:05:12.000Z',
-        })
-      ).toEqual([]);
-      expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT leases.status, capacity.in_use_count AS inUseCount
-             FROM scheduler_session_leases AS leases
-             JOIN scheduler_capacity_records AS capacity ON capacity.target_id = leases.target_id
-             WHERE leases.lease_id = ?`
-          )
-          .get('lease_cleanup_grace')
-      ).toEqual({ inUseCount: 1, status: 'releasing' });
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'lease_cleanup_grace'
+        )?.phase
+      ).toBe('closing');
     } finally {
       coreDb.sqlite.close();
     }
   });
 
   it.each([
-    ['completed', 'released', 'turn-completed', null],
-    ['interrupted', 'released', 'turn-interrupted', null],
-    ['cancelled', 'released', 'turn-cancelled', null],
-    ['failed', 'failed', 'turn-failed', 'needs-evidence'],
-  ] as const)('maps %s product turns to the terminal scheduler lease transition', (turnStatus, leaseStatus, releaseReason, recoveryState) => {
+    'completed',
+    'interrupted',
+    'cancelled',
+    'failed',
+  ] as const)('closes the exact attempt for %s product turns after complete cleanup', async (turnStatus) => {
     const coreDb = createMigratedCoreDb();
     const suffix = `turn_${turnStatus}`;
 
     try {
-      createDispatchedLease(coreDb, `lease_${suffix}`);
-      completeSchedulerLeaseForTerminalTurn(coreDb, {
+      createPreparedAttempt(coreDb, `lease_${suffix}`);
+      completeTerminalAttempt(coreDb, {
         id: `turn_${suffix}`,
         workspaceId: 'ws_demo',
         threadId: `thread_${suffix}`,
         status: turnStatus,
       });
 
+      await releaseModeledAttempt(coreDb, `lease_${suffix}`);
       expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT status, release_reason AS releaseReason, recovery_state AS recoveryState
-               FROM scheduler_session_leases
-               WHERE lease_id = ?`
-          )
-          .get(`lease_${suffix}`)
-      ).toEqual({ status: leaseStatus, releaseReason, recoveryState });
+        observeExecutionAttempts(coreDb).find((attempt) => attempt.attempt_id === `lease_${suffix}`)
+          ?.phase
+      ).toBe('closed');
+      const first = observeExecutionAttempts(coreDb).find(
+        (row) => row.attempt_id === `lease_${suffix}`
+      )!;
+      expect(first.terminal_cause).toEqual(expect.any(String));
+      expect(first.outcome_ref).toBe(`turn:turn_${suffix}:${turnStatus}`);
+      /** Projects only closed-core facts; evidence, diagnostics and timestamps may refine. */
+      const protectedFacts = (db: typeof coreDb) => {
+        const rows = observeExecutionAttempts(db);
+        const row = rows.find((candidate) => candidate.attempt_id === first.attempt_id);
+        expect(row).toBeDefined();
+        expect(row!.disposition).toBe('unknown');
+        expect(row!.operation_id).toBe(`fixture-submit:lease_${suffix}`);
+        expect(row!.fence_ref).toBe(`self-check:lease_${suffix}`);
+        expect(rows.filter((candidate) => candidate.phase !== 'closed')).toEqual([]);
+        expect(rows.map((candidate) => candidate.attempt_id)).toEqual([first.attempt_id]);
+        return {
+          attemptId: row!.attempt_id,
+          phase: row!.phase,
+          firstTerminalCause: row!.terminal_cause,
+          outcomeRef: row!.outcome_ref,
+          disposition: row!.disposition,
+          fenceRef: row!.fence_ref,
+        };
+      };
+      const protectedFirst = protectedFacts(coreDb);
+      // Product closeout replay protects these facts without freezing lawful evidence refinement.
+      for (const lateStatus of [turnStatus, turnStatus === 'completed' ? 'failed' : 'completed']) {
+        try {
+          completeTerminalAttempt(coreDb, {
+            id: `turn_${suffix}`,
+            workspaceId: 'ws_demo',
+            threadId: `thread_${suffix}`,
+            status: lateStatus,
+          });
+        } catch (error) {
+          expect(error).toBeInstanceOf(Error);
+        }
+        expect(protectedFacts(coreDb)).toEqual(protectedFirst);
+      }
+      const reopened = openCoreDb(coreDb.dataRoot);
+      try {
+        for (const lateStatus of [
+          turnStatus,
+          turnStatus === 'completed' ? 'failed' : 'completed',
+        ]) {
+          try {
+            completeTerminalAttempt(reopened, {
+              id: `turn_${suffix}`,
+              workspaceId: 'ws_demo',
+              threadId: `thread_${suffix}`,
+              status: lateStatus,
+            });
+          } catch (error) {
+            expect(error).toBeInstanceOf(Error);
+          }
+          expect(protectedFacts(reopened)).toEqual(protectedFirst);
+        }
+      } finally {
+        reopened.sqlite.close();
+      }
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('leaves scheduler leases live for non-terminal product turns', () => {
+  it('keeps a non-terminal Turn attempt open', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createDispatchedLease(coreDb, 'lease_turn_running');
-      completeSchedulerLeaseForTerminalTurn(coreDb, {
+      createPreparedAttempt(coreDb, 'lease_turn_running');
+      completeTerminalAttempt(coreDb, {
         id: 'turn_turn_running',
         workspaceId: 'ws_demo',
         threadId: 'thread_turn_running',
         status: 'running',
       });
 
-      expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT status, release_reason AS releaseReason
-             FROM scheduler_session_leases
-             WHERE lease_id = ?`
-          )
-          .get('lease_turn_running')
-      ).toEqual({ status: 'acquired', releaseReason: null });
+      expect(['open', 'closing']).toContain(
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'lease_turn_running'
+        )?.phase
+      );
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('rejects repeated terminal transitions without double releasing capacity', () => {
+  it('classifies NanoHost startup timeout before any accepted process', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createDispatchedLease(coreDb, 'lease_double_terminal');
-      completeSchedulerSessionLease(coreDb, {
-        leaseId: 'lease_double_terminal',
-        terminalStatus: 'failed',
-        releaseReason: 'worker-failed',
-        recoveryState: 'evidence-missing',
-      });
+      createPreparedAttempt(coreDb, 'lease_startup_timeout');
 
-      expect(() =>
-        completeSchedulerSessionLease(coreDb, {
-          leaseId: 'lease_double_terminal',
-          terminalStatus: 'released',
-          releaseReason: 'duplicate',
-        })
-      ).toThrow('already terminal');
       expect(
-        coreDb.sqlite
-          .prepare('SELECT in_use_count FROM scheduler_capacity_records WHERE target_id = ?')
-          .get('target_double_terminal')
-      ).toEqual({ in_use_count: 0 });
+        resolveAttemptRoute(coreDb, 'lease_startup_timeout', '2026-07-05T00:26:00.000Z')
+      ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
       expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT current_admitted_session_count FROM scheduler_worker_pools WHERE pool_id = ?'
-          )
-          .get('pool_double_terminal')
-      ).toEqual({ current_admitted_session_count: 0 });
+        attemptActionOwners.requireSchedulerExecutionAttempt(coreDb, 'lease_startup_timeout')
+      ).toMatchObject({ phase: 'open', disposition: 'unknown', fenceRef: null });
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('fails startup-timed-out leases and releases claimed capacity', () => {
+  it('retains the native fence when an anchored startup times out', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createDispatchedLease(coreDb, 'lease_startup_timeout');
-
-      const failed = transitionStartupTimedOutSchedulerLeases(coreDb, {
-        now: () => '2026-07-05T00:03:00.000Z',
-      });
-
-      expect(failed.map((lease) => lease.leaseId)).toEqual(['lease_startup_timeout']);
-      expect(failed[0]).toMatchObject({
-        status: 'failed',
-        releaseReason: 'startup-timeout',
-        recoveryState: 'needs-evidence',
-      });
-      expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT in_use_count, version FROM scheduler_capacity_records WHERE target_id = ?'
-          )
-          .get('target_startup_timeout')
-      ).toEqual({ in_use_count: 0, version: 3 });
-      expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT current_admitted_session_count FROM scheduler_worker_pools WHERE pool_id = ?'
-          )
-          .get('pool_startup_timeout')
-      ).toEqual({ current_admitted_session_count: 0 });
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('retains capacity when an anchored startup times out', () => {
-    const coreDb = createMigratedCoreDb();
-
-    try {
-      createDispatchedLease(coreDb, 'lease_anchored_startup_timeout');
+      createPreparedAttempt(coreDb, 'lease_anchored_startup_timeout');
       seedBackendRuntimeTarget(coreDb);
       recordWorkerBackendSessionMaterializing(coreDb, {
         backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
@@ -1639,35 +1135,15 @@ describe('scheduler records', () => {
         sandboxBindingRef: 'lease-binding:lease_anchored_startup_timeout',
       });
 
-      const timedOut = transitionStartupTimedOutSchedulerLeases(coreDb, {
-        now: () => '2026-07-05T00:03:00.000Z',
-      });
-
-      expect(timedOut).toEqual([
-        expect.objectContaining({
-          leaseId: 'lease_anchored_startup_timeout',
-          recoveryState: 'needs-evidence',
-          releaseReason: 'startup-timeout',
-          status: 'stale',
-        }),
-      ]);
       expect(
-        coreDb.sqlite
-          .prepare('SELECT in_use_count FROM scheduler_capacity_records WHERE target_id = ?')
-          .get('target_anchored_startup_timeout')
-      ).toEqual({ in_use_count: 1 });
+        resolveAttemptRoute(coreDb, 'lease_anchored_startup_timeout', '2026-07-05T00:26:00.000Z')
+      ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
       expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT current_admitted_session_count FROM scheduler_worker_pools WHERE pool_id = ?'
-          )
-          .get('pool_anchored_startup_timeout')
-      ).toEqual({ current_admitted_session_count: 1 });
-      expect(
-        coreDb.sqlite
-          .prepare('SELECT status FROM scheduler_placement_plans WHERE plan_id = ?')
-          .get('plan_anchored_startup_timeout')
-      ).toEqual({ status: 'executing' });
+        attemptActionOwners.requireSchedulerExecutionAttempt(
+          coreDb,
+          'lease_anchored_startup_timeout'
+        )
+      ).toMatchObject({ phase: 'open', disposition: 'unknown', fenceRef: null });
     } finally {
       coreDb.sqlite.close();
     }
@@ -1677,108 +1153,54 @@ describe('scheduler records', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createDispatchedLease(coreDb, 'lease_started');
-      acceptSchedulerLeaseHeartbeat(coreDb, {
-        leaseId: 'lease_started',
+      createPreparedAttempt(coreDb, 'lease_started');
+      acceptNanoHostAttemptHeartbeat(coreDb, {
+        attemptId: 'lease_started',
         workerSequence: 1,
-        heartbeatTimeoutMs: 300_000,
+        heartbeatTimeoutMs: 30_000,
         now: () => '2026-07-05T00:00:10.000Z',
       });
 
+      for (let sequence = 2; sequence <= 78; sequence += 1) {
+        acceptNanoHostAttemptHeartbeat(coreDb, {
+          attemptId: 'lease_started',
+          workerSequence: sequence,
+          heartbeatTimeoutMs: 30_000,
+          now: () =>
+            new Date(
+              Date.parse('2026-07-05T00:00:10.000Z') + (sequence - 1) * 20_000
+            ).toISOString(),
+        });
+      }
       expect(
-        transitionStartupTimedOutSchedulerLeases(coreDb, {
-          now: () => '2026-07-05T00:03:00.000Z',
-        })
-      ).toEqual([]);
-      expect(
-        coreDb.sqlite
-          .prepare('SELECT status FROM scheduler_session_leases WHERE lease_id = ?')
-          .get('lease_started')
-      ).toEqual({ status: 'active' });
-      expect(
-        coreDb.sqlite
-          .prepare('SELECT in_use_count FROM scheduler_capacity_records WHERE target_id = ?')
-          .get('target_started')
-      ).toEqual({ in_use_count: 1 });
+        resolveAttemptRoute(coreDb, 'lease_started', '2026-07-05T00:26:00.000Z')
+      ).toMatchObject({ status: 'accepted' });
+      expect(['open', 'closing']).toContain(
+        observeExecutionAttempts(coreDb).find((attempt) => attempt.attempt_id === 'lease_started')
+          ?.phase
+      );
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('renews live leases without changing heartbeat deadlines', () => {
+  it('revokes a closing attempt without dropping exclusion', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createDispatchedLease(coreDb, 'lease_renewal');
-      acceptSchedulerLeaseHeartbeat(coreDb, {
-        leaseId: 'lease_renewal',
-        workerSequence: 2,
-        heartbeatTimeoutMs: 300_000,
+      createPreparedAttempt(coreDb, 'lease_releasing');
+
+      beginOwnedAttemptCloseout(coreDb, {
+        attemptId: 'lease_releasing',
         now: () => '2026-07-05T00:00:10.000Z',
+        firstTerminalCause: 'worker-final-status',
       });
-
-      const renewed = renewSchedulerSessionLease(coreDb, {
-        leaseId: 'lease_renewal',
-        expiresAt: '2026-07-05T00:30:02.000Z',
-        now: () => '2026-07-05T00:10:00.000Z',
-      });
-
-      expect(renewed).toMatchObject({
-        status: 'active',
-        expiresAt: '2026-07-05T00:30:02.000Z',
-        heartbeatDeadline: '2026-07-05T00:05:10.000Z',
-        renewalCount: 1,
-      });
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('rejects renewal after lease expiry', () => {
-    const coreDb = createMigratedCoreDb();
-
-    try {
-      createDispatchedLease(coreDb, 'lease_expired_renewal');
-
-      expect(() =>
-        renewSchedulerSessionLease(coreDb, {
-          leaseId: 'lease_expired_renewal',
-          expiresAt: '2026-07-05T00:30:02.000Z',
-          now: () => '2026-07-05T00:16:00.000Z',
-        })
-      ).toThrow('cannot be renewed after expiry');
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('marks a live lease releasing without releasing capacity', () => {
-    const coreDb = createMigratedCoreDb();
-
-    try {
-      createDispatchedLease(coreDb, 'lease_releasing');
-
-      const releasing = markSchedulerSessionLeaseReleasing(coreDb, {
-        leaseId: 'lease_releasing',
-        now: () => '2026-07-05T00:00:10.000Z',
-        releaseReason: 'worker-final-status',
-      });
-      const capacity = coreDb.sqlite
-        .prepare(
-          "SELECT in_use_count AS inUseCount FROM scheduler_capacity_records WHERE pool_id = 'pool_releasing'"
-        )
-        .get() as { inUseCount: number };
-
-      expect(releasing).toMatchObject({
-        leaseId: 'lease_releasing',
-        expiresAt: '2026-07-05T00:05:10.000Z',
-        status: 'releasing',
-        releaseReason: 'worker-final-status',
-        recoveryState: 'needs-evidence',
-      });
-      expect(capacity.inUseCount).toBe(1);
       expect(
-        resolveSchedulerLeaseTokenBinding(coreDb, {
+        observeExecutionAttempts(coreDb).find((attempt) => attempt.attempt_id === 'lease_releasing')
+          ?.phase
+      ).toBe('closing');
+      expect(
+        resolveNanoHostAttemptTokenBinding(coreDb, {
           sandboxBindingRef: 'lease-binding:lease_releasing',
           lineage: {
             agentSessionId: 'session_releasing',
@@ -1788,95 +1210,59 @@ describe('scheduler records', () => {
             workspaceId: 'ws_demo',
           },
         })
-      ).toEqual({ status: 'rejected', reason: 'lease-not-live' });
+      ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('preserves an earlier lease expiry when entering release grace', () => {
+  it('preserves exclusion for an unanchored closing attempt after Native timeout', async () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createDispatchedLease(coreDb, 'lease_short_release');
-      coreDb.sqlite
-        .prepare('UPDATE scheduler_session_leases SET expires_at = ? WHERE lease_id = ?')
-        .run('2026-07-05T00:03:00.000Z', 'lease_short_release');
-
-      expect(
-        markSchedulerSessionLeaseReleasing(coreDb, {
-          leaseId: 'lease_short_release',
-          now: () => '2026-07-05T00:00:10.000Z',
-          releaseReason: 'worker-final-status',
-        }).expiresAt
-      ).toBe('2026-07-05T00:03:00.000Z');
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('lists stale workspace recovery while refusing to expire an unanchored releasing lease', () => {
-    const coreDb = createMigratedCoreDb();
-
-    try {
-      createDispatchedLease(coreDb, 'lease_recovery_stale');
-      createDispatchedLease(coreDb, 'lease_recovery_release');
-      createDispatchedLease(coreDb, 'lease_recovery_startup');
-      acceptSchedulerLeaseHeartbeat(coreDb, {
+      createPreparedAttempt(coreDb, 'lease_recovery_stale');
+      createPreparedAttempt(coreDb, 'lease_recovery_release');
+      createPreparedAttempt(coreDb, 'lease_recovery_startup');
+      acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        leaseId: 'lease_recovery_stale',
+        attemptId: 'lease_recovery_stale',
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
-      markExpiredSchedulerLeasesStale(coreDb, {
-        now: () => '2026-07-05T00:03:00.000Z',
-      });
-      markSchedulerSessionLeaseReleasing(coreDb, {
-        leaseId: 'lease_recovery_release',
+      expect(
+        resolveAttemptRoute(coreDb, 'lease_recovery_stale', '2026-07-05T00:26:00.000Z')
+      ).toMatchObject({ status: 'rejected' });
+      beginOwnedAttemptCloseout(coreDb, {
+        attemptId: 'lease_recovery_release',
         now: () => '2026-07-05T00:00:10.000Z',
-        releaseReason: 'worker-final-status',
+        firstTerminalCause: 'worker-final-status',
       });
-      expect(() =>
-        expireReleasingSchedulerLeases(coreDb, {
-          now: () => '2026-07-05T00:05:11.000Z',
-        })
-      ).toThrow('requires a durable backend session anchor before completion');
-      transitionStartupTimedOutSchedulerLeases(coreDb, {
-        now: () => '2026-07-05T00:03:00.000Z',
+      await runSchedulerRecoveryMaintenance(coreDb, {
+        executionBackend: createConfiguredWorkerLifecycleRuntime({ coreDb, env: {} }).turnExecutor
+          .executionBackend!,
+        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+        now: () => '2026-07-05T00:26:00.000Z',
       });
-
       expect(
-        listSchedulerLeasesNeedingWorkspaceRecovery(coreDb).map((lease) => ({
-          leaseId: lease.leaseId,
-          recoveryState: lease.recoveryState,
-          releaseReason: lease.releaseReason,
-          status: lease.status,
-        }))
-      ).toEqual([
-        {
-          leaseId: 'lease_recovery_stale',
-          recoveryState: 'needs-evidence',
-          releaseReason: 'heartbeat-timeout',
-          status: 'stale',
-        },
-      ]);
+        resolveAttemptRoute(coreDb, 'lease_recovery_startup', '2026-07-05T00:26:00.000Z')
+      ).toMatchObject({ status: 'rejected' });
       expect(
-        coreDb.sqlite
-          .prepare('SELECT status FROM scheduler_session_leases WHERE lease_id = ?')
-          .get('lease_recovery_release')
-      ).toEqual({ status: 'releasing' });
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'lease_recovery_release'
+        )?.phase
+      ).toBe('closing');
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('resolves live lease token bindings through durable scheduler records', () => {
+  it('resolves live route credentials through the exact durable attempt', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createDispatchedLease(coreDb, 'lease_binding');
+      createPreparedAttempt(coreDb, 'lease_binding');
 
-      const resolution = resolveSchedulerLeaseTokenBinding(coreDb, {
+      const resolution = resolveNanoHostAttemptTokenBinding(coreDb, {
         sandboxBindingRef: 'lease-binding:lease_binding',
         now: () => '2026-07-05T00:00:10.000Z',
         lineage: {
@@ -1888,12 +1274,14 @@ describe('scheduler records', () => {
         },
       });
 
-      expect(resolution).toMatchObject({
-        status: 'accepted',
-        lease: {
-          leaseId: 'lease_binding',
-          status: 'acquired',
-        },
+      expect(resolution).toMatchObject({ status: 'accepted' });
+      expect(
+        observeExecutionAttempts(coreDb).find((attempt) => attempt.attempt_id === 'lease_binding')
+      ).toMatchObject({
+        phase: 'open',
+        turn_id: 'turn_binding',
+        agent_session_id: 'session_binding',
+        binding_ref: 'lease-binding:lease_binding',
       });
     } finally {
       coreDb.sqlite.close();
@@ -1904,10 +1292,10 @@ describe('scheduler records', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createDispatchedLease(coreDb, 'lease_binding_expired');
+      createPreparedAttempt(coreDb, 'lease_binding_expired');
 
       expect(
-        resolveSchedulerLeaseTokenBinding(coreDb, {
+        resolveNanoHostAttemptTokenBinding(coreDb, {
           lineage: {
             agentSessionId: 'session_binding_expired',
             packageSnapshotId: 'pkg_demo',
@@ -1915,10 +1303,10 @@ describe('scheduler records', () => {
             turnId: 'turn_binding_expired',
             workspaceId: 'ws_demo',
           },
-          now: () => '2026-07-05T00:16:00.000Z',
+          now: () => '2026-07-05T02:01:00.000Z',
           sandboxBindingRef: 'lease-binding:lease_binding_expired',
         })
-      ).toEqual({ status: 'rejected', reason: 'lease-not-live' });
+      ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
     } finally {
       coreDb.sqlite.close();
     }
@@ -1928,10 +1316,10 @@ describe('scheduler records', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createDispatchedLease(coreDb, 'lease_binding_startup_timeout');
+      createPreparedAttempt(coreDb, 'lease_binding_startup_timeout');
 
       expect(
-        resolveSchedulerLeaseTokenBinding(coreDb, {
+        resolveNanoHostAttemptTokenBinding(coreDb, {
           lineage: {
             agentSessionId: 'session_binding_startup_timeout',
             packageSnapshotId: 'pkg_demo',
@@ -1939,10 +1327,10 @@ describe('scheduler records', () => {
             turnId: 'turn_binding_startup_timeout',
             workspaceId: 'ws_demo',
           },
-          now: () => '2026-07-05T00:03:00.000Z',
+          now: () => '2026-07-05T00:26:00.000Z',
           sandboxBindingRef: 'lease-binding:lease_binding_startup_timeout',
         })
-      ).toEqual({ status: 'rejected', reason: 'lease-not-live' });
+      ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
     } finally {
       coreDb.sqlite.close();
     }
@@ -1952,16 +1340,16 @@ describe('scheduler records', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createDispatchedLease(coreDb, 'lease_binding_heartbeat_timeout');
-      acceptSchedulerLeaseHeartbeat(coreDb, {
+      createPreparedAttempt(coreDb, 'lease_binding_heartbeat_timeout');
+      acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        leaseId: 'lease_binding_heartbeat_timeout',
+        attemptId: 'lease_binding_heartbeat_timeout',
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
 
       expect(
-        resolveSchedulerLeaseTokenBinding(coreDb, {
+        resolveNanoHostAttemptTokenBinding(coreDb, {
           lineage: {
             agentSessionId: 'session_binding_heartbeat_timeout',
             packageSnapshotId: 'pkg_demo',
@@ -1972,7 +1360,7 @@ describe('scheduler records', () => {
           now: () => '2026-07-05T00:00:41.000Z',
           sandboxBindingRef: 'lease-binding:lease_binding_heartbeat_timeout',
         })
-      ).toEqual({ status: 'rejected', reason: 'lease-not-live' });
+      ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
     } finally {
       coreDb.sqlite.close();
     }
@@ -1982,7 +1370,7 @@ describe('scheduler records', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createDispatchedLease(coreDb, 'lease_binding_rejected');
+      createPreparedAttempt(coreDb, 'lease_binding_rejected');
       const lineage = {
         agentSessionId: 'session_binding_rejected',
         packageSnapshotId: 'pkg_demo',
@@ -1992,317 +1380,75 @@ describe('scheduler records', () => {
       };
 
       expect(
-        resolveSchedulerLeaseTokenBinding(coreDb, {
+        resolveNanoHostAttemptTokenBinding(coreDb, {
           sandboxBindingRef: 'lease-binding:missing',
           lineage,
         })
       ).toEqual({ status: 'rejected', reason: 'binding-not-found' });
       expect(
-        resolveSchedulerLeaseTokenBinding(coreDb, {
+        resolveNanoHostAttemptTokenBinding(coreDb, {
           sandboxBindingRef: 'lease-binding:lease_binding_rejected',
           lineage: { ...lineage, threadId: 'thread_other' },
         })
       ).toEqual({ status: 'rejected', reason: 'lineage-mismatch' });
 
-      completeSchedulerSessionLease(coreDb, {
-        leaseId: 'lease_binding_rejected',
-        terminalStatus: 'released',
-        releaseReason: 'completed',
+      beginOwnedAttemptCloseout(coreDb, {
+        attemptId: 'lease_binding_rejected',
+        outcome: 'completed',
+        firstTerminalCause: 'completed',
       });
 
       expect(
-        resolveSchedulerLeaseTokenBinding(coreDb, {
+        resolveNanoHostAttemptTokenBinding(coreDb, {
           sandboxBindingRef: 'lease-binding:lease_binding_rejected',
           lineage,
         })
-      ).toEqual({ status: 'rejected', reason: 'lease-not-live' });
+      ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('persists worker pool records', () => {
+  it('skips queued entries whose Thread already owns a live attempt', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      const pool = upsertSchedulerWorkerPool(coreDb, {
-        poolId: 'pool_local',
-        allowedBackendKinds: ['openshell'],
-        allowedPlacements: ['local'],
-        maxConcurrentSessions: 2,
-        queueLimit: 20,
-        defaultTimeoutMs: 900_000,
-        allowedWorkspaceScopes: ['local'],
-        budgetClass: 'interactive',
-        healthSummary: 'ready',
-        currentAdmittedSessionCount: 1,
-        currentQueueDepth: 3,
-        status: 'active',
-      });
-
-      expect(pool).toMatchObject({
-        poolId: 'pool_local',
-        maxConcurrentSessions: 2,
-        queueLimit: 20,
-        status: 'active',
-        warmSessionTarget: null,
-      });
-      expect(pool.allowedBackendKinds).toEqual(['openshell']);
-      expect(pool.allowedPlacements).toEqual(['local']);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    'local',
-    'remote',
-  ] as const)('creates the %s baseline with one scheduler slot', (placement) => {
-    const coreDb = createMigratedCoreDb();
-
-    try {
-      ensureConfiguredSchedulerBaseline(coreDb, {
-        now: () => '2026-07-05T00:00:00.000Z',
-        placement,
-      });
-
-      expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT default_timeout_ms AS defaultTimeoutMs, max_concurrent_sessions AS maxConcurrentSessions FROM scheduler_worker_pools WHERE pool_id = ?'
-          )
-          .get(`pool_${placement}`)
-      ).toEqual({ defaultTimeoutMs: 2_400_000, maxConcurrentSessions: 1 });
-      expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT concurrency_ceiling AS concurrencyCeiling FROM scheduler_capacity_records WHERE target_id = ?'
-          )
-          .get(`target_${placement}`)
-      ).toEqual({ concurrencyCeiling: 1 });
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('increments capacity versions on each target capacity write', () => {
-    const coreDb = createMigratedCoreDb();
-
-    try {
-      const first = upsertSchedulerCapacityRecord(coreDb, {
-        targetId: 'target_local',
-        poolId: 'pool_local',
-        capacityClass: 'local',
-        concurrencyCeiling: 2,
-        inUseCount: 0,
-        queueDepth: 0,
-        observationSource: 'configured',
-        observedAt: '2026-07-05T00:00:00.000Z',
-      });
-      const second = upsertSchedulerCapacityRecord(coreDb, {
-        targetId: 'target_local',
-        poolId: 'pool_local',
-        capacityClass: 'local',
-        concurrencyCeiling: 2,
-        inUseCount: 1,
-        queueDepth: 2,
-        observationSource: 'probe',
-        observedAt: '2026-07-05T00:00:10.000Z',
-      });
-
-      expect(first.version).toBe(1);
-      expect(second).toMatchObject({
-        targetId: 'target_local',
-        poolId: 'pool_local',
-        inUseCount: 1,
-        queueDepth: 2,
-        observationSource: 'probe',
-        version: 2,
-      });
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('sets up configured capacity without a generic target-health table', () => {
-    const coreDb = createMigratedCoreDb();
-
-    try {
-      expect(
-        coreDb.sqlite
-          .prepare(
-            "SELECT name FROM sqlite_master WHERE name LIKE 'scheduler_target_health_records%'"
-          )
-          .all()
-      ).toEqual([]);
-      ensureConfiguredSchedulerBaseline(coreDb, { placement: 'local' });
-      ensureConfiguredSchedulerBaseline(coreDb, { placement: 'remote' });
-      ensureConfiguredSchedulerBaseline(coreDb, { placement: 'local' });
-      expect(
-        coreDb.sqlite
-          .prepare('SELECT target_id FROM scheduler_capacity_records ORDER BY target_id')
-          .all()
-      ).toEqual([{ target_id: 'target_local' }, { target_id: 'target_remote' }]);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('dispatches the next queued entry to an acquired lease on the localhost baseline', () => {
-    const coreDb = createMigratedCoreDb();
-
-    try {
-      upsertSchedulerWorkerPool(coreDb, {
-        poolId: 'pool_local',
-        allowedBackendKinds: ['openshell'],
-        allowedPlacements: ['local'],
-        maxConcurrentSessions: 2,
-        queueLimit: 20,
-        defaultTimeoutMs: 900_000,
-        allowedWorkspaceScopes: ['local'],
-        budgetClass: 'interactive',
-        healthSummary: 'ready',
-        currentAdmittedSessionCount: 0,
-        currentQueueDepth: 1,
-        status: 'active',
-      });
-      upsertSchedulerCapacityRecord(coreDb, {
-        targetId: 'target_local',
-        poolId: 'pool_local',
-        capacityClass: 'local',
-        concurrencyCeiling: 2,
-        inUseCount: 0,
-        queueDepth: 0,
-        observationSource: 'configured',
-        observedAt: '2026-07-05T00:00:00.000Z',
-      });
       createSchedulerAdmissionEntry(coreDb, {
-        triggerActor: { kind: 'user', id: 'user_local' },
-        queueEntryId: 'queue_dispatch',
-        workspaceId: 'ws_demo',
-        threadId: 'thread_demo',
-        turnId: 'turn_demo',
-        turnInput: 'Run dispatched turn',
-        requestedAgentId: 'agent_worker',
-        profileRef: null,
-        priorityClass: 'interactive',
-        requiredPoolConstraints: ['openshell.local'],
-        now: () => '2026-07-05T00:00:01.000Z',
-      });
-
-      const result = dispatchNextSchedulerEntry(coreDb, {
-        planId: 'plan_dispatch',
-        leaseId: 'lease_dispatch',
-        agentSessionId: 'session_dispatch',
-        schedulerEpoch: 8,
-        leaseDurationMs: 900_000,
-        heartbeatIntervalMs: 10_000,
-        heartbeatTimeoutMs: 30_000,
-        startupTimeoutMs: 120_000,
-        expectedControlMode: 'poll',
-        expectedDataPlaneMode: 'openshell-files',
-        sandboxBindingRef: 'lease-binding:lease_dispatch',
-        now: () => '2026-07-05T00:00:02.000Z',
-      });
-
-      expect(result.status).toBe('dispatched');
-      if (result.status !== 'dispatched') {
-        throw new Error('Expected dispatch result.');
-      }
-      expect(result.plan).toMatchObject({
-        planId: 'plan_dispatch',
-        selectedPoolId: 'pool_local',
-        selectedTargetId: 'target_local',
-        status: 'executing',
-      });
-      expect(result.lease).toMatchObject({
-        leaseId: 'lease_dispatch',
-        poolId: 'pool_local',
-        targetId: 'target_local',
-        packageSnapshotId: 'aepsnap_turn_demo_session_dispatch',
-        status: 'acquired',
-        expiresAt: '2026-07-05T00:15:02.000Z',
-        heartbeatDeadline: '2026-07-05T00:00:32.000Z',
-        startupDeadline: '2026-07-05T00:02:02.000Z',
-      });
-      expect(listQueuedSchedulerAdmissionEntries(coreDb)).toEqual([]);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('skips queued entries whose thread already has a live lease', () => {
-    const coreDb = createMigratedCoreDb();
-
-    try {
-      upsertSchedulerWorkerPool(coreDb, {
-        poolId: 'pool_local',
-        allowedBackendKinds: ['openshell'],
-        allowedPlacements: ['local'],
-        maxConcurrentSessions: 2,
-        queueLimit: 20,
-        defaultTimeoutMs: 900_000,
-        allowedWorkspaceScopes: ['local'],
-        budgetClass: 'interactive',
-        healthSummary: 'ready',
-        currentAdmittedSessionCount: 0,
-        currentQueueDepth: 3,
-        status: 'active',
-      });
-      upsertSchedulerCapacityRecord(coreDb, {
-        targetId: 'target_local',
-        poolId: 'pool_local',
-        capacityClass: 'local',
-        concurrencyCeiling: 2,
-        inUseCount: 0,
-        queueDepth: 0,
-        observationSource: 'configured',
-        observedAt: '2026-07-05T00:00:00.000Z',
-      });
-      createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_thread_first',
+        requestId: 'request_first',
         workspaceId: 'ws_demo',
         threadId: 'thread_shared',
         turnId: 'turn_thread_first',
         turnInput: 'Run first shared-thread turn',
         requestedAgentId: 'agent_worker',
         profileRef: null,
-        priorityClass: 'interactive',
-        requiredPoolConstraints: ['openshell.local'],
         now: () => '2026-07-05T00:00:01.000Z',
       });
 
-      const first = dispatchNextSchedulerEntry(coreDb, {
-        planId: 'plan_thread_first',
-        leaseId: 'lease_thread_first',
-        agentSessionId: 'session_thread_first',
-        schedulerEpoch: 8,
-        leaseDurationMs: 900_000,
-        heartbeatIntervalMs: 10_000,
-        heartbeatTimeoutMs: 30_000,
-        startupTimeoutMs: 120_000,
-        expectedControlMode: 'poll',
-        expectedDataPlaneMode: 'openshell-files',
-        sandboxBindingRef: 'lease-binding:lease_thread_first',
-        now: () => '2026-07-05T00:00:02.000Z',
+      const first = findNextDispatchableSchedulerAdmissionEntry(coreDb)!;
+      expect(first.queueEntryId).toBe('queue_thread_first');
+      attemptActionOwners.createSchedulerExecutionAttempt(coreDb, {
+        entry: first,
+        attemptId: 'attempt_thread_first',
+        preparationInput: { admission: first },
       });
-
-      expect(first.status).toBe('dispatched');
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_thread_second',
+        requestId: 'request_second',
         workspaceId: 'ws_demo',
         threadId: 'thread_shared',
         turnId: 'turn_thread_second',
         turnInput: 'Run second shared-thread turn',
         requestedAgentId: 'agent_worker',
         profileRef: null,
-        priorityClass: 'interactive',
-        requiredPoolConstraints: ['openshell.local'],
         now: () => '2026-07-05T00:00:03.000Z',
       });
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'user_local' },
         queueEntryId: 'queue_thread_other',
         workspaceId: 'ws_demo',
@@ -2311,163 +1457,111 @@ describe('scheduler records', () => {
         turnInput: 'Run other thread turn',
         requestedAgentId: 'agent_worker',
         profileRef: null,
-        priorityClass: 'interactive',
-        requiredPoolConstraints: ['openshell.local'],
         now: () => '2026-07-05T00:00:04.000Z',
       });
 
-      const second = dispatchNextSchedulerEntry(coreDb, {
-        planId: 'plan_thread_other',
-        leaseId: 'lease_thread_other',
-        agentSessionId: 'session_thread_other',
-        schedulerEpoch: 8,
-        leaseDurationMs: 900_000,
-        heartbeatIntervalMs: 10_000,
-        heartbeatTimeoutMs: 30_000,
-        startupTimeoutMs: 120_000,
-        expectedControlMode: 'poll',
-        expectedDataPlaneMode: 'openshell-files',
-        sandboxBindingRef: 'lease-binding:lease_thread_other',
-        now: () => '2026-07-05T00:00:05.000Z',
+      const second = findNextDispatchableSchedulerAdmissionEntry(coreDb)!;
+      expect(second.queueEntryId).toBe('queue_thread_other');
+      attemptActionOwners.createSchedulerExecutionAttempt(coreDb, {
+        entry: second,
+        attemptId: 'attempt_thread_other',
+        preparationInput: { admission: second },
       });
-
-      expect(second.status).toBe('dispatched');
-      if (second.status !== 'dispatched') {
-        throw new Error('Expected dispatch result.');
-      }
-      expect(second.entry.queueEntryId).toBe('queue_thread_other');
       expect(
         listQueuedSchedulerAdmissionEntries(coreDb).map((entry) => entry.queueEntryId)
       ).toEqual(['queue_thread_second']);
-      expect(
-        dispatchNextSchedulerEntry(coreDb, {
-          planId: 'plan_thread_busy',
-          leaseId: 'lease_thread_busy',
-          agentSessionId: 'session_thread_busy',
-          schedulerEpoch: 8,
-          leaseDurationMs: 900_000,
-          heartbeatIntervalMs: 10_000,
-          heartbeatTimeoutMs: 30_000,
-          startupTimeoutMs: 120_000,
-          expectedControlMode: 'poll',
-          expectedDataPlaneMode: 'openshell-files',
-          sandboxBindingRef: 'lease-binding:lease_thread_busy',
-          now: () => '2026-07-05T00:00:06.000Z',
-        })
-      ).toEqual({ status: 'queued', reason: 'thread-busy' });
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('leaves queued entries waiting when compatible capacity is full', () => {
-    const coreDb = createMigratedCoreDb();
-
-    try {
-      upsertSchedulerWorkerPool(coreDb, {
-        poolId: 'pool_local',
-        allowedBackendKinds: ['openshell'],
-        allowedPlacements: ['local'],
-        maxConcurrentSessions: 1,
-        queueLimit: 20,
-        defaultTimeoutMs: 900_000,
-        allowedWorkspaceScopes: ['local'],
-        budgetClass: 'interactive',
-        healthSummary: 'ready',
-        currentAdmittedSessionCount: 1,
-        currentQueueDepth: 1,
-        status: 'active',
-      });
-      upsertSchedulerCapacityRecord(coreDb, {
-        targetId: 'target_local',
-        poolId: 'pool_local',
-        capacityClass: 'local',
-        concurrencyCeiling: 1,
-        inUseCount: 1,
-        queueDepth: 1,
-        observationSource: 'configured',
-        observedAt: '2026-07-05T00:00:00.000Z',
-      });
-      createSchedulerAdmissionEntry(coreDb, {
-        triggerActor: { kind: 'user', id: 'user_local' },
-        queueEntryId: 'queue_wait',
-        workspaceId: 'ws_demo',
-        threadId: 'thread_demo',
-        turnId: 'turn_demo',
-        turnInput: 'Run waiting turn',
-        requestedAgentId: 'agent_worker',
-        profileRef: null,
-        priorityClass: 'interactive',
-        requiredPoolConstraints: ['openshell.local'],
-        now: () => '2026-07-05T00:00:01.000Z',
-      });
-
-      expect(
-        dispatchNextSchedulerEntry(coreDb, {
-          planId: 'plan_wait',
-          leaseId: 'lease_wait',
-          agentSessionId: 'session_wait',
-          packageSnapshotId: 'pkg_wait',
-          schedulerEpoch: 8,
-          leaseDurationMs: 900_000,
-          heartbeatIntervalMs: 10_000,
-          heartbeatTimeoutMs: 30_000,
-          startupTimeoutMs: 120_000,
-          expectedControlMode: 'poll',
-          expectedDataPlaneMode: 'openshell-files',
-          sandboxBindingRef: 'lease-binding:lease_wait',
-          now: () => '2026-07-05T00:00:02.000Z',
-        })
-      ).toEqual({ status: 'queued', reason: 'capacity-saturated' });
-      expect(
-        listQueuedSchedulerAdmissionEntries(coreDb).map((entry) => entry.queueEntryId)
-      ).toEqual(['queue_wait']);
+      expect(findNextDispatchableSchedulerAdmissionEntry(coreDb)).toBeNull();
+      expect(requireSchedulerAdmissionEntry(coreDb, 'queue_thread_second').status).toBe('queued');
     } finally {
       coreDb.sqlite.close();
     }
   });
 });
 
-it.each([
-  'null',
-  '{"kind":"selected"}',
-])('classifies invalid retained scheduler storage choice %s without writes', (choice) => {
-  const coreDb = createMigratedCoreDb();
-  try {
-    createSchedulerAdmissionEntry(coreDb, {
-      triggerActor: { kind: 'user', id: 'user_local' },
-      queueEntryId: 'queue_bad_choice',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'tu_demo',
-      turnInput: 'Inspect retained scheduler decoding.',
-      requestedAgentId: 'agent_codex_host',
-      profileRef: 'agent_codex_host',
-      priorityClass: 'interactive',
-      requiredPoolConstraints: [],
+/** Models settled product barriers and exercises the real Native release consumer over retained physical proof. */
+async function closeOwnedExecutionAttempt(
+  db: ReturnType<typeof openCoreDb>,
+  input: { attemptId: string; firstTerminalCause: string; outcome?: string; now?: () => string }
+) {
+  const closing = attemptActionOwners.markSchedulerExecutionAttemptClosing(db, {
+    attemptId: input.attemptId,
+    cause: input.firstTerminalCause,
+    ...(input.outcome ? { outcomeRef: input.outcome } : {}),
+    ...(input.now ? { now: input.now } : {}),
+  });
+  const correlation = attemptActionOwners.schedulerExecutionCorrelation(closing);
+  const proof = {
+    terminalHandoff: true,
+    output: true,
+    evidence: true,
+    outsideWorkspaceCollection: true,
+    integrationDrain: true,
+    routesRevoked: true,
+  } as const;
+  const backend = createConfiguredWorkerLifecycleRuntime({ coreDb: db, env: {} }).turnExecutor
+    .executionBackend!;
+  const result = await backend.release({ ...correlation, proof });
+  if (result.state === 'released')
+    attemptActionOwners.closeSchedulerExecutionAttemptWithFence(db, {
+      correlation,
+      proof,
+      fenceRef: result.fenceRef!,
     });
-    coreDb.sqlite
-      .prepare(
-        'UPDATE scheduler_admission_entries SET worker_storage_choice_json = ? WHERE queue_entry_id = ?'
-      )
-      .run(choice, 'queue_bad_choice');
-    const observed = () =>
-      coreDb.sqlite
-        .prepare('SELECT * FROM scheduler_admission_entries ORDER BY queue_entry_id')
-        .all();
-    const before = observed();
-    let failure: unknown;
-    try {
-      listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        workspaceId: 'ws_demo',
-        statuses: ['queued'],
-      });
-    } catch (error) {
-      failure = error;
-    }
-    expect(observed()).toEqual(before);
-    expect(failure).toBeInstanceOf(z.ZodError);
-  } finally {
-    coreDb.sqlite.close();
-  }
-});
+  return result;
+}
+
+/** Revokes authority without release; terminal product state does not supply a fence. */
+function beginOwnedAttemptCloseout(
+  db: ReturnType<typeof openCoreDb>,
+  input: { attemptId: string; firstTerminalCause: string; outcome?: string; now?: () => string }
+) {
+  return attemptActionOwners.markSchedulerExecutionAttemptClosing(db, {
+    attemptId: input.attemptId,
+    cause: input.firstTerminalCause,
+    ...(input.outcome ? { outcomeRef: input.outcome } : {}),
+    ...(input.now ? { now: input.now } : {}),
+  });
+}
+
+/** Only this explicit simulator fixture owns vacuous output/physical barriers; no Native absence is treated as proof. */
+async function releaseModeledAttempt(
+  db: ReturnType<typeof openCoreDb>,
+  attemptId: string
+): Promise<void> {
+  const closing = attemptActionOwners.requireSchedulerExecutionAttempt(db, attemptId);
+  const correlation = attemptActionOwners.schedulerExecutionCorrelation(closing);
+  const proof = {
+    terminalHandoff: true,
+    output: true,
+    evidence: true,
+    outsideWorkspaceCollection: true,
+    integrationDrain: true,
+    routesRevoked: true,
+  } as const;
+  const result = await new SimulatedTurnExecutor({ coreDb: db }).release({ ...correlation, proof });
+  attemptActionOwners.closeSchedulerExecutionAttemptWithFence(db, {
+    correlation,
+    proof,
+    fenceRef: result.fenceRef!,
+  });
+}
+
+/** Resolves the unchanged private route gate at an exact timestamp without mutating generic Core. */
+function resolveAttemptRoute(
+  db: ReturnType<typeof openCoreDb>,
+  attemptId: string,
+  timestamp: string
+) {
+  const attempt = requireNanoHostExecutionAttempt(db, attemptId);
+  return resolveNanoHostAttemptTokenBinding(db, {
+    sandboxBindingRef: attempt.bindingRef!,
+    now: () => timestamp,
+    lineage: {
+      workspaceId: attempt.workspaceId,
+      threadId: attempt.threadId,
+      turnId: attempt.turnId,
+      agentSessionId: attempt.agentSessionId!,
+      packageSnapshotId: attempt.inputRef!,
+    },
+  });
+}

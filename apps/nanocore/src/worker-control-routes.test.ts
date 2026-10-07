@@ -11,16 +11,27 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import { WorkerControlClient } from '../../../packages/worker-shim/src/control-client.js';
 import { createDefaultWorkerControlGateway } from './app.js';
-import type { FsStore } from './lib/store.js';
+import { ensureLocalUser } from './auth/identity.js';
+import { SimulatedTurnExecutor } from './lib/simulator.js';
+import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from './lib/store.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
+import * as attemptActionOwners from './runtime/execution-attempt-records.js';
+import {
+  acceptNanoHostAttemptHeartbeat,
+  bindNanoHostAttemptRouteTokenHashes,
+  requireNanoHostExecutionAttempt,
+  resolveNanoHostAttemptTokenBinding,
+} from './runtime/nanohost-attempt-records.js';
+import { runNanoHostAttemptRecoveryMaintenance } from './runtime/nanohost-attempt-recovery.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   getNanoHostRuntimeTarget,
   recordNanoHostRuntimeTargetConnectionClose,
   upsertNanoHostRuntimeTarget,
 } from './runtime/nanohost-runtime-target.js';
-import { runSchedulerLeaseMaintenanceOnce } from './runtime/scheduler-lease-maintenance-service.js';
+import { projectWorkerBackendCleanup } from './runtime/worker-backend-cleanup-projection.js';
 import {
+  type getWorkerBackendSession,
   markWorkerBackendWorkspaceHandoffComplete,
   recordWorkerBackendSessionMaterializing,
   transitionWorkerBackendSessionState,
@@ -50,19 +61,8 @@ import {
   updateBackendWorkspaceHandleCleanupStatus,
 } from './runtime/workspace-sync-records.js';
 import {
-  acceptSchedulerLeaseHeartbeat,
-  bindSchedulerLeaseRouteTokenHashes,
-  completeSchedulerLeaseForTerminalTurn,
-  completeSchedulerSessionLease,
   createSchedulerAdmissionEntry,
-  dispatchNextSchedulerEntry,
-  markExpiredSchedulerLeasesStale,
-  markSchedulerSessionLeaseReleasing,
-  requireSchedulerSessionLease,
-  resolveSchedulerLeaseTokenBinding,
-  schedulerLeaseHasAppliedSupplyRefreshAck,
-  upsertSchedulerCapacityRecord,
-  upsertSchedulerWorkerPool,
+  requireSchedulerAdmissionEntry,
 } from './scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { coreDbPath, LOCAL_USER_ID } from './storage/fs-layout.js';
@@ -70,7 +70,9 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 // The real client retry owner uses timers/promises; route tests control only its clock.
 vi.mock('node:timers/promises', async (original) => {
@@ -166,63 +168,39 @@ function createDurableWorkerControlLease(
   lineage: WorkerControlLineage,
   suffix: string
 ): string {
-  const poolId = `pool_${suffix}`;
-  const targetId = `target_${suffix}`;
   const binding = `lease-binding:lease_${suffix}`;
 
-  upsertSchedulerWorkerPool(coreDb, {
-    allowedBackendKinds: ['openshell'],
-    allowedPlacements: ['local'],
-    allowedWorkspaceScopes: ['local'],
-    budgetClass: 'interactive',
-    currentAdmittedSessionCount: 0,
-    currentQueueDepth: 1,
-    defaultTimeoutMs: 900_000,
-    healthSummary: 'ready',
-    maxConcurrentSessions: 2,
-    poolId,
-    queueLimit: 20,
-    status: 'active',
-  });
-  upsertSchedulerCapacityRecord(coreDb, {
-    capacityClass: 'local',
-    concurrencyCeiling: 2,
-    inUseCount: 0,
-    observationSource: 'configured',
-    observedAt: '2026-07-05T00:00:00.000Z',
-    poolId,
-    queueDepth: 0,
-    targetId,
-  });
   createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
     triggerActor: { kind: 'user', id: LOCAL_USER_ID },
-    priorityClass: 'interactive',
-    profileRef: 'profile_worker',
+    profileRef: environmentPackage.agent.profileId,
     queueEntryId: `queue_${suffix}`,
     requestId: lineage.requestId,
-    requestedAgentId: 'agent_worker',
-    requiredPoolConstraints: ['openshell.local'],
+    requestedAgentId: environmentPackage.agent.agentId,
     threadId: lineage.threadId,
     turnId: lineage.turnId,
     turnInput: 'Run durable worker-control test',
     workspaceId: lineage.workspaceId,
   });
-  dispatchNextSchedulerEntry(coreDb, {
+  const submittedAttempt = recordTestExecutionAttempt(coreDb, {
+    entry: requireSchedulerAdmissionEntry(coreDb, `queue_${suffix}`),
+    attemptId: `lease_${suffix}`,
     agentSessionId: lineage.agentSessionId,
-    expectedControlMode: 'poll',
-    expectedDataPlaneMode: 'openshell-files',
-    heartbeatIntervalMs: 10_000,
-    heartbeatTimeoutMs: 30_000,
-    leaseDurationMs: 900_000,
-    leaseId: `lease_${suffix}`,
-    packageSnapshotId: lineage.packageSnapshotId,
-    planId: `plan_${suffix}`,
-    sandboxBindingRef: binding,
-    schedulerEpoch: 1,
-    startupTimeoutMs: 120_000,
+    inputRef: lineage.packageSnapshotId,
+    bindingRef: binding,
+    sessionCompatibilityKey: 'fixture-compatibility',
+    now: () => new Date().toISOString(),
+    operationId: `fixture-submit:${String(`lease_${suffix}`)}`,
   });
-  bindSchedulerLeaseRouteTokenHashes(coreDb, {
-    leaseId: `lease_${suffix}`,
+  attemptActionOwners.acceptSchedulerExecutionObservation(coreDb, {
+    ...attemptActionOwners.schedulerExecutionCorrelation(submittedAttempt),
+    disposition: 'accepted',
+    execution: 'running',
+    fenceRef: null,
+    outcomeRef: null,
+  });
+  bindNanoHostAttemptRouteTokenHashes(coreDb, {
+    attemptId: `lease_${suffix}`,
     sandboxBindingRef: binding,
     workerCapabilityTokenHash: hashWorkerRouteToken(workerRouteToken(binding, 'capability')),
     workerControlTokenHash: hashWorkerRouteToken(workerRouteToken(binding, 'worker-control')),
@@ -291,7 +269,7 @@ function recordWorkerControlBackendSession(
   }
   return recordWorkerBackendSessionMaterializing(coreDb, {
     backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
-    backendVersion: '0.0.99',
+    backendVersion: '0.0.80',
     identity: {
       agentSessionId: lineage.agentSessionId,
       backendKind: 'openshell',
@@ -308,11 +286,11 @@ function recordWorkerControlBackendSession(
       workspaceId: lineage.workspaceId,
     },
     sandboxBindingRef,
-  }).leaseId;
+  }).attemptId;
 }
 
 /** Advances one test backend identity through successful physical and durable cleanup. */
-function markWorkerControlBackendSessionCleaned(coreDb: CoreDb, leaseId: string): void {
+function markWorkerControlBackendSessionCleaned(coreDb: CoreDb, attemptId: string): void {
   const transitions = [
     ['materializing', 'cleanup-pending'],
     ['cleanup-pending', 'physical-cleaned'],
@@ -320,7 +298,7 @@ function markWorkerControlBackendSessionCleaned(coreDb: CoreDb, leaseId: string)
   ] as const;
 
   for (const [fromState, toState] of transitions) {
-    transitionWorkerBackendSessionState(coreDb, { fromState, leaseId, toState });
+    transitionWorkerBackendSessionState(coreDb, { fromState, attemptId, toState });
   }
 }
 
@@ -339,6 +317,34 @@ function heartbeatEnvelope(
     schemaVersion: 2 as const,
     sequence,
   };
+}
+
+/** Reads exact Core attempt ownership without interpreting backend-private progress. */
+function observeExecutionAttempts(
+  coreDb: ReturnType<typeof openCoreDb>
+): Record<string, unknown>[] {
+  const present = coreDb.sqlite
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduler_execution_attempts'"
+    )
+    .get();
+  return present
+    ? (coreDb.sqlite
+        .prepare('SELECT * FROM scheduler_execution_attempts ORDER BY rowid')
+        .all() as Record<string, unknown>[])
+    : [];
+}
+
+/** Observes the immutable Core deadline separately from adapter liveness and sequence updates. */
+function absoluteAttemptDeadline(coreDb: CoreDb, turnId: string): string {
+  const row = observeExecutionAttempts(coreDb).find((attempt) => attempt.turn_id === turnId);
+  expect(
+    row,
+    'Activity must retain a real attempt with a durable absolute deadline.'
+  ).toBeDefined();
+  const deadline = String(row!.deadline);
+  expect(Number.isFinite(Date.parse(deadline))).toBe(true);
+  return deadline;
 }
 
 describe('worker control routes', () => {
@@ -372,7 +378,8 @@ describe('worker control routes', () => {
           code: 'invalid_request',
           outcome: 'refused',
           status: 400,
-          leaseId: null,
+          attemptId: null,
+          attemptPhase: null,
           turnId: null,
           agentSessionId: null,
         });
@@ -388,6 +395,8 @@ describe('worker control routes', () => {
     const fixture = createWorkerControlRouteFixture();
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-heartbeat-gap-')));
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: LOCAL_USER_ID });
     const binding = createDurableWorkerControlLease(
       coreDb,
       fixture.environmentPackage,
@@ -416,7 +425,7 @@ describe('worker control routes', () => {
     const firstAccepted = new Promise<void>((resolve) => {
       entered = resolve;
     });
-    let baseline: ReturnType<typeof requireSchedulerSessionLease> | undefined;
+    let baseline: ReturnType<typeof requireNanoHostExecutionAttempt> | undefined;
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] });
     const stop = new AbortController();
     const client = new WorkerControlClient({
@@ -429,7 +438,7 @@ describe('worker control routes', () => {
         const response = await app.request(url, init);
         if (attempts.length <= 2) {
           expect(response.status).toBe(200);
-          const lease = requireSchedulerSessionLease(coreDb, 'lease_diagnostic_gap');
+          const lease = requireNanoHostExecutionAttempt(coreDb, 'lease_diagnostic_gap');
           if (!baseline) {
             baseline = lease;
             entered();
@@ -448,21 +457,33 @@ describe('worker control routes', () => {
       await vi.advanceTimersByTimeAsync(31_000);
       expect(attempts.length).toBeGreaterThanOrEqual(3);
       expect(new Set(attempts).size).toBe(1);
-      expect(requireSchedulerSessionLease(coreDb, 'lease_diagnostic_gap').heartbeatDeadline).toBe(
-        baseline!.heartbeatDeadline
-      );
-      expect(markExpiredSchedulerLeasesStale(coreDb, {})).toEqual([
-        expect.objectContaining({
-          leaseId: 'lease_diagnostic_gap',
-          status: 'stale',
-          releaseReason: 'heartbeat-timeout',
-          recoveryState: 'needs-evidence',
-        }),
-      ]);
+      expect(
+        requireNanoHostExecutionAttempt(coreDb, 'lease_diagnostic_gap').heartbeatDeadline
+      ).toBe(baseline!.heartbeatDeadline);
+      expect(
+        resolveNanoHostAttemptTokenBinding(coreDb, {
+          sandboxBindingRef: binding,
+          lineage: fixture.lineage,
+          token: registration.token,
+          tokenFamily: 'worker-control',
+        })
+      ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
+      expect(
+        attemptActionOwners.requireSchedulerExecutionAttempt(coreDb, 'lease_diagnostic_gap')
+      ).toMatchObject({
+        phase: 'open',
+        disposition: 'accepted',
+        operationId: 'fixture-submit:lease_diagnostic_gap',
+        fenceRef: null,
+      });
       releaseCarriage();
       expect(await heartbeat).toMatchObject({ code: 'worker_control_lease_not_live', status: 403 });
-      expect(requireSchedulerSessionLease(coreDb, 'lease_diagnostic_gap')).toMatchObject({
-        status: 'stale',
+      expect(['open', 'closing']).toContain(
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'lease_diagnostic_gap'
+        )?.phase
+      );
+      expect(requireNanoHostExecutionAttempt(coreDb, 'lease_diagnostic_gap')).toMatchObject({
         lastWorkerSequence: 0,
         heartbeatDeadline: baseline!.heartbeatDeadline,
       });
@@ -479,7 +500,8 @@ describe('worker control routes', () => {
           event: 'worker.control.request',
           operation: 'heartbeat',
           sequence: 0,
-          leaseId: 'lease_diagnostic_gap',
+          attemptId: 'lease_diagnostic_gap',
+          attemptPhase: 'open',
           outcome: 'accepted',
         })
       );
@@ -487,7 +509,8 @@ describe('worker control routes', () => {
         expect.objectContaining({
           event: 'worker.control.request',
           sequence: 0,
-          leaseId: 'lease_diagnostic_gap',
+          attemptId: 'lease_diagnostic_gap',
+          attemptPhase: 'open',
           outcome: 'refused',
           status: 403,
           deadlineDeltaMs: 1000,
@@ -661,13 +684,19 @@ describe('worker control routes', () => {
 
     try {
       applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        workspaceId: 'ws_demo',
+        ownerUserId: LOCAL_USER_ID,
+      });
       const binding = createDurableWorkerControlLease(
         coreDb,
         fixture.environmentPackage,
         fixture.lineage,
         'process_key_reconnect'
       );
-      const leaseId = recordWorkerControlBackendSession(
+      const attemptId = recordWorkerControlBackendSession(
         coreDb,
         fixture.environmentPackage,
         fixture.lineage,
@@ -676,15 +705,16 @@ describe('worker control routes', () => {
       );
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materializing',
-        leaseId,
+        attemptId,
         toState: 'materialized',
       });
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materialized',
-        leaseId,
+        attemptId,
         toState: 'launching',
       });
-      markWorkerBackendWorkspaceHandoffComplete(coreDb, { leaseId });
+      markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId });
+      const absoluteDeadline = absoluteAttemptDeadline(coreDb, fixture.lineage.turnId);
       const firstGateway = createDefaultWorkerControlGateway(coreDb);
       registerDurableWorkerControlSession(firstGateway, fixture.environmentPackage, binding);
       const firstApp = createApp({
@@ -704,13 +734,13 @@ describe('worker control routes', () => {
         method: 'POST',
       });
       expect(firstHeartbeat.status).toBe(200);
+      expect(absoluteAttemptDeadline(coreDb, fixture.lineage.turnId)).toBe(absoluteDeadline);
       coreDb.sqlite
         .prepare(
-          `UPDATE scheduler_session_leases
+          `UPDATE scheduler_execution_attempts
            SET recovery_state = 'awaiting-reconnect',
-               recovery_deadline = '2099-01-01T00:00:00.000Z',
-               scheduler_epoch = 2
-           WHERE lease_id = 'lease_process_key_reconnect'`
+               recovery_deadline = '2099-01-01T00:00:00.000Z'
+           WHERE attempt_id = 'lease_process_key_reconnect'`
         )
         .run();
       if (clearRuntimeTargetReadiness) {
@@ -724,7 +754,7 @@ describe('worker control routes', () => {
       if (beginBackendCleanup) {
         transitionWorkerBackendSessionState(coreDb, {
           fromState: 'launching',
-          leaseId,
+          attemptId,
           toState: 'cleanup-pending',
         });
       }
@@ -748,7 +778,7 @@ describe('worker control routes', () => {
         },
         method: 'POST',
       });
-      const lease = requireSchedulerSessionLease(coreDb, 'lease_process_key_reconnect');
+      const lease = requireNanoHostExecutionAttempt(coreDb, 'lease_process_key_reconnect');
       const durableWorkerControl = JSON.stringify(
         coreDb.sqlite
           .prepare(
@@ -760,6 +790,7 @@ describe('worker control routes', () => {
       );
 
       expect(reconnect.status === 200).toBe(accepted);
+      expect(absoluteAttemptDeadline(coreDb, fixture.lineage.turnId)).toBe(absoluteDeadline);
       if (expectedErrorCode) {
         expect(reconnect.status).toBe(expectedStatus);
         expect(await reconnect.clone().json()).toMatchObject({ code: expectedErrorCode });
@@ -814,6 +845,12 @@ describe('worker control routes', () => {
 
     try {
       applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        workspaceId: 'ws_demo',
+        ownerUserId: LOCAL_USER_ID,
+      });
 
       const binding = createDurableWorkerControlLease(
         coreDb,
@@ -927,6 +964,12 @@ describe('worker control routes', () => {
 
     try {
       applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        workspaceId: 'ws_demo',
+        ownerUserId: LOCAL_USER_ID,
+      });
 
       const binding = createDurableWorkerControlLease(
         coreDb,
@@ -1014,6 +1057,12 @@ describe('worker control routes', () => {
 
     try {
       applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        workspaceId: 'ws_demo',
+        ownerUserId: LOCAL_USER_ID,
+      });
       const gateway = new WorkerControlGateway({
         acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
         createToken: () => token,
@@ -1151,6 +1200,12 @@ describe('worker control routes', () => {
 
     try {
       applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        workspaceId: 'ws_demo',
+        ownerUserId: LOCAL_USER_ID,
+      });
 
       const binding = createDurableWorkerControlLease(
         coreDb,
@@ -1257,59 +1312,39 @@ describe('worker control routes', () => {
     };
 
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: LOCAL_USER_ID });
     const gateway = createDefaultWorkerControlGateway(coreDb);
-    upsertSchedulerWorkerPool(coreDb, {
-      allowedBackendKinds: ['openshell'],
-      allowedPlacements: ['local'],
-      allowedWorkspaceScopes: ['local'],
-      budgetClass: 'interactive',
-      currentAdmittedSessionCount: 0,
-      currentQueueDepth: 1,
-      defaultTimeoutMs: 900_000,
-      healthSummary: 'ready',
-      maxConcurrentSessions: 2,
-      poolId: 'pool_default_binding',
-      queueLimit: 20,
-      status: 'active',
-    });
-    upsertSchedulerCapacityRecord(coreDb, {
-      capacityClass: 'local',
-      concurrencyCeiling: 2,
-      inUseCount: 0,
-      observationSource: 'configured',
-      observedAt: '2026-07-05T00:00:00.000Z',
-      poolId: 'pool_default_binding',
-      queueDepth: 0,
-      targetId: 'target_default_binding',
-    });
     createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
       triggerActor: { kind: 'user', id: 'user_local' },
-      priorityClass: 'interactive',
-      profileRef: 'profile_worker',
+      profileRef: environmentPackage.agent.profileId,
       queueEntryId: 'queue_default_binding',
-      requestedAgentId: 'agent_worker',
-      requiredPoolConstraints: ['openshell.local'],
+      requestedAgentId: environmentPackage.agent.agentId,
       threadId: lineage.threadId,
       turnId: lineage.turnId,
       turnInput: 'Run worker control route test',
       workspaceId: lineage.workspaceId,
     });
-    dispatchNextSchedulerEntry(coreDb, {
+    const submittedAttempt = recordTestExecutionAttempt(coreDb, {
+      entry: requireSchedulerAdmissionEntry(coreDb, 'queue_default_binding'),
+      attemptId: 'lease_default_binding',
       agentSessionId: lineage.agentSessionId,
-      expectedControlMode: 'poll',
-      expectedDataPlaneMode: 'openshell-files',
-      heartbeatIntervalMs: 10_000,
-      heartbeatTimeoutMs: 30_000,
-      leaseDurationMs: 900_000,
-      leaseId: 'lease_default_binding',
-      packageSnapshotId: lineage.packageSnapshotId,
-      planId: 'plan_default_binding',
-      sandboxBindingRef: 'lease-binding:lease_default_binding',
-      schedulerEpoch: 1,
-      startupTimeoutMs: 120_000,
+      inputRef: lineage.packageSnapshotId,
+      bindingRef: 'lease-binding:lease_default_binding',
+      sessionCompatibilityKey: 'fixture-compatibility',
+      now: () => new Date().toISOString(),
+      operationId: `fixture-submit:${String('lease_default_binding')}`,
     });
-    bindSchedulerLeaseRouteTokenHashes(coreDb, {
-      leaseId: 'lease_default_binding',
+    attemptActionOwners.acceptSchedulerExecutionObservation(coreDb, {
+      ...attemptActionOwners.schedulerExecutionCorrelation(submittedAttempt),
+      disposition: 'accepted',
+      execution: 'running',
+      fenceRef: null,
+      outcomeRef: null,
+    });
+    bindNanoHostAttemptRouteTokenHashes(coreDb, {
+      attemptId: 'lease_default_binding',
       sandboxBindingRef: 'lease-binding:lease_default_binding',
       workerCapabilityTokenHash: hashWorkerRouteToken(
         workerRouteToken('lease-binding:lease_default_binding', 'capability')
@@ -1339,15 +1374,21 @@ describe('worker control routes', () => {
       authorization: `Bearer ${registration.token}`,
       ...heartbeatEnvelope(lineage, 1, 'running'),
     });
-    expect(requireSchedulerSessionLease(coreDb, 'lease_default_binding')).toMatchObject({
+    expect(['open', 'closing']).toContain(
+      observeExecutionAttempts(coreDb).find(
+        (attempt) => attempt.attempt_id === 'lease_default_binding'
+      )?.phase
+    );
+    expect(requireNanoHostExecutionAttempt(coreDb, 'lease_default_binding')).toMatchObject({
       lastAcceptedHeartbeatAt: expect.any(String),
       lastWorkerSequence: 1,
-      status: 'active',
     });
-    const heartbeatBaseline = requireSchedulerSessionLease(coreDb, 'lease_default_binding');
+    const heartbeatBaseline = requireNanoHostExecutionAttempt(coreDb, 'lease_default_binding');
 
     coreDb.sqlite
-      .prepare('UPDATE scheduler_session_leases SET last_worker_sequence = ? WHERE lease_id = ?')
+      .prepare(
+        'UPDATE scheduler_execution_attempts SET last_worker_sequence = ? WHERE attempt_id = ?'
+      )
       .run(3, 'lease_default_binding');
     const staleSequenceResponse = await app.request('/api/worker-control/heartbeat', {
       body: JSON.stringify(heartbeatEnvelope(lineage, 2, 'running')),
@@ -1367,7 +1408,9 @@ describe('worker control routes', () => {
       )
       .run(2);
     coreDb.sqlite
-      .prepare('UPDATE scheduler_session_leases SET last_worker_sequence = ? WHERE lease_id = ?')
+      .prepare(
+        'UPDATE scheduler_execution_attempts SET last_worker_sequence = ? WHERE attempt_id = ?'
+      )
       .run(heartbeatBaseline.lastWorkerSequence, 'lease_default_binding');
 
     coreDb.sqlite.exec(`
@@ -1397,7 +1440,7 @@ describe('worker control routes', () => {
         "SELECT COUNT(*) AS count FROM worker_control_records WHERE operation = 'heartbeat' AND record_key = ?"
       )
       .get('2') as { count: number };
-    const leaseAfterFailure = requireSchedulerSessionLease(coreDb, 'lease_default_binding');
+    const leaseAfterFailure = requireNanoHostExecutionAttempt(coreDb, 'lease_default_binding');
 
     expect(failedHeartbeatResponse.status).toBe(500);
     expect.soft(failedSequence.count).toBe(0);
@@ -1406,7 +1449,7 @@ describe('worker control routes', () => {
       heartbeatDeadline: heartbeatBaseline.heartbeatDeadline,
       lastAcceptedHeartbeatAt: heartbeatBaseline.lastAcceptedHeartbeatAt,
       lastWorkerSequence: heartbeatBaseline.lastWorkerSequence,
-      status: heartbeatBaseline.status,
+      phase: heartbeatBaseline.phase,
     });
     coreDb.sqlite
       .prepare(
@@ -1415,12 +1458,12 @@ describe('worker control routes', () => {
       .run(2);
     coreDb.sqlite
       .prepare(
-        `UPDATE scheduler_session_leases
-         SET status = ?, heartbeat_deadline = ?, last_accepted_heartbeat_at = ?, last_worker_sequence = ?
-         WHERE lease_id = ?`
+        `UPDATE scheduler_execution_attempts
+         SET phase = ?, heartbeat_deadline = ?, last_accepted_heartbeat_at = ?, last_worker_sequence = ?
+         WHERE attempt_id = ?`
       )
       .run(
-        heartbeatBaseline.status,
+        heartbeatBaseline.phase,
         heartbeatBaseline.heartbeatDeadline,
         heartbeatBaseline.lastAcceptedHeartbeatAt,
         heartbeatBaseline.lastWorkerSequence,
@@ -1428,7 +1471,7 @@ describe('worker control routes', () => {
       );
     coreDb.sqlite
       .prepare(
-        "UPDATE scheduler_session_leases SET heartbeat_deadline = '2000-01-01T00:00:00.000Z' WHERE lease_id = ?"
+        "UPDATE scheduler_execution_attempts SET heartbeat_deadline = '2000-01-01T00:00:00.000Z' WHERE attempt_id = ?"
       )
       .run('lease_default_binding');
     const staleResponse = await app.request('/api/worker-control/heartbeat', {
@@ -1444,10 +1487,10 @@ describe('worker control routes', () => {
     expect(staleResponse.status).toBe(403);
     expect(staleBody.code).toBe('worker_control_lease_not_live');
     markWorkerControlBackendSessionCleaned(coreDb, backendLeaseId);
-    completeSchedulerSessionLease(coreDb, {
-      leaseId: 'lease_default_binding',
-      releaseReason: 'completed',
-      terminalStatus: 'released',
+    await closeOwnedExecutionAttempt(coreDb, {
+      attemptId: 'lease_default_binding',
+      firstTerminalCause: 'completed',
+      outcome: 'completed',
     });
 
     expect(() =>
@@ -1471,6 +1514,12 @@ describe('worker control routes', () => {
 
     try {
       applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        workspaceId: 'ws_demo',
+        ownerUserId: LOCAL_USER_ID,
+      });
       const gateway = createDefaultWorkerControlGateway(coreDb);
       const registration = registerDurableWorkerControlSession(
         gateway,
@@ -1500,6 +1549,8 @@ describe('worker control routes', () => {
     const { environmentPackage, lineage, store } = createWorkerControlRouteFixture();
 
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: LOCAL_USER_ID });
     const gateway = createDefaultWorkerControlGateway(coreDb);
     const registration = gateway.registerSession(environmentPackage, {
       sandboxBindingRef: 'lease-binding:database_failure',
@@ -1658,6 +1709,8 @@ describe('worker control routes', () => {
     };
 
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: LOCAL_USER_ID });
     const gateway = createDefaultWorkerControlGateway(coreDb);
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
     applyScopedMigrations(workspaceDb);
@@ -1682,60 +1735,37 @@ describe('worker control routes', () => {
         workspaceId: lineage.workspaceId,
       },
     ]);
-    upsertSchedulerWorkerPool(coreDb, {
-      allowedBackendKinds: ['openshell'],
-      allowedPlacements: ['local'],
-      allowedWorkspaceScopes: ['local'],
-      budgetClass: 'interactive',
-      currentAdmittedSessionCount: 0,
-      currentQueueDepth: 1,
-      defaultTimeoutMs: 900_000,
-      healthSummary: 'ready',
-      maxConcurrentSessions: 2,
-      poolId: 'pool_final_status',
-      queueLimit: 20,
-      status: 'active',
-    });
-    upsertSchedulerCapacityRecord(coreDb, {
-      capacityClass: 'local',
-      concurrencyCeiling: 2,
-      inUseCount: 0,
-      observationSource: 'configured',
-      observedAt: '2026-07-05T00:00:00.000Z',
-      poolId: 'pool_final_status',
-      queueDepth: 0,
-      targetId: 'target_final_status',
-    });
     createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
       triggerActor: { kind: 'user', id: 'user_local' },
-      priorityClass: 'interactive',
-      profileRef: 'profile_worker',
+      profileRef: environmentPackage.agent.profileId,
       queueEntryId: 'queue_final_status',
       requestId: lineage.requestId,
-      requestedAgentId: 'agent_worker',
-      requiredPoolConstraints: ['openshell.local'],
+      requestedAgentId: environmentPackage.agent.agentId,
       threadId: lineage.threadId,
       turnId: lineage.turnId,
       turnInput: 'Run final status route test',
       workspaceId: lineage.workspaceId,
     });
-    dispatchNextSchedulerEntry(coreDb, {
+    const submittedAttempt = recordTestExecutionAttempt(coreDb, {
+      entry: requireSchedulerAdmissionEntry(coreDb, 'queue_final_status'),
+      attemptId: 'lease_final_status',
       agentSessionId: lineage.agentSessionId,
-      expectedControlMode: 'poll',
-      expectedDataPlaneMode: 'openshell-files',
-      heartbeatIntervalMs: 10_000,
-      heartbeatTimeoutMs: 30_000,
-      leaseDurationMs: 900_000,
-      leaseId: 'lease_final_status',
-      packageSnapshotId: lineage.packageSnapshotId,
-      planId: 'plan_final_status',
-      sandboxBindingRef: 'lease-binding:lease_final_status',
-      schedulerEpoch: 1,
-      startupTimeoutMs: 120_000,
+      inputRef: lineage.packageSnapshotId,
+      bindingRef: 'lease-binding:lease_final_status',
+      sessionCompatibilityKey: 'fixture-compatibility',
       now: () => '2099-07-05T00:00:02.000Z',
+      operationId: `fixture-submit:${String('lease_final_status')}`,
     });
-    bindSchedulerLeaseRouteTokenHashes(coreDb, {
-      leaseId: 'lease_final_status',
+    attemptActionOwners.acceptSchedulerExecutionObservation(coreDb, {
+      ...attemptActionOwners.schedulerExecutionCorrelation(submittedAttempt),
+      disposition: 'accepted',
+      execution: 'running',
+      fenceRef: null,
+      outcomeRef: null,
+    });
+    bindNanoHostAttemptRouteTokenHashes(coreDb, {
+      attemptId: 'lease_final_status',
       now: () => '2099-07-05T00:00:03.000Z',
       sandboxBindingRef: 'lease-binding:lease_final_status',
       workerCapabilityTokenHash: hashWorkerRouteToken(
@@ -1755,9 +1785,9 @@ describe('worker control routes', () => {
       'lease-binding:lease_final_status',
       'sandbox_final_status'
     );
-    acceptSchedulerLeaseHeartbeat(coreDb, {
+    acceptNanoHostAttemptHeartbeat(coreDb, {
       heartbeatTimeoutMs: 30_000,
-      leaseId: 'lease_final_status',
+      attemptId: 'lease_final_status',
       now: () => '2099-07-05T00:00:10.000Z',
       workerSequence: 1,
     });
@@ -1780,8 +1810,8 @@ describe('worker control routes', () => {
 
     coreDb.sqlite.exec(`
       CREATE TRIGGER reject_final_status_release
-      BEFORE UPDATE OF status ON scheduler_session_leases
-      WHEN OLD.lease_id = 'lease_final_status' AND NEW.status = 'releasing'
+      BEFORE UPDATE OF phase ON scheduler_execution_attempts
+      WHEN OLD.attempt_id = 'lease_final_status' AND NEW.phase = 'closing'
       BEGIN
         SELECT RAISE(ABORT, 'injected final status release failure');
       END
@@ -1814,9 +1844,11 @@ describe('worker control routes', () => {
     expect(failed.status).toBe(500);
     expect.soft(recordsAfterFailure).toEqual([]);
     expect.soft(fingerprintsAfterFailure).toEqual([]);
-    expect(requireSchedulerSessionLease(coreDb, 'lease_final_status')).toMatchObject({
-      status: 'active',
-    });
+    expect(['open', 'closing']).toContain(
+      observeExecutionAttempts(coreDb).find(
+        (attempt) => attempt.attempt_id === 'lease_final_status'
+      )?.phase
+    );
 
     coreDb.sqlite.exec('DROP TRIGGER reject_final_status_release');
     const rebuiltGateway = createDefaultWorkerControlGateway(coreDb);
@@ -1834,11 +1866,7 @@ describe('worker control routes', () => {
       },
       method: 'POST',
     });
-    const lease = coreDb.sqlite
-      .prepare(
-        'SELECT status, release_reason AS releaseReason FROM scheduler_session_leases WHERE lease_id = ?'
-      )
-      .get('lease_final_status') as { releaseReason: string; status: string };
+
     const acceptedRecords = coreDb.sqlite
       .prepare(
         `SELECT operation, COUNT(*) AS count
@@ -1895,10 +1923,11 @@ describe('worker control routes', () => {
       { count: 1, operation: 'event_append' },
       { count: 1, operation: 'final_status' },
     ]);
-    expect(lease).toEqual({
-      releaseReason: 'worker-final-status',
-      status: 'releasing',
-    });
+    expect(
+      observeExecutionAttempts(coreDb).find(
+        (attempt) => attempt.attempt_id === 'lease_final_status'
+      )?.phase
+    ).toBe('closing');
 
     expect(listBackendWorkspaceHandles(workspaceDb, lineage.workspaceId)).toEqual([
       expect.objectContaining({
@@ -1909,33 +1938,38 @@ describe('worker control routes', () => {
       }),
     ]);
     expect(
-      resolveSchedulerLeaseTokenBinding(coreDb, {
+      resolveNanoHostAttemptTokenBinding(coreDb, {
         sandboxBindingRef: 'lease-binding:lease_final_status',
         lineage,
       })
-    ).toEqual({ status: 'rejected', reason: 'lease-not-live' });
+    ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
 
-    const maintenance = runSchedulerLeaseMaintenanceOnce(coreDb, {
-      maxTotalLeaseMs: 7_200_000,
+    const reconcileAcceptedFinalStatus = vi.fn(async () => undefined);
+    await runNanoHostAttemptRecoveryMaintenance(coreDb, {
+      executionBackend: {
+        id: 'nanohost',
+        submit: vi.fn(),
+        inspect: vi.fn(),
+        cancel: vi.fn(),
+        release: vi.fn(),
+      },
+      cleanupBackendSession: vi.fn(),
+      prepareBackendCleanup: vi.fn(),
+      restoreBackendSession: vi.fn(),
+      projectRecoveredTurn: vi.fn(),
+      reconcileAcceptedFinalStatus,
       now: () => new Date(Date.now() + 60_000).toISOString(),
-      renewalDurationMs: 1_800_000,
-      renewalLeadMs: 300_000,
     });
-
-    expect(maintenance.leaseWatch.stale).toEqual([]);
+    expect(reconcileAcceptedFinalStatus).toHaveBeenCalledOnce();
     expect(listWorkspaceReconciliationRecords(workspaceDb, lineage.workspaceId)).toEqual([]);
-    expect(requireSchedulerSessionLease(coreDb, 'lease_final_status')).toMatchObject({
-      heartbeatDeadline: '2099-07-05T00:00:40.000Z',
-      releaseReason: 'worker-final-status',
-      status: 'releasing',
-    });
     expect(
-      coreDb.sqlite
-        .prepare(
-          'SELECT in_use_count AS inUseCount, version FROM scheduler_capacity_records WHERE target_id = ?'
-        )
-        .get('target_final_status')
-    ).toEqual({ inUseCount: 1, version: 2 });
+      observeExecutionAttempts(coreDb).find(
+        (attempt) => attempt.attempt_id === 'lease_final_status'
+      )?.phase
+    ).toBe('closing');
+    expect(requireNanoHostExecutionAttempt(coreDb, 'lease_final_status')).toMatchObject({
+      heartbeatDeadline: '2099-07-05T00:00:40.000Z',
+    });
 
     const completedTurn = {
       id: lineage.turnId,
@@ -1944,20 +1978,33 @@ describe('worker control routes', () => {
       workspaceId: lineage.workspaceId,
     };
     markWorkerControlBackendSessionCleaned(coreDb, backendLeaseId);
-    completeSchedulerLeaseForTerminalTurn(coreDb, completedTurn);
-    completeSchedulerLeaseForTerminalTurn(coreDb, completedTurn);
+    // This route-level fixture supplies settled handoff barriers after checking the accepted
+    // transcript and retained Workspace handle; executor integration tests prove their producers.
+    attemptActionOwners.markSchedulerAttemptForTerminalTurn(coreDb, completedTurn);
+    const closing = attemptActionOwners.requireSchedulerExecutionAttempt(
+      coreDb,
+      'lease_final_status'
+    );
+    const release = {
+      correlation: attemptActionOwners.schedulerExecutionCorrelation(closing),
+      proof: {
+        terminalHandoff: true,
+        output: true,
+        evidence: true,
+        outsideWorkspaceCollection: true,
+        integrationDrain: true,
+        routesRevoked: true,
+      },
+      fenceRef: 'fixture-cleaned:lease_final_status',
+    };
+    attemptActionOwners.closeSchedulerExecutionAttemptWithFence(coreDb, release);
+    attemptActionOwners.closeSchedulerExecutionAttemptWithFence(coreDb, release);
 
-    expect(requireSchedulerSessionLease(coreDb, 'lease_final_status')).toMatchObject({
-      releaseReason: 'turn-completed',
-      status: 'released',
-    });
     expect(
-      coreDb.sqlite
-        .prepare(
-          'SELECT in_use_count AS inUseCount, version FROM scheduler_capacity_records WHERE target_id = ?'
-        )
-        .get('target_final_status')
-    ).toEqual({ inUseCount: 0, version: 3 });
+      observeExecutionAttempts(coreDb).find(
+        (attempt) => attempt.attempt_id === 'lease_final_status'
+      )?.phase
+    ).toBe('closed');
 
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
@@ -1969,6 +2016,12 @@ describe('worker control routes', () => {
 
     try {
       applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        workspaceId: 'ws_demo',
+        ownerUserId: LOCAL_USER_ID,
+      });
       const binding = createDurableWorkerControlLease(
         coreDb,
         environmentPackage,
@@ -1981,9 +2034,7 @@ describe('worker control routes', () => {
           resolveWorkerControlFinalStatusTokenBinding(coreDb, input),
         runFinalStatusTransaction: (operation) => {
           coreDb.sqlite
-            .prepare(
-              'UPDATE scheduler_session_leases SET sandbox_binding_ref = ? WHERE lease_id = ?'
-            )
+            .prepare('UPDATE scheduler_execution_attempts SET binding_ref = ? WHERE attempt_id = ?')
             .run('revoked-binding', 'lease_final_status_live_race');
           return coreDb.sqlite.transaction(operation)();
         },
@@ -2023,23 +2074,34 @@ describe('worker control routes', () => {
       expect(response.status).toBe(401);
       expect.soft(acceptedRecordCount.count).toBe(0);
       expect.soft(fingerprintCount.count).toBe(0);
-      expect(requireSchedulerSessionLease(coreDb, 'lease_final_status_live_race')).toMatchObject({
-        releaseReason: null,
-        sandboxBindingRef: 'revoked-binding',
-        status: 'acquired',
-      });
+      expect(['open', 'closing']).toContain(
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'lease_final_status_live_race'
+        )?.phase
+      );
+      expect(
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'lease_final_status_live_race'
+        )
+      ).toMatchObject({ binding_ref: 'revoked-binding' });
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('rejects exact final-status replay when release grace expires at transaction entry', async () => {
+  it('rejects exact final-status replay when the authority deadline expires at transaction entry', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-replay-race-')));
     const { environmentPackage, lineage, store } = createWorkerControlRouteFixture();
     let transactionCount = 0;
 
     try {
       applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        workspaceId: 'ws_demo',
+        ownerUserId: LOCAL_USER_ID,
+      });
       const binding = createDurableWorkerControlLease(
         coreDb,
         environmentPackage,
@@ -2056,15 +2118,15 @@ describe('worker control routes', () => {
       const gateway = new WorkerControlGateway({
         acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
         onFinalStatusAccepted: (input) => {
-          const resolution = resolveSchedulerLeaseTokenBinding(coreDb, input);
+          const resolution = resolveNanoHostAttemptTokenBinding(coreDb, input);
 
           if (resolution.status !== 'accepted') {
             throw new Error('Expected a live lease during initial final-status acceptance.');
           }
 
-          markSchedulerSessionLeaseReleasing(coreDb, {
-            leaseId: resolution.lease.leaseId,
-            releaseReason: 'worker-final-status',
+          beginOwnedAttemptCloseout(coreDb, {
+            attemptId: resolution.attempt.attemptId,
+            firstTerminalCause: 'worker-final-status',
           });
         },
         resolveFinalStatusTokenBinding: (input) =>
@@ -2073,14 +2135,13 @@ describe('worker control routes', () => {
           transactionCount += 1;
           if (transactionCount === 2) {
             coreDb.sqlite
-              .prepare('UPDATE scheduler_session_leases SET expires_at = ? WHERE lease_id = ?')
+              .prepare('UPDATE scheduler_execution_attempts SET deadline = ? WHERE attempt_id = ?')
               .run('2000-01-01T00:00:00.000Z', 'lease_final_status_replay_race');
             markWorkerControlBackendSessionCleaned(coreDb, backendLeaseId);
-            completeSchedulerSessionLease(coreDb, {
-              leaseId: 'lease_final_status_replay_race',
-              recoveryState: 'needs-evidence',
-              releaseReason: 'release-grace-timeout',
-              terminalStatus: 'lost',
+            beginOwnedAttemptCloseout(coreDb, {
+              attemptId: 'lease_final_status_replay_race',
+
+              firstTerminalCause: 'worker-final-status',
             });
           }
           return coreDb.sqlite.transaction(operation)();
@@ -2124,12 +2185,11 @@ describe('worker control routes', () => {
       expect(replay.status).toBe(403);
       expect.soft(acceptedRecordCount.count).toBe(2);
       expect.soft(fingerprintCount.count).toBe(2);
-      expect(requireSchedulerSessionLease(coreDb, 'lease_final_status_replay_race')).toMatchObject({
-        expiresAt: '2000-01-01T00:00:00.000Z',
-        recoveryState: 'needs-evidence',
-        releaseReason: 'release-grace-timeout',
-        status: 'lost',
-      });
+      expect(
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'lease_final_status_replay_race'
+        )?.phase
+      ).toBe('closing');
     } finally {
       coreDb.sqlite.close();
     }
@@ -2165,6 +2225,12 @@ describe('worker control routes', () => {
 
     try {
       applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        workspaceId: 'ws_demo',
+        ownerUserId: LOCAL_USER_ID,
+      });
       const binding = createDurableWorkerControlLease(
         coreDb,
         environmentPackage,
@@ -2218,6 +2284,7 @@ describe('worker control routes', () => {
         },
         method: 'POST' as const,
       };
+      const absoluteDeadline = absoluteAttemptDeadline(coreDb, lineage.turnId);
       const response = await app.request('/api/worker-control/final-status', request);
 
       expect(response.status).toBe(200);
@@ -2239,51 +2306,103 @@ describe('worker control routes', () => {
         store,
         workerControlGateway: restartedGateway,
       });
+      expect(absoluteAttemptDeadline(coreDb, lineage.turnId)).toBe(absoluteDeadline);
       const replay = await restartedApp.request('/api/worker-control/final-status', request);
 
+      expect(absoluteAttemptDeadline(coreDb, lineage.turnId)).toBe(absoluteDeadline);
       expect(replay.status).toBe(200);
       expect(listBackendWorkspaceHandles(workspaceDb, lineage.workspaceId)).toEqual([
         expect.objectContaining({ cleanupStatus: 'retained' }),
       ]);
 
       markWorkerControlBackendSessionCleaned(coreDb, backendLeaseId);
-      const releasingLease = requireSchedulerSessionLease(coreDb, 'lease_final_status_workspace');
-      completeSchedulerSessionLease(coreDb, {
-        leaseId: releasingLease.leaseId,
-        recoveryState: 'needs-evidence',
-        releaseReason: 'release-grace-timeout',
-        terminalStatus: 'lost',
-      });
-      runSchedulerLeaseMaintenanceOnce(coreDb, {
-        maxTotalLeaseMs: 7_200_000,
-        now: () => new Date(Date.parse(releasingLease.expiresAt) + 1).toISOString(),
-        onError: (error) => {
-          throw error;
-        },
-        renewalDurationMs: 1_800_000,
-        renewalLeadMs: 300_000,
-      });
+      const releasingLease = requireNanoHostExecutionAttempt(
+        coreDb,
+        'lease_final_status_workspace'
+      );
+      beginOwnedAttemptCloseout(coreDb, {
+        attemptId: releasingLease.attemptId,
 
-      expect(listWorkspaceReconciliationRecords(workspaceDb, lineage.workspaceId)).toEqual([
-        expect.objectContaining({
-          backendHandleSummary: expect.objectContaining({ cleanupStatus: 'retained' }),
-          backendReachability: expect.objectContaining({ detail: 'release-grace-timeout' }),
-          stateBefore: 'lease-releasing',
-          triggerReason: 'backend_takeover',
-        }),
-      ]);
-      expect(requireSchedulerSessionLease(coreDb, 'lease_final_status_workspace')).toMatchObject({
-        recoveryState: 'recovery-projected',
-        releaseReason: 'release-grace-timeout',
-        status: 'lost',
+        firstTerminalCause: 'worker-final-status',
       });
+      const reconcileAcceptedFinalStatus = vi.fn(
+        async (session: NonNullable<ReturnType<typeof getWorkerBackendSession>>) => {
+          expect(session.attemptId).toBe(backendLeaseId);
+          expect(session.state).toBe('cleaned');
+          // This transport fixture has no physical worker; the normal terminal callback settles its actual Workspace projection before modeled release.
+          const completedAt = session.physicalCleanedAt!;
+          const projection = projectWorkerBackendCleanup(workspaceDb, {
+            agentSessionId: lineage.agentSessionId,
+            backendType: session.backendKind,
+            backendVersion: session.backendVersion,
+            completedAt,
+            outcome: 'succeeded',
+            backendSessionId: 'sandbox_final_status_workspace',
+            environmentPackage,
+            packageSnapshotId: lineage.packageSnapshotId,
+            placement: 'local',
+            threadId: lineage.threadId,
+            turnId: lineage.turnId,
+            workerImage: environmentPackage.runtime.image.ref,
+            workspaceHandoffState: 'complete',
+            workspaceId: lineage.workspaceId,
+          });
+          expect(projection.workspaceHandoffComplete).toBe(true);
+          store.createAgentSession({
+            id: lineage.agentSessionId,
+            agentId: environmentPackage.agent.agentId,
+            workspaceId: lineage.workspaceId,
+            threadId: lineage.threadId,
+            status: 'idle',
+            message: null,
+            environmentPackageSnapshotId: lineage.packageSnapshotId,
+            createdAt: completedAt,
+            updatedAt: completedAt,
+          });
+          const terminal = store.updateTurn(lineage.turnId, {
+            agentId: environmentPackage.agent.agentId,
+            agentSessionId: lineage.agentSessionId,
+            status: 'completed',
+            completedAt,
+          });
+          store.emitTurnEvent(
+            lineage.turnId,
+            {
+              event: 'turn.completed',
+              requestId: lineage.requestId,
+              workspaceId: lineage.workspaceId,
+              threadId: lineage.threadId,
+              turnId: lineage.turnId,
+              data: { type: 'turn-completed', stopReason: 'completed', turn: terminal },
+            },
+            ALREADY_DECIDED_PUBLICATION_ADMISSION
+          );
+          await closeOwnedExecutionAttempt(coreDb, {
+            attemptId: session.attemptId,
+            firstTerminalCause: 'turn-completed',
+            outcome: `turn:${lineage.turnId}:completed`,
+          });
+        }
+      );
+      await runNanoHostAttemptRecoveryMaintenance(coreDb, {
+        executionBackend: new SimulatedTurnExecutor({ coreDb }),
+        now: () => new Date(Date.parse(releasingLease.deadline!) + 1).toISOString(),
+        cleanupBackendSession: vi.fn(async () => {}),
+        prepareBackendCleanup: vi.fn(),
+        restoreBackendSession: vi.fn(async () => {}),
+        projectRecoveredTurn: vi.fn(async () => ({ status: 'interrupted' as const })),
+        reconcileAcceptedFinalStatus,
+      });
+      expect(reconcileAcceptedFinalStatus).toHaveBeenCalledTimes(1);
+      expect(listBackendWorkspaceHandles(workspaceDb, lineage.workspaceId)).toEqual([
+        expect.objectContaining({ cleanupStatus: 'cleaned' }),
+      ]);
+      expect(listWorkspaceReconciliationRecords(workspaceDb, lineage.workspaceId)).toEqual([]);
       expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT in_use_count AS inUseCount FROM scheduler_capacity_records WHERE target_id = ?'
-          )
-          .get('target_final_status_workspace')
-      ).toEqual({ inUseCount: 0 });
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'lease_final_status_workspace'
+        )?.phase
+      ).toBe('closed');
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -2296,6 +2415,12 @@ describe('worker control routes', () => {
 
     try {
       applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        workspaceId: 'ws_demo',
+        ownerUserId: LOCAL_USER_ID,
+      });
       const binding = createDurableWorkerControlLease(
         coreDb,
         environmentPackage,
@@ -2319,10 +2444,11 @@ describe('worker control routes', () => {
       });
 
       expect(accepted.status).toBe(200);
-      expect(requireSchedulerSessionLease(coreDb, 'lease_final_status_replay')).toMatchObject({
-        releaseReason: 'worker-final-status',
-        status: 'releasing',
-      });
+      expect(
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === 'lease_final_status_replay'
+        )?.phase
+      ).toBe('closing');
 
       const sameProcessReplay = await app.request('/api/worker-control/final-status', {
         body: finalStatusBody,
@@ -2445,7 +2571,7 @@ describe('worker control routes', () => {
     ]);
   });
 
-  it('records supply refresh acknowledgements for durable scheduler renewal gates', async () => {
+  it('retains accepted supply refresh acknowledgement evidence in Core', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-supply-refresh-ack-')));
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Supply refresh thread');
@@ -2479,59 +2605,43 @@ describe('worker control routes', () => {
 
     try {
       applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        workspaceId: 'ws_demo',
+        ownerUserId: LOCAL_USER_ID,
+      });
       const gateway = createDefaultWorkerControlGateway(coreDb);
-      upsertSchedulerWorkerPool(coreDb, {
-        allowedBackendKinds: ['openshell'],
-        allowedPlacements: ['local'],
-        allowedWorkspaceScopes: ['local'],
-        budgetClass: 'interactive',
-        currentAdmittedSessionCount: 0,
-        currentQueueDepth: 1,
-        defaultTimeoutMs: 900_000,
-        healthSummary: 'ready',
-        maxConcurrentSessions: 2,
-        poolId: 'pool_supply_refresh',
-        queueLimit: 20,
-        status: 'active',
-      });
-      upsertSchedulerCapacityRecord(coreDb, {
-        capacityClass: 'local',
-        concurrencyCeiling: 2,
-        inUseCount: 0,
-        observationSource: 'configured',
-        observedAt: '2026-07-05T00:00:00.000Z',
-        poolId: 'pool_supply_refresh',
-        queueDepth: 0,
-        targetId: 'target_supply_refresh',
-      });
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'user_local' },
-        priorityClass: 'interactive',
-        profileRef: 'profile_worker',
+        profileRef: environmentPackage.agent.profileId,
         queueEntryId: 'queue_supply_refresh',
-        requestedAgentId: 'agent_worker',
-        requiredPoolConstraints: ['openshell.local'],
+        requestedAgentId: environmentPackage.agent.agentId,
         threadId: lineage.threadId,
         turnId: lineage.turnId,
         turnInput: 'Run supply refresh worker',
         workspaceId: lineage.workspaceId,
       });
-      dispatchNextSchedulerEntry(coreDb, {
+      const submittedAttempt = recordTestExecutionAttempt(coreDb, {
+        entry: requireSchedulerAdmissionEntry(coreDb, 'queue_supply_refresh'),
+        attemptId: 'lease_supply_refresh',
         agentSessionId: lineage.agentSessionId,
-        expectedControlMode: 'poll',
-        expectedDataPlaneMode: 'openshell-files',
-        heartbeatIntervalMs: 10_000,
-        heartbeatTimeoutMs: 30_000,
-        leaseDurationMs: 900_000,
-        leaseId: 'lease_supply_refresh',
-        packageSnapshotId: lineage.packageSnapshotId,
-        planId: 'plan_supply_refresh',
-        sandboxBindingRef: 'lease-binding:lease_supply_refresh',
-        schedulerEpoch: 1,
-        startupTimeoutMs: 120_000,
+        inputRef: lineage.packageSnapshotId,
+        bindingRef: 'lease-binding:lease_supply_refresh',
+        sessionCompatibilityKey: 'fixture-compatibility',
+        now: () => new Date().toISOString(),
+        operationId: `fixture-submit:${String('lease_supply_refresh')}`,
       });
-      bindSchedulerLeaseRouteTokenHashes(coreDb, {
-        leaseId: 'lease_supply_refresh',
+      attemptActionOwners.acceptSchedulerExecutionObservation(coreDb, {
+        ...attemptActionOwners.schedulerExecutionCorrelation(submittedAttempt),
+        disposition: 'accepted',
+        execution: 'running',
+        fenceRef: null,
+        outcomeRef: null,
+      });
+      bindNanoHostAttemptRouteTokenHashes(coreDb, {
+        attemptId: 'lease_supply_refresh',
         sandboxBindingRef: 'lease-binding:lease_supply_refresh',
         workerCapabilityTokenHash: hashWorkerRouteToken(
           workerRouteToken('lease-binding:lease_supply_refresh', 'capability')
@@ -2569,12 +2679,15 @@ describe('worker control routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(
-        schedulerLeaseHasAppliedSupplyRefreshAck(coreDb, {
-          agentSessionId: lineage.agentSessionId,
-          packageSnapshotId: lineage.packageSnapshotId,
-        })
-      ).toBe(true);
+      const durableAck = coreDb.sqlite
+        .prepare(
+          "SELECT record_json AS recordJson FROM worker_control_records WHERE turn_id = ? AND operation = 'supply_refresh_ack'"
+        )
+        .get(lineage.turnId) as { recordJson: string };
+      expect(JSON.parse(durableAck.recordJson)).toMatchObject({
+        refreshId: 'refresh_safe_1',
+        status: 'applied',
+      });
     } finally {
       coreDb.sqlite.close();
     }
@@ -2759,60 +2872,44 @@ describe('worker control routes', () => {
 
     try {
       applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        workspaceId: 'ws_demo',
+        ownerUserId: LOCAL_USER_ID,
+      });
       const firstGateway = createDefaultWorkerControlGateway(coreDb);
-      upsertSchedulerWorkerPool(coreDb, {
-        allowedBackendKinds: ['openshell'],
-        allowedPlacements: ['local'],
-        allowedWorkspaceScopes: ['local'],
-        budgetClass: 'interactive',
-        currentAdmittedSessionCount: 0,
-        currentQueueDepth: 1,
-        defaultTimeoutMs: 900_000,
-        healthSummary: 'ready',
-        maxConcurrentSessions: 2,
-        poolId: 'pool_rebuild',
-        queueLimit: 20,
-        status: 'active',
-      });
-      upsertSchedulerCapacityRecord(coreDb, {
-        capacityClass: 'local',
-        concurrencyCeiling: 2,
-        inUseCount: 0,
-        observationSource: 'configured',
-        observedAt: '2026-07-05T00:00:00.000Z',
-        poolId: 'pool_rebuild',
-        queueDepth: 0,
-        targetId: 'target_rebuild',
-      });
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'user_local' },
-        priorityClass: 'interactive',
-        profileRef: 'profile_worker',
+        profileRef: environmentPackage.agent.profileId,
         queueEntryId: 'queue_rebuild',
         requestId: lineage.requestId,
-        requestedAgentId: 'agent_worker',
-        requiredPoolConstraints: ['openshell.local'],
+        requestedAgentId: environmentPackage.agent.agentId,
         threadId: lineage.threadId,
         turnId: lineage.turnId,
         turnInput: 'Run worker control rebuild test',
         workspaceId: lineage.workspaceId,
       });
-      dispatchNextSchedulerEntry(coreDb, {
+      const submittedAttempt = recordTestExecutionAttempt(coreDb, {
+        entry: requireSchedulerAdmissionEntry(coreDb, 'queue_rebuild'),
+        attemptId: 'lease_rebuild',
         agentSessionId: lineage.agentSessionId,
-        expectedControlMode: 'poll',
-        expectedDataPlaneMode: 'openshell-files',
-        heartbeatIntervalMs: 10_000,
-        heartbeatTimeoutMs: 30_000,
-        leaseDurationMs: 900_000,
-        leaseId: 'lease_rebuild',
-        packageSnapshotId: lineage.packageSnapshotId,
-        planId: 'plan_rebuild',
-        sandboxBindingRef: 'lease-binding:lease_rebuild',
-        schedulerEpoch: 1,
-        startupTimeoutMs: 120_000,
+        inputRef: lineage.packageSnapshotId,
+        bindingRef: 'lease-binding:lease_rebuild',
+        sessionCompatibilityKey: 'fixture-compatibility',
+        now: () => new Date().toISOString(),
+        operationId: `fixture-submit:${String('lease_rebuild')}`,
       });
-      bindSchedulerLeaseRouteTokenHashes(coreDb, {
-        leaseId: 'lease_rebuild',
+      attemptActionOwners.acceptSchedulerExecutionObservation(coreDb, {
+        ...attemptActionOwners.schedulerExecutionCorrelation(submittedAttempt),
+        disposition: 'accepted',
+        execution: 'running',
+        fenceRef: null,
+        outcomeRef: null,
+      });
+      bindNanoHostAttemptRouteTokenHashes(coreDb, {
+        attemptId: 'lease_rebuild',
         sandboxBindingRef: 'lease-binding:lease_rebuild',
         workerCapabilityTokenHash: hashWorkerRouteToken(
           workerRouteToken('lease-binding:lease_rebuild', 'capability')
@@ -2837,6 +2934,7 @@ describe('worker control routes', () => {
         workerControlGateway: firstGateway,
       });
 
+      const absoluteDeadline = absoluteAttemptDeadline(coreDb, lineage.turnId);
       const firstHeartbeatResponse = await firstApp.request('/api/worker-control/heartbeat', {
         body: JSON.stringify(heartbeatEnvelope(lineage, 1, 'running', 'Worker is alive.')),
         headers: {
@@ -2889,7 +2987,8 @@ describe('worker control routes', () => {
         ...heartbeatEnvelope(lineage, 1, 'running', 'Worker is alive.'),
       });
       const snapshot = rebuiltGateway.getSessionSnapshot(lineage.packageSnapshotId);
-      const leaseAfterRetry = requireSchedulerSessionLease(coreDb, 'lease_rebuild');
+      const leaseAfterRetry = requireNanoHostExecutionAttempt(coreDb, 'lease_rebuild');
+      expect(absoluteAttemptDeadline(coreDb, lineage.turnId)).toBe(absoluteDeadline);
       expect.soft(retryHeartbeat).toEqual(firstHeartbeatBody.heartbeat);
       expect.soft(snapshot?.heartbeat).toEqual(firstHeartbeatBody.heartbeat);
       expect
@@ -3058,3 +3157,60 @@ describe('worker control routes', () => {
     expect(source).not.toContain("tokenFamily: 'inference'");
   });
 });
+
+/** Closes this explicit no-process control fixture only after its six modeled barriers and exact simulator fence settle. */
+async function closeOwnedExecutionAttempt(
+  db: CoreDb,
+  input: {
+    readonly attemptId: string;
+    readonly firstTerminalCause: string;
+    readonly outcome?: string;
+    readonly now?: () => string;
+  }
+) {
+  const attempt = attemptActionOwners.markSchedulerExecutionAttemptClosing(db, {
+    attemptId: input.attemptId,
+    cause: input.firstTerminalCause,
+    ...(input.outcome ? { outcomeRef: input.outcome } : {}),
+    ...(input.now ? { now: input.now } : {}),
+  });
+  const proof = {
+    terminalHandoff: true,
+    output: true,
+    evidence: true,
+    outsideWorkspaceCollection: true,
+    integrationDrain: true,
+    routesRevoked: true,
+  } as const;
+  const correlation = attemptActionOwners.schedulerExecutionCorrelation(attempt);
+  const result = await new SimulatedTurnExecutor({ coreDb: db }).release({ ...correlation, proof });
+  return attemptActionOwners.closeSchedulerExecutionAttemptWithFence(db, {
+    correlation,
+    proof,
+    fenceRef: result.fenceRef!,
+    ...(input.now ? { now: input.now } : {}),
+  });
+}
+
+/** Calls the current attempt owner at the deciding action; the private API spelling is an adaptable test seam. */
+function beginOwnedAttemptCloseout(
+  db: ReturnType<typeof openCoreDb>,
+  input: {
+    readonly attemptId: string;
+    readonly firstTerminalCause: string;
+    readonly outcome?: string;
+    readonly now?: () => string;
+  }
+) {
+  const action = attemptActionOwners.markSchedulerExecutionAttemptClosing;
+  expect(
+    action,
+    'The deciding action needs the current attempt owner, without a SessionLease compatibility action.'
+  ).toBeTypeOf('function');
+  return action(db, {
+    attemptId: input.attemptId,
+    cause: input.firstTerminalCause,
+    ...(input.outcome ? { outcomeRef: input.outcome } : {}),
+    ...(input.now ? { now: input.now } : {}),
+  });
+}

@@ -98,7 +98,7 @@ function createPhysicalEpochFixture(
       cleanup_state text NOT NULL
     );
     CREATE TABLE worker_backend_sessions (
-      lease_id text PRIMARY KEY NOT NULL,
+      attempt_id text PRIMARY KEY NOT NULL,
       workspace_id text NOT NULL,
       thread_id text NOT NULL,
       turn_id text NOT NULL,
@@ -286,10 +286,10 @@ describe('physical Epoch cutover', () => {
       ]);
 
       const predecessorBackend = predecessor
-        .prepare('SELECT * FROM worker_backend_sessions WHERE lease_id = ?')
+        .prepare('SELECT * FROM worker_backend_sessions WHERE attempt_id = ?')
         .get('lease_1');
       const { origin_physical_epoch: backendOrigin, ...convertedBackend } = sqlite
-        .prepare('SELECT * FROM worker_backend_sessions WHERE lease_id = ?')
+        .prepare('SELECT * FROM worker_backend_sessions WHERE attempt_id = ?')
         .get('lease_1') as Record<string, unknown>;
       expect(backendOrigin).toBe('pre-witness');
       expect(convertedBackend).toEqual(predecessorBackend);

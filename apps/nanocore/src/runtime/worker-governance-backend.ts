@@ -19,6 +19,7 @@ import { z } from 'zod';
 import { skillSnapshotPath } from '../catalog/resource-catalog.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
 import type { AgentEnvironmentPackagePreview } from './agent-environment.js';
+import type { ExecutionBackend } from './execution-backend.js';
 import type { FilesystemSnapshotManifest } from './filesystem-workspace-sync.js';
 import type { WorkerTranscriptPayload } from './worker-transcript.js';
 
@@ -133,7 +134,7 @@ export class WorkerNativeProofValidationError extends Error {
     | {
         readonly proofAgentSessionId: string;
         readonly packageSnapshotId: string;
-        readonly leaseId: string;
+        readonly attemptId: string;
         readonly originPhysicalEpoch: string | null;
         readonly attachmentPhysicalEpoch: string | null;
       }
@@ -177,8 +178,8 @@ export interface WorkerGovernanceBackendSessionIdentity {
 export interface WorkerGovernanceAgentSessionContinuityInput {
   /** AgentSession identity on the newly acquired admission lease during post-dispatch commit. */
   readonly admissionAgentSessionId?: string;
-  /** Newly acquired scheduler lease ignored only after exact lineage validation. */
-  readonly admissionLeaseId?: string;
+  /** Newly acquired execution attempt ignored only after exact lineage validation. */
+  readonly admissionAttemptId?: string;
   /** Current Core AgentSession identity. */
   readonly agentSessionId: string;
   /** Desired compatibility key; absent for proof-only inspection before package planning. */
@@ -821,7 +822,7 @@ export interface WorkerGovernanceWorkspaceChangeRecord {
 /**
  * Worker governance backend boundary from NanoCore resolved package to runtime materialization.
  */
-export interface WorkerGovernanceBackend {
+export interface WorkerGovernanceBackend extends ExecutionBackend {
   /**
    * Describes backend capabilities before package selection.
    *
@@ -896,14 +897,12 @@ export interface WorkerGovernanceBackend {
   ): Promise<WorkerGovernanceMaterializationRecord>;
 
   /**
-   * Launches a previously materialized session.
+   * Prepares the materialized native Session and accepts its Workspace baseline before submit.
    *
    * @param materialization Materialization record to launch.
-   * @returns Evidence emitted during launch.
+   * @returns Completion of existing supply and Workspace preparation.
    */
-  launch(
-    materialization: WorkerGovernanceMaterializationRecord
-  ): Promise<WorkerGovernanceEvidenceRecord>;
+  prepareLaunch(materialization: WorkerGovernanceMaterializationRecord): Promise<void>;
 
   /**
    * Interrupts one exact active Turn through a backend-owned continuity channel when supported.

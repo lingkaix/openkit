@@ -887,7 +887,7 @@ function normalizeWorkerStorageLayout(layout: WorkerStorageLayout): WorkerStorag
   };
 }
 
-/** Validates canonical stored target records. */
+/** Reads retained target facts without forwarding annotations or accepting unsupported required semantics. */
 function normalizeStoredTargets(value: unknown): WorkerStorageTarget[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new WorkerStorageBindingError('storage_fenced', 'Worker storage targets are invalid.');
@@ -898,7 +898,8 @@ function normalizeStoredTargets(value: unknown): WorkerStorageTarget[] {
     }
     const record = entry as Record<string, unknown>;
     if (
-      Object.keys(record).sort().join(',') !== 'active,initialized,target,volumeRef' ||
+      (record.requiredFeatures !== undefined &&
+        (!Array.isArray(record.requiredFeatures) || record.requiredFeatures.length !== 0)) ||
       typeof record.active !== 'boolean' ||
       typeof record.initialized !== 'boolean'
     ) {

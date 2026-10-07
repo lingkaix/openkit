@@ -7,19 +7,17 @@ import { join } from 'node:path';
 import { getRequestListener } from '@hono/node-server';
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
+import { ensureLocalUser } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
-import {
-  createSchedulerAdmissionEntry,
-  dispatchNextSchedulerEntry,
-  upsertSchedulerCapacityRecord,
-  upsertSchedulerWorkerPool,
-} from '../scheduler-records.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
 import {
   createNanoHostSessionDispatch,
@@ -57,6 +55,8 @@ async function createFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-delete-discard-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
   const target = {
     deploymentId: 'deployment-test',
     identityId: 'nanohost-test',
@@ -127,57 +127,26 @@ async function createFixture() {
     ).toEqual({ status: 204, body: '' });
   };
   await boot();
-  upsertSchedulerWorkerPool(coreDb, {
-    allowedBackendKinds: ['openshell'],
-    allowedPlacements: ['local'],
-    allowedWorkspaceScopes: ['local'],
-    budgetClass: 'interactive',
-    currentAdmittedSessionCount: 0,
-    currentQueueDepth: 1,
-    defaultTimeoutMs: 900_000,
-    healthSummary: 'ready',
-    maxConcurrentSessions: 1,
-    poolId: 'pool_backend_session',
-    queueLimit: 20,
-    status: 'active',
-  });
-  upsertSchedulerCapacityRecord(coreDb, {
-    capacityClass: 'local',
-    concurrencyCeiling: 1,
-    inUseCount: 0,
-    observationSource: 'configured',
-    observedAt: '2026-07-15T00:00:00.000Z',
-    poolId: 'pool_backend_session',
-    queueDepth: 0,
-    targetId: 'target_backend_session',
-  });
-  createSchedulerAdmissionEntry(coreDb, {
+  const entry = createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
     triggerActor: { kind: 'user', id: 'user_local' },
-    priorityClass: 'interactive',
     profileRef: 'profile_worker',
     queueEntryId: 'queue_backend_session',
     requestedAgentId: 'agent_codex_host',
-    requiredPoolConstraints: ['openshell.local'],
     threadId: 'thread_backend_session',
     turnId: 'turn_backend_session',
     turnInput: 'Run worker',
     workspaceId: 'ws_demo',
     now: () => '2026-07-15T00:00:01.000Z',
   });
-  dispatchNextSchedulerEntry(coreDb, {
+  recordTestExecutionAttempt(coreDb, {
+    entry,
+    attemptId: 'lease_backend_session',
     agentSessionId: 'as_backend_session',
-    expectedControlMode: 'poll',
-    expectedDataPlaneMode: 'openshell-files',
-    heartbeatIntervalMs: 10_000,
-    heartbeatTimeoutMs: 30_000,
-    leaseDurationMs: 900_000,
-    leaseId: 'lease_backend_session',
+    inputRef: 'aepsnap_backend_session',
+    bindingRef: 'lease-binding:lease_backend_session',
+    sessionCompatibilityKey: 'fixture-compatibility',
     now: () => '2026-07-15T00:00:02.000Z',
-    packageSnapshotId: 'aepsnap_backend_session',
-    planId: 'plan_backend_session',
-    sandboxBindingRef: 'lease-binding:lease_backend_session',
-    schedulerEpoch: 1,
-    startupTimeoutMs: 120_000,
   });
   recordWorkerBackendSessionMaterializing(coreDb, {
     backendLineage: { kind: 'reference', imageRef: 'worker:test' },
@@ -205,7 +174,7 @@ async function createFixture() {
     toState: 'cleanup-pending' | 'cleanup-failed' | 'physical-cleaned' | 'cleaned'
   ) => {
     const fromState = getWorkerBackendSession(coreDb, leaseId)!.state;
-    transitionWorkerBackendSessionState(coreDb, { fromState, leaseId, toState });
+    transitionWorkerBackendSessionState(coreDb, { fromState, attemptId: leaseId, toState });
   };
   transition('cleanup-pending');
   return {
@@ -372,7 +341,7 @@ describe('cleaned backend delete delivery discard', () => {
         body: '',
       });
       fixture.coreDb.sqlite
-        .prepare('UPDATE worker_backend_sessions SET runtime_target_id = ? WHERE lease_id = ?')
+        .prepare('UPDATE worker_backend_sessions SET runtime_target_id = ? WHERE attempt_id = ?')
         .run('unavailable-correlation', leaseId);
       const before = fixture.coreDb.sqlite.serialize();
       expect((await fixture.post(`${deletePath}/result`, retainedResult)).status).toBe(409);
@@ -451,11 +420,11 @@ describe('cleaned backend delete delivery discard', () => {
       ).toBe(409);
       for (const column of ['runtime_target_id', 'deployment_id']) {
         fixture.coreDb.sqlite
-          .prepare(`UPDATE worker_backend_sessions SET ${column} = ? WHERE lease_id = ?`)
+          .prepare(`UPDATE worker_backend_sessions SET ${column} = ? WHERE attempt_id = ?`)
           .run('foreign', leaseId);
         expect((await fixture.post(`${deletePath}/result`, retainedResult)).status).toBe(409);
         fixture.coreDb.sqlite
-          .prepare(`UPDATE worker_backend_sessions SET ${column} = ? WHERE lease_id = ?`)
+          .prepare(`UPDATE worker_backend_sessions SET ${column} = ? WHERE attempt_id = ?`)
           .run(column === 'runtime_target_id' ? 'nanohost-test' : 'deployment-test', leaseId);
       }
     } finally {
@@ -472,7 +441,7 @@ describe('cleaned backend delete delivery discard', () => {
     try {
       fixture.transition('physical-cleaned');
       fixture.coreDb.sqlite
-        .prepare(`UPDATE worker_backend_sessions SET ${column} = ? WHERE lease_id = ?`)
+        .prepare(`UPDATE worker_backend_sessions SET ${column} = ? WHERE attempt_id = ?`)
         .run(value, leaseId);
       const before = fixture.coreDb.sqlite.serialize();
       const body =

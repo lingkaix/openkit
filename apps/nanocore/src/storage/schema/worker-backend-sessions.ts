@@ -17,12 +17,12 @@ export type WorkerBackendSessionPlacement = 'local' | 'remote';
 /** Cross-database publication phase for workspace materialization handles. */
 export type WorkerBackendWorkspaceHandoffState = 'pending' | 'complete';
 
-/** Package-scoped physical worker sessions owned by scheduler leases. */
+/** Package-scoped physical worker sessions owned by execution attempts. */
 export const workerBackendSessions = sqliteTable(
   'worker_backend_sessions',
   {
-    /** Scheduler lease that exclusively owns this physical session. */
-    leaseId: text('lease_id').primaryKey().notNull(),
+    /** execution attempt that exclusively owns this physical session. */
+    attemptId: text('attempt_id').primaryKey().notNull(),
     /** Workspace lineage id. */
     workspaceId: text('workspace_id').notNull(),
     /** Thread lineage id. */

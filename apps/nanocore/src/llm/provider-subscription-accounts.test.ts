@@ -32,17 +32,14 @@ import { createRuntimeConfigManager, loadRuntimeConfig } from '../config/runtime
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { WorkerControlGateway } from '../runtime/worker-control-gateway.js';
-import {
-  createSchedulerAdmissionEntry,
-  createSchedulerPlacementPlan,
-  createSchedulerSessionLease,
-} from '../scheduler-records.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { type VaultBackend, VaultBackendError } from '../vault/vault-backend.js';
@@ -4612,7 +4609,7 @@ describe('live quota and inference observations', () => {
 /**
  * Builds a real inference app using the account fixture's existing pair owner.
  * @param subscriptionProviderId Provider whose stock auth and synthetic inference are exercised.
- * @param worker Whether to admit the existing trusted Worker relay and durable session lease.
+ * @param worker Whether to admit the existing trusted Worker relay and submitted execution attempt.
  * @returns App, real account owner, admitted Turn and controlled synthetic Provider.
  */
 async function createObservedInferenceRouteFixture(
@@ -4667,7 +4664,8 @@ async function createObservedInferenceRouteFixture(
       workspaceCwd: '/workspace/openkit',
       workspaceRoots: [],
     });
-    createSchedulerAdmissionEntry(fixture.coreDb, {
+    const entry = createSchedulerAdmissionEntry(fixture.coreDb, {
+      backendId: 'nanohost',
       queueEntryId: 'queue_observed',
       requestId: 'req_observed_worker',
       triggerActor: environmentPackage.scope.triggerActor,
@@ -4677,32 +4675,16 @@ async function createObservedInferenceRouteFixture(
       turnId: turn.id,
       turnInput: 'Inference observation regression',
       requestedAgentId: environmentPackage.agent.agentId,
-      priorityClass: 'interactive',
-      requiredPoolConstraints: [],
     });
-    createSchedulerPlacementPlan(fixture.coreDb, {
-      planId: 'plan_observed',
-      queueEntryId: 'queue_observed',
-      selectedPoolId: 'pool_test',
-      selectedTargetId: 'target_test',
-      plannedLeaseDurationMs: 900000,
-      heartbeatIntervalMs: 10000,
-      heartbeatTimeoutMs: 30000,
-      expectedControlMode: 'poll',
-      expectedDataPlaneMode: 'openshell-files',
-      degradedOptionalFeatures: [],
-      policyDecisionIds: [],
-      schedulerEpoch: 1,
-    });
-    createSchedulerSessionLease(fixture.coreDb, {
-      leaseId: 'lease_observed',
-      planId: 'plan_observed',
+    recordTestExecutionAttempt(fixture.coreDb, {
+      entry,
+      attemptId: 'lease_observed',
       agentSessionId: environmentPackage.scope.agentSessionId,
-      packageSnapshotId: environmentPackage.snapshotId,
-      expiresAt: '2099-01-01T00:00:00.000Z',
-      heartbeatDeadline: '2099-01-01T00:00:00.000Z',
-      startupDeadline: '2099-01-01T00:00:00.000Z',
-      sandboxTokenBindingRef: 'lease-binding:observed',
+      inputRef: environmentPackage.snapshotId,
+      bindingRef: 'lease-binding:observed',
+      sessionCompatibilityKey: 'observed-inference',
+      operationId: 'submit:observed',
+      now: () => new Date().toISOString(),
     });
     workerControlGateway = new WorkerControlGateway({
       resolveTokenBinding: () => ({ status: 'accepted' }),

@@ -9,32 +9,33 @@ import type { WorkerBackendSessionRecord } from './worker-backend-sessions.js';
  * Re-derives the complete fixed-effect identity shared by dispatch and retained-delivery correlation.
  *
  * @param identity Immutable backend attempt and package identity.
- * @param leaseId Exact scheduler lease owning that attempt.
+ * @param attemptId Exact execution attempt owning that attempt.
  * @param operation Fixed NanoHost effect.
  * @param input Canonical operation input, before wire projection.
  * @returns The unchanged command input and deterministic request identity; derivation grants no dispatch authority.
  */
 export function createNanoHostEffectRequest(
   identity: Pick<WorkerBackendSessionRecord, 'backendSessionId' | 'packageSnapshotId'>,
-  leaseId: string,
+  attemptId: string,
   operation: NanoHostEffectOperation,
   input: Readonly<Record<string, unknown>>
 ): NanoHostSessionEffectRequest {
+  const { attemptId: _attemptId, ...carriedInput } = input;
   const commandInput =
     operation === 'bridge.open' || operation === 'image.inspect'
-      ? input
+      ? carriedInput
       : {
           backendSessionId: identity.backendSessionId,
-          leaseId,
+          leaseId: attemptId,
           packageSnapshotId: identity.packageSnapshotId,
-          ...input,
+          ...carriedInput,
         };
   const requestId = createHash('sha256')
     .update(
       stableNanoHostEffectJson({
         backendSessionId: identity.backendSessionId,
         input: commandInput,
-        leaseId,
+        leaseId: attemptId,
         operation,
         packageSnapshotId: identity.packageSnapshotId,
       })

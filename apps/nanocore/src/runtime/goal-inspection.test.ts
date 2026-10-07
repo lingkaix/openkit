@@ -216,6 +216,7 @@ it.each([
     const refusal = 'Admission cancelled before a Task Turn; no queue remains.';
     const reservedTurnId = 'tu_cancelled_note';
     createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
       queueEntryId: 'queue_cancelled_note',
       workspaceId: workspace.id,
       threadId: refused.id,
@@ -224,8 +225,6 @@ it.each([
       triggerActor: { kind: 'user', id: actor.userId },
       turnInput: 'Write note',
       requestedAgentId: 'codex',
-      priorityClass: 'interactive',
-      requiredPoolConstraints: [],
     });
     cancelSchedulerAdmissionEntry(coreDb, {
       queueEntryId: 'queue_cancelled_note',

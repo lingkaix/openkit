@@ -4,13 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
+import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store';
 import { ProviderRegistry } from '../providers/registry';
 import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
-  upsertSchedulerCapacityRecord,
-  upsertSchedulerWorkerPool,
 } from '../scheduler-records';
 import { openCoreDb } from '../storage/db';
 import { applyMigrations } from '../storage/migrate';
@@ -18,21 +17,15 @@ import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import {
+  admitTestNativeEnvironment,
+  recordTestNativeRuntimeTarget,
+} from '../test-support/native-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { startSchedulerDispatchRetryService } from './scheduler-dispatch-service';
 import type { TurnExecutor, TurnStartRuntimeContext } from './types';
 
-class RecordingTurnExecutor implements TurnExecutor {
-  public readonly capabilities = {
-    approvals: false,
-    artifacts: false,
-    interrupts: true,
-    questions: false,
-    workspaceConfig: true,
-    workspaceKnowledgeEditing: true,
-  };
-  public readonly eventFamilies = ['turn.started'] as const;
+class RecordingTurnExecutor extends SimulatedTurnExecutor {
   public readonly calls: Array<{
     context: TurnStartRuntimeContext | undefined;
     input: string;
@@ -55,10 +48,8 @@ class RecordingTurnExecutor implements TurnExecutor {
     context?: TurnStartRuntimeContext
   ): Promise<void> {
     this.calls.push({ context, input, store, turnId });
+    await super.startTurn(store, turnId, input, context);
   }
-
-  /** No-op interrupt implementation. */
-  public async interruptTurn(): Promise<void> {}
 }
 
 /**
@@ -72,46 +63,13 @@ function createMigratedCoreDb() {
   return coreDb;
 }
 
-/**
- * Seeds one active localhost scheduler target.
- *
- * @param coreDb Open Core database handle.
- */
-function seedLocalSchedulerTarget(coreDb: ReturnType<typeof createMigratedCoreDb>): void {
-  upsertSchedulerWorkerPool(coreDb, {
-    allowedBackendKinds: ['openshell'],
-    allowedPlacements: ['local'],
-    allowedWorkspaceScopes: ['local'],
-    budgetClass: 'interactive',
-    currentAdmittedSessionCount: 0,
-    currentQueueDepth: 1,
-    defaultTimeoutMs: 900_000,
-    healthSummary: 'ready',
-    maxConcurrentSessions: 1,
-    poolId: 'pool_local',
-    queueLimit: 20,
-    status: 'active',
-    warmSessionTarget: 0,
-  });
-  upsertSchedulerCapacityRecord(coreDb, {
-    capacityClass: 'local',
-    concurrencyCeiling: 1,
-    inUseCount: 0,
-    observedAt: '2026-07-05T00:00:00.000Z',
-    observationSource: 'configured',
-    poolId: 'pool_local',
-    queueDepth: 0,
-    targetId: 'target_local',
-  });
-}
-
 describe('scheduler dispatch service', () => {
-  it('keeps a transient preparation failure queued and reports the original error', async () => {
+  it('fails the original accepted Turn after preparation failure and reports its original error without retry', async () => {
     const coreDb = createMigratedCoreDb();
-    const store = new FsStore();
+    const store = new FsStore({ dataRoot: coreDb.dataRoot });
     const workspace = store.createWorkspace('Transient background workspace');
     const thread = store.createThread(workspace.id, 'Transient background thread');
-    const recordingExecutor = new RecordingTurnExecutor();
+    const recordingExecutor = new RecordingTurnExecutor({ coreDb });
     const failure = new Error('Transient AgentSession preparation failure');
     const turnExecutor: TurnExecutor = recordingExecutor;
     turnExecutor.prepareAgentSessionForTurn = async () => {
@@ -134,10 +92,32 @@ describe('scheduler dispatch service', () => {
         ownerUserId: 'user_background',
         workspaceId: workspace.id,
       });
-      seedLocalSchedulerTarget(coreDb);
+      recordTestNativeRuntimeTarget(coreDb);
+      store.createTurn(
+        workspace.id,
+        thread.id,
+        'Prepare background work',
+        { kind: 'user', id: 'user_background' },
+        null,
+        {
+          turnId: 'turn_transient_background',
+          agentId: manifest.id,
+          status: 'pending',
+          executorKind: 'worker',
+        }
+      );
+      store.recordCommandRequest({
+        command: 'turn.start',
+        requestId: 'request_transient_background',
+        scope: { actorId: 'user_background', workspaceId: workspace.id, threadId: thread.id },
+        inputHash: 'transient-fixture',
+        response: { kind: 'turn', id: 'turn_transient_background' },
+      });
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         priorityClass: 'interactive',
         queueEntryId: 'queue_transient_background',
+        requestId: 'request_transient_background',
         requestedAgentId: manifest.id,
         requiredPoolConstraints: ['openshell.local'],
         threadId: thread.id,
@@ -149,12 +129,7 @@ describe('scheduler dispatch service', () => {
       service = startSchedulerDispatchRetryService({
         clearInterval: () => {},
         coreDb,
-        expectedControlMode: 'poll',
-        expectedDataPlaneMode: 'openshell-files',
-        heartbeatIntervalMs: 10_000,
-        heartbeatTimeoutMs: 30_000,
         intervalMs: 60_000,
-        leaseDurationMs: 900_000,
         onError: (error) => errors.push(error),
         runtimeConfigSnapshot: () =>
           createInMemoryRuntimeConfigSnapshot({
@@ -170,23 +145,45 @@ describe('scheduler dispatch service', () => {
               },
             ]),
           }),
-        schedulerEpoch: 1,
         setInterval: () => ({ timer: 'test' }),
-        startupTimeoutMs: 120_000,
         store,
         turnExecutor,
+        executionBackend: recordingExecutor.executionBackend,
       });
       await vi.waitFor(() => expect(errors).toHaveLength(1));
       expect(errors[0]).toBe(failure);
-      expect(await service.runOnce()).toBeNull();
-      expect(errors).toHaveLength(2);
-      expect(errors[1]).toBe(failure);
+      expect(await service.runOnce()).toMatchObject({
+        startedTurns: [],
+        terminalResult: { status: 'queued', reason: 'no-queued-entry' },
+      });
+      expect(errors).toEqual([failure]);
       expect(requireSchedulerAdmissionEntry(coreDb, 'queue_transient_background').status).toBe(
-        'queued'
+        'admitted'
       );
-      expect(coreDb.sqlite.prepare('SELECT lease_id FROM scheduler_session_leases').all()).toEqual(
-        []
-      );
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT phase, disposition, operation_id, terminal_cause FROM scheduler_execution_attempts'
+          )
+          .all()
+      ).toEqual([
+        {
+          phase: 'closed',
+          disposition: 'not_accepted',
+          operation_id: null,
+          terminal_cause: 'turn-start-failed',
+        },
+      ]);
+      expect(store.getTurnById('turn_transient_background')).toMatchObject({
+        status: 'failed',
+        error: { message: failure.message },
+      });
+      expect(store.listCommandRequests()).toEqual([
+        expect.objectContaining({
+          requestId: 'request_transient_background',
+          response: { kind: 'turn', id: 'turn_transient_background' },
+        }),
+      ]);
       expect(recordingExecutor.calls).toEqual([]);
     } finally {
       service?.stop();
@@ -196,10 +193,10 @@ describe('scheduler dispatch service', () => {
 
   it('reads the current runtime snapshot before retrying a queued turn', async () => {
     const coreDb = createMigratedCoreDb();
-    const store = new FsStore();
+    const store = new FsStore({ dataRoot: coreDb.dataRoot });
     const workspace = store.createWorkspace('Background dispatch workspace');
     const thread = store.createThread(workspace.id, 'Background dispatch thread');
-    const turnExecutor = new RecordingTurnExecutor();
+    const turnExecutor = new RecordingTurnExecutor({ coreDb });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-background-dispatch-repo-'));
     execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
     execFileSync('git', ['config', 'user.email', 'openkit@example.invalid'], {
@@ -245,11 +242,26 @@ describe('scheduler dispatch service', () => {
         ownerUserId: 'user_background',
         workspaceId: workspace.id,
       });
-      seedLocalSchedulerTarget(coreDb);
+      recordTestNativeRuntimeTarget(coreDb);
+      store.createTurn(
+        workspace.id,
+        thread.id,
+        'Run from the owner store',
+        { kind: 'user', id: 'user_background' },
+        null,
+        {
+          turnId: 'turn_background',
+          agentId: manifest.id,
+          status: 'pending',
+          executorKind: 'worker',
+        }
+      );
       createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
         priorityClass: 'interactive',
         profileRef: null,
         queueEntryId: 'queue_background',
+        requestId: 'request_background',
         requestedAgentId: 'agent_codex_host',
         requiredPoolConstraints: ['openshell.local'],
         threadId: thread.id,
@@ -275,25 +287,26 @@ describe('scheduler dispatch service', () => {
         clearInterval: () => {},
         coreDb,
         createAgentSessionId: () => 'as_background',
-        createLeaseId: () => 'lease_background',
-        createPlanId: () => 'plan_background',
+        createAttemptId: () => 'attempt_background',
         dependencies: { providerCredentialResolver },
-        expectedControlMode: 'poll',
-        expectedDataPlaneMode: 'openshell-files',
-        heartbeatIntervalMs: 10_000,
-        heartbeatTimeoutMs: 30_000,
         intervalMs: 60_000,
-        leaseDurationMs: 900_000,
         maxDispatches: 1,
         onError: (error) => errors.push(error),
         runtimeConfigSnapshot: () => currentSnapshot,
-        schedulerEpoch: 1,
         setInterval: () => ({ timer: 'test' }),
-        startupTimeoutMs: 120_000,
         store,
         turnExecutor,
+        executionBackend: turnExecutor.executionBackend,
       });
-      await vi.waitFor(() => expect(errors).toHaveLength(1));
+      expect(await service.runOnce()).toMatchObject({
+        startedTurns: [],
+        terminalResult: { status: 'queued', reason: 'entry-publication-pending' },
+      });
+      expect(errors).toEqual([]);
+      expect(turnExecutor.calls).toEqual([]);
+      expect(
+        coreDb.sqlite.prepare('SELECT attempt_id FROM scheduler_execution_attempts').all()
+      ).toEqual([]);
 
       currentSnapshot = createInMemoryRuntimeConfigSnapshot({
         agentManifests: [manifest],
@@ -328,6 +341,13 @@ describe('scheduler dispatch service', () => {
             workspaceId: workspace.id,
           },
         ],
+      });
+      store.recordCommandRequest({
+        command: 'turn.start',
+        requestId: 'request_background',
+        scope: { actorId: 'user_background', workspaceId: workspace.id, threadId: thread.id },
+        inputHash: 'snapshot-fixture',
+        response: { kind: 'turn', id: 'turn_background' },
       });
       const result = await service.runOnce();
       service.stop();

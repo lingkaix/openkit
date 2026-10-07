@@ -6,7 +6,12 @@ import { ensureLocalUser } from './auth/identity.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { ProviderRegistry } from './providers/registry.js';
+import {
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  upsertNanoHostRuntimeTarget,
+} from './runtime/nanohost-runtime-target.js';
 import { openCoreDb } from './storage/db.js';
+import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
@@ -166,6 +171,20 @@ describe('runtime config reload API', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
+    const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      deploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
+      identityId: 'identity_reload_fixture',
+      observedAt: new Date().toISOString(),
+      targetId: 'target_reload_fixture',
+    });
+    upsertNanoHostRuntimeTarget(coreDb, {
+      ...target,
+      freshEmpty: true,
+      observedAt: new Date().toISOString(),
+      physicalEpoch: 'a'.repeat(64),
+      predecessorFenced: true,
+      ready: true,
+    });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'user_local',
@@ -214,7 +233,7 @@ describe('runtime config reload API', () => {
         },
       ]),
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
     });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-runtime-reload-repository-'));
 
@@ -237,10 +256,18 @@ describe('runtime config reload API', () => {
           }
         )
       );
-      const turn = (await turnRes.json()) as { configVersion: number };
+      const turn = (await turnRes.json()) as { id: string; configVersion: number };
 
       expect(turn.configVersion, JSON.stringify(turn)).toBe(1);
       expect(turn).not.toHaveProperty('agentSessionId');
+      await vi.waitFor(() => {
+        expect(store.getTurnById(turn.id).status).toBe('completed');
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT phase FROM scheduler_execution_attempts WHERE turn_id = ?')
+            .get(turn.id)
+        ).toEqual({ phase: 'closed' });
+      });
       const sessionsBeforeReload = store.listThreadAgentSessions('ws_demo', 'th_demo');
       expect(sessionsBeforeReload).toEqual([
         expect.objectContaining({ configVersion: 1, stale: false, status: 'idle' }),
