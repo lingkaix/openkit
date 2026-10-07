@@ -34,6 +34,8 @@ NanoCore pins pi-ai `0.99.2` and consumes the vendored models.dev `2026-10-01` s
 
 Requested sampling retains only fields supplied at the dispatcher-to-Pi boundary, as required by [Environment Binding And Cause](../../../../docs/specs/20260921-work_data_retention_format.md#environment-binding-and-cause). Undefined values stay omitted; explicit zero and null values remain unchanged. The canonical sampling schema accepts both omitted fields and retained null slots, so existing observations stay readable without rewriting their bytes or filling adapter defaults.
 
+The pi-ai consumption loops yield to the event loop after each admitted semantic observation callback commits. Buffered text and Tool deltas therefore allow Worker heartbeats and other requests to run between observations, including native Responses text whose public frames wait for completion. Required metadata and per-line fsync remain unchanged; this scheduling boundary does not batch or drop observations or make an individual synchronous filesystem operation asynchronous. The capture-off buffered-stream regression in `model-capture.test.ts` checks both public formats using real observation writes and an independently scheduled callback.
+
 ## Verification
 
 Run the focused Gateway, dispatcher, upstream client, provider-subscription, usage, mapping, and prompt-cache tests affected by the change, followed by the package gates in the [NanoCore source guide](../README.md).

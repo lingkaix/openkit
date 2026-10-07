@@ -1,5 +1,14 @@
 import { createHash } from 'node:crypto';
-import { closeSync, constants, existsSync, fsyncSync, ftruncateSync, openSync } from 'node:fs';
+import {
+  type BigIntStats,
+  closeSync,
+  constants,
+  existsSync,
+  fsyncSync,
+  ftruncateSync,
+  lstatSync,
+  openSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -429,9 +438,9 @@ export function appendWorkObservation(
     edge: 'publication' as const,
   }));
   const path = join(binding.root, 'observations.jsonl');
-  // ponytail: full-ledger validation makes total append work quadratic; add an incremental index if long-Turn latency becomes material.
-  const { rows, committedBytes, totalBytes } = readRows(path, input.turnId);
-  const existing = rows.find((row) => row.id === draft.id);
+  const state = readAppendState(workspaceDb, path, input.turnId);
+  const { committedBytes, totalBytes } = state;
+  const existing = state.records.get(draft.id);
   const candidate = parseWorkObservationRecord({
     ...draft,
     payload:
@@ -444,7 +453,7 @@ export function appendWorkObservation(
           ? { ...draft.payload, bodies: existing.payload.bodies }
           : draft.payload,
     v: 1,
-    seq: existing?.seq ?? rows.length + 1,
+    seq: existing?.seq ?? state.records.size + 1,
     turnId: input.turnId,
   });
   if (draft.type === 'runtime.observed' && descriptors.length) {
@@ -470,31 +479,33 @@ export function appendWorkObservation(
       `${JSON.stringify({ ...binding.raw, requiredFeatures: [...requiredFeatures, 'openkit.work-observations.v1'] }, null, 2)}\n`
     );
   }
-  // A successful replay must not turn a previous failed fsync into an ACK without synchronization.
-  if (existsSync(path)) {
+  // Replays synchronize even a previously failed commit. A fresh line's fsync also commits truncation.
+  if (existing || committedBytes !== totalBytes) {
     const fd = openSync(path, constants.O_WRONLY | constants.O_NOFOLLOW);
     try {
       if (committedBytes !== totalBytes) ftruncateSync(fd, committedBytes);
-      fsyncSync(fd);
+      if (existing) fsyncSync(fd);
     } finally {
       closeSync(fd);
     }
-    syncCanonicalDirectory(binding.root);
+    if (existing) syncCanonicalDirectory(binding.root);
   }
   if (!existing) {
-    appendCanonicalTextFile(path, `${JSON.stringify(candidate)}\n`);
-    rows.push(candidate);
+    appendObservationRecord(path, state, candidate);
+  } else {
+    state.totalBytes = state.committedBytes;
+    state.stamp = lstatSync(path, { bigint: true });
   }
   // Metadata replay neither withdraws an existing publication nor publishes deferred content.
   if (!descriptors.length || input.deferBodyPublication)
     return { disposition: existing ? 'duplicate' : 'committed', observation: candidate };
   const publicationId = `${draft.id}:publication`;
-  const priorPublication = rows.find((row) => row.id === publicationId);
+  const priorPublication = state.records.get(publicationId);
   const publication: WorkObservationRecord = {
     v: 1,
     id: publicationId,
     type: 'content.published',
-    seq: priorPublication?.seq ?? rows.length + 1,
+    seq: priorPublication?.seq ?? state.records.size + 1,
     ts: draft.ts,
     obs: draft.obs,
     turnId: input.turnId,
@@ -522,8 +533,69 @@ export function appendWorkObservation(
       throw new Error('recovery_required: unpublished body was lawfully expired');
   }
   if (descriptors.length)
-    appendCanonicalTextFile(path, `${JSON.stringify(parseWorkObservationRecord(publication))}\n`);
+    appendObservationRecord(path, state, parseWorkObservationRecord(publication));
   return { disposition: existing ? 'duplicate' : 'committed', observation: candidate };
+}
+
+/** Validated writer projection; canonical files remain authoritative and reads always validate them. */
+interface ObservationAppendState {
+  readonly records: Map<string, WorkObservationRecord>;
+  committedBytes: number;
+  totalBytes: number;
+  stamp: BigIntStats | undefined;
+}
+
+// Scope reusable state to the borrowed database lifetime, without a second durable index.
+const observationAppendStates = new WeakMap<WorkspaceDb, Map<string, ObservationAppendState>>();
+
+/** Opens a ledger with full validation; only this writer's unchanged committed prefix is reusable. */
+function readAppendState(
+  workspaceDb: WorkspaceDb,
+  path: string,
+  turnId: string
+): ObservationAppendState {
+  const states = observationAppendStates.get(workspaceDb) ?? new Map();
+  observationAppendStates.set(workspaceDb, states);
+  const cached = states.get(path);
+  const stamp = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+  if (
+    cached &&
+    stamp?.isFile() &&
+    cached.stamp &&
+    stamp.dev === cached.stamp.dev &&
+    stamp.ino === cached.stamp.ino &&
+    stamp.size === cached.stamp.size &&
+    stamp.mtimeNs === cached.stamp.mtimeNs &&
+    stamp.ctimeNs === cached.stamp.ctimeNs
+  )
+    return cached;
+  // Replacement, edits, a torn tail, another handle's write and failed synchronization all reopen.
+  states.delete(path);
+  const { rows, committedBytes, totalBytes } = readRows(path, turnId);
+  const state: ObservationAppendState = {
+    records: new Map(rows.map((row) => [row.id, row])),
+    committedBytes,
+    totalBytes,
+    stamp,
+  };
+  states.set(path, state);
+  return state;
+}
+
+/** Advances validated state only after the existing file-and-directory synchronization succeeds. */
+function appendObservationRecord(
+  path: string,
+  state: ObservationAppendState,
+  record: WorkObservationRecord
+): void {
+  const text = `${JSON.stringify(record)}\n`;
+  // Keep emitted bytes independent of mutable objects returned to producers.
+  const retained = parseWorkObservationRecord(JSON.parse(text));
+  appendCanonicalTextFile(path, text);
+  state.records.set(retained.id, retained);
+  state.committedBytes += Buffer.byteLength(text);
+  state.totalBytes = state.committedBytes;
+  state.stamp = lstatSync(path, { bigint: true });
 }
 
 /** Validates all complete records and preserves the exact truncation boundary for the writer. */

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { scheduler } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import {
   type AssistantMessage,
@@ -219,14 +220,18 @@ async function raceProviderWithSignal<T>(
   }
 }
 
-/** Publishes only admitted fields; private reasoning events never reach retention. */
-function observeModelEvent(
+/** Commits admitted fields before yielding so buffered observations cannot starve Worker heartbeats. */
+async function observeModelEvent(
   event: AssistantMessageEvent,
   observer?: (event: ModelSemanticEvent) => void
-): void {
+): Promise<void> {
   if (!observer) return;
   const admitted = admittedModelEvent(event);
-  if (admitted) observer(admitted);
+  if (admitted) {
+    observer(admitted);
+    // Each callback keeps its per-line fsync commit; yield changes scheduling, not durability.
+    await scheduler.yield();
+  }
 }
 
 /** Captures a terminal Provider failure without assigning error semantics to normal protocol finishes. */
@@ -456,7 +461,7 @@ async function completeObservedModel(
             : undefined;
       const terminalFailure = terminalMessage ? terminalPiAiFailure(terminalMessage) : undefined;
       if (terminalMessage) onTerminal(terminalMessage, terminalFailure);
-      observeModelEvent(result.value, transport.onModelEvent);
+      await observeModelEvent(result.value, transport.onModelEvent);
       if (result.value.type === 'done') {
         await inference.observe(terminalFailure);
         return result.value.message;
@@ -1616,7 +1621,7 @@ export class PiAiGatewayClient {
               usageObserved = true;
               onUsage?.(event.type === 'done' ? event.message.usage : event.error.usage);
             }
-            observeModelEvent(event, onModelEvent);
+            await observeModelEvent(event, onModelEvent);
             if (event.type === 'done' || event.type === 'error')
               await onInferenceTerminal?.(
                 event.type === 'done' ? event.message : event.error,
@@ -3524,7 +3529,7 @@ function toResponsesSseStream(
             usageObserved = true;
             onUsage?.(event.type === 'done' ? event.message.usage : event.error.usage);
           }
-          observeModelEvent(event, onModelEvent);
+          await observeModelEvent(event, onModelEvent);
           if (event.type === 'done' || event.type === 'error')
             await onInferenceTerminal?.(
               event.type === 'done' ? event.message : event.error,

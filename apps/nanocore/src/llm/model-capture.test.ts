@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  createAssistantMessageEventStream,
   createModels,
   fauxAssistantMessage,
   fauxProvider,
@@ -94,6 +95,61 @@ const provider = {
   requiresApiKey: true,
   gatewayCapabilities: { chatCompletions: 'native' as const, responses: 'bridged' as const },
 };
+
+it.each([
+  'chat',
+  'responses',
+] as const)('services the event loop between durable buffered %s observations', async (format) => {
+  const f = fixture('off');
+  const faux = fauxProvider({
+    api: 'openai-responses',
+    provider: provider.id,
+    models: [{ id: 'capture-model' }],
+  });
+  const partial = fauxAssistantMessage([fauxText('x'.repeat(12))]);
+  const events = createAssistantMessageEventStream();
+  Object.assign(faux.provider, { stream: () => events });
+  const models = createModels();
+  models.setProvider(faux.provider);
+  events.push({ type: 'start', partial });
+  events.push({ type: 'text_start', contentIndex: 0, partial });
+  for (let index = 0; index < 12; index++)
+    events.push({ type: 'text_delta', contentIndex: 0, delta: 'x', partial });
+  events.push({ type: 'text_end', contentIndex: 0, content: 'x'.repeat(12), partial });
+  events.push({ type: 'done', reason: 'stop', message: partial });
+  events.end(partial);
+  const capture = new ModelCapture({ ...f, corr: 'responsiveness' }, [], provider.id);
+  let deltas = 0;
+  let probe!: Promise<number>;
+  const client = new PiAiGatewayClient({ models });
+  const transport = {
+    onModelEvent: (event: Parameters<ModelCapture['event']>[0]) => {
+      capture.event(event);
+      if (event.type === 'text_delta' && ++deltas === 1)
+        probe = new Promise((resolve) => setImmediate(() => resolve(deltas)));
+    },
+  };
+  const stream =
+    format === 'chat'
+      ? await client.createChatCompletionStream(
+          provider,
+          { model: 'capture-model', messages: [{ role: 'user', content: 'hello' }], stream: true },
+          undefined,
+          transport
+        )
+      : await client.createResponsesStream(
+          provider,
+          { model: 'capture-model', input: 'hello', stream: true },
+          undefined,
+          transport
+        );
+  await new Response(stream).text();
+  expect(await probe).toBe(1);
+  expect(deltas).toBe(12);
+  expect(
+    readWorkObservations(f.workspaceDb, f).filter((row) => row.payload.event === 'text_delta')
+  ).toHaveLength(12);
+});
 
 describe('Turn environment retention', () => {
   it.each(['off', 'on'] as const)('retains env.bound before run with capture %s', async (value) => {

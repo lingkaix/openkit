@@ -1,10 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
-const partialWriteState = vi.hoisted(() => ({ calls: 0, failSync: false }));
+const partialWriteState = vi.hoisted(() => ({ calls: 0, failSync: false, fullReads: 0 }));
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
@@ -27,6 +27,10 @@ vi.mock('node:fs', async (importOriginal) => {
   return {
     ...actual,
     writeSync,
+    readFileSync: ((...args: Parameters<typeof actual.readFileSync>) => {
+      partialWriteState.fullReads++;
+      return actual.readFileSync(...args);
+    }) as typeof actual.readFileSync,
     fsyncSync: (descriptor: number) => {
       if (partialWriteState.failSync) throw new Error('injected durability failure');
       actual.fsyncSync(descriptor);
@@ -34,9 +38,90 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 
+import { FsStore } from '../lib/store.js';
+import { openWorkspaceDb } from './db.js';
+import { applyScopedMigrations } from './migrate.js';
+import { appendWorkObservation, readWorkObservations } from './work-observations.js';
 import { appendCanonicalTextFile, appendWorkspaceItemRevision } from './workspace-file-records.js';
 
 describe('canonical append writes', () => {
+  it('does not acknowledge a failed observation commit through cached state or replay', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-observation-sync-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Durability');
+    const thread = store.createThread(workspace.id, 'Durability');
+    const turn = store.createTurn(
+      workspace.id,
+      thread.id,
+      'Durability',
+      { kind: 'user', id: 'user_local' },
+      null,
+      { captureCoverage: { scope: 'server', value: 'off' } }
+    );
+    const db = openWorkspaceDb(dataRoot, workspace.id);
+    applyScopedMigrations(db);
+    const input = {
+      threadId: thread.id,
+      turnId: turn.id,
+      observation: {
+        id: 'warm',
+        type: 'model.observed',
+        ts: '2026-10-07T00:00:00.000Z',
+        obs: 'gateway' as const,
+        payload: {
+          direction: 'response',
+          event: 'text_delta',
+          attempt: 0,
+          runtimeOriginRef: null,
+          content: { state: 'off' },
+        },
+      },
+      bodies: [],
+    };
+    try {
+      appendWorkObservation(db, input);
+      input.observation.id = 'next';
+      partialWriteState.failSync = true;
+      expect(() => appendWorkObservation(db, input)).toThrow('injected durability failure');
+      expect(() => appendWorkObservation(db, input)).toThrow('injected durability failure');
+      partialWriteState.failSync = false;
+      expect(appendWorkObservation(db, input).disposition).toBe('duplicate');
+      expect(readWorkObservations(db, input).map((row) => row.id)).toEqual(['warm', 'next']);
+    } finally {
+      partialWriteState.failSync = false;
+      db.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('retains full recovery validation for incomplete append boundaries', () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-append-tail-'));
+    const path = join(root, 'events.jsonl');
+    try {
+      appendCanonicalTextFile(path, '{"id":"warm"}\n');
+      appendFileSync(path, '{"id":"torn');
+      appendCanonicalTextFile(path, '{"id":"next"}\n');
+      expect(readFileSync(path, 'utf8')).toBe('{"id":"warm"}\n{"id":"next"}\n');
+      appendFileSync(path, '{"id":"complete"}');
+      appendCanonicalTextFile(path, '{"id":"last"}\n');
+      expect(readFileSync(path, 'utf8').trim().split('\n')).toHaveLength(4);
+      appendFileSync(path, '{malformed}');
+      expect(() => appendCanonicalTextFile(path, '{"id":"refused"}\n')).toThrow(SyntaxError);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('checks complete append boundaries without full-file reads', () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-append-bound-'));
+    const path = join(root, 'events.jsonl');
+    appendCanonicalTextFile(path, '{"id":"warm"}\n');
+    partialWriteState.fullReads = 0;
+    for (let index = 0; index < 20; index++)
+      appendCanonicalTextFile(path, `${JSON.stringify({ id: index })}\n`);
+    expect(partialWriteState.fullReads).toBe(0);
+    expect(readFileSync(path, 'utf8').trim().split('\n')).toHaveLength(21);
+  });
   it('does not acknowledge an append when durable synchronization fails', () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-append-sync-'));
     partialWriteState.failSync = true;

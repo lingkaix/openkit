@@ -10,6 +10,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  readSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -2811,8 +2812,26 @@ function normalizeAppendBoundary(path: string): void {
     return;
   }
 
-  const content = readCanonicalFile(path);
-  if (content.length > 0 && content.at(-1) !== 0x0a) {
+  assertCanonicalRegularFile(path);
+  const descriptor = openSync(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+  );
+  let incomplete = false;
+  try {
+    const current = fstatSync(descriptor);
+    if (!current.isFile()) throw new Error(`Canonical path must be a regular file: ${path}.`);
+    // Completed logs need only their last byte; full parsing is reserved for tail recovery.
+    if (current.size > 0) {
+      const tail = Buffer.allocUnsafe(1);
+      if (readSync(descriptor, tail, 0, 1, current.size - 1) !== 1)
+        throw new Error(`Canonical append boundary could not be read: ${path}.`);
+      incomplete = tail[0] !== 0x0a;
+    }
+  } finally {
+    closeSync(descriptor);
+  }
+  if (incomplete) {
     readCanonicalJsonLines(path, true);
   }
 }

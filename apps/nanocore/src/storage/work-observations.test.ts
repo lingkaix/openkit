@@ -10,7 +10,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   compactWorkspaceEvidenceBundles,
   listWorkspaceEvidenceBundles,
@@ -146,6 +146,59 @@ describe('durable work observations', () => {
         id: 'user_local',
       }
     );
+  });
+
+  it.each([
+    'running',
+    'pending',
+  ] as const)('does constant prior-row parse work per append after opening the %s writer', (status) => {
+    const f = fixture('off');
+    f.store.updateTurn(f.owner.turnId, { status });
+    appendWorkObservation(f.db, { ...f.owner, observation: model('warm'), bodies: [] });
+    const parse = vi.spyOn(JSON, 'parse');
+    try {
+      for (let index = 0; index < 20; index++) {
+        parse.mockClear();
+        const id = `delta-${index}`;
+        appendWorkObservation(f.db, { ...f.owner, observation: model(id), bodies: [] });
+        const priorRows = parse.mock.calls.filter(
+          ([text]) =>
+            typeof text === 'string' &&
+            text.includes('"seq":') &&
+            text.includes('"type":"model.observed"') &&
+            !text.includes(`"id":"${id}"`)
+        );
+        expect(priorRows).toHaveLength(0);
+      }
+      parse.mockClear();
+      expect(readWorkObservations(f.db, f.owner)).toHaveLength(21);
+      expect(parse.mock.calls.filter(([text]) => text.includes('"seq":'))).toHaveLength(21);
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
+  it('revalidates externally changed ledgers and does not trust returned observation objects', () => {
+    const f = fixture('off');
+    const input = { ...f.owner, observation: model(), bodies: [] };
+    const result = appendWorkObservation(f.db, input);
+    (result.observation.payload.content as { state: string }).state = 'off';
+    expect(appendWorkObservation(f.db, input).disposition).toBe('duplicate');
+    const path = join(f.turnRoot, 'observations.jsonl');
+    const original = readFileSync(path, 'utf8');
+    // Same-length replacement must invalidate state, not just growth or truncation.
+    writeFileSync(path, original.replace('"seq":1', '"seq":9'));
+    expect(() => readWorkObservations(f.db, f.owner)).toThrow(/corrupt observation/);
+    expect(() => appendWorkObservation(f.db, input)).toThrow(/corrupt observation/);
+    writeFileSync(path, original);
+    appendFileSync(path, '{"torn":');
+    expect(appendWorkObservation(f.db, input).disposition).toBe('duplicate');
+    expect(readFileSync(path, 'utf8')).toBe(original);
+    f.db.sqlite.close();
+    const reopened = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
+    databases.push(reopened);
+    writeFileSync(path, original.replace('"seq":1', '"seq":9'));
+    expect(() => appendWorkObservation(reopened, input)).toThrow(/corrupt observation/);
   });
 
   it('refuses body effects for an observation kind without a body declaration', () => {
