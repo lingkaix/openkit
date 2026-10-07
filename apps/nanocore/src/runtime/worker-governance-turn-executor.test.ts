@@ -1,3 +1,4 @@
+// openkit-test-platform: posix
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
