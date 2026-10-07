@@ -8,7 +8,7 @@ Root `package.json` owns the command surface and `docs/toolchain.md` owns setup 
 
 Run `pnpm release:preflight -- --tag <tag>` and `pnpm release:package -- --tag <tag>` through the release cookbook. Release and pre-release tag CI runs target-native real-host qualification before publication under the release and NanoHost specifications; pull-request and manual gates do not run it.
 
-For a complete NanoHost release, supply `--nanohost-amd64-binary`, `--nanohost-arm64-binary`, `--openshell-amd64-gateway-archive`, `--openshell-arm64-gateway-archive`, `--openshell-license`, and `--openshell-notices` to the existing packager. Gateway archive and extracted executable identities come from `gateway.targets["linux/<architecture>"]` in the schema-version-2 OpenShell release pin. The shared checksum covers the operations Skill and both NanoHost archives.
+For a complete NanoHost release, supply `--nanohost-amd64-binary`, `--nanohost-arm64-binary`, `--openshell-amd64-gateway-archive`, `--openshell-arm64-gateway-archive`, `--openshell-license`, and `--openshell-notices` to the existing packager. Gateway archive and extracted executable identities come from `gateway.targets["linux/<architecture>"]` in the schema-version-2 OpenShell release pin. The shared checksum covers the operations Skill and both NanoHost archives. Tag packaging installs checkout dependencies before invoking the packager and downloads the accepted inputs with the test image's built-in Node fetch. Post-publication asset inspection also installs checkout dependencies inside that image; its Node 24 verifier runs operations discovery from the extracted envelope outside the checkout while Docker and GitHub Release access remain on the host.
 
 ## NanoHost Static Checks
 

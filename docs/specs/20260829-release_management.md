@@ -106,7 +106,7 @@ All root, app, and workspace package manifests remain private and produce no npm
 
 `test-env` remains an internal CI artifact, and the Codex-plus-Pi dogfood image remains an internal non-release artifact.
 
-The NanoHost owner admits exactly two distribution targets, `linux/amd64` and `linux/arm64`. Release composition MUST use both exact target-matched archives without redefining their contents, destinations, installer semantics, or readiness, and MUST bind each generated manifest to its exact target plus the host-profile id and digest owned by the deployment-host specification. Current arm64-only packaging is an implementation gap and cannot define the release target set.
+The NanoHost owner admits exactly two distribution targets, `linux/amd64` and `linux/arm64`. Release composition MUST use both exact target-matched archives without redefining their contents, destinations, installer semantics, or readiness, and MUST bind each generated manifest to its exact target plus the host-profile id and digest owned by the deployment-host specification. Current packaging implements both admitted targets.
 
 R001 remains open pending fresh exact-product no-host-reboot A1 evidence. Until that runtime gate closes, a release MUST remain a prerelease and its notes MUST state that the NanoHost archive is installable but supported Worker Agent execution is not yet release-ready.
 
