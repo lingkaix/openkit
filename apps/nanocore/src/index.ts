@@ -72,6 +72,7 @@ import {
   recoverPendingRequestsAtBoot,
 } from './runtime/pending-request-flow.js';
 import {
+  type SchedulerAttemptMaintenanceInput,
   type SchedulerAttemptMaintenanceService,
   startSchedulerAttemptMaintenanceService,
 } from './runtime/scheduler-attempt-maintenance-service.js';
@@ -137,7 +138,7 @@ let coreDb: CoreDb | undefined;
 let vaultUnlockState: VaultUnlockState | undefined;
 let bootWorkerControlGateway: ReturnType<typeof createDefaultWorkerControlGateway> | undefined;
 let workerLifecycleRuntime: ConfiguredWorkerLifecycleRuntime | undefined;
-let runRecoveryMaintenance: (() => Promise<void>) | undefined;
+let runRecoveryMaintenance: SchedulerAttemptMaintenanceInput['runRecoveryMaintenance'] | undefined;
 let sharedStore: FsStore | undefined;
 const restartCloseoutPackageSnapshots = new Set<string>();
 const nanohostTransportSessionAuthority = createNanoHostTransportSessionAuthority();
@@ -394,10 +395,10 @@ const bootResult = await runBootPhases({
         };
         installPendingRequestAdmission(recoveryStore, pendingWorkspace);
         recoverPendingRequestsAtBoot(recoveryStore, pendingWorkspace);
-        runRecoveryMaintenance = async () => {
-          await runSchedulerRecoveryMaintenance(recoveryCoreDb, recoveryInput);
-          await runNanoHostAttemptRecoveryMaintenance(recoveryCoreDb, recoveryInput);
-          await classifyWorkerCheckpointsAfterSchedulerRecovery(recoveryCoreDb);
+        runRecoveryMaintenance = {
+          scheduler: () => runSchedulerRecoveryMaintenance(recoveryCoreDb, recoveryInput),
+          native: () => runNanoHostAttemptRecoveryMaintenance(recoveryCoreDb, recoveryInput),
+          checkpoints: () => classifyWorkerCheckpointsAfterSchedulerRecovery(recoveryCoreDb),
         };
         for (const row of recoveryCoreDb.sqlite
           .prepare(
@@ -651,11 +652,6 @@ schedulerAttemptMaintenance = startSchedulerAttemptMaintenanceService({
     'Scheduler recovery maintenance was not initialized.'
   ),
   intervalMs: SCHEDULER_ATTEMPT_MAINTENANCE_INTERVAL_MS,
-  onError: (error) => {
-    console.warn(
-      `Scheduler attempt maintenance failed: ${error instanceof Error ? error.message : String(error)}`
-    );
-  },
 });
 if (refreshStatusCollector) {
   openshellRefreshStatusPolling = startOpenShellRefreshStatusPollingService({

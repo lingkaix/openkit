@@ -2,21 +2,30 @@ import { isDeepStrictEqual } from 'node:util';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { isSealedTurnTerminal } from '@openkit/protocol';
 import { recordServerAuditEvent } from '../audit-events.js';
-import { DISPLAY_PROJECTION_REFRESH_FIELDS, type FsStore } from '../lib/store.js';
+import {
+  DISPLAY_PROJECTION_REFRESH_FIELDS,
+  type FsStore,
+  StoreRecordNotFoundError,
+} from '../lib/store.js';
 import {
   requireSchedulerAdmissionEntry,
   requireSchedulerExecutionAttemptAdmissionContext,
+  schedulerAdmissionInputHash,
 } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { isAlreadyDecidedWorkerMcpItem } from '../worker-mcp-routes.js';
-import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import {
+  findNamedAgentEnvironmentPackageSnapshot,
+  requireAgentEnvironmentPackageSnapshot,
+} from './aep-snapshot-ledger.js';
 import {
   closeSchedulerExecutionAttemptWithFence,
   listOpenSchedulerExecutionAttempts,
   markSchedulerExecutionAttemptClosing,
   requireSchedulerExecutionAttempt,
+  type SchedulerExecutionAttemptRecord,
   schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
 import {
@@ -315,6 +324,11 @@ export async function runNanoHostAttemptRecoveryMaintenance(
         });
       }
     } catch (error) {
+      logNativeRecoveryFailure(
+        attempt,
+        'scheduler.native_attempt_recovery_failed',
+        'Native attempt cleanup or terminal handoff check failed.'
+      );
       errors.push(error);
     }
   }
@@ -355,19 +369,35 @@ export async function runNanoHostAttemptRecoveryMaintenance(
           })
           .immediate();
     } catch (error) {
+      logNativeRecoveryFailure(
+        session,
+        'scheduler.native_orphan_backend_recovery_failed',
+        'Closed-attempt backend retirement check failed.'
+      );
       errors.push(error);
     }
   }
   if (input.store) {
     const failedStarts = coreDb.sqlite
-      .prepare(`SELECT attempt_id AS attemptId
+      .prepare(`SELECT attempt_id AS attemptId, workspace_id AS workspaceId,
+      thread_id AS threadId, turn_id AS turnId, agent_session_id AS agentSessionId
       FROM scheduler_execution_attempts WHERE phase = 'closed' AND terminal_cause = 'turn-start-failed'
       ORDER BY rowid`)
-      .all() as Array<{ attemptId: string }>;
-    for (const { attemptId } of failedStarts) {
+      .all() as Array<
+      Pick<
+        SchedulerExecutionAttemptRecord,
+        'attemptId' | 'workspaceId' | 'threadId' | 'turnId' | 'agentSessionId'
+      >
+    >;
+    for (const attempt of failedStarts) {
       try {
-        await settleTerminalFailedStart(coreDb, attemptId, input.store, input, timestamp);
+        await settleTerminalFailedStart(coreDb, attempt.attemptId, input.store, input, timestamp);
       } catch (error) {
+        logNativeRecoveryFailure(
+          attempt,
+          'scheduler.native_failed_start_recovery_required',
+          'Failed-start product settlement check failed.'
+        );
         errors.push(
           new Error(
             `recovery_required: ${error instanceof Error ? error.message : String(error)}`,
@@ -379,6 +409,31 @@ export async function runNanoHostAttemptRecoveryMaintenance(
   }
   if (errors.length) throw new AggregateError(errors, 'Native attempt recovery failed.');
 }
+/** Emits only fixed failed-check diagnostics and already known product ids; exceptions stay private. */
+function logNativeRecoveryFailure(
+  subject: Pick<
+    SchedulerExecutionAttemptRecord,
+    'attemptId' | 'workspaceId' | 'threadId' | 'turnId' | 'agentSessionId'
+  >,
+  errorCode: string,
+  summary: string
+): void {
+  console.warn(
+    JSON.stringify({
+      severityText: 'WARN',
+      body: summary,
+      attributes: {
+        'openkit.error.code': errorCode,
+        'openkit.attempt.id': subject.attemptId,
+        'openkit.workspace.id': subject.workspaceId,
+        'openkit.thread.id': subject.threadId,
+        'openkit.turn.id': subject.turnId,
+        ...(subject.agentSessionId ? { 'openkit.agent.session.id': subject.agentSessionId } : {}),
+      },
+    })
+  );
+}
+
 /** Cleans one exact durable physical identity and records the stable completion instant. */
 async function cleanupPhysicalSession(
   coreDb: CoreDb,
@@ -692,27 +747,70 @@ async function settleTerminalFailedStart(
     });
     return true;
   }
-  const session = store.getAgentSession(attempt.agentSessionId);
+  // An attempt can record a planned successor before the product owner creates or assigns it.
+  // Only the Store's explicit not-found result proves absence; other read failures stay fatal.
+  const unassigned = turn.agentSessionId == null;
+  let session: ReturnType<FsStore['getAgentSession']> | null = null;
+  try {
+    session = store.getAgentSession(attempt.agentSessionId);
+  } catch (error) {
+    if (!unassigned || !(error instanceof StoreRecordNotFoundError)) throw error;
+  }
+  if (unassigned && session)
+    throw new Error('Unassigned failed-start preparation already has a product AgentSession.');
   const admission = requireSchedulerAdmissionEntry(coreDb, attempt.queueEntryId);
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, attempt.workspaceId);
   const workspace = { db: workspaceDb };
   try {
     applyScopedMigrations(workspaceDb);
-    const pkg = attempt.inputRef
-      ? requireAgentEnvironmentPackageSnapshot(workspaceDb, attempt.workspaceId, attempt.inputRef)
-          .snapshot
-      : null;
-    const sameLineage = [turn, session, admission].every(
+    if (unassigned) {
+      const preparation = JSON.parse(attempt.preparationInputJson);
+      if (
+        attempt.phase !== 'closed' ||
+        !hasNanoHostAttemptPreEffectProof(coreDb, attemptId) ||
+        !preparation?.admission ||
+        preparation.admission.queueEntryId !== admission.queueEntryId ||
+        schedulerAdmissionInputHash(preparation.admission) !== admission.inputHash ||
+        schedulerAdmissionInputHash(admission) !== admission.inputHash ||
+        admission.backendId !== attempt.backendId ||
+        (attempt.inputRef !== null &&
+          attempt.inputRef !== `aepsnap_${attempt.turnId}_${attempt.agentSessionId}`) ||
+        (attempt.inputRef !== null &&
+          findNamedAgentEnvironmentPackageSnapshot(
+            workspaceDb,
+            attempt.workspaceId,
+            attempt.agentSessionId,
+            attempt.inputRef
+          ) !== null) ||
+        coreDb.sqlite
+          .prepare(
+            'SELECT 1 FROM worker_backend_sessions WHERE agent_session_id = ? OR turn_id = ? LIMIT 1'
+          )
+          .get(attempt.agentSessionId, attempt.turnId) ||
+        coreDb.sqlite
+          .prepare('SELECT 1 FROM worker_control_records WHERE turn_id = ? LIMIT 1')
+          .get(attempt.turnId)
+      )
+        throw new Error(
+          'Unassigned failed-start preparation has unproved input or execution ownership.'
+        );
+    }
+    const pkg =
+      session && attempt.inputRef
+        ? requireAgentEnvironmentPackageSnapshot(workspaceDb, attempt.workspaceId, attempt.inputRef)
+            .snapshot
+        : null;
+    const sameLineage = [turn, admission, ...(session ? [session] : [])].every(
       (owner) => owner.workspaceId === attempt.workspaceId && owner.threadId === attempt.threadId
     );
     if (
       !sameLineage ||
-      turn.agentSessionId !== attempt.agentSessionId ||
+      (!unassigned && turn.agentSessionId !== attempt.agentSessionId) ||
       admission.turnId !== attempt.turnId ||
       admission.status !== 'admitted' ||
       !admission.requestId ||
-      session.stale ||
-      session.agentId !== turn.agentId ||
+      session?.stale ||
+      (session && session.agentId !== turn.agentId) ||
       admission.requestedAgentId !== turn.agentId ||
       !isDeepStrictEqual(turn.triggerActor, admission.triggerActor) ||
       (pkg &&
@@ -721,7 +819,7 @@ async function settleTerminalFailedStart(
           pkg.scope.turnId !== attempt.turnId ||
           pkg.scope.agentSessionId !== attempt.agentSessionId ||
           pkg.scope.requestId !== admission.requestId ||
-          session.environmentPackageSnapshotId !== attempt.inputRef ||
+          session?.environmentPackageSnapshotId !== attempt.inputRef ||
           pkg.agent.agentId !== turn.agentId ||
           !isDeepStrictEqual(pkg.scope.triggerActor, admission.triggerActor)))
     ) {
@@ -897,7 +995,7 @@ async function settleTerminalFailedStart(
     terminalizeGovernedWorkerTurn({
       store,
       turnId: turn.id,
-      agentSessionId: session.id,
+      agentSessionId: session?.id ?? null,
       requestId: admission.requestId,
       completedAt: timestamp,
       errorCode,

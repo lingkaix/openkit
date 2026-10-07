@@ -155,17 +155,18 @@ export function requireAgentEnvironmentPackageSnapshot(
 }
 
 /**
- * Reads the one snapshot a durable record names, or null when it was never recorded.
+ * Reads the one snapshot a durable record names, or null only for definite absence.
  *
  * Callers that already hold an AgentSession and snapshot id use this instead of the export listing,
  * so an unrelated malformed snapshot cannot fail their read. A snapshot that exists but does not
- * validate still throws: only absence is reported as null.
+ * validate still throws. Permission and I/O failures propagate; noncanonical entries refuse.
  *
  * @param workspaceDb Open workspace database.
  * @param workspaceId Workspace id.
  * @param agentSessionId AgentSession that owns the snapshot.
  * @param snapshotId AEP snapshot id.
- * @returns Stored AEP snapshot record, or null when no snapshot file exists.
+ * @returns Stored AEP snapshot record, or null when its canonical location is definitely absent.
+ * @throws Error for inaccessible storage, noncanonical entries or invalid retained bytes.
  */
 export function findNamedAgentEnvironmentPackageSnapshot(
   workspaceDb: WorkspaceDb,
@@ -176,9 +177,19 @@ export function findNamedAgentEnvironmentPackageSnapshot(
   assertWorkspaceOwner(workspaceDb, workspaceId);
   const path = snapshotPath(workspaceDb, agentSessionId, snapshotId);
 
-  if (!existsSync(path)) {
-    return null;
+  const root = agentSessionsRoot(workspaceDb);
+  // Inspect only the named path. Missing entries prove absence; unreadable storage does not.
+  // Parent checks also refuse links and non-directories before a child can appear missing.
+  for (const directory of [dirname(root), root, join(root, agentSessionId), dirname(path)]) {
+    const entry = lstatSync(directory, { throwIfNoEntry: false });
+    if (!entry) return null;
+    if (!entry.isDirectory()) {
+      throw new Error(
+        `Agent environment package snapshot parent is not a canonical directory: ${snapshotId}`
+      );
+    }
   }
+  if (!lstatSync(path, { throwIfNoEntry: false })) return null;
 
   return readSnapshotRecord(workspaceDb, path, agentSessionId, snapshotId);
 }

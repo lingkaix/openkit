@@ -842,12 +842,27 @@ function decidedMcpParentItemId(
   if (!isAddressableSnapshotLineage(row.agent_session_id, row.package_snapshot_id)) {
     return { kind: 'snapshot-unreadable' };
   }
-  const snapshot = findNamedAgentEnvironmentPackageSnapshot(
-    workspaceDb,
-    workspaceId,
-    row.agent_session_id,
-    row.package_snapshot_id
-  );
+  let snapshot: ReturnType<typeof findNamedAgentEnvironmentPackageSnapshot>;
+  try {
+    snapshot = findNamedAgentEnvironmentPackageSnapshot(
+      workspaceDb,
+      workspaceId,
+      row.agent_session_id,
+      row.package_snapshot_id
+    );
+  } catch (error) {
+    const failure = error as NodeJS.ErrnoException;
+    // This caller defers unavailable publication inputs; the shared proof reader stays strict.
+    if (
+      error instanceof Error &&
+      typeof failure.errno === 'number' &&
+      ['EACCES', 'EPERM', 'EIO', 'EMFILE', 'ENFILE'].includes(failure.code ?? '') &&
+      ['lstat', 'open', 'read'].includes(failure.syscall ?? '')
+    ) {
+      return { kind: 'snapshot-unreadable' };
+    }
+    throw error;
+  }
   return snapshot
     ? { kind: 'decided', parentItemId: snapshot.snapshot.scope.itemId ?? null }
     : { kind: 'snapshot-unreadable' };

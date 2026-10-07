@@ -1,9 +1,19 @@
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
@@ -37,6 +47,7 @@ import { retainWorkObservationBody } from './evidence-bundles.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
 import { ProviderRegistry } from './providers/registry.js';
+import * as snapshotLedger from './runtime/aep-snapshot-ledger.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import {
   acceptSchedulerExecutionObservation,
@@ -3529,6 +3540,208 @@ describe('worker MCP routes', () => {
     } finally {
       await Promise.all(clients.map((client) => client.close()));
       coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'permission',
+    'EPERM',
+    'EIO',
+    'EMFILE',
+    'malformed-json',
+    'schema',
+    'digest',
+    'lineage',
+    'noncanonical',
+    'programming',
+    'coded-programming',
+  ] as const)('defers only unavailable named snapshot storage during real MCP boot reconciliation: %s', (failure) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-backfill-unavailable-'));
+    const store = createDemoStore({ dataRoot });
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    applyScopedMigrations(workspaceDb);
+    const timestamp = '2026-09-22T00:00:00.000Z';
+    const packages: AgentEnvironmentPackage[] = [];
+    try {
+      for (const suffix of ['0_unavailable', '1_healthy']) {
+        const thread = store.createThread('ws_demo', `MCP backfill ${suffix}`);
+        const turn = store.createTurn(
+          'ws_demo',
+          thread.id,
+          'Recover decided MCP publication',
+          { id: 'user_local', kind: 'user' },
+          null,
+          { startedAt: timestamp }
+        );
+        // Store writes preserve retained package directories only for registered product sessions.
+        const session = store.createAgentSession({
+          id: `as_mcp_${suffix}`,
+          agentId: 'agent_codex_host',
+          workspaceId: turn.workspaceId,
+          threadId: turn.threadId,
+          status: 'idle',
+          message: null,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+        store.updateTurn(turn.id, { agentSessionId: session.id });
+        const environmentPackage = resolveAgentEnvironmentPackage({
+          agentSetup: createTestAgentSetup(),
+          agentSessionId: session.id,
+          backend: { kind: 'openshell' },
+          requestId: `req_mcp_${suffix}`,
+          triggerActor: turn.triggerActor,
+          turn,
+          turnInput: 'Recover decided MCP publication',
+          workspaceCwd: null,
+          workspaceRoots: [],
+        });
+        recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+          environmentPackage,
+          createdAt: timestamp,
+        });
+        packages.push(environmentPackage);
+        const call = startCapabilityCall({
+          agentId: environmentPackage.agent.agentId,
+          agentSessionId: environmentPackage.scope.agentSessionId,
+          authorityActor: turn.triggerActor,
+          callId: `cap_mcp_${suffix}`,
+          capabilityId: 'mcp.call_tool',
+          family: 'mcp',
+          itemId: `it_mcp_${suffix}`,
+          now: new Date(timestamp),
+          operation: 'mcp.call_tool',
+          packageSnapshotId: environmentPackage.snapshotId,
+          providerRef: 'echo',
+          redactionClass: 'metadata-only',
+          serviceRef: 'mcp-tool:echo',
+          threadId: turn.threadId,
+          turnId: turn.id,
+          workspaceDb,
+          workspaceId: turn.workspaceId,
+        });
+        finishCapabilityCall({
+          callId: call.id,
+          status: 'succeeded',
+          workspaceDb,
+          now: new Date(timestamp),
+        });
+        store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
+      }
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+    verifyAndMigrateExistingScopedDatabases(dataRoot);
+    const selected = packages[0]!;
+    const snapshotsRoot = join(
+      dirname(dirname(workspaceDb.sqlite.name)),
+      'runtime',
+      'agent-sessions',
+      selected.scope.agentSessionId,
+      'aep-snapshots'
+    );
+    const snapshotPath = join(snapshotsRoot, `${selected.snapshotId}.json`);
+    const originalBytes = readFileSync(snapshotPath, 'utf8');
+    const read = snapshotLedger.findNamedAgentEnvironmentPackageSnapshot;
+    let unavailableDirectory = false;
+    let fault: Error | undefined;
+    let inspection: { mockRestore(): void } | undefined;
+    const beforeItems = store.listAllItems();
+    const beforeEvents = packages.map((pkg) => store.getTurnEvents(pkg.scope.turnId));
+    const publish = vi.spyOn(store, 'createItem');
+    try {
+      if (failure === 'permission') {
+        chmodSync(snapshotsRoot, 0);
+        unavailableDirectory = true;
+        expect(() => lstatSync(snapshotPath)).toThrow(expect.objectContaining({ code: 'EACCES' }));
+      } else if (failure === 'noncanonical') {
+        rmSync(snapshotPath);
+        symlinkSync(join(snapshotsRoot, 'missing-target'), snapshotPath);
+      } else if (['malformed-json', 'schema', 'digest', 'lineage'].includes(failure)) {
+        const record = JSON.parse(originalBytes);
+        if (failure === 'digest') record.contentDigest = '0'.repeat(64);
+        if (failure === 'lineage') record.threadId = 'th_contradictory';
+        writeFileSync(
+          snapshotPath,
+          failure === 'malformed-json' ? '{' : failure === 'schema' ? '{}' : JSON.stringify(record)
+        );
+      } else {
+        fault =
+          failure === 'programming'
+            ? new TypeError('Unexpected named-reader failure.')
+            : Object.assign(new Error('Named-reader fault.'), {
+                code: failure === 'coded-programming' ? 'EIO' : failure,
+                ...(failure === 'coded-programming'
+                  ? {}
+                  : {
+                      syscall: failure === 'EIO' ? 'read' : 'open',
+                      errno: failure === 'EIO' ? -5 : failure === 'EMFILE' ? -24 : -1,
+                      path: snapshotPath,
+                    }),
+              });
+        inspection = vi
+          .spyOn(snapshotLedger, 'findNamedAgentEnvironmentPackageSnapshot')
+          .mockImplementation((db, workspaceId, sessionId, snapshotId) => {
+            if (snapshotId === selected.snapshotId) throw fault;
+            return read(db, workspaceId, sessionId, snapshotId);
+          });
+      }
+      if (
+        failure === 'permission' ||
+        failure === 'EPERM' ||
+        failure === 'EIO' ||
+        failure === 'EMFILE'
+      ) {
+        expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
+        expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
+        expect(publish).toHaveBeenCalledOnce();
+        expect(publish.mock.calls[0]![0]).toMatchObject({
+          id: 'it_mcp_1_healthy',
+          causationId: 'cap_mcp_1_healthy',
+          status: 'completed',
+        });
+        expect(
+          store.listAllItems().find((item) => item.id === 'it_mcp_0_unavailable')
+        ).toBeUndefined();
+        expect(store.getTurnEvents(selected.scope.turnId)).toEqual(beforeEvents[0]);
+        if (unavailableDirectory) {
+          chmodSync(snapshotsRoot, 0o700);
+          unavailableDirectory = false;
+        }
+        inspection?.mockRestore();
+        expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
+        expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
+        expect(
+          store.listAllItems().find((item) => item.id === 'it_mcp_0_unavailable')
+        ).toMatchObject({ causationId: 'cap_mcp_0_unavailable', status: 'completed' });
+      } else {
+        const reconcile = () => reconcileWorkerMcpItems(dataRoot, store);
+        if (fault) expect(reconcile).toThrow(fault);
+        else expect(reconcile).toThrow();
+        expect(publish).not.toHaveBeenCalled();
+        expect(store.listAllItems()).toEqual(beforeItems);
+        packages.forEach((pkg, index) => {
+          expect(store.getTurnEvents(pkg.scope.turnId)).toEqual(beforeEvents[index]);
+        });
+      }
+      const reopened = openWorkspaceDb(dataRoot, 'ws_demo');
+      try {
+        expect(
+          reopened.sqlite
+            .prepare('SELECT call_id, status FROM capability_calls ORDER BY call_id')
+            .all()
+        ).toEqual([
+          { call_id: 'cap_mcp_0_unavailable', status: 'succeeded' },
+          { call_id: 'cap_mcp_1_healthy', status: 'succeeded' },
+        ]);
+      } finally {
+        reopened.sqlite.close();
+      }
+    } finally {
+      if (unavailableDirectory) chmodSync(snapshotsRoot, 0o700);
+      inspection?.mockRestore();
+      publish.mockRestore();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 

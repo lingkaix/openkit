@@ -1,6 +1,16 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -72,6 +82,7 @@ import { seedWritableGitRepository } from '../test-support/git-repository.js';
 import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
@@ -1146,6 +1157,276 @@ describe('WorkerGovernanceTurnExecutor', () => {
       }
     } finally {
       f.coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'proved',
+    'assigned-missing',
+    'unknown-operation',
+    'accepted-operation',
+    'native-evidence',
+    'lineage-conflict',
+    'store-read-failure',
+    'package-inaccessible',
+    'package-invalid',
+    'package-present',
+    'package-directory',
+    'package-file-link',
+    'package-parent-link',
+  ] as const)('settles only proved unassigned planned successor preparation: %s', async (proof) => {
+    const coreDb = openCommitFixtureCore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = store.createTurn(
+      'ws_demo',
+      'th_demo',
+      'Prepare planned successor',
+      { kind: 'user', id: 'user_local' },
+      undefined,
+      { status: 'pending', agentId: 'agent_codex_host', executorKind: 'worker' }
+    );
+    const predecessor = store.createAgentSession({
+      id: 'as_planned_predecessor',
+      agentId: 'agent_codex_host',
+      workspaceId: turn.workspaceId,
+      threadId: turn.threadId,
+      status: 'idle',
+      message: null,
+      policySnapshotId: 'worker_turn_launch_policy',
+      sessionCompatibilityKey: `sha256:${'0'.repeat(64)}`,
+      createdAt: '2026-07-15T00:00:00.000Z',
+      updatedAt: '2026-07-15T00:00:00.000Z',
+    });
+    const plannedId = 'as_planned_successor';
+    const attemptId = 'attempt_planned_successor';
+    const backend = new FakeWorkerGovernanceBackend();
+    const continuity = vi.fn(async (input: { readonly reuseAllowed: boolean }) => {
+      if (input.reuseAllowed) return 'replacement-required' as const;
+      if (proof === 'assigned-missing') store.updateTurn(turn.id, { agentSessionId: plannedId });
+      throw new Error('/private/planned-successor-canary native-secret-canary');
+    });
+    Object.assign(backend, { prepareAgentSessionContinuity: continuity });
+    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+    const entry = createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
+      queueEntryId: 'queue_planned_successor',
+      requestId: '00000000-0000-4000-8000-000000000292',
+      workspaceId: turn.workspaceId,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      turnInput: 'Prepare planned successor',
+      requestedAgentId: 'agent_codex_host',
+      triggerActor: turn.triggerActor,
+    });
+    store.recordCommandRequest({
+      command: 'turn.start',
+      requestId: entry.requestId,
+      inputHash: 'fixture:planned-successor',
+      scope: { actorId: 'user_local', workspaceId: entry.workspaceId, threadId: entry.threadId },
+      response: { kind: 'turn', id: entry.turnId },
+      createdAt: new Date().toISOString(),
+    });
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let unreadableDir: string | null = null;
+    try {
+      await expect(
+        runSchedulerDispatchLoop({
+          coreDb,
+          store,
+          turnExecutor: executor,
+          executionBackend: executor.executionBackend,
+          callerQueueEntryId: entry.queueEntryId,
+          createAgentSessionId: () => plannedId,
+          createAttemptId: () => attemptId,
+          agentManifests: [createTestAgentSetup().manifest],
+          gatewayConfig: createTestGatewayConfig(),
+          providerRegistry: new ProviderRegistry([
+            {
+              baseUrl: 'http://127.0.0.1:11434/v1',
+              defaultModel: 'openai/gpt-5.2',
+              displayName: 'Scheduler fixture provider',
+              id: 'agent-openrouter',
+              kind: 'local',
+              models: ['openai/gpt-5.2'],
+              modelMetadata: { 'openai/gpt-5.2': { temperature: false } },
+            },
+          ]),
+        })
+      ).rejects.toThrow('The AgentSession runtime binding changed after scheduler dispatch.');
+      expect(continuity.mock.calls.some(([input]) => !input.reuseAllowed)).toBe(true);
+      const original = store.getTurnById(turn.id);
+      const originalEvents = store.getTurnEvents(turn.id);
+      expect(original).toMatchObject({
+        status: 'failed',
+        error: { code: 'worker_preparation_failed' },
+      });
+      expect(original.agentSessionId).toBe(proof === 'assigned-missing' ? plannedId : undefined);
+      expect(originalEvents.filter((event) => event.event === 'turn.completed')).toHaveLength(1);
+      expect(() => store.getAgentSession(plannedId)).toThrow();
+      const attempt = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+      expect(attempt).toMatchObject({
+        agentSessionId: plannedId,
+        inputRef: `aepsnap_${turn.id}_${plannedId}`,
+        phase: 'closed',
+        disposition: 'not_accepted',
+        operationId: null,
+        terminalCause: 'turn-start-failed',
+      });
+      const workspace = openTestWorkspaceDb(coreDb);
+      try {
+        expect(
+          snapshotLedger.listExportableAgentEnvironmentPackageSnapshots(workspace, 'ws_demo')
+        ).toEqual([]);
+        const packageRoot = join(
+          dirname(dirname(workspace.sqlite.name)),
+          'runtime',
+          'agent-sessions',
+          plannedId,
+          'aep-snapshots'
+        );
+        const packagePath = join(packageRoot, `${attempt.inputRef}.json`);
+        if (proof === 'package-present') {
+          const environmentPackage = resolveAgentEnvironmentPackage({
+            coreDb,
+            agentSetup: createTestAgentSetup(),
+            agentSessionId: plannedId,
+            backend: { kind: 'openshell' },
+            requestId: entry.requestId,
+            triggerActor: turn.triggerActor,
+            turn,
+            turnInput: entry.turnInput,
+            workspaceCwd: null,
+            workspaceRoots: [],
+          });
+          expect(environmentPackage.snapshotId).toBe(attempt.inputRef);
+          snapshotLedger.recordAgentEnvironmentPackageSnapshot(workspace, {
+            environmentPackage,
+            createdAt: '2026-07-15T00:00:01.000Z',
+          });
+          expect(
+            snapshotLedger.findNamedAgentEnvironmentPackageSnapshot(
+              workspace,
+              turn.workspaceId,
+              plannedId,
+              attempt.inputRef!
+            )
+          ).not.toBeNull();
+        } else if (proof === 'package-parent-link') {
+          mkdirSync(dirname(packageRoot), { recursive: true });
+          symlinkSync(join(dirname(packageRoot), 'missing-package-canary'), packageRoot, 'dir');
+        } else if (proof.startsWith('package-')) {
+          mkdirSync(packageRoot, { recursive: true });
+          if (proof === 'package-directory') mkdirSync(packagePath);
+          else if (proof === 'package-file-link')
+            symlinkSync(join(packageRoot, 'missing-package-canary'), packagePath);
+          else {
+            writeFileSync(packagePath, '{}');
+            if (proof === 'package-inaccessible') {
+              unreadableDir = packageRoot;
+              chmodSync(unreadableDir, 0);
+              // Prove the existing bytes are inaccessible before testing the settlement grant.
+              expect(() => lstatSync(packagePath)).toThrow(
+                expect.objectContaining({ code: 'EACCES' })
+              );
+            }
+          }
+        }
+      } finally {
+        workspace.sqlite.close();
+      }
+      const recovery = {
+        executionBackend: executor.executionBackend,
+        store,
+        cleanupBackendSession: vi.fn(async () => {}),
+        prepareBackendCleanup: vi.fn(),
+        restoreBackendSession: vi.fn(async () => {}),
+        reconcileAcceptedFinalStatus: vi.fn(async () => {}),
+        projectRecoveredTurn: vi.fn(async () => ({ status: 'failed' as const })),
+      };
+      if (proof === 'store-read-failure') {
+        const getSession = store.getAgentSession.bind(store);
+        vi.spyOn(store, 'getAgentSession').mockImplementation((id) => {
+          if (id === plannedId)
+            throw new Error('/private/planned-successor-canary native-secret-canary');
+          return getSession(id);
+        });
+      } else if (proof === 'unknown-operation' || proof === 'accepted-operation') {
+        coreDb.sqlite
+          .prepare(
+            'UPDATE scheduler_execution_attempts SET operation_id = ?, disposition = ? WHERE attempt_id = ?'
+          )
+          .run(
+            'original-operation',
+            proof === 'unknown-operation' ? 'unknown' : 'accepted',
+            attemptId
+          );
+      } else if (proof === 'native-evidence') {
+        coreDb.sqlite
+          .prepare(
+            'UPDATE scheduler_execution_attempts SET last_worker_sequence = 1 WHERE attempt_id = ?'
+          )
+          .run(attemptId);
+      } else if (proof === 'lineage-conflict') {
+        coreDb.sqlite
+          .prepare('UPDATE scheduler_admission_entries SET turn_input = ? WHERE queue_entry_id = ?')
+          .run('A different immutable request', entry.queueEntryId);
+      }
+      const beforeRecovery = store.getTurnById(turn.id);
+      const beforeAttempt = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+      const publish = vi.spyOn(store, 'emitTurnEvent');
+      const createSession = vi.spyOn(store, 'createAgentSession');
+      for (let pass = 0; pass < 2; pass += 1) {
+        if (proof === 'proved') {
+          await expect(
+            runNanoHostAttemptRecoveryMaintenance(coreDb, recovery)
+          ).resolves.toBeUndefined();
+        } else {
+          await expect(
+            runNanoHostAttemptRecoveryMaintenance(coreDb, recovery)
+          ).rejects.toMatchObject({
+            message: 'Native attempt recovery failed.',
+            errors: [
+              proof === 'package-inaccessible'
+                ? expect.objectContaining({ cause: expect.objectContaining({ code: 'EACCES' }) })
+                : expect.any(Error),
+            ],
+          });
+        }
+        expect(store.getTurnById(turn.id)).toEqual(beforeRecovery);
+        expect(store.getTurnEvents(turn.id)).toEqual(originalEvents);
+        expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toEqual(beforeAttempt);
+      }
+      expect(publish).not.toHaveBeenCalled();
+      expect(createSession).not.toHaveBeenCalled();
+      expect(() => store.getAgentSession(plannedId)).toThrow();
+      expect(store.getAgentSession(predecessor.id)).toEqual(predecessor);
+      expect(backend.calls).toEqual([]);
+      expect(recovery.cleanupBackendSession).not.toHaveBeenCalled();
+      expect(recovery.prepareBackendCleanup).not.toHaveBeenCalled();
+      expect(recovery.restoreBackendSession).not.toHaveBeenCalled();
+      expect(recovery.reconcileAcceptedFinalStatus).not.toHaveBeenCalled();
+      expect(recovery.projectRecoveredTurn).not.toHaveBeenCalled();
+      expect(log.mock.calls).toHaveLength(proof === 'proved' ? 0 : 2);
+      for (const [line] of log.mock.calls)
+        expect(JSON.parse(line)).toEqual({
+          severityText: 'WARN',
+          body: 'Failed-start product settlement check failed.',
+          attributes: {
+            'openkit.error.code': 'scheduler.native_failed_start_recovery_required',
+            'openkit.attempt.id': attemptId,
+            'openkit.workspace.id': turn.workspaceId,
+            'openkit.thread.id': turn.threadId,
+            'openkit.turn.id': turn.id,
+            'openkit.agent.session.id': plannedId,
+          },
+        });
+      expect(JSON.stringify(log.mock.calls)).not.toContain('native-secret-canary');
+      expect(JSON.stringify(log.mock.calls)).not.toContain('/private/planned-successor-canary');
+      expect(JSON.stringify(log.mock.calls)).not.toContain('missing-package-canary');
+    } finally {
+      if (unreadableDir) chmodSync(unreadableDir, 0o700);
+      log.mockRestore();
+      coreDb.sqlite.close();
     }
   });
 

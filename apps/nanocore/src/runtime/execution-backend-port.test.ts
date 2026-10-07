@@ -977,7 +977,11 @@ describe('execution backend port through real Core coordination', () => {
         intervalMs: 30_000,
         setInterval: () => 'fixture-timer',
         clearInterval: () => undefined,
-        runRecoveryMaintenance: () => runSchedulerRecoveryMaintenance(f.db, f.recoveryInput),
+        runRecoveryMaintenance: {
+          scheduler: () => runSchedulerRecoveryMaintenance(f.db, f.recoveryInput),
+          native: async () => {},
+          checkpoints: async () => {},
+        },
       });
       try {
         const first = service.runOnce();

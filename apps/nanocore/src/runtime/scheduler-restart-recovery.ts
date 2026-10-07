@@ -8,9 +8,11 @@ import {
   listOpenSchedulerExecutionAttempts,
   markSchedulerExecutionAttemptClosing,
   requireSchedulerExecutionAttempt,
+  type SchedulerExecutionAttemptRecord,
   schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
 import type { ExecutionBackend } from './execution-backend.js';
+import { logRecoveryMaintenanceFailure } from './scheduler-attempt-maintenance-service.js';
 
 /** Product outcome established by its existing recovery owner. */
 export type RecoveredTurnStatus = 'completed' | 'failed' | 'interrupted' | 'cancelled' | 'missing';
@@ -99,23 +101,31 @@ export async function runSchedulerRecoveryMaintenance(
         await input.executionBackend.inspect(schedulerExecutionCorrelation(attempt))
       );
     } catch (error) {
+      logRecoveryMaintenanceFailure('attempt-recovery', attempt);
       errors.push(error);
     }
   }
   // A crash may leave definite no-effect closure ahead of product publication. Retry only
   // that existing publication owner, without requesting a never-published AEP snapshot.
   const failures = coreDb.sqlite
-    .prepare(`SELECT attempt_id AS attemptId FROM scheduler_execution_attempts
+    .prepare(`SELECT attempt_id AS attemptId, workspace_id AS workspaceId, thread_id AS threadId,
+      turn_id AS turnId, agent_session_id AS agentSessionId FROM scheduler_execution_attempts
     WHERE phase = 'closed' AND disposition = 'not_accepted' AND operation_id IS NULL
       AND terminal_cause IN ('restart-before-effects', 'authority-revoked', 'execution-deadline')
     ORDER BY rowid`)
-    .all() as Array<{ attemptId: string }>;
-  for (const { attemptId } of failures) {
+    .all() as Array<
+    Pick<
+      SchedulerExecutionAttemptRecord,
+      'attemptId' | 'workspaceId' | 'threadId' | 'turnId' | 'agentSessionId'
+    >
+  >;
+  for (const failure of failures) {
     try {
-      const attempt = requireSchedulerExecutionAttempt(coreDb, attemptId);
+      const attempt = requireSchedulerExecutionAttempt(coreDb, failure.attemptId);
       if (input.isTurnExecutionActive?.(attempt.turnId)) continue;
       await input.projectRecoveredTurn({ ...attempt, packageSnapshotId: attempt.inputRef });
     } catch (error) {
+      logRecoveryMaintenanceFailure('failed-publication', failure);
       errors.push(error);
     }
   }
