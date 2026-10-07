@@ -116,6 +116,8 @@ Selected Workspace catalog MCP servers resolve into the same secret-free AEP sup
 
 Every Worker package supplies the built-in `openkit-work` MCP server. It raises pending input requests and provides read-only same-Sandbox peer discovery and product history under the responsible user's current access. The [runtime guide](src/runtime/README.md) describes the Turn-scoped handles, paging, and existing Gateway evidence path.
 
+`agent-environment.ts` refuses authored host-directory sources with a root-id/source-kind diagnostic during NanoHost preparation, before Sandbox effects; the backend currently materializes only remote Git sources. Every package also declares the generated `turn-output` root at `/openkit/sessions/<agent-session-id>/outputs`, independently of authored roots. Workers finish a file there and call `work_submit_artifact`; the authenticated route regression in `src/worker-mcp-routes.test.ts` captures a real file and reads its committed Artifact during the active Turn. See [AgentSession Static Workspace Materialization](../../docs/specs/20260704-session_static_workspace_materialization.md).
+
 ## Commands
 
 Tests of unrelated AEP consumers use `src/test-support/prepared-agent-environment.ts` for confirmed image evidence and explicit default-off capture fixtures. Capture-admission tests use the production resolver directly so missing historical coverage remains a dispatch refusal.
@@ -438,7 +440,6 @@ Canonical Thread envelopes require `openkit.thread-visibility.v1`. On predecesso
 Deployment administrators can manage workspace secrets through `POST /api/app/operations/vault.secret-create`, `vault.secret-rotate`, and `vault.secret-revoke`, and ordinary gateway-only grants with no capability target or GitHub Worker runtime-env grants through `vault.grant-create` and `vault.grant-revoke`. All material is request-only; reference and grant ids remain redacted lifecycle history after revocation.
 
 Authored `server.jsonc.policy.workspaceApprovalModes` entries for `repo.push`, including `require_human_approval` and `auto_allow`, remain parseable for configuration loadability only. They have no grant or execution consumer and do not control vendor MCP approval. Selected vendor tools retain their per-tool approval rules under [Worker MCP Tool Supply](../../docs/specs/20260704-worker_mcp_tool_supply.md) and [Pending Requests](../../docs/specs/20260930-pending_requests.md).
-
 
 At boot, pending requests on terminal raising Turns remain pending. Recovery settles unfinished claims as unknown and completes only missing Items on their named publication Turns after scheduler fencing. Contradictory records remain inspect-only.
 

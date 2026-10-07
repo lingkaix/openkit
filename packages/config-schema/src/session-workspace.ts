@@ -293,8 +293,7 @@ export function planSessionWorkspaceMaterialization(
         access: workspaceInput.access,
       };
     }),
-    outputSlotIds:
-      (input.environmentPackage.workspace?.outputs ?? []).length > 0 ? ['turn-output'] : [],
+    outputSlotIds: ['turn-output'],
   });
 
   return {
@@ -346,7 +345,9 @@ function createDefaultSessionWorkspaceLayout(
   workSlotRef: string
 ): SessionWorkspaceLayout {
   const root = environmentPackage.workspace?.root ?? '/workspace';
-  const { contextRoot } = workerSessionInputPaths(environmentPackage.scope?.agentSessionId);
+  const { root: sessionRoot, contextRoot } = workerSessionInputPaths(
+    environmentPackage.scope?.agentSessionId
+  );
   const worktreeRoot = `${root}/worktrees/${workSlotRef}`;
 
   return SessionWorkspaceLayoutSchema.parse({
@@ -405,7 +406,7 @@ function createDefaultSessionWorkspaceLayout(
       slot(
         'turn-output',
         'output',
-        `${root}/outputs`,
+        `${sessionRoot}/outputs`,
         'read-write',
         ['generated'],
         ['create-empty'],

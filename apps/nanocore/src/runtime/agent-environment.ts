@@ -480,7 +480,7 @@ function resolveOpenShellAgentEnvironmentPackage(
       access: root.access,
       id: root.id,
       kind: 'directory' as const,
-      materialization: workspaceInputMaterialization(root.access),
+      materialization: workspaceInputMaterialization(root),
       source: workspaceInputSource(root, input),
       target: root.workerPath,
     })),
@@ -843,11 +843,22 @@ function resolveOpenShellAgentEnvironmentPackage(
     workspace: {
       ...environmentPackage.workspace,
       inputs: materializedWorkspaceInputs,
-      outputs: environmentPackage.workspace.outputs.map((output) => {
-        const rootId = output.id.endsWith('-output') ? output.id.slice(0, -'-output'.length) : null;
-        const target = rootId ? materializedTargets.get(rootId) : undefined;
-        return target ? { ...output, path: target } : output;
-      }),
+      outputs: [
+        ...environmentPackage.workspace.outputs.map((output) => {
+          const rootId = output.id.endsWith('-output')
+            ? output.id.slice(0, -'-output'.length)
+            : null;
+          const target = rootId ? materializedTargets.get(rootId) : undefined;
+          return target ? { ...output, path: target } : output;
+        }),
+        {
+          // Authored roots retain `${id}-output`; this fixed identity cannot share that suffix.
+          id: 'turn-output-root',
+          path: sessionWorkspace.layout.slots.find((slot) => slot.id === 'turn-output')!.path,
+          registerAsArtifacts: true,
+          retention: 'sync-on-turn-end',
+        },
+      ],
     },
     policy: {
       ...environmentPackage.policy,
@@ -959,7 +970,7 @@ function requirePreparedWorkerContextPackage(
 /**
  * Resolves the AEP source snapshot for one workspace root.
  *
- * @param root Materialized workspace root.
+ * @param root Remote Git root admitted by the NanoHost materialization selector.
  * @param input AEP resolver input.
  * @returns Worker-visible source snapshot.
  */
@@ -969,73 +980,40 @@ function workspaceInputSource(
 ): Record<string, unknown> {
   const sourceRef = input.workspaceSourceRefs?.[root.id];
 
-  if (root.sourceKind === 'remote-git') {
-    if (!sourceRef || !input.workspaceDataSourceCatalog) {
-      throw new Error(
-        `Workspace data source catalog required for sourceRef: ${sourceRef ?? root.id}`
-      );
-    }
-
-    const resolved = resolveWorkspaceDataSourceReference({
-      access: root.access,
-      catalog: input.workspaceDataSourceCatalog,
-      slotKind: 'worktree',
-      sourceRef,
-    });
-    let locator: ReturnType<typeof requireCredentialFreeHttpsGitLocator>;
-    try {
-      locator = requireCredentialFreeHttpsGitLocator(resolved.locator);
-    } catch {
-      throw new Error(`Remote Git source changed after scheduler admission: ${sourceRef}`);
-    }
-    if (
-      resolved.sourceKind !== 'git' ||
-      resolved.vaultGrantRef ||
-      locator.commit !== root.sourceCommit
-    ) {
-      throw new Error(`Remote Git source changed after scheduler admission: ${sourceRef}`);
-    }
-
-    return {
-      catalogEntryDigest: resolved.catalogEntryDigest,
-      commit: root.sourceCommit,
-      kind: 'git',
-      sensitivity: resolved.sensitivity,
-      sourceId: resolved.sourceId,
-      sourceRef,
-      url: locator.url,
-    };
-  }
-
-  if (!sourceRef) {
-    return {
-      kind: root.sourceKind,
-      pathRef: `workspace-root://${root.id}`,
-      ...(root.sourceCommit ? { commit: root.sourceCommit } : {}),
-    };
-  }
-
-  if (!input.workspaceDataSourceCatalog) {
-    throw new Error(`Workspace data source catalog required for sourceRef: ${sourceRef}`);
+  if (!sourceRef || !input.workspaceDataSourceCatalog) {
+    throw new Error(
+      `Workspace data source catalog required for sourceRef: ${sourceRef ?? root.id}`
+    );
   }
 
   const resolved = resolveWorkspaceDataSourceReference({
     access: root.access,
     catalog: input.workspaceDataSourceCatalog,
-    slotKind: root.access === 'read-write' ? 'worktree' : 'input',
+    slotKind: 'worktree',
     sourceRef,
   });
+  let locator: ReturnType<typeof requireCredentialFreeHttpsGitLocator>;
+  try {
+    locator = requireCredentialFreeHttpsGitLocator(resolved.locator);
+  } catch {
+    throw new Error(`Remote Git source changed after scheduler admission: ${sourceRef}`);
+  }
+  if (
+    resolved.sourceKind !== 'git' ||
+    resolved.vaultGrantRef ||
+    locator.commit !== root.sourceCommit
+  ) {
+    throw new Error(`Remote Git source changed after scheduler admission: ${sourceRef}`);
+  }
 
   return {
     catalogEntryDigest: resolved.catalogEntryDigest,
-    kind: resolved.sourceKind,
-    locator: resolved.locator,
-    pathRef: `workspace-root://${root.id}`,
+    commit: root.sourceCommit,
+    kind: 'git',
     sensitivity: resolved.sensitivity,
     sourceId: resolved.sourceId,
     sourceRef,
-    ...(root.sourceCommit ? { commit: root.sourceCommit } : {}),
-    ...(resolved.vaultGrantRef ? { vaultGrantRef: resolved.vaultGrantRef } : {}),
+    url: locator.url,
   };
 }
 
@@ -1757,17 +1735,22 @@ function projectAgentEnvironmentIdentity(setup: ResolvedAgentSetup): {
 }
 
 /**
- * Builds the backend-portable workspace materialization hint passed to workers.
+ * Builds the supported NanoHost workspace materialization hint passed to workers.
  *
- * @param access Declared worker access mode.
+ * @param root Resolved workspace root, independent of worker access.
  * @returns Materialization metadata consumed by worker shims and backend collectors.
+ * @throws DeterministicAgentPreparationError when NanoHost has no importer for the source kind.
  */
-function workspaceInputMaterialization(
-  access: 'read-only' | 'read-write'
-): Record<string, unknown> {
-  return {
-    strategy: access === 'read-write' ? 'git' : 'filesystem',
-  };
+function workspaceInputMaterialization(root: MaterializedWorkspaceRoot): Record<string, unknown> {
+  // NanoHost supports remote Git checkout; authored directory snapshot import is unavailable.
+  if (root.sourceKind !== 'remote-git') {
+    throw new DeterministicAgentPreparationError(
+      `NanoHost cannot materialize workspace root ${root.id}: unsupported source kind ${root.sourceKind}.`,
+      'workspace_data_source_blocked',
+      409
+    );
+  }
+  return { strategy: 'git' };
 }
 
 /**

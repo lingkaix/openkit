@@ -20,6 +20,24 @@ import {
 } from './worker-governance-backend.js';
 
 describe('NanoHost worker governance helpers', () => {
+  it('exports a generated output under the exact AgentSession namespace and refuses undeclared paths', () => {
+    const environmentPackage = createNanoHostPackage();
+    const agentSessionId = environmentPackage.scope.agentSessionId;
+    const path = `/openkit/sessions/${agentSessionId}/outputs/report.md`;
+    expect(resolveNanoHostExportPath(environmentPackage, path)).toEqual({
+      slot: 'turn-output',
+      relativePath: `${agentSessionId}/outputs/report.md`,
+    });
+    for (const candidate of [
+      '/workspace/outputs/report.md',
+      '/openkit/sessions/as_sibling/outputs/report.md',
+    ]) {
+      expect(() => resolveNanoHostExportPath(environmentPackage, candidate)).toThrow(
+        'outside every declared output slot'
+      );
+    }
+  });
+
   it('prefixes a main-worktree export with the exact AEP-bound work slot', () => {
     const environmentPackage = createNanoHostPackage();
     const mainWorktree = (

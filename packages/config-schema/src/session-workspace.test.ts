@@ -81,6 +81,19 @@ function packageFixture(overrides: Record<string, unknown> = {}) {
 }
 
 describe('session workspace layout schema', () => {
+  it('keeps generated output slots private to each admitted AgentSession', () => {
+    for (const agentSessionId of ['as_a', 'as_b']) {
+      const planned = planSessionWorkspaceMaterialization({
+        environmentPackage: packageFixture({
+          scope: { agentSessionId, threadId: 'th_demo', turnId: 'turn_demo' },
+        }),
+      });
+      expect(planned.layout.slots.find((slot) => slot.id === 'turn-output')?.path).toBe(
+        `/openkit/sessions/${agentSessionId}/outputs`
+      );
+    }
+  });
+
   it('binds Context slots to distinct admitted AgentSessions', () => {
     const roots = ['as_a', 'as_b'].map((agentSessionId) => {
       const planned = planSessionWorkspaceMaterialization({

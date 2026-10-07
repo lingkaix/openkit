@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
@@ -36,14 +36,6 @@ function submissionFixture() {
     workspaceCwd: '/workspace/output',
     workspaceRoots: [],
   });
-  environmentPackage.workspace.outputs = [
-    {
-      id: 'main-worktree',
-      path: '/workspace/output',
-      registerAsArtifacts: true,
-      retention: 'sync-on-turn-end',
-    },
-  ];
   store.updateTurn(turn.id, {
     status: 'running',
     agentId: environmentPackage.agent.agentId,
@@ -81,7 +73,7 @@ function submissionFixture() {
   const submit = (requestId = 'req_file_1', overrides: Record<string, unknown> = {}) =>
     dispatchOpenkitWorkTool(input, 'work_submit_artifact', {
       requestId,
-      path: '/workspace/output/report.md',
+      path: '/openkit/sessions/as_submit_1/outputs/report.md',
       kind: 'report',
       title: 'Report',
       mediaType: 'text/markdown',
@@ -100,7 +92,7 @@ function submissionFixture() {
     ).n,
     receipts: store.listCommandRequests().length,
   });
-  return { ...input, submit, counts, turn, dataRoot };
+  return { ...input, submit, counts, turn, dataRoot, credentialCheckValues };
 }
 
 /** Extracts the acknowledged id without inferring successful publication from assistant text. */
@@ -114,6 +106,32 @@ function acknowledgedArtifactId(
 }
 
 describe('synchronous Worker file submission', () => {
+  it('captures a real finished file from the empty-roots package output and reads back its Artifact', async () => {
+    const fixture = submissionFixture();
+    const path = '/openkit/sessions/as_submit_1/outputs/report.md';
+    const localRoot = join(fixture.dataRoot, 'sandbox-output');
+    mkdirSync(localRoot);
+    writeFileSync(join(localRoot, 'report.md'), '# Session report\n');
+    fixture.captureArtifact.mockImplementation(async (request) => {
+      expect(request.path).toBe(path);
+      return {
+        bytes: readFileSync(join(localRoot, 'report.md')),
+        credentialCheckValues: fixture.credentialCheckValues,
+      };
+    });
+    const id = acknowledgedArtifactId(await fixture.submit());
+    expect(fixture.captureArtifact).toHaveBeenCalledOnce();
+    expect(fixture.store.getArtifact('ws_demo', id).content?.body).toBe('# Session report\n');
+    expect(fixture.counts()).toEqual({ artifacts: 1, references: 1, reviews: 1, receipts: 1 });
+    await expect(
+      fixture.submit('req_undeclared', { path: '/workspace/outputs/report.md' })
+    ).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(
+      fixture.submit('req_sibling', { path: '/openkit/sessions/as_submit_2/outputs/report.md' })
+    ).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(fixture.captureArtifact).toHaveBeenCalledOnce();
+  });
+
   it('advertises work_submit_artifact on the existing work supply', () => {
     expect(OPENKIT_WORK_TOOLS.map((tool) => tool.name)).toContain('work_submit_artifact');
   });
@@ -355,9 +373,9 @@ describe('submission authority and byte evidence', () => {
   });
 
   it.each([
-    '/workspace/output',
-    '/workspace/output/../report.md',
-    '/workspace/output//report.md',
+    '/openkit/sessions/as_submit_1/outputs',
+    '/openkit/sessions/as_submit_1/outputs/../report.md',
+    '/openkit/sessions/as_submit_1/outputs//report.md',
     '/undeclared/report.md',
   ])('rejects path %s before export', async (path) => {
     const fixture = submissionFixture();
@@ -387,7 +405,7 @@ describe('submission authority and byte evidence', () => {
       fixture.environmentPackage.workspace.outputs.push({
         ...fixture.environmentPackage.workspace.outputs[0]!,
         id: 'nested',
-        path: '/workspace/output/report.md',
+        path: '/openkit/sessions/as_submit_1/outputs/report.md',
       });
     await expect(fixture.submit()).rejects.toMatchObject({ code: 'invalid_request' });
     expect(fixture.captureArtifact).not.toHaveBeenCalled();
@@ -509,7 +527,7 @@ describe('submission authority and byte evidence', () => {
     await expect(
       dispatchOpenkitWorkTool({ ...fixture, signal: abort.signal }, 'work_submit_artifact', {
         requestId: 'cancelled',
-        path: '/workspace/output/report.md',
+        path: '/openkit/sessions/as_submit_1/outputs/report.md',
         kind: 'report',
         title: 'Report',
         mediaType: 'text/markdown',

@@ -1,6 +1,5 @@
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -128,6 +127,25 @@ function createWorkerControlRouteFixture(workspaceRoots: MaterializedWorkspaceRo
       turn,
       workspaceCwd: '/workspace/repo',
       workspaceRoots,
+      workspaceSourceRefs: Object.fromEntries(workspaceRoots.map((root) => [root.id, root.id])),
+      workspaceDataSourceCatalog: {
+        schemaVersion: 1,
+        requiredFeatures: [],
+        extensions: {},
+        sources: workspaceRoots.map((root) => ({
+          id: root.id,
+          displayName: root.id,
+          kind: 'git' as const,
+          locator: { commit: root.sourceCommit!, url: 'https://example.invalid/control.git' },
+          access: root.access,
+          allowedSlotKinds: ['worktree' as const],
+          sensitivity: 'internal' as const,
+          status: 'active' as const,
+          syncHints: {},
+          requiredFeatures: [],
+          extensions: {},
+        })),
+      },
     })
   );
   const gateway = new WorkerControlGateway({
@@ -2197,27 +2215,13 @@ describe('worker control routes', () => {
 
   it('retains the backend handle in the canonical Workspace across final-status replay', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-workspace-')));
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-final-status-workspace-repo-'));
-
-    execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
-    execFileSync('git', ['config', 'user.email', 'openkit@example.invalid'], {
-      cwd: repositoryPath,
-    });
-    execFileSync('git', ['config', 'user.name', 'OpenKit'], { cwd: repositoryPath });
-    writeFileSync(join(repositoryPath, 'README.md'), '# Workspace\n', 'utf8');
-    execFileSync('git', ['add', 'README.md'], { cwd: repositoryPath });
-    execFileSync('git', ['commit', '-m', 'initial'], { cwd: repositoryPath, stdio: 'ignore' });
-    const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: repositoryPath,
-      encoding: 'utf8',
-    }).trim();
+    const sourceCommit = 'a'.repeat(40);
     const { environmentPackage, lineage, store } = createWorkerControlRouteFixture([
       {
         access: 'read-write',
         id: 'repo_default',
         sourceCommit,
-        sourceKind: 'host-dir',
-        sourcePath: repositoryPath,
+        sourceKind: 'remote-git',
         workerPath: '/workspace/repo',
       },
     ]);

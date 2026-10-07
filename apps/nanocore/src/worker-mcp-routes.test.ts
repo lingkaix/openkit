@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -90,7 +90,6 @@ import {
 } from './test-support/agent-environment.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
-import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
 import { admitTestNativeEnvironment } from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
@@ -2005,7 +2004,6 @@ describe('worker MCP routes', () => {
     decision,
   }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-lifecycle-'));
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-lifecycle-repository-'));
     const exportRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-lifecycle-export-'));
     const callFile = join(dataRoot, 'mcp-calls.txt');
     const coreDb = openCoreDb(dataRoot);
@@ -2013,14 +2011,10 @@ describe('worker MCP routes', () => {
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-    seedWritableGitRepository(repositoryPath);
     const agentSetup = createTestAgentSetup({
       requiredCapabilities: ['trusted-worker-inference-relay'],
       mcpIds: ['echo'],
     });
-    agentSetup.manifest.workspace = {
-      inputs: [{ id: 'repo_remote', access: 'read-write', sourceRef: 'main-repo' }],
-    };
     admitTestNativeEnvironment(coreDb, agentSetup.manifest);
     let repositoryApprovalId: string | null = null;
     const catalog = parseWorkspaceMcpServerCatalog({
@@ -2059,35 +2053,6 @@ describe('worker MCP routes', () => {
             models: ['openai/gpt-5.2'],
           },
         ]),
-        workspaceDataSourceCatalogs: [
-          {
-            workspaceId: 'ws_demo',
-            path: join(dataRoot, 'workspaces/ws_demo/config/data-sources.jsonc'),
-            catalog: {
-              schemaVersion: 1,
-              requiredFeatures: [],
-              extensions: {},
-              sources: [
-                {
-                  id: 'main-repo',
-                  displayName: 'Remote repository',
-                  kind: 'git',
-                  status: 'active',
-                  access: 'read-write',
-                  allowedSlotKinds: ['worktree'],
-                  sensitivity: 'internal',
-                  locator: {
-                    url: 'https://git.example.test/openkit/repository.git',
-                    commit: 'a'.repeat(40),
-                  },
-                  syncHints: {},
-                  requiredFeatures: [],
-                  extensions: {},
-                },
-              ],
-            },
-          },
-        ],
         workspaceConfigs: [
           {
             config: {
@@ -2127,7 +2092,8 @@ describe('worker MCP routes', () => {
     });
     const terminalEvents = new Map<string, Buffer>();
     let liveCaptureCount = 0;
-    let liveFileBytes = Buffer.from('Captured by the existing configured runtime.\n');
+    const sandboxSessionRoot = join(dataRoot, 'sandbox-sessions');
+    let liveFilePath = '';
     const nanoHostSessionDispatch: NanoHostSessionDispatch = {
       async effect(
         requestOrConnection: object,
@@ -2191,6 +2157,10 @@ describe('worker MCP routes', () => {
             expect(request.input.maxByteLength).toBeLessThanOrEqual(16 * 1024 * 1024 + 1);
             const directory = mkdtempSync(join(exportRoot, 'live-'));
             const stagingPath = join(directory, 'body');
+            expect(request.input.slot).toBe('turn-output');
+            expect(request.input.relativePath).toMatch(/^[A-Za-z0-9_-]+\/outputs\/submitted\.md$/);
+            expect(join(sandboxSessionRoot, request.input.relativePath)).toBe(liveFilePath);
+            const liveFileBytes = readFileSync(liveFilePath);
             writeFileSync(stagingPath, liveFileBytes);
             return {
               stagingPath,
@@ -2323,10 +2293,6 @@ describe('worker MCP routes', () => {
           nativeHandleDigest: null,
           nativeHandleState: 'pending',
           state: 'open',
-          workspaceGitBaseline: {
-            commit: 'a'.repeat(40),
-            tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
-          },
         });
       }
       const started = await dispatchNext('turn.start');
@@ -2343,6 +2309,25 @@ describe('worker MCP routes', () => {
         `Bearer ${capabilityToken}`,
         { tokenFamily: 'capability' }
       );
+      expect(environmentPackage.workspace.inputs.every((input) => input.kind === 'generated')).toBe(
+        true
+      );
+      expect(environmentPackage.workspace.outputs).toEqual([
+        {
+          id: 'turn-output-root',
+          path: `/openkit/sessions/${environmentPackage.scope.agentSessionId}/outputs`,
+          registerAsArtifacts: true,
+          retention: 'sync-on-turn-end',
+        },
+      ]);
+      const localOutputRoot = join(
+        sandboxSessionRoot,
+        environmentPackage.scope.agentSessionId,
+        'outputs'
+      );
+      mkdirSync(localOutputRoot, { recursive: true });
+      liveFilePath = join(localOutputRoot, 'submitted.md');
+      writeFileSync(liveFilePath, 'Captured by the existing configured runtime.\n');
       const lineage = {
         agentSessionId: environmentPackage.scope.agentSessionId,
         packageSnapshotId: environmentPackage.snapshotId,
@@ -2409,8 +2394,8 @@ describe('worker MCP routes', () => {
         })
       ).rejects.toMatchObject({ data: { code: 'invalid_request' } });
       expect(liveCaptureCount).toBe(beforeRefusal);
-      const originalBytes = liveFileBytes;
-      liveFileBytes = Buffer.from(capabilityToken);
+      const originalBytes = readFileSync(liveFilePath);
+      writeFileSync(liveFilePath, capabilityToken);
       await expect(
         work.callTool({
           name: 'work_submit_artifact',
@@ -2426,7 +2411,7 @@ describe('worker MCP routes', () => {
           .filter((artifact) => artifact.turnId === environmentPackage.scope.turnId)
       ).toHaveLength(0);
       expect(store.getTurnById(environmentPackage.scope.turnId).status).toBe('running');
-      liveFileBytes = originalBytes;
+      writeFileSync(liveFilePath, originalBytes);
       const capturesBefore = liveCaptureCount;
       const submitted = await work.callTool({
         name: 'work_submit_artifact',
@@ -2434,11 +2419,20 @@ describe('worker MCP routes', () => {
       });
       expect(submitted.isError).toBe(false);
       const artifactId = String(submitted.structuredContent!.artifactId);
-      expect(store.getArtifact('ws_demo', artifactId).content.body).toBe(
-        liveFileBytes.toString('utf8')
+      const readback = await app.request(
+        ...operationRequest('artifact.read', { workspaceId: 'ws_demo', artifactId })
       );
-      const publishedBytes = liveFileBytes;
-      liveFileBytes = Buffer.from('A later edit cannot mutate the committed output.');
+      expect(readback.status).toBe(200);
+      expect(await readback.json()).toMatchObject({
+        id: artifactId,
+        content: { body: readFileSync(liveFilePath, 'utf8') },
+      });
+
+      expect(store.getArtifact('ws_demo', artifactId).content.body).toBe(
+        readFileSync(liveFilePath, 'utf8')
+      );
+      const publishedBytes = readFileSync(liveFilePath);
+      writeFileSync(liveFilePath, 'A later edit cannot mutate the committed output.');
       expect(
         (await work.callTool({ name: 'work_submit_artifact', arguments: submission }))
           .structuredContent!.artifactId
@@ -2804,7 +2798,6 @@ describe('worker MCP routes', () => {
       await workerMcpGateway.close();
       coreDb.sqlite.close();
       rmSync(exportRoot, { force: true, recursive: true });
-      rmSync(repositoryPath, { force: true, recursive: true });
       rmSync(dataRoot, { force: true, recursive: true });
     }
   }, 30_000);

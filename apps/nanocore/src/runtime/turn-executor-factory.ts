@@ -4863,9 +4863,11 @@ function nanoHostSandboxCompatibilityKey(
   environmentPackage: AgentEnvironmentPackagePreview
 ): string {
   const responsibleUserId = responsibleUserIdForActor(environmentPackage.scope.triggerActor);
-  const { contextRoot, packagePath } = workerSessionInputPaths(
-    environmentPackage.scope.agentSessionId
-  );
+  const {
+    root: sessionRoot,
+    contextRoot,
+    packagePath,
+  } = workerSessionInputPaths(environmentPackage.scope.agentSessionId);
   const { layout, materialization } = planSessionWorkspaceMaterialization({ environmentPackage });
   const mainWorktreePath = layout.slots.find((slot) => slot.id === 'main-worktree')?.path;
   const filesystem = environmentPackage.policy.filesystem;
@@ -4936,19 +4938,24 @@ function nanoHostSandboxCompatibilityKey(
               layout.workingDirectory === mainWorktreePath
                 ? 'worker-storage-worktree'
                 : layout.workingDirectory,
+            // Private disposable namespaces vary by AgentSession inside one physical Sandbox.
             slots: layout.slots.map((slot) =>
               slot.id === 'context'
                 ? { ...slot, path: 'agent-session-context' }
                 : slot.id === 'main-worktree'
                   ? { ...slot, path: 'worker-storage-worktree' }
-                  : slot
+                  : slot.id === 'turn-output'
+                    ? { ...slot, path: 'agent-session-output' }
+                    : slot
             ),
             control: { ...layout.control, contextRoot: 'agent-session-context' },
           },
           outputs: environmentPackage.workspace.outputs.map((output) =>
-            output.path === mainWorktreePath
-              ? { ...output, path: 'worker-storage-worktree' }
-              : output
+            output.id === 'turn-output-root' && output.path === `${sessionRoot}/outputs`
+              ? { ...output, path: 'agent-session-output' }
+              : output.path === mainWorktreePath
+                ? { ...output, path: 'worker-storage-worktree' }
+                : output
           ),
         },
       })

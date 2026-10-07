@@ -19,7 +19,10 @@ import type {
   AgentEnvironmentValidationDiagnostic,
   WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
-import { validateAgentEnvironmentPackageForBackend } from '@openkit/config-schema';
+import {
+  materializeWorkspaceRoots,
+  validateAgentEnvironmentPackageForBackend,
+} from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { RequestIdSchema } from '@openkit/protocol';
 import {
@@ -876,7 +879,119 @@ function observeExecutionAttempts(
     : [];
 }
 
+/** Supplies a supported, credential-free remote source for lifecycle fixtures that need a workspace input. */
+function remoteGitInputFixture() {
+  const commit = 'a'.repeat(40);
+  return {
+    workspaceRoots: [
+      {
+        id: 'repo',
+        access: 'read-write' as const,
+        sourceKind: 'remote-git' as const,
+        sourceCommit: commit,
+        workerPath: '/workspace/openkit',
+      },
+    ],
+    workspaceSourceRefs: { repo: 'repo' },
+    workspaceDataSourceCatalog: {
+      schemaVersion: 1 as const,
+      sources: [
+        {
+          id: 'repo',
+          displayName: 'Repository',
+          kind: 'git' as const,
+          locator: { commit, url: 'https://example.invalid/repo.git' },
+          access: 'read-write' as const,
+          allowedSlotKinds: ['worktree' as const],
+          sensitivity: 'internal' as const,
+          status: 'active' as const,
+        },
+      ],
+    },
+  };
+}
+
 describe('WorkerGovernanceTurnExecutor', () => {
+  it('refuses the r35 host-dir source during AEP preparation with zero backend dispatch', async () => {
+    const fixture = createWorkerContextExecutorFixture('r35-host-dir');
+    const backend = new FakeWorkerGovernanceBackend();
+    Object.assign(backend, { prepareAgentSessionContinuity: async () => 'absent' as const });
+    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb: fixture.coreDb });
+    const workspaceRoots = materializeWorkspaceRoots({
+      config: {
+        id: 'ws_demo',
+        name: 'Demo',
+        workspace: {
+          name: 'Demo',
+          roots: [
+            {
+              id: 'r35-output',
+              kind: 'host-dir',
+              path: 'r35-outputs',
+              access: 'read-write',
+              createIfMissing: true,
+            },
+          ],
+        },
+      },
+      workspaceRoot: fixture.coreDb.dataRoot,
+      createMissing: true,
+    });
+    try {
+      await expect(
+        executor.prepareAgentSessionForTurn(fixture.store, {
+          agentSetup: createTestAgentSetup(),
+          freshAgentSessionId: fixture.agentSessionId,
+          requestId: fixture.requestId,
+          turn: fixture.turn,
+          turnInput: fixture.workerRequest,
+          workspaceRoots,
+        })
+      ).rejects.toThrow(
+        'NanoHost cannot materialize workspace root r35-output: unsupported source kind host-dir.'
+      );
+      expect(backend.calls).toEqual([]);
+      const commit = 'a'.repeat(40);
+      await expect(
+        executor.prepareAgentSessionForTurn(fixture.store, {
+          agentSetup: createTestAgentSetup(),
+          freshAgentSessionId: fixture.agentSessionId,
+          requestId: fixture.requestId,
+          turn: fixture.turn,
+          turnInput: fixture.workerRequest,
+          workspaceRoots: [
+            {
+              id: 'repo',
+              access: 'read-write',
+              sourceKind: 'remote-git',
+              sourceCommit: commit,
+              workerPath: '/workspace/openkit',
+            },
+          ],
+          workspaceSourceRefs: { repo: 'main-repo' },
+          workspaceDataSourceCatalog: {
+            schemaVersion: 1,
+            sources: [
+              {
+                id: 'main-repo',
+                displayName: 'Main repository',
+                kind: 'git',
+                locator: { commit, url: 'https://example.invalid/repo.git' },
+                access: 'read-write',
+                allowedSlotKinds: ['worktree'],
+                sensitivity: 'internal',
+                status: 'active',
+              },
+            ],
+          },
+        })
+      ).resolves.toMatchObject({ agentSessionId: fixture.agentSessionId });
+      expect(backend.calls).toEqual([]);
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
   it('closes a real preparation failure before snapshot publication without backend submission or missing-snapshot maintenance (#108)', async () => {
     const fixture = createWorkerContextExecutorFixture('pre-snapshot-108');
     const backend = new FakeWorkerGovernanceBackend();
@@ -1739,17 +1854,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
         createAgentSessionId: () => agentSessionId,
         now: () => '2026-08-21T12:00:00.000Z',
       });
-      const workspaceCwd = mkdtempSync(join(tmpdir(), 'openkit-governance-preview-'));
-      seedWritableGitRepository(workspaceCwd);
-      const workspaceRoots = [
-        {
-          access: 'read-write' as const,
-          id: 'repo',
-          sourceKind: 'host-dir' as const,
-          sourcePath: workspaceCwd,
-          workerPath: '/workspace/openkit',
-        },
-      ];
+      const workspaceCwd = null;
+      const workspaceRoots: [] = [];
       const prepared = await executor.prepareAgentSessionForTurn(store, {
         agentSetup,
         freshAgentSessionId: agentSessionId,
@@ -2269,15 +2375,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         requestId,
         sandboxBindingRef,
         triggerActor: turn.triggerActor,
-        workspaceRoots: [
-          {
-            id: 'output',
-            access: 'read-write',
-            sourceKind: 'host-dir',
-            sourcePath: coreDb.dataRoot,
-            workerPath: '/workspace/output',
-          },
-        ],
+        workspaceRoots: [],
       });
 
       const packageSnapshotId = backend.lastPackage?.snapshotId;
@@ -2568,8 +2666,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
     applyMigrations(coreDb);
 
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-governance-transcript-'));
-    seedWritableGitRepository(repositoryPath);
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Run in OpenShell');
     store.updateTurn(turn.id, { agentId: 'agent_opencode_host' });
     const completedAt = new Date(
@@ -2612,16 +2708,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
           id: 'automation_governance_test',
           responsibleUserId: 'user_local',
         },
-        workspaceCwd: repositoryPath,
-        workspaceRoots: [
-          {
-            access: 'read-write',
-            id: 'repo',
-            sourceKind: 'host-dir',
-            sourcePath: repositoryPath,
-            workerPath: '/workspace/openkit',
-          },
-        ],
+        workspaceCwd: null,
+        ...remoteGitInputFixture(),
       }
     );
 
@@ -2662,7 +2750,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(backend.lastContext?.workspaceRoots).toEqual([
       expect.objectContaining({
         id: 'repo',
-        sourcePath: repositoryPath,
+        sourceKind: 'remote-git',
         workerPath: '/workspace/openkit',
       }),
     ]);
@@ -5611,8 +5699,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
     applyMigrations(coreDb);
 
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-governance-teardown-fail-repo-'));
-    seedWritableGitRepository(repositoryPath);
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Run in OpenShell');
     const backend = new FakeWorkerGovernanceBackend({ sandboxName: 'sandbox_teardown_fail_1' });
     backend.failTeardown = true;
@@ -5639,15 +5725,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           agentSetup: createTestAgentSetup(),
           requestId: '00000000-0000-4000-8000-000000000205',
           triggerActor: turn.triggerActor,
-          workspaceRoots: [
-            {
-              access: 'read-write',
-              id: 'repo',
-              sourceKind: 'host-dir',
-              sourcePath: repositoryPath,
-              workerPath: '/workspace/openkit',
-            },
-          ],
+          ...remoteGitInputFixture(),
         }
       )
     ).rejects.toThrow('teardown failed');
@@ -5675,8 +5753,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
     applyMigrations(coreDb);
 
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-governance-teardown-retry-repo-'));
-    seedWritableGitRepository(repositoryPath);
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Retry OpenShell teardown');
     const backend = new FakeWorkerGovernanceBackend({ sandboxName: 'sandbox_teardown_retry_1' });
     backend.teardownFailuresRemaining = 1;
@@ -5702,15 +5778,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           agentSetup: createTestAgentSetup(),
           requestId: '00000000-0000-4000-8000-000000000206',
           triggerActor: turn.triggerActor,
-          workspaceRoots: [
-            {
-              access: 'read-write',
-              id: 'repo',
-              sourceKind: 'host-dir',
-              sourcePath: repositoryPath,
-              workerPath: '/workspace/openkit',
-            },
-          ],
+          ...remoteGitInputFixture(),
         }
       )
     ).rejects.toThrow('teardown failed');
@@ -5766,8 +5834,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
     setupDb.sqlite.close();
     closeSpy.mockClear();
 
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-governance-cleanup-status-repo-'));
-    seedWritableGitRepository(repositoryPath);
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Fail cleanup status persistence');
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
@@ -5793,15 +5859,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
             agentSetup: createTestAgentSetup(),
             requestId: '00000000-0000-4000-8000-000000000207',
             triggerActor: turn.triggerActor,
-            workspaceRoots: [
-              {
-                access: 'read-write',
-                id: 'repo',
-                sourceKind: 'host-dir',
-                sourcePath: repositoryPath,
-                workerPath: '/workspace/openkit',
-              },
-            ],
+            ...remoteGitInputFixture(),
           }
         )
       ).rejects.toThrow('cleanup status persistence failed');

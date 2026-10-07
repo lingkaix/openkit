@@ -229,6 +229,82 @@ function prepareCredentialAttemptFixture(
 }
 
 describe('agent environment package resolver', () => {
+  it.each(['repo', 'turn'])('preserves authored root %s with unique output ids', (id) => {
+    const commit = 'a'.repeat(40);
+    const resolved = resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
+      agentSetup: createTestSetup(),
+      agentSessionId: 'as_review',
+      backend: { kind: 'openshell' },
+      turn: createTurnFixture('Use the authored writable root'),
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceRoots: [
+        {
+          id,
+          access: 'read-write',
+          sourceKind: 'remote-git',
+          sourceCommit: commit,
+          workerPath: '/workspace/repo',
+        },
+      ],
+      workspaceSourceRefs: { [id]: 'source' },
+      workspaceDataSourceCatalog: {
+        schemaVersion: 1,
+        sources: [
+          {
+            id: 'source',
+            displayName: 'Repository',
+            kind: 'git',
+            locator: { url: 'https://example.invalid/repo.git', commit },
+            status: 'active',
+            sensitivity: 'internal',
+            access: 'read-write',
+            allowedSlotKinds: ['worktree'],
+          },
+        ],
+      },
+    });
+    expect(resolved.workspace.inputs).toContainEqual(expect.objectContaining({ id }));
+    const outputs = resolved.workspace.outputs;
+    expect(outputs).toHaveLength(2);
+    expect(new Set(outputs.map((output) => output.id)).size).toBe(outputs.length);
+    expect(outputs).toContainEqual(
+      expect.objectContaining({ id: `${id}-output`, registerAsArtifacts: true })
+    );
+    expect(outputs).toContainEqual(
+      expect.objectContaining({ path: '/openkit/sessions/as_review/outputs' })
+    );
+  });
+
+  it('declares the generated session-private output slot without authored roots', () => {
+    for (const agentSessionId of ['as_output_a', 'as_output_b']) {
+      const resolved = resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
+        agentSetup: createTestSetup(),
+        agentSessionId,
+        backend: { kind: 'openshell' },
+        turn: createTurnFixture('Write a report'),
+        triggerActor: USER_TRIGGER_ACTOR,
+        workspaceRoots: [],
+      });
+      const path = `/openkit/sessions/${agentSessionId}/outputs`;
+      expect(resolved.workspace.outputs).toEqual([
+        { id: 'turn-output-root', path, registerAsArtifacts: true, retention: 'sync-on-turn-end' },
+      ]);
+      const plan = (
+        resolved.extensions.openkit as { sessionWorkspace: SessionWorkspaceMaterializationPlan }
+      ).sessionWorkspace;
+      expect(plan.layout.slots.find((slot) => slot.id === 'turn-output')).toMatchObject({
+        path,
+        access: 'read-write',
+        allowedSourceKinds: ['generated'],
+        allowedMaterializationModes: ['create-empty'],
+        retention: 'turn',
+      });
+      expect(plan.materialization.outputSlotIds).toContain('turn-output');
+    }
+  });
+
   it.each([
     { cpu: { maxCores: 1 } },
     { unsupportedLimit: 0 },
@@ -1203,31 +1279,31 @@ describe('agent environment package resolver', () => {
     ]);
   });
 
-  it('projects a writable filesystem source without inspecting host Git', () => {
-    const resolved = resolveAgentEnvironmentPackage({
-      captureCoverage: { scope: 'server', value: 'off' },
-      agentSetup: createTestSetup(),
-      agentSessionId: 'session_filesystem',
-      backend: { kind: 'openshell' },
-      createdAt: '2026-07-18T00:00:00.000Z',
-      requestId: 'req_filesystem',
-      turn: createTurnFixture('Use an ordinary filesystem root'),
-      triggerActor: USER_TRIGGER_ACTOR,
-      workspaceCwd: null,
-      workspaceRoots: [
-        {
-          access: 'read-write',
-          id: 'files',
-          sourceKind: 'host-dir',
-          sourcePath: '/unreachable/host',
-          workerPath: '/workspace/openkit',
-        },
-      ],
-    });
-    expect(resolved.workspace.inputs[0]?.source).toEqual({
-      kind: 'host-dir',
-      pathRef: 'workspace-root://files',
-    });
+  it('refuses an unsupported filesystem source without inspecting host Git', () => {
+    expect(() =>
+      resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
+        agentSetup: createTestSetup(),
+        agentSessionId: 'session_filesystem',
+        backend: { kind: 'openshell' },
+        createdAt: '2026-07-18T00:00:00.000Z',
+        requestId: 'req_filesystem',
+        turn: createTurnFixture('Use an ordinary filesystem root'),
+        triggerActor: USER_TRIGGER_ACTOR,
+        workspaceCwd: null,
+        workspaceRoots: [
+          {
+            access: 'read-write',
+            id: 'files',
+            sourceKind: 'host-dir',
+            sourcePath: '/unreachable/host',
+            workerPath: '/workspace/openkit',
+          },
+        ],
+      })
+    ).toThrow(
+      'NanoHost cannot materialize workspace root files: unsupported source kind host-dir.'
+    );
   });
 
   it('records catalog-resolved workspace lineage without inventing provider attachments', () => {
@@ -1282,7 +1358,10 @@ describe('agent environment package resolver', () => {
     expect(resolved.workspace).toMatchObject({
       root: '/workspace',
       inputs: [{ id: 'repo', target: '/workspace/worktrees/wsl_selected_predecessor' }],
-      outputs: [{ id: 'repo-output', path: '/workspace/worktrees/wsl_selected_predecessor' }],
+      outputs: [
+        { id: 'repo-output', path: '/workspace/worktrees/wsl_selected_predecessor' },
+        { id: 'turn-output-root', path: '/openkit/sessions/session_source_1/outputs' },
+      ],
     });
     expect(resolved.runtime.command.workingDirectory).toBe(
       '/workspace/worktrees/wsl_selected_predecessor'

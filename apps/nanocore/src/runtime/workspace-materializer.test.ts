@@ -1,12 +1,8 @@
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { WorkspaceChangeSetSchema } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { seedWritableGitRepository } from '../test-support/git-repository.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import {
   buildWorkspaceInputSnapshots,
@@ -17,8 +13,6 @@ import {
 describe('workspace materializer records', () => {
   it('builds product-safe input snapshots from an Agent Environment Package', () => {
     const store = createDemoStore();
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-materializer-snapshot-'));
-    seedWritableGitRepository(repositoryPath);
     const turn = store.createTurn('ws_demo', 'th_demo', 'Update docs', {
       kind: 'user',
       id: 'user_local',
@@ -36,12 +30,28 @@ describe('workspace materializer records', () => {
       turn,
       turnInput: 'Update docs',
       workspaceCwd: null,
+      workspaceSourceRefs: { repo: 'repo' },
+      workspaceDataSourceCatalog: {
+        schemaVersion: 1,
+        sources: [
+          {
+            id: 'repo',
+            displayName: 'Repository',
+            kind: 'git',
+            locator: { commit: 'a'.repeat(40), url: 'https://example.invalid/materializer.git' },
+            access: 'read-write',
+            allowedSlotKinds: ['worktree'],
+            sensitivity: 'internal',
+            status: 'active',
+          },
+        ],
+      },
       workspaceRoots: [
         {
           access: 'read-write',
           id: 'repo',
-          sourceKind: 'host-dir',
-          sourcePath: repositoryPath,
+          sourceKind: 'remote-git',
+          sourceCommit: 'a'.repeat(40),
           workerPath: '/workspace/openkit',
         },
       ],
@@ -204,8 +214,6 @@ describe('workspace materializer records', () => {
 
   it('carries catalog source ids into workspace lineage records', () => {
     const store = createDemoStore();
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-materializer-source-'));
-    seedWritableGitRepository(repositoryPath);
     const turn = store.createTurn('ws_demo', 'th_demo', 'Update docs from catalog source', {
       kind: 'user',
       id: 'user_local',
@@ -231,7 +239,7 @@ describe('workspace materializer records', () => {
             displayName: 'Main repository',
             id: 'repo_default',
             kind: 'git',
-            locator: { repositoryResourceId: 'repo_default' },
+            locator: { commit: 'a'.repeat(40), url: 'https://example.invalid/materializer.git' },
             sensitivity: 'internal',
             status: 'active',
           },
@@ -241,8 +249,8 @@ describe('workspace materializer records', () => {
         {
           access: 'read-write',
           id: 'repo_default',
-          sourceKind: 'host-dir',
-          sourcePath: repositoryPath,
+          sourceKind: 'remote-git',
+          sourceCommit: 'a'.repeat(40),
           workerPath: '/workspace/openkit',
         },
       ],

@@ -1,5 +1,4 @@
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -197,20 +196,35 @@ describe('scheduler dispatch service', () => {
     const workspace = store.createWorkspace('Background dispatch workspace');
     const thread = store.createThread(workspace.id, 'Background dispatch thread');
     const turnExecutor = new RecordingTurnExecutor({ coreDb });
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-background-dispatch-repo-'));
-    execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
-    execFileSync('git', ['config', 'user.email', 'openkit@example.invalid'], {
-      cwd: repositoryPath,
-    });
-    execFileSync('git', ['config', 'user.name', 'OpenKit'], { cwd: repositoryPath });
-    writeFileSync(join(repositoryPath, 'README.md'), '# Background dispatch fixture\n');
-    execFileSync('git', ['add', 'README.md'], { cwd: repositoryPath });
-    execFileSync('git', ['commit', '-m', 'initial'], {
-      cwd: repositoryPath,
-      stdio: 'ignore',
-    });
     const providerCredentialResolver = vi.fn(() => null);
     const manifest = createTestAgentSetup({ mcpIds: ['echo'] }).manifest;
+    manifest.workspace = { inputs: [{ id: 'repo', access: 'read-write', sourceRef: 'repo' }] };
+    const workspaceDataSourceCatalogs = [
+      {
+        workspaceId: workspace.id,
+        path: `workspaces/${workspace.id}/config/data-sources.jsonc`,
+        catalog: {
+          schemaVersion: 1 as const,
+          requiredFeatures: [],
+          extensions: {},
+          sources: [
+            {
+              id: 'repo',
+              displayName: 'Repository',
+              kind: 'git' as const,
+              locator: { commit: 'a'.repeat(40), url: 'https://example.invalid/dispatch.git' },
+              access: 'read-write' as const,
+              allowedSlotKinds: ['worktree' as const],
+              sensitivity: 'internal' as const,
+              status: 'active' as const,
+              syncHints: {},
+              requiredFeatures: [],
+              extensions: {},
+            },
+          ],
+        },
+      },
+    ];
     admitTestNativeEnvironment(coreDb, manifest);
     const gatewayConfig = createTestGatewayConfig();
     const providerRegistry = new ProviderRegistry([
@@ -227,6 +241,7 @@ describe('scheduler dispatch service', () => {
       dataRoot: null,
       gatewayConfig,
       providerRegistry,
+      workspaceDataSourceCatalogs,
     });
 
     try {
@@ -274,8 +289,8 @@ describe('scheduler dispatch service', () => {
           {
             access: 'read-write',
             id: 'repo',
-            sourceKind: 'host-dir',
-            sourcePath: repositoryPath,
+            sourceKind: 'remote-git',
+            sourceCommit: 'a'.repeat(40),
             workerPath: '/workspace/background',
           },
         ],
@@ -313,6 +328,7 @@ describe('scheduler dispatch service', () => {
         dataRoot: null,
         gatewayConfig,
         providerRegistry,
+        workspaceDataSourceCatalogs,
         workspaceMcpServerCatalogs: [
           {
             catalog: {
@@ -371,8 +387,8 @@ describe('scheduler dispatch service', () => {
           {
             access: 'read-write',
             id: 'repo',
-            sourceKind: 'host-dir',
-            sourcePath: repositoryPath,
+            sourceKind: 'remote-git',
+            sourceCommit: 'a'.repeat(40),
             workerPath: '/workspace/background',
           },
         ],

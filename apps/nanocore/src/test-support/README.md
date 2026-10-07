@@ -7,7 +7,7 @@ This directory owns explicit reusable NanoCore test fixtures and no production b
 - `execution-attempt.ts` establishes exact prepared Native attempt authority below the dispatcher from a caller-supplied authorized admission. It records an optional submission intent without inventing acceptance, a cleanup fence, or Workspace membership.
 - `demo-store.ts` creates an isolated `FsStore` and explicitly seeds the Demo Workspace fixture.
 - `git-repository.ts` seeds a writable Git repository with one resolvable HEAD commit.
-- `agent-environment.ts` records deterministic production-shaped AEP snapshots for scheduler recovery fixtures.
+- `agent-environment.ts` records deterministic production-shaped AEP snapshots for scheduler recovery fixtures. Requested workspace input ids use pinned, credential-free remote Git catalog sources supported by NanoHost; the fixture creates no host repository.
 - `goal-intent.ts` creates a completed user Turn and initial objective Item so Goal fixtures bind a real `createdByItemId` and `currentIntentItemId` lineage.
 - `app.ts` creates an app with an explicit Core-backed simulated executor and its same execution backend unless a test supplies another executor. Its explicit `createAppWithWorkspaceAuthority` fixture creates real temporary local identity and Workspace membership records for storage-only HTTP fixtures that exercise definition-derived operations, and closes those fixture databases after each test. Explicit databases and server authority remain caller-owned.
 - Both app fixtures accept omitted options. Tests whose subject is file-backed configuration loading or reload supply an explicit `runtimeConfigManager` so synthetic Gateway and Provider defaults do not replace the authored initial snapshot.

@@ -354,6 +354,8 @@ function fakeIntegration(options: { readyAppendStatus?: number; registerFails?: 
 function harnessFixture(
   options: {
     adapter?: ReturnType<typeof fakeAdapter>;
+    /** Declares generated outputs for the output materialization regression. */
+    outputSlot?: boolean;
     /** Uses the production registry instead of injecting the fake under this id. */
     registryAdapterId?: string;
     environment?: Record<string, string>;
@@ -470,6 +472,19 @@ function harnessFixture(
             sessionWorkspace: {
               layout: {
                 slots: [
+                  ...(options.outputSlot
+                    ? [
+                        {
+                          id: 'turn-output',
+                          kind: 'output',
+                          path: `/openkit/sessions/${agentSessionId}/outputs`,
+                          access: 'read-write',
+                          allowedSourceKinds: ['generated'],
+                          allowedMaterializationModes: ['create-empty'],
+                          retention: 'turn',
+                        },
+                      ]
+                    : []),
                   {
                     kind: 'worktree',
                     access: 'read-write',
@@ -499,7 +514,22 @@ function harnessFixture(
           turnId,
           workspaceId: 'workspace-one',
         },
-        workspace: { root: sandboxRoot, inputs: [] },
+        workspace: {
+          root: sandboxRoot,
+          inputs: [],
+          ...(options.outputSlot
+            ? {
+                outputs: [
+                  {
+                    id: 'turn-output-root',
+                    path: `/openkit/sessions/${agentSessionId}/outputs`,
+                    registerAsArtifacts: true,
+                    retention: 'sync-on-turn-end',
+                  },
+                ],
+              }
+            : {}),
+        },
         snapshotId: `package-${turnId}`,
         supply: { mcpServers: [{ id: 'echo' }] },
       })
@@ -577,6 +607,34 @@ function command(operation: string, sequence: number, body: Readonly<Record<stri
     sequence,
   };
 }
+
+describe('generated session-private output slot', () => {
+  it('prepares before native open, clears between Turns, and preserves sibling output', async () => {
+    const f = harnessFixture({ outputSlot: true });
+    const output = join(f.sandboxRoot, 'sessions', 'as-a', 'outputs');
+    const sibling = join(f.sandboxRoot, 'sessions', 'as-b', 'outputs');
+    const openSession = f.fake.adapter.openSession.bind(f.fake.adapter);
+    vi.spyOn(f.fake.adapter, 'openSession').mockImplementation(async (input) => {
+      expect(existsSync(join(f.sandboxRoot, 'sessions', input.agentSessionId, 'outputs'))).toBe(
+        true
+      );
+      return openSession(input);
+    });
+    expect((await f.open('as-a')).disposition).toBe('succeeded');
+    expect(existsSync(output)).toBe(true);
+    expect((await f.open('as-b', { threadId: 'thread-two' })).disposition).toBe('succeeded');
+    writeFileSync(join(sibling, 'sibling.md'), 'Keep sibling output');
+    writeFileSync(join(output, 'old.md'), 'Prior Turn output');
+    expect((await f.start('as-a', 'turn-output-1')).disposition).toBe('succeeded');
+    await f.settle('as-a');
+    expect(readdirSync(output)).toEqual([]);
+    writeFileSync(join(output, 'first.md'), 'First Turn output');
+    expect((await f.start('as-a', 'turn-output-2')).disposition).toBe('succeeded');
+    await f.settle('as-a');
+    expect(readdirSync(output)).toEqual([]);
+    expect(readFileSync(join(sibling, 'sibling.md'), 'utf8')).toBe('Keep sibling output');
+  });
+});
 
 describe('session.open workspace initialization', () => {
   it('resumes after Sandbox recreation only on the retained native root', async () => {

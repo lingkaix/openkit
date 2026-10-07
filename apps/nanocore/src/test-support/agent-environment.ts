@@ -1,6 +1,3 @@
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import type {
   AgentEnvironmentCredentialDeclaration,
   AgentEnvironmentPackage,
@@ -13,7 +10,6 @@ import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
-import { seedWritableGitRepository } from './git-repository.js';
 import { admitTestNativeEnvironment, createTestNativeEnvironmentDb } from './native-environment.js';
 
 /**
@@ -165,14 +161,13 @@ export interface RecordTestAgentEnvironmentPackageInput {
  *
  * @param workspaceDb Workspace database that owns the package snapshot.
  * @param input Stable lineage suffix, expected workspace input ids, and optional Item lineage.
- * @returns Parsed package snapshot with production-shaped workspace input ids.
+ * @returns Parsed package snapshot with supported remote Git inputs and exact requested ids.
  */
 export function recordTestAgentEnvironmentPackage(
   workspaceDb: WorkspaceDb,
   input: RecordTestAgentEnvironmentPackageInput
 ): AgentEnvironmentPackage {
-  const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-agent-environment-'));
-  seedWritableGitRepository(repositoryPath);
+  const sourceCommit = 'a'.repeat(40);
   const coreDb = input.coreDb ?? createTestNativeEnvironmentDb();
   admitTestNativeEnvironment(coreDb, createTestAgentSetup().manifest);
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
@@ -204,10 +199,29 @@ export function recordTestAgentEnvironmentPackage(
       workspaceRoots: input.workspaceInputIds.map((inputId) => ({
         access: 'read-write' as const,
         id: inputId,
-        sourceKind: 'host-dir' as const,
-        sourcePath: repositoryPath,
+        sourceKind: 'remote-git' as const,
+        sourceCommit,
         workerPath: `/workspace/${inputId}`,
       })),
+      workspaceSourceRefs: Object.fromEntries(input.workspaceInputIds.map((id) => [id, id])),
+      workspaceDataSourceCatalog: {
+        schemaVersion: 1,
+        requiredFeatures: [],
+        extensions: {},
+        sources: input.workspaceInputIds.map((id) => ({
+          id,
+          displayName: id,
+          kind: 'git' as const,
+          locator: { commit: sourceCommit, url: 'https://example.invalid/recovery.git' },
+          access: 'read-write' as const,
+          allowedSlotKinds: ['worktree' as const],
+          sensitivity: 'internal' as const,
+          status: 'active' as const,
+          syncHints: {},
+          requiredFeatures: [],
+          extensions: {},
+        })),
+      },
     })
   );
 

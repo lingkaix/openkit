@@ -1,5 +1,5 @@
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { type ReasoningEffort, ReasoningEffortSchema } from '@openkit/protocol';
 import {
@@ -10,6 +10,7 @@ import {
   WorkerCanonicalTerminalEventDataSchema,
   type WorkerLineage,
   type WorkerStartupFailure,
+  workerSessionInputPaths,
 } from '@openkit/worker-protocol';
 import type {
   WorkerAdapterLlmRoute,
@@ -216,6 +217,11 @@ async function runResidentTurnImplementation(
   await writeFile(join(options.sessionDir, 'items.jsonl'), '', 'utf8');
   progress.stage = 'runtime_supply';
   await materializeRuntimeSupply(packageManifest);
+  await prepareGeneratedOutputSlot(
+    packageManifest,
+    options.packagePath,
+    options.lineage.agentSessionId
+  );
 
   let controlSession: WorkerControlClient | null = null;
   const controlAbortController = new AbortController();
@@ -639,6 +645,8 @@ interface WorkerShimPackageManifest {
   };
   /** Worker-visible workspace declarations. */
   workspace?: {
+    /** Exact generated output declarations. */
+    outputs?: unknown;
     /** Materialized worker inputs. */
     inputs?: unknown;
     /** Declared worker workspace root. */
@@ -819,6 +827,7 @@ export async function initializeSessionWorkspace(
       throw new Error('Initial workspace package lineage disagrees.');
   }
   await materializeRuntimeSupply(manifest);
+  await prepareGeneratedOutputSlot(manifest, packagePath, identity.agentSessionId);
   const inputs = resolveWorkspaceInputs(manifest);
   const root = manifest.workspace?.root;
   if (typeof root !== 'string' || !root) throw new Error('Initial workspace root is unavailable.');
@@ -837,6 +846,53 @@ export async function initializeSessionWorkspace(
     }
   }
   return gitBaseline;
+}
+
+/** Clears only the declared generated output of the admitted package's private control namespace before native work. */
+async function prepareGeneratedOutputSlot(
+  manifest: WorkerShimPackageManifest,
+  packagePath: string,
+  agentSessionId: string
+): Promise<void> {
+  const slots = manifest.extensions?.openkit?.sessionWorkspace?.layout?.slots;
+  if (!Array.isArray(slots)) return;
+  const outputSlots = slots.filter((slot) => isRecord(slot) && slot.id === 'turn-output');
+  if (outputSlots.length === 0) return;
+  const slot = outputSlots[0];
+  if (manifest.scope?.agentSessionId !== agentSessionId)
+    throw new Error('Generated output package lineage disagrees.');
+  const { root } = workerSessionInputPaths(agentSessionId);
+  const outputPath = `${root}/outputs`;
+  if (
+    outputSlots.length !== 1 ||
+    !isRecord(slot) ||
+    slot.kind !== 'output' ||
+    slot.path !== outputPath ||
+    slot.access !== 'read-write' ||
+    slot.retention !== 'turn' ||
+    !Array.isArray(slot.allowedSourceKinds) ||
+    slot.allowedSourceKinds.length !== 1 ||
+    slot.allowedSourceKinds[0] !== 'generated' ||
+    !Array.isArray(slot.allowedMaterializationModes) ||
+    slot.allowedMaterializationModes.length !== 1 ||
+    slot.allowedMaterializationModes[0] !== 'create-empty' ||
+    !Array.isArray(manifest.workspace?.outputs) ||
+    !manifest.workspace.outputs.some(
+      (output) =>
+        isRecord(output) &&
+        output.id === 'turn-output-root' &&
+        output.path === outputPath &&
+        output.registerAsArtifacts === true &&
+        output.retention === 'sync-on-turn-end'
+    )
+  )
+    throw new Error('Generated output requires the exact AgentSession-private slot.');
+  // The fixed package-config path identifies the already admitted physical control namespace.
+  const sessionRoot = dirname(dirname(packagePath));
+  const target = join(sessionRoot, 'outputs');
+  await initializeEmptyWorkspaceSlot(sessionRoot, target);
+  await rm(target, { recursive: true, force: true });
+  await initializeEmptyWorkspaceSlot(sessionRoot, target);
 }
 
 /**

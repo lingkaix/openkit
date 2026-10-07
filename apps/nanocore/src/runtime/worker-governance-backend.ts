@@ -654,6 +654,16 @@ export function resolveNanoHostExportPath(
   if (!relativePath || relativePath.startsWith('../') || posix.isAbsolute(relativePath)) {
     throw new Error('NanoHost export path is not one declared regular file.');
   }
+  if (slot.id === 'turn-output') {
+    const { root } = workerSessionInputPaths(environmentPackage.scope.agentSessionId);
+    if (slot.path !== `${root}/outputs`) {
+      throw new Error('NanoHost output export has no exact admitted AgentSession slot.');
+    }
+    return {
+      relativePath: `${environmentPackage.scope.agentSessionId}/outputs/${relativePath}`,
+      slot: slot.id,
+    };
+  }
   if (slot.id !== 'main-worktree') {
     return { relativePath, slot: slot.id };
   }

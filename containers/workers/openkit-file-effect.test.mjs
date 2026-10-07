@@ -35,7 +35,7 @@ const CANONICAL_WORKSPACE_SLOT_ROOTS = {
   scratch: '/workspace/scratch',
   session: '/openkit/session',
   'turn-inputs': '/workspace/inputs',
-  'turn-output': '/workspace/outputs',
+  'turn-output': '/openkit/sessions',
 };
 const CANONICAL_SLOT_ROOTS = {
   ...CANONICAL_WORKSPACE_SLOT_ROOTS,
@@ -81,6 +81,93 @@ async function assertRejected(runFileEffect, slotRoots, rejection) {
       assert.equal(diagnostic.includes(value), false, rejection.label);
     }
   }
+}
+
+test('generated output capture uses only a private AgentSession output namespace', async () => {
+  const { CANONICAL_SLOT_ROOTS: actualRoots, runFileEffect } = await import(
+    pathToFileURL(helperPath).href
+  );
+  assert.equal(actualRoots['turn-output'], '/openkit/sessions');
+  const root = await mkdtemp(join(tmpdir(), 'openkit-session-output-'));
+  try {
+    await mkdir(join(root, 'as_one', 'outputs'), { recursive: true });
+    await writeFile(join(root, 'as_one', 'outputs', 'report.md'), '# Session report\n');
+    const invoke = (path) =>
+      invokeFileEffect(runFileEffect, { 'turn-output': root }, [
+        'file.export',
+        '--slot',
+        'turn-output',
+        '--path',
+        path,
+        '--max-length',
+        '17',
+        '--artifact-submission',
+        '--allow-missing',
+      ]);
+    const captured = await invoke('as_one/outputs/report.md');
+    assert.equal(captured.exitCode, 0);
+    assert.equal(captured.stdout.toString(), '# Session report\n');
+    for (const path of [
+      'report.md',
+      'as_one/context/report.md',
+      'as_one/config/package.json',
+      'as_one/outputs',
+      '../as_two/outputs/report.md',
+    ]) {
+      assert.equal((await invoke(path)).exitCode, 1);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+for (const scenario of [
+  'missing session',
+  'missing outputs',
+  'missing child',
+  'symlinked session',
+  'symlinked outputs',
+]) {
+  test(`live generated output absence requires a proved root: ${scenario}`, async () => {
+    const { runFileEffect } = await import(pathToFileURL(helperPath).href);
+    const root = await mkdtemp(join(tmpdir(), 'openkit-output-root-proof-'));
+    try {
+      const session = join(root, 'as_one');
+      const outputs = join(session, 'outputs');
+      const target = join(root, 'linked-target');
+      if (scenario === 'symlinked session') {
+        await mkdir(join(target, 'outputs'), { recursive: true });
+        await symlink(target, session);
+      } else if (scenario !== 'missing session') {
+        await mkdir(session);
+        if (scenario === 'symlinked outputs') {
+          await mkdir(target);
+          await symlink(target, outputs);
+        } else if (scenario === 'missing child') {
+          await mkdir(outputs);
+        }
+      }
+      const result = await invokeFileEffect(runFileEffect, { 'turn-output': root }, [
+        'file.export',
+        '--slot',
+        'turn-output',
+        '--path',
+        'as_one/outputs/missing-child/report.md',
+        '--max-length',
+        '17',
+        '--artifact-submission',
+        '--allow-missing',
+      ]);
+      assert.equal(result.exitCode, scenario === 'missing child' ? 2 : 1);
+      assert.equal(result.stdout.length, 0);
+      assert.equal(
+        result.stderr.toString(),
+        scenario === 'missing child' ? '' : 'File effect rejected.\n'
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 }
 
 test('the fixed file-effect helper imports and exports only canonical regular files', async () => {
@@ -301,7 +388,7 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
     assert.equal(declaredLengthStat.mode & 0o777, 0o600);
 
     const exportedBytes = Buffer.from([0, 1, 2, 10, 13, 255]);
-    const exportedPath = 'reports/result.bin';
+    const exportedPath = 'as-one/outputs/reports/result.bin';
     const exportedTarget = join(slotRoots['turn-output'], exportedPath);
     await mkdir(dirname(exportedTarget), { recursive: true });
     await writeFile(exportedTarget, exportedBytes, { mode: 0o600 });
@@ -335,7 +422,7 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
     assert.equal(worktreeExport.exitCode, 0);
     assert.deepEqual(worktreeExport.stdout, exportedBytes);
 
-    const optionalAbsentPath = 'reports/no-workspace-changes.json';
+    const optionalAbsentPath = 'as-one/outputs/reports/no-workspace-changes.json';
     const optionalAbsent = await invokeFileEffect(runFileEffect, slotRoots, [
       'file.export',
       '--slot',
@@ -364,7 +451,7 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
     assert.equal(optionalPresent.stderr.length, 0);
     assert.deepEqual(optionalPresent.stdout, exportedBytes);
 
-    const emptyPath = 'reports/empty';
+    const emptyPath = 'as-one/outputs/reports/empty';
     await writeFile(join(slotRoots['turn-output'], emptyPath), Buffer.alloc(0), { mode: 0o600 });
     const optionalEmpty = await invokeFileEffect(runFileEffect, slotRoots, [
       'file.export',
@@ -385,11 +472,11 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
     const privateContextRoot = join(slotRoots.context, 'as-one/context');
     await symlink(outsideRoot, join(privateContextRoot, 'linked-ancestor'));
     await symlink(outsideFile, join(privateContextRoot, 'linked-target'));
-    const hardLinkSource = join(slotRoots['turn-output'], 'hard-source');
-    const hardLinkTarget = join(slotRoots['turn-output'], 'hard-target');
+    const hardLinkSource = join(slotRoots['turn-output'], 'as-one/outputs/hard-source');
+    const hardLinkTarget = join(slotRoots['turn-output'], 'as-one/outputs/hard-target');
     await writeFile(hardLinkSource, 'hard-linked', { mode: 0o600 });
     await link(hardLinkSource, hardLinkTarget);
-    await mkdir(join(slotRoots['turn-output'], 'directory-target'));
+    await mkdir(join(slotRoots['turn-output'], 'as-one/outputs/directory-target'));
 
     /** Builds the exact Rust-owned import argv for one injected slot root. */
     const validImportArgs = (slot, path) => [
@@ -493,13 +580,13 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
           '--slot',
           'turn-output',
           '--path',
-          'missing-parent/file',
+          'as-one/outputs/missing-parent/file',
           '--max-length',
           String(MAX_FILE_BYTES),
           '--allow-missing',
         ],
         label: 'optional export with a missing parent',
-        privateValues: ['missing-parent/file'],
+        privateValues: ['as-one/outputs/missing-parent/file'],
       },
       {
         argv: validImportArgs('turn-output', 'wrong-operation'),
@@ -537,12 +624,12 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
           '--slot',
           'turn-output',
           '--path',
-          'hard-target',
+          'as-one/outputs/hard-target',
           '--max-length',
           String(MAX_FILE_BYTES),
         ],
         label: 'hard-linked export',
-        privateValues: ['hard-target'],
+        privateValues: ['as-one/outputs/hard-target'],
       },
       {
         argv: [
@@ -550,12 +637,12 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
           '--slot',
           'turn-output',
           '--path',
-          'directory-target',
+          'as-one/outputs/directory-target',
           '--max-length',
           String(MAX_FILE_BYTES),
         ],
         label: 'non-regular export',
-        privateValues: ['directory-target'],
+        privateValues: ['as-one/outputs/directory-target'],
       },
       {
         argv: ['reference.import', '--slot'],
@@ -691,7 +778,7 @@ test('export stays bound to its directory when an ancestor is swapped before the
   const { runFileEffect } = await import(pathToFileURL(helperPath).href);
   const base = await mkdtemp(join(tmpdir(), 'openkit-export-ancestor-'));
   const root = join(base, 'output');
-  const parent = join(root, 'parent');
+  const parent = join(root, 'as_one', 'outputs', 'parent');
   const outside = join(base, 'outside');
   const realLstat = fs.promises.lstat;
   let swapped = false;
@@ -715,7 +802,7 @@ test('export stays bound to its directory when an ancestor is swapped before the
       '--slot',
       'turn-output',
       '--path',
-      'parent/entry.txt',
+      'as_one/outputs/parent/entry.txt',
       '--max-length',
       '17',
       '--artifact-submission',

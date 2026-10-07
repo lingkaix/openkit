@@ -56,6 +56,8 @@ Optional `server.jsonc.appUpdate` fixes one SSH host, user, port, identity file 
 
 AEP `observability.captureCoverage` uses the shared Worker protocol schema as a required admission-bound pair without a default. Runtime construction reads the persisted Turn setting; the shim never resolves configuration precedence. `openkit.work-observations.v1` registers the observation family for explicit reader support and portable reference handling, independently of optional full runtime provenance.
 
+The session workspace planner declares `turn-output` for every package at `/openkit/sessions/<agent-session-id>/outputs`, using the existing Worker protocol session namespace. Generated outputs are Turn-scoped and remain separate from retained worktrees and authored sources. Run `src/session-workspace.test.ts` with `--maxWorkers=2`; [AgentSession Static Workspace Materialization](../../docs/specs/20260704-session_static_workspace_materialization.md) owns the namespace and hygiene rules.
+
 ## Commands
 
 - `pnpm --filter @openkit/config-schema test`

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 import { createHash, randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { constants } from 'node:fs';
 import { link, lstat, mkdir, open, rename, unlink } from 'node:fs/promises';
 import { isAbsolute, join, posix } from 'node:path';
-import { once } from 'node:events';
 import { pathToFileURL } from 'node:url';
 
 const MAX_FILE_BYTES = 268_435_456;
@@ -23,7 +23,7 @@ const CANONICAL_WORKSPACE_SLOT_ROOTS = Object.freeze({
   scratch: '/workspace/scratch',
   session: '/openkit/session',
   'turn-inputs': '/workspace/inputs',
-  'turn-output': '/workspace/outputs',
+  'turn-output': '/openkit/sessions',
 });
 
 /** Fixed installed roots for workspace effects and the sole image-private package import. */
@@ -140,6 +140,9 @@ function parseCommand(argv, slotRoots) {
     const root = resolveSlotRoot(slotRoots, slot, EXPORT_SLOTS);
     const relativePath = parseRelativePath(exportArgs[4]);
     if (slot === 'main-worktree') validateMainWorktreeExportPath(relativePath);
+    if (slot === 'turn-output' && !/^[A-Za-z0-9_-]+\/outputs\/.+$/.test(relativePath)) {
+      throw new Error('invalid session output path');
+    }
     return { allowMissing, live, maximum, slot, operation: 'file.export', relativePath, root };
   }
 
@@ -225,7 +228,7 @@ function resolveRuntimeCredentialRoot(slotRoots, relativePath) {
  * @returns {string} Absolute normalized slot root.
  */
 function resolveSlotRoot(slotRoots, slot, allowedSlots) {
-  if (!allowedSlots.has(slot) || !Object.prototype.hasOwnProperty.call(slotRoots, slot)) {
+  if (!allowedSlots.has(slot) || !Object.hasOwn(slotRoots, slot)) {
     throw new Error('invalid slot');
   }
   const root = slotRoots[slot];
@@ -476,7 +479,7 @@ async function exportFile(command, stdout) {
  * @param {string} root Canonical slot root beneath trusted bootstrap parents.
  * @param {string} relativePath Validated slot-relative path.
  * @param {boolean} live Whether proved missing interior paths may return absence.
- * @param {string | null} slot Main-worktree also requires its selected work-slot root to exist.
+ * @param {string | null} slot Main-worktree and turn-output require their selected slot prefixes to exist.
  * @returns {Promise<{path: string, directory: import('node:fs/promises').FileHandle} | null>} Descriptor-relative leaf and its owned parent, or proved live absence.
  */
 async function resolveExistingTarget(root, relativePath, live = false, slot = null) {
@@ -491,7 +494,13 @@ async function resolveExistingTarget(root, relativePath, live = false, slot = nu
         // The fixed proc descriptor namespace follows our own open parent, never a mutable pathname ancestor.
         next = await open(`/proc/self/fd/${directory.fd}/${segment}`, directoryFlags);
       } catch (error) {
-        if (live && error?.code === 'ENOENT' && (slot !== 'main-worktree' || index > 0))
+        // Absence is optional only below the admitted root, after every control prefix passed the no-follow walk.
+        if (
+          live &&
+          error?.code === 'ENOENT' &&
+          (slot !== 'main-worktree' || index > 0) &&
+          (slot !== 'turn-output' || index > 1)
+        )
           return null;
         throw error;
       }

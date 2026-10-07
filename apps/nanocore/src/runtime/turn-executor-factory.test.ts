@@ -11,6 +11,7 @@ import {
   planSessionWorkspaceMaterialization,
   type SessionWorkspaceMaterializationPlan,
 } from '@openkit/config-schema';
+import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
@@ -530,7 +531,7 @@ function completeNanoHostPackage(input: {
   const { agentSetup, ...packageInput } = input;
   const base = resolveAgentEnvironmentPackage({
     captureCoverage: { scope: 'server', value: 'off' },
-    agentSessionId: 'as_factory_fixture',
+    agentSessionId: String(input.scope.agentSessionId ?? 'as_factory_fixture'),
     agentSetup: agentSetup ?? createTestAgentSetup(),
     backend: { kind: 'openshell' },
     createdAt: '2026-08-21T00:00:00.000Z',
@@ -3779,6 +3780,27 @@ describe('createConfiguredTurnExecutor', () => {
         },
         'snapshot_supply_mcp_successor'
       );
+      // A successor gets fresh disposable paths while retaining the authorized native pair.
+      const successorPaths = workerSessionInputPaths(successorPackage.scope.agentSessionId);
+      successorPackage.workspace.outputs = successorPackage.workspace.outputs.map((output) =>
+        output.id === 'turn-output-root'
+          ? { ...output, path: `${successorPaths.root}/outputs` }
+          : output
+      );
+      successorPackage.workspace.generatedFiles = successorPackage.workspace.generatedFiles.map(
+        (file) =>
+          file.id === 'agent-environment-package'
+            ? { ...file, target: successorPaths.packagePath }
+            : file
+      );
+      successorPackage.policy.filesystem!.rules = successorPackage.policy.filesystem!.rules.map(
+        (rule) =>
+          rule.id === 'openkit-context-package'
+            ? { ...rule, workerPath: successorPaths.contextRoot }
+            : rule
+      );
+      (successorPackage.extensions.openkit as Record<string, unknown>).sessionWorkspace =
+        planSessionWorkspaceMaterialization({ environmentPackage: successorPackage });
       const resume = { digest: readyDigest, locator: environmentPackage.scope.agentSessionId };
       authorizeNanoHostPackage(coreDb, successorPackage);
       bindNanoHostWorkerLineage(coreDb, successorPackage, {
@@ -4276,18 +4298,6 @@ describe('createConfiguredTurnExecutor', () => {
 
   it('carries a resident predecessor handoff slot into a no-choice successor AEP without a storage-bearing session.open', async () => {
     const coreDb = createFactoryCoreDb();
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-selected-work-slot-'));
-    execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
-    execFileSync('git', ['config', 'user.email', 'openkit@example.invalid'], {
-      cwd: repositoryPath,
-    });
-    execFileSync('git', ['config', 'user.name', 'OpenKit'], { cwd: repositoryPath });
-    writeFileSync(join(repositoryPath, 'README.md'), '# Selected slot\n');
-    execFileSync('git', ['add', 'README.md'], { cwd: repositoryPath });
-    execFileSync('git', ['commit', '-m', 'initial'], {
-      cwd: repositoryPath,
-      stdio: 'ignore',
-    });
     const sessionDispatch: NanoHostSessionDispatch = {
       async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
         const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
@@ -4395,7 +4405,7 @@ describe('createConfiguredTurnExecutor', () => {
               displayName: 'Main repository',
               id: 'main-repo',
               kind: 'git',
-              locator: { defaultRef: 'main', url: 'https://example.invalid/repository.git' },
+              locator: { commit: 'a'.repeat(40), url: 'https://example.invalid/repository.git' },
               sensitivity: 'internal',
               status: 'active',
               vaultGrantRef: null,
@@ -4406,8 +4416,8 @@ describe('createConfiguredTurnExecutor', () => {
           {
             access: 'read-write',
             id: 'repo',
-            sourceKind: 'host-dir',
-            sourcePath: repositoryPath,
+            sourceKind: 'remote-git',
+            sourceCommit: 'a'.repeat(40),
             workerPath: '/workspace/legacy-root',
           },
         ],
@@ -4495,7 +4505,7 @@ describe('createConfiguredTurnExecutor', () => {
               displayName: 'Main repository',
               id: 'main-repo',
               kind: 'git',
-              locator: { defaultRef: 'main', url: 'https://example.invalid/repository.git' },
+              locator: { commit: 'a'.repeat(40), url: 'https://example.invalid/repository.git' },
               sensitivity: 'internal',
               status: 'active',
               vaultGrantRef: null,
@@ -4506,8 +4516,8 @@ describe('createConfiguredTurnExecutor', () => {
           {
             access: 'read-write',
             id: 'repo',
-            sourceKind: 'host-dir',
-            sourcePath: repositoryPath,
+            sourceKind: 'remote-git',
+            sourceCommit: 'a'.repeat(40),
             workerPath: '/workspace/legacy-root',
           },
         ],
@@ -5781,7 +5791,7 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
-  it('keys shared Sandboxes by static isolation inputs, not Turn Context bytes', () => {
+  it('keys shared Sandboxes by static isolation inputs, with private Context and output namespaces', () => {
     const coreDb = createFactoryCoreDb();
     try {
       coreDb.sqlite
@@ -5889,7 +5899,14 @@ describe('createConfiguredTurnExecutor', () => {
                 target: '/workspace/inputs/source',
               },
             ],
-            outputs: [],
+            outputs: [
+              {
+                id: 'turn-output-root',
+                path: `/openkit/sessions/agent-session-${turnId}/outputs`,
+                registerAsArtifacts: true,
+                retention: 'sync-on-turn-end',
+              },
+            ],
             root: '/workspace',
           },
         }) as AgentEnvironmentPackage;
