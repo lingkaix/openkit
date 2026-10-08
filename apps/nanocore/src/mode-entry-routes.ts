@@ -1190,7 +1190,38 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
     if (conversationRetryDecision.status === 'reconnect-pending') {
       return 'live';
     }
-    recoverWorkerCheckpointStopReason(input.coreDb, input.store, input.workspaceDb, checkpoint);
+    const stopReason = recoverWorkerCheckpointStopReason(
+      input.coreDb,
+      input.store,
+      input.workspaceDb,
+      checkpoint
+    );
+    if (checkpoint.stage === 'running_worker' && checkpoint.stopReason === null) {
+      const turn = input.store.getTurn(
+        checkpoint.workspaceId,
+        checkpoint.threadId,
+        checkpoint.turnId
+      );
+      const evidence = taskModeEvidenceForTurn(
+        input.store,
+        input.workspaceDb,
+        checkpoint.workspaceId,
+        checkpoint.threadId,
+        turn
+      );
+      updateWorkerCheckpoint(input.workspaceDb, {
+        authorityActor: turn.triggerActor,
+        workspaceId: checkpoint.workspaceId,
+        threadId: checkpoint.threadId,
+        turnId: checkpoint.turnId,
+        stage: workerTurnStageForStopReason(stopReason),
+        stopReason,
+        diagnosticsSummary: createWorkerCheckpointEvidenceDiagnostics(
+          evidence,
+          parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary)
+        ),
+      });
+    }
     const recoveredConversationCheckpoint = getWorkerCheckpoint(
       input.workspaceDb,
       checkpoint.workspaceId,

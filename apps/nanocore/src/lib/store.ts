@@ -936,7 +936,7 @@ export function knowledgeAuthorityId(
  * @param threadId Optional Thread carried by the event.
  * @returns Protocol envelope requestId before schema parse.
  */
-function projectTurnEventRequestId(
+export function projectTurnEventRequestId(
   requestId: string | null | undefined,
   workspaceId: string,
   threadId: string | undefined

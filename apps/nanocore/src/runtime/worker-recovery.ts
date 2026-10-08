@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 
 import type { StopReason } from '@openkit/protocol';
 
-import type { FsStore } from '../lib/store.js';
+import { type FsStore, projectTurnEventRequestId } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
@@ -267,28 +267,52 @@ export function recoverWorkerCheckpointStopReason(
   ) {
     throw new Error('Pre-effect worker checkpoint has no definite terminal closeout.');
   }
-  const terminalEvents = store
-    .getTurnEvents(checkpoint.turnId)
-    .filter((event) => event.event === 'turn.completed' && event.data.type === 'turn-completed');
-  if (terminalEvents.length !== 1 || terminalEvents[0]?.data.type !== 'turn-completed')
+  const events = store.getTurnEvents(checkpoint.turnId);
+  const terminalEvents = events.filter(
+    (event) => event.event === 'turn.completed' && event.data.type === 'turn-completed'
+  );
+  const terminalEvent = terminalEvents[0];
+  if (terminalEvents.length !== 1 || terminalEvent?.data.type !== 'turn-completed')
     throw new Error('Worker checkpoint has no exact product terminal event.');
-  const productStopReason = terminalEvents[0].data.stopReason;
+  const productStopReason = terminalEvent.data.stopReason;
   if (stopReason && stopReason !== productStopReason)
     throw new Error('Worker checkpoint contradicts its product terminal event.');
   stopReason = productStopReason;
+  if (
+    terminalEvent.workspaceId !== checkpoint.workspaceId ||
+    terminalEvent.threadId !== checkpoint.threadId ||
+    terminalEvent.turnId !== checkpoint.turnId ||
+    terminalEvent.data.turn.id !== checkpoint.turnId ||
+    terminalEvent.data.turn.workspaceId !== checkpoint.workspaceId ||
+    terminalEvent.data.turn.threadId !== checkpoint.threadId ||
+    terminalEvent.data.turn.agentId !== turn.agentId ||
+    !isDeepStrictEqual(terminalEvent.data.turn.triggerActor, turn.triggerActor)
+  ) {
+    throw new Error('Worker product terminal event contradicts its checkpoint lineage.');
+  }
 
   if (!stopReason) {
     throw new Error('Worker checkpoint has no canonical StopReason.');
   }
 
   const closedApprovalGate = classifyClosedWorkerApprovalGate(store, turn);
+  // An exact Approval Gate closure belongs to its response command; ordinary closeout
+  // belongs to the initiating checkpoint/admission command, even when App ids need projection.
+  const publicationRequestId = projectTurnEventRequestId(
+    closedApprovalGate?.responseRequestId ?? checkpoint.requestId,
+    checkpoint.workspaceId,
+    checkpoint.threadId
+  );
+  if (terminalEvent.requestId !== publicationRequestId) {
+    throw new Error('Worker product terminal event contradicts its command owner.');
+  }
   const expectedTurnStatus = closedApprovalGate
     ? closedApprovalGate.stopReason === 'aborted'
       ? 'interrupted'
       : 'completed'
     : turnStatusForCanonicalWorkerStopReason(stopReason);
 
-  const expectedAgentSessionStatus =
+  let expectedAgentSessionStatus =
     closedApprovalGate?.stopReason === 'completed'
       ? 'closed'
       : expectedTurnStatus === 'completed'
@@ -296,8 +320,92 @@ export function recoverWorkerCheckpointStopReason(
         : expectedTurnStatus === 'interrupted'
           ? 'interrupted'
           : 'failed';
+  // Live closeout publishes idle when it retains a reusable binding.
+  // That publication outlives the backend binding and proves the historical retention decision.
+  const sessionPublications = events.filter(
+    (event) =>
+      event.event === 'agent.session.updated' && event.data.type === 'agent-session-updated'
+  );
+  const sessionEvents = sessionPublications.filter(
+    (event) =>
+      event.data.type === 'agent-session-updated' &&
+      ['idle', 'closed', 'failed', 'interrupted'].includes(event.data.agentSession.status)
+  );
+  // Execution observations must precede both the first closeout publication and turn.completed.
+  // A later nonterminal publication for this Turn contradicts ordinary and repaired closeout alike.
+  const closeoutSequence = Math.min(
+    sessionEvents[0]?.sequence ?? terminalEvent.sequence,
+    terminalEvent.sequence
+  );
+  if (
+    sessionPublications.some(
+      (event) => event.sequence >= closeoutSequence && !sessionEvents.includes(event)
+    )
+  ) {
+    throw new Error('Worker AgentSession publication contradicts its checkpoint lineage.');
+  }
+  const sessionEvent = sessionEvents.at(-1);
+  if (sessionEvent) {
+    if (
+      sessionEvent.data.type !== 'agent-session-updated' ||
+      sessionEvent.workspaceId !== checkpoint.workspaceId ||
+      sessionEvent.threadId !== checkpoint.threadId ||
+      sessionEvent.turnId !== checkpoint.turnId ||
+      sessionEvent.requestId !== publicationRequestId ||
+      sessionEvent.data.agentSession.id !== agentSession.id ||
+      sessionEvent.data.agentSession.agentId !== agentSession.agentId ||
+      sessionEvent.data.agentSession.createdAt !== agentSession.createdAt ||
+      sessionEvent.data.agentSession.workspaceId !== checkpoint.workspaceId ||
+      sessionEvent.data.agentSession.threadId !== checkpoint.threadId ||
+      Date.parse(sessionEvent.data.agentSession.updatedAt) > Date.parse(sessionEvent.timestamp)
+    ) {
+      throw new Error('Worker AgentSession publication contradicts its checkpoint lineage.');
+    }
+    const publishedSession = sessionEvent.data.agentSession;
+    // The terminalization owner can lose the Session event write yet publish turn.completed.
+    // Its retry publishes the original completion snapshot without replacing the terminal event.
+    // Prove that decided content, not how long the repair took; fresh post-terminal changes
+    // and a second closeout publication cannot establish this missing-publication repair.
+    const repairedPublication =
+      !closedApprovalGate &&
+      (stopReason === 'completed' || stopReason === 'error' || stopReason === 'aborted') &&
+      sessionEvents.length === 1 &&
+      sessionEvent.sequence > terminalEvent.sequence &&
+      publishedSession.updatedAt === terminalEvent.data.turn.completedAt &&
+      terminalEvent.data.turn.completedAt === turn.completedAt &&
+      terminalEvent.data.turn.agentSessionId === agentSession.id &&
+      isDeepStrictEqual(terminalEvent.data.turn.error, turn.error) &&
+      isDeepStrictEqual(publishedSession.sandboxSummary, agentSession.sandboxSummary) &&
+      publishedSession.message ===
+        (publishedSession.status === 'idle' ? null : turn.error?.message);
+    const precedingPublication =
+      sessionEvent.sequence < terminalEvent.sequence &&
+      Date.parse(sessionEvent.timestamp) <= Date.parse(terminalEvent.timestamp);
+    if (!precedingPublication && !repairedPublication) {
+      throw new Error('Worker AgentSession publication contradicts its checkpoint lineage.');
+    }
+    const retained =
+      !closedApprovalGate &&
+      Boolean(agentSession.environmentPackageSnapshotId) &&
+      publishedSession.status === 'idle';
+    if (publishedSession.status !== expectedAgentSessionStatus && !retained) {
+      throw new Error('Worker generic closeout contradicts its canonical StopReason.');
+    }
+    expectedAgentSessionStatus = publishedSession.status;
+    // Idle reclamation may close the binding after this Turn finished.
+    // Recovery preserves the later owner's write instead of reopening the AgentSession.
+    const closedLater =
+      publishedSession.status === 'idle' &&
+      agentSession.status === 'closed' &&
+      Date.parse(agentSession.updatedAt) > Date.parse(terminalEvent.timestamp);
+    if (closedLater) expectedAgentSessionStatus = 'closed';
+    else if (agentSession.updatedAt !== publishedSession.updatedAt) {
+      throw new Error('Worker generic closeout contradicts its canonical StopReason.');
+    }
+  }
   if (
     turn.status !== expectedTurnStatus ||
+    terminalEvent.data.turn.status !== expectedTurnStatus ||
     agentSession.status !== expectedAgentSessionStatus ||
     attempt.phase !== 'closed' ||
     terminalEvents.length !== 1 ||

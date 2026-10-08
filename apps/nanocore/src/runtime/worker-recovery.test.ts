@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
@@ -9,21 +9,279 @@ import {
   WorkerRuntimeNativeOriginIndexEntrySchema,
   WorkerRuntimeRawStreamManifestSchema,
 } from '@openkit/worker-protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import { ensureLocalUser } from '../auth/identity.js';
+import { ALREADY_DECIDED_PUBLICATION_ADMISSION } from '../lib/store.js';
+import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
 import { OperationError } from '../operation-error.js';
-import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
-import { getWorkerCheckpoint, upsertWorkerCheckpoint } from './worker-checkpoints.js';
+import {
+  acceptSchedulerExecutionObservation,
+  bindSchedulerExecutionAttemptSession,
+  closeSchedulerExecutionAttemptWithFence,
+  createSchedulerExecutionAttempt,
+  finalizeSchedulerExecutionAttemptInput,
+  markSchedulerExecutionAttemptClosing,
+  recordSchedulerExecutionOperation,
+  schedulerExecutionCorrelation,
+} from './execution-attempt-records.js';
+import {
+  getWorkerCheckpoint,
+  listRecoverableWorkerCheckpoints,
+  upsertWorkerCheckpoint,
+} from './worker-checkpoints.js';
 import {
   classifyClosedWorkerApprovalGate,
   clearWorkerCheckpointAfterTerminalState,
+  recoverWorkerCheckpointStopReason,
 } from './worker-recovery.js';
 import { importWorkerRuntimeProvenance } from './worker-runtime-provenance.js';
+import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
+
+/**
+ * Builds closeout tuples through real terminal publications and released attempt owners.
+ * @param outcome Original decided worker outcome.
+ * @param retained Whether failure closeout keeps its reusable Session idle.
+ * @param options Optional publication fault/retry, execution observation, and App request identity.
+ * @returns Retained owner tuple and database cleanup callback.
+ */
+function createCheckpointCloseoutFixture(
+  outcome: 'failed' | 'completed' | 'interrupted',
+  retained = true,
+  options: {
+    readonly repairSessionPublication?: boolean;
+    readonly executionPublication?: 'before-closeout' | 'before-terminal';
+    readonly requestId?: string;
+  } = {}
+) {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-checkpoint-closeout-'));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+  const store = createDemoStore({ dataRoot });
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+  applyScopedMigrations(workspaceDb);
+  const requestId = options.requestId ?? '00000000-0000-4000-8000-000000000501';
+  const turn = store.createTurn('ws_demo', 'th_demo', 'Recover exact worker closeout', {
+    kind: 'user',
+    id: 'user_local',
+  });
+  const agentSessionId = 'as_checkpoint_closeout';
+  store.updateTurn(turn.id, { agentId: 'agent_codex_host', agentSessionId });
+  const createdAt = new Date().toISOString();
+  const environmentPackage = resolveAgentEnvironmentPackage({
+    agentSetup: createTestAgentSetup(),
+    agentSessionId,
+    backend: { kind: 'openshell' },
+    createdAt,
+    requestId,
+    triggerActor: turn.triggerActor,
+    turn: store.getTurnById(turn.id),
+    turnInput: 'Recover exact worker closeout',
+    workspaceRoots: [],
+  });
+  recordAgentEnvironmentPackageSnapshot(workspaceDb, { environmentPackage, createdAt });
+  store.createAgentSession({
+    id: agentSessionId,
+    agentId: 'agent_codex_host',
+    workspaceId: turn.workspaceId,
+    threadId: turn.threadId,
+    status: 'busy',
+    message: null,
+    createdAt,
+    updatedAt: createdAt,
+    environmentPackageSnapshotId: environmentPackage.snapshotId,
+  });
+  const entry = createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
+    queueEntryId: 'queue_checkpoint_closeout',
+    requestId,
+    triggerActor: turn.triggerActor,
+    requestedAgentId: 'agent_codex_host',
+    workspaceId: turn.workspaceId,
+    threadId: turn.threadId,
+    turnId: turn.id,
+    turnInput: 'Recover exact worker closeout',
+  });
+  const attempt = createSchedulerExecutionAttempt(coreDb, {
+    entry,
+    preparationInput: { admission: entry },
+  });
+  bindSchedulerExecutionAttemptSession(coreDb, { attemptId: attempt.attemptId, agentSessionId });
+  finalizeSchedulerExecutionAttemptInput(coreDb, {
+    attemptId: attempt.attemptId,
+    inputRef: environmentPackage.snapshotId,
+    bindingRef: 'binding_checkpoint_closeout',
+  });
+  const submitted = recordSchedulerExecutionOperation(coreDb, {
+    attemptId: attempt.attemptId,
+    operationId: 'operation_checkpoint_closeout',
+    submission: true,
+  });
+  const correlation = schedulerExecutionCorrelation(submitted);
+  acceptSchedulerExecutionObservation(coreDb, {
+    ...correlation,
+    disposition: 'accepted',
+    execution: 'terminal',
+    outcomeRef: `turn:${turn.id}:${outcome}`,
+    fenceRef: null,
+  });
+  markSchedulerExecutionAttemptClosing(coreDb, {
+    attemptId: attempt.attemptId,
+    cause: 'worker-final-status',
+  });
+  const completedAt = new Date().toISOString();
+  const executionSession = store.getAgentSession(agentSessionId);
+  const emit = store.emitTurnEvent.bind(store);
+  /** Publishes the captured execution observation without changing the durable Session owner. */
+  const publishExecution = () =>
+    emit(
+      turn.id,
+      {
+        event: 'agent.session.updated',
+        data: { type: 'agent-session-updated', agentSession: executionSession },
+        requestId,
+        workspaceId: turn.workspaceId,
+        threadId: turn.threadId,
+        turnId: turn.id,
+      },
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
+  if (options.executionPublication === 'before-closeout') publishExecution();
+  if (outcome === 'completed') store.updateTurn(turn.id, { status: 'completed', completedAt });
+  // Success uses the same production helper's completed-outcome publication repair path.
+  const terminalization = {
+    agentSessionId,
+    agentSessionRetained: retained,
+    completedAt,
+    outcome: outcome === 'interrupted' ? ('interrupted' as const) : ('failed' as const),
+    errorCode: 'unsupported_gateway_feature',
+    message: 'Choose a compatible model route and start a new Task.',
+    requestId,
+    store,
+    turnId: turn.id,
+  };
+  if (options.repairSessionPublication) {
+    const injectedFailure = new Error('Injected first AgentSession publication failure.');
+    const publication = vi
+      .spyOn(store, 'emitTurnEvent')
+      .mockImplementation((id, event, admission) => {
+        if (event.event === 'agent.session.updated') throw injectedFailure;
+        return emit(id, event, admission);
+      });
+    try {
+      expect(() => terminalizeGovernedWorkerTurn(terminalization)).toThrow(
+        expect.objectContaining({ errors: [injectedFailure] })
+      );
+      const partialEvents = store.getTurnEvents(turn.id);
+      expect(partialEvents.map((event) => event.event)).toEqual(
+        options.executionPublication === 'before-closeout'
+          ? ['agent.session.updated', 'turn.completed']
+          : ['turn.completed']
+      );
+      const terminalBytes = JSON.stringify(partialEvents.at(-1));
+      publication.mockRestore();
+      terminalizeGovernedWorkerTurn(terminalization);
+      expect(
+        JSON.stringify(
+          store.getTurnEvents(turn.id).find((event) => event.event === 'turn.completed')
+        )
+      ).toBe(terminalBytes);
+    } finally {
+      publication.mockRestore();
+    }
+  } else if (options.executionPublication === 'before-terminal') {
+    // Insert the contradictory observation after the owner's idle write but before its terminal write.
+    const publication = vi
+      .spyOn(store, 'emitTurnEvent')
+      .mockImplementation((id, event, admission) => {
+        if (event.event === 'turn.completed') publishExecution();
+        return emit(id, event, admission);
+      });
+    try {
+      terminalizeGovernedWorkerTurn(terminalization);
+    } finally {
+      publication.mockRestore();
+    }
+  } else {
+    terminalizeGovernedWorkerTurn(terminalization);
+  }
+  closeSchedulerExecutionAttemptWithFence(coreDb, {
+    correlation,
+    fenceRef: 'worker-backend:checkpoint-closeout',
+    proof: {
+      terminalHandoff: true,
+      output: true,
+      evidence: true,
+      outsideWorkspaceCollection: true,
+      integrationDrain: true,
+      routesRevoked: true,
+    },
+  });
+  const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+    workspaceId: turn.workspaceId,
+    threadId: turn.threadId,
+    turnId: turn.id,
+    workerSessionId: agentSessionId,
+    requestId,
+    requestInputHash: 'sha256:checkpoint-closeout',
+    stage:
+      outcome === 'failed' ? 'failed' : outcome === 'interrupted' ? 'aborted' : 'running_worker',
+    stopReason: outcome === 'failed' ? 'error' : outcome === 'interrupted' ? 'aborted' : null,
+    iteration: 0,
+  });
+  return {
+    coreDb,
+    workspaceDb,
+    store,
+    checkpoint,
+    attempt,
+    agentSessionId,
+    close: () => {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    },
+  };
+}
+
+/** Records the existing outer command receipt required by conversation checkpoint recovery. */
+function recordCloseoutConversationReceipt(
+  f: ReturnType<typeof createCheckpointCloseoutFixture>
+): void {
+  const { checkpoint, store } = f;
+  store.recordCommandRequest({
+    command: 'conversation.submit',
+    requestId: checkpoint.requestId,
+    inputHash: checkpoint.requestInputHash,
+    scope: {
+      actorId: 'user_local',
+      workspaceId: checkpoint.workspaceId,
+      threadId: checkpoint.threadId,
+    },
+    response: {
+      kind: 'turn',
+      id: checkpoint.turnId,
+      conversationMetadata: {
+        targetRef: 'new-task-worker',
+        logicalModelId: null,
+        receivingWorkspaceId: checkpoint.workspaceId,
+        receivingThreadId: checkpoint.threadId,
+        downstream: { kind: 'task', turnId: checkpoint.turnId },
+        resultKind: 'worker-turn',
+        status: 202,
+      },
+    },
+  });
+}
 
 /**
  * Opens a migrated workspace database for worker recovery tests.
@@ -208,6 +466,506 @@ function runtimeSha256(bytes: Uint8Array): string {
 }
 
 describe('worker recovery materialization', () => {
+  it('recovers Subject A: failed Turn with a live-closeout retained idle AgentSession', () => {
+    const f = createCheckpointCloseoutFixture('failed');
+    try {
+      expect(f.store.getTurnById(f.checkpoint.turnId)).toMatchObject({
+        status: 'failed',
+        error: { code: 'unsupported_gateway_feature' },
+      });
+      expect(f.store.getAgentSession(f.agentSessionId).status).toBe('idle');
+      expect(
+        recoverWorkerCheckpointStopReason(f.coreDb, f.store, f.workspaceDb, f.checkpoint)
+      ).toBe('error');
+    } finally {
+      f.close();
+    }
+  });
+
+  it('recovers Subject B: completed Turn with an AgentSession closed after its terminal event', () => {
+    const f = createCheckpointCloseoutFixture('completed');
+    try {
+      const terminal = f.store
+        .getTurnEvents(f.checkpoint.turnId)
+        .find((event) => event.event === 'turn.completed')!;
+      f.store.updateAgentSession(f.agentSessionId, {
+        status: 'closed',
+        updatedAt: new Date(Date.parse(terminal.timestamp) + 1000).toISOString(),
+      });
+      expect(f.checkpoint).toMatchObject({ stage: 'running_worker', stopReason: null });
+      expect(
+        recoverWorkerCheckpointStopReason(f.coreDb, f.store, f.workspaceDb, f.checkpoint)
+      ).toBe('completed');
+    } finally {
+      f.close();
+    }
+  });
+
+  it.each([
+    ['failed', 'error'],
+    ['completed', 'completed'],
+  ] as const)('recovers %s publication repair after a real failed write and owner retry', (outcome, stopReason) => {
+    const f = createCheckpointCloseoutFixture(outcome, false, { repairSessionPublication: true });
+    try {
+      expect(
+        f.store
+          .getTurnEvents(f.checkpoint.turnId)
+          .map((event) => `${event.sequence}:${event.event}`)
+      ).toEqual(['1:turn.completed', '2:agent.session.updated']);
+      expect(
+        recoverWorkerCheckpointStopReason(f.coreDb, f.store, f.workspaceDb, f.checkpoint)
+      ).toBe(stopReason);
+      const reloaded = createDemoStore({ dataRoot: f.workspaceDb.dataRoot });
+      expect(
+        recoverWorkerCheckpointStopReason(f.coreDb, reloaded, f.workspaceDb, f.checkpoint)
+      ).toBe(stopReason);
+    } finally {
+      f.close();
+    }
+  });
+
+  it.each([
+    ['repaired closeout', true, false],
+    ['ordinary closeout before terminal', false, true],
+    ['ordinary closeout after terminal', false, false],
+  ] as const)('preserves recovery_required for a later nonterminal publication after %s', async (_scenario, repairSessionPublication, beforeTerminal) => {
+    const f = createCheckpointCloseoutFixture('completed', false, {
+      repairSessionPublication,
+      executionPublication: beforeTerminal ? 'before-terminal' : undefined,
+    });
+    try {
+      const { checkpoint, store } = f;
+      if (!beforeTerminal) {
+        const session = store
+          .getTurnEvents(checkpoint.turnId)
+          .find((event) => event.data.type === 'agent-session-updated')!;
+        if (session.data.type !== 'agent-session-updated')
+          throw new Error('Missing fixture closeout publication.');
+        store.emitTurnEvent(
+          checkpoint.turnId,
+          {
+            event: 'agent.session.updated',
+            data: {
+              type: 'agent-session-updated',
+              agentSession: { ...session.data.agentSession, status: 'busy' },
+            },
+            requestId: checkpoint.requestId,
+            workspaceId: checkpoint.workspaceId,
+            threadId: checkpoint.threadId,
+            turnId: checkpoint.turnId,
+          },
+          ALREADY_DECIDED_PUBLICATION_ADMISSION
+        );
+      }
+      recordCloseoutConversationReceipt(f);
+      const cold = createDemoStore({ dataRoot: f.workspaceDb.dataRoot });
+      expect(cold.getAgentSession(f.agentSessionId).status).toBe('idle');
+      expect(
+        cold
+          .getTurnEvents(checkpoint.turnId)
+          .map((event) =>
+            event.data.type === 'agent-session-updated'
+              ? `${event.sequence}:${event.data.agentSession.status}`
+              : `${event.sequence}:${event.event}`
+          )
+      ).toEqual(
+        repairSessionPublication
+          ? ['1:turn.completed', '2:idle', '3:busy']
+          : beforeTerminal
+            ? ['1:idle', '2:busy', '3:turn.completed']
+            : ['1:idle', '2:turn.completed', '3:busy']
+      );
+      const result = await classifyDirectTaskCheckpointAfterSchedulerRecovery({
+        coreDb: f.coreDb,
+        workspaceDb: f.workspaceDb,
+        store: cold,
+        checkpoint,
+      }).catch((error: Error) => error.message);
+      expect({
+        result,
+        checkpoint: getWorkerCheckpoint(
+          f.workspaceDb,
+          checkpoint.workspaceId,
+          checkpoint.threadId,
+          checkpoint.turnId
+        ),
+      }).toEqual({
+        result: 'Worker AgentSession publication contradicts its checkpoint lineage.',
+        checkpoint,
+      });
+    } finally {
+      f.close();
+    }
+  });
+
+  it.each([
+    false,
+    true,
+  ])('accepts an earlier execution publication before closeout with repair=%s', (repairSessionPublication) => {
+    const f = createCheckpointCloseoutFixture('completed', false, {
+      repairSessionPublication,
+      executionPublication: 'before-closeout',
+    });
+    try {
+      const cold = createDemoStore({ dataRoot: f.workspaceDb.dataRoot });
+      expect(
+        cold
+          .getTurnEvents(f.checkpoint.turnId)
+          .map((event) =>
+            event.data.type === 'agent-session-updated'
+              ? `${event.sequence}:${event.data.agentSession.status}`
+              : `${event.sequence}:${event.event}`
+          )
+      ).toEqual(
+        repairSessionPublication
+          ? ['1:busy', '2:turn.completed', '3:idle']
+          : ['1:busy', '2:idle', '3:turn.completed']
+      );
+      expect(recoverWorkerCheckpointStopReason(f.coreDb, cold, f.workspaceDb, f.checkpoint)).toBe(
+        'completed'
+      );
+    } finally {
+      f.close();
+    }
+  });
+
+  it.each([
+    'changed completion timestamp',
+    'changed message',
+    'changed sandbox summary',
+    'duplicate closeout publication',
+    'changed terminal completion',
+    'unsupported success reason',
+  ] as const)('rejects an unproved reordered repair with %s', (scenario) => {
+    const f = createCheckpointCloseoutFixture('completed', false, {
+      repairSessionPublication: true,
+    });
+    try {
+      const events = structuredClone(f.store.getTurnEvents(f.checkpoint.turnId));
+      const terminal = events[0]!;
+      const session = events[1]!;
+      if (terminal.data.type !== 'turn-completed' || session.data.type !== 'agent-session-updated')
+        throw new Error('Missing repaired fixture publications.');
+      switch (scenario) {
+        case 'changed completion timestamp':
+          session.data.agentSession.updatedAt = new Date(
+            Date.parse(session.timestamp) - 1000
+          ).toISOString();
+          break;
+        case 'changed message':
+          session.data.agentSession.message = 'A different decided message.';
+          break;
+        case 'changed sandbox summary':
+          session.data.agentSession.sandboxSummary = {
+            access: 'none',
+            workspaceRootRefs: [],
+            summary: 'A different projection.',
+          };
+          break;
+        case 'duplicate closeout publication':
+          events.push({ ...session, sequence: session.sequence + 1 });
+          break;
+        case 'changed terminal completion':
+          terminal.data.turn.completedAt = new Date(
+            Date.parse(session.data.agentSession.updatedAt) - 1000
+          ).toISOString();
+          break;
+        case 'unsupported success reason':
+          terminal.data.stopReason = 'length';
+          break;
+      }
+      vi.spyOn(f.store, 'getTurnEvents').mockReturnValue(events);
+      expect(() =>
+        recoverWorkerCheckpointStopReason(f.coreDb, f.store, f.workspaceDb, f.checkpoint)
+      ).toThrow('Worker AgentSession publication contradicts its checkpoint lineage.');
+    } finally {
+      vi.restoreAllMocks();
+      f.close();
+    }
+  });
+
+  it.each([
+    'failed',
+    'completed',
+  ] as const)('requires recovery when both %s publications name the same wrong request', async (outcome) => {
+    const f = createCheckpointCloseoutFixture(outcome);
+    try {
+      const events = structuredClone(f.store.getTurnEvents(f.checkpoint.turnId));
+      for (const event of events) event.requestId = '00000000-0000-4000-8000-000000000502';
+      vi.spyOn(f.store, 'getTurnEvents').mockReturnValue(events);
+      expect(() =>
+        recoverWorkerCheckpointStopReason(f.coreDb, f.store, f.workspaceDb, f.checkpoint)
+      ).toThrow('Worker product terminal event contradicts its command owner.');
+      recordCloseoutConversationReceipt(f);
+      await expect(
+        classifyDirectTaskCheckpointAfterSchedulerRecovery({
+          coreDb: f.coreDb,
+          store: f.store,
+          workspaceDb: f.workspaceDb,
+          checkpoint: f.checkpoint,
+        })
+      ).rejects.toThrow('Worker product terminal event contradicts its command owner.');
+      expect(
+        getWorkerCheckpoint(
+          f.workspaceDb,
+          f.checkpoint.workspaceId,
+          f.checkpoint.threadId,
+          f.checkpoint.turnId
+        )
+      ).toEqual(f.checkpoint);
+    } finally {
+      vi.restoreAllMocks();
+      f.close();
+    }
+  });
+
+  it.each([
+    'failed',
+    'completed',
+  ] as const)('joins %s publications to a projected non-UUID command request', (outcome) => {
+    const f = createCheckpointCloseoutFixture(outcome, true, {
+      requestId: 'req_checkpoint_closeout',
+    });
+    try {
+      expect(f.store.getTurnEvents(f.checkpoint.turnId)[0]?.requestId).not.toBe(
+        f.checkpoint.requestId
+      );
+      expect(
+        recoverWorkerCheckpointStopReason(f.coreDb, f.store, f.workspaceDb, f.checkpoint)
+      ).toBe(outcome === 'failed' ? 'error' : 'completed');
+    } finally {
+      f.close();
+    }
+  });
+
+  it('keeps ordinary completed closeout distinct from an earlier busy AgentSession publication', () => {
+    const f = createCheckpointCloseoutFixture('completed');
+    try {
+      const events = structuredClone(f.store.getTurnEvents(f.checkpoint.turnId));
+      const session = events.find((event) => event.data.type === 'agent-session-updated')!;
+      if (session.data.type !== 'agent-session-updated')
+        throw new Error('Missing fixture AgentSession publication.');
+      session.data.agentSession.status = 'busy';
+      session.data.agentSession.updatedAt = session.data.agentSession.createdAt;
+      vi.spyOn(f.store, 'getTurnEvents').mockReturnValue(events);
+      expect(
+        recoverWorkerCheckpointStopReason(f.coreDb, f.store, f.workspaceDb, f.checkpoint)
+      ).toBe('completed');
+    } finally {
+      vi.restoreAllMocks();
+      f.close();
+    }
+  });
+
+  it.each([
+    ['failed', false, 'failed', 'error'],
+    ['interrupted', false, 'interrupted', 'aborted'],
+    ['interrupted', true, 'idle', 'aborted'],
+    ['completed', true, 'idle', 'completed'],
+  ] as const)('recovers %s closeout with retention=%s and published %s', (outcome, retained, status, stopReason) => {
+    const f = createCheckpointCloseoutFixture(outcome, retained);
+    try {
+      expect(f.store.getAgentSession(f.agentSessionId).status).toBe(status);
+      expect(
+        recoverWorkerCheckpointStopReason(f.coreDb, f.store, f.workspaceDb, f.checkpoint)
+      ).toBe(stopReason);
+    } finally {
+      f.close();
+    }
+  });
+
+  it.each([
+    ['failed', false],
+    ['completed', false],
+    ['failed', true],
+    ['completed', true],
+  ] as const)('finishes the conversation checkpoint through its existing owner after %s closeout with publication repair=%s', async (outcome, repairSessionPublication) => {
+    const f = createCheckpointCloseoutFixture(outcome, !repairSessionPublication, {
+      repairSessionPublication,
+    });
+    try {
+      const { checkpoint, store } = f;
+      const terminal = store
+        .getTurnEvents(checkpoint.turnId)
+        .find((event) => event.event === 'turn.completed')!;
+      if (outcome === 'completed')
+        store.updateAgentSession(f.agentSessionId, {
+          status: 'closed',
+          updatedAt: new Date(Date.parse(terminal.timestamp) + 1000).toISOString(),
+        });
+      recordCloseoutConversationReceipt(f);
+      const before = JSON.stringify({
+        turn: store.getTurnById(checkpoint.turnId),
+        session: store.getAgentSession(f.agentSessionId),
+        events: store.getTurnEvents(checkpoint.turnId),
+        attempts: f.coreDb.sqlite.prepare('SELECT * FROM scheduler_execution_attempts').all(),
+      });
+      await expect(
+        classifyDirectTaskCheckpointAfterSchedulerRecovery({
+          coreDb: f.coreDb,
+          workspaceDb: f.workspaceDb,
+          store,
+          checkpoint,
+        })
+      ).resolves.toBe('complete');
+      expect(
+        getWorkerCheckpoint(
+          f.workspaceDb,
+          checkpoint.workspaceId,
+          checkpoint.threadId,
+          checkpoint.turnId
+        )
+      ).toBeNull();
+      expect(listRecoverableWorkerCheckpoints(f.workspaceDb, checkpoint.workspaceId)).toEqual([]);
+      expect(
+        JSON.stringify({
+          turn: store.getTurnById(checkpoint.turnId),
+          session: store.getAgentSession(f.agentSessionId),
+          events: store.getTurnEvents(checkpoint.turnId),
+          attempts: f.coreDb.sqlite.prepare('SELECT * FROM scheduler_execution_attempts').all(),
+        })
+      ).toBe(before);
+    } finally {
+      f.close();
+    }
+  });
+
+  const closeoutContradiction = 'Worker generic closeout contradicts its canonical StopReason.';
+  const publicationContradiction =
+    'Worker AgentSession publication contradicts its checkpoint lineage.';
+  const incompleteExecution = 'Worker checkpoint has no complete execution closeout.';
+  const missingTerminal = 'Worker checkpoint has no exact product terminal event.';
+  it.each([
+    ['Turn status disagrees', closeoutContradiction],
+    ['terminal Turn status disagrees', closeoutContradiction],
+    ['no terminal event', missingTerminal],
+    ['duplicate terminal event', missingTerminal],
+    [
+      'checkpoint StopReason disagrees with terminal event',
+      'Worker checkpoint contradicts its product terminal event.',
+    ],
+    ['attempt still open', incompleteExecution],
+    ['attempt has no fence', incompleteExecution],
+    ['attempt has no operation', incompleteExecution],
+    ['impossible published AgentSession', closeoutContradiction],
+    ['AgentSession changed before terminal', closeoutContradiction],
+    ['AgentSession changed at terminal', closeoutContradiction],
+    ['post-terminal publication changes the decided completion', publicationContradiction],
+    ['AgentSession publication has later timestamp', publicationContradiction],
+    ['AgentSession publication missing for retained failure', closeoutContradiction],
+    ['AgentSession publication has wrong owner', publicationContradiction],
+    ['AgentSession publication has wrong agent', publicationContradiction],
+    ['AgentSession publication has wrong Thread', publicationContradiction],
+    ['AgentSession publication has wrong request', publicationContradiction],
+    [
+      'terminal event has wrong Turn',
+      'Worker product terminal event contradicts its checkpoint lineage.',
+    ],
+    ['checkpoint has wrong AgentSession', 'Worker checkpoint has no exact AgentSession owner.'],
+    ['checkpoint has wrong request', 'Worker scheduler admission contradicts its command owner.'],
+  ])('fails closed when %s', (scenario, expectedError) => {
+    const f = createCheckpointCloseoutFixture('failed');
+    const events = structuredClone(f.store.getTurnEvents(f.checkpoint.turnId));
+    const terminal = events.find((event) => event.data.type === 'turn-completed')!;
+    const session = events.find((event) => event.data.type === 'agent-session-updated')!;
+    if (terminal.data.type !== 'turn-completed' || session.data.type !== 'agent-session-updated')
+      throw new Error('Fixture lacks production terminal publications.');
+    let checkpoint = f.checkpoint;
+    try {
+      switch (scenario) {
+        case 'Turn status disagrees':
+          vi.spyOn(f.store, 'getTurn').mockReturnValue({
+            ...f.store.getTurnById(checkpoint.turnId),
+            status: 'completed',
+          });
+          break;
+        case 'terminal Turn status disagrees':
+          terminal.data.turn.status = 'completed';
+          break;
+        case 'no terminal event':
+          events.splice(events.indexOf(terminal), 1);
+          break;
+        case 'duplicate terminal event':
+          events.push(structuredClone(terminal));
+          break;
+        case 'checkpoint StopReason disagrees with terminal event':
+          checkpoint = { ...checkpoint, stage: 'aborted', stopReason: 'aborted' };
+          break;
+        case 'attempt still open':
+          f.coreDb.sqlite.prepare("UPDATE scheduler_execution_attempts SET phase = 'open'").run();
+          break;
+        case 'attempt has no fence':
+          f.coreDb.sqlite.prepare('UPDATE scheduler_execution_attempts SET fence_ref = NULL').run();
+          break;
+        case 'attempt has no operation':
+          f.coreDb.sqlite
+            .prepare('UPDATE scheduler_execution_attempts SET operation_id = NULL')
+            .run();
+          break;
+        case 'impossible published AgentSession':
+          session.data.agentSession.status = 'busy';
+          break;
+        case 'AgentSession changed before terminal':
+        case 'AgentSession changed at terminal':
+          f.store.updateAgentSession(f.agentSessionId, {
+            status: 'closed',
+            updatedAt: new Date(
+              Date.parse(terminal.timestamp) -
+                (scenario === 'AgentSession changed before terminal' ? 1 : 0)
+            ).toISOString(),
+          });
+          break;
+        case 'post-terminal publication changes the decided completion':
+          session.sequence = terminal.sequence + 1;
+          session.timestamp = new Date(Date.parse(terminal.timestamp) + 1000).toISOString();
+          session.data.agentSession.updatedAt = session.timestamp;
+          break;
+        case 'AgentSession publication has later timestamp':
+          session.timestamp = new Date(Date.parse(terminal.timestamp) + 1).toISOString();
+          break;
+        case 'AgentSession publication missing for retained failure':
+          events.splice(events.indexOf(session), 1);
+          break;
+        case 'AgentSession publication has wrong owner':
+          session.data.agentSession.id = 'as_foreign';
+          break;
+        case 'AgentSession publication has wrong agent':
+          session.data.agentSession.agentId = 'agent_foreign';
+          break;
+        case 'AgentSession publication has wrong Thread':
+          session.data.agentSession.threadId = 'th_foreign';
+          break;
+        case 'AgentSession publication has wrong request':
+          session.requestId = '00000000-0000-4000-8000-000000000502';
+          break;
+        case 'terminal event has wrong Turn':
+          terminal.data.turn.id = 'turn_foreign';
+          break;
+        case 'checkpoint has wrong AgentSession':
+          checkpoint = { ...checkpoint, workerSessionId: 'as_foreign' };
+          break;
+        case 'checkpoint has wrong request':
+          checkpoint = { ...checkpoint, requestId: '00000000-0000-4000-8000-000000000502' };
+          break;
+      }
+      vi.spyOn(f.store, 'getTurnEvents').mockReturnValue(events);
+      expect(() =>
+        recoverWorkerCheckpointStopReason(f.coreDb, f.store, f.workspaceDb, checkpoint)
+      ).toThrow(expectedError);
+      expect(
+        getWorkerCheckpoint(
+          f.workspaceDb,
+          f.checkpoint.workspaceId,
+          f.checkpoint.threadId,
+          f.checkpoint.turnId
+        )
+      ).toEqual(f.checkpoint);
+    } finally {
+      vi.restoreAllMocks();
+      f.close();
+    }
+  });
+
   it.each([
     ['granted', 'completed', 'completed'],
     ['denied', 'interrupted', 'aborted'],
@@ -323,24 +1081,6 @@ describe('worker recovery materialization', () => {
       responseRequestId: '00000000-0000-4000-8000-000000000401',
       stopReason,
     });
-  });
-
-  it('requires the closed Core fence and exact product terminal facts for failed closeout', () => {
-    const source = readFileSync(new URL('./worker-recovery.ts', import.meta.url), 'utf8');
-    // Durable Scheduler D72 retires Core's private Native evidence-state interpretation;
-    // D97 keeps failed product state separate from the exact released execution fence.
-    expect(source).toContain(
-      "attempt.phase !== 'closed' || !attempt.fenceRef || !attempt.operationId"
-    );
-    const genericCloseout = source
-      .split('const expectedAgentSessionStatus =')[1]
-      ?.split("throw new Error('Worker generic closeout contradicts")[0];
-    expect(genericCloseout).toContain("expectedTurnStatus === 'interrupted'");
-    expect(genericCloseout).toContain("'failed'");
-    expect(genericCloseout).toContain('turn.status !== expectedTurnStatus');
-    expect(genericCloseout).toContain('agentSession.status !== expectedAgentSessionStatus');
-    expect(genericCloseout).toContain("attempt.phase !== 'closed'");
-    expect(genericCloseout).toContain('terminalEvents[0].data.stopReason !== stopReason');
   });
 
   it('cleans checkpoints only after terminal worker state is durably saved', async () => {
