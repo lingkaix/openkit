@@ -119,10 +119,12 @@ import {
   classifyClosedWorkerApprovalGate,
   classifyClosedWorkerUserInputGate,
   clearWorkerCheckpointAfterTerminalState,
+  hasWorkerCheckpointNeverSubmittedProof,
   recoverWorkerCheckpointStopReason,
   resolveInterruptedWorkerRetryDecision,
 } from './runtime/worker-recovery.js';
 import { isTerminalWorkerTurnStage, workerTurnStageForStopReason } from './runtime/worker-stage.js';
+import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
 import { runWorkerTurnLoop } from './runtime/worker-turn-loop.js';
 import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
 import {
@@ -967,6 +969,42 @@ function validateLiveTaskAdmission(input: {
 }
 
 /**
+ * Completes product publication only after the initiating mode has established its command owner.
+ * @param input Existing exact checkpoint and product owners.
+ * @throws Error when retained proof or a product publication is contradictory or fails.
+ */
+function publishCheckpointNeverSubmittedFailure(input: {
+  readonly coreDb: CoreDb;
+  readonly store: FsStore;
+  readonly workspaceDb: WorkspaceDb;
+  readonly checkpoint: WorkerCheckpointRecord;
+}): void {
+  if (
+    !hasWorkerCheckpointNeverSubmittedProof(
+      input.coreDb,
+      input.store,
+      input.workspaceDb,
+      input.checkpoint
+    )
+  )
+    return;
+  const turn = input.store.getTurnById(input.checkpoint.turnId);
+  const session = input.store.getAgentSession(input.checkpoint.workerSessionId!);
+  terminalizeGovernedWorkerTurn({
+    store: input.store,
+    turnId: turn.id,
+    agentSessionId: session.id,
+    requestId: input.checkpoint.requestId,
+    completedAt:
+      turn.completedAt ??
+      (session.status === 'failed' ? session.updatedAt : new Date().toISOString()),
+    outcome: 'failed',
+    errorCode: turn.error?.code ?? 'worker_governance_turn_failed',
+    message: turn.error?.message ?? session.message ?? 'The worker attempt failed to start.',
+  });
+}
+
+/**
  * Rebuilds one direct Task result from its exact request-bound worker checkpoint.
  *
  * @param input Direct Task command identity and durable owners.
@@ -1033,6 +1071,9 @@ function recoverDirectTaskModeCheckpoint(input: {
   } catch {
     throw directTaskModeRecoveryError('The Task checkpoint worker input is not authoritative.');
   }
+
+  publishCheckpointNeverSubmittedFailure(input);
+  turn = input.store.getTurn(input.workspaceId, input.threadId, input.turnId);
 
   let stopReason: StopReason;
   let stage = checkpoint.stage;
@@ -1190,12 +1231,41 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
     if (conversationRetryDecision.status === 'reconnect-pending') {
       return 'live';
     }
+    const conversationTurn = input.store.getTurnById(checkpoint.turnId);
+    const neverSubmitted = hasWorkerCheckpointNeverSubmittedProof(
+      input.coreDb,
+      input.store,
+      input.workspaceDb,
+      checkpoint
+    );
+    if (neverSubmitted) {
+      const resultItem = conversationTurn.items.find(
+        (item) => item.id === `it_worker_result_${conversationTurn.id}`
+      );
+      if (
+        resultItem?.type !== 'status' ||
+        resultItem.status !== 'completed' ||
+        resultItem.workspaceId !== checkpoint.workspaceId ||
+        resultItem.threadId !== checkpoint.threadId ||
+        resultItem.turnId !== checkpoint.turnId
+      )
+        throw directTaskModeRecoveryError('The conversation Worker result is contradictory.');
+      publishCheckpointNeverSubmittedFailure(input);
+    }
     const stopReason = recoverWorkerCheckpointStopReason(
       input.coreDb,
       input.store,
       input.workspaceDb,
       checkpoint
     );
+    if (neverSubmitted)
+      persistConversationWorkerResultItem(
+        input.store,
+        checkpoint.workspaceId,
+        checkpoint.threadId,
+        checkpoint.turnId,
+        conversationTurn.agentId!
+      );
     if (checkpoint.stage === 'running_worker' && checkpoint.stopReason === null) {
       const turn = input.store.getTurn(
         checkpoint.workspaceId,
@@ -1238,6 +1308,8 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
     }
     if (
       !(await clearWorkerCheckpointAfterTerminalState(input.workspaceDb, {
+        coreDb: input.coreDb,
+        store: input.store,
         workspaceId: checkpoint.workspaceId,
         threadId: checkpoint.threadId,
         turnId: checkpoint.turnId,
@@ -1336,6 +1408,8 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
   }
   if (
     !(await clearWorkerCheckpointAfterTerminalState(input.workspaceDb, {
+      coreDb: input.coreDb,
+      store: input.store,
       workspaceId: checkpoint.workspaceId,
       threadId: checkpoint.threadId,
       turnId: checkpoint.turnId,
@@ -3849,6 +3923,31 @@ export function createConversationService({
         input: conversationCommandInput(chatInput),
         replay: async (record) => {
           const downstream = record.response.conversationMetadata?.downstream;
+          if (coreDb && record.response.conversationMetadata?.resultKind === 'worker-turn') {
+            const receivingWorkspaceId = record.response.conversationMetadata.receivingWorkspaceId;
+            const workerDb = repositoryWorkspaceDb(receivingWorkspaceId);
+            try {
+              const checkpoint = getWorkerCheckpoint(
+                workerDb,
+                receivingWorkspaceId,
+                record.response.conversationMetadata.receivingThreadId,
+                record.response.id
+              );
+              if (
+                checkpoint &&
+                hasWorkerCheckpointNeverSubmittedProof(coreDb, store, workerDb, checkpoint)
+              ) {
+                await classifyDirectTaskCheckpointAfterSchedulerRecovery({
+                  coreDb,
+                  store,
+                  workspaceDb: workerDb,
+                  checkpoint,
+                });
+              }
+            } finally {
+              workerDb.sqlite.close();
+            }
+          }
           if (
             record.response.conversationMetadata?.resultKind === 'task-handoff' &&
             downstream?.kind === 'task' &&
@@ -4360,6 +4459,8 @@ export function createTaskStartOperation({
       if (
         checkpoint.stage !== 'waiting_for_user' &&
         !(await clearWorkerCheckpointAfterTerminalState(workspaceDb, {
+          coreDb: coreDb!,
+          store,
           workspaceId,
           threadId,
           turnId,
@@ -4640,6 +4741,30 @@ export function createTaskStartOperation({
         replay: async (record) => {
           const turnId = directTaskModeTurnId(actorId, workspaceId, threadId, record.requestId);
           const closeout = activeTaskCloseouts.get(turnId);
+          if (
+            !closeout &&
+            coreDb &&
+            record.response.kind === 'turn' &&
+            record.response.id === turnId
+          ) {
+            const workspaceDb = repositoryWorkspaceDb(workspaceId);
+            try {
+              const checkpoint = getWorkerCheckpoint(workspaceDb, workspaceId, threadId, turnId);
+              if (
+                checkpoint &&
+                hasWorkerCheckpointNeverSubmittedProof(coreDb, store, workspaceDb, checkpoint)
+              ) {
+                await classifyDirectTaskCheckpointAfterSchedulerRecovery({
+                  coreDb,
+                  store,
+                  workspaceDb,
+                  checkpoint,
+                });
+              }
+            } finally {
+              workspaceDb.sqlite.close();
+            }
+          }
           if (closeout && record.response.kind === 'turn' && record.response.id === turnId) {
             try {
               const turn = store.getTurnById(turnId);

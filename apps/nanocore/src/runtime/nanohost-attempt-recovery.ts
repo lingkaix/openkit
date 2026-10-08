@@ -686,21 +686,80 @@ function hasRecoveredTerminalHandoff(
  */
 export function hasNanoHostAttemptPreEffectProof(coreDb: CoreDb, attemptId: string): boolean {
   const attempt = requireSchedulerExecutionAttempt(coreDb, attemptId);
-  const nativeProof = coreDb.sqlite
-    .prepare(`SELECT last_accepted_heartbeat_at, last_worker_sequence, worker_process_key_hash,
-      worker_control_token_hash, worker_inference_token_hash, worker_capability_token_hash
-      FROM scheduler_execution_attempts WHERE attempt_id = ?`)
-    .get(attemptId) as Record<string, string | number | null>;
-  const binding = coreDb.sqlite
-    .prepare(`SELECT 1 FROM agent_session_runtime_bindings
-      WHERE agent_session_id = ? OR current_turn_id = ? OR current_attempt_id = ? LIMIT 1`)
-    .get(attempt.agentSessionId, attempt.turnId, attemptId);
   return (
     attempt.disposition === 'not_accepted' &&
     attempt.operationId === null &&
     !getWorkerBackendSession(coreDb, attemptId) &&
-    !binding &&
-    Object.values(nativeProof).every((value) => value === null)
+    hasNanoHostAttemptNoExecutionEvidence(coreDb, attempt)
+  );
+}
+
+/** Reads native evidence without treating a closed attempt or physical cleanup as proof of non-execution. */
+function hasNanoHostAttemptNoExecutionEvidence(
+  coreDb: CoreDb,
+  attempt: SchedulerExecutionAttemptRecord
+): boolean {
+  const proof = coreDb.sqlite
+    .prepare(`SELECT last_accepted_heartbeat_at, last_worker_sequence, worker_process_key_hash,
+      worker_control_token_hash, worker_inference_token_hash, worker_capability_token_hash
+      FROM scheduler_execution_attempts WHERE attempt_id = ?`)
+    .get(attempt.attemptId) as Record<string, string | number | null> | undefined;
+  const binding = coreDb.sqlite
+    .prepare(`SELECT 1 FROM agent_session_runtime_bindings
+      WHERE agent_session_id = ? OR current_turn_id = ? OR current_attempt_id = ? LIMIT 1`)
+    .get(attempt.agentSessionId, attempt.turnId, attempt.attemptId);
+  return Boolean(proof && !binding && Object.values(proof).every((value) => value === null));
+}
+
+/**
+ * Proves the cleaned, unused NanoHost preparation boundary for checkpoint-owned failed-start closeout.
+ *
+ * Pending handoff remains untouched because no materialization or handle was published. This does not grant cleanup or release authority.
+ * @param coreDb Native attempt, binding and backend owners.
+ * @param workspaceDb Exact Workspace materialization owners.
+ * @param environmentPackage Original immutable package.
+ * @param attemptId Original failed attempt.
+ * @returns Whether the exact cleaned anchor positively proves no Worker was submitted.
+ * @throws Error when retained native or package lineage is unreadable or contradictory.
+ */
+export function hasNanoHostUnusedFailedStartAnchorProof(
+  coreDb: CoreDb,
+  workspaceDb: WorkspaceDb,
+  environmentPackage: AgentEnvironmentPackage,
+  attemptId: string
+): boolean {
+  const attempt = requireSchedulerExecutionAttempt(coreDb, attemptId);
+  const backend = getWorkerBackendSession(coreDb, attemptId);
+  if (
+    !backend ||
+    backend.state !== 'cleaned' ||
+    !backend.physicalCleanedAt ||
+    attempt.phase !== 'closed' ||
+    attempt.disposition !== 'not_accepted' ||
+    attempt.terminalCause !== 'turn-start-failed' ||
+    attempt.operationId !== null ||
+    attempt.deadline !== null ||
+    attempt.outcomeRef !== null ||
+    attempt.fenceRef !== null ||
+    !hasNanoHostAttemptNoExecutionEvidence(coreDb, attempt)
+  )
+    return false;
+  const native = requireNanoHostExecutionAttempt(coreDb, attemptId);
+  if (
+    native.recoveryState !== null ||
+    native.recoveryDeadline !== null ||
+    backend.sandboxBindingRef !== attempt.bindingRef
+  )
+    return false;
+  assertSessionMatchesAttempt(backend, native);
+  assertEnvironmentPackageMatchesSession(environmentPackage, backend);
+  return (
+    !listBackendWorkspaceHandles(workspaceDb, attempt.workspaceId).some(
+      (handle) => handle.packageSnapshotId === environmentPackage.snapshotId
+    ) &&
+    !listWorkspaceMaterializationRecords(workspaceDb, attempt.workspaceId).some(
+      (record) => record.packageSnapshotId === environmentPackage.snapshotId
+    )
   );
 }
 
@@ -929,13 +988,7 @@ async function settleTerminalFailedStart(
       attempt.disposition === 'not_accepted' &&
       attempt.operationId === null &&
       attempt.deadline === null &&
-      bindings.length === 0 &&
-      native.lastAcceptedHeartbeatAt === null &&
-      native.lastWorkerSequence === null &&
-      native.workerProcessKeyHash === null &&
-      native.workerControlTokenHash === null &&
-      native.workerInferenceTokenHash === null &&
-      native.workerCapabilityTokenHash === null;
+      hasNanoHostAttemptNoExecutionEvidence(coreDb, attempt);
     if (backend) {
       if (
         !pkg ||

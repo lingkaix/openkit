@@ -1,12 +1,20 @@
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
-import type { StopReason } from '@openkit/protocol';
-
-import { type FsStore, projectTurnEventRequestId } from '../lib/store.js';
+import { AgentSessionSchema, type StopReason } from '@openkit/protocol';
+import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
+import {
+  DISPLAY_PROJECTION_REFRESH_FIELDS,
+  type FsStore,
+  projectTurnEventRequestId,
+} from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
-import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
+import {
+  requireSchedulerExecutionAttemptAdmissionContext,
+  schedulerAdmissionInputHash,
+} from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { isAlreadyDecidedWorkerMcpItem } from '../worker-mcp-routes.js';
 import {
   listExportableAgentEnvironmentPackageSnapshots,
   requireAgentEnvironmentPackageSnapshot,
@@ -15,6 +23,12 @@ import {
   isSchedulerExecutionBusyRefusal,
   listSchedulerExecutionAttemptsForTurn,
 } from './execution-attempt-records.js';
+import { commandInputHash } from './idempotent-command.js';
+import {
+  hasNanoHostAttemptPreEffectProof,
+  hasNanoHostUnusedFailedStartAnchorProof,
+} from './nanohost-attempt-recovery.js';
+import { getSchedulerPreparationClaims } from './scheduler-dispatch-loop.js';
 import {
   clearWorkerCheckpoint,
   getWorkerCheckpoint,
@@ -169,6 +183,275 @@ export interface ClearWorkerCheckpointAfterTerminalStateInput {
    * worker session plus one closed, definite pre-effect failed-start attempt. Skipping does not claim provenance is complete or that no Worker ran.
    */
   readonly skipRuntimeProvenance?: boolean;
+  /** Existing Core and product owners used to revalidate the assigned-Session never-submitted exception. */
+  readonly coreDb?: CoreDb;
+  /** Original product store; supplied with Core only by the initiating checkpoint owner. */
+  readonly store?: FsStore;
+}
+
+/**
+ * Validates the complete assigned-Session failed-start alternative without writing any owner.
+ *
+ * Command receipt authority remains with the initiating mode. Native absence stays adapter-owned; this proof only makes execution-generated provenance inapplicable on the exact never-submitted branch.
+ * @param coreDb Existing admission and attempt owners.
+ * @param store Original Turn, AgentSession and publication owners.
+ * @param workspaceDb Immutable input, package and checkpoint owners.
+ * @param checkpoint Exact original checkpoint, including a failed projection left by partial closeout.
+ * @returns Whether this tuple proves a never-submitted failed start.
+ * @throws Error for unreadable or contradictory retained owners.
+ */
+export function hasWorkerCheckpointNeverSubmittedProof(
+  coreDb: CoreDb,
+  store: FsStore,
+  workspaceDb: WorkspaceDb,
+  checkpoint: WorkerCheckpointRecord
+): boolean {
+  if (
+    !checkpoint.workerSessionId ||
+    checkpoint.goalId !== null ||
+    checkpoint.taskId !== null ||
+    checkpoint.iteration !== 0 ||
+    !(
+      (checkpoint.stage === 'running_worker' && checkpoint.stopReason === null) ||
+      (checkpoint.stage === 'failed' && checkpoint.stopReason === 'error')
+    )
+  )
+    return false;
+  const attempts = listSchedulerExecutionAttemptsForTurn(coreDb, checkpoint);
+  const relevant = attempts.filter((attempt) => !isSchedulerExecutionBusyRefusal(attempt));
+  const attempt = relevant[0];
+  if (
+    !attempt ||
+    relevant.length !== 1 ||
+    attempt.agentSessionId !== checkpoint.workerSessionId ||
+    attempt.phase !== 'closed' ||
+    attempt.disposition !== 'not_accepted' ||
+    attempt.terminalCause !== 'turn-start-failed' ||
+    attempt.operationId !== null ||
+    attempt.deadline !== null ||
+    attempt.fenceRef !== null ||
+    attempt.outcomeRef !== null ||
+    !attempt.inputRef
+  )
+    return false;
+  const admission = requireSchedulerExecutionAttemptAdmissionContext(coreDb, attempt.attemptId);
+  if (getSchedulerPreparationClaims(coreDb).has(admission.queueEntryId)) return false;
+  const turn = store.getTurn(checkpoint.workspaceId, checkpoint.threadId, checkpoint.turnId);
+  const session = store.getAgentSession(checkpoint.workerSessionId);
+  const pkg = requireAgentEnvironmentPackageSnapshot(
+    workspaceDb,
+    checkpoint.workspaceId,
+    attempt.inputRef
+  ).snapshot;
+  const initiatingItem = turn.items.find((item) => item.id === `it_user_${turn.id}`);
+  const originalInput = store
+    .listWorkspaceItemRevisions(checkpoint.workspaceId)
+    .find((item) => item.id === `it_user_${turn.id}`);
+  const preparation = JSON.parse(attempt.preparationInputJson);
+  if (
+    admission.status !== 'admitted' ||
+    admission.requestId !== checkpoint.requestId ||
+    admission.requestedAgentId !== turn.agentId ||
+    admission.backendId !== attempt.backendId ||
+    schedulerAdmissionInputHash(admission) !== admission.inputHash ||
+    !preparation?.admission ||
+    preparation.admission.queueEntryId !== admission.queueEntryId ||
+    schedulerAdmissionInputHash(preparation.admission) !== admission.inputHash ||
+    !isDeepStrictEqual(turn.triggerActor, admission.triggerActor) ||
+    turn.agentSessionId !== session.id ||
+    !['running', 'failed'].includes(turn.status) ||
+    session.workspaceId !== checkpoint.workspaceId ||
+    session.threadId !== checkpoint.threadId ||
+    session.agentId !== turn.agentId ||
+    session.stale ||
+    session.nativeHandleDigest != null ||
+    !['created', 'failed'].includes(session.status) ||
+    (session.status === 'created' && session.message !== null) ||
+    session.environmentPackageSnapshotId !== pkg.snapshotId ||
+    pkg.agent.agentId !== turn.agentId ||
+    pkg.scope.workspaceId !== checkpoint.workspaceId ||
+    pkg.scope.threadId !== checkpoint.threadId ||
+    pkg.scope.turnId !== checkpoint.turnId ||
+    pkg.scope.agentSessionId !== session.id ||
+    pkg.scope.requestId !== checkpoint.requestId ||
+    !isDeepStrictEqual(pkg.scope.triggerActor, admission.triggerActor) ||
+    initiatingItem?.type !== 'user-message' ||
+    initiatingItem.status !== 'completed' ||
+    initiatingItem.workspaceId !== checkpoint.workspaceId ||
+    initiatingItem.threadId !== checkpoint.threadId ||
+    initiatingItem.turnId !== turn.id ||
+    !isDeepStrictEqual(initiatingItem, originalInput) ||
+    !isDeepStrictEqual(initiatingItem.actor, turn.triggerActor) ||
+    initiatingItem.text !== admission.turnInput ||
+    (pkg.extensions.openkit as { turnInput?: unknown }).turnInput !== admission.turnInput ||
+    !checkpoint.contextDigest ||
+    commandInputHash(
+      StructuredWorkerDelegationRequestSchema.parse(JSON.parse(admission.turnInput))
+    ) !== checkpoint.contextDigest ||
+    parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary)?.contextDigest !==
+      checkpoint.contextDigest
+  )
+    throw new Error('Never-submitted checkpoint has contradictory input or product lineage.');
+  if (
+    // The attempt owner enumerates rowid creation order; equal timestamps alone prove no order.
+    attempts.some(
+      (sibling, index) =>
+        sibling.attemptId !== attempt.attemptId &&
+        (!isSchedulerExecutionBusyRefusal(sibling) ||
+          index >= attempts.indexOf(attempt) ||
+          sibling.createdAt > attempt.createdAt ||
+          !hasNanoHostAttemptPreEffectProof(coreDb, sibling.attemptId))
+    ) ||
+    coreDb.sqlite
+      .prepare(
+        'SELECT 1 FROM scheduler_admission_entries WHERE turn_id = ? AND queue_entry_id <> ? LIMIT 1'
+      )
+      .get(turn.id, admission.queueEntryId) ||
+    coreDb.sqlite
+      .prepare(
+        "SELECT 1 FROM scheduler_execution_attempts WHERE agent_session_id = ? AND attempt_id <> ? AND phase <> 'closed' LIMIT 1"
+      )
+      .get(session.id, attempt.attemptId) ||
+    coreDb.sqlite
+      .prepare(
+        'SELECT 1 FROM worker_backend_sessions WHERE (turn_id = ? OR agent_session_id = ?) AND attempt_id <> ? LIMIT 1'
+      )
+      .get(turn.id, session.id, attempt.attemptId) ||
+    coreDb.sqlite
+      .prepare(`SELECT 1 FROM worker_control_records WHERE turn_id = ?
+      UNION ALL SELECT 1 FROM worker_control_rejected_evidence WHERE turn_id = ?
+      UNION ALL SELECT 1 FROM worker_control_sequence_fingerprints WHERE turn_id = ? LIMIT 1`)
+      .get(turn.id, turn.id, turn.id) ||
+    workspaceDb.sqlite
+      .prepare(
+        'SELECT 1 FROM pending_requests WHERE raising_turn_id = ? OR delivery_turn_id = ? LIMIT 1'
+      )
+      .get(turn.id, turn.id) ||
+    turn.items.some((item) =>
+      [
+        'approval-request',
+        'approval-decision',
+        'user-input-request',
+        'user-input-response',
+      ].includes(item.type)
+    ) ||
+    store
+      .listCommandRequests()
+      .some(
+        (receipt) =>
+          receipt.scope.workspaceId === turn.workspaceId &&
+          receipt.scope.turnId === turn.id &&
+          ['approval.respond', 'user_input.answer', 'pending_request.withdraw'].includes(
+            receipt.command
+          )
+      ) ||
+    store
+      .listThreadTurns(turn.workspaceId, turn.threadId)
+      .some(
+        (other) =>
+          other.id !== turn.id &&
+          other.agentSessionId === session.id &&
+          !['completed', 'failed', 'cancelled', 'interrupted'].includes(other.status)
+      ) ||
+    !hasNanoHostUnusedFailedStartAnchorProof(coreDb, workspaceDb, pkg, attempt.attemptId)
+  )
+    return false;
+  // Validate existing partial publications before invoking a lifecycle owner that can repair missing writes.
+  const events = store.getTurnEvents(turn.id);
+  const terminals = events.filter((event) => event.event === 'turn.completed');
+  const sessionEvents = events.filter((event) => event.event === 'agent.session.updated');
+  const requestId = projectTurnEventRequestId(
+    checkpoint.requestId,
+    turn.workspaceId,
+    turn.threadId
+  );
+  const completedAt = turn.completedAt ?? (session.status === 'failed' ? session.updatedAt : null);
+  if (
+    (turn.status === 'running' && (turn.error !== null || turn.completedAt !== null)) ||
+    (turn.status === 'failed' && (!turn.error?.code || !turn.error.message || !turn.completedAt)) ||
+    terminals.length > 1 ||
+    terminals.some(
+      (event) =>
+        event.requestId !== requestId ||
+        event.workspaceId !== turn.workspaceId ||
+        event.threadId !== turn.threadId ||
+        event.turnId !== turn.id ||
+        event.data.type !== 'turn-completed' ||
+        event.data.stopReason !== 'error' ||
+        Date.parse(event.data.turn.completedAt!) > Date.parse(event.timestamp) ||
+        // Align with native failed-start recovery: preserve the ordered published prefix and prove every addition.
+        !isDeepStrictEqual(
+          withoutConversationStatusDisplayFields(event.data.turn),
+          withoutConversationStatusDisplayFields({
+            ...turn,
+            items: turn.items.slice(0, event.data.turn.items.length),
+          })
+        ) ||
+        !turn.items
+          .slice(event.data.turn.items.length)
+          .every((item) => isAlreadyDecidedWorkerMcpItem(workspaceDb, pkg, item, turn.completedAt))
+    ) ||
+    sessionEvents.filter(
+      (event) =>
+        event.data.type === 'agent-session-updated' && event.data.agentSession.status === 'created'
+    ).length > 1 ||
+    sessionEvents.filter(
+      (event) =>
+        event.data.type === 'agent-session-updated' && event.data.agentSession.status === 'failed'
+    ).length > 1 ||
+    sessionEvents.some(
+      (event) =>
+        event.requestId !== requestId ||
+        event.workspaceId !== turn.workspaceId ||
+        event.threadId !== turn.threadId ||
+        event.turnId !== turn.id ||
+        event.data.type !== 'agent-session-updated' ||
+        event.data.agentSession.id !== session.id ||
+        event.data.agentSession.agentId !== session.agentId ||
+        event.data.agentSession.workspaceId !== session.workspaceId ||
+        event.data.agentSession.threadId !== session.threadId ||
+        event.data.agentSession.createdAt !== session.createdAt ||
+        Date.parse(event.data.agentSession.updatedAt) > Date.parse(event.timestamp) ||
+        !['created', 'failed'].includes(event.data.agentSession.status) ||
+        (event.data.agentSession.status === 'failed' &&
+          (session.status !== 'failed' ||
+            event.data.agentSession.updatedAt !== completedAt ||
+            !isDeepStrictEqual(event.data.agentSession, AgentSessionSchema.parse(session)))) ||
+        (event.data.agentSession.status === 'created' &&
+          events.some(
+            (closeout) =>
+              (closeout.event === 'turn.completed' ||
+                (closeout.data.type === 'agent-session-updated' &&
+                  closeout.data.agentSession.status === 'failed')) &&
+              event.sequence >= closeout.sequence
+          ))
+    ) ||
+    (session.status === 'failed' &&
+      (session.updatedAt !== completedAt || (turn.error && session.message !== turn.error.message)))
+  )
+    throw new Error('Never-submitted checkpoint has contradictory terminal publication.');
+  return true;
+}
+
+/**
+ * Omits only the Store-admitted display refresh fields of the conversation's existing result Item.
+ *
+ * @param turn Published or current Turn whose ordered decided Item content must remain intact.
+ * @returns Turn content with only result status level, title and summary omitted for comparison.
+ */
+function withoutConversationStatusDisplayFields(turn: ReturnType<FsStore['getTurnById']>) {
+  return {
+    ...turn,
+    items: turn.items.map((item) =>
+      item.id === `it_worker_result_${turn.id}` && item.type === 'status'
+        ? Object.fromEntries(
+            Object.entries(item).filter(
+              ([field]) => !DISPLAY_PROJECTION_REFRESH_FIELDS.some((allowed) => allowed === field)
+            )
+          )
+        : item
+    ),
+  };
 }
 
 /**
@@ -254,7 +537,10 @@ export function recoverWorkerCheckpointStopReason(
     // Native final-status verification and every release barrier belong behind the adapter.
     // A closed attempt with its exact retained fence proves those owners settled, while the
     // product terminal event supplies the canonical StopReason without parsing Native proof.
-    if (attempt.phase !== 'closed' || !attempt.fenceRef || !attempt.operationId)
+    if (
+      (attempt.phase !== 'closed' || !attempt.fenceRef || !attempt.operationId) &&
+      !hasWorkerCheckpointNeverSubmittedProof(coreDb, store, workspaceDb, checkpoint)
+    )
       throw new Error('Worker checkpoint has no complete execution closeout.');
   } else if (
     !stopReason ||
@@ -722,7 +1008,15 @@ export async function clearWorkerCheckpointAfterTerminalState(
       record.turnId === input.turnId &&
       (!checkpoint.workerSessionId || record.agentSessionId === checkpoint.workerSessionId)
   )?.snapshot;
-  if (!input.skipRuntimeProvenance && environmentPackage?.control.transcript?.runtimeProvenance) {
+  if (
+    !input.skipRuntimeProvenance &&
+    environmentPackage?.control.transcript?.runtimeProvenance &&
+    !(
+      input.coreDb &&
+      input.store &&
+      hasWorkerCheckpointNeverSubmittedProof(input.coreDb, input.store, workspaceDb, checkpoint)
+    )
+  ) {
     const rawBundle = workspaceDb.sqlite
       .prepare(
         `SELECT evidence_bundle_id, backend_type, created_at
