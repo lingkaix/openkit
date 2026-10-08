@@ -805,8 +805,16 @@ describe('chat starter (board 01)', () => {
   });
 
   it('shows the empty state when there are no recent chats', async () => {
-    renderApp('/chat', makeClient());
-    expect(await screen.findByText('Start a chat')).toBeInTheDocument();
+    const listConversationNavigation = vi.fn().mockResolvedValue({ items: [] });
+    renderApp('/chat', makeClient({}, { 'conversation.navigation': listConversationNavigation }));
+
+    // Discovery can replace the initial empty block with a loading skeleton.
+    await waitFor(() => {
+      expect(listConversationNavigation).toHaveBeenCalledWith({ workspaceId: 'ws1' });
+      expect(
+        within(screen.getByRole('main', { name: 'Workspace' })).getByText('Start a chat')
+      ).toBeInTheDocument();
+    });
   });
 
   it('switches the active Workspace from Chat', async () => {

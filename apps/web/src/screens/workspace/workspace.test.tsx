@@ -1528,8 +1528,11 @@ describe('Overview / Action Center (board 07)', () => {
       })
     );
 
-    expect(await screen.findByText('Launch research program')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Launch research program' })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', {
+        name: 'Launch research program',
+      })
+    ).toBeInTheDocument();
     expect(screen.getAllByRole('link', { name: 'Open goal' })[0]).toHaveAttribute(
       'href',
       '/goals/ws1/th_goal_need'
