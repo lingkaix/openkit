@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
 import { googleProvider } from '@earendil-works/pi-ai/providers/google';
+import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -19,6 +20,7 @@ import { readWorkObservations } from '../storage/work-observations.js';
 const databases: WorkspaceDb[] = [];
 const roots: string[] = [];
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const db of databases.splice(0)) db.sqlite.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -49,7 +51,8 @@ import {
   LogicalModelRoutesExhaustedError,
 } from '../llm/gateway-execution.js';
 import type { ResolvedLogicalModel } from '../llm/logical-models.js';
-import { PiAiGatewayClient } from '../llm/pi-ai-client.js';
+import { GatewayUnsupportedFeatureError, PiAiGatewayClient } from '../llm/pi-ai-client.js';
+import { attachPiAiFailure } from '../llm/pi-ai-failure.js';
 import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { createInternalAgentGatewayProvider } from './gateway-provider.js';
 
@@ -97,7 +100,281 @@ function request(input = 'Read status.') {
 }
 
 describe('internal Agent Gateway provider', () => {
+  it('logs the real required prefixItems rejection as pre-transport without private content', async () => {
+    const capture = captureBinding();
+    const stock = openaiProvider();
+    const models = createModels();
+    models.setProvider(stock);
+    const model = models
+      .getModels()
+      .find((model) => model.provider === stock.id && model.api === 'openai-responses')!;
+    expect(model).toBeDefined();
+    const selectedModel = {
+      ...logicalModel,
+      routes: [{ ...logicalModel.routes[0]!, providerModel: model.id }],
+    };
+    const dispatcher = new LLMGatewayProviderDispatcher({
+      piAiClient: new PiAiGatewayClient({ models }),
+    });
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('Unexpected transport.'));
+    const provider = createInternalAgentGatewayProvider({
+      capture,
+      logicalModel: selectedModel,
+      resolveLogicalModel: () => selectedModel,
+      dispatcher: {
+        // Recreate the original required-sampling admission through the real stock serializer.
+        createResponses: (provider, input, context) =>
+          dispatcher.createResponses(
+            provider,
+            {
+              ...input,
+              tools: (input.tools as Record<string, unknown>[]).map((tool) => ({
+                ...tool,
+                strict: true,
+              })),
+            },
+            context
+          ),
+      },
+      resolveGatewayProvider: () => ({
+        id: 'provider',
+        adapterId: stock.id,
+        apiKey: 'credential-canary',
+        baseUrl: null,
+        models: [model.id],
+        requiresApiKey: true,
+        gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
+        modelMetadata: { [model.id]: { tool_call: true } },
+      }),
+      promptCacheScope: {
+        sessionId: 'private-session-canary',
+        workspaceId: capture.turn.workspaceId,
+      },
+      usageEndpoint: 'responses',
+      callContext: {
+        workspaceId: capture.turn.workspaceId,
+        authorityActor: capture.turn.triggerActor,
+        family: 'llm',
+        operation: 'administration',
+        capabilityId: 'inference.local.administration',
+        requestId: '00000000-0000-4000-8000-000000000001',
+        redactionClass: 'metadata-only',
+      },
+    });
+    const failure = await provider({
+      ...request('prompt-canary'),
+      tools: [
+        {
+          name: 'task_start',
+          description: 'schema-canary',
+          inputSchema: {
+            type: 'object',
+            properties: { args: { type: 'array', prefixItems: [{ type: 'string' }] } },
+          },
+        },
+      ],
+    }).catch((error: unknown) => error);
+    expect(failure).toHaveProperty(
+      'cause.message',
+      'Tool "task_start" requires JSON-schema constrained sampling, but prefixItems schemas are unsupported.'
+    );
+    expect(fetch).not.toHaveBeenCalled();
+    const calls = listWorkspaceCapabilityCalls(capture.workspaceDb, capture.turn.workspaceId);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ status: 'failed', errorCode: 'internal_inference_failed' });
+    expect(log).toHaveBeenCalledTimes(1);
+    const diagnostic = JSON.parse(String(log.mock.calls[0]![0]));
+    expect(diagnostic).toEqual({
+      code: 'internal_gateway_call_failed',
+      message: 'Internal Gateway logical call failed.',
+      phase: 'pre-transport',
+      failureKind: 'unknown',
+      requestId: '00000000-0000-4000-8000-000000000001',
+      workspaceId: capture.turn.workspaceId,
+      threadId: capture.threadId,
+      turnId: capture.turnId,
+      capabilityCallId: calls[0]!.id,
+      corr: expect.any(String),
+      attempt: 0,
+    });
+    const serialized = JSON.stringify(diagnostic);
+    for (const prohibited of [
+      'task_start',
+      'prefixItems',
+      'constrained sampling',
+      'schema-canary',
+      'prompt-canary',
+      'credential-canary',
+      'private-session-canary',
+    ])
+      expect(serialized).not.toContain(prohibited);
+  });
+
+  it.each([
+    'transport',
+    'provider-response',
+    'output-projection',
+    'pre-transport',
+    'sink-failure',
+  ] as const)('keeps %s diagnostics safe and independent of product closeout', async (scenario) => {
+    const capture = captureBinding();
+    const original =
+      scenario === 'pre-transport'
+        ? new GatewayUnsupportedFeatureError('schema-canary')
+        : attachPiAiFailure(new Error('exception-canary'), {
+            code: 'provider-private-canary',
+            ...(scenario === 'provider-response' ? { status: 401 } : {}),
+          });
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {
+      if (scenario === 'sink-failure') throw new Error('Log sink unavailable.');
+    });
+    const provider = createInternalAgentGatewayProvider({
+      capture,
+      logicalModel: { ...logicalModel, autoFailover: false },
+      resolveLogicalModel() {
+        return this.logicalModel;
+      },
+      dispatcher: {
+        createResponses: async (_provider, _input, context) => {
+          context?.transport?.onProviderHandoff?.();
+          if (scenario === 'output-projection')
+            return {
+              id: 'response',
+              object: 'response',
+              output: [
+                {
+                  type: 'function_call',
+                  call_id: 'call',
+                  name: 'task_start',
+                  arguments: 'argument-canary',
+                },
+              ],
+            } as never;
+          throw original;
+        },
+      },
+      resolveGatewayProvider: () =>
+        ({
+          id: 'provider',
+          models: ['model'],
+          gatewayCapabilities: {},
+          modelMetadata: { model: { tool_call: true } },
+        }) as never,
+      promptCacheScope: { sessionId: 'internal', workspaceId: capture.turn.workspaceId },
+      usageEndpoint: 'responses',
+      callContext: {
+        workspaceId: capture.turn.workspaceId,
+        authorityActor: capture.turn.triggerActor,
+        family: 'llm',
+        operation: 'administration',
+        capabilityId: 'inference.local.administration',
+        redactionClass: 'metadata-only',
+      },
+    });
+    const error = await provider(request()).catch((error: unknown) => error);
+    if (scenario === 'output-projection')
+      expect(error).toHaveProperty('message', 'Gateway returned invalid Tool arguments.');
+    else if (scenario === 'pre-transport') expect(error).toHaveProperty('cause.cause', original);
+    else expect(error).toHaveProperty('cause', original);
+    expect(
+      listWorkspaceCapabilityCalls(capture.workspaceDb, capture.turn.workspaceId)
+    ).toMatchObject([
+      {
+        status: 'failed',
+        errorCode:
+          scenario === 'provider-response'
+            ? 'gateway_provider_authentication_failed'
+            : scenario === 'pre-transport'
+              ? 'unsupported_gateway_feature'
+              : 'internal_inference_failed',
+      },
+    ]);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(log.mock.calls[0]![0]))).toEqual({
+      code: 'internal_gateway_call_failed',
+      message: 'Internal Gateway logical call failed.',
+      phase: scenario === 'sink-failure' ? 'transport' : scenario,
+      failureKind:
+        scenario === 'provider-response'
+          ? 'auth_rejected'
+          : scenario === 'pre-transport'
+            ? 'unsupported'
+            : 'unknown',
+      ...(scenario === 'provider-response' ? { httpStatus: 401 } : {}),
+      workspaceId: capture.turn.workspaceId,
+      threadId: capture.threadId,
+      turnId: capture.turnId,
+      capabilityCallId: expect.any(String),
+      corr: expect.any(String),
+      attempt: 0,
+    });
+  });
+
+  it('emits one diagnostic after retry and failover exhaustion', async () => {
+    vi.useFakeTimers();
+    try {
+      const capture = captureBinding();
+      const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const createResponses = vi.fn(async (_provider, _input, context) => {
+        context.transport.onProviderHandoff();
+        throw new GatewayAttemptFailure({
+          kind: 'rate_limited',
+          settled: true,
+          status: 429,
+          providerCode: 'private-code-canary',
+          retryAfter: '0',
+        });
+      });
+      const provider = createInternalAgentGatewayProvider({
+        capture,
+        logicalModel: {
+          ...logicalModel,
+          routes: [
+            ...logicalModel.routes,
+            { ...logicalModel.routes[0]!, id: 'backup', providerProfileId: 'backup' },
+          ],
+        },
+        resolveLogicalModel() {
+          return this.logicalModel;
+        },
+        dispatcher: { createResponses },
+        resolveGatewayProvider: (id) =>
+          ({
+            id,
+            models: ['model'],
+            gatewayCapabilities: {},
+            modelMetadata: { model: { tool_call: true } },
+          }) as never,
+        promptCacheScope: { sessionId: 'internal', workspaceId: capture.turn.workspaceId },
+        usageEndpoint: 'responses',
+      });
+      const pending = provider(request()).catch((error: unknown) => error);
+      await vi.runAllTimersAsync();
+      expect(await pending).toBeInstanceOf(LogicalModelRoutesExhaustedError);
+      expect(createResponses).toHaveBeenCalledTimes(8);
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(log.mock.calls[0]![0]))).toEqual({
+        code: 'internal_gateway_call_failed',
+        message: 'Internal Gateway logical call failed.',
+        phase: 'provider-response',
+        failureKind: 'rate_limited',
+        httpStatus: 429,
+        workspaceId: capture.turn.workspaceId,
+        threadId: capture.threadId,
+        turnId: capture.turnId,
+        corr: expect.any(String),
+        attempt: 7,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('returns existing unavailable outcome when the pinned model no longer resolves', async () => {
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const capture = captureBinding();
     const createResponses = vi.fn().mockResolvedValue({
       id: 'unexpected',
@@ -149,6 +426,17 @@ describe('internal Agent Gateway provider', () => {
       listWorkspaceCapabilityCalls(capture.workspaceDb, capture.turn.workspaceId)
     ).toMatchObject([{ status: 'failed', errorCode: 'gateway_logical_model_unavailable' }]);
     expect(listWorkspaceUsageRecords(capture.workspaceDb, capture.turn.workspaceId)).toEqual([]);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(log.mock.calls[0]![0]))).toEqual({
+      code: 'internal_gateway_call_failed',
+      message: 'Internal Gateway logical call failed.',
+      phase: 'pre-transport',
+      failureKind: 'unknown',
+      workspaceId: capture.turn.workspaceId,
+      threadId: capture.threadId,
+      turnId: capture.turnId,
+      capabilityCallId: expect.any(String),
+    });
   });
 
   it('projects only fixed Tools and preserves provider output interleaving', async () => {
@@ -208,7 +496,11 @@ describe('internal Agent Gateway provider', () => {
         ],
       }),
       expect.objectContaining({
-        transport: { signal: expect.any(AbortSignal), deadline: expect.any(Number) },
+        transport: {
+          signal: expect.any(AbortSignal),
+          deadline: expect.any(Number),
+          onProviderHandoff: expect.any(Function),
+        },
       })
     );
     expect(createResponses.mock.calls[0]?.[1]).not.toHaveProperty('metadata');

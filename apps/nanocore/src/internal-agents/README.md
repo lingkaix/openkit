@@ -23,4 +23,6 @@ Production administration and Goal consumers supply their existing capability co
 
 The internal Gateway producer settles callback ownership at logical closeout on both success and failure. Later usage callbacks are ignored before any ledger access, including after the capture database closes. Its transport carries the executor’s unchanged absolute deadline through retry and failover; no deadline consumer is added here.
 
+Failed logical closeout emits the best-effort `internal_gateway_call_failed` process log under [Operational Telemetry Standardization](../../../../docs/specs/20260731-operational_telemetry_standardization.md#failed-internal-gateway-logical-calls). `gateway-provider.test.ts` exercises the real stock required-sampling `prefixItems` rejection, safe phase/status/correlation projection, and a throwing log sink. Public failure and durable CapabilityCall metadata keep their existing projections.
+
 The deterministic Workflow Coordinator routes user requests; the model-using Goal Coordinator is a separate consumer in `../runtime/goal-coordinator.ts`. It uses this existing loop on ordinary Goal Thread Turns without an AgentSession and the configured `goal-orchestrator` role identity. `task-shapes.ts` retains ordinary Task handoff shapes independently of the removed Goal stores.

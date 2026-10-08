@@ -180,6 +180,14 @@ These attributes are a projection of existing ids, not a new identity vocabulary
 - Console output without a retained container, process-manager, or Collector sink is transient and must not be claimed as surviving evidence.
 - The presence or absence of a log line never decides a product or test outcome.
 
+### Failed Internal Gateway Logical Calls
+
+The existing internal-role Gateway logical-call closeout emits one best-effort product-safe diagnostic when the logical call fails, rather than one log per retry or route member. Its stable code is `internal_gateway_call_failed`. It carries only a fixed safe summary, a failure phase, the existing closed Gateway failure kind, an actually observed upstream HTTP status when available, and existing correlation ids already known by closeout. It creates no durable descriptive cause on CapabilityCall and no additional product record.
+
+The failure phase is allowlisted to `pre-transport`, `transport`, `provider-response`, or `output-projection`. Local selection, admission and request-construction rejection are `pre-transport`; in particular, rejection of a Tool's `prefixItems` schema under required constrained sampling belongs to that phase even when the stock adapter was entered. An attempt handed to the adapter without affirmative local rejection or provider-response evidence is `transport`; this phase does not prove delivery. An observed upstream HTTP rejection is `provider-response`. Failure converting a returned response to the internal Agent message is `output-projection`. Local error-envelope HTTP values are not observed upstream status and must be omitted.
+
+Correlation includes known request, Workspace, Thread, Turn and CapabilityCall ids, plus the existing logical-dispatch correlation and attempt index when a member was reached. Missing values are omitted; no id is minted or storage queried for this log. Raw exception text, stack traces, provider-private codes, schemas, Tool arguments, prompts, outputs and credentials are prohibited. Failed or absent logging leaves closeout and the existing public `provider_call_failed` / `internal_inference_failed` projection unchanged. These diagnostics have no recovery or restart lifecycle beyond the existing optional log sink.
+
 ## Test And CI Contract
 
 - The system under test emits the same production telemetry with `deployment.environment.name=test`; tests do not maintain a second instrumentation implementation.
@@ -277,6 +285,7 @@ There is no compatibility requirement. No product data migration, telemetry back
 - A deterministic test exporter proves Resource identity, trace parentage, terminal status, stable error code, and existing OpenKit id projection without a network service.
 - HTTP tests prove stable route-template instrumentation, status and cancellation behavior, and absence of body, header, query, credential, and unrestricted path attributes.
 - Gateway and provider tests prove product-safe provider, model, operation, streaming, terminal, duration, and usage projection without prompt, response, quota payload, account, credential, cache-key, or provider-private data.
+- Internal Gateway regressions prove one logical-closeout diagnostic, the pre-transport classification of required constrained-sampling rejection of `task_start`'s `prefixItems` schema, observed-status-only projection, prohibited-content absence, and unchanged failure closeout when the log sink throws.
 - Worker tests prove that NanoCore-owned scheduler, worker, transcript, publication, and teardown boundaries correlate without injecting an SDK or exporter into the worker.
 - Metrics tests reject high-cardinality OpenKit ids and dynamic route, URL, error-message, user, account, Workspace, Thread, Turn, request, and test-case dimensions.
 - Failure tests prove disabled telemetry, Collector refusal, exporter timeout, queue overflow, and shutdown flush failure do not alter product status, canonical records, cleanup, or process deadline behavior.

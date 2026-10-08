@@ -11,6 +11,8 @@ import { recordInternalLlmGatewayUsage } from '../llm/gateway-usage.js';
 import type { ResolvedLogicalModel } from '../llm/logical-models.js';
 import { type ModelCaptureContext, ModelCaptureError } from '../llm/model-capture.js';
 import type { OpenAICompatibleResponsesResponse } from '../llm/openai-compatible-client.js';
+import { GatewayUnsupportedFeatureError } from '../llm/pi-ai-client.js';
+import type { PiAiFailure, PiAiFailureKind } from '../llm/pi-ai-failure.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
@@ -20,6 +22,13 @@ import type {
   InternalAgentProviderCall,
 } from './internal-agent-loop.js';
 import { InternalAgentProviderError } from './internal-agent-loop.js';
+
+/** Allowlisted diagnostic phases; stock handoff alone does not establish transport delivery. */
+type InternalGatewayFailurePhase =
+  | 'pre-transport'
+  | 'transport'
+  | 'provider-response'
+  | 'output-projection';
 
 /** Dependencies that bind the shared internal Agent loop to the existing logical Gateway. */
 export interface InternalAgentGatewayProviderOptions {
@@ -95,6 +104,9 @@ export function createInternalAgentGatewayProvider(
         })
       : undefined;
     let callFinished = false;
+    let failurePhase: InternalGatewayFailurePhase = 'pre-transport';
+    let observedStatus: number | undefined;
+    let dispatchCorrelation: { corr: string; attempt: number } | undefined;
     try {
       const logicalModel = options.resolveLogicalModel(options.logicalModel.id);
       if (!logicalModel) throw new LogicalModelRoutesExhaustedError();
@@ -116,41 +128,79 @@ export function createInternalAgentGatewayProvider(
           attempt,
           execution,
         }) => {
-          const response = await options.dispatcher.createResponses(
-            provider,
-            {
-              model: providerModel,
-              instructions: request.systemPrompt,
-              input: providerInput,
-              parallel_tool_calls: false,
-              tools: providerTools,
-            },
-            {
-              ...(subscriptionModels ? { models: subscriptionModels } : {}),
-              capture: {
-                ...options.capture,
-                ...(call ? { capabilityCallId: call.id } : {}),
-                corr,
-                attempt,
+          failurePhase = 'pre-transport';
+          observedStatus = undefined;
+          dispatchCorrelation = { corr, attempt };
+          const response = await options.dispatcher
+            .createResponses(
+              provider,
+              {
+                model: providerModel,
+                instructions: request.systemPrompt,
+                input: providerInput,
+                parallel_tool_calls: false,
+                tools: providerTools,
               },
-              promptCacheScope: options.promptCacheScope,
-              usageEndpoint: options.usageEndpoint,
-              onUsage: (usage) => {
-                if (call && !callFinished)
-                  execution.addUsageRecordIds(
-                    recordInternalLlmGatewayUsage({
-                      workspaceDb,
-                      call,
-                      logicalModelId: options.logicalModel.id,
-                      providerId: provider.id,
-                      usage,
-                      succeeded: false,
-                    })
-                  );
-              },
-              transport: { signal: execution.signal, deadline: execution.deadline },
-            }
-          );
+              {
+                ...(subscriptionModels ? { models: subscriptionModels } : {}),
+                capture: {
+                  ...options.capture,
+                  ...(call ? { capabilityCallId: call.id } : {}),
+                  corr,
+                  attempt,
+                },
+                promptCacheScope: options.promptCacheScope,
+                usageEndpoint: options.usageEndpoint,
+                onUsage: (usage) => {
+                  if (call && !callFinished)
+                    execution.addUsageRecordIds(
+                      recordInternalLlmGatewayUsage({
+                        workspaceDb,
+                        call,
+                        logicalModelId: options.logicalModel.id,
+                        providerId: provider.id,
+                        usage,
+                        succeeded: false,
+                      })
+                    );
+                },
+                transport: {
+                  signal: execution.signal,
+                  deadline: execution.deadline,
+                  onProviderHandoff: () => {
+                    failurePhase = 'transport';
+                    execution.onProviderHandoff?.();
+                  },
+                },
+              }
+            )
+            .catch((error: unknown) => {
+              const failure = (error as { failure?: PiAiFailure } | null)?.failure;
+              const status = failure?.status;
+              observedStatus =
+                typeof status === 'number' &&
+                Number.isInteger(status) &&
+                status >= 100 &&
+                status <= 599
+                  ? status
+                  : undefined;
+              // pi-ai 0.99.2 flattens this local serializer rejection into terminal text after stock handoff.
+              // Recognize only its fixed signature for diagnostics; never use it for routing or emit the Tool name, schema or exception text.
+              if (
+                error instanceof GatewayUnsupportedFeatureError ||
+                (error instanceof Error &&
+                  /^Tool "[^"]+" requires JSON-schema constrained sampling, but prefixItems schemas are unsupported\.$/.test(
+                    error.message
+                  ))
+              ) {
+                failurePhase = 'pre-transport';
+                observedStatus = undefined;
+              } else if (observedStatus !== undefined) {
+                failurePhase = 'provider-response';
+              }
+              throw error;
+            });
+          failurePhase = 'output-projection';
           const message = fromResponses(response);
           if (call)
             execution.addUsageRecordIds(
@@ -184,9 +234,51 @@ export function createInternalAgentGatewayProvider(
           status: 'failed',
           errorCode: projectGatewayFailure(error, 'internal_inference_failed').code,
         });
+      try {
+        console.warn(
+          JSON.stringify({
+            code: 'internal_gateway_call_failed',
+            message: 'Internal Gateway logical call failed.',
+            phase: failurePhase,
+            failureKind: internalGatewayFailureKind(error),
+            ...(observedStatus === undefined ? {} : { httpStatus: observedStatus }),
+            ...(call?.context.requestId ? { requestId: call.context.requestId } : {}),
+            workspaceId: workspaceDb.workspaceId,
+            threadId: options.capture.threadId,
+            turnId: options.capture.turnId,
+            ...(call ? { capabilityCallId: call.id } : {}),
+            ...dispatchCorrelation,
+          })
+        );
+      } catch {
+        // Optional diagnostics must preserve the original product failure and closeout.
+      }
       throw error;
     }
   };
+}
+
+/** Projects only the existing closed Gateway kind; private codes and exception text stay private. */
+function internalGatewayFailureKind(error: unknown): PiAiFailureKind {
+  const kind =
+    error instanceof LogicalModelRoutesExhaustedError
+      ? error.cause
+      : (error as { failure?: PiAiFailure } | null)?.failure?.kind;
+  switch (kind) {
+    case 'auth_rejected':
+    case 'quota_exhausted':
+    case 'rate_limited':
+    case 'provider_unavailable':
+    case 'context_overflow':
+    case 'unsupported':
+    case 'output_limit':
+    case 'refused':
+    case 'invalid_request':
+    case 'cancelled':
+      return kind;
+    default:
+      return error instanceof GatewayUnsupportedFeatureError ? 'unsupported' : 'unknown';
+  }
 }
 
 function toResponsesInput(message: AgentMessage): readonly Record<string, unknown>[] {
