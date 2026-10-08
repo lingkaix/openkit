@@ -284,7 +284,7 @@ describe('parseOkfDocument', () => {
 });
 
 describe('knowledgeReferenceErrors', () => {
-  it('requires digest-qualified local references to be verified as an exact closed reference', () => {
+  it('checks registered-source pins against the registry even when a closed proof is supplied', () => {
     const reference = `source:ks_123e4567-e89b-42d3-a456-426614174000@sha256:${'0'.repeat(64)}`;
     const parsed = parseOkfDocument({
       path: 'knowledge/pages/digest-reference.md',
@@ -305,12 +305,19 @@ describe('knowledgeReferenceErrors', () => {
     expect(
       knowledgeReferenceErrors(
         parsed.document,
-        new Set(['ks_123e4567-e89b-42d3-a456-426614174000']),
+        new Map([['ks_123e4567-e89b-42d3-a456-426614174000', null]]),
         new Set()
       )
     ).toContainEqual(expect.objectContaining({ code: 'reference.unresolved_source' }));
     expect(
-      knowledgeReferenceErrors(parsed.document, new Set(), new Set(), new Set([reference]))
+      knowledgeReferenceErrors(parsed.document, new Map(), new Set(), new Set([reference]))
+    ).toContainEqual(expect.objectContaining({ code: 'reference.unresolved_source' }));
+    expect(
+      knowledgeReferenceErrors(
+        parsed.document,
+        new Map([['ks_123e4567-e89b-42d3-a456-426614174000', `sha256:${'0'.repeat(64)}`]]),
+        new Set()
+      )
     ).toEqual([]);
   });
 });
@@ -462,7 +469,7 @@ describe('validateOpenKitKnowledgeProfile', () => {
     expect(validateOpenKitKnowledgeProfile(parsed.document).errors).toContainEqual(
       expect.objectContaining({ code: 'profile.invalid_source_refs' })
     );
-    expect(knowledgeReferenceErrors(parsed.document, new Set(), new Set())).toEqual([]);
+    expect(knowledgeReferenceErrors(parsed.document, new Map(), new Set())).toEqual([]);
   });
 
   it('rejects secret-like fields and values recursively through mappings and arrays', () => {

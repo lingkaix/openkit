@@ -8,6 +8,7 @@ This directory owns the portable OKF v0.2 Markdown parser and OpenKit workspace 
 - `updateOkfFrontmatter` is the shared YAML edit boundary for changing managed fields while retaining unknown metadata and the selected exact Markdown body.
 - Parsed computation, executor, attester, provenance, generation, and verification metadata remains inert data; this directory does not execute code, access networks, attest runs, or grant authority.
 - Knowledge routes, ledgers, retrieval, indexes, and portable file storage remain with their existing feature and storage owners.
+- Page `source_refs` validation and source-reference indexes share `resolveRegisteredKnowledgeSourceReference`: bare ids require an owning-scope registry target and pins additionally require its matching digest. Registry resolution preserves citation bytes and supplies no review, captured-byte integrity, or retrieval authorization proof.
 - Keep parsing deterministic and independent of database, provider, and HTTP concerns.
 
 ## Verification

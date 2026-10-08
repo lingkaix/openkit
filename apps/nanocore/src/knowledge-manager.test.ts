@@ -741,12 +741,12 @@ describe('Knowledge Manager answer operation', () => {
       content: 'Beta body.',
     });
     store.createKnowledgeSource({
-      id: 'ks_registered',
+      id: 'ks_123e4567-e89b-42d3-a456-426614174000',
       workspaceId: 'ws_demo',
       kind: 'document',
       title: 'Registered source',
       uri: null,
-      contentDigest: 'sha256:registered',
+      contentDigest: `sha256:${'a'.repeat(64)}`,
       originatingThreadId: null,
       originatingTurnId: null,
       originatingFileId: null,
@@ -766,7 +766,7 @@ describe('Knowledge Manager answer operation', () => {
         'openkit_status: "active"',
         'status: "stable"',
         'scope: "workspace"',
-        `source_refs: ["knowledge:${knowledge.id}", "source:ks_registered"]`,
+        `source_refs: ["knowledge:${knowledge.id}", "source:ks_123e4567-e89b-42d3-a456-426614174000"]`,
         'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
@@ -831,7 +831,7 @@ describe('Knowledge Manager answer operation', () => {
         }),
         expect.objectContaining({
           conceptId: 'alpha',
-          reference: 'source:ks_registered',
+          reference: 'source:ks_123e4567-e89b-42d3-a456-426614174000',
           kind: 'registered-source',
           resolved: true,
         }),

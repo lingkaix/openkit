@@ -16,6 +16,7 @@ import {
   type OkfDocument,
   parseOkfDocument,
   parseWorkspaceKnowledgeSchema,
+  resolveRegisteredKnowledgeSourceReference,
   stringFrontmatterField,
   stringListFrontmatterField,
   validateKnowledgePageCandidate,
@@ -517,7 +518,7 @@ export function retrieveWorkspaceKnowledge(
   const traceId = input.traceId ?? `krt_${randomUUID()}`;
   const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
   const workspaceSchemaText = readWorkspaceKnowledgeSchemaText(workspaceRoot);
-  const registeredSourceIds = readRegisteredSourceIds(workspaceRoot, input.workspaceId);
+  const registeredSources = readRegisteredSources(workspaceRoot, input.workspaceId);
   const knowledgeIds = readKnowledgePageIds(join(workspaceRoot, 'knowledge', 'pages'));
   const sourceReferencesByConcept = new Map<string, string[]>();
   const scores = new Map<string, number>();
@@ -601,7 +602,7 @@ export function retrieveWorkspaceKnowledge(
       path: expectedPath,
       content,
       ...(workspaceSchemaText ? { workspaceSchemaText } : {}),
-      registeredSourceIds,
+      registeredSources,
       knowledgeIds,
     });
     const sourceReferences = document
@@ -619,7 +620,7 @@ export function retrieveWorkspaceKnowledge(
       path: expectedPath,
       content,
       ...(workspaceSchemaText ? { workspaceSchemaText } : {}),
-      registeredSourceIds,
+      registeredSources,
       knowledgeIds,
       ...(referenceProof ? { resolvedReferences: referenceProof.resolvedReferences } : {}),
     });
@@ -774,7 +775,7 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
   }
 
   const workspaceSchemaText = readWorkspaceKnowledgeSchemaText(workspaceRoot);
-  const registeredSourceIds = readRegisteredSourceIds(workspaceRoot, input.workspaceId);
+  const registeredSources = readRegisteredSources(workspaceRoot, input.workspaceId);
   const knowledgeIds = readKnowledgePageIds(join(workspaceRoot, 'knowledge', 'pages'));
   const pages: ResolvedWorkspaceKnowledgeRetrievalPage[] = [];
 
@@ -803,7 +804,7 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
       path,
       content,
       ...(workspaceSchemaText ? { workspaceSchemaText } : {}),
-      registeredSourceIds,
+      registeredSources,
       knowledgeIds,
       ...(referenceProof ? { resolvedReferences: referenceProof.resolvedReferences } : {}),
     });
@@ -1093,7 +1094,7 @@ function readKnowledgePageEntries(
 ): WorkspaceSearchIndexEntry[] {
   const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
   const schema = readWorkspaceKnowledgeSchema(workspaceRoot);
-  const registeredSourceIds = readRegisteredSourceIds(workspaceRoot, workspaceId);
+  const registeredSources = readRegisteredSources(workspaceRoot, workspaceId);
   const knowledgeIds = readKnowledgePageIds(pagesRoot);
   const entries: WorkspaceSearchIndexEntry[] = [];
 
@@ -1108,7 +1109,7 @@ function readKnowledgePageEntries(
 
     if (
       !parsed.ok ||
-      !isStaticKnowledgeIndexPage(parsed.document, schema, registeredSourceIds, knowledgeIds)
+      !isStaticKnowledgeIndexPage(parsed.document, schema, registeredSources, knowledgeIds)
     ) {
       continue;
     }
@@ -1167,37 +1168,43 @@ function indexKnowledgePageIds(pagesRoot: string): string[] {
 }
 
 /**
- * Reads registered knowledge source ids from the workspace source registry.
+ * Reads registered Source ids and digests from the owning Workspace registry.
  *
  * @param workspaceRoot Workspace root path.
  * @param workspaceId Workspace id.
- * @returns Registered source ids for the workspace.
+ * @returns Registered Source ids and nullable digests for the Workspace.
  */
-function readRegisteredSourceIds(workspaceRoot: string, workspaceId: string): Set<string> {
+function readRegisteredSources(
+  workspaceRoot: string,
+  workspaceId: string
+): Map<string, string | null> {
   const registryRoot = join(workspaceRoot, 'sources', 'registry');
-  const sourceIds = new Set<string>();
+  const sources = new Map<string, string | null>();
 
   for (const fileName of listFiles(registryRoot).filter((name) => name.endsWith('.json'))) {
     const source = readJsonRecord(join(registryRoot, fileName)) as Record<string, unknown>;
 
     if (stringField(source, 'workspaceId') === workspaceId) {
-      sourceIds.add(stringField(source, 'id'));
+      sources.set(
+        stringField(source, 'id'),
+        typeof source.contentDigest === 'string' ? source.contentDigest : null
+      );
     }
   }
 
-  return sourceIds;
+  return sources;
 }
 
 /**
  * Returns whether source-prefixed references resolve to registered sources.
  *
  * @param document Parsed OKF document.
- * @param registeredSourceIds Registered source ids for the workspace.
+ * @param registeredSources Registered Source ids and digests for the Workspace.
  * @returns True when all source-prefixed references resolve.
  */
 function sourceReferencesResolve(
   document: OkfDocument,
-  registeredSourceIds: ReadonlySet<string>,
+  registeredSources: ReadonlyMap<string, string | null>,
   knowledgeIds: ReadonlySet<string>,
   resolvedReferences?: ReadonlySet<string>
 ): boolean {
@@ -1206,7 +1213,7 @@ function sourceReferencesResolve(
   }
 
   return (
-    knowledgeReferenceErrors(document, registeredSourceIds, knowledgeIds, resolvedReferences)
+    knowledgeReferenceErrors(document, registeredSources, knowledgeIds, resolvedReferences)
       .length === 0
   );
 }
@@ -1219,20 +1226,20 @@ function sourceReferencesResolve(
  *
  * @param document Parsed authoritative Page.
  * @param schema Current Workspace Knowledge schema.
- * @param registeredSourceIds Current registered Source identities.
+ * @param registeredSources Current registered Source identities and digests.
  * @param knowledgeIds Current Workspace Knowledge identities.
  * @returns True only for an active, valid, directly user-authored Page.
  */
 function isStaticKnowledgeIndexPage(
   document: OkfDocument,
   schema: WorkspaceKnowledgeSchema,
-  registeredSourceIds: ReadonlySet<string>,
+  registeredSources: ReadonlyMap<string, string | null>,
   knowledgeIds: ReadonlySet<string>
 ): boolean {
   return (
     stringFrontmatterField(document, 'review_state') === 'user-authored' &&
     isActiveOpenKitKnowledgePage(document, schema) &&
-    sourceReferencesResolve(document, registeredSourceIds, knowledgeIds)
+    sourceReferencesResolve(document, registeredSources, knowledgeIds)
   );
 }
 
@@ -1249,7 +1256,7 @@ function buildKnowledgeValidationRecords(
 ): WorkspaceKnowledgeValidationRecord[] {
   const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
   const workspaceSchemaText = readWorkspaceKnowledgeSchemaText(workspaceRoot);
-  const registeredSourceIds = readRegisteredSourceIds(workspaceRoot, workspaceId);
+  const registeredSources = readRegisteredSources(workspaceRoot, workspaceId);
   const knowledgeIds = readKnowledgePageIds(pagesRoot);
   const records: WorkspaceKnowledgeValidationRecord[] = [];
 
@@ -1264,7 +1271,7 @@ function buildKnowledgeValidationRecords(
       path,
       content,
       ...(workspaceSchemaText ? { workspaceSchemaText } : {}),
-      registeredSourceIds,
+      registeredSources,
       knowledgeIds,
     });
     const active = parsed.document?.frontmatter.openkit_status === 'active';
@@ -1304,7 +1311,7 @@ function buildKnowledgeSourceReferences(
   workspaceId: string
 ): WorkspaceKnowledgeSourceReference[] {
   const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
-  const registeredSourceIds = readRegisteredSourceIds(workspaceRoot, workspaceId);
+  const registeredSources = readRegisteredSources(workspaceRoot, workspaceId);
   const knowledgeIds = readKnowledgePageIds(pagesRoot);
   const references: WorkspaceKnowledgeSourceReference[] = [];
 
@@ -1327,7 +1334,7 @@ function buildKnowledgeSourceReferences(
           conceptId,
           path: workspacePath,
           reference,
-          registeredSourceIds,
+          registeredSources,
           knowledgeIds,
         })
       );
@@ -1354,21 +1361,23 @@ function classifyKnowledgeSourceReference(input: {
   path: string;
   /** Raw source reference. */
   reference: string;
-  /** Registered workspace source ids. */
-  registeredSourceIds: ReadonlySet<string>;
+  /** Registered Workspace Source ids and digests. */
+  registeredSources: ReadonlyMap<string, string | null>;
   /** File-backed workspace knowledge ids. */
   knowledgeIds: ReadonlySet<string>;
 }): WorkspaceKnowledgeSourceReference {
   if (input.reference.startsWith('source:')) {
-    const targetId = input.reference.slice('source:'.length).replace(/@sha256:[a-f0-9]{64}$/, '');
+    const resolution = resolveRegisteredKnowledgeSourceReference(
+      input.reference,
+      input.registeredSources
+    );
 
     return {
       conceptId: input.conceptId,
       path: input.path,
       reference: input.reference,
       kind: 'registered-source',
-      targetId,
-      resolved: input.registeredSourceIds.has(targetId),
+      ...resolution,
     };
   }
 
@@ -1396,7 +1405,7 @@ function classifyKnowledgeSourceReference(input: {
         body: '',
         reserved: false,
       },
-      input.registeredSourceIds,
+      input.registeredSources,
       input.knowledgeIds
     ).length === 0;
 
@@ -1423,7 +1432,7 @@ function buildKnowledgeFullTextTerms(
 ): WorkspaceKnowledgeFullTextTerm[] {
   const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
   const schema = readWorkspaceKnowledgeSchema(workspaceRoot);
-  const registeredSourceIds = readRegisteredSourceIds(workspaceRoot, workspaceId);
+  const registeredSources = readRegisteredSources(workspaceRoot, workspaceId);
   const knowledgeIds = readKnowledgePageIds(pagesRoot);
   const terms = new Map<
     string,
@@ -1446,7 +1455,7 @@ function buildKnowledgeFullTextTerms(
 
     if (
       !parsed.ok ||
-      !isStaticKnowledgeIndexPage(parsed.document, schema, registeredSourceIds, knowledgeIds)
+      !isStaticKnowledgeIndexPage(parsed.document, schema, registeredSources, knowledgeIds)
     ) {
       continue;
     }
@@ -1528,7 +1537,7 @@ function buildKnowledgeLinkEdges(
 ): WorkspaceKnowledgeLinkEdge[] {
   const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
   const schema = readWorkspaceKnowledgeSchema(workspaceRoot);
-  const registeredSourceIds = readRegisteredSourceIds(workspaceRoot, workspaceId);
+  const registeredSources = readRegisteredSources(workspaceRoot, workspaceId);
   const knowledgeIds = readKnowledgePageIds(pagesRoot);
   const conceptIds = readKnowledgePageConceptIds(pagesRoot);
   const edges: WorkspaceKnowledgeLinkEdge[] = [];
@@ -1543,7 +1552,7 @@ function buildKnowledgeLinkEdges(
 
     if (
       !parsed.ok ||
-      !isStaticKnowledgeIndexPage(parsed.document, schema, registeredSourceIds, knowledgeIds)
+      !isStaticKnowledgeIndexPage(parsed.document, schema, registeredSources, knowledgeIds)
     ) {
       continue;
     }

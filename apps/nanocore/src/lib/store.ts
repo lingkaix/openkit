@@ -1587,10 +1587,10 @@ export class FsStore {
       path: `knowledge/pages/${candidate.id}.md`,
       content: candidateContent,
       ...(workspaceSchemaText === undefined ? {} : { workspaceSchemaText }),
-      registeredSourceIds: new Set(
+      registeredSources: new Map(
         [...this.knowledgeSources.values()]
           .filter((source) => source.workspaceId === workspaceId)
-          .map((source) => source.id)
+          .map((source) => [source.id, source.contentDigest])
       ),
       knowledgeIds: new Set(knowledge.map((entry) => entry.id)),
       resolvedReferences,
@@ -1661,10 +1661,10 @@ export class FsStore {
       path: candidatePath,
       content: proposal.canonicalPageBytes,
       ...(workspaceSchemaText === undefined ? {} : { workspaceSchemaText }),
-      registeredSourceIds: new Set(
+      registeredSources: new Map(
         [...this.knowledgeSources.values()]
           .filter((source) => source.workspaceId === proposal.workspaceId)
-          .map((source) => source.id)
+          .map((source) => [source.id, source.contentDigest])
       ),
       knowledgeIds: new Set(knowledge.map((entry) => entry.id)),
       resolvedReferences,
@@ -4016,10 +4016,10 @@ export class FsStore {
       path,
       content,
       ...(workspaceSchemaText === undefined ? {} : { workspaceSchemaText }),
-      registeredSourceIds: new Set(
+      registeredSources: new Map(
         [...this.knowledgeSources.values()]
           .filter((source) => source.workspaceId === workspaceId)
-          .map((source) => source.id)
+          .map((source) => [source.id, source.contentDigest])
       ),
       knowledgeIds: new Set(
         this.getWorkspaceResources(workspaceId).knowledge.map((entry) => entry.id)

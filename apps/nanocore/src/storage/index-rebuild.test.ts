@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import {
@@ -41,7 +42,245 @@ function sha256Digest(content: string): string {
   return `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`;
 }
 
+/** Builds exact accepted Page bytes with one declared registered-source reference. */
+function sourceReferencePage(knowledgePageId: string, reference: string): string {
+  return [
+    '---',
+    'type: KnowledgePage',
+    'title: Registered source resolution',
+    `schema_version: ${DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION}`,
+    'openkit_status: active',
+    'scope: workspace',
+    `source_refs: ${JSON.stringify([reference])}`,
+    'review_state: accepted',
+    'sensitivity: normal',
+    'freshness: current',
+    'created_at: "2026-10-08T00:00:00.000Z"',
+    'updated_at: "2026-10-08T00:00:00.000Z"',
+    `openkit_entry_id: ${knowledgePageId}`,
+    'openkit_entry_kind: project-context',
+    '---',
+    'Registered capture evidence.',
+    '',
+  ].join('\n');
+}
+
 describe('workspace derived index rebuild', () => {
+  it('uses the same registered-source resolution for validation and reference indexing', () => {
+    const dataRoot = createDataRoot();
+    const store = createDemoStore({ dataRoot });
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const sourceId = 'ks_123e4567-e89b-42d3-a456-426614174000';
+    const missingId = 'ks_123e4567-e89b-42d3-a456-426614174001';
+    const noDigestId = 'ks_123e4567-e89b-42d3-a456-426614174002';
+    const foreignId = 'ks_123e4567-e89b-42d3-a456-426614174003';
+    const digest = sha256Digest('Registered capture evidence.');
+    const source = store.createKnowledgeSource({
+      id: sourceId,
+      workspaceId: 'ws_demo',
+      kind: 'document',
+      title: 'Registered capture',
+      uri: null,
+      contentDigest: digest,
+      originatingThreadId: null,
+      originatingTurnId: null,
+      originatingFileId: null,
+      capturedAt: '2026-10-08T00:00:00.000Z',
+      createdAt: '2026-10-08T00:00:00.000Z',
+      updatedAt: '2026-10-08T00:00:00.000Z',
+    });
+    // Registry-only fixtures ensure rebuild does not require captured-file integrity proof.
+    writeFileSync(
+      join(workspaceRoot, 'sources', 'registry', `${noDigestId}.json`),
+      JSON.stringify({ ...source, id: noDigestId, contentDigest: null })
+    );
+    writeFileSync(
+      join(workspaceRoot, 'sources', 'registry', `${foreignId}.json`),
+      JSON.stringify({ ...source, id: foreignId, workspaceId: 'ws_foreign' })
+    );
+    const cases = [
+      { id: 'bare', reference: `source:${sourceId}`, targetId: sourceId, resolved: true },
+      {
+        id: 'matching',
+        reference: `source:${sourceId}@${digest}`,
+        targetId: sourceId,
+        resolved: true,
+      },
+      {
+        id: 'wrong-pin',
+        reference: `source:${sourceId}@sha256:${'0'.repeat(64)}`,
+        targetId: sourceId,
+        resolved: false,
+      },
+      { id: 'missing', reference: `source:${missingId}`, targetId: missingId, resolved: false },
+      {
+        id: 'missing-pinned',
+        reference: `source:${missingId}@${digest}`,
+        targetId: missingId,
+        resolved: false,
+      },
+      {
+        id: 'missing-digest',
+        reference: `source:${noDigestId}@${digest}`,
+        targetId: noDigestId,
+        resolved: false,
+      },
+      {
+        id: 'bare-without-digest',
+        reference: `source:${noDigestId}`,
+        targetId: noDigestId,
+        resolved: true,
+      },
+      {
+        id: 'wrong-scope',
+        reference: `source:${foreignId}@${digest}`,
+        targetId: foreignId,
+        resolved: false,
+      },
+      {
+        id: 'wrong-scope-bare',
+        reference: `source:${foreignId}`,
+        targetId: foreignId,
+        resolved: false,
+      },
+      {
+        id: 'malformed',
+        reference: `source:${sourceId}@sha256:invalid`,
+        targetId: null,
+        resolved: false,
+      },
+      { id: 'empty-pin', reference: `source:${sourceId}@`, targetId: null, resolved: false },
+      {
+        id: 'double-pin',
+        reference: `source:${sourceId}@${digest}@${digest}`,
+        targetId: null,
+        resolved: false,
+      },
+      { id: 'invalid-id', reference: 'source:ks_invalid', targetId: null, resolved: false },
+      {
+        id: 'trailing-newline',
+        reference: `source:${sourceId}@${digest}\n`,
+        targetId: null,
+        resolved: false,
+      },
+    ];
+    for (const entry of cases) {
+      writeFileSync(
+        join(workspaceRoot, 'knowledge', 'pages', `${entry.id}.md`),
+        sourceReferencePage(entry.id, entry.reference)
+      );
+    }
+    rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: 'ws_demo' });
+    const indexes = join(workspaceRoot, 'indexes');
+    const validation = JSON.parse(readFileSync(join(indexes, 'knowledge-validation.json'), 'utf8'));
+    const references = JSON.parse(
+      readFileSync(join(indexes, 'knowledge-source-refs.json'), 'utf8')
+    );
+    for (const entry of cases) {
+      expect(
+        validation.records.find((record: { conceptId: string }) => record.conceptId === entry.id),
+        entry.id
+      ).toMatchObject({
+        conformance: 'Workspace-schema-valid',
+        indexed: false,
+        errors: entry.resolved
+          ? []
+          : [
+              {
+                code: 'reference.unresolved_source',
+                field: 'source_refs',
+                message: 'Knowledge source reference does not resolve.',
+              },
+            ],
+      });
+      expect(
+        references.references.find(
+          (record: { conceptId: string }) => record.conceptId === entry.id
+        ),
+        entry.id
+      ).toEqual({
+        conceptId: entry.id,
+        path: `knowledge/pages/${entry.id}.md`,
+        reference: entry.reference,
+        kind: 'registered-source',
+        targetId: entry.targetId,
+        resolved: entry.resolved,
+      });
+    }
+  });
+
+  it('rebuilds an accepted matching-pin Page without rewriting bytes or contradicting resolution', () => {
+    const dataRoot = createDataRoot();
+    const store = createDemoStore({ dataRoot });
+    const material = 'Registered capture evidence.';
+    const source = store.createKnowledgeSource(
+      {
+        id: 'ks_123e4567-e89b-42d3-a456-426614174000',
+        workspaceId: 'ws_demo',
+        kind: 'document',
+        title: 'Registered capture',
+        uri: null,
+        contentDigest: sha256Digest(material),
+        originatingThreadId: null,
+        originatingTurnId: null,
+        originatingFileId: null,
+        capturedAt: '2026-10-08T00:00:00.000Z',
+        createdAt: '2026-10-08T00:00:00.000Z',
+        updatedAt: '2026-10-08T00:00:00.000Z',
+      },
+      material
+    );
+    const reference = `source:${source.id}@${source.contentDigest}`;
+    const canonicalPageBytes = sourceReferencePage('accepted-pin', reference);
+    const proposal = store.createKnowledgeProposal({
+      workspaceId: 'ws_demo',
+      knowledgePageId: 'accepted-pin',
+      canonicalPageBytes,
+      contentDigest: sha256Digest(canonicalPageBytes),
+      sourceReferences: [reference],
+      requestId: '00000000-0000-4000-8000-000000000801',
+      rationale: 'Preserve registered evidence.',
+      confidence: 1,
+      producer: { kind: 'user', id: 'user_local' },
+      verifiedExternalReferences: [],
+      createdAt: '2026-10-08T00:00:00.000Z',
+    });
+    store.recordKnowledgeProposalReviewDecision({
+      workspaceId: 'ws_demo',
+      proposalId: proposal.id,
+      decision: 'accepted',
+      requestId: '00000000-0000-4000-8000-000000000802',
+      actor: { kind: 'user', id: 'user_local' },
+      verifiedExternalReferences: [],
+      decidedAt: '2026-10-08T00:00:00.000Z',
+    });
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const pagePath = join(workspaceRoot, 'knowledge', 'pages', 'accepted-pin.md');
+    const before = readFileSync(pagePath);
+    expect(before).toEqual(Buffer.from(canonicalPageBytes));
+    rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: 'ws_demo' });
+    expect(readFileSync(pagePath)).toEqual(before);
+    const validation = JSON.parse(
+      readFileSync(join(workspaceRoot, 'indexes', 'knowledge-validation.json'), 'utf8')
+    );
+    const references = JSON.parse(
+      readFileSync(join(workspaceRoot, 'indexes', 'knowledge-source-refs.json'), 'utf8')
+    );
+    expect(
+      validation.records.find(
+        (record: { conceptId: string }) => record.conceptId === 'accepted-pin'
+      )
+    ).toMatchObject({ errors: [], indexed: false });
+    expect(
+      references.references.find(
+        (record: { conceptId: string }) => record.conceptId === 'accepted-pin'
+      )
+    ).toMatchObject({ reference, targetId: source.id, resolved: true });
+    expect(
+      new FsStore({ dataRoot }).getWorkspaceResources('ws_demo').knowledge.map((entry) => entry.id)
+    ).toContain('accepted-pin');
+  });
+
   it('excludes reserved index and log files at every Knowledge bundle depth', () => {
     const dataRoot = createDataRoot();
     createDemoStore({ dataRoot });
@@ -1117,12 +1356,12 @@ describe('workspace derived index rebuild', () => {
     });
 
     store.createKnowledgeSource({
-      id: 'ks_registered',
+      id: 'ks_123e4567-e89b-42d3-a456-426614174000',
       workspaceId: 'ws_demo',
       kind: 'document',
       title: 'Registered source',
       uri: null,
-      contentDigest: 'sha256:registered',
+      contentDigest: `sha256:${'a'.repeat(64)}`,
       originatingThreadId: null,
       originatingTurnId: null,
       originatingFileId: null,
@@ -1140,7 +1379,7 @@ describe('workspace derived index rebuild', () => {
         'openkit_status: "active"',
         'status: "stable"',
         'scope: "workspace"',
-        'source_refs: ["source:ks_registered"]',
+        'source_refs: ["source:ks_123e4567-e89b-42d3-a456-426614174000"]',
         'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
@@ -1312,12 +1551,12 @@ describe('workspace derived index rebuild', () => {
     });
 
     store.createKnowledgeSource({
-      id: 'ks_registered',
+      id: 'ks_123e4567-e89b-42d3-a456-426614174000',
       workspaceId: 'ws_demo',
       kind: 'document',
       title: 'Registered source',
       uri: null,
-      contentDigest: 'sha256:registered',
+      contentDigest: `sha256:${'a'.repeat(64)}`,
       originatingThreadId: null,
       originatingTurnId: null,
       originatingFileId: null,
@@ -1336,8 +1575,8 @@ describe('workspace derived index rebuild', () => {
         'status: "stable"',
         'scope: "workspace"',
         `source_refs: ${JSON.stringify([
-          'source:ks_registered',
-          `source:ks_registered@sha256:${'a'.repeat(64)}`,
+          'source:ks_123e4567-e89b-42d3-a456-426614174000',
+          `source:ks_123e4567-e89b-42d3-a456-426614174000@sha256:${'a'.repeat(64)}`,
           `knowledge:${knowledge.id}`,
           `knowledge:${knowledge.id}@sha256:${'b'.repeat(64)}`,
           'source:ks_missing',
@@ -1383,17 +1622,17 @@ describe('workspace derived index rebuild', () => {
         {
           conceptId: 'source-reference-index',
           path: 'knowledge/pages/source-reference-index.md',
-          reference: 'source:ks_registered',
+          reference: 'source:ks_123e4567-e89b-42d3-a456-426614174000',
           kind: 'registered-source',
-          targetId: 'ks_registered',
+          targetId: 'ks_123e4567-e89b-42d3-a456-426614174000',
           resolved: true,
         },
         {
           conceptId: 'source-reference-index',
           path: 'knowledge/pages/source-reference-index.md',
-          reference: `source:ks_registered@sha256:${'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}`,
+          reference: `source:ks_123e4567-e89b-42d3-a456-426614174000@sha256:${'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}`,
           kind: 'registered-source',
-          targetId: 'ks_registered',
+          targetId: 'ks_123e4567-e89b-42d3-a456-426614174000',
           resolved: true,
         },
         {
@@ -1417,7 +1656,7 @@ describe('workspace derived index rebuild', () => {
           path: 'knowledge/pages/source-reference-index.md',
           reference: 'source:ks_missing',
           kind: 'registered-source',
-          targetId: 'ks_missing',
+          targetId: null,
           resolved: false,
         },
         {

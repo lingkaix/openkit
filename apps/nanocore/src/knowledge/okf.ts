@@ -477,8 +477,8 @@ export function validateKnowledgePageCandidate(input: {
   content: string;
   /** Current workspace schema text, or the default schema when absent. */
   workspaceSchemaText?: string;
-  /** Registered source ids in the owning Workspace. */
-  registeredSourceIds: ReadonlySet<string>;
+  /** Registered Source ids and digests in the owning scope. */
+  registeredSources: ReadonlyMap<string, string | null>;
   /** Knowledge page ids that exist after the candidate write. */
   knowledgeIds: ReadonlySet<string>;
   /** Closed references already verified by their owning authority. */
@@ -512,7 +512,7 @@ export function validateKnowledgePageCandidate(input: {
 
   const referenceErrors = knowledgeReferenceErrors(
     parsed.document,
-    input.registeredSourceIds,
+    input.registeredSources,
     input.knowledgeIds,
     input.resolvedReferences
   );
@@ -593,17 +593,48 @@ export function updateOkfFrontmatter(input: {
 }
 
 /**
+ * Resolves a Page's registered-source citation without granting evidence or retrieval authority.
+ *
+ * Pins constrain the existing capture's registry digest; malformed pins never fall back to an id.
+ * Captured-byte integrity and review proof remain with the acceptance and retrieval owners.
+ *
+ * @param reference Exact declared Page citation, retained unchanged.
+ * @param registeredSources Source ids and nullable digests from the owning scope's registry.
+ * @returns Parsed target identity and whether its complete registry constraint resolves.
+ */
+export function resolveRegisteredKnowledgeSourceReference(
+  reference: string,
+  registeredSources: ReadonlyMap<string, string | null>
+): { targetId: string | null; resolved: boolean } {
+  const parsed =
+    /^source:(ks_[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})(?:@(sha256:[a-f0-9]{64}))?$/.exec(
+      reference
+    );
+  if (!parsed || parsed[0] !== reference) {
+    return { targetId: null, resolved: false };
+  }
+  const targetId = parsed[1]!;
+  const expectedDigest = parsed[2];
+  return {
+    targetId,
+    resolved:
+      registeredSources.has(targetId) &&
+      (expectedDigest === undefined || registeredSources.get(targetId) === expectedDigest),
+  };
+}
+
+/**
  * Validates local and external references declared by one Knowledge Page.
  *
  * @param document Parsed candidate document.
- * @param registeredSourceIds Registered source ids in the owning Workspace.
+ * @param registeredSources Registered Source ids and digests in the owning scope.
  * @param knowledgeIds Knowledge page ids that exist after the candidate write.
  * @param resolvedReferences Closed non-page references verified by their owners.
  * @returns Reference-resolution errors.
  */
 export function knowledgeReferenceErrors(
   document: OkfDocument,
-  registeredSourceIds: ReadonlySet<string>,
+  registeredSources: ReadonlyMap<string, string | null>,
   knowledgeIds: ReadonlySet<string>,
   resolvedReferences: ReadonlySet<string> = new Set()
 ): KnowledgeValidationError[] {
@@ -617,14 +648,14 @@ export function knowledgeReferenceErrors(
   }
 
   return sourceRefs.flatMap((reference) => {
-    if (resolvedReferences.has(reference)) {
-      return [];
-    }
-
     if (reference.startsWith('source:')) {
-      return registeredSourceIds.has(reference.slice('source:'.length))
+      return resolveRegisteredKnowledgeSourceReference(reference, registeredSources).resolved
         ? []
         : [referenceError('reference.unresolved_source')];
+    }
+
+    if (resolvedReferences.has(reference)) {
+      return [];
     }
 
     if (reference.startsWith('knowledge:')) {
