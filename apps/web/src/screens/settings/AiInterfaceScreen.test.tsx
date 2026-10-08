@@ -294,6 +294,34 @@ function makeClient(
   } as unknown as CoreClient;
 }
 
+/** Quota display fixtures use a locally logged-in account on both list and detail reads. */
+function makeConnectedClient(overrides: Parameters<typeof makeClient>[0] = {}): CoreClient {
+  return makeClient({
+    ...overrides,
+    operations: {
+      'provider-subscription.account-list': vi
+        .fn()
+        .mockImplementation(({ subscriptionProviderId }: { subscriptionProviderId: string }) =>
+          Promise.resolve({
+            accounts: subscriptionProviderId === 'openai-codex' ? [LOGGED_IN_ACCOUNT] : [],
+          })
+        ),
+      'provider-subscription.account-status': vi
+        .fn()
+        .mockImplementation(
+          ({
+            subscriptionProviderId,
+            accountSlotId,
+          }: {
+            subscriptionProviderId: string;
+            accountSlotId: string;
+          }) => Promise.resolve({ ...LOGGED_IN_ACCOUNT, subscriptionProviderId, accountSlotId })
+        ),
+      ...overrides.operations,
+    },
+  });
+}
+
 function renderScreen(
   client: CoreClient,
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -579,7 +607,7 @@ describe('AI interface deployment-admin workflow', () => {
     { seconds: 937, label: '937-second' },
     { seconds: undefined, label: 'Primary' },
   ])('labels Codex with only the supplied duration ($label)', async ({ seconds, label }) => {
-    const client = makeClient({
+    const client = makeConnectedClient({
       operations: {
         'provider-subscription.account-quota': vi.fn().mockResolvedValue({
           ...CODEX_QUOTA,
@@ -607,14 +635,14 @@ describe('AI interface deployment-admin workflow', () => {
   });
 
   it('shows one percentage per quota window for Codex and xAI', async () => {
-    const client = makeClient({
+    const client = makeConnectedClient({
       operations: {
         'provider-subscription.account-list': vi
           .fn()
           .mockImplementation(
             ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
               Promise.resolve({
-                accounts: [{ ...CODEX_ACCOUNT, subscriptionProviderId: providerId }],
+                accounts: [{ ...LOGGED_IN_ACCOUNT, subscriptionProviderId: providerId }],
               })
           ),
       },
@@ -630,14 +658,14 @@ describe('AI interface deployment-admin workflow', () => {
 
   it('keeps account management available when one quota read fails without an observation', async () => {
     const user = userEvent.setup();
-    const client = makeClient({
+    const client = makeConnectedClient({
       operations: {
         'provider-subscription.account-list': vi
           .fn()
           .mockImplementation(
             ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
               Promise.resolve({
-                accounts: [{ ...CODEX_ACCOUNT, subscriptionProviderId: providerId }],
+                accounts: [{ ...LOGGED_IN_ACCOUNT, subscriptionProviderId: providerId }],
               })
           ),
         'provider-subscription.account-quota': vi
@@ -904,7 +932,7 @@ describe('AI interface deployment-admin workflow', () => {
           return Promise.resolve({ ...XAI_QUOTA, accountSlotId });
         }
       );
-    const client = makeClient({
+    const client = makeConnectedClient({
       listProviders,
       operations: {
         'provider-subscription.account-list': listAccounts,
@@ -1132,8 +1160,8 @@ describe('AI interface deployment-admin workflow', () => {
     expect(within(codex).getByRole('button', { name: 'Refresh quota' })).toBeInTheDocument();
     expect(within(codex).getByRole('button', { name: 'Start login' })).toBeInTheDocument();
     expect(
-      within(codex).getByRole('meter', { name: 'Primary remaining 59.6%' })
-    ).toBeInTheDocument();
+      within(codex).queryByRole('meter', { name: 'Primary remaining 59.6%' })
+    ).not.toBeInTheDocument();
     const settings = within(codex).getByText('Account settings').closest('details');
     const createSlot = within(codex).getByText('Add account slot').closest('details');
     expect(settings).not.toBeNull();
@@ -1149,14 +1177,14 @@ describe('AI interface deployment-admin workflow', () => {
   });
 
   it('formats remaining percents without rounding tiny or near-full values to 0 or 100', async () => {
-    const client = makeClient({
+    const client = makeConnectedClient({
       operations: {
         'provider-subscription.account-list': vi
           .fn()
           .mockImplementation(
             ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
               Promise.resolve({
-                accounts: providerId === 'openai-codex' ? [CODEX_ACCOUNT] : [],
+                accounts: providerId === 'openai-codex' ? [LOGGED_IN_ACCOUNT] : [],
               })
           ),
         'provider-subscription.account-quota': vi.fn().mockResolvedValue({
@@ -1185,7 +1213,7 @@ describe('AI interface deployment-admin workflow', () => {
   });
 
   it('shows unknown usage with reset and last checked when xAI omits credit percent', async () => {
-    const client = makeClient({
+    const client = makeConnectedClient({
       operations: {
         'provider-subscription.account-list': vi
           .fn()
@@ -1194,10 +1222,10 @@ describe('AI interface deployment-admin workflow', () => {
               Promise.resolve({
                 accounts:
                   providerId === 'openai-codex'
-                    ? [CODEX_ACCOUNT]
+                    ? [LOGGED_IN_ACCOUNT]
                     : [
                         {
-                          ...CODEX_ACCOUNT,
+                          ...LOGGED_IN_ACCOUNT,
                           subscriptionProviderId: 'xai' as const,
                           displayName: 'xAI primary',
                         },
@@ -1296,7 +1324,7 @@ describe('AI interface deployment-admin workflow', () => {
               })
             : Promise.resolve(CODEX_QUOTA)
       );
-    const client = makeClient({
+    const client = makeConnectedClient({
       operations: {
         'provider-subscription.account-list': vi
           .fn()
@@ -1305,10 +1333,10 @@ describe('AI interface deployment-admin workflow', () => {
               Promise.resolve({
                 accounts:
                   providerId === 'openai-codex'
-                    ? [CODEX_ACCOUNT]
+                    ? [LOGGED_IN_ACCOUNT]
                     : [
                         {
-                          ...CODEX_ACCOUNT,
+                          ...LOGGED_IN_ACCOUNT,
                           subscriptionProviderId: 'xai' as const,
                           displayName: 'xAI primary',
                         },
@@ -1772,14 +1800,14 @@ describe('Gateway dependency and routing completion', () => {
             ? Promise.reject(new ApiCallError(403, 'private-quota-denial'))
             : Promise.resolve(XAI_QUOTA)
       );
-    const client = makeClient({
+    const client = makeConnectedClient({
       operations: {
         'provider-subscription.account-list': vi
           .fn()
           .mockImplementation(
             ({ subscriptionProviderId: provider }: { subscriptionProviderId: string }) =>
               Promise.resolve({
-                accounts: [{ ...CODEX_ACCOUNT, subscriptionProviderId: provider }],
+                accounts: [{ ...LOGGED_IN_ACCOUNT, subscriptionProviderId: provider }],
               })
           ),
         'provider-subscription.account-quota': quota,

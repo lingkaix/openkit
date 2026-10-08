@@ -402,3 +402,5 @@ Material hooks and Artifact Review Material comparisons use `client.operations` 
 Access-token inventory, creation, rotation, revocation and personal administrator-token selection call the canonical `token.*` methods through `client.operations` with complete input objects. Their existing secret display/dismiss and administrator-admission UI behavior remains unchanged.
 
 Gateway settings samples product diagnostics through `client.operations['diagnostics.app']({})`; account and chat discovery continue to avoid setup probes. Web Portability retains binary archive uploads and downloads through the existing stream bindings.
+
+Gateway account rows clear cached quota while pending or logged out, including late quota responses. The shared account and quota projections are covered by `src/screens/settings/provider-subscription-quota.test.ts`; logged-in observations retain their supplied values and timestamps.

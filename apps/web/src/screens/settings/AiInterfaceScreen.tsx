@@ -19,6 +19,7 @@ import {
   type ConnectedAppProviderRow,
   type ConnectedAppQuotaWindow,
   type ConnectedAppRow,
+  overlayConnectedAppAccount,
   overlayConnectedAppQuota,
   projectConnectedApps,
   settingsKeys,
@@ -542,7 +543,7 @@ function AccountControls({
     account.accountSlotId,
   ] as const;
   const cachedStatus = queryClient.getQueryData<ProviderSubscriptionAccount>(statusKey);
-  const overlay = overlayAccount(account, snapshot ?? cachedStatus);
+  const overlay = overlayConnectedAppAccount(account, snapshot ?? cachedStatus);
   const shouldPoll = overlay.status === 'pending';
   const status = useQuery({
     queryKey: statusKey,
@@ -570,7 +571,7 @@ function AccountControls({
       ? { subscriptionProviderId: providerId, accountSlotId: account.accountSlotId }
       : quotaRead.data
   )[0]!.accounts[0]!;
-  const live = overlayAccount(quotaAccount, status.data ?? snapshot ?? cachedStatus);
+  const live = overlayConnectedAppAccount(quotaAccount, status.data ?? snapshot ?? cachedStatus);
   useEffect(() => {
     if (isAdminDenied(quotaRead.error)) onAccessDenied(providerId, account.accountSlotId);
   }, [quotaRead.error, onAccessDenied, providerId, account.accountSlotId]);
@@ -638,6 +639,7 @@ function AccountControls({
         interactionId: live.interactionId as string,
       }),
     onSuccess: (next) => {
+      queryClient.setQueryData(statusKey, next);
       setSnapshot(next);
       onAccountsChanged();
     },
@@ -649,6 +651,7 @@ function AccountControls({
         accountSlotId: account.accountSlotId,
       }),
     onSuccess: (next) => {
+      queryClient.setQueryData(statusKey, next);
       setSnapshot(next);
       onAccountsChanged();
     },
@@ -967,43 +970,6 @@ function BillingAmount({ label, cents }: { label: string; cents: number | null |
           )}
     </p>
   );
-}
-
-/** Merges a polled account snapshot onto the safe list row without dropping quota. */
-function overlayAccount(
-  account: ConnectedAppRow,
-  snapshot: ProviderSubscriptionAccount | undefined
-): ConnectedAppRow {
-  if (!snapshot) return account;
-  const interaction = snapshot.status === 'pending' ? snapshot.interaction : undefined;
-  return {
-    ...account,
-    displayName: snapshot.displayName
-      ? (projectSafeValue(snapshot.displayName) as string)
-      : account.displayName,
-    status: snapshot.status,
-    accountLabel: snapshot.accountLabel
-      ? (projectSafeValue(snapshot.accountLabel) as string)
-      : account.accountLabel,
-    planLabel: snapshot.planLabel
-      ? (projectSafeValue(snapshot.planLabel) as string)
-      : account.planLabel,
-    boundProviderCount: snapshot.boundProviderIds.length,
-    // Detail absence clears observations; only the account owner decides their lifetime.
-    inferenceObservation: projectSafeValue(
-      snapshot.inferenceObservation
-    ) as ConnectedAppRow['inferenceObservation'],
-    verificationUrl: interaction?.verificationUrl
-      ? (projectSafeValue(interaction.verificationUrl) as string)
-      : null,
-    userCode: interaction?.userCode ? (projectSafeValue(interaction.userCode) as string) : null,
-    interactionId: interaction?.interactionId ?? null,
-    message:
-      snapshot.status === 'unavailable' || snapshot.status === 'error'
-        ? (projectSafeValue(snapshot.message) as string)
-        : null,
-    updatedAt: snapshot.updatedAt,
-  };
 }
 
 /** Labels Codex windows by exact reported duration, falling back to stable window ids. */
