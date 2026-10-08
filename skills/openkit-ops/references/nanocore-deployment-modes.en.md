@@ -156,6 +156,21 @@ Ordinary product work uses Web or remote MCP at the configured public origin plu
 
 The bundled administrator CLI uses public NanoCore contracts and is not a separate package. It does not start NanoCore, manage host services or expose private deployment state. A currently usable administrator bearer remains subject to read-only, expiry, revocation, per-effect approvals and model-delivery restrictions. Keep its endpoint store separate from issued named credentials. Replace the complete operations package on version mismatch; there is no compatibility alias.
 
+### Codex Remote MCP Example
+
+For an external Codex client, use this Streamable HTTP example in its `config.toml`, replacing the example origin with the deployment's configured HTTPS public origin:
+
+```toml
+[mcp_servers.openkit]
+url = "https://openkit.example.com/mcp"
+bearer_token_env_var = "OPENKIT_NANOCORE_TOKEN"
+default_tools_approval_mode = "approve"
+```
+
+The example contains only an environment-variable name, never a Token value. First arrange an administrator-issued Token through the existing supported delivery procedure and keep persistent credentials in supported protected storage, preferring a secret-safe OS credential writer or the permitted encrypted fallback. Use this example only when an existing protected launch mechanism can supply `OPENKIT_NANOCORE_TOKEN` to the Codex process as an explicitly selected ephemeral override. Codex does not automatically read or transfer the administrator CLI's endpoint or named credential slots. If that delivery prerequisite is unavailable, report it as unmet; do not copy secrets into TOML, shell arguments, prompts, logs or Artifacts. See [credential storage and delivery](https://github.com/lingkaix/openkit/blob/main/docs/specs/20260704-remote_auth_credential_bootstrap.md#client-credential-storage).
+
+The [pinned official Codex source](https://github.com/openai/codex/blob/2dae757b8713d3317e8da58828bdac821386982c/codex-rs/config/src/mcp_types.rs) places all three settings in the server table. Its [approval implementation](https://github.com/openai/codex/blob/2dae757b8713d3317e8da58828bdac821386982c/codex-rs/core/src/mcp_tool_call.rs) makes `approve` skip the client tool-approval prompt unless a per-tool override applies. This follows OpenKit's [remote MCP guidance](https://github.com/lingkaix/openkit/blob/main/docs/specs/20261002-operation_definition.md#remote-mcp-projection); it grants no server authority. An administrator-issued Token acts as its owner, with authority limited by its scope, current usability and applicable permissions. NanoCore's Sandbox checks, effect-specific approvals and exact server-side human decisions remain required; a client prompt or its absence cannot substitute for them. Plan approval does not authorize publication.
+
 ## Establish the connection
 
 1. Confirm that the host can load this operations Skill, execute its bundled script, provide Node.js 24, and protect local credentials and environment state.
