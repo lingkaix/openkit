@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: boundary
-updated: 2026-10-05
+updated: 2026-10-08
 ---
 # OpenCode Worker Adapter
 
@@ -78,7 +78,7 @@ OpenCode's native configuration, instructions, Skills, plugins and local MCP con
 
 `session.open` starts the server with explicit configuration and establishes or resumes the exact native session before work. The adapter inspects native automatic recovery before startup admission so unknown effectful work is not resumed outside authorization. `turn.start` reuses that session. Abort stops the Turn's work and leaves the session present. `turn.interrupt` reports the actual abort and does not close the session. `session.close` stops the binding's work, preserves native data, and does not delete the session as its method of release. A successor resumes the exact session. `session.inspect` reads the exact surviving host and native conversation, launches no work, and fails closed on an unknown or mismatched identity. `harness.drain` is the Harness admission fence. While admitted work and cleanup settle, this adapter refuses new `session.open` and `turn.start`. The Harness owns that fence. This adapter does not invent a native drain RPC.
 
-The six operations are owned by [Worker Control Protocol](20260703-worker_control_protocol.md#harness-control-operations). This section maps each of them onto the open, inspection, prompt, interrupt, close, and admission-fence behavior above.
+The seven operations are owned by [Worker Control Protocol](20260703-worker_control_protocol.md#harness-control-operations). This section maps each of them onto the open, inspection, prompt, live-steer mapping or refusal below, interrupt, close, and admission-fence behavior above.
 
 `session.open` carries `resume: { locator, digest } | null`. The raw reference stays in retained Sandbox storage outside the ephemeral control slots. Core stores the locator and the digest. Initial hosting is one server per binding until capability isolation for a shared server is proved. Closing a shared-host binding, once sharing exists, does not kill the server. A host restart invalidates every binding on that server. A transport loss and a NanoCore restart may each adopt the exact surviving binding, including its lineage, sequence, and execution attempt, under the existing [continuity](20260704-agent_session_continuity.md#exact-reconnect-contract), [scheduler attempt](20260703-durable_scheduler_design.md#attempt-reconnect-and-cleanup), and [NanoHost Adapter Liveness](20260629-worker_runtime_communication_model.md#nanohost-adapter-liveness) proof contracts, with no duplicate effect. A binding that cannot be proved exactly is closed or fenced, and a successor resumes the native conversation. A NanoCore restart does not by itself end the binding. The server's own exit still ends the bindings that process hosted.
 
@@ -104,10 +104,17 @@ The adapter returns a normalized final assistant message and adapter-local diagn
 
 ## Control Mapping
 
+- `turn.steer` projects [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) through the private [Worker Control Protocol](20260703-worker_control_protocol.md#live-steer-operation-boundary) operation and only the qualified native delivery mapping below.
 - `turn.interrupt` aborts the Turn's work, reports the actual outcome, leaves the session present, and does not close the session.
 - Native approval and question APIs are not product round trips.
 - The server existing inside the Sandbox is not HTTP exposure to NanoCore.
 - Exact native session resume is supported. Resume failure is explicit.
+
+## Live-Steer Mapping And Qualification
+
+The selected OpenCode V2 pin `2.0.22` exposes native steering delivery through `session.prompt` and its inbox. The adapter uses only that native steering mode on the exact resident native session, guarded by the addressed active OpenKit work. It does not use an ordinary prompt that can become a fresh run after an idle race. Durable inbox admission alone is insufficient unless qualification proves that it accepts the input for processing during this Turn and cannot deliver it on later work. It correlates native acceptance with the exact public input Item/digest and records privately the precise initial and steering user-message identities admitted into this OpenKit Turn. Terminal result correlation must admit those legitimate additional user messages and reject unrelated ones; selecting the latest assistant message is never a substitute for exact lineage.
+
+Before advertising support, native qualification must prove same-Turn inbox delivery, completion racing admission, refusal on a stale or idle session, interrupt and end-of-work inbox disposition, lost-response non-redelivery, and restart/automatic-recovery inspection that prevents old inbox entries from executing on a successor Turn. Retained native history and the response must prove exact input identities and the terminal result's association with the same admitted work. If the pin cannot provide the exact active-work boundary or no-spill proof, support stays disabled with an explicit unsupported refusal; no custom inbox, replay, prompt-after-abort, or latest-message correlation is added. The full public lifecycle, failures, receipt, and acceptance remain with [Task live steer](20260704-task_mode_worker_delegation.md#live-steer); this section owns only OpenCode's native mapping and qualification.
 
 ## Skills And MCP
 
@@ -154,6 +161,7 @@ The authored manifest is the sole launch-time capability declaration. Adapter co
 - Workspace edits inside declared writable roots: supported
 - Normalized final assistant candidate content: supported
 - Abort that reports the actual outcome: supported
+- Live steer: unqualified; not advertised or enabled until [native qualification](#live-steer-mapping-and-qualification) passes
 - MCP on the dedicated server for selected supply: supported
 - Live native token streaming into product Items: not supported
 - Native approval or question round trips: not supported
@@ -163,6 +171,7 @@ The authored manifest is the sole launch-time capability declaration. Adapter co
 
 Required adapter tests cover:
 
+- Native live-steer qualification above, including exact initial/steering user-message correlation with unrelated-input rejection, inbox/terminal/interrupt races, lost-response non-redelivery, and no restart or successor spill
 - Credential-value absence, the fixed slash-free provider id, exact model id serialization, and direct-route rejection before the session admits work
 - Unknown-event tolerance, the 16 MiB and 16 KiB bounds, and redacted diagnostics
 - Admitted home and project configuration, local Skills and plugins affect actual execution without their files being overwritten. Protected-id collisions leave authored bytes intact, emit a warning, and use the admitted managed route and bearer. A later plugin hook that rewrites a provider request is outside that guarantee. Sharing, updates, model fetches, default plugin installation and LSP download stay disabled; a fresh home receives image defaults; and retained home bytes are preserved at close
@@ -179,6 +188,8 @@ The shared qualification cases in [Codex Worker Adapter](20260716-codex_worker_a
 Required image smoke covers the selected OpenCode version, the generic shim entrypoint, non-root user, and absence of `/etc/opencode` or the proved equivalent.
 
 ## Implementation Evidence And Limit
+
+The live-steer mapping above is accepted design, not qualification by the implementation evidence below. Live-steer support remains unqualified and disabled until its declared-pin checks pass.
 
 The [2026-10-05 runtime upgrade decision](../decisions/20261005-worker_runtimes_upgrade_to_latest.md) selects CLI/client npm latest `2.0.22`. Optional session parent and form-cancellation fields, partial capability overlays, native transport timeouts, and bounded MCP shutdown changes preserve the consumed HTTP and promise-client boundary. Session storage, the protected plugin hooks, and stdio EOF shutdown retain their existing shapes; no data migration or adapter compatibility path is introduced. Prior-pin observations below retain their original version attribution.
 

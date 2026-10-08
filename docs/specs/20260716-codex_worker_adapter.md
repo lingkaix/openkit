@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: boundary
-updated: 2026-10-05
+updated: 2026-10-08
 ---
 # Codex Worker Adapter
 
@@ -53,7 +53,7 @@ The production interface is one supervised App Server v2 process per binding, ov
 
 A thread id selects the exact native thread. Neither `--last`, title search, cwd search, sibling state, nor ambient Codex home is permitted. An ephemeral mode must not drop persistence under the AgentSession-private `CODEX_HOME`, because that persistence is what a later server instance resumes. Ambient user config, rules, hooks, and saved-session discovery are not launch authority.
 
-Codex starts with full access and full permission inside the Sandbox, with native permission prompts disabled ([Sandbox](../core/sandbox.md), [Sandbox full-capability rulings](../decisions/20261001-sandbox_full_capability_rulings.md)). An unexpected native permission request receives the pin's shortest-lived allow decision by default and does not interrupt the Turn. The adapter retains its existing deny-capable response path for future user-configurable policy, without introducing a policy setting now. Authored native deny rules remain the user's choice and are preserved. Native questions, steering, follow-up, and interactive approval round trips remain unsupported. External effects continue through Gateway approval and audit, and full native permission grants no authority beyond Sandbox storage and network containment.
+Codex starts with full access and full permission inside the Sandbox, with native permission prompts disabled ([Sandbox](../core/sandbox.md), [Sandbox full-capability rulings](../decisions/20261001-sandbox_full_capability_rulings.md)). An unexpected native permission request receives the pin's shortest-lived allow decision by default and does not interrupt the Turn. The adapter retains its existing deny-capable response path for future user-configurable policy, without introducing a policy setting now. Authored native deny rules remain the user's choice and are preserved. Native questions, follow-up, and interactive approval round trips remain unsupported. Live steer is conditional on the qualification below under [Task live steer](20260704-task_mode_worker_delegation.md#live-steer). External effects continue through Gateway approval and audit, and full native permission grants no authority beyond Sandbox storage and network containment.
 
 ## AEP Inputs Consumed
 
@@ -102,12 +102,13 @@ The Harness owns lifecycle sequencing. The adapter owns native thread identity, 
 
 - `session.open` starts one supervised App Server for this binding; native thread creation is deferred to the first bound Turn, and a new binding reports `pending` until that Turn establishes a resumable exact thread, while a resumed binding proves that thread before `ready`.
 - `turn.start` uses the current binding, one active Turn, and current authorization. It does not launch a new process per Turn.
+- `turn.steer` uses only the qualified native `turn/steer` mapping below on that exact running Turn; it never starts or interrupts a Turn.
 - `turn.interrupt` reports the actual native cancellation outcome and does not close the session.
 - `session.inspect` distinguishes the surviving server and thread from a replacement or an unknown or mismatched identity, and launches no work.
 - `session.close` stops that binding's work, preserves `CODEX_HOME`, removes the ephemeral control binding and Turn-local outputs, and returns exact writer absence proof for that binding.
 - `harness.drain` is the Harness admission fence. While admitted work and cleanup settle, this adapter refuses new `session.open` and `turn.start`. The Harness owns that fence. This adapter does not invent a native drain RPC.
 
-The six operations are owned by [Worker Control Protocol](20260703-worker_control_protocol.md#harness-control-operations). This section maps each of them onto the native thread behavior above.
+The seven operations are owned by [Worker Control Protocol](20260703-worker_control_protocol.md#harness-control-operations). This section maps each of them onto the native thread behavior above.
 
 Initial hosting is one server per binding until shared-host isolation is proved. Until that proof, close stops that binding's server. Once sharing is proved, closing one binding does not kill the server or delete native data, and a worker-control failure stops that binding's work without killing sibling bindings. A host restart invalidates every binding that host served. A transport loss and a NanoCore restart may each adopt the exact surviving binding, including its lineage, sequence, and execution attempt, under the existing [continuity](20260704-agent_session_continuity.md#exact-reconnect-contract), [scheduler attempt](20260703-durable_scheduler_design.md#attempt-reconnect-and-cleanup), and [NanoHost Adapter Liveness](20260629-worker_runtime_communication_model.md#nanohost-adapter-liveness) proof contracts, with no duplicate effect. A binding that cannot be proved exactly is closed or fenced, and a successor resumes the native conversation. A NanoCore restart does not by itself end the binding.
 
@@ -147,11 +148,18 @@ The target OpenKit worker envelope is one open Codex AgentSession with zero or m
 
 - `session.open` creates the private state root and starts the supervised server; new-thread establishment occurs on the first bound Turn, while resume proves the exact retained thread at open.
 - `turn.start` submits the Turn on that resident thread.
+- `turn.steer` projects [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) through the private [Worker Control Protocol](20260703-worker_control_protocol.md#live-steer-operation-boundary) operation and the native mapping below; it is unsupported until qualified.
 - `turn.interrupt` reports the actual cancellation outcome for that AgentSession's work and does not close the session.
 - `session.inspect` and `session.close` use the fixed adapter operations above.
-- Native approval requests, questions, steering, and follow-up remain unsupported.
+- Native approval requests, questions, and follow-up remain unsupported.
 
 Another resident AgentSession belongs to another Thread and has a distinct private `CODEX_HOME`, native handle, server process until sharing is proved, Turn slots, the two loopback credentials, and cleanup proof even when it selects the same Agent, image, model, or provider. The adapter never selects an AgentSession by `--last`, title, cwd, sibling state, or ambient Codex home.
+
+## Live-Steer Mapping And Qualification
+
+The selected App Server v2 pin `0.160.0` exposes native `turn/steer`. This is source/schema evidence, not enabled support. The adapter maps the shared operation to the exact resident native thread and its active native `expectedTurnId`, with bounded text input. It correlates the native response's `turnId` with that expected Turn and the public input Item/digest before reporting acceptance. A stale native target refuses without a new `turn/start`, interrupt, resume, or thread selection. A native `clientUserMessageId`, if used, is correlation only unless the pin independently proves stronger semantics; its presence does not authorize native idempotent resend.
+
+Before advertising support, native qualification at the declared pin must prove same-Turn acceptance and retained input correlation; wrong-Turn refusal; completion racing dispatch; interrupt before and after acceptance; late acknowledgement attached only to the original Turn; and no unconsumed steering input on a later Turn or exact successor resume. Lost responses and reconnect must use the shared non-redelivery rule, not another `turn/steer`. Native history and the acceptance response must agree on the addressed instruction. Source presence and mock passes do not qualify this boundary. If exact acceptance or successor-spill prevention cannot be proved, refuse as unsupported. The full public lifecycle, failures, receipt, and acceptance remain with [Task live steer](20260704-task_mode_worker_delegation.md#live-steer); this section owns only Codex's native mapping and proof.
 
 ## Skills And MCP
 
@@ -211,13 +219,15 @@ The authored manifest is the sole launch-time capability declaration. Adapter co
 - Interrupt that reports the actual outcome and does not close the session: supported
 - Live native token streaming into product Items: not supported
 - Native approval or question round trips: not supported
-- Steering and follow-up: not supported
+- Live steer: unqualified; not advertised or enabled until [native qualification](#live-steer-mapping-and-qualification) passes
+- Follow-up: not supported
 - Optional runtime provenance: supported only through the provenance owner and the accepted AEP feature
 
 ## Tests
 
 Required adapter tests cover:
 
+- Native live-steer qualification above, including exact input correlation, zero fresh-Turn effects, terminal/interrupt races, lost-response non-redelivery, and no retained-input spill into later work
 - Credential-value absence from argv, native configuration text, diagnostics, and evidence, and direct-route rejection before the native Turn is admitted
 - Rejection of any environment variable, AEP extension, or image diagnostic that would replace the adapter-produced native operations
 - Distinct-Thread AgentSession-private `CODEX_HOME` roots, rejection of two current bindings for one Thread, preserved admitted native config and rules with proved external-authority isolation, and ignored configuration outside the admitted Sandbox roots, exact thread establishment, exact resume by a later server, sibling rejection, and close preserving `CODEX_HOME` while removing only the ephemeral control binding, image defaults in a fresh home, and a local Skill that remains available when the selected Skill set is empty
@@ -255,6 +265,8 @@ The following qualification cases apply to this runtime on its accepted interfac
 - Workspace collection does not claim stability while a relevant writer remains active. This adapter does not treat process exit as the collection gate. Collection is owned by [Workspace Synchronization](20260703-workspace_synchronization.md).
 
 ## Implementation Evidence And Limit
+
+The live-steer mapping above is accepted design, not qualification by the implementation evidence below. Live-steer support remains unqualified and disabled until its declared-pin checks pass.
 
 The [2026-10-05 runtime upgrade decision](../decisions/20261005-worker_runtimes_upgrade_to_latest.md) selects npm latest `0.160.0`. Regeneration by that installed vendor binary yields the same 314 JSON schemas as `0.159.2`; the consumed App Server protocol, configuration destinations, and rollout shape are unchanged. Native SQLite initialization, telemetry reclamation, and plugin caching changes remain upstream implementation details; the adapter requires no protocol compatibility path. Prior-pin observations below retain their original version attribution.
 

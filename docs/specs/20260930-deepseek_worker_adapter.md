@@ -3,7 +3,7 @@ status: Accepted
 implementation: Partial
 kind: boundary
 date: "2026-09-30"
-updated: 2026-10-05
+updated: 2026-10-08
 ---
 # DeepSeek Worker Adapter
 
@@ -82,7 +82,7 @@ The adapter uses `session/load` only when the negotiated capability set advertis
 
 `session.close` cancels, waits for admission and idle, drains ordered output and continuable descendants, flushes persistence, and disposes the addressed agent, without deleting retained context. That close drain is native output settlement for the addressed session. It is not `harness.drain`. Close that cannot drain is not success. Cancel and close report the actual outcome. `harness.drain` is the Harness admission fence. While admitted work and cleanup settle, this adapter refuses new `session.open` and `turn.start`. The Harness owns that fence. This adapter does not invent a native drain RPC.
 
-The six operations are owned by [Worker Control Protocol](20260703-worker_control_protocol.md#harness-control-operations). This section maps each of them onto the open, inspection, prompt, interrupt, close, and admission-fence behavior above.
+The seven operations are owned by [Worker Control Protocol](20260703-worker_control_protocol.md#harness-control-operations). This section maps each of them onto the open, inspection, prompt, live-steer mapping or refusal below, interrupt, close, and admission-fence behavior above.
 
 A successor resumes the exact id after a runtime-process restart. A runtime-host exit ends the bindings that process hosted. A transport loss and a NanoCore restart may each adopt the exact surviving binding, including its lineage, sequence, and execution attempt, under the existing [continuity](20260704-agent_session_continuity.md#exact-reconnect-contract), [scheduler attempt](20260703-durable_scheduler_design.md#attempt-reconnect-and-cleanup), and [NanoHost Adapter Liveness](20260629-worker_runtime_communication_model.md#nanohost-adapter-liveness) proof contracts, with no duplicate effect. A binding that cannot be proved exactly is closed or fenced, and a successor resumes the native conversation. A NanoCore restart does not by itself end the binding. A crash during an effectful Turn ends the old AgentSession and does not claim effect rollback or automatic replay.
 
@@ -107,10 +107,17 @@ Compaction evidence is only what ACP actually exposes. Usage changes are not a c
 ## Control Mapping
 
 - Prompt, cancel, and close are the supported product controls, addressed to one native session.
+- `turn.steer` returns the shared unsupported, definite no-delivery refusal at the current ACP pin, as specified below.
 - `session/load`, when advertised, does not restore in-flight work.
 - Filesystem and terminal callbacks are not advertised. Native in-Sandbox shell and file tools remain available through the runtime’s own backends.
 - Upward ACP is not a product path.
 - `turn.interrupt` is the cancel above and does not close the session by itself.
+
+## Live-Steer Refusal And Qualification Boundary
+
+At DeepSeek `dsh@0.2.0-rc.2` with client ACP SDK `1.7.0` and the server's own SDK `1.4.0`, live steering is unsupported. The selected ACP server rejects a second prompt while a prompt is in flight; it supplies no qualified same-Turn additional-input operation. The private [Worker Control Protocol](20260703-worker_control_protocol.md#live-steer-operation-boundary) operation maps to a typed unsupported refusal without a native call, and the public [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) operation returns `steer_unsupported` before Item admission when that limitation is known.
+
+The adapter must not send another `session/prompt`, cancel and then prompt, switch to the narrower SDK wire, introduce a plugin, or substitute a new Turn to conceal the limitation. Tests prove refusal with zero additional native prompt, configuration, cancellation, or conversation effects and an unaffected original running Turn. Future support requires an accepted pin/interface with exact same-Turn native admission and the Task owner's terminal, interrupt, lost-response, restart, and no-successor-spill qualification; a new SDK alone or another runtime's pass does not enable it. Full public lifecycle, failures, receipt, and acceptance remain with Task Mode.
 
 ## MCP
 
@@ -156,12 +163,14 @@ The authored manifest is the sole capability declaration. Adapter conformance do
 - Native permission round trips: not supported
 - Filesystem or terminal callbacks: not supported
 - Live product-item streaming: not supported
+- Live steer: not supported at the current ACP pin
 - Upward ACP: not supported
 
 ## Tests
 
 Required tests cover:
 
+- Current-pin `turn.steer` unsupported refusal with zero additional native effects, unchanged original work, and no alternate wire, plugin, cancellation, or new-Turn fallback
 - `session/resume` by exact id after a process restart, then `session/close`, with no further `session/update`
 - Cancel addressed to one session
 - If a shared process is under test, the sibling remains and credentials and Skill roots do not bleed
@@ -180,6 +189,8 @@ Required tests cover:
 The shared qualification cases in [Codex Worker Adapter](20260716-codex_worker_adapter.md#tests) apply on native ACP. The SDK wire and a third-party ACP bridge are not alternate passing interfaces. One runtime's pass does not qualify another.
 
 ## Implementation Evidence And Limit
+
+The implementation evidence below does not qualify live steer; the current ACP pin explicitly remains unsupported under the refusal boundary above.
 
 The [2026-10-05 runtime upgrade decision](../decisions/20261005-worker_runtimes_upgrade_to_latest.md) selects client SDK npm latest `1.7.0`; DeepSeek CLI npm latest remains `0.2.0-rc.2`, while `0.2.1-alpha.1` is an alpha prerelease. The unchanged server plugin retains its own SDK `1.4.0` dependency. Both client releases use ACP protocol version 1; consumed connection and request APIs are unchanged. New optional state updates are ignored by existing pre-SDK admission, and the new SDK default 32 MiB line limit exceeds the adapter’s 16 MiB update ceiling. Historical registry sizes and probes below describe the prior client pin.
 

@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: concept
-updated: "2026-10-06"
+updated: "2026-10-08"
 ---
 # Task Mode Worker Delegation
 
@@ -12,6 +12,7 @@ updated: "2026-10-06"
 - The V1 flow from Assistant or user request to Workflow Coordinator routing, worker selection, thread/turn creation, bounded worker execution, result collection, and user-facing completion.
 - The single-worker default delegation contract.
 - Task Mode item, artifact, evidence, and Action Center projection requirements.
+- Exact running-Task live steer, its ordinary input Item, completed command receipt, failure and recovery semantics, and observable delivery result.
 
 ## Does Not Own
 
@@ -94,6 +95,82 @@ A worker's approval or user-input request in a direct Task is a pending request.
 Worker final status must satisfy the canonicalization contract in [Worker Turn Reliability Envelope](20260531-worker_turn_reliability_envelope.md#worker-turn-envelope). This version starts from a new data root and reads no earlier-version data ([decision](../decisions/20260930-earlier_version_data_not_carried.md)). A final status outside that contract, or any other contradictory tuple, is preserved as recorded and stays `recovery_required`: Task Mode MUST NOT synthesize a request, publish a receipt, project a human-waiting Turn, offer an answer or approval action, retry, or resume the worker from it.
 
 A Chat-subordinate Task worker raises requests on its receiving Thread exactly as a direct Task does. A user-input request is non-secret elicitation, not authorization: a secret question is refused, and it creates or requires no Approval, policy action, or `PermissionDecision`. The answer command validates the answering actor against the request's responsible user, who is the actor of the outer `conversation.submit` command, or, for a handoff from an outcome-initiated Assistant Turn, the responsible user of the pending request that admitted that Turn. The outer `conversation.submit` receipt, where one exists, remains the sole delegation-ledger owner and is never mutated or re-published; a handoff from an outcome-initiated Assistant Turn is owned by its source tuple in [Chat Mode Assistant](20260704-chat_mode_assistant.md), and no nested `task.start` receipt is required in either case. The answer is delivered on the receiving Thread's next Turn, whose admission keeps the handoff lineage (`parentThreadId`, receiving Thread, and `resultKind=task-handoff`). Receipt lookup precedes mutation; the same answer command identity with the same answer map replays, a changed answer map returns `409 idempotency_key_conflict`, a secret question returns `400 secret_input_not_supported` before any write, and a missing or contradictory request, receipt, or lineage owner returns `409 recovery_required` without worker resume, replacement work, or inferred repair.
+
+### Live steer
+
+#### Definition and exclusions
+
+`task.steer` submits an authorized additional user instruction to one Task Thread's exact running Turn and current worker binding. It preserves the Turn, execution attempt, AgentSession, original admission input, selected model, effort, environment, and effect authority. It may influence subsequent worker decisions, but does not undo effects already performed. The [Task Live-Steer Rulings](../decisions/20261008-task_live_steer_rulings.md) record the accepted scope and visible guarantee.
+
+Steer is not a new Task or Turn, a Pending Request answer, Plan approval, Goal intent or card mutation, permission escalation, interrupt, pause, or resume. The runtime selects its native processing boundary; Core selects no safe point and keeps no future-step input list. Native buffering is private adapter behavior, qualified against the same-Turn boundary. Persisted native input never authorizes execution on a successor Turn. A runtime without a qualified same-Turn boundary is unsupported even when it has a native input hook.
+
+The initial input shape is nonempty bounded text only. Non-whitespace text is required, and the exact submitted bytes are retained without normalization. Payload bounds protect the existing control envelope and bounded native exchange; implementation chooses the text limit within those bounds. Model, effort, environment, binary attachments, Artifact references, and new capability selections are inapplicable fields and are refused before effects. A client preserves an inapplicable draft rather than discarding its fields. Ordinary `conversation.submit` remains the explicit path for follow-up text and Artifacts on a fresh Turn.
+
+#### Public operation and actors
+
+The single public entry is `task.steer({ workspaceId, threadId, turnId, requestId, input })`, registered through [Operation Definition](20261002-operation_definition.md). Every field is required; `input` is text and the request rejects unknown effect-bearing fields. The caller supplies no actor, AgentSession, Harness, lease, runtime or native Turn identifier, provider, or configuration. NanoCore resolves the exact current binding from the authorized Task Turn. `pending` worker admission is ineligible; only the addressed running Turn can receive this operation.
+
+The actor must pass current Workspace and Thread access, mutation admission, and the existing `turn.run` execution policy against the exact target. Seeing a Worker does not authorize steering it. Current administrator eligibility, private Thread audience, and effect-specific approval rules remain intact. Missing, inaccessible, or mis-scoped targets use existing indistinguishable absence or denial before content disclosure or work-history writes.
+
+A personal agent invokes this same operation through the existing bearer-authenticated remote MCP `search`, `describe`, and `call` surface. The authenticated Token's user is the actor; audit retains its Token reference and `remote-mcp` channel. This adds no personal-agent identity, token scope, MCP tool family, transport, or worker-to-Core steering channel. The Coordinator may use the same Task service for linked work only through existing trusted invocation and delegated Plan authority. Before delivery, recheck current actor, Goal and card cancellation, and the Plan commitment. Worker MCP exposure still requires explicit supply and authority admission; one worker has no general authority to steer another.
+
+Text describing a new material commitment activates no Plan and grants no governed effect. Intent, Plan approval, Pending Requests, and effect owners retain those decisions. A Goal with several running Tasks requires selection of an exact Task Thread and Turn; there is no implicit recipient or broadcast. The Coordinator's own Thread is not a Task steer target.
+
+| Public outcome | Observable result |
+| --- | --- |
+| Accepted | Success identifies the same Workspace, Thread, Turn, and input Item with `delivery="accepted"`. The runtime accepted the instruction for native processing during that Turn; model reading, obedience, and completion are not promised. |
+| Unsupported | `409 steer_unsupported` means the input or runtime cannot satisfy the qualified live-steer contract. Known lack of support is refused before admission and native contact. |
+| Stale target | `409 steer_target_stale` means the addressed Turn ended, was replaced, or no longer has the exact live binding. It never selects a newer Turn. |
+| Busy | `409 steer_busy` means a different request occupies the existing Harness operation slot. Refusal precedes Item admission; no backlog is created. |
+| Unknown | `409 steer_outcome_unknown` identifies the retained input Item and exact target when dispatch or native acceptance cannot be proved. It is neither success nor definite non-delivery. |
+| Other definite refusal | Existing authorization, validation, absence, conflict, and dependency errors retain their owning semantics and safe reason. A post-admission refusal retains the Item and completed refusal receipt. |
+
+#### Durable authority and projections
+
+One ordinary `user-message` Item on the addressed Turn owns the instruction, real actor, exact original text, arrival time, and command causation. Its presence means submitted to that Turn, not consumed by the model. Steer does not rewrite the immutable initiating worker request, Context Package, checkpoint input, or Task admission receipt.
+
+The existing completed command-receipt family admits bounded immutable metadata for `task.steer`: target Turn, input Item id, canonical input hash, accepted/refused/unknown disposition, safe reason, and private-operation correlation sufficient to verify its source result. Receipts contain no prompt copy, native body, or credential. This admission extends receipt serialization only; it adds no receipt lifecycle, pending-command table, or steer store. The Harness record owns private dispatch and result truth. The public receipt retains the product result before that private result can be displaced by another operation.
+
+The authorized timeline and read projection join the Item with its retained result and distinguish `Sending`, `Accepted by running worker`, `Not delivered`, and `Delivery unknown`. Sending exists only while the exact live attempt exists and promises no eventual delivery. A missing completed receipt after ownership loss is unknown, not indefinitely queued. Do not label the instruction applied or read. A late exact acknowledgement may complete a not-yet-completed receipt without changing terminal Turn content; an already completed receipt remains immutable, and no late success or error Item is appended to a terminal Turn. Native history is execution evidence, not product delivery authority.
+
+#### Lifecycle and effect boundary
+
+1. Look up the receipt and existing attempt by immutable command scope before resolving current execution or selecting another target. For a new attempt, validate the whole request, current authority, exact running Turn and live binding, qualified support, payload bound, and free Harness slot. Known failures precede Item, scheduler, and native effects.
+2. Under existing exact-Turn mutation serialization, derive the input Item identity from operation, actor, Workspace, Thread, and request id independently of input bytes and target Turn. The canonical hash covers exact text and addressed Turn. Check existing attempt evidence and append that Item durably while the addressed Turn is still non-terminal. This write precedes every possible native dispatch, including after process-local request ownership is lost.
+3. Enqueue one private `turn.steer` through [Worker Control Protocol](20260703-worker_control_protocol.md#harness-control-operations). It names the exact binding, Turn and execution-attempt lineage, input Item, and payload digest. Queued storage retains body references; bounded text is materialized only for the authenticated downward exchange. It is typed user content, never interpreted by the control boundary as executable or shell text, an arbitrary path, or new runtime configuration. The shim rechecks exact active native work and invokes the adapter mapping once.
+4. The private result is `succeeded`, `refused`, or `unknown`. Success requires the adapter's exact native acceptance evidence, not Core receipt or a successful byte write. Persist the immutable public receipt before releasing the retained private result for slot reuse. A definite refusal discovered after Item admission retains that Item and its refusal receipt; only pre-admission refusal promises zero work-history writes.
+5. Completed exact replay returns the original disposition with no native contact or current-target resolution. Concurrent identical calls share one attempt; changed text or target under the same command scope returns `409 idempotency_key_conflict`. An Item or private attempt without a provable completed receipt prevents fresh execution and exposes unknown or existing recovery evidence. Receipt expiry does not turn retained attempt evidence into fresh authority. The caller inspects before explicitly choosing a new request; no automatic resend, follow-up promotion, compensation, or new-request retry is installed.
+
+Item append, Workspace receipt storage, Core Harness storage, and the external runtime are separate effect boundaries, with no cross-store or cross-runtime transaction. A crash between local writes can leave an inspectable Item without delivery. A crash after dispatch can leave an unknown native outcome. Write-before-dispatch and result-before-slot-reuse are required ordering guarantees; an unprovable gap fails closed. If the existing storage seam cannot satisfy either ordering, report that concrete finding rather than adding another durable owner. Steer creates no checkpoint transition, continuation, terminal state, or recovery runner; original Task closeout remains authoritative.
+
+#### Conflicts, failures, and recovery
+
+| Condition | Required outcome |
+| --- | --- |
+| Missing or inaccessible target, wrong Thread or Workspace | Existing scoped absence or denial, no content leakage or writes; global Worker discovery does not prove access. |
+| Turn ends before Item admission | Stale refusal with no Item, native call, new Turn, or fallback. |
+| Turn ends after Item admission but before dispatch | Recheck and record definite non-delivery only when absence of dispatch is proved; preserve the Item and never rebind it. |
+| Native completion races dispatch | The native exact-active-work guard or qualified adapter boundary decides acceptance. Proven refusal remains refused; uncertain transport or correlation is unknown. A delayed success acknowledges the old Turn only. |
+| Exact duplicate or changed request | Replay one retained result or share one attempt for identical scope/input; changed text or target conflicts. Receipt loss or expiry with retained attempt evidence never permits re-execution. |
+| Different concurrent requests | The existing single Harness slot admits one; another gets busy before Item admission. No backlog or client-selected ordering is added. Sequential accepted submissions follow the native order the adapter proves. |
+| Core restart or reconnect | A never-dispatched queued command proceeds only after exact surviving-binding adoption and fresh target and authority checks. Dispatched effects are never redelivered. An exact retained result may settle the original receipt; missing evidence is unknown under existing admission and cleanup fences. |
+| NanoHost or native host restart | A new process is not the old active Turn. Existing continuity owners alone authorize exact surviving-binding adoption; host replacement loses that proof. Retained native input cannot spill into successor admission. Missing cleanup or resume proof makes the adapter unsupported. |
+| Harness failure or response loss | After possible dispatch, preserve the original Item and target and report unknown. Do not infer refusal, success, a replacement worker, or automatic retry; existing containment and cleanup owners fence uncertainty. |
+| Interrupt races steer | Once interrupt authorization wins before steer dispatch, send no new steer. Already-dispatched input cannot be unsent; interrupt follows its existing owner without promising the text was unconsumed. Record steer disposition separately from the Turn terminal. |
+| Slow native acceptance | Use existing bounded control-call and failure discipline, without waiting for model consumption or indefinitely holding the private slot. Unresponsive steer enters unknown and cleanup handling, creates no second interrupt route, and must not weaken the existing interrupt-delivery requirement. |
+| Authorization revoked while pending | Revalidate before dispatch and refuse unsent input. After dispatch, preserve truthful uncertainty and apply existing revocation and interrupt rules. Text never restores a revoked grant. |
+| Native input can spill into the next Turn | Refuse with `steer_unsupported`; no custom queue, inferred completion, cancel/restart sequence, or cross-Turn promotion may conceal the missing proof. |
+
+#### Observable acceptance
+
+| Proof surface | Required observation |
+| --- | --- |
+| Request and authorization | Missing exact Turn, empty or oversized text, extra authority/configuration fields, and attachments refuse before effects. Inaccessible private targets disclose no content. Remote MCP and HTTP use the same actor, target, receipt, and errors. |
+| Same-Turn acceptance | Exactly one subsequent user Item and one native invocation identify the addressed running Task Turn. Original input, model, effort, environment, attempt, AgentSession, and execution authority remain unchanged; no second Turn or admission exists. Native acceptance evidence is correlated, and the product does not claim model consumption. |
+| Replay and write gaps | Observe retained bytes and native invocation counts after faults following Item append, enqueue, dispatch, native acceptance, and before public receipt publication. Recreated owners and same/changed requests never resend a possibly dispatched effect; receipt expiry does not defeat that fence. |
+| Races and recovery | Natural terminal, interrupt, revoked authority, reconnect, Core restart, host loss, successor admission, and lost responses preserve exact targeting, truthful refusal or unknown, cleanup fencing, and no stale native-input spill. Slow steer preserves bounded slot settlement and the existing interrupt-delivery bound. Reuse existing restart instruments. |
+| Runtime qualification | Each enabled adapter proves the contract at its declared pin through native work, terminal and interrupt races, and retained state across successor admission. Schema presence, a mock, a resolved Promise, or another runtime's pass cannot enable support. |
+| Goal and Composer | An exact linked Task receives steer without Goal intent/card/Plan mutation, Goal completion, a Goal input store, a new Goal operation, or a steer-only wake. Card edits alone invoke no native steer; the Coordinator refuses live steer. Unsupported or uncertain Composer submissions retain the exact draft and target without automatic follow-up. |
 
 ### Routing and worker selection
 
@@ -179,6 +256,8 @@ An exact receipt replay of a queued or running Turn validates the same request-b
 Task Mode composes existing lower-level services: Assistant or UI entry, Workflow Coordinator decision, context package assembly, scheduler placement, worker control, workspace sync/review/apply, Action Center, and evidence records. NanoCore should implement this as a thin workflow service over those contracts rather than a separate runtime.
 
 ## Current Implementation Projection
+
+Live steer is an accepted contract awaiting implementation and runtime qualification. The public `task.steer`, private `turn.steer`, receipt metadata, and delivery projection above are required targets, not claims of existing support. No adapter is qualified for this complete contract by the source inspection that motivated it.
 
 NanoCore now has the first distinct Task Mode App API contract and bounded worker-launch path. `@openkit/app-api-schemas` defines `StartTaskModeRequestSchema`, the internal launch projection `TaskDelegationDecisionSchema`, and `StartTaskModeResponseSchema`; `@openkit/core-client` exposes `client.operations['task.start']`; remote MCP and the administrator CLI expose the `task.start` operation; and NanoCore serves `POST /api/app/operations/task.start`.
 

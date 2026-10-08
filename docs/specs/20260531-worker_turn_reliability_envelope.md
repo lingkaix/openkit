@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: concept
-updated: "2026-10-06"
+updated: "2026-10-08"
 ---
 # Worker Turn Reliability Envelope
 
@@ -12,7 +12,7 @@ This spec owns the implementation-facing reliability envelope for internal-role 
 
 ## Does Not Own
 
-This spec does not own stable core workflow vocabulary, user-facing work labels, worker selection, semantic worker-request composition, user-input delivery semantics, worker-control wire commands or reconnect authorization, workspace synchronization, runtime execution-attempt adoption, agent manifest resolution, Agent Environment Package schemas, context-management policy or compaction algorithms, or UI recovery layouts. S15 owns worker selection and semantic request composition; [Pending Requests](20260930-pending_requests.md) owns worker user-input requests and outcome delivery, [Goal](20261002-goal.md) owns Goal intent and card edits, and `docs/specs/20260902-agent_runtime_context_compaction.md` owns context-management policy and compaction authority.
+This spec does not own stable core workflow vocabulary, user-facing work labels, worker selection, semantic worker-request composition, user-input delivery semantics, worker-control wire commands or reconnect authorization, workspace synchronization, runtime execution-attempt adoption, agent manifest resolution, Agent Environment Package schemas, context-management policy or compaction algorithms, or UI recovery layouts. S15 owns worker selection, semantic request composition, and [Task live steer](20260704-task_mode_worker_delegation.md#live-steer); [Pending Requests](20260930-pending_requests.md) owns worker user-input requests and outcome delivery, [Goal](20261002-goal.md) owns Goal intent and card edits, and `docs/specs/20260902-agent_runtime_context_compaction.md` owns context-management policy and compaction authority.
 
 ## Core References
 
@@ -288,7 +288,7 @@ There is no separate `prepareNextTurn` semantic authority. The owning Task servi
 
 `shouldStopAfterTurn(context)` returns a `StopAfterTurnDecision` whose `outcome` is exactly `continue`, `review`, `block`, `abort`, or `complete`, whose `shouldStop` is false only for `continue`, and whose separate `stopReason` uses the protocol `StopReason` enum.
 
-Runtime-owned system steering such as a budget wrap-up or recovery constraint is input to the owning mode service's next Coordinator decision; the envelope must not inject it behind that decision. User input has no generic follow-up queue in this contract. A Task worker receives it through a pending request, as [Pending Requests](20260930-pending_requests.md) defines. Goal steering is not an input on this envelope. The current implementation leaves that legacy path unavailable until the Goal implementation, as [Goal](20261002-goal.md) defines.
+Runtime-owned system steering such as a budget wrap-up or recovery constraint is input to the owning mode service's next Coordinator decision; the envelope must not inject it behind that decision. User input has no generic follow-up queue in this contract. Pending Request outcomes arrive on later Turns under [Pending Requests](20260930-pending_requests.md); unsolicited live input uses only [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) and the private Harness contract. Goal-owned steering is not an input on this envelope. The current implementation leaves that legacy path unavailable until the Goal implementation, as [Goal](20261002-goal.md) defines.
 
 NanoCore's app-local `runWorkerTurnLoop()` is the first worker-turn envelope shell. It receives the mode-owned request identity and prepared worker inputs, atomically invokes the mode's exact Turn reservation, records its allowed launch PermissionDecision, writes the request-bound `preparing` checkpoint, performs the first scheduler admission, starts exactly that worker with exactly that request, observes the terminal worker stop reason, records terminal checkpoint evidence, and evaluates `shouldStopAfterTurn()`. It MUST NOT invent another Turn or checkpoint when the mode-owned launch fence is missing or contradictory. Until S16's immutable Context Package trace exists, a restart or handled failure after the `preparing` fence but before the exact Turn-owned request is durable fails closed as `recovery_required`; this bounded compromise is safer than reconstructing request bytes from Coordinator, checkpoint diagnostics, or current context.
 
@@ -361,9 +361,9 @@ Durable checkpoint, terminal, evidence, and business-owner writes replay exactly
 
 ### Pending User Turn
 
-A Task worker's input while work is active is a pending request, as [Pending Requests](20260930-pending_requests.md) defines. It does not use a Goal steering record. Generic active-turn queues, worker-filesystem mutation, and recovery workflows remain prohibited.
+A Task worker's requested input is a pending request with later-Turn outcome delivery, as [Pending Requests](20260930-pending_requests.md) defines. Unsolicited input to exact running work uses only [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) through [Worker Control Protocol](20260703-worker_control_protocol.md#harness-control-operations), never a Goal steering record. It adds no pending-user-turn queue, checkpoint transition, continuation, or recovery runner. Dispatched unknown effects retain existing fencing; original Task closeout remains authoritative. Generic active-turn queues, worker-filesystem mutation, and recovery workflows remain prohibited.
 
-The generic direct-Turn path has no later-delivery owner and MUST return `409 thread_busy` before creating an Item, pending row, or accepted command. Restart MUST NOT infer pending input from audit events, a current Thread projection, or worker-private state.
+The generic direct-Turn path, outside explicit [Task live steer](20260704-task_mode_worker_delegation.md#live-steer), has no later-delivery owner and MUST return `409 thread_busy` before creating an Item, pending row, or accepted command. Restart MUST NOT infer pending input from audit events, a current Thread projection, or worker-private state.
 
 ### Inactive Goal Input Contract
 

@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: boundary
-updated: 2026-10-05
+updated: 2026-10-08
 ---
 # Pi Worker Adapter
 
@@ -16,7 +16,7 @@ Official SDK operations, event translation, and feature restrictions remain owne
 
 The Pi Worker Adapter runs the official SDK inside one dedicated host process for the active AgentSession and translates that host's events into the shared OpenKit Harness result.
 
-Plugins and Extensions run in that host, never in the Integration and Harness process. The host control channel is small and private: prompt, interrupt, evidence, configuration, and close. It is not a product protocol and it does not put Pi RPC into NanoCore. The production path is not JSON mode, not unchanged `RpcClient`, and not a Pi ACP bridge ([four native runtime adapters](../decisions/20260929-four_native_runtime_adapters.md)).
+Plugins and Extensions run in that host, never in the Integration and Harness process. The host control channel is small and private: prompt, qualified live steer, interrupt, evidence, configuration, and close. It is not a product protocol and it does not put Pi RPC into NanoCore. The production path is not JSON mode, not unchanged `RpcClient`, and not a Pi ACP bridge ([four native runtime adapters](../decisions/20260929-four_native_runtime_adapters.md)).
 
 Pi's purpose in this architecture is to prove that the worker boundary is not an accidental Codex or OpenCode common denominator. Each runtime is qualified on its own.
 
@@ -85,7 +85,7 @@ Missing, empty, malformed, symlinked, wrong-id, or wrong-cwd identity fails befo
 
 `turn.interrupt` reports the actual outcome and does not close the session. `session.inspect` repeats the identity proof without launching work and distinguishes this host from a replacement. An unknown or mismatched identity fails closed and launches no work. `session.close` stops work, finishes cleanup, and terminates that dedicated host, preserving the session file and every other retained byte, and proves writer absence. `harness.drain` is the Harness admission fence. While admitted work and cleanup settle, this adapter refuses new `session.open` and `turn.start`. The Harness owns that fence. This adapter does not invent a native drain RPC.
 
-The six operations `session.open`, `session.inspect`, `turn.start`, `turn.interrupt`, `session.close`, and `harness.drain` are owned by [Worker Control Protocol](20260703-worker_control_protocol.md#harness-control-operations). This section maps them onto the open, inspection, prompt, interrupt, close, and admission-fence behavior above.
+The seven operations `session.open`, `session.inspect`, `turn.start`, `turn.steer`, `turn.interrupt`, `session.close`, and `harness.drain` are owned by [Worker Control Protocol](20260703-worker_control_protocol.md#harness-control-operations). This section maps them onto the open, inspection, prompt, live-steer mapping or refusal below, interrupt, close, and admission-fence behavior above.
 
 A host exit ends that AgentSession. A transport loss and a NanoCore restart may each adopt the exact surviving binding, including its lineage, sequence, and execution attempt, under the existing [continuity](20260704-agent_session_continuity.md#exact-reconnect-contract), [scheduler attempt](20260703-durable_scheduler_design.md#attempt-reconnect-and-cleanup), and [NanoHost Adapter Liveness](20260629-worker_runtime_communication_model.md#nanohost-adapter-liveness) proof contracts, with no duplicate effect. A binding that cannot be proved exactly is closed or fenced, and a successor resumes only the exact retained reference. A NanoCore restart does not by itself end the binding. Failed or interrupted collection returns no new ready authority. A failure after native bytes were written fails the Turn without rolling back, truncating, deleting, or repairing the retained file. The adapter does not infer that a failed OpenKit Turn left no native effect.
 
@@ -110,9 +110,16 @@ The adapter returns a normalized final assistant message and adapter-local diagn
 ## Control Mapping
 
 - `turn.interrupt` uses the host's native cancel, reports the actual outcome, and does not close the session by itself.
-- Steer and follow-up are not advertised and are not active-turn product controls.
+- `turn.steer` projects [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) through a bounded private SDK-host command under [Worker Control Protocol](20260703-worker_control_protocol.md#live-steer-operation-boundary); it remains unsupported until the native qualification below passes.
+- Follow-up is not advertised as an active-Turn product control.
 - Extension UI confirmation defaults to true; prompts requiring free input return undefined. These observations are not a product approval or question channel.
 - Pi RPC does not enter NanoCore.
+
+## Live-Steer Mapping And Qualification
+
+At SDK pin `1.0.2`, the host maps the bounded private steer command to the exact resident SDK `AgentSession.steer` and correlates it with the existing host's active-work generation and public input Item/digest. Pi's native steer buffer chooses a tool/processing boundary; OpenKit adds no buffer or scheduling policy. Extension input hooks can handle the input without admitting it to model processing, so a resolved Promise, a host-channel acknowledgement, or an extension-handled result alone does not prove acceptance. Such handled input must report definite non-delivery rather than success when native admission is absent.
+
+Before advertising support, real-host qualification must establish native admission during the exact addressed work, stale/end-of-work refusal, extension-handled non-delivery, interrupt racing acceptance, and the bounded command's settlement without weakening interrupt delivery. It must also prove that terminal, abort, close, host loss, and exact successor resume cannot leave queued text executable by a later Turn; clearing or disposition must follow the pin's native behavior without deleting retained conversation data or installing a custom queue. Native Promise resolution and queue presence alone cannot enable support. An unproved boundary refuses as unsupported. [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) owns the full product lifecycle, failure, receipt, and acceptance; this owner supplies only the Pi mapping and qualification. Pi RPC and SDK events stay inside the adapter and its host.
 
 ## Skills, Extensions, And MCP
 
@@ -192,7 +199,8 @@ The authored manifest is the sole launch-time capability declaration. Adapter co
 - MCP through Pi's native MCP, once per resident session, with OpenKit tools declared directly when the server offers them and with an empty catalog accepted: supported
 - Live native token streaming into product Items: not supported
 - Native approval or extension UI round trips: not supported
-- Steer and follow-up: not supported
+- Live steer: unqualified; not advertised or enabled until [native qualification](#live-steer-mapping-and-qualification) passes
+- Follow-up: not supported
 - Built-in Pi MCP for admitted OpenKit servers and for agent-directory user servers: supported
 - Native search discovery and direct invocation of user MCP tools with default `codemode`, `codemode-deferred` and `deferred` exposure, with hidden tools excluded: supported by the search-only host contract; qualification required before claiming the route usable.
 - User-configured native codemode setup: permitted under the stated targeting limitation.
@@ -201,6 +209,7 @@ The authored manifest is the sole launch-time capability declaration. Adapter co
 
 Required adapter tests cover:
 
+- Native live-steer qualification above, including the active-work generation, extension-handled refusal, terminal/interrupt queue disposition, lost-response non-redelivery, bounded slot settlement, and no successor-input spill
 - Identity preflight of the exact nonempty session header id and cwd before work, rejection of missing, empty, malformed, symlinked, wrong-id, wrong-cwd, or otherwise mismatched identity, and no inode tracker
 - Close preserving the session file and every other retained byte, and rejection of any file other than the exact retained reference
 - Credential-value absence, direct-route rejection, and no `--api-key`
@@ -236,6 +245,8 @@ These criteria use real-host fixtures and named expected failures so a registrat
 10. **Packaging and live boundary:** run the real-host fixture from the built deployment dependency closure as the non-root worker and record the exact image digest. Separately retain the adapter's real Task/provider and deployed Sandbox gates; neither imports nor a local synthetic MCP/server exchange closes them. Do not add a public network dependency to these local discovery regressions.
 
 ## Implementation Evidence And Limit
+
+The live-steer mapping above is accepted design, not qualification by the implementation evidence below. Live-steer support remains unqualified and disabled until its declared-pin checks pass.
 
 The paragraphs below record the JSON-mode implementation and the image observations through 2026-09-29. They are historical evidence of those bytes. The accepted design replaces this path with the official SDK host. A successor's different absent path in those probes is evidence of the old contract, not the new requirement. The `0.85.1` two-process file probe proves process replacement on that pin. It does not prove the SDK host, `pi-mcp-adapter`, or the shared image.
 

@@ -1,8 +1,9 @@
 ---
 status: Accepted
-implementation: Implemented
+implementation: Partial
 kind: boundary
 date: 2026-08-31
+updated: "2026-10-08"
 ---
 # Unified Conversation Composer
 
@@ -76,6 +77,9 @@ interface ConversationTarget {
   unavailableReason: string | null;
   threadId: string | null;
   profileId: string | null;
+  activeTurnId: string | null;
+  steerAvailability: 'available' | 'busy' | 'unsupported' | 'unavailable';
+  steerUnavailableReason: string | null;
   logicalModels: readonly {
     id: string;
     label: string;
@@ -93,6 +97,16 @@ The catalog contains the built-in Assistant and Workspace Knowledge Manager when
 Creation and update are a context-specific join over the existing Agent catalog, internal-role availability, Goal and Thread state, AgentSession readiness, Workspace configuration, User preference, and Gateway logical-model state. The conversation catalog owns no Agent health, runtime health, warm placement, or readiness fact and must consume the product-safe projections of those owners rather than recompute them. Removing or replacing one of those owners removes or changes the catalog entry on the next read. NanoCore restart rebuilds the catalog from those owners; the catalog itself has no persistence or recovery lifecycle.
 
 Existing Worker targets are scoped to the requested Thread, never other conversations in the Workspace. A starter without a Thread has no existing Worker target. The `running-worker` discriminator addresses the Thread's current Worker continuity; it is not a claim that a Sandbox or process is running. Terminal AgentSessions are excluded. Ready or idle current Workers may be available when their setup is admitted, busy Workers remain visibly busy, and other current states or stale configuration are unavailable with a reason. The selector identifies the current Worker as belonging to this conversation and shows each target's product-safe description beneath its label, distinguishing reusable Agent supply from continued work. Catalog reads and submission acceptance apply the same scope, so a target from another Thread fails with `target_missing` before effects. Acceptance covers two Threads using the same Agent, terminal history, idle and unavailable states, starter exclusion, cross-Thread rejection, and accessible target descriptions.
+
+## Explicit Live Input
+
+For explicit live input to a running Task, the Composer calls [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) as `task.steer` with the displayed exact Thread and Turn, request identity, and bounded text. Ordinary `conversation.submit` remains a new-Turn action and never implicitly becomes steer. Neither action switches to the other after target revalidation. The [Task Live-Steer Rulings](../decisions/20261008-task_live_steer_rulings.md) record the accepted scope and visible guarantee.
+
+The existing authorized target/read surface projects `activeTurnId`, qualified `steerAvailability`, and its safe reason from the exact Task Turn and existing binding/support owners. The projection grants no authority and stores no readiness or routing fact. Non-Task targets have no available live-steer action; the Coordinator is explicitly unsupported. A busy ordinary target may still offer explicit live input only when that separate projected availability is available. Missing exact Turn or unavailable qualification disables sending and preserves the draft.
+
+Live-steer controls accept only the Task owner's text shape. Model, effort, environment reuse, Artifact references, uploaded files, and capability changes are inapplicable to live input. The client requires an explicit resolution of inapplicable draft fields and never silently discards them or sends them as configuration. New-Turn selectors and Artifact import behavior remain the ordinary submission contract. Explicit live input requires non-whitespace text and no identical request already pending.
+
+The client retains the exact text, Thread, Turn, request identity, and inapplicable draft fields after failure or uncertainty. Catalog refresh does not replace that pending Turn, choose a successor, submit automatically, or fall through to a new Turn. It clears the live draft only after the exact accepted response. Render native acceptance, definite non-delivery, and delivery unknown distinctly through the Task owner's Item/result projection; success never says the model read, obeyed, or completed the instruction. Sending is only the live attempt's projection, not a durable queue or promise of delivery. Lifecycle, replay, races, recovery, and receipt authority remain with Task Mode; the Composer adds no independent routing or retry logic.
 
 ## Structured Submission
 
@@ -129,7 +143,7 @@ Target dispatch is a synchronous branch over existing services, not a durable di
 - `knowledge-manager` invokes the Workspace Knowledge Manager in the originating Thread and projects its answer through ordinary Turn and Item history.
 - `goal-orchestrator` remains the wire discriminator for the Goal target. A handoff calls create Goal, as [Goal](20261002-goal.md) defines, and addresses the Coordinator Thread that operation records. A submission to an active Goal addresses that Goal's Coordinator Thread. A delegated intent change calls the same Goal intent operations. Steering is not a dispatch. This branch does not authorize a separate Goal execution path and does not define a mapping from natural language onto a Goal operation. It adds no audience, replay, or target-revalidation rule. Those checks stay the ones this specification already states.
 - `warm-worker` starts the next Task Turn in the Thread selected or created under the existing Task and AgentSession continuity rules.
-- `running-worker` addresses only its owning Thread. If the owning workflow already accepts steering, NanoCore uses that command. If the target cannot accept input while its Turn is active, submission returns `target_busy` with no effects and the client retains the draft for an explicit retry.
+- `running-worker` addresses only its owning Thread. Ordinary submission starts a later Task Turn only when that Thread can admit it; an active Turn returns `target_busy` with no effects and the client retains the draft. Explicit live input calls only `task.steer` under [Task live steer](20260704-task_mode_worker_delegation.md#live-steer), with its displayed exact Turn and distinct input shape; no implicit busy-to-steer or steer-to-follow-up branch exists.
 - `new-task-worker` creates one linked Task execution Thread from the originating Thread and enters the existing Task Mode start path with the selected Agent profile and logical-model preference. It creates no Shard entity.
 
 The response names the accepted outcome, originating Workspace and Thread, receiving Workspace and Thread, created or continued Turn when one exists, selected target, accepted logical model, and existing handoff or failure projection. `receivingWorkspaceId` equals the originating Workspace for ordinary branches and names the actual receiving Workspace for an existing cross-Workspace owner such as a Quick Chat handoff. It does not contain placement or private routing identities. A target chosen from an earlier catalog read is revalidated at submission; NanoCore does not silently substitute another target when it is missing, stale, busy, unauthorized, or incompatible.
@@ -152,6 +166,8 @@ The client retains exact text, target, model, optional effort, Artifact referenc
 
 ## Current Implementation Projection
 
+The explicit live-input action and exact-Turn/qualified-availability fields are accepted targets awaiting implementation; the existing Composer and conversation operations below do not qualify live steer. This added gap makes implementation alignment Partial.
+
 NanoCore implements `POST /api/app/operations/conversation.targets` and `POST /api/app/operations/conversation.submit` with strict target, logical-model, Artifact-reference, command-receipt, replay, and recovery behavior. The catalog includes Assistant, Knowledge Manager, active Coordinator, warm Worker, running Worker, and new Task Worker choices when their owning resources are available. Submission reuses existing Assistant, Knowledge, Goal, Worker, Task, Thread, Turn, Item, Artifact, and scheduler owners and adds no Shard record or second workflow engine.
 
 `@openkit/core-client` exposes `client.operations['conversation.targets']` and `client.operations['conversation.submit']`; `StartChatMode*`, `client.app.startChatMode`, the Chat-specific App route, and `chat.start` are absent. Direct Task, Goal, and Knowledge operations remain available to non-Composer callers.
@@ -164,14 +180,15 @@ The Web Composer implements the accepted two-region design with bounded auto-gro
 - L2 client and command tests prove request-id insertion, canonical hashing, stable target-reference derivation, exact replay for every branch, changed-input and changed-effort conflict, admitted Turn effort and admission precedence, absent effort without an inferred native default, stale-target rejection, receiving-Workspace projection, and no silent target or model substitution.
 - L3 NanoCore tests exercise Assistant, Knowledge Manager, Coordinator, warm Worker, running Worker, and new Task Worker branches through their existing owners, including busy rejection and linked Task Thread creation without a Shard record.
 - L4 Web tests prove the two-region action order, approximately two-and-one-half-line minimum, `min(240px, 40vh)` maximum, target and model filtering, advertised-only effort choices and hidden control without reasoning/options, Thread-last-admitted-effort preselection only while advertised, no preselection otherwise, preselection submitted as an ordinary explicit value, effort delivery and failure retention without catalog refresh changing a pending choice, Artifact selection and supported text-file import, preserved draft and request identity after failure, starter Thread half-state, exact retry, Enter and Shift+Enter behavior, keyboard and screen-reader operation, and no concrete Provider or runtime identity in the UI.
+- L1-L4 live-input coverage consumes the Task owner's acceptance predicates and proves exact displayed Turn forwarding, text-only controls, explicit resolution of inapplicable fields, unsupported draft retention, distinct accepted/refused/unknown rendering, unchanged pending target after refresh, and zero automatic resend or new-Turn fallback.
 - One end-to-end story selects `New Shard + Worker`, submits a supported Artifact and logical model, observes the linked Task Thread and Worker Turn, and proves the worker-visible model stays logical while Gateway evidence records the private route.
 
-Acceptance requires one target catalog, one structured submit command, no second workflow engine, no durable Shard, exact reuse of existing execution owners, one visible logical-model choice, and complete draft preservation on failure.
+Acceptance requires one target catalog, one structured new-Turn submit command and the Task owner's explicit live-steer operation, no second workflow engine, no durable Shard, exact reuse of existing execution owners, one visible logical-model choice, and complete draft preservation on failure.
 
 ## Alternatives Considered
 
 - Extend the existing text-only `chat.start` name while making it dispatch non-Assistant targets. Rejected because the public name would lie about its scope.
-- Add one endpoint per target kind. Rejected because the Composer would become a client-side dispatcher and duplicate idempotency and error handling.
+- Add one endpoint per target kind for ordinary new-Turn submission. Rejected because the Composer would become a client-side dispatcher and duplicate idempotency and error handling. Explicit live steer is the Task owner's different semantic operation, not a per-target replacement for structured submission.
 - Add an attachment store or general binary upload service. Rejected because the current bounded Artifact import already supports the required first upload path.
 - Expose AgentSession or Sandbox identities in the target selector. Rejected because Thread and Agent supply are the product owners and runtime placement is private.
 

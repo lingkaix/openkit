@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: concept
-updated: "2026-10-06"
+updated: "2026-10-08"
 ---
 # Human Attention And Intervention Model
 
@@ -32,7 +32,7 @@ The product should treat human involvement as `human attention` first, then rout
 
 The core protocol should stay small.
 
-It should keep approval and user-input requests as pending requests that never pause a Turn, with blocking derived from Thread state as [Pending Requests](20260930-pending_requests.md) defines, keep the request kind as the branch point between approval and question UI, refuse ordinary input with `409 thread_busy` while a Turn is non-terminal, and keep review, redo, and refinement attached to their exact owning records and ordinary Turns.
+It should keep approval and user-input requests as pending requests that never pause a Turn, with blocking derived from Thread state as [Pending Requests](20260930-pending_requests.md) defines, keep the request kind as the branch point between approval and question UI, refuse ordinary input with `409 thread_busy` while a Turn is non-terminal except through the explicit [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) operation, and keep review, redo, and refinement attached to their exact owning records and ordinary Turns.
 
 The app layer may expose a richer Action Center that combines pending approvals, including Plan approval and completion acceptance, questions, blocked work, artifact reviews, authorized budget decisions, and recovery choices into one product surface.
 
@@ -57,7 +57,7 @@ Goals:
 - Keep `ApprovalRequest` focused on permission, safety, budget, credential, irreversible, and external side-effect decisions.
 - Keep agent questions, Plan Mode questions, and elicitation flows separate from approvals.
 - Keep steering as user input during active work, not as a separate core object.
-- Refuse input submitted while a Turn is non-terminal with `409 thread_busy` before writes. A Goal work-intent edit is recorded on the Goal and does not by itself change a running worker.
+- Refuse ordinary input submitted while a Turn is non-terminal with `409 thread_busy` before writes, except the exact [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) contract. A Goal work-intent edit is recorded on the Goal and does not by itself change a running worker.
 - Define how artifact review, result acceptance, redo, and refinement map to existing product concepts without authorizing a generic reviewer loop.
 - List typical product scenarios so implementation work can test against realistic user flows.
 - Establish which concepts belong in core protocol, which belong in NanoCore app-local runtime state, and which belong in Web read models.
@@ -106,7 +106,7 @@ Core protocol keeps these stable rules:
 - An elicitation request uses a `user-input-request` item.
 - Active-turn steering is submitted as ordinary input and recorded as normal user-message or equivalent item history.
 - Review, redo, and refinement use the exact Review owner and create ordinary traceable Turns where its specification authorizes follow-up work; this rule does not authorize a generic review loop.
-- UI clients and adapters submit ordinary input and render authoritative Items and Turn events. They do not invent a delivery queue. Busy input while a Turn is non-terminal returns `409 thread_busy` before writes.
+- UI clients and adapters submit ordinary input and render authoritative Items and Turn events. They do not invent a delivery queue. Ordinary busy input while a Turn is non-terminal returns `409 thread_busy` before writes; explicit [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) uses its exact-target contract.
 
 The app layer may expose an `Action Center` read model that groups pending human attention across those modes.
 
@@ -120,7 +120,7 @@ The app layer may expose an `Action Center` read model that groups pending human
 
 Only approval requests and elicitation requests are human gates in the current core protocol.
 
-`Delivery policy` is the authoritative outcome for steering input. V1 has no Goal safe-point path. Input submitted while a Turn is non-terminal returns `409 thread_busy` before writes.
+`Delivery policy` is the authoritative outcome for steering input. [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) owns exact running-Task delivery, including Goal-linked workers. It adds no Goal safe-point queue; other ordinary input while a Turn is non-terminal returns `409 thread_busy` before writes.
 
 `Escalation trigger` is a runtime, review, budget, policy, or quality condition that asks for human attention.
 
@@ -285,11 +285,11 @@ An answer to a pending user-input request uses the answer command addressed to t
 
 A pending approval is answered only by the approval response command, never by user input.
 
-Input submitted while a Thread has a non-terminal Turn returns `409 thread_busy` before Item or command writes. A Goal work-intent edit is recorded on the Goal and does not by itself change a running worker. Interrupting that worker uses the Task owner's interrupt.
+Ordinary input submitted while a Thread has a non-terminal Turn returns `409 thread_busy` before Item or command writes. Explicit [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) addresses its exact running Turn and owns admission and delivery. A Goal work-intent edit is recorded on the Goal and does not by itself change a running worker. Interrupting that worker uses the Task owner's interrupt. The [Task Live-Steer Rulings](../decisions/20261008-task_live_steer_rulings.md) record this scope.
 
 ### Delivery Policies
 
-V1 has no Goal safe-point steering path. Generic `interrupt_then_apply`, `after_current_turn`, and automatic `follow_up_turn` policies are not authorized. A UI MUST NOT expose them as available delivery choices until an accepted specification names their owner, durable proof, failure behavior, restart behavior, and replay predicate.
+Goal-linked worker input uses [Task live steer](20260704-task_mode_worker_delegation.md#live-steer), with no Goal safe-point steering path. Generic `interrupt_then_apply`, `after_current_turn`, and automatic `follow_up_turn` policies are not authorized. A UI MUST NOT expose them as available delivery choices until an accepted specification names their owner, durable proof, failure behavior, restart behavior, and replay predicate.
 
 ### Runtime Constraints And Follow-up Input
 
@@ -301,11 +301,11 @@ V1 has no generic user follow-up queue and no Goal pending-input row.
 
 The UI should not render rejected busy input as pending. A Goal work-intent edit appears on the Goal.
 
-The user should be able to tell whether their message was applied or blocked by a human gate.
+The UI distinguishes native acceptance, definite non-delivery, and delivery unknown under [Task live steer](20260704-task_mode_worker_delegation.md#live-steer). Native acceptance is distinct from model consumption or completion. Pending Request responses remain later-Turn delivery and are shown separately from unsolicited live input. The user should be able to tell whether a human gate blocked their message.
 
 The item log should remain coherent.
 
-A card edit does not steer a running worker. The Task owner owns interruption.
+A card edit does not steer a running worker. The Task owner owns explicit live steer and interruption as separate operations.
 
 ## Review And Acceptance Mapping
 
@@ -391,13 +391,13 @@ This is primarily an elicitation gate or Action Center recovery action.
 
 ### Pending User Input While Busy
 
-Input submitted while a Thread has a non-terminal Turn returns `409 thread_busy` before an Item or command write. It is not stored as queued input.
+Ordinary input submitted while a Thread has a non-terminal Turn returns `409 thread_busy` before an Item or command write. Explicit [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) has its own admitted Item and result; neither path creates queued follow-up input.
 
 The direct-Turn path must not present the rejected input as queued or recoverable.
 
 Action Center shows pending approvals and questions. It does not show a Goal steering row.
 
-There is no Goal steering owner and no terminal follow-up conversion.
+Goal adds no steering owner or terminal follow-up conversion; linked workers use [Task live steer](20260704-task_mode_worker_delegation.md#live-steer).
 
 ### Agent Readiness Or Config Failure
 
@@ -438,16 +438,16 @@ The following scenarios should guide implementation, tests, and product review.
 | Use vault-backed credential | Agent needs a secret reference | Approval Gate | Elicitation Gate | Ask only if policy requires approval, never expose secret value. |
 | Plan Mode asks for implementation strategy | Planner has multiple viable paths | Elicitation Gate | Review And Acceptance | Render the accepted bounded choices and allow user override, without an unowned recommendation field. |
 | Agent asks which branch to target | Worker lacks required context | Elicitation Gate | None | Record the answer on the pending request and deliver it on the next Turn of the same Thread. |
-| User notices wrong direction during an active worker Turn | User sends correction | Steering Input | None | Return `thread_busy` before writes. A Goal work-intent edit is recorded on the Goal and does not change the running worker. |
-| User wants immediate correction | User requests interrupt and correct | Steering Input | Elicitation Gate | V1 does not accept interrupt-then-apply. Return `thread_busy` before writes. Interrupting a worker uses the Task owner's interrupt. |
-| User adds extra requirements while a worker Turn is busy | New input arrives | Steering Input | None | Return `thread_busy` before writes. A Goal card edit is recorded on the Goal. |
+| User notices wrong direction during an active worker Turn | User sends correction | Steering Input | None | Use explicit [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) for the exact running Turn and display its native acceptance, refusal, or unknown result. A Goal work-intent edit remains a separate operation. |
+| User wants immediate correction | User requests interrupt and correct | Steering Input | Elicitation Gate | V1 does not accept interrupt-then-apply. Ordinary busy input returns `thread_busy` before writes. Interrupting a worker uses the Task owner's interrupt; additional same-Turn input uses [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) without interrupting. |
+| User adds extra requirements while a worker Turn is busy | New input arrives | Steering Input | None | Use explicit [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) for bounded text to the exact running Turn. A Goal card edit is recorded separately on the Goal. |
 | Artifact is ready for inspection | Worker emits artifact | Review And Acceptance | Steering Input | Let user accept, refine, redo, export, reuse, or comment. |
 | User requests refinement | Artifact is close but incomplete | Review And Acceptance | Steering Input | Start follow-up turn in same thread with accepted context. |
 | User requests redo | Attempt is unsatisfactory | Review And Acceptance | Steering Input | Start new attempt in same thread without deleting prior attempt. |
 | Budget nearing limit | Usage crosses configured watermark | Steering Input | Elicitation Gate | The owning mode supplies a request-scoped budget constraint to its next Coordinator decision and optionally asks the user for scope or budget choice; no queue record is created. |
 | Budget exhausted | No more substantive work allowed | Elicitation Gate | Approval Gate if extension spends quota | Ask the user to wrap up, request an authorized extension, narrow scope, choose a permitted downgrade, or pause where the owning mode supports it. |
 | Runtime crashes with checkpoint | Active Turn loses AgentSession continuity | Elicitation Gate | Review And Acceptance | Show product-safe recovery choices and partial Artifacts without exposing AgentSession identity or actions. |
-| A crash occurs during a Goal | The Goal record is still the authority | Steering Input | None | A work-intent edit is durable on the Goal. There is no pending-input row to recover. Refused busy input was not stored. |
+| A crash occurs during a Goal | The Goal record is still the authority | Steering Input | None | A work-intent edit is durable on the Goal. There is no pending-input row to recover. Refused ordinary busy input was not stored; admitted [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) retains its Item and truthful result. |
 | Agent configuration becomes incompatible | A later Turn cannot reuse the current AgentSession | Elicitation Gate | Steering Input | Explain product-safe availability and offer only an authorized Turn retry, a new Thread, or an available Agent choice; AgentSession retirement and replacement remain internal. |
 | Agent readiness blocked | Agent cannot start | Elicitation Gate | None | Offer switch agent, refresh, fix config, or retry later. |
 | Knowledge proposal after task | User or owning service submits an explicit governed proposal command with source references | Review And Acceptance | Elicitation Gate | Let user accept, reject, or defer; changed candidate bytes require a new proposal. |
@@ -455,8 +455,8 @@ The following scenarios should guide implementation, tests, and product review.
 | Automation draft needs confirmation | Scheduled job prepared a follow-up | Review And Acceptance | Approval Gate if external effect | User accepts, edits, rejects, or approves send. |
 | Conflicting user instructions | New steering conflicts with prior goal | Elicitation Gate | Steering Input | Ask user to choose which instruction wins. |
 | Human accepts known risk | Reviewer flags issue but user wants continue | Approval Gate if policy-sensitive | Review And Acceptance | Record decision and rationale, continue only within policy. |
-| User wants long-running work to stop | User asks to pause after a safe point | Steering Input | None | Return `thread_busy` before writes. There is no Goal pause command. Canceling the Goal, or canceling a card, asks the Task owner to interrupt linked running Tasks. |
-| User asks for handoff | User wants different agent or profile | Steering Input | Elicitation Gate if target unclear | Return `thread_busy` before writes when a Turn is non-terminal. Worker replacement remains the Task or worker owner's command. |
+| User wants long-running work to stop | User asks to pause after a safe point | Steering Input | None | There is no Goal pause command or guaranteed safe-point pause. A text request to wrap up uses [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) and promises only native acceptance. Canceling the Goal, or canceling a card, asks the Task owner to interrupt linked running Tasks. |
+| User asks for handoff | User wants different agent or profile | Steering Input | Elicitation Gate if target unclear | Ordinary submission returns `thread_busy` before writes when a Turn is non-terminal. [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) accepts no agent or profile change; worker replacement remains the Task or worker owner's command. |
 
 ## Action Center Projection
 
@@ -529,9 +529,9 @@ The canonical target row kind for reusable knowledge proposal review is `knowled
 
 `packages/core-client/src/operations.ts` exposes version-owned Artifact Review listing and decisions through `client.operations['artifact.review-list']({ workspaceId, artifactId })` and `client.operations['artifact.review.decide']({ workspaceId, artifactId, artifactVersion, ...input })`, each taking one selector object. The former `client.app.listArtifactReviews` and `client.app.submitArtifactReviewDecision` methods are absent. `packages/core-client/src/operations.ts` exposes durable Workspace Sync Review decisions through `client.operations['sync.review-decide']({ workspaceId, reviewId, ...input })`. Plan approval and completion acceptance use the pending-request commands. The Core Client exposes no generic unversioned Artifact Review method or cross-owner alias.
 
-`apps/nanocore/src/action-center.ts` owns the unified projection over protocol approval/user-input items, scheduler admissions, worker checkpoints, version-owned Artifact Reviews, durable Workspace Sync Reviews, failed/offline agent readiness, and explicit knowledge proposal records. A pending-input row is not current guidance. Busy input returns `409 thread_busy` before writes. The legacy pending-input projection leaves with the new Goal implementation. The projection contains no Item text, Material bytes or tuple, claim fields, receipt body, or independently mutable status.
+`apps/nanocore/src/action-center.ts` owns the unified projection over protocol approval/user-input items, scheduler admissions, worker checkpoints, version-owned Artifact Reviews, durable Workspace Sync Reviews, failed/offline agent readiness, and explicit knowledge proposal records. A pending-input row is not current guidance. Ordinary busy input returns `409 thread_busy` before writes; [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) owns its separate Item/result projection. The legacy pending-input projection leaves with the new Goal implementation. The projection contains no Item text, Material bytes or tuple, claim fields, receipt body, or independently mutable status.
 
-Goal steering is not current guidance. The deleted generic queue, delivery engine, recovery routes, import/export family, runner, and former user-facing stdio MCP facade remain absent. That absence does not prohibit the remote MCP endpoint owned by [Remote MCP Interface](20261002-remote_mcp_interface.md), and it does not restore those deleted queues or engines. Busy input returns `409 thread_busy` before writes and does not mutate a live worker.
+A Goal steering operation or queue is not current guidance; linked running workers use [Task live steer](20260704-task_mode_worker_delegation.md#live-steer). The deleted generic queue, delivery engine, recovery routes, import/export family, runner, and former user-facing stdio MCP facade remain absent. That absence does not prohibit the remote MCP endpoint owned by [Remote MCP Interface](20261002-remote_mcp_interface.md), and it does not restore those deleted queues or engines. Ordinary busy input returns `409 thread_busy` before writes and does not mutate a live worker. Explicit live steer follows only the Task owner.
 
 `require_escalation` remains a durable permission-decision outcome, but no current enforcement point produces an escalation workflow or higher-authority Action Center row. Generic pending-request approvals remain governed elsewhere in this specification and by [Pending Requests](20260930-pending_requests.md).
 
@@ -570,7 +570,7 @@ NanoCore owns app-local runtime behavior:
 
 - Worker turn envelope state.
 - Runtime-owned system steering input to the next Coordinator decision.
-- No Goal pending-input record. Busy input returns `409 thread_busy` before writes.
+- No Goal pending-input record. Ordinary busy input returns `409 thread_busy` before writes; live-steer delivery follows [Task live steer](20260704-task_mode_worker_delegation.md#live-steer).
 - Runtime checkpoints.
 - Review cap detection.
 - Budget stop handling.
@@ -600,15 +600,15 @@ Web owns product rendering:
 
 Protocol tests should assert that no Turn status pauses for a request, that a request stays decidable after its raising Turn ends, and that approval and user-input requests stay distinct.
 
-NanoCore unit tests prove generic busy-input rejection before writes, checkpoint recovery projection, and Workspace-scoped Action Center filtering. They do not require a Goal pending-input row. Every deleted generic route, queue, and recovery action remains absent.
+NanoCore unit tests prove ordinary busy-input rejection before writes, consume [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) acceptance for explicit live input, and prove checkpoint recovery projection and Workspace-scoped Action Center filtering. They do not require a Goal pending-input row. Every deleted generic route, queue, and recovery action remains absent.
 
 Workspace-review tests MUST prove that `workspace_review` actions submit only `accepted`, `needs_refinement`, `rejected`, or `blocked` to the exact S49 route; only `accepted` enters apply; the exact durable `artifactId` relationship excludes its backing Artifact from generic Artifact Review; and no id prefix, artifact-only fallback, or verdict translation selects or mutates Workspace Sync Review authority.
 
-NanoCore black-box tests cover a busy Thread returning `thread_busy` before writes. They do not require a Goal worker to accept queued input.
+NanoCore black-box tests cover ordinary submission to a busy Thread returning `thread_busy` before writes and explicit [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) with its distinct delivery results. They do not require a Goal worker to accept queued input.
 
 Web component tests should cover distinct rendering for approval, question, artifact review, existing recovery, and authorized budget rows. Pending-input rendering is not required.
 
-Web e2e tests should cover a realistic flow where busy input is refused with `thread_busy`, a Goal card edit does not change the running worker, the user answers a question, approves a sensitive action, reviews an artifact, and requests refinement in the same thread.
+Web e2e tests should cover a realistic flow where ordinary busy input is refused with `thread_busy`, explicit Task live steer displays native acceptance separately from consumption, a Goal card edit does not change the running worker, the user answers a question, approves a sensitive action, reviews an artifact, and requests refinement in the same thread.
 
 ## Risks & Mitigations
 
@@ -622,7 +622,7 @@ Mitigation: keep delivery policy as command intent and make Core/NanoCore emit a
 
 Risk: steering input disappears during crashes.
 
-Mitigation: busy input is rejected before writes, so there is no pending steering row to lose. A Goal work-intent edit is durable on the Goal.
+Mitigation: ordinary busy input is rejected before writes; admitted [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) preserves its Item and result or explicit uncertainty under the Task owner. There is no pending steering row. A Goal work-intent edit is durable on the Goal.
 
 Risk: review verdicts become a premature protocol object.
 
@@ -638,13 +638,13 @@ Mitigation: prefer accepted defaults, policy, and request-scoped mode constraint
 
 ## Resolved Decisions
 
-- Steering has no Goal safe-point owner and no generic queue. Busy input returns `409 thread_busy` before writes.
+- Steering has no Goal safe-point owner or generic queue. [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) owns exact running-worker delivery; ordinary busy input returns `409 thread_busy` before writes.
 - Artifact review should produce durable app-local verdict or decision records before any item-backed or protocol-level review object is introduced.
 - The current dogfooding Action Center row kinds are approval, question, artifact review, workspace review, blocked turn, authorized budget choice, checkpoint recovery, agent readiness, knowledge review, and external side effect. Pending input is not a row kind. Plan approval and completion acceptance are approvals.
 - Plan Mode controls beyond the current bounded question schema require an accepted App API or app-local schema first; multi-select, recommended options, validation hints, file selection, and secret-answer affordances are not currently authorized, while core protocol keeps only the stable user-input gate semantics.
 - Secret elicitation must use a vault-backed or explicitly safe app-local path. Normal item payloads, prompts, diagnostics, Knowledge Store records, and context packages must not carry secret answers.
 - Budget handling is elicitation when the user chooses scope, priority, a permitted model downgrade, wrap-up, or an owner-supported pause; it becomes approval when the decision authorizes spending quota, cost, risk, credentials, or external side effects.
-- There is no pending-steering surface. Busy input is refused before writes.
+- There is no pending-steering queue surface. Ordinary busy input is refused before writes; [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) projects accepted, refused, or unknown delivery.
 
 ## Deferred Work
 
