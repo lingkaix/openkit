@@ -22,6 +22,7 @@ import {
 } from './aep-snapshot-ledger.js';
 import {
   closeSchedulerExecutionAttemptWithFence,
+  isSchedulerExecutionBusyRefusal,
   listOpenSchedulerExecutionAttempts,
   markSchedulerExecutionAttemptClosing,
   requireSchedulerExecutionAttempt,
@@ -826,8 +827,8 @@ async function settleTerminalFailedStart(
       throw new Error('Failed-start product, admission or package lineage disagrees.');
     }
     const attempts = coreDb.sqlite
-      .prepare('SELECT attempt_id FROM scheduler_execution_attempts WHERE turn_id = ?')
-      .all(attempt.turnId);
+      .prepare('SELECT attempt_id AS attemptId FROM scheduler_execution_attempts WHERE turn_id = ?')
+      .all(attempt.turnId) as Array<{ attemptId: string }>;
     const competing = coreDb.sqlite
       .prepare(
         `SELECT attempt_id FROM scheduler_execution_attempts WHERE agent_session_id = ? AND attempt_id <> ?
@@ -845,7 +846,13 @@ async function settleTerminalFailedStart(
       .get(attempt.turnId, attempt.agentSessionId, attemptId);
     const turns = store.listThreadTurns(attempt.workspaceId, attempt.threadId);
     if (
-      attempts.length !== 1 ||
+      // Proved no-effect capacity deferrals share this Turn but hold no execution ownership.
+      attempts.some(
+        ({ attemptId: siblingId }) =>
+          siblingId !== attemptId &&
+          (!isSchedulerExecutionBusyRefusal(requireSchedulerExecutionAttempt(coreDb, siblingId)) ||
+            !hasNanoHostAttemptPreEffectProof(coreDb, siblingId))
+      ) ||
       admissions.length !== 1 ||
       competing ||
       otherBackend ||

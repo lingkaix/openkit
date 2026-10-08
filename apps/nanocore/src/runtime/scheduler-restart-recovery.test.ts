@@ -429,6 +429,140 @@ function observeExecutionAttempts(
 }
 
 describe('terminal failed-start product recovery', () => {
+  it.each([
+    'closed-busy',
+    'open',
+    'closing',
+    'unknown-operation',
+    'native-evidence',
+    'cleanup-failed',
+    'cleanup-unknown',
+  ] as const)('checks repeated failed-start settlement with busy history: %s', async (proof) => {
+    const suffix = `busy_history_${proof}`;
+    const f = await createFailedStartFixture(suffix);
+    const attemptId = `lease_${suffix}`;
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // Match the terminal no-operation failure after capacity deferrals, with a cleaned anchor in the same physical Epoch; cleanup controls retain the original uncertain operation.
+      if (proof !== 'cleanup-failed' && proof !== 'cleanup-unknown')
+        f.coreDb.sqlite
+          .prepare(
+            "UPDATE scheduler_execution_attempts SET disposition = 'not_accepted', operation_id = NULL, deadline = NULL WHERE attempt_id = ?"
+          )
+          .run(attemptId);
+      for (let index = 0; index < 3; index += 1) {
+        f.coreDb.sqlite
+          .prepare("UPDATE scheduler_admission_entries SET status = 'queued' WHERE turn_id = ?")
+          .run(f.turnId);
+        const entry = requireSchedulerExecutionAttemptAdmissionContext(f.coreDb, attemptId);
+        const busy = attempts.createSchedulerExecutionAttempt(f.coreDb, {
+          entry,
+          attemptId: `busy_${suffix}_${index}`,
+          preparationInput: { admission: entry },
+          now: () => '2026-07-05T00:00:00.000Z',
+        });
+        attempts.bindSchedulerExecutionAttemptSession(f.coreDb, {
+          attemptId: busy.attemptId,
+          agentSessionId: `as_busy_${suffix}_${index}`,
+        });
+        attempts.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+          attemptId: busy.attemptId,
+          noOutstandingEffects: true,
+          cause: 'backend-busy',
+        });
+      }
+      const competingId = `busy_${suffix}_0`;
+      if (proof === 'open' || proof === 'closing')
+        f.coreDb.sqlite
+          .prepare('UPDATE scheduler_execution_attempts SET phase = ? WHERE attempt_id = ?')
+          .run(proof, competingId);
+      else if (proof === 'unknown-operation')
+        f.coreDb.sqlite
+          .prepare(
+            "UPDATE scheduler_execution_attempts SET disposition = 'unknown', operation_id = 'unproved-operation' WHERE attempt_id = ?"
+          )
+          .run(competingId);
+      else if (proof === 'native-evidence')
+        f.coreDb.sqlite
+          .prepare(
+            'UPDATE scheduler_execution_attempts SET last_worker_sequence = 1 WHERE attempt_id = ?'
+          )
+          .run(competingId);
+      else if (proof === 'cleanup-failed')
+        f.coreDb.sqlite
+          .prepare(
+            "UPDATE worker_backend_sessions SET state = 'cleanup-failed', physical_cleaned_at = NULL WHERE attempt_id = ?"
+          )
+          .run(attemptId);
+      else if (proof === 'cleanup-unknown')
+        f.coreDb.sqlite
+          .prepare(
+            'UPDATE worker_backend_sessions SET physical_cleaned_at = NULL WHERE attempt_id = ?'
+          )
+          .run(attemptId);
+      terminalizeGovernedWorkerTurn({
+        store: f.store,
+        turnId: f.turnId,
+        agentSessionId: f.agentSessionId,
+        requestId: `request_${suffix}`,
+        completedAt: '2026-07-05T00:00:08.000Z',
+        outcome: 'failed',
+        errorCode: 'worker_governance_turn_failed',
+        message: 'NanoHost one-Sandbox capacity is occupied or unproved.',
+      });
+      const terminal = f.store.getTurnById(f.turnId);
+      const events = f.store.getTurnEvents(f.turnId);
+      const session = f.store.getAgentSession(f.agentSessionId);
+      const beforeAttempts = observeExecutionAttempts(f.coreDb);
+      const cleanup = vi.fn(async () => {
+        throw new Error('Backend cleanup is unproved.');
+      });
+      const recovery = testRecoveryInput(f.coreDb, { ...f.input, cleanupBackendSession: cleanup });
+      const results: PromiseSettledResult<void>[] = [];
+      for (let pass = 0; pass < 2; pass += 1)
+        results.push(
+          ...(await Promise.allSettled([runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery)]))
+        );
+      const warnings = log.mock.calls
+        .map(([line]) => JSON.parse(line))
+        .filter(
+          (record) =>
+            record.attributes['openkit.error.code'] ===
+            'scheduler.native_failed_start_recovery_required'
+        );
+      expect(warnings).toHaveLength(proof === 'closed-busy' ? 0 : 2);
+      expect(results.map((result) => result.status)).toEqual(
+        proof === 'closed-busy' ? ['fulfilled', 'fulfilled'] : ['rejected', 'rejected']
+      );
+      for (const result of results)
+        if (result.status === 'rejected')
+          expect(result.reason.errors).toContainEqual(
+            expect.objectContaining({
+              message:
+                proof === 'cleanup-failed' || proof === 'cleanup-unknown'
+                  ? 'recovery_required: Failed-start backend cleanup is not definite for this exact attempt.'
+                  : 'recovery_required: Failed-start attempt has a competing execution owner.',
+            })
+          );
+      if (proof === 'closed-busy') {
+        expect(log).not.toHaveBeenCalled();
+        expect(cleanup).not.toHaveBeenCalled();
+      }
+      for (const warning of warnings)
+        expect(warning.attributes['openkit.attempt.id']).toBe(attemptId);
+      expect(f.store.getTurnById(f.turnId)).toEqual(terminal);
+      expect(f.store.getTurnEvents(f.turnId)).toEqual(events);
+      expect(events.filter((event) => event.event === 'turn.completed')).toHaveLength(1);
+      expect(f.store.getAgentSession(f.agentSessionId)).toEqual(session);
+      expect(observeExecutionAttempts(f.coreDb)).toEqual(beforeAttempts);
+      expect(recovery.projectRecoveredTurn).not.toHaveBeenCalled();
+      expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+      f.coreDb.sqlite.close();
+    }
+  });
+
   it('settles a proved pre-effect outcome preparation failure without a never-published snapshot or its own delivery retry (#108)', async () => {
     const f = await createFailedStartFixture('pre_snapshot_108', true, false, false);
     const cleanup = vi.fn(async () => {
