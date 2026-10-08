@@ -301,11 +301,10 @@ function makeConnectedClient(overrides: Parameters<typeof makeClient>[0] = {}): 
     operations: {
       'provider-subscription.account-list': vi
         .fn()
-        .mockImplementation(
-          ({ subscriptionProviderId }: { subscriptionProviderId: string }) =>
-            Promise.resolve({
-              accounts: subscriptionProviderId === 'openai-codex' ? [LOGGED_IN_ACCOUNT] : [],
-            })
+        .mockImplementation(({ subscriptionProviderId }: { subscriptionProviderId: string }) =>
+          Promise.resolve({
+            accounts: subscriptionProviderId === 'openai-codex' ? [LOGGED_IN_ACCOUNT] : [],
+          })
         ),
       'provider-subscription.account-status': vi
         .fn()
