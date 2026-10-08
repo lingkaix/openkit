@@ -2122,6 +2122,8 @@ export async function dispatchLogicalModel<T>(input: {
   clock?: GatewayClock;
   resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
   providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
+  /** Private diagnostic observer before member resolution, including failures that never reach the producer. */
+  onAttemptStart?: (context: { corr: string; attempt: number }) => void;
   attempt: (route: {
     provider: ResolvedLLMProviderConfig;
     providerModel: string;
@@ -2230,6 +2232,7 @@ export async function dispatchLogicalModel<T>(input: {
     signal: input.signal,
     ...(input.clock ? { clock: input.clock } : {}),
     attempt: async (selection, execution) => {
+      input.onAttemptStart?.({ corr, attempt: execution.attemptOrder });
       const route = selection.route;
       let provider: ResolvedLLMProviderConfig;
       let subscriptionModels: Awaited<ReturnType<typeof resolveGatewaySubscriptionModels>>;

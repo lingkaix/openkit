@@ -116,6 +116,12 @@ export function createInternalAgentGatewayProvider(
         requiredCapabilities: request.model.capabilities,
         ...(options.logicalModel.contract ? { pinnedLimits: options.logicalModel.contract } : {}),
         signal: request.signal,
+        onAttemptStart: (correlation) => {
+          // Resolution can fail before the producer runs; evidence belongs to this member only.
+          failurePhase = 'pre-transport';
+          observedStatus = undefined;
+          dispatchCorrelation = correlation;
+        },
         resolveGatewayProvider: options.resolveGatewayProvider,
         ...(options.providerSubscriptionAccountManager
           ? { providerSubscriptionAccountManager: options.providerSubscriptionAccountManager }
@@ -128,9 +134,6 @@ export function createInternalAgentGatewayProvider(
           attempt,
           execution,
         }) => {
-          failurePhase = 'pre-transport';
-          observedStatus = undefined;
-          dispatchCorrelation = { corr, attempt };
           const response = await options.dispatcher
             .createResponses(
               provider,
@@ -167,6 +170,10 @@ export function createInternalAgentGatewayProvider(
                 transport: {
                   signal: execution.signal,
                   deadline: execution.deadline,
+                  onModelEvent: (event) => {
+                    // Stock completion precedes adapter output conversion, which can still reject Tool output.
+                    if (event.type === 'done') failurePhase = 'output-projection';
+                  },
                   onProviderHandoff: () => {
                     failurePhase = 'transport';
                     execution.onProviderHandoff?.();
@@ -187,11 +194,10 @@ export function createInternalAgentGatewayProvider(
               // pi-ai 0.99.2 flattens this local serializer rejection into terminal text after stock handoff.
               // Recognize only its fixed signature for diagnostics; never use it for routing or emit the Tool name, schema or exception text.
               if (
-                error instanceof GatewayUnsupportedFeatureError ||
-                (error instanceof Error &&
-                  /^Tool "[^"]+" requires JSON-schema constrained sampling, but prefixItems schemas are unsupported\.$/.test(
-                    error.message
-                  ))
+                error instanceof Error &&
+                /^Tool "[^"]+" requires JSON-schema constrained sampling, but prefixItems schemas are unsupported\.$/.test(
+                  error.message
+                )
               ) {
                 failurePhase = 'pre-transport';
                 observedStatus = undefined;
