@@ -224,6 +224,18 @@ Resolution must turn workspace declarations into a session-static workspace layo
 
 `sandbox` declares exact network grants, credential requirements or Server-scope direct declarations, and backend requirements. Each network grant identifies its host, port, protocol, purpose, and a non-empty explicit binary-path list plus either one access mode or a non-empty bounded REST rule list; omission never means every runtime binary, and every listed path must exactly match a path declared in `runtime.binaries`. Exact REST rules currently allow `GET` or `POST` with absolute OpenShell-compatible paths and cannot be combined with an access preset. Credential entries use the `vault` requirement contract plus allowed visibility and injection mode without secret values. Backend requirements may identify allowed and preferred backend kinds plus required capabilities only as eligibility constraints; they never name or select a NanoHost, backend instance, Runtime Epoch, local or remote placement, SSH target, Gateway origin, NanoCore endpoint, direct worker endpoint, route credential, or transport.
 
+A network grant whose protocol is `rest`, whose access is `read-only`, and which has no `rules` may declare `allowEncodedSlash` with the closed boolean values `false` and `true`. Omission means `false`. The field is authority-bearing. Any other value or any occurrence on another grant shape fails validation; no coercion or fallback is allowed. Existing protocol and access defaults remain unchanged, and a resolved protocol other than `rest` cannot use this field.
+
+`true` authorizes percent-encoded slash bytes in the endpoint's request path while preserving them as encoded segment content. It grants no additional host, port, executable scope, HTTP method, credential, or path-rule authority. It does not authorize an alternative parser, disabled inspection, or arbitrary native endpoint options. `false` and omission retain strict encoded-slash rejection. The grant's other restrictions and ordinary canonicalization remain effective.
+
+The authored manifest is the durable source of this authorization, subject to existing policy restriction. Resolution preserves the admitted value in the immutable AEP and its material identity; backend intent and native policy are projections of that value. A grant id, host name, purpose, image, template revision, or backend default cannot infer `true`. A policy refusal or an inability to enforce the declared behavior blocks the dependent launch with a located diagnostic.
+
+Before materialization, composed grants for the same canonical host and port must agree on encoded-slash acceptance. Omission and any grant shape that cannot declare the field mean `false` for this comparison. A disagreement blocks launch; it is not resolved by grant order, binary-list differences, merging with logical OR, or widening another grant. Existing exact host validation applies, and no new endpoint path selector is introduced.
+
+Query encoding is outside this setting. The boolean introduces no new durable record or independent retry state machine.
+
+The decision and its reason are recorded in [a decision record](../decisions/20261008-encoded_slash_authority_and_release_hold.md).
+
 The Authorized binaries list defines the resolved executable-and-descendant scope of a network grant ([decision](../decisions/20261004-egress_grant_descendant_scope.md)). A connection matches that scope when the socket-owning executable path or an executable path in its observed ancestor chain is listed in the grant. Admission also requires the endpoint's exact host, port and protocol and its access preset or exact REST method and path rules; an ancestor match never authorizes an ungranted destination or forbidden method or path.
 
 Matching uses resolved executable paths, not command labels or script paths in argv. An interpreted script does not become an independently authorized binary through its script path. Scope follows the observed chain at connection time, not a permanent process-tree provenance label; reparenting, parent exit and executable replacement can change it. Only observed ancestors within the backend's bounded depth participate; the current default is at most 64 ancestor levels, and observation stops earlier at the Sandbox entrypoint, root process or an unavailable parent.
@@ -250,15 +262,21 @@ The resolved public map obeys the same 128-entry, 128-character-name and 16 KiB 
 
 The repository-owned built-in AgentManifest templates copy the same out-of-box development grants at init. Those templates are copy-on-init content: a later edit of this table or of a template file does not mutate an already-created manifest, and a missing grant fails as a denied network operation rather than being inferred from the image or from a hidden shared allowlist.
 
+Existing authored manifests retain omission as `false`; updating templates does not update those manifests. An authorized administrator may opt an existing qualifying grant in by adding `allowEncodedSlash: true`, preserving its other fields. Initialization, reload, and release upgrade do not automatically perform that authorization change. Data continuity requires continued processing of retained manifests and AEPs, not inferred consent to wider request syntax.
+
+For an existing deployment, an authorized administrator must inspect the actual authored selected manifest, add `"allowEncodedSlash": true` to its existing qualifying npm grant, validate and reload through the supported configuration workflow, and run a later Turn on a newly materialized policy. Do not replace the whole manifest or overwrite operator customization. Preserve retained volumes and native history during the existing successor process.
+
 | Grant | Endpoint | Exact access | Authorized binaries (each executable and its observed descendants) |
 | --- | --- | --- | --- |
 | GitHub Smart HTTP read (`github-git-read`) | `github.com:443` | `GET /**/info/refs*` and `POST /**/git-upload-pack` | `/usr/bin/git` |
 | GitHub REST read (`github-rest-read`) | `api.github.com:443` | OpenShell `read-only` REST access | `/usr/local/bin/gh` |
-| npm package read (`npm-registry-read`) | `registry.npmjs.org:443` | OpenShell `read-only` REST access | Node, npm, npx, pnpm, and pnpx paths declared by the manifest |
+| npm package read (`npm-registry-read`) | `registry.npmjs.org:443` | OpenShell `read-only` REST access with authored `allowEncodedSlash: true` | Node, npm, npx, pnpm, and pnpx paths declared by the manifest |
 | PyPI index read (`pypi-index-read`) | `pypi.org:443` | OpenShell `read-only` REST access | uv and the writable virtual-environment Python and pip paths declared by the manifest |
 | PyPI artifact read (`pypi-files-read`) | `files.pythonhosted.org:443` | OpenShell `read-only` REST access | The same Python tool paths |
 
 The Git grant deliberately omits `POST /**/git-receive-pack`, so clone, fetch, and pull are available while push is denied. No grant in this table names a mise supply host, language distribution server, release archive host, or registry mirror that exists only to serve a mise provision. Installed image tools confer no authority; a provision against an ungranted host fails denied.
+
+Only the npm grant in the built-in development baseline declares `allowEncodedSlash: true`. The other built-in grants retain strict encoded-slash rejection. The npm grant supports scoped and unscoped package metadata and archives on its declared registry endpoint; secondary hosts remain subject to their own explicit grants.
 
 An authored AgentManifest may add a narrower present-use grant when the generic sandbox policy permits it. Missing endpoints fail as a denied network operation, unsupported exact-rule shapes fail before sandbox creation, missing declared binaries fail manifest validation, and backend inability to enforce a grant blocks launch rather than widening access.
 
@@ -287,6 +305,8 @@ This spec owns only the manifest-specific classification:
 - New fields under `workspace`, `vault`, `policy`, `sandbox`, `providers`, `mcp`, `tools`, `resources`, `scale`, `observability`, or `lifecycle` are authority-bearing by default; this spec is the place that may explicitly mark a specific field as descriptive metadata, and no field is currently so marked.
 - Manifest writers SHOULD gate new behavior with `requiredFeatures` from the shared feature registry; `minCoreVersion` is the discouraged escape hatch per the schema evolution spec.
 - Required backend capabilities remain the correct gate when the requirement is a backend property rather than a reader-semantics property.
+
+`allowEncodedSlash` uses the existing closed authority-bearing field boundary: readers that do not understand it fail closed, and supported readers accept retained omission with strict behavior. Adding the field requires neither a permanent older-shape reader nor dual writes. A one-way migration that merely makes omitted strict behavior explicit is authority-preserving; a migration that sets `true` requires a separately accepted design and explicit authorization for the affected authored grants.
 
 ## Resolution Order
 
@@ -438,6 +458,8 @@ Shim and adapter outputs are candidate records, never canonical product state. N
 
 Worker agents must not author or mutate their own stable supply, and neither a backend nor an adapter may add undeclared network, credential, capability, provider, or MCP authority.
 
+Changing or removing `allowEncodedSlash` takes effect only through a newly resolved package and a Sandbox materialization that enforces that package. Active Turns and retained AEP snapshots are not rewritten. A live Sandbox enforcing the previous value cannot be reused for the changed package. Existing successor, fencing, and retained-volume rules govern the transition; the change creates no new lifecycle or automatic retry. Restart reconstructs enforcement from admitted package authority. A failed application remains a failure until a fresh authorized attempt establishes the requested enforcement, and historical packages remain readable without acquiring the new authority.
+
 ## User Administration Of Native Environment
 
 NanoCore's user configuration view and App API edit the same Agent file through existing revision-checked validation, write and safe-reload operations; neither owns an independent environment store. Reads and edits require current usable deployment-administrator authority and applicable audience checks. The response distinguishes persisted revision, runtime-snapshot reload and native application; a write or reload alone never reports a running binding changed.
@@ -561,6 +583,10 @@ Rejected. Workspace binding and extension of referenced Server supply is accepte
 - Fail-closed tests proving unsupported mount kinds, credential materialization modes, vault injection modes, and capability families block launch when required.
 
 Qualification of native environment administration requires observable admitted-default inspection, revision-checked override/edit/suppression/restored inheritance, desired-versus-acknowledged-applied status and shared-Agent scope, actual new values in a native tool only after exact successor resume, denial of unauthorized or stale edits, no secret publication, no sibling change, and preserved conversation and native data.
+
+Tests must prove strict omission and explicit `false`, accepted `true` only on read-only REST access grants, rejection of malformed values and forbidden grant shapes, fail-closed unsupported readers and backends, rejection of conflicting composed endpoint settings, and preservation through manifest resolution, immutable AEP identity, policy intent, and native policy. Changing templates must leave existing authored configuration and historical AEP bytes unchanged. An authorized edit must affect a later materialization without changing an active Turn or losing retained Worker data.
+
+Verification should start with a regression whose expected failure is loss or rejection of the authored true value on the real manifest-to-SDK path, not a renderer-only snapshot. Then prove omission/false and forbidden-shape controls, field preservation, and conflicting same-destination rejection.
 
 ## Risks & Mitigations
 

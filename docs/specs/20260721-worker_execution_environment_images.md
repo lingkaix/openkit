@@ -162,6 +162,10 @@ Trusted NanoCore inference is a provider-route constraint, not a claim that the 
 
 This specification does not own the out-of-box development grant table. `docs/specs/20260703-agent_manifest_aep_resolution.md` owns those five grants as copy-on-init built-in AgentManifest template content. Installed tools confer no authority. No mise supply host is granted. Existing manifests are unchanged by later template edits, and a missing grant fails denied.
 
+The installed Node package tools must support scoped and unscoped npm metadata and archive downloads when the selected manifest declares the npm grant, including its encoded-slash authorization, from the grant owner. The setting is supplied by the immutable package and enforced by the backend; it is not baked into the image or inferred from an installed package manager. Updating an image or template does not opt an existing authored manifest in.
+
+The decision and its reason are recorded in [a decision record](../decisions/20261008-encoded_slash_authority_and_release_hold.md).
+
 ## Non-Published Attempt Images
 
 The execution runtime may run a sandbox from an image that is not one of the currently published catalog artifacts: content retrieved from a declared public registry, or an image built from an Agent Environment Package build definition or an administrator-authorized immutable environment-preparation candidate using the same definition and bounds. Preparation may precede a Worker attempt; it confers no activation, publication or workload authority. That path is owned by `docs/specs/20260802-nanohost_runtime_and_transport.md` and `docs/specs/20260616-agent_environment_package.md`. This section exists so that its relationship to the published baseline is stated rather than assumed.
@@ -234,7 +238,7 @@ L0/L1 static and contract checks must prove:
 - the fixed helper accepts exactly one image-private package import at `package-config/<agent-session-id>/config/package.json`, creates only `/openkit/sessions/<agent-session-id>/config/package.json` with the accepted atomic file boundary, rejects adjacent identity, path, destination, export, existing target, and baked package content, and leaves all ten workspace identities unchanged;
 - The deployment image contains exactly the four selected runtimes, the shim and four adapters, plus Pi's built SDK host with the exact patched native MCP/tool-search production closure; pi-mcp-adapter is absent from that repository artifact, and the empty-set base contains none of the native runtime or Pi-host supply.
 - repository build helpers and release CI pass the manifest target to Docker;
-- every built-in AgentManifest declares the common tool binary paths and the five exact development grants owned by `docs/specs/20260703-agent_manifest_aep_resolution.md`;
+- Every built-in AgentManifest declares the common tool binary paths and the five exact development grants owned by [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md#built-in-development-grant-templates), including explicit encoded-slash authorization on the npm grant only.
 - trusted-relay AEP validation accepts unrelated manifest-authored grants while still rejecting direct Provider credentials, concrete Provider routes, and malformed relay rules;
 - OpenShell policy rendering preserves Git Smart HTTP wildcard paths and `GET`/`POST` methods without adding `git-receive-pack` or any undeclared endpoint.
 
@@ -256,7 +260,7 @@ The exact deployment image can run the Pi adapter's search-only SDK fixture with
 - A mise provision whose supply host is not an authored grant fails as a denied network operation, and no built-in development grant names such a host.
 - A non-root worker in the deployment image can use the complete declared Node.js, Python, Unix, source-control, build, editor, and diagnostic command baseline locally.
 - The writable Python virtual environment accepts package installation when the exact PyPI grants are present.
-- npm, pnpm, Git clone/fetch, and read-only GitHub CLI operations have only the endpoint and binary authority declared by the selected AgentManifest.
+- npm and pnpm can retrieve scoped and unscoped package metadata and archives with the selected manifest's explicit npm grant. npm, pnpm, Git clone/fetch, and read-only GitHub CLI operations retain exactly the selected manifest's endpoint, executable, method, path, and encoded-slash authority. Image smoke proves tool supply; deployed download and denial observations prove the network behavior under [Worker Sandbox Freedom Policy](20260709-worker_sandbox_freedom_policy.md#built-in-development-baseline).
 - Git push, arbitrary curl, private-network access, undeclared package hosts, and undeclared provider endpoints remain denied under the built-in baseline.
 - Removing an AgentManifest grant removes the corresponding generated OpenShell network policy without rebuilding the image.
 - Adding an executable to an image does not authorize that executable for any external endpoint.
