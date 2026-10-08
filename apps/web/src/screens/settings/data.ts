@@ -615,6 +615,10 @@ export function overlayConnectedAppQuota(
         if (row.accountSlotId !== quota.accountSlotId || row.identity !== identity) {
           return row;
         }
+        // A response from the previous login can settle after the account disconnects.
+        if (row.status === 'pending' || row.status === 'logged_out') {
+          return { ...row, ...absentQuotaObservation() };
+        }
         const nextObserved = observationMillis(observation.quotaObservedAt);
         if (nextObserved === null && 'availability' in quota) {
           return row;
@@ -678,7 +682,9 @@ export function projectConnectedApps(
         planLabel: account.planLabel ?? null,
         boundProviderCount: account.boundProviderIds.length,
         inferenceObservation: account.inferenceObservation,
-        ...projectQuotaObservation(quota),
+        ...projectQuotaObservation(
+          account.status === 'pending' || account.status === 'logged_out' ? null : quota
+        ),
         verificationUrl: interaction?.verificationUrl
           ? (projectSafeValue(interaction.verificationUrl) as string)
           : null,
@@ -688,6 +694,54 @@ export function projectConnectedApps(
         updatedAt: account.updatedAt,
       };
     }),
+  };
+}
+
+/**
+ * Merges the account detail into a list row, clearing quota from a disconnected login.
+ *
+ * @param account Safe list row, possibly carrying cached quota from an earlier login.
+ * @param snapshot Latest account detail, when available.
+ * @returns Current account projection with no old-session quota while pending or logged out.
+ */
+export function overlayConnectedAppAccount(
+  account: ConnectedAppRow,
+  snapshot: ProviderSubscriptionAccountsPayload['accounts'][number] | undefined
+): ConnectedAppRow {
+  const status = snapshot?.status ?? account.status;
+  const current =
+    status === 'pending' || status === 'logged_out'
+      ? { ...account, ...absentQuotaObservation() }
+      : account;
+  if (!snapshot) return current;
+  const interaction = snapshot.status === 'pending' ? snapshot.interaction : undefined;
+  return {
+    ...current,
+    displayName: snapshot.displayName
+      ? (projectSafeValue(snapshot.displayName) as string)
+      : account.displayName,
+    status: snapshot.status,
+    accountLabel: snapshot.accountLabel
+      ? (projectSafeValue(snapshot.accountLabel) as string)
+      : account.accountLabel,
+    planLabel: snapshot.planLabel
+      ? (projectSafeValue(snapshot.planLabel) as string)
+      : account.planLabel,
+    boundProviderCount: snapshot.boundProviderIds.length,
+    // Detail absence clears observations; only the account owner decides their lifetime.
+    inferenceObservation: projectSafeValue(
+      snapshot.inferenceObservation
+    ) as ConnectedAppRow['inferenceObservation'],
+    verificationUrl: interaction?.verificationUrl
+      ? (projectSafeValue(interaction.verificationUrl) as string)
+      : null,
+    userCode: interaction?.userCode ? (projectSafeValue(interaction.userCode) as string) : null,
+    interactionId: interaction?.interactionId ?? null,
+    message:
+      snapshot.status === 'unavailable' || snapshot.status === 'error'
+        ? (projectSafeValue(snapshot.message) as string)
+        : null,
+    updatedAt: snapshot.updatedAt,
   };
 }
 
