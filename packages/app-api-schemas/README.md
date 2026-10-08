@@ -12,6 +12,8 @@ Dashboard work-status and active-work schemas carry recorded activity and output
 
 `@openkit/app-api-schemas` owns runtime-neutral Zod schemas for NanoCore App API payloads.
 
+`AuthGetSessionResultSchema` validates the existing Better Auth session read as an active user envelope or null, allowing the Web membership switcher to identify the caller without changing `AuthorizedWorkspaceSummary`.
+
 The [Core Client Boundary](../../docs/specs/20260528-core_client_boundary.md) permits browser-safe config-schema subpaths, including `@openkit/config-schema/native-environment` for shared native-environment literals. App API schemas never import the server-only config root; the built browser import graph regression lives in Web's `test/browser-package-boundary.test.ts`.
 
 These schemas are shared by `apps/nanocore` and `@openkit/core-client` while the App API remains an implementation projection over the stable Core protocol.

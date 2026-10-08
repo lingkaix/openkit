@@ -533,7 +533,7 @@ export function useSelfLeave() {
   const queryClient = useQueryClient();
   const { selectedWorkspace, selectedWorkspaceId } = useSelectedAccountWorkspace();
 
-  /** Settles one exact membership projection into the protected authorized-Workspace cache. */
+  /** Settles one exact membership into account admission and removes departed discovery projections. */
   function settleMembership(member: AccountWorkspaceMember) {
     const departed = member.status === 'removed' || member.effectiveRole === null;
     queryClient.setQueryData<Awaited<ReturnType<CoreClient['operations']['workspace.list']>>>(
@@ -561,6 +561,10 @@ export function useSelfLeave() {
     }
     queryClient.setQueryData<Array<{ id: string }>>(chatKeys.workspaces, (current) =>
       current?.filter((item) => item.id !== member.workspaceId)
+    );
+    // Confirmed removal must reach sidebar choices before rediscovery can settle or fail.
+    queryClient.setQueryData<AccountWorkspaceSummary[]>(chatKeys.workspaceSummaries, (current) =>
+      current?.filter((item) => item.workspace.id !== member.workspaceId)
     );
     void queryClient.refetchQueries({ exact: true, queryKey: chatKeys.workspaces });
   }

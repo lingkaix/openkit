@@ -176,6 +176,20 @@ export const AuthSignOutResponseSchema = z
   })
   .strict();
 
+/**
+ * Signed-in Better Auth session read.
+ *
+ * The route returns this object for an active session and JSON null when no session is present. Extra session fields stay ignored.
+ */
+export const AuthGetSessionResponseSchema = z
+  .object({
+    user: AuthUserSchema,
+  })
+  .passthrough();
+
+/** Active session body, or null when the browser has no session. */
+export const AuthGetSessionResultSchema = z.union([AuthGetSessionResponseSchema, z.null()]);
+
 /** Email/password auth request body. */
 export type AuthEmailRequest = z.infer<typeof AuthEmailRequestSchema>;
 /** Email/password sign-up request body. */
@@ -228,3 +242,5 @@ export type AuthSignUpEmailResponse = z.infer<typeof AuthSignUpEmailResponseSche
 export type AuthSignInEmailResponse = z.infer<typeof AuthSignInEmailResponseSchema>;
 /** Browser auth response for sign-out. */
 export type AuthSignOutResponse = z.infer<typeof AuthSignOutResponseSchema>;
+/** Signed-in Better Auth session read. */
+export type AuthGetSessionResponse = z.infer<typeof AuthGetSessionResponseSchema>;

@@ -741,7 +741,7 @@ function makeClient(
       ...overrides.core,
     },
     app: { ...overrides.app },
-    auth: { email: { signUp: vi.fn(), signIn: vi.fn(), signOut: vi.fn() } },
+    auth: { email: { signUp: vi.fn(), signIn: vi.fn(), signOut: vi.fn(), getSession: vi.fn() } },
     capabilities: {
       refresh: vi.fn(),
       snapshot: vi.fn().mockReturnValue(META),

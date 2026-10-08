@@ -1,10 +1,10 @@
 import type { CoreClient, WorkspaceRecord } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
-import { chatKeys } from '../chat/data';
+import { chatKeys, useWorkspaceSummaries, workspaceBelongsToCaller } from '../chat/data';
 import { useWorkspaceStore, WORKSPACE_SELECTION_STORAGE_KEY } from '../workspace-store';
 import { type AccountWorkspaceSummary, useSelfLeave, useWorkspaceOwnerManagement } from './data';
 import { accountAdmissionKey } from './session';
@@ -66,9 +66,16 @@ const REMOVED_MEMBER = {
 /** Reads Account's selected Workspace through the live self-leave owner. */
 function AccountSelectionProbe() {
   const { leave, selectedWorkspaceId } = useSelfLeave();
+  const summaries = useWorkspaceSummaries();
   return (
     <>
       <output aria-label="Account workspace">{selectedWorkspaceId ?? ''}</output>
+      <output aria-label="Sidebar workspace choices">
+        {(summaries.data ?? [])
+          .filter((item) => workspaceBelongsToCaller(item, null, false))
+          .map((item) => item.workspace.id)
+          .join(',')}
+      </output>
       <button
         type="button"
         onClick={() =>
@@ -97,13 +104,16 @@ function renderAccountSelection(options: {
 }) {
   let discovery = options.items;
   const listWorkspaces = vi.fn(async () => ({
-    items: discovery.map((workspace) => ({
-      workspace,
-      effectiveRole: 'owner' as const,
-      membershipRevision: 1,
-      ownerUserId: 'user_local',
-      registryRevision: 1,
-    })),
+    items: discovery.map(
+      (workspace) =>
+        options.admission.find((item) => item.workspace.id === workspace.id) ?? {
+          workspace,
+          effectiveRole: 'owner' as const,
+          membershipRevision: 1,
+          ownerUserId: 'user_local',
+          registryRevision: 1,
+        }
+    ),
   }));
   const client = {
     app: {},
@@ -235,5 +245,57 @@ describe('account selected Workspace', () => {
         USER_A_QUICK_CHAT.id,
       ]);
     });
+  });
+
+  it('removes the departed sidebar choice before pending rediscovery and retains removal after failure', async () => {
+    const leaveWorkspace = vi.fn().mockResolvedValue({ member: REMOVED_MEMBER });
+    useWorkspaceStore.getState().bindSelectionUserKey(USER_A_QUICK_CHAT.id);
+    useWorkspaceStore.getState().setCurrentWorkspaceId(PROJECT_WORKSPACE.id);
+    const { listWorkspaces, queryClient } = renderAccountSelection({
+      admission: [summary(PROJECT_WORKSPACE, 'editor'), summary(OTHER_WORKSPACE, 'viewer')],
+      items: [PROJECT_WORKSPACE, OTHER_WORKSPACE, USER_A_QUICK_CHAT],
+      leaveWorkspace,
+    });
+    await waitFor(() => {
+      expect(screen.getByLabelText('Account workspace')).toHaveTextContent(PROJECT_WORKSPACE.id);
+    });
+    await waitFor(() => {
+      expect(screen.getByLabelText('Sidebar workspace choices')).toHaveTextContent(
+        `${PROJECT_WORKSPACE.id},${OTHER_WORKSPACE.id},${USER_A_QUICK_CHAT.id}`
+      );
+    });
+    let rejectDiscovery!: (error: Error) => void;
+    listWorkspaces.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          rejectDiscovery = reject;
+        })
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'leave' }));
+    await waitFor(() => expect(listWorkspaces).toHaveBeenCalledTimes(2));
+    expect(leaveWorkspace).toHaveBeenCalledExactlyOnceWith({
+      expectedRevision: 17,
+      workspaceId: PROJECT_WORKSPACE.id,
+    });
+    expect(queryClient.getQueryState(chatKeys.workspaces)?.fetchStatus).toBe('fetching');
+    await waitFor(() => {
+      expect(screen.getByLabelText('Sidebar workspace choices')).toHaveTextContent(
+        `${OTHER_WORKSPACE.id},${USER_A_QUICK_CHAT.id}`
+      );
+      expect(screen.getByLabelText('Sidebar workspace choices')).not.toHaveTextContent(
+        PROJECT_WORKSPACE.id
+      );
+    });
+
+    await act(async () => rejectDiscovery(new Error('Workspace rediscovery failed.')));
+    await waitFor(() => {
+      expect(queryClient.getQueryState(chatKeys.workspaces)?.status).toBe('error');
+    });
+    expect(screen.getByLabelText('Sidebar workspace choices')).toHaveTextContent(
+      `${OTHER_WORKSPACE.id},${USER_A_QUICK_CHAT.id}`
+    );
+    expect(screen.getByLabelText('Sidebar workspace choices')).not.toHaveTextContent(
+      PROJECT_WORKSPACE.id
+    );
   });
 });

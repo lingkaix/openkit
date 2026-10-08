@@ -4600,6 +4600,37 @@ describe('createCoreClient', () => {
     await expect(client.auth.email.signOut()).resolves.toEqual({ success: true });
   });
 
+  it('reads the signed-in session user and accepts a null session', async () => {
+    const timestamp = '2026-09-16T00:00:00.000Z';
+    const { client, requests } = createFakeClient({
+      'GET /api/auth/get-session': {
+        body: {
+          session: { id: 'session_demo' },
+          user: {
+            id: 'user_demo',
+            email: 'user@example.com',
+            name: 'Demo User',
+            emailVerified: true,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          },
+        },
+      },
+    });
+
+    await expect(client.auth.email.getSession()).resolves.toMatchObject({
+      user: { id: 'user_demo' },
+    });
+    expect(requests).toEqual([
+      expect.objectContaining({ method: 'GET', path: '/api/auth/get-session' }),
+    ]);
+
+    const absent = createFakeClient({
+      'GET /api/auth/get-session': { body: null },
+    });
+    await expect(absent.client.auth.email.getSession()).resolves.toBeNull();
+  });
+
   it('rejects placeholder email auth response shapes', async () => {
     const { client } = createFakeClient({
       'POST /api/auth/sign-up/email': {

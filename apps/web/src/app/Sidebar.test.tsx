@@ -310,4 +310,84 @@ describe('conversation navigation sidebar', () => {
     expect(screen.getByRole('button', { name: 'Ops workspace' })).toBeInTheDocument();
     queryClient.clear();
   });
+
+  it('omits workspaces the signed-in user does not belong to and keeps a shared membership', async () => {
+    const user = userEvent.setup();
+    const client = {
+      core: {},
+      app: {},
+      auth: {
+        email: {
+          getSession: async () => ({ user: { id: 'user_admin' } }),
+        },
+      },
+      operations: {
+        'conversation.navigation': async () => ({ items: [] }),
+        'workspace.list': async () => ({
+          items: [
+            {
+              workspace: { id: 'ws_mine', name: 'My notes', kind: 'general' },
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'user_admin',
+              registryRevision: 1,
+            },
+            {
+              workspace: { id: 'ws_quick', name: 'My quick chat', kind: 'quick-chat' },
+              effectiveRole: 'owner',
+              membershipRevision: 2,
+              ownerUserId: 'user_admin',
+              registryRevision: 1,
+            },
+            {
+              workspace: { id: 'ws_theirs', name: 'Someone else', kind: 'quick-chat' },
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'user_other',
+              registryRevision: 1,
+            },
+            {
+              workspace: { id: 'ws_viewer', name: 'Read together', kind: 'general' },
+              effectiveRole: 'viewer',
+              membershipRevision: 1,
+              ownerUserId: 'user_other',
+              registryRevision: 1,
+            },
+            {
+              workspace: { id: 'ws_shared', name: 'Shared notes', kind: 'general' },
+              effectiveRole: 'editor',
+              membershipRevision: 3,
+              ownerUserId: 'user_other',
+              registryRevision: 1,
+            },
+          ],
+        }),
+      },
+    } as unknown as CoreClient;
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <CoreClientProvider client={client}>
+          <MemoryRouter>
+            <Sidebar />
+          </MemoryRouter>
+        </CoreClientProvider>
+      </QueryClientProvider>
+    );
+
+    expect(await screen.findByRole('button', { name: 'My quick chat' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'My quick chat' }));
+    expect(screen.getByRole('menuitem', { name: 'My notes' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'My quick chat' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Shared notes' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Read together' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Someone else' })).not.toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    act(() => useWorkspaceStore.getState().setCurrentWorkspaceId('ws_theirs'));
+    expect(screen.getByRole('button', { name: 'Someone else' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Someone else' }));
+    expect(screen.queryByRole('menuitem', { name: 'Someone else' })).not.toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'My quick chat' })).toBeInTheDocument();
+    queryClient.clear();
+  });
 });

@@ -475,6 +475,7 @@ function makeClient(overrides: ClientOverrides = {}) {
     },
     auth: {
       email: {
+        getSession: vi.fn(),
         signIn: overrides.signIn ?? vi.fn(),
         signOut: overrides.signOut ?? vi.fn(),
         signUp: overrides.signUp ?? vi.fn(),
@@ -1391,6 +1392,8 @@ describe('email/password session operations', () => {
     });
     queryClient.setQueryData(unrelatedKey, unrelatedValue);
     queryClient.setQueryData(['workspaces'], [{ id: 'ws-actor-a-cached-catalog' }]);
+    queryClient.setQueryData(['workspaces', 'summaries'], [{ ownerUserId: 'user-actor-a-only' }]);
+    queryClient.setQueryData(['account', 'session-user'], 'user-actor-a-only');
     queryClient.setQueryData(['thread-dashboard', 'ws1', 'th1'], {
       viewerUserId: 'user-actor-a-dashboard-viewer',
       participants: [],
@@ -1438,6 +1441,8 @@ describe('email/password session operations', () => {
 
     await waitFor(() => expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(2));
     expect(useWorkspaceStore.getState().currentWorkspaceId).toBeNull();
+    expect(queryClient.getQueryData(['workspaces', 'summaries'])).toBeUndefined();
+    expect(queryClient.getQueryData(['account', 'session-user'])).toBeUndefined();
     const auth = operation === 'signIn' ? signIn : operation === 'signUp' ? signUp : signOut;
     expect(auth).toHaveBeenCalledTimes(1);
     expect(auth.mock.invocationCallOrder[0]).toBeLessThan(

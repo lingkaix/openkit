@@ -1,6 +1,8 @@
 import {
   type AuthEmailRequest,
   AuthEmailRequestSchema,
+  type AuthGetSessionResponse,
+  AuthGetSessionResultSchema,
   type AuthSignInEmailResponse,
   AuthSignInEmailResponseSchema,
   type AuthSignOutResponse,
@@ -20,6 +22,8 @@ export interface EmailAuthClient {
   signIn(input: AuthEmailRequest): Promise<AuthSignInEmailResponse>;
   /** Clears the active Better Auth session. */
   signOut(): Promise<AuthSignOutResponse>;
+  /** Reads the active Better Auth session, or null when the browser has none. */
+  getSession(): Promise<AuthGetSessionResponse | null>;
 }
 
 /** Creates the email/password auth client. */
@@ -38,5 +42,6 @@ export function createEmailAuthClient(transport: ClientTransport): EmailAuthClie
         AuthSignInEmailResponseSchema
       ),
     signOut: () => transport.postJson('/api/auth/sign-out', {}, AuthSignOutResponseSchema),
+    getSession: () => transport.getJson('/api/auth/get-session', AuthGetSessionResultSchema),
   };
 }

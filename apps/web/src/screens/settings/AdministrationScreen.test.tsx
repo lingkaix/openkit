@@ -4,9 +4,9 @@ import {
 } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { useWorkspaceStore } from '../workspace-store';
@@ -253,6 +253,7 @@ function makeClient(
 ): CoreClient {
   return {
     app: { ...app },
+    auth: { email: { getSession: vi.fn().mockResolvedValue({ user: { id: 'user_local' } }) } },
     core: {
       meta: vi.fn().mockResolvedValue({}),
       ...core,
@@ -320,12 +321,18 @@ function makeClient(
   } as unknown as CoreClient;
 }
 
+/** Observes the destination of the Administration Open action. */
+function LocationProbe() {
+  return <output aria-label="Current path">{useLocation().pathname}</output>;
+}
+
 function renderScreen(client: CoreClient) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
         <MemoryRouter>
+          <LocationProbe />
           <AdministrationScreen />
         </MemoryRouter>
       </CoreClientProvider>
@@ -335,10 +342,99 @@ function renderScreen(client: CoreClient) {
 }
 
 beforeEach(() => {
-  useWorkspaceStore.setState({ currentWorkspaceId: PROJECT.id });
+  useWorkspaceStore.setState({ currentWorkspaceId: PROJECT.id, selectionUserKey: null });
 });
 
 describe('Administration', () => {
+  it('lists other owners separately and opens their Workspace into the selected state', async () => {
+    const user = userEvent.setup();
+    const foreignQuickChat = { ...QUICK_CHAT, id: 'ws_foreign', name: 'Other Quick Chat' };
+    const client = makeClient();
+    vi.mocked(client.operations['workspace.list'])
+      .mockReset()
+      .mockResolvedValue({
+        items: [foreignQuickChat, PROJECT, QUICK_CHAT].map((workspace) => ({
+          workspace,
+          ownerUserId: workspace.id === foreignQuickChat.id ? 'user_other' : 'user_local',
+          effectiveRole: 'owner',
+          registryRevision: 1,
+          membershipRevision: 1,
+        })),
+      } as Awaited<ReturnType<CoreClient['operations']['workspace.list']>>);
+    renderScreen(client);
+
+    const others = await screen.findByRole('region', { name: 'Other workspaces' });
+    expect(within(others).getByText(foreignQuickChat.name)).toBeInTheDocument();
+    expect(within(others).queryByText(PROJECT.name)).not.toBeInTheDocument();
+    expect(within(others).queryByText(QUICK_CHAT.name, { exact: true })).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(client.operations['thread.list']).toHaveBeenCalledWith({ workspaceId: QUICK_CHAT.id })
+    );
+    expect(client.operations['thread.list']).not.toHaveBeenCalledWith({
+      workspaceId: foreignQuickChat.id,
+    });
+    await user.click(within(others).getByRole('button', { name: /Open Other Quick Chat/ }));
+    expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(foreignQuickChat.id);
+    expect(screen.getByLabelText('Current path')).toHaveTextContent('/chat');
+  });
+
+  it('waits for ownership discovery before reading the private Quick Chat', async () => {
+    const client = makeClient();
+    const foreignQuickChat = { ...QUICK_CHAT, id: 'ws_foreign', name: 'Other Quick Chat' };
+    const result = {
+      items: [foreignQuickChat, QUICK_CHAT].map((workspace) => ({
+        workspace,
+        ownerUserId: workspace.id === foreignQuickChat.id ? 'user_other' : 'user_local',
+        effectiveRole: 'owner',
+        registryRevision: 1,
+        membershipRevision: 1,
+      })),
+    } as Awaited<ReturnType<CoreClient['operations']['workspace.list']>>;
+    let resolveSummaries!: (value: typeof result) => void;
+    const pendingSummaries = new Promise<typeof result>((resolve) => {
+      resolveSummaries = resolve;
+    });
+    vi.mocked(client.operations['workspace.list'])
+      .mockReset()
+      .mockReturnValueOnce(pendingSummaries)
+      .mockResolvedValue(result);
+    let resolveSession!: (
+      value: Awaited<ReturnType<CoreClient['auth']['email']['getSession']>>
+    ) => void;
+    vi.mocked(client.auth.email.getSession).mockReturnValue(
+      new Promise((resolve) => {
+        resolveSession = resolve;
+      })
+    );
+    renderScreen(client);
+    await waitFor(() => expect(client.operations['workspace.list']).toHaveBeenCalledTimes(1));
+    expect(client.operations['thread.list']).not.toHaveBeenCalled();
+    expect(useWorkspaceStore.getState().selectionUserKey).toBeNull();
+    await act(async () => resolveSummaries(result));
+    await waitFor(() => expect(client.auth.email.getSession).toHaveBeenCalledTimes(1));
+    expect(client.operations['thread.list']).not.toHaveBeenCalled();
+    expect(useWorkspaceStore.getState().selectionUserKey).toBeNull();
+    await act(async () =>
+      resolveSession({
+        user: {
+          id: 'user_local',
+          email: 'local@example.com',
+          name: 'Local user',
+          emailVerified: true,
+          createdAt: TIMESTAMP,
+          updatedAt: TIMESTAMP,
+        },
+      })
+    );
+    await waitFor(() =>
+      expect(client.operations['thread.list']).toHaveBeenCalledWith({ workspaceId: QUICK_CHAT.id })
+    );
+    expect(client.operations['thread.list']).not.toHaveBeenCalledWith({
+      workspaceId: foreignQuickChat.id,
+    });
+    expect(useWorkspaceStore.getState().selectionUserKey).toBe(QUICK_CHAT.id);
+  });
+
   it('polls observation-only runtime activity in the private Administration Thread without new Items', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     try {

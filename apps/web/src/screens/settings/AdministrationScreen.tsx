@@ -21,7 +21,7 @@ import { ApiCallError, type CoreClient, createRequestId } from '@openkit/core-cl
 import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query';
 import { type ParseError, parse } from 'jsonc-parser';
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useConnection, useCoreClient } from '../../app/core-client';
 import {
   Button,
@@ -41,11 +41,16 @@ import {
 import {
   chatKeys,
   useCurrentWorkspaceId,
+  useSignedInUserId,
   useThreadItems,
   useThreads,
+  useWorkspaceSummaries,
   useWorkspaces,
+  workspaceAdmissionIsAmbiguous,
+  workspaceBelongsToCaller,
 } from '../chat/data';
 import { ThreadStream } from '../chat/ThreadStream';
+import { useWorkspaceStore } from '../workspace-store';
 import {
   AdministrationConfigurationReview,
   type ConfigurationCandidate,
@@ -90,15 +95,76 @@ type ActivationResult = Awaited<
   ReturnType<CoreClient['operations']['worker-environment.activate']>
 >;
 
+/** Workspaces visible through administrator eligibility that the signed-in user does not own. */
+function AdministratorWorkspaces() {
+  const navigate = useNavigate();
+  const setWorkspaceId = useWorkspaceStore((state) => state.setCurrentWorkspaceId);
+  const summaries = useWorkspaceSummaries();
+  const ambiguous = summaries.isSuccess && workspaceAdmissionIsAmbiguous(summaries.data);
+  const sessionUser = useSignedInUserId(ambiguous);
+  const callerId = sessionUser.data ?? null;
+  const foreign = (summaries.data ?? []).filter(
+    (item) =>
+      ambiguous &&
+      callerId != null &&
+      item.effectiveRole === 'owner' &&
+      item.ownerUserId !== callerId
+  );
+  if (foreign.length === 0) return null;
+  return (
+    <section className="flex flex-col gap-3" aria-labelledby="other-workspaces">
+      <div>
+        <h2 id="other-workspaces" className="text-lg font-extrabold text-fg-strong">
+          Other workspaces
+        </h2>
+        <p className="text-sm text-fg-muted">
+          These workspaces belong to other people. Open one here to inspect it. They stay out of the
+          sidebar switcher.
+        </p>
+      </div>
+      <Card>
+        {foreign.map((item) => (
+          <ListRow key={item.workspace.id}>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-bold text-fg-strong">{item.workspace.name}</p>
+              <p className="truncate text-xs text-fg-muted">Owner {item.ownerUserId}</p>
+            </div>
+            <Button
+              variant="outline"
+              aria-label={`Open ${item.workspace.name} owned by ${item.ownerUserId}`}
+              onPress={() => {
+                setWorkspaceId(item.workspace.id);
+                navigate('/chat');
+              }}
+            >
+              Open
+            </Button>
+          </ListRow>
+        ))}
+      </Card>
+    </section>
+  );
+}
+
 /** Private administrator conversation plus target-Workspace Worker environment status. */
 export function AdministrationScreen() {
   const client = useCoreClient();
   const queryClient = useQueryClient();
   const connection = useConnection();
   const workspaces = useWorkspaces();
+  const summaries = useWorkspaceSummaries();
+  const ambiguous = summaries.isSuccess && workspaceAdmissionIsAmbiguous(summaries.data);
+  const sessionUser = useSignedInUserId(ambiguous);
   const workspaceId = useCurrentWorkspaceId();
   const workspace = workspaces.data?.find((candidate) => candidate.id === workspaceId) ?? null;
-  const quickChat = workspaces.data?.find((candidate) => candidate.kind === 'quick-chat') ?? null;
+  // Resolve ownership before reading private Threads: administrator discovery can list another user's Quick Chat first.
+  const quickChat = summaries.isSuccess
+    ? (summaries.data.find(
+        (item) =>
+          item.workspace.kind === 'quick-chat' &&
+          workspaceBelongsToCaller(item, sessionUser.data ?? null, ambiguous)
+      )?.workspace ?? null)
+    : null;
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedThreadId = searchParams.get('threadId')?.trim() || null;
   const privateThreads = useThreads(quickChat?.id ?? null);
@@ -216,6 +282,7 @@ export function AdministrationScreen() {
         />
       ) : (
         <>
+          <AdministratorWorkspaces />
           <section className="flex flex-col gap-3" aria-labelledby="administration-conversation">
             <div>
               <h2
@@ -428,7 +495,7 @@ function WorkerEnvironmentSection({
         <EmptyState
           icon="folder"
           title="Select a Workspace"
-          hint="Choose the target with the global Workspace switcher."
+          hint="Choose one of your workspaces in the sidebar, or open another person's workspace above."
         />
       ) : environments.isLoading ? (
         <Skeleton lines={4} />
@@ -710,7 +777,8 @@ function EnvironmentPreparation({
         <div className="flex flex-col gap-3 rounded-ok border border-border bg-sunken p-3">
           {!workspaceId ? (
             <p className="text-sm text-fg-muted">
-              Select the affected Workspace with the global Workspace switcher.
+              Select one of your workspaces in the sidebar, or open another person's workspace
+              above.
             </p>
           ) : (
             <Select

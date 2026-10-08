@@ -15,6 +15,8 @@ import {
   AppDiagnosticsResponseSchema,
   AppSearchResponseSchema,
   ArchivedGitPushRecordSchema,
+  AuthGetSessionResponseSchema,
+  AuthGetSessionResultSchema,
   AuthSignInEmailResponseSchema,
   AuthSignOutResponseSchema,
   AuthSignUpEmailResponseSchema,
@@ -4517,6 +4519,20 @@ describe('app api schemas', () => {
       }).redirect
     ).toBe(false);
     expect(AuthSignOutResponseSchema.parse({ success: true }).success).toBe(true);
+    expect(
+      AuthGetSessionResponseSchema.parse({
+        session: { id: 'session_1' },
+        user: {
+          id: 'user_1',
+          email: 'user@example.com',
+          name: 'Demo User',
+          emailVerified: true,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+      }).user.id
+    ).toBe('user_1');
+    expect(AuthGetSessionResultSchema.parse(null)).toBeNull();
     expect(AuthSignUpEmailResponseSchema.safeParse({ user: { id: 'user_1' } }).success).toBe(false);
     expect(
       ConsumeOpenKitBootstrapTokenRequestSchema.parse({

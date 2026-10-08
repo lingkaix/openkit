@@ -38,7 +38,7 @@ NanoCore App API payloads come from `@openkit/app-api-schemas`.
 - `client.operations` exposes the seven current-administrator Worker environment operations and the private administration conversation entry. Every input carries its complete logical selectors; destructive purge binds confirmation to the same storage reference and revision.
 - `client.operations[id]`: the ten `runtime.*` configuration editor and reload operations.
 - `client.operations[id]`: the eleven `provider-subscription.*` operations for fixed provider inventory plus provider-scoped account, device-code login, logout, quota, and auto-top-up routes. Quota and auto-top-up omit missing percentages and monetary fields rather than inferring zero; a successful quota with no percentage is Provider did not report usage.
-- `client.auth.email`: Better Auth email sign-up, sign-in, and sign-out routes.
+- `client.auth.email`: Better Auth email sign-up, sign-in, sign-out, and `getSession` reads. The session read validates the active user or returns null when no session exists; it supplies identity when administrator Workspace discovery contains multiple owners.
 - `client.capabilities`: `refresh`, `snapshot`, `supports`, and `require` helpers over `/api/meta`.
 - `client.operations`: Canonical Agent inventory, detail and health refresh operations.
 - `client.operations['attention.list']`: definition-derived unified Human Attention read model with one selector object.
