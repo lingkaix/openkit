@@ -10,7 +10,9 @@ This document owns execution isolation, sandbox scope, environment constraints, 
 
 This document does not own permission policy, technical capability declarations, runtime scheduling, agent supply declarations, vault secret storage, storage layout, deployment topology, or backend-native sandbox payloads.
 
-Sandbox is execution isolation and runtime environment design. It answers where work runs and what the runtime can reach.
+The user-selectable Sandbox is the retained Worker environment identified by its Core storage association. Its physical Sandbox runtime instance is a replaceable containment realization. Sandbox runtime semantics decide where work runs and what execution can reach. Selection constrains placement and grants no authority; equal static compatibility never substitutes a different selected association. [User-Selected Workspace-Shared Sandboxes](../decisions/20261008-user_selected_workspace_shared_sandboxes.md) records this distinction and its owning specifications.
+
+Containment, co-residency, cleanup and isolation clauses below concern the physical Sandbox runtime instance unless they explicitly concern the selectable retained resource.
 
 Sandbox is separate from permission and capability.
 
@@ -79,7 +81,7 @@ A sandbox may be scoped to:
 
 The default scope when security and adjudication isolation is required remains one AgentSession per Sandbox. A shared Sandbox is an explicitly admitted alternative in which multiple compatibility-keyed Harnesses and AgentSessions from distinct Threads occupy one Sandbox while retaining independent Core identity, authority, Turn lineage, mutable Workspace slots, output staging, sequence, interruption, evidence, and terminal outcome. Historical AgentSessions for one Thread MUST NOT retain a resident binding after a successor becomes current.
 
-Shared-Sandbox admission MUST use one static compatibility envelope that covers Workspace, responsible-user trust class, runtime image and declared Harness set, OS identity and process visibility, filesystem and mount posture, network policy, Provider attachment visibility, Vault injection visibility class, static credential exposure class, aggregate resource class, sensitivity class, and containment policy. Co-resident Harnesses and AgentSessions belong to distinct Threads in one Workspace and one responsible-user trust class. A broader trust class requires an accepted contract proving identical visibility and the required security and adjudication isolation level; it is not implied by spare capacity.
+Shared-Sandbox admission MUST use one static compatibility envelope that covers Workspace, admitted trust class, runtime image and declared Harness set, OS identity and process visibility, filesystem and mount posture, network policy, Provider attachment visibility, Vault injection visibility class, static credential exposure class, aggregate resource class, sensitivity class, and containment policy. Co-resident Harnesses and AgentSessions belong to distinct Threads in one Workspace and one admitted trust class. For a Workspace-shared retained environment, current eligible Workspace members form its admitted shared trust class. Different responsible users alone do not prohibit co-residency. No security or adjudication isolation is claimed between these members' executions; incompatible credential exposure, narrower source audiences, independent adjudication and other required stronger isolation still prevent sharing. Other trust-class expansion requires an accepted contract proving identical visibility and the required isolation level; spare capacity supplies no such proof. The accepted shared-data and mutual-write consequence is recorded in [User-Selected Workspace-Shared Sandboxes](../decisions/20261008-user_selected_workspace_shared_sandboxes.md).
 
 Turn payloads, Thread history, native conversation handles, raw secrets, temporary upload handles, output contents, worker-private caches, and short-lived effect authority MUST NOT enter the static compatibility envelope. They remain independently admitted and bound to the exact AgentSession and Turn.
 
@@ -99,7 +101,7 @@ Every Sandbox isolation claim MUST name exactly one of these levels:
 
 Filesystem namespacing under one OS identity provides Workspace-write isolation only. It is logical separation, not a security boundary, and MUST NOT be described as security and adjudication isolation. Shared-Sandbox AgentSessions occupy one compromise domain unless stronger intra-Sandbox isolation is separately proved.
 
-Independent adjudication, adversarial work, incompatible credential visibility, incompatible responsible-user trust, authorization-sensitive work, and strict-risk work MUST use separate ordinary Sandboxes whenever shared process memory, writable state, credentials, context, retained warm state, or model state could undermine security and adjudication isolation.
+Independent adjudication, adversarial work, incompatible credential visibility, incompatible admitted trust class, authorization-sensitive work, and strict-risk work MUST use separate ordinary Sandboxes whenever shared process memory, writable state, credentials, context, retained warm state, or model state could undermine security and adjudication isolation.
 
 ## Shared-Sandbox Lifecycle And Failure
 
@@ -177,6 +179,8 @@ The sandbox summary may describe stable slot refs and access classes, but it mus
 ## Retained Working Volumes
 
 [Storage](storage.md) owns generic whole-volume retention. Sandbox owns only the admission and containment of their attachment. A replacement may attach the same retained storage after all previous writers are fenced and the image's inherited storage layout, access audience, mount policy and ownership remain compatible. A volume is not an execution identity or an authority cache. Contents need no per-file-format support to survive.
+
+One retained association has at most one current writable physical attachment; concurrent members share that attachment only through an admitted group with separately owned mutable work slots. No second attachment, competing assigned writer for the same slot, or transfer from an unfenced predecessor is authorized. Full shared-volume access is not protection against deliberate sibling modification. [User-Selected Workspace-Shared Sandboxes](../decisions/20261008-user_selected_workspace_shared_sandboxes.md) records the accepted trust boundary.
 
 A storage association MUST NOT grant access to another Sandbox's retained files merely because Workspace, user, image or backend matches. Sharing remains exactly the existing explicitly admitted Sandbox trust boundary; independent adjudication receives separate storage and only its authorized candidate inputs. Static mount changes require replacement when the backend cannot apply them safely in place. Containers derived from the same compatible base SHOULD reuse storage without copying only Git files or registered Artifacts. Root filesystem and process snapshots are separate features.
 

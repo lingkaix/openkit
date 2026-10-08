@@ -123,6 +123,8 @@ Runtime observes liveness, effective setup identity, placement, capabilities, sa
 
 ## Runtime Placement Boundaries
 
+Worker admission resolves the exact selected retained environment before placement. Runtime residency remains backend-private and replaceable; public environment identity is not a Harness, AgentSession, attempt or Epoch identity. Selection preserves the existing execution-backend port and independently admitted grants. [User-Selected Workspace-Shared Sandboxes](../decisions/20261008-user_selected_workspace_shared_sandboxes.md) records the resource-selection decision.
+
 Runtime placement decomposes into four distinct private projections:
 
 - a Sandbox runtime projection identifies one containment and aggregate-resource boundary whose conversation-context, Workspace-write, or security and adjudication isolation level remains owned by `sandbox.md`;

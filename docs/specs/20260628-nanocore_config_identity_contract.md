@@ -102,6 +102,7 @@ DATA_ROOT/config/server.jsonc
 DATA_ROOT/config/model-catalog.jsonc
 DATA_ROOT/config/gateway.jsonc
 DATA_ROOT/config/internal-role-profiles.jsonc
+DATA_ROOT/config/sandbox-templates.jsonc
 DATA_ROOT/config/providers/<providerId>.provider.jsonc
 DATA_ROOT/config/agents/<agentId>.agent.jsonc
 DATA_ROOT/users/<userId>/config/user.jsonc
@@ -137,6 +138,10 @@ Authored configuration uses the hand-written configuration rule in `docs/core/co
 | `data-sources.jsonc` | Unknown optional descriptive keys at catalog and source-entry level under the Workspace Data Source Catalog owner; the existing tolerant parser must also report the warning and location. | Invalid known authority fields, including `kind`, `access`, `locator`, and `vaultGrantRef`, and unsupported required features at catalog or entry level. |
 
 `server.jsonc`, `user.jsonc`, and `workspace.jsonc` admit top-level `requiredFeatures` through the shared required-feature registry. The [Workspace Data Source Catalog](./20260704-workspace_data_source_catalog.md) owns source-entry field semantics and required-feature placement; this contract owns its participation in NanoCore runtime-config diagnostics. A reader preserves unknown optional fields in the authored source when it projects an effective snapshot. Revision-protected raw JSONC editing keeps those fields unless the submitted source explicitly removes them. This change adds no compatibility alias, generic unknown-field activation, routing plugin registry, or parallel configuration transaction protocol. Generated Workspace MCP catalogs and Agent Environment Package manifests remain outside this hand-written configuration classification.
+
+## Sandbox Template Configuration
+
+`DATA_ROOT/config/sandbox-templates.jsonc` is the Server-owned administrator-authored named template collection. The existing runtime-config file service owns its file identity, exact SHA-256 revision/CAS, validation, diagnostics and safe reload. [Persistent Worker Volumes](20260910-persistent_worker_volumes.md) owns each template's definition, exact immutable revision, publication evidence, enablement and removal semantics. Publication requires existing verified preparation/activation; a configuration edit alone cannot publish an image or change a retained Sandbox pin. Invalid input preserves the last good snapshot; missing or stale required publication evidence refuses dependent resolution. No user Sandbox, live attachment, occupancy or readiness fact is stored in configuration. Unknown optional descriptive content follows existing located warnings and source preservation; unknown core, required or authority-bearing content fails closed. [User-Selected Workspace-Shared Sandboxes](../decisions/20261008-user_selected_workspace_shared_sandboxes.md) records this configuration seam.
 
 ## Deployment Model Extension File
 

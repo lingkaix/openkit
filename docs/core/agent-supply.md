@@ -126,6 +126,8 @@ These are catalog areas, not a closed field list.
 
 The `AgentManifest` is the sole authored setup source used to initialize and operate one agent supply unit.
 
+An administrator-published Sandbox template supplies an exact image and environment facts for setup resolution. It confers no permissions; the selected AgentManifest remains the source of governed runtime authority and declares adapter, binaries, requirements and default environment supply. Selecting admitted template supply resolves those requirements rather than creating another authored agent setup or grant source. [User-Selected Workspace-Shared Sandboxes](../decisions/20261008-user_selected_workspace_shared_sandboxes.md) records the distinction.
+
 It may declare:
 
 - identity and version
