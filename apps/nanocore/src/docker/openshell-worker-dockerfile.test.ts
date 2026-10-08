@@ -377,6 +377,7 @@ describe('governed worker image contracts', () => {
             access: 'read-only',
             host: 'registry.npmjs.org',
             id: 'npm-registry-read',
+            allowEncodedSlash: true,
           }),
           expect.objectContaining({
             access: 'read-only',
@@ -390,6 +391,9 @@ describe('governed worker image contracts', () => {
           }),
         ])
       );
+      expect(manifest.sandbox.network.filter((grant) => 'allowEncodedSlash' in grant)).toEqual([
+        expect.objectContaining({ id: 'npm-registry-read', allowEncodedSlash: true }),
+      ]);
       expect(JSON.stringify(manifest.sandbox.network)).not.toContain('git-receive-pack');
     }
   });

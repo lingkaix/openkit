@@ -7,6 +7,7 @@ import {
   AgentEnvironmentPackageSchema,
   type SessionWorkspaceMaterializationPlan,
   type WorkerSandboxAccess,
+  WorkerSandboxAccessSchema,
 } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import {
@@ -229,6 +230,60 @@ function prepareCredentialAttemptFixture(
 }
 
 describe('agent environment package resolver', () => {
+  it('binds explicit encoded-slash authority into immutable package and session material identity', () => {
+    const turn = createTurnFixture('Read packages');
+    const resolve = (allowEncodedSlash?: boolean) => {
+      const network = WorkerSandboxAccessSchema.parse({
+        network: [
+          {
+            id: 'package-read',
+            host: 'packages.example.com',
+            port: 443,
+            protocol: 'rest',
+            access: 'read-only',
+            purpose: 'Read scoped packages.',
+            binaries: ['/usr/local/bin/node'],
+            ...(allowEncodedSlash === undefined ? {} : { allowEncodedSlash }),
+          },
+        ],
+      }).network;
+      return resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
+        agentSetup: createTestSetup({ network }),
+        agentSessionId: 'as_encoding',
+        backend: { kind: 'openshell' },
+        createdAt: '2026-10-08T00:00:00.000Z',
+        turn,
+        triggerActor: USER_TRIGGER_ACTOR,
+        workspaceRoots: [],
+      });
+    };
+    const omitted = resolve();
+    const historicalBytes = JSON.stringify(omitted);
+    const strict = resolve(false);
+    const allowed = resolve(true);
+    const identity = (pkg: typeof omitted) =>
+      (
+        pkg.extensions.openkit as {
+          sessionWorkspace: { compatibilityKey: { digest: string } };
+        }
+      ).sessionWorkspace.compatibilityKey.digest;
+    expect(allowed.policy.network?.rules).toContainEqual(
+      expect.objectContaining({ allowEncodedSlash: true })
+    );
+    expect(strict.policy.network?.rules).toContainEqual(
+      expect.objectContaining({ allowEncodedSlash: false })
+    );
+    expect(identity(allowed)).not.toBe(identity(strict));
+    expect(identity(allowed)).not.toBe(identity(omitted));
+    expect(JSON.stringify(omitted)).toBe(historicalBytes);
+    expect(JSON.stringify(resolve())).toBe(historicalBytes);
+    expect(JSON.stringify(AgentEnvironmentPackageSchema.parse(JSON.parse(historicalBytes)))).toBe(
+      historicalBytes
+    );
+    expect(historicalBytes).not.toContain('allowEncodedSlash');
+  });
+
   it.each(['repo', 'turn'])('preserves authored root %s with unique output ids', (id) => {
     const commit = 'a'.repeat(40);
     const resolved = resolveAgentEnvironmentPackage({

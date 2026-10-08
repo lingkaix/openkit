@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import { AuthoredAgentConfigSchema } from './agent.js';
+import { getConfigSchemaCatalog } from './catalog.js';
 
 /** Returns one valid opaque worker AgentManifest fixture. */
 function validAgentConfig() {
@@ -44,6 +45,60 @@ function validAgentConfig() {
 }
 
 describe('AuthoredAgentConfigSchema', () => {
+  it('projects encoded-slash authority only on the qualifying closed editor schema and manifest shape', () => {
+    const schema = getConfigSchemaCatalog().find((entry) => entry.kind === 'agent')!.schema as {
+      properties: {
+        sandbox: {
+          properties: {
+            network: {
+              items: {
+                anyOf: Array<{
+                  properties: Record<string, unknown>;
+                  additionalProperties: boolean;
+                }>;
+              };
+            };
+          };
+        };
+      };
+    };
+    const branches = schema.properties.sandbox.properties.network.items.anyOf;
+    expect(branches.filter((branch) => 'allowEncodedSlash' in branch.properties)).toEqual([
+      expect.objectContaining({
+        additionalProperties: false,
+        properties: expect.objectContaining({
+          allowEncodedSlash: { type: 'boolean' },
+          access: expect.objectContaining({ const: 'read-only' }),
+          protocol: expect.objectContaining({ const: 'rest' }),
+          rules: { not: {} },
+        }),
+      }),
+    ]);
+    expect(branches.every((branch) => branch.additionalProperties === false)).toBe(true);
+    const config = validAgentConfig();
+    const grant = {
+      ...config.sandbox.network[0]!,
+      protocol: 'rest',
+      access: 'read-only',
+      allowEncodedSlash: true,
+    };
+    expect(
+      AuthoredAgentConfigSchema.parse({ ...config, sandbox: { network: [grant] } }).sandbox
+        ?.network[0]
+    ).toMatchObject(grant);
+    expect(
+      AuthoredAgentConfigSchema.safeParse({
+        ...config,
+        sandbox: {
+          network: [
+            grant,
+            { ...grant, id: 'strict', host: 'API.EXAMPLE.COM.', allowEncodedSlash: false },
+          ],
+        },
+      }).success
+    ).toBe(false);
+  });
+
   it('preserves authored resource intent for retained configuration even when runtime support is absent', () => {
     const resources = { cpu: { maxCores: 1 }, futureLimit: { value: 0 } };
     expect(AuthoredAgentConfigSchema.parse({ ...validAgentConfig(), resources }).resources).toEqual(

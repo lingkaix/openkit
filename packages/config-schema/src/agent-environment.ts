@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
+import { isIP } from 'node:net';
 import { ActorRefSchema, ReasoningEffortSchema } from '@openkit/protocol';
 import {
   type CaptureCoverageBinding as AgentEnvironmentCaptureCoverage,
@@ -838,6 +839,12 @@ const WorkerSandboxPublicAccessSchema = z
 export const WorkerSandboxNetworkGrantSchema = z
   .union([
     WORKER_SANDBOX_NETWORK_GRANT_BASE_SCHEMA.extend({
+      access: z.literal('read-only').default('read-only'),
+      protocol: z.literal('rest').default('rest'),
+      rules: z.never().optional(),
+      allowEncodedSlash: z.boolean().optional(),
+    }),
+    WORKER_SANDBOX_NETWORK_GRANT_BASE_SCHEMA.extend({
       access: z.enum(['read-only', 'read-write']).default('read-only'),
       protocol: z.enum(['rest', 'http', 'https']).default('rest'),
       rules: z.never().optional(),
@@ -872,7 +879,12 @@ export const WorkerSandboxNetworkGrantSchema = z
 export const WorkerSandboxAccessSchema = z
   .object({
     filesystem: z.array(WorkerSandboxFilesystemGrantSchema).default([]),
-    network: z.array(WorkerSandboxNetworkGrantSchema).default([]),
+    network: z
+      .array(WorkerSandboxNetworkGrantSchema)
+      .superRefine((grants, ctx) => {
+        addEncodedSlashConflictIssues(grants, ctx, []);
+      })
+      .default([]),
     credentialDeclarations: z.array(AgentEnvironmentCredentialDeclarationSchema).default([]),
   })
   .strict()
@@ -1156,17 +1168,22 @@ export const AgentEnvironmentPackageSchema = z
       });
     }
 
+    addEncodedSlashConflictIssues(value.policy.network?.rules ?? [], ctx, [
+      'policy',
+      'network',
+      'rules',
+    ]);
     const runtimeBinaryPaths = new Set(value.runtime.binaries.map((binary) => binary.path));
     for (const [ruleIndex, rule] of (value.policy.network?.rules ?? []).entries()) {
       if (!rule || typeof rule !== 'object' || Array.isArray(rule)) {
         continue;
       }
-      if ('publicAccess' in rule) {
+      if ('publicAccess' in rule || 'allowEncodedSlash' in rule) {
         const { action, ...grant } = rule as Record<string, unknown>;
         if (action !== 'allow' || !WorkerSandboxNetworkGrantSchema.safeParse(grant).success) {
           ctx.addIssue({
             code: 'custom',
-            message: 'Public network policy requires a recognized exact REST grant.',
+            message: 'Authority-bearing network policy requires a recognized exact REST grant.',
             path: ['policy', 'network', 'rules', ruleIndex],
           });
         }
@@ -1450,6 +1467,51 @@ function addDuplicateIdIssues(
     }
 
     ids.add(value.id);
+  }
+}
+
+/** Refuses mixed parser authority at a canonical destination before package materialization. */
+function addEncodedSlashConflictIssues(
+  values: unknown[],
+  ctx: z.RefinementCtx,
+  path: Array<string | number>
+): void {
+  const settings = new Map<string, boolean>();
+  for (const [index, value] of values.entries()) {
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      !('host' in value) ||
+      !('port' in value) ||
+      typeof value.host !== 'string'
+    )
+      continue;
+    const host = value.host.trim().toLowerCase().replace(/\.$/, '');
+    let canonical = host;
+    try {
+      const address = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+      canonical = new URL(
+        `https://${isIP(address) === 6 ? `[${address}]` : host}`
+      ).hostname.replace(/\.$/, '');
+      const mapped = /^\[::ffff:([a-f0-9]{1,4}):([a-f0-9]{1,4})\]$/.exec(canonical);
+      if (mapped) {
+        const high = Number.parseInt(mapped[1]!, 16);
+        const low = Number.parseInt(mapped[2]!, 16);
+        canonical = [high >> 8, high & 255, low >> 8, low & 255].join('.');
+      }
+    } catch {
+      /* Existing grant validation owns invalid hosts. */
+    }
+    const destination = `${canonical}:${value.port}`;
+    const allowed = 'allowEncodedSlash' in value && value.allowEncodedSlash === true;
+    if (settings.has(destination) && settings.get(destination) !== allowed) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Composed network grants disagree on encoded-slash authority.',
+        path: [...path, index, 'allowEncodedSlash'],
+      });
+    }
+    settings.set(destination, allowed);
   }
 }
 

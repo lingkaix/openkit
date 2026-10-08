@@ -346,6 +346,9 @@ function redactResolvedAgentSetup(
         network: (manifest.sandbox?.network ?? []).map((grant) => ({
           binaries: [...(grant.binaries ?? [])],
           host: grant.host,
+          ...('allowEncodedSlash' in grant && grant.allowEncodedSlash !== undefined
+            ? { allowEncodedSlash: grant.allowEncodedSlash }
+            : {}),
           id: grant.id,
           port: grant.port,
           purpose: grant.purpose,

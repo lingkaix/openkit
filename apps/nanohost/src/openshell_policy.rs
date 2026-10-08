@@ -70,6 +70,61 @@ fn paths_overlap(left: &str, right: &str) -> bool {
         || right.starts_with(&format!("{left}/"))
 }
 
+/// Canonical destination identity for conflict checks, without URL or wildcard authority.
+fn canonical_network_host(host: &str) -> Result<String, &'static str> {
+    let host = host.trim().trim_end_matches('.').to_lowercase();
+    if host.is_empty()
+        || host
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || "/@?#*\\".contains(c))
+    {
+        return Err("sandbox network intent host invalid");
+    }
+    let authority = if host.parse::<std::net::Ipv6Addr>().is_ok() {
+        format!("[{host}]")
+    } else {
+        host.clone()
+    };
+    let url = reqwest::Url::parse(&format!("https://{authority}"))
+        .map_err(|_| "sandbox network intent host invalid")?;
+    if url.port().is_some()
+        || (host.contains(':')
+            && !host.starts_with('[')
+            && host.parse::<std::net::Ipv6Addr>().is_err())
+    {
+        return Err("sandbox network intent host invalid");
+    }
+    let canonical = url
+        .host_str()
+        .ok_or("sandbox network intent host invalid")?
+        .trim_end_matches('.');
+    if let Ok(address) = canonical
+        .trim_matches(['[', ']'])
+        .parse::<std::net::Ipv6Addr>()
+        && let Some(mapped) = address.to_ipv4_mapped()
+    {
+        return Ok(mapped.to_string());
+    }
+    Ok(canonical.to_string())
+}
+
+/// Refuses mixed parser settings rather than letting native endpoint composition OR them.
+fn admit_encoded_slash_setting(
+    settings: &mut HashMap<(String, u64), bool>,
+    host: &str,
+    port: u64,
+    allowed: bool,
+) -> Result<(), &'static str> {
+    let destination = (canonical_network_host(host)?, port);
+    if settings
+        .insert(destination, allowed)
+        .is_some_and(|previous| previous != allowed)
+    {
+        return Err("composed network grants disagree on encoded-slash authority");
+    }
+    Ok(())
+}
+
 /// Projects the existing fixed native policy from Core endpoint and filesystem intent only.
 fn render_worker_policy(intent: &Value) -> Result<Value, &'static str> {
     let intent = intent_object(
@@ -115,11 +170,12 @@ fn render_worker_policy(intent: &Value) -> Result<Value, &'static str> {
         .as_array()
         .ok_or("sandbox network intent invalid")?;
     let mut policies = Map::new();
+    let mut encoded_slash_settings = HashMap::new();
     for value in endpoints {
         let entry = intent_object(
             value,
             &["binaries", "host", "name", "port"],
-            &["access", "protocol", "rules"],
+            &["access", "allowEncodedSlash", "protocol", "rules"],
         )?;
         let name = intent_text(&entry["name"])?;
         let mut name_bytes = name.bytes();
@@ -174,6 +230,27 @@ fn render_worker_policy(intent: &Value) -> Result<Value, &'static str> {
         if rules.is_some_and(|rules| !rules.is_empty()) && access.is_some() {
             return Err("sandbox network intent access and rules conflict");
         }
+        let allow_encoded_slash = entry
+            .get("allowEncodedSlash")
+            .map(|value| {
+                value
+                    .as_bool()
+                    .ok_or("sandbox encoded-slash intent boolean invalid")
+            })
+            .transpose()?;
+        if allow_encoded_slash.is_some()
+            && (rules.is_some() || access.unwrap_or("read-only") != "read-only")
+        {
+            return Err(
+                "sandbox encoded-slash intent requires read-only REST access without rules",
+            );
+        }
+        admit_encoded_slash_setting(
+            &mut encoded_slash_settings,
+            host,
+            port,
+            allow_encoded_slash.unwrap_or(false),
+        )?;
         let mut endpoint =
             json!({"enforcement": "enforce", "host": host, "port": port, "protocol": "rest"});
         if let Some(rules) = rules.filter(|rules| !rules.is_empty()) {
@@ -192,6 +269,9 @@ fn render_worker_policy(intent: &Value) -> Result<Value, &'static str> {
             endpoint["rules"] = json!(rules);
         } else {
             endpoint["access"] = json!(access.unwrap_or("read-only"));
+        }
+        if allow_encoded_slash == Some(true) {
+            endpoint["allow_encoded_slash"] = json!(true);
         }
         policies.insert(
             name.to_string(),
@@ -313,6 +393,7 @@ fn parse_native_policy(value: &serde_json::Value) -> Result<SandboxPolicy, &'sta
         .and_then(serde_json::Value::as_object)
         .ok_or("sandbox network policies invalid")?;
     let mut network_policies = HashMap::new();
+    let mut encoded_slash_settings = HashMap::new();
     for (key, value) in policies {
         let policy = value
             .as_object()
@@ -359,12 +440,15 @@ fn parse_native_policy(value: &serde_json::Value) -> Result<SandboxPolicy, &'sta
             .ok_or("sandbox network policy endpoint invalid")?;
         let has_access = endpoint.contains_key("access");
         let has_rules = endpoint.contains_key("rules");
-        let expected_endpoint_keys = if has_access {
-            &["access", "enforcement", "host", "port", "protocol"][..]
+        let mut expected_endpoint_keys = if has_access {
+            vec!["access", "enforcement", "host", "port", "protocol"]
         } else {
-            &["enforcement", "host", "port", "protocol", "rules"][..]
+            vec!["enforcement", "host", "port", "protocol", "rules"]
         };
-        if has_access == has_rules || !exact_keys(endpoint, expected_endpoint_keys) {
+        if endpoint.contains_key("allow_encoded_slash") {
+            expected_endpoint_keys.push("allow_encoded_slash");
+        }
+        if has_access == has_rules || !exact_keys(endpoint, &expected_endpoint_keys) {
             return Err("sandbox network policy endpoint invalid");
         }
         let enforcement = text(
@@ -388,6 +472,19 @@ fn parse_native_policy(value: &serde_json::Value) -> Result<SandboxPolicy, &'sta
         } else {
             String::new()
         };
+        let allow_encoded_slash = endpoint
+            .get("allow_encoded_slash")
+            .map(|value| {
+                value
+                    .as_bool()
+                    .ok_or("sandbox encoded-slash policy boolean invalid")
+            })
+            .transpose()?;
+        if allow_encoded_slash.is_some() && (!has_access || access != "read-only") {
+            return Err(
+                "sandbox encoded-slash policy requires read-only REST access without rules",
+            );
+        }
         let rules = if has_rules {
             endpoint
                 .get("rules")
@@ -455,6 +552,12 @@ fn parse_native_policy(value: &serde_json::Value) -> Result<SandboxPolicy, &'sta
         if host.trim().is_empty() {
             return Err("sandbox network policy host invalid");
         }
+        admit_encoded_slash_setting(
+            &mut encoded_slash_settings,
+            &host,
+            u64::from(port),
+            allow_encoded_slash.unwrap_or(false),
+        )?;
         network_policies.insert(
             key.clone(),
             NetworkPolicyRule {
@@ -467,6 +570,7 @@ fn parse_native_policy(value: &serde_json::Value) -> Result<SandboxPolicy, &'sta
                     enforcement,
                     access,
                     rules,
+                    allow_encoded_slash: allow_encoded_slash.unwrap_or(false),
                     ..NetworkEndpoint::default()
                 }],
             },
@@ -570,6 +674,126 @@ mod tests {
         let mut unknown = value;
         unknown["unrecognized"] = serde_json::json!(true);
         assert!(parse_native_policy(&unknown).is_err());
+    }
+
+    #[test]
+    fn encoded_slash_authority_preserves_strict_controls_and_git_rules() {
+        let strict = representative_intent();
+        let original = render_worker_policy(&strict).unwrap();
+        for setting in [None, Some(false), Some(true)] {
+            let mut intent = strict.clone();
+            if let Some(allowed) = setting {
+                intent["additionalNetworkEndpoints"][0]["allowEncodedSlash"] = json!(allowed);
+            }
+            let native = render_worker_policy(&intent).unwrap();
+            let endpoint = &native["networkPolicies"]["direct_api"]["endpoints"][0];
+            assert_eq!(
+                endpoint.get("allow_encoded_slash"),
+                setting
+                    .filter(|allowed| *allowed)
+                    .map(|_| &Value::Bool(true))
+            );
+            let policy = render_sandbox_policy(&intent).unwrap();
+            let endpoint = &policy.network_policies["direct_api"].endpoints[0];
+            assert_eq!(endpoint.allow_encoded_slash, setting.unwrap_or(false));
+            assert_eq!(endpoint.access, "read-only");
+            assert_eq!(endpoint.enforcement, "enforce");
+            assert_eq!(endpoint.protocol, "rest");
+            assert_eq!(endpoint.host, "api.example.com");
+            assert_eq!(endpoint.port, 443);
+            assert_eq!(
+                policy.network_policies["direct_api"].binaries[0].path,
+                "/usr/local/bin/codex"
+            );
+            assert_eq!(
+                native["networkPolicies"]["github_git_read"],
+                original["networkPolicies"]["github_git_read"]
+            );
+            assert!(!policy.network_policies["github_git_read"].endpoints[0].allow_encoded_slash);
+        }
+    }
+
+    #[test]
+    fn encoded_slash_refuses_malformed_forbidden_and_unknown_native_authority() {
+        for malformed in [
+            json!("true"),
+            json!("false"),
+            json!(0),
+            json!(1),
+            Value::Null,
+            json!({}),
+            json!([]),
+        ] {
+            let mut intent = representative_intent();
+            intent["additionalNetworkEndpoints"][0]["allowEncodedSlash"] = malformed.clone();
+            assert!(render_sandbox_policy(&intent).is_err());
+            let mut native = render_worker_policy(&representative_intent()).unwrap();
+            native["networkPolicies"]["direct_api"]["endpoints"][0]["allow_encoded_slash"] =
+                malformed;
+            assert!(parse_native_policy(&native).is_err());
+        }
+        for allowed in [false, true] {
+            for change in [
+                json!({"access": "read-write"}),
+                json!({"protocol": "http"}),
+                json!({"protocol": "https"}),
+                json!({"rules": []}),
+            ] {
+                let mut intent = representative_intent();
+                let endpoint = intent["additionalNetworkEndpoints"][0]
+                    .as_object_mut()
+                    .unwrap();
+                endpoint.insert("allowEncodedSlash".into(), json!(allowed));
+                endpoint.extend(change.as_object().unwrap().clone());
+                assert!(render_sandbox_policy(&intent).is_err());
+            }
+            let mut intent = representative_intent();
+            intent["additionalNetworkEndpoints"][1]["allowEncodedSlash"] = json!(allowed);
+            assert!(render_sandbox_policy(&intent).is_err());
+            for name in ["direct_api", "github_git_read"] {
+                let mut native = render_worker_policy(&representative_intent()).unwrap();
+                native["networkPolicies"][name]["endpoints"][0]["allow_encoded_slash"] =
+                    json!(allowed);
+                if name == "direct_api" {
+                    native["networkPolicies"][name]["endpoints"][0]["access"] = json!("read-write");
+                }
+                assert!(parse_native_policy(&native).is_err());
+            }
+        }
+        let mut native = render_worker_policy(&representative_intent()).unwrap();
+        native["networkPolicies"]["direct_api"]["endpoints"][0]["futureAuthority"] = json!(true);
+        assert!(parse_native_policy(&native).is_err());
+    }
+
+    #[test]
+    fn encoded_slash_composition_requires_agreement_at_each_boundary() {
+        let mut opted = representative_intent()["additionalNetworkEndpoints"][0].clone();
+        opted["allowEncodedSlash"] = json!(true);
+        for rules in [false, true] {
+            let mut strict =
+                representative_intent()["additionalNetworkEndpoints"][usize::from(rules)].clone();
+            strict["host"] = json!("API.EXAMPLE.COM.");
+            strict["name"] = json!("strict");
+            for endpoints in [json!([opted, strict]), json!([strict, opted])] {
+                let intent = json!({"additionalFilesystemGrants": [], "additionalNetworkEndpoints": endpoints});
+                assert!(render_sandbox_policy(&intent).is_err());
+            }
+        }
+        let mut same = opted.clone();
+        same["name"] = json!("same");
+        let intent =
+            json!({"additionalFilesystemGrants": [], "additionalNetworkEndpoints": [opted, same]});
+        let mut native = render_worker_policy(&intent).unwrap();
+        assert!(parse_native_policy(&native).is_ok());
+        native["networkPolicies"]["same"]["endpoints"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("allow_encoded_slash");
+        assert!(parse_native_policy(&native).is_err());
+        native["networkPolicies"]["same"]["endpoints"][0]["allow_encoded_slash"] = json!(false);
+        assert!(parse_native_policy(&native).is_err());
+        native["networkPolicies"]["same"]["endpoints"][0]["port"] = json!(8443);
+        assert!(parse_native_policy(&native).is_ok());
     }
 
     /// The input whose TypeScript-rendered bytes were captured before moving the projector.

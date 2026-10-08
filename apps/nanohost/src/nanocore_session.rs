@@ -2915,6 +2915,15 @@ mod tests {
                                 &input["policyIntent"],
                             )
                             .expect("Core-produced sandbox policy must parse for execution");
+                            let endpoint =
+                                &policy.network_policies["scoped_package_read"].endpoints[0];
+                            assert!(endpoint.allow_encoded_slash);
+                            assert_eq!(endpoint.access, "read-only");
+                            assert_eq!(endpoint.protocol, "rest");
+                            assert_eq!(endpoint.enforcement, "enforce");
+                            assert_eq!(endpoint.host, "packages.example.com");
+                            assert_eq!(endpoint.port, 443);
+                            assert!(endpoint.rules.is_empty());
                             let storage = crate::parse_storage_attachment(input.get("storage"))
                                 .expect("Core-produced storage must parse for execution");
                             crate::parse_sandbox_environment(input.get("environment"))

@@ -17,6 +17,7 @@ import {
   openShellNetworkEndpointsFromPackagePolicy,
   prepareNanoHostContextPackageImports,
   resolveNanoHostExportPath,
+  WorkerSandboxPolicyIntentSchema,
 } from './worker-governance-backend.js';
 
 describe('NanoHost worker governance helpers', () => {
@@ -340,4 +341,94 @@ it.each([
   }
   candidate.llm.reasoningEffort = 'max';
   expect(imported?.body).toEqual(expectedBytes);
+});
+
+describe('encoded-slash Core policy intent', () => {
+  const endpoint = {
+    name: 'package_read',
+    host: 'packages.example.com',
+    port: 443,
+    protocol: 'rest',
+    access: 'read-only',
+    binaries: ['/usr/local/bin/node'],
+  };
+  const parse = (additionalNetworkEndpoints: unknown[]) =>
+    WorkerSandboxPolicyIntentSchema.safeParse({
+      additionalFilesystemGrants: [],
+      additionalNetworkEndpoints,
+    });
+  it.each([
+    undefined,
+    false,
+    true,
+  ])('preserves package authority %s at the intent boundary', (allowEncodedSlash) => {
+    const pkg = createNanoHostPackage();
+    pkg.policy.network!.rules = [
+      {
+        action: 'allow',
+        id: 'package-read',
+        ...endpoint,
+        ...(allowEncodedSlash === undefined ? {} : { allowEncodedSlash }),
+      },
+    ];
+    const endpoints = openShellNetworkEndpointsFromPackagePolicy(pkg);
+    expect(endpoints).toEqual([
+      { ...endpoint, ...(allowEncodedSlash === undefined ? {} : { allowEncodedSlash }) },
+    ]);
+    expect(parse(endpoints).success).toBe(true);
+  });
+  it('rejects malformed, forbidden and unsupported authority rather than dropping it', () => {
+    for (const change of [
+      { allowEncodedSlash: 'true' },
+      { allowEncodedSlash: null },
+      { allowEncodedSlash: true, access: 'read-write' },
+      { allowEncodedSlash: false, rules: [] },
+      { allowEncodedSlash: true, protocol: 'http' },
+      { futureAuthority: true },
+    ]) {
+      expect(parse([{ ...endpoint, ...change }]).success).toBe(false);
+      const pkg = createNanoHostPackage();
+      pkg.policy.network!.rules = [{ action: 'allow', id: 'package-read', ...endpoint, ...change }];
+      if ('allowEncodedSlash' in change)
+        expect(() => openShellNetworkEndpointsFromPackagePolicy(pkg)).toThrow();
+    }
+  });
+  it('refuses encoded-slash authority on a rule that would otherwise be silently omitted', () => {
+    for (const change of [
+      { id: 'openkit-worker-control' },
+      { id: 'openkit-worker-inference' },
+      { binaries: [] },
+      { action: 'deny' },
+      { port: undefined },
+    ]) {
+      const pkg = createNanoHostPackage();
+      pkg.policy.network!.rules = [
+        { action: 'allow', id: 'package-read', ...endpoint, allowEncodedSlash: true, ...change },
+      ];
+      expect(() => openShellNetworkEndpointsFromPackagePolicy(pkg)).toThrow(
+        'cannot project encoded-slash authority'
+      );
+    }
+  });
+  it('refuses conflicting destination settings in either order and accepts matching settings', () => {
+    const allowed = { ...endpoint, allowEncodedSlash: true };
+    for (const strict of [
+      { ...endpoint, name: 'strict', host: 'PACKAGES.EXAMPLE.COM.' },
+      { ...endpoint, name: 'strict', allowEncodedSlash: false },
+      {
+        ...endpoint,
+        name: 'strict',
+        access: undefined,
+        rules: [{ method: 'GET', path: '/allowed' }],
+      },
+    ]) {
+      expect(parse([allowed, strict]).success).toBe(false);
+      expect(parse([strict, allowed]).success).toBe(false);
+    }
+    expect(parse([allowed, { ...allowed, name: 'same' }]).success).toBe(true);
+    expect(
+      parse([endpoint, { ...endpoint, name: 'strict', allowEncodedSlash: false }]).success
+    ).toBe(true);
+    expect(parse([allowed, { ...endpoint, name: 'other_port', port: 8443 }]).success).toBe(true);
+  });
 });

@@ -230,6 +230,8 @@ Each Agent Manifest declares one reusable Worker Agent and its Harness configura
 
 `runtime.image` is either a published image reference or a bounded build declaration. `runtime.binaries` declares available executable paths. `models.preferredLogicalModelId` is the Agent default, while `allowedLogicalModelIds` is either a non-empty list or `all`. Profiles may refine instructions, model preference and admission, Skills, and MCP entries. Sandbox configuration declares backend requirements, credential declarations, filesystem grants, and network grants.
 
+An authorized administrator can opt an existing npm grant into scoped package reads by adding `"allowEncodedSlash": true` to its REST, read-only access grant without rules, preserving the host, port and binary list, then validating and reloading the manifest and using a newly materialized Sandbox; omission stays strict and template upgrades never edit existing manifests.
+
 A direct credential declaration with `vaultGrantId` is Server-specific and therefore must reference a Server-scoped grant. A reusable manifest should instead declare `requirementId`; each Workspace binds that requirement to its own Workspace-scoped VaultGrant.
 
 ## `workspaces/<workspaceId>/config/workspace.jsonc`

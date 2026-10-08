@@ -21,6 +21,7 @@ import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
 import type { AgentEnvironmentPackagePreview } from './agent-environment.js';
 import type { ExecutionBackend } from './execution-backend.js';
 import type { FilesystemSnapshotManifest } from './filesystem-workspace-sync.js';
+import { canonicalPublicNetworkHost } from './public-network-grants.js';
 import type { WorkerTranscriptPayload } from './worker-transcript.js';
 
 /** Canonical absolute filesystem paths in Core's bounded authorization intent. */
@@ -48,6 +49,7 @@ const WorkerFilesystemGrantSchema = z
 const WorkerNetworkEndpointSchema = z
   .object({
     access: z.enum(['read-only', 'read-write']).optional(),
+    allowEncodedSlash: z.boolean().optional(),
     binaries: z
       .array(z.string().refine((path) => path.startsWith('/') && !/[\r\n\0]/.test(path)))
       .min(1),
@@ -67,13 +69,46 @@ const WorkerNetworkEndpointSchema = z
       .optional(),
   })
   .strict()
-  .refine((endpoint) => !endpoint.access || !endpoint.rules?.length);
+  .refine((endpoint) => !endpoint.access || !endpoint.rules?.length)
+  .refine(
+    (endpoint) =>
+      endpoint.allowEncodedSlash === undefined ||
+      ((endpoint.protocol ?? 'rest') === 'rest' &&
+        (endpoint.access ?? 'read-only') === 'read-only' &&
+        endpoint.rules === undefined)
+  );
 
 /** Authority-bearing sandbox policy intent; every object boundary refuses unknown fields. */
 export const WorkerSandboxPolicyIntentSchema = z
   .object({
     additionalFilesystemGrants: z.array(WorkerFilesystemGrantSchema),
-    additionalNetworkEndpoints: z.array(WorkerNetworkEndpointSchema),
+    additionalNetworkEndpoints: z
+      .array(WorkerNetworkEndpointSchema)
+      .superRefine((endpoints, ctx) => {
+        const settings = new Map<string, boolean>();
+        for (const [index, endpoint] of endpoints.entries()) {
+          let host: string;
+          try {
+            host = canonicalPublicNetworkHost(endpoint.host);
+          } catch {
+            ctx.addIssue({
+              code: 'custom',
+              message: 'Worker policy host must be exact.',
+              path: [index, 'host'],
+            });
+            continue;
+          }
+          const destination = `${host}:${endpoint.port}`;
+          const allowed = endpoint.allowEncodedSlash ?? false;
+          if (settings.has(destination) && settings.get(destination) !== allowed)
+            ctx.addIssue({
+              code: 'custom',
+              message: 'Composed network grants disagree on encoded-slash authority.',
+              path: [index, 'allowEncodedSlash'],
+            });
+          settings.set(destination, allowed);
+        }
+      }),
   })
   .strict();
 
@@ -1159,10 +1194,18 @@ export function openShellNetworkEndpointsFromPackagePolicy(
       typeof rule.id !== 'string' ||
       typeof rule.host !== 'string'
     ) {
+      if (isRecord(rule) && 'allowEncodedSlash' in rule) {
+        throw new Error(
+          `OpenShell policy cannot project encoded-slash authority: ${String(rule.id)}`
+        );
+      }
       return [];
     }
     const name = rule.id.replaceAll('-', '_');
     if (name === 'openkit_worker_control' || name === 'openkit_worker_inference') {
+      if ('allowEncodedSlash' in rule) {
+        throw new Error(`OpenShell policy cannot project encoded-slash authority: ${rule.id}`);
+      }
       return [];
     }
     let exactRules: WorkerNetworkEndpoint['rules'];
@@ -1190,6 +1233,7 @@ export function openShellNetworkEndpointsFromPackagePolicy(
         ...(rule.access === 'read-only' || rule.access === 'read-write'
           ? { access: rule.access }
           : {}),
+        ...('allowEncodedSlash' in rule ? { allowEncodedSlash: rule.allowEncodedSlash } : {}),
         binaries: rule.binaries,
         host: rule.host,
         name,

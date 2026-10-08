@@ -2025,3 +2025,143 @@ it('preserves canonical AEP effort and levels while retaining packages without e
     }).success
   ).toBe(false);
 });
+
+describe('explicit encoded-slash grant authority', () => {
+  const grant = {
+    id: 'package-read',
+    host: 'packages.example.com',
+    port: 443,
+    protocol: 'rest',
+    access: 'read-only',
+    purpose: 'Read packages.',
+    binaries: ['/usr/local/bin/node'],
+  };
+
+  it.each([
+    undefined,
+    false,
+    true,
+  ])('preserves authored %s without inventing an omitted value', (allowed) => {
+    const authored = { ...grant, ...(allowed === undefined ? {} : { allowEncodedSlash: allowed }) };
+    const parsed = WorkerSandboxAccessSchema.parse({ network: [authored] }).network[0]!;
+    expect(parsed).toMatchObject(authored);
+    expect(Object.hasOwn(parsed, 'allowEncodedSlash')).toBe(allowed !== undefined);
+    // Protocol/access defaults still resolve before checking eligibility.
+    const { protocol: _protocol, access: _access, ...defaults } = authored;
+    expect(WorkerSandboxAccessSchema.safeParse({ network: [defaults] }).success).toBe(true);
+  });
+
+  it.each([
+    'true',
+    'false',
+    0,
+    1,
+    null,
+    {},
+    [],
+  ])('rejects malformed authority %j', (allowEncodedSlash) => {
+    expect(
+      WorkerSandboxAccessSchema.safeParse({ network: [{ ...grant, allowEncodedSlash }] }).success
+    ).toBe(false);
+  });
+
+  it.each([true, false])('rejects %s on every forbidden grant shape', (allowEncodedSlash) => {
+    for (const forbidden of [
+      { ...grant, access: 'read-write' },
+      { ...grant, protocol: 'http' },
+      { ...grant, protocol: 'https' },
+      { ...grant, access: undefined, rules: [{ method: 'GET', path: '/allowed' }] },
+    ])
+      expect(
+        WorkerSandboxAccessSchema.safeParse({ network: [{ ...forbidden, allowEncodedSlash }] })
+          .success
+      ).toBe(false);
+  });
+
+  it('refuses mixed canonical destination settings even across executable and grant shapes', () => {
+    for (const strict of [
+      { ...grant, id: 'strict-read', host: 'PACKAGES.EXAMPLE.COM.', binaries: ['/usr/bin/git'] },
+      { ...grant, id: 'strict-read', allowEncodedSlash: false },
+      {
+        ...grant,
+        id: 'strict-read',
+        access: undefined,
+        rules: [{ method: 'GET', path: '/allowed' }],
+      },
+    ]) {
+      const opted = { ...grant, allowEncodedSlash: true };
+      for (const network of [
+        [opted, strict],
+        [strict, opted],
+      ]) {
+        const result = WorkerSandboxAccessSchema.safeParse({ network });
+        expect(result.success).toBe(false);
+        if (!result.success)
+          expect(result.error.issues).toContainEqual(
+            expect.objectContaining({
+              message: 'Composed network grants disagree on encoded-slash authority.',
+            })
+          );
+      }
+    }
+    expect(
+      WorkerSandboxAccessSchema.safeParse({
+        network: [
+          { ...grant, allowEncodedSlash: true },
+          { ...grant, id: 'same', allowEncodedSlash: true },
+        ],
+      }).success
+    ).toBe(true);
+    expect(
+      WorkerSandboxAccessSchema.safeParse({
+        network: [grant, { ...grant, id: 'same', allowEncodedSlash: false }],
+      }).success
+    ).toBe(true);
+    expect(
+      WorkerSandboxAccessSchema.safeParse({
+        network: [
+          { ...grant, allowEncodedSlash: true },
+          { ...grant, id: 'different-port', port: 8443 },
+        ],
+      }).success
+    ).toBe(true);
+  });
+
+  it.each([
+    ['2606:4700:4700::1111', '[2606:4700:4700:0:0:0:0:1111]'],
+    ['8.8.8.8', '[::ffff:8.8.8.8]'],
+    ['packages.example.com', 'PACKAGES.EXAMPLE.COM.'],
+  ])('compares canonical host aliases %s and %s', (left, right) => {
+    expect(
+      WorkerSandboxAccessSchema.safeParse({
+        network: [
+          { ...grant, host: left, allowEncodedSlash: true },
+          { ...grant, id: 'strict', host: right },
+        ],
+      }).success
+    ).toBe(false);
+  });
+
+  it('validates retained AEP bytes without the field and refuses malformed or forbidden retained authority', () => {
+    const fixture = openshellPackageFixture() as { policy: { network: { rules: unknown[] } } };
+    fixture.policy.network.rules = [{ ...grant, action: 'allow', scope: 'session' }];
+    const retained = AgentEnvironmentPackageSchema.parse(fixture);
+    const bytes = JSON.stringify(retained);
+    expect(JSON.stringify(AgentEnvironmentPackageSchema.parse(JSON.parse(bytes)))).toBe(bytes);
+    expect(bytes).not.toContain('allowEncodedSlash');
+    for (const change of [
+      { allowEncodedSlash: 'true' },
+      { allowEncodedSlash: true, access: 'read-write' },
+      { allowEncodedSlash: false, access: undefined, rules: [{ method: 'GET', path: '/allowed' }] },
+      { allowEncodedSlash: true, protocol: 'http' },
+    ]) {
+      fixture.policy.network.rules = [{ ...grant, action: 'allow', scope: 'session', ...change }];
+      expect(AgentEnvironmentPackageSchema.safeParse(fixture).success).toBe(false);
+    }
+    fixture.policy.network.rules = [
+      { ...grant, action: 'allow', scope: 'session', allowEncodedSlash: true },
+      { ...grant, action: 'allow', scope: 'session', id: 'strict', host: 'PACKAGES.EXAMPLE.COM.' },
+    ];
+    expect(AgentEnvironmentPackageSchema.safeParse(fixture).success).toBe(false);
+  });
+});

@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { WorkerSandboxAccessSchema } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -45,6 +46,40 @@ function resolvedSetup(): ResolvedAgentSetup {
 }
 
 describe('resolved agent setup ledger', () => {
+  it.each([
+    undefined,
+    false,
+    true,
+  ])('retains encoded-slash %s in resolved setup evidence', (allowEncodedSlash) => {
+    const workspaceDb = createWorkspaceDb();
+    const network = WorkerSandboxAccessSchema.parse({
+      network: [
+        {
+          id: 'package-read',
+          host: 'packages.example.com',
+          port: 443,
+          protocol: 'rest',
+          access: 'read-only',
+          purpose: 'Read scoped packages.',
+          binaries: ['/usr/local/bin/node'],
+          ...(allowEncodedSlash === undefined ? {} : { allowEncodedSlash }),
+        },
+      ],
+    }).network;
+    try {
+      const record = recordResolvedAgentSetup(workspaceDb, {
+        recordId: 'ras_encoding',
+        workspaceId: 'ws_1',
+        setup: createTestAgentSetup({ network }),
+        createdAt: '2026-10-08T00:00:00.000Z',
+      });
+      expect(record.setup.manifest.sandbox.network).toEqual(network);
+      expect(requireResolvedAgentSetup(workspaceDb, 'ws_1', record.id)).toEqual(record);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
   it('persists and reads one workspace-scoped resolved setup record', () => {
     const workspaceDb = createWorkspaceDb();
 

@@ -722,6 +722,9 @@ function resolveOpenShellAgentEnvironmentPackage(
           ...('publicAccess' in grant && grant.publicAccess
             ? { publicAccess: { ...grant.publicAccess } }
             : {}),
+          ...('allowEncodedSlash' in grant && grant.allowEncodedSlash !== undefined
+            ? { allowEncodedSlash: grant.allowEncodedSlash }
+            : {}),
           id: grant.id,
           port: grant.port,
           protocol: grant.protocol,

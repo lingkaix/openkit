@@ -948,6 +948,7 @@ export class RuntimeConfigFileService {
         "port": 443,
         "protocol": "rest",
         "access": "read-only",
+        "allowEncodedSlash": true,
         "purpose": "Download Node.js package metadata and archives.",
         "binaries": [
           "/usr/local/bin/node",

@@ -10,6 +10,7 @@ import {
   AgentEnvironmentPackageSchema,
   planSessionWorkspaceMaterialization,
   type SessionWorkspaceMaterializationPlan,
+  WorkerSandboxAccessSchema,
 } from '@openkit/config-schema';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { describe, expect, it, vi } from 'vitest';
@@ -2047,6 +2048,7 @@ describe('createConfiguredTurnExecutor', () => {
   async function admitIdleSupplyResident(
     label: string,
     options: {
+      agentSetup?: ReturnType<typeof createTestAgentSetup>;
       exactBinding?: boolean;
       gitBaseline?: { commit: string; tree: string };
       nativeValues?: Record<string, string>;
@@ -2129,6 +2131,7 @@ describe('createConfiguredTurnExecutor', () => {
       }
     ).backend;
     const environmentPackage = completeNanoHostPackage({
+      agentSetup: options.agentSetup,
       ...(nativeValues
         ? {
             runtime: {
@@ -2311,6 +2314,42 @@ describe('createConfiguredTurnExecutor', () => {
     };
   }
 
+  it('plans a new physical Sandbox identity when encoded-slash authority changes', async () => {
+    const f = await admitIdleSupplyResident('encoding_identity');
+    try {
+      const packageFor = (allowEncodedSlash?: boolean) =>
+        completeNanoHostPackage({
+          scope: f.environmentPackage.scope,
+          snapshotId: 'snapshot_encoding_comparison',
+          agentSetup: createTestAgentSetup({
+            network: WorkerSandboxAccessSchema.parse({
+              network: [
+                {
+                  id: 'package-read',
+                  host: 'packages.example.com',
+                  port: 443,
+                  protocol: 'rest',
+                  access: 'read-only',
+                  purpose: 'Read packages.',
+                  binaries: ['/usr/local/bin/node'],
+                  ...(allowEncodedSlash === undefined ? {} : { allowEncodedSlash }),
+                },
+              ],
+            }).network,
+          }),
+        });
+      const omitted = packageFor();
+      const before = JSON.stringify(omitted);
+      const nativeIdentity = (pkg: AgentEnvironmentPackage) =>
+        f.backend.planSession(pkg).backendSessionId;
+      expect(nativeIdentity(packageFor(true))).not.toBe(nativeIdentity(packageFor(false)));
+      expect(nativeIdentity(packageFor(true))).not.toBe(nativeIdentity(omitted));
+      expect(JSON.stringify(omitted)).toBe(before);
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
   it('pins actual runtime and preparation producers to the Host effect fixture', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-producer-pin-'));
     const captured: Array<{ producer: string; request: NanoHostSessionEffectRequest }> = [];
@@ -2354,7 +2393,23 @@ describe('createConfiguredTurnExecutor', () => {
         pullPolicy: 'if-not-present' as const,
         ref: `docker.io/library/alpine@sha256:${'a'.repeat(64)}`,
       };
+      // This fixture crosses authored admission, resolution, native dispatch and the Rust SDK consumer.
+      const authored = WorkerSandboxAccessSchema.parse({
+        network: [
+          {
+            id: 'scoped-package-read',
+            host: 'packages.example.com',
+            port: 443,
+            protocol: 'rest',
+            access: 'read-only',
+            allowEncodedSlash: true,
+            purpose: 'Read scoped packages.',
+            binaries: ['/usr/local/bin/node'],
+          },
+        ],
+      });
       const resident = await admitIdleSupplyResident('producer_pin', {
+        agentSetup: createTestAgentSetup({ network: authored.network }),
         onExport,
         configurePackage: (pkg) => {
           pkg.scope.requestId = 'request_factory_fixture';
@@ -2365,7 +2420,23 @@ describe('createConfiguredTurnExecutor', () => {
       resident.backend.sessions.set(resident.environmentPackage.snapshotId, resident.session);
       await resident.backend.collectTranscript(resident.environmentPackage.snapshotId, true);
       await resident.backend.collectWorkspaceChanges(resident.environmentPackage.snapshotId, true);
+      expect(resident.environmentPackage.policy.network?.rules).toContainEqual(
+        expect.objectContaining({ id: 'scoped-package-read', allowEncodedSlash: true })
+      );
       const created = resident.effects.find((request) => request.kind === 'sandbox.create')!;
+      expect(created.input.policyIntent).toMatchObject({
+        additionalNetworkEndpoints: [
+          {
+            name: 'scoped_package_read',
+            host: 'packages.example.com',
+            port: 443,
+            protocol: 'rest',
+            access: 'read-only',
+            allowEncodedSlash: true,
+            binaries: ['/usr/local/bin/node'],
+          },
+        ],
+      });
       // Invoke the existing wider-cleanup producer with the resident's actual identities.
       await (
         resident.backend as unknown as {

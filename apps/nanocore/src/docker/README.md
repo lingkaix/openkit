@@ -13,3 +13,5 @@ This directory owns tests for NanoCore container build and run artifacts; the ar
 Run `pnpm --filter @openkit/nanocore exec vitest run src/docker` and the relevant built-process smoke tests after changing a container artifact.
 
 See [NanoCore README](../../README.md) for package-level container and smoke commands.
+
+The development-grant regression also checks explicit encoded-slash opt-in on npm only across all four templates; Git path rules and every other development grant retain strict parsing.
