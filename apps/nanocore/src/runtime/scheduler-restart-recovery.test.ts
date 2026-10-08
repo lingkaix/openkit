@@ -1834,10 +1834,13 @@ describe('terminal failed-start product recovery', () => {
     const before = f.store.getTurnById(f.turnId);
     const session = f.store.getAgentSession(f.agentSessionId);
     try {
-      await runRestartRecoveryThroughMaintenance(f.coreDb, {
+      const recovery = runRestartRecoveryThroughMaintenance(f.coreDb, {
         ...f.input,
         isTurnExecutionActive: () => owner === 'live-owner',
       });
+      if (owner === 'checkpoint')
+        await expect(recovery).rejects.toThrow('Native attempt recovery failed');
+      else await recovery;
       expect(f.store.getTurnById(f.turnId)).toEqual(before);
       expect(f.store.getAgentSession(f.agentSessionId)).toEqual(session);
       expect(f.store.getTurnEvents(f.turnId)).toEqual([]);
@@ -2554,6 +2557,151 @@ describe('scheduler restart recovery', () => {
   });
 
   it.each([
+    true,
+    false,
+  ])('reports recovery required for a cleaned unused failed-start anchor with a running checkpoint (%s)', async (checkpointed) => {
+    const suffix = `cleaned_unused_checkpoint_${checkpointed}`;
+    const f = await createFailedStartFixture(suffix, false, false, true, ['source']);
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      f.coreDb.sqlite
+        .prepare("UPDATE scheduler_execution_attempts SET phase = 'open' WHERE attempt_id = ?")
+        .run(`lease_${suffix}`);
+      recordBackendSession(f.coreDb, suffix, 'cleaned');
+      f.coreDb.sqlite
+        .prepare("UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE attempt_id = ?")
+        .run(`lease_${suffix}`);
+      f.coreDb.sqlite
+        .prepare('UPDATE worker_backend_sessions SET physical_cleaned_at = ? WHERE attempt_id = ?')
+        .run('2026-10-08T04:30:35.231Z', `lease_${suffix}`);
+      f.store.updateAgentSession(f.agentSessionId, { status: 'created' });
+      const db = openWorkspaceDb(f.dataRoot, 'ws_demo');
+      try {
+        expect(listBackendWorkspaceHandles(db, 'ws_demo')).toEqual([]);
+        expect(listWorkspaceMaterializationRecords(db, 'ws_demo')).toEqual([]);
+        if (checkpointed)
+          db.sqlite
+            .prepare(`INSERT INTO worker_turn_checkpoints
+            (checkpoint_id, workspace_id, thread_id, turn_id, request_id, request_input_hash,
+             stage, iteration, worker_session_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'running_worker', 1, ?, ?, ?)`)
+            .run(
+              `checkpoint_${suffix}`,
+              'ws_demo',
+              f.threadId,
+              f.turnId,
+              `request_${suffix}`,
+              'a'.repeat(64),
+              f.agentSessionId,
+              f.input.now(),
+              f.input.now()
+            );
+        const checkpoint = db.sqlite.prepare('SELECT * FROM worker_turn_checkpoints').get();
+        const anchor = getWorkerBackendSession(f.coreDb, `lease_${suffix}`)!;
+        const attempt = requireNanoHostExecutionAttempt(f.coreDb, `lease_${suffix}`);
+        const turn = f.store.getTurnById(f.turnId);
+        const session = f.store.getAgentSession(f.agentSessionId);
+        expect(anchor).toMatchObject({
+          state: 'cleaned',
+          workspaceHandoffState: 'pending',
+          physicalCleanedAt: '2026-10-08T04:30:35.231Z',
+        });
+        expect(attempt).toMatchObject({
+          phase: 'closed',
+          disposition: 'not_accepted',
+          terminalCause: 'turn-start-failed',
+          operationId: null,
+          deadline: null,
+          outcomeRef: null,
+          fenceRef: null,
+          lastAcceptedHeartbeatAt: null,
+          lastWorkerSequence: null,
+          workerProcessKeyHash: null,
+          workerControlTokenHash: null,
+          workerInferenceTokenHash: null,
+          workerCapabilityTokenHash: null,
+        });
+        expect(session).toMatchObject({ status: 'created', nativeHandleDigest: null });
+        expect(turn).toMatchObject({ status: 'running', completedAt: null, error: null });
+        expect(
+          f.coreDb.sqlite
+            .prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings')
+            .get()
+        ).toEqual({ count: 0 });
+        recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
+          targetId: 'runtime-target-test',
+          closedGeneration: 1,
+          authoritativeGeneration: null,
+          observedAt: '2026-10-08T04:30:36.000Z',
+        });
+        const allocated = allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+          deploymentId: 'deployment-test',
+          identityId: 'identity-test',
+          observedAt: '2026-10-08T04:30:37.000Z',
+          targetId: 'runtime-target-test',
+        });
+        upsertNanoHostRuntimeTarget(f.coreDb, {
+          ...allocated,
+          freshEmpty: true,
+          observedAt: '2026-10-08T04:30:38.000Z',
+          physicalEpoch: 'b'.repeat(64),
+          predecessorFenced: true,
+          ready: true,
+        });
+        const recovery = testRecoveryInput(f.coreDb, {
+          ...f.input,
+          now: () => '2026-10-08T15:20:00.000Z',
+        });
+        for (let pass = 0; pass < 6; pass++) {
+          const result = await Promise.allSettled([
+            runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery),
+          ]);
+          expect(f.store.getTurnById(f.turnId).status).toBe(checkpointed ? 'running' : 'failed');
+          if (checkpointed) {
+            expect(log.mock.calls).toHaveLength(pass + 1);
+            expect(JSON.parse(log.mock.calls[pass][0])).toMatchObject({
+              severityText: 'WARN',
+              body: 'Failed-start product settlement check failed.',
+              attributes: {
+                'openkit.error.code': 'scheduler.native_failed_start_recovery_required',
+                'openkit.turn.id': f.turnId,
+                'openkit.attempt.id': attempt.attemptId,
+              },
+            });
+            expect(f.store.getTurnById(f.turnId)).toEqual(turn);
+            expect(f.store.getAgentSession(f.agentSessionId)).toEqual(session);
+            expect(f.store.getTurnEvents(f.turnId)).toEqual([]);
+          } else {
+            expect(log).not.toHaveBeenCalled();
+            expect(
+              f.store.getTurnEvents(f.turnId).filter((event) => event.event === 'turn.completed')
+            ).toMatchObject([{ event: 'turn.completed', data: { stopReason: 'error' } }]);
+          }
+          expect(result[0].status).toBe(checkpointed ? 'rejected' : 'fulfilled');
+          if (result[0].status === 'rejected')
+            expect(
+              hasRecoveryFailure(
+                result[0].reason,
+                'recovery_required: Failed-start nonterminal Turn retains checkpoint-owned closeout.'
+              )
+            ).toBe(true);
+          expect(db.sqlite.prepare('SELECT * FROM worker_turn_checkpoints').get()).toEqual(
+            checkpoint
+          );
+          expect(getWorkerBackendSession(f.coreDb, attempt.attemptId)).toEqual(anchor);
+          expect(requireNanoHostExecutionAttempt(f.coreDb, attempt.attemptId)).toEqual(attempt);
+        }
+        expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
+      } finally {
+        db.sqlite.close();
+      }
+    } finally {
+      log.mockRestore();
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
     { partial: false, workspaceInputIds: [] },
     { partial: true, workspaceInputIds: [] },
     { partial: false, workspaceInputIds: ['source'] },
@@ -2725,6 +2873,8 @@ describe('scheduler restart recovery', () => {
     'materialization',
     'handle',
     'native-evidence',
+    'operation',
+    'accepted',
   ] as const)('refuses unused-anchor failed-start settlement with unproved %s', async (proof) => {
     const suffix = `no_effect_unproved_${proof}`;
     const f = await createFailedStartFixture(suffix, false, false, true, ['source']);
@@ -2743,6 +2893,18 @@ describe('scheduler restart recovery', () => {
           f.coreDb.sqlite
             .prepare(
               'UPDATE scheduler_execution_attempts SET last_worker_sequence = 1 WHERE attempt_id = ?'
+            )
+            .run(`lease_${suffix}`);
+        else if (proof === 'operation')
+          f.coreDb.sqlite
+            .prepare(
+              'UPDATE scheduler_execution_attempts SET operation_id = ? WHERE attempt_id = ?'
+            )
+            .run('unproved-operation', `lease_${suffix}`);
+        else if (proof === 'accepted')
+          f.coreDb.sqlite
+            .prepare(
+              "UPDATE scheduler_execution_attempts SET disposition = 'accepted' WHERE attempt_id = ?"
             )
             .run(`lease_${suffix}`);
         else {

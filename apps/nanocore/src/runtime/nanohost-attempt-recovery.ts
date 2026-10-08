@@ -865,9 +865,6 @@ async function settleTerminalFailedStart(
     )
       throw new Error('Failed-start attempt has a competing execution owner.');
     if (
-      workspace.db.sqlite
-        .prepare('SELECT turn_id FROM worker_turn_checkpoints WHERE turn_id = ?')
-        .get(attempt.turnId) ||
       coreDb.sqlite
         .prepare(
           "SELECT turn_id FROM worker_control_records WHERE turn_id = ? AND operation = 'final_status'"
@@ -875,6 +872,16 @@ async function settleTerminalFailedStart(
         .get(attempt.turnId)
     )
       return false;
+    if (
+      workspace.db.sqlite
+        .prepare('SELECT turn_id FROM worker_turn_checkpoints WHERE turn_id = ?')
+        .get(attempt.turnId)
+    ) {
+      // Preserve checkpoint closeout ownership and report a nonterminal failed start as requiring inspection.
+      if (!isSealedTurnTerminal(turn.status))
+        throw new Error('Failed-start nonterminal Turn retains checkpoint-owned closeout.');
+      return false;
+    }
     const nativeProof = coreDb.sqlite
       .prepare(`SELECT session_compatibility_key AS sessionCompatibilityKey
       FROM scheduler_execution_attempts WHERE attempt_id = ?`)
