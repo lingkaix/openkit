@@ -19,6 +19,10 @@ import {
   useCreateThread,
   useCurrentWorkspaceId,
   useSendTurn,
+  useSignedInUserId,
+  useWorkspaceSummaries,
+  useWorkspaces,
+  workspaceAdmissionIsAmbiguous,
 } from './data';
 
 /**
@@ -27,13 +31,17 @@ import {
  * Composer-first: describe what you need and a thread opens. Recent conversations
  * reuse the authorized conversation-navigation projection for the current
  * Workspace. No landing page (DESIGN.md §1). Honors the §9.13 states: skeleton
- * while recent conversations load, a calm empty block on first use, an inline
+ * while discovery and recent conversations load, an empty block only after a successful read, an inline
  * banner if creating a chat fails, and a disabled composer with a stated reason
  * when the runtime is unreachable.
  */
 export function ChatStarter() {
   const navigate = useNavigate();
   const workspaceId = useCurrentWorkspaceId();
+  const workspaces = useWorkspaces();
+  const summaries = useWorkspaceSummaries();
+  const ambiguous = summaries.isSuccess && workspaceAdmissionIsAmbiguous(summaries.data);
+  const sessionUser = useSignedInUserId(ambiguous);
   const navigation = useConversationNavigation(workspaceId);
   const targets = useConversationTargets(workspaceId);
   const artifacts = useArtifacts(workspaceId);
@@ -44,9 +52,17 @@ export function ChatStarter() {
   currentWorkspace.current = workspaceId;
   const mounted = useRef(true);
   const workerEnvironments = useComposerWorkerEnvironments(workspaceId, null);
-  const { failed: disconnected } = useConnection();
+  const { failed: disconnected, retry: retryConnection } = useConnection();
   const createOwner = create.variables?.workspaceId === workspaceId;
   const conversations = navigation.data ?? [];
+  // Retry the read that prevented authorized Workspace resolution, never navigation with a null ID.
+  const recentRead = workspaces.isError
+    ? workspaces
+    : !workspaceId && ambiguous
+      ? sessionUser
+      : navigation;
+  const workspaceUnavailable =
+    !workspaceId && workspaces.isSuccess && (!ambiguous || sessionUser.isSuccess);
 
   useEffect(() => {
     mounted.current = true;
@@ -117,13 +133,17 @@ export function ChatStarter() {
 
       <section className="flex flex-col gap-2">
         <p className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">Recent</p>
-        {navigation.isLoading ? (
-          <Skeleton lines={3} />
-        ) : navigation.isError ? (
+        {disconnected ? (
+          <ErrorBanner message="Couldn't reach the local runtime." onRetry={retryConnection} />
+        ) : recentRead.isError || workspaceUnavailable ? (
           <ErrorBanner
-            message="Couldn't load recent chats."
-            onRetry={() => void navigation.refetch()}
+            message={
+              workspaceUnavailable ? 'No workspace is available.' : "Couldn't load recent chats."
+            }
+            onRetry={() => void (workspaceUnavailable ? workspaces : recentRead).refetch()}
           />
+        ) : !workspaceId || !navigation.isSuccess ? (
+          <Skeleton lines={3} />
         ) : conversations.length === 0 ? (
           <EmptyState
             icon="chat"
