@@ -20,6 +20,13 @@ import { PassThrough } from 'node:stream';
 import type { ReasoningEffort } from '@openkit/protocol';
 import { WorkerErrorEnvelopeSchema } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { OpenAICompatibleResponsesRequest } from '../../../../apps/nanocore/src/llm/openai-compatible-client.js';
+import {
+  createDefaultPiAiGatewayModels,
+  PiAiGatewayClient,
+} from '../../../../apps/nanocore/src/llm/pi-ai-client.js';
+import { LLMGatewayProviderDispatcher } from '../../../../apps/nanocore/src/llm/provider-dispatcher.js';
+import type { ResolvedLLMProviderConfig } from '../../../../apps/nanocore/src/providers/llm-config.js';
 import type {
   WorkerAdapterLlmRoute,
   WorkerResidentOpenInput,
@@ -43,8 +50,8 @@ import {
   openCodexResidentSession,
   surfaceUnprovedCodexTurn,
 } from './codex.js';
-
 import { CodexAppServer, codexPermissionResponse, redactDiagnostic } from './codex-app-server.js';
+import { codexInferenceRuntimeHintMapping } from './codex-inference-runtime-hint.js';
 
 const INFERENCE_SECRET = 'codex-test-inference-secret';
 const CAPABILITY_SECRET = 'codex-test-capability-secret';
@@ -82,6 +89,252 @@ afterEach(async () => {
 });
 
 describe('Codex App Server adapter', () => {
+  it.each([
+    false,
+    true,
+  ])('continues pinned tool history through real Gateway native compaction; failSummary=%s', async (failSummary) => {
+    const roots = await tempRoots();
+    closers.push(() => rm(roots.base, { recursive: true, force: true }));
+    await writeFile(join(roots.state, 'config.toml'), 'model_auto_compact_token_limit = 20000\n');
+    const requests: Array<{ kind: string; body: Record<string, unknown> }> = [];
+    const mcp = await mcpServer();
+    let providerCalls = 0;
+    const providerBodies: Record<string, unknown>[] = [];
+    const providerTransport = await responsesServer((body, response) => {
+      const request = JSON.parse(body);
+      providerBodies.push(request);
+      providerCalls += 1;
+      if (providerCalls === 1) {
+        const definitions = request.tools as Array<Record<string, unknown>>;
+        const hasExec = definitions.some(
+          (tool) =>
+            tool.type === 'namespace' &&
+            tool.name === 'functions' &&
+            (tool.tools as Array<Record<string, unknown>>).some(
+              (child) => child.type === 'custom' && child.name === 'exec'
+            )
+        );
+        if (!hasExec) writeFunctionCall(response, advertisedMcpTool(body));
+        else {
+          // The pin can expose MCP through its native code-mode tool. Invoke only the synthetic alpha fixture.
+          const item = {
+            type: 'custom_tool_call',
+            id: 'ctc_fixture',
+            call_id: 'call_fixture',
+            name: 'exec',
+            namespace: 'functions',
+            input:
+              'const tool = ALL_TOOLS.find(tool => tool.name.endsWith("alpha_tool")); if (!tool) throw new Error("Fixture alpha tool is missing."); text(await tools[tool.name]({}));',
+            status: 'completed',
+          };
+          const events = [
+            {
+              type: 'response.created',
+              response: { id: 'resp_tool', status: 'in_progress', output: [] },
+            },
+            {
+              type: 'response.output_item.added',
+              output_index: 0,
+              item: { ...item, input: '', status: 'in_progress' },
+            },
+            { type: 'response.custom_tool_call_input.delta', output_index: 0, delta: item.input },
+            { type: 'response.output_item.done', output_index: 0, item },
+            {
+              type: 'response.completed',
+              response: { id: 'resp_tool', status: 'completed', output: [item] },
+            },
+          ];
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          response.end(
+            events
+              .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+              .join('')
+          );
+        }
+        return true;
+      }
+      const summary = providerCalls === 3;
+      if (providerCalls >= 3 && failSummary) {
+        response.writeHead(503, { 'content-type': 'application/json' });
+        response.end(
+          JSON.stringify({
+            error: { code: 'provider_unavailable', message: 'Synthetic summary refusal.' },
+          })
+        );
+        return true;
+      }
+      const text = summary
+        ? 'Synthetic summary: cedar; tool already completed; continue pending work.'
+        : 'Synthetic ordinary reply.';
+      const item = {
+        id: `msg_probe_${providerCalls}`,
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text, annotations: [] }],
+      };
+      const inputTokens = providerCalls === 2 ? 30000 : 100;
+      const payload = {
+        id: `resp_probe_${providerCalls}`,
+        status: 'completed',
+        output: [item],
+        usage: { input_tokens: inputTokens, output_tokens: 10, total_tokens: inputTokens + 10 },
+      };
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.write(
+        `event: response.output_item.added\ndata: ${JSON.stringify({ type: 'response.output_item.added', output_index: 0, item: { ...item, content: [] } })}\n\n`
+      );
+      response.write(
+        `event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', output_index: 0, content_index: 0, delta: text })}\n\n`
+      );
+      response.write(
+        `event: response.output_item.done\ndata: ${JSON.stringify({ type: 'response.output_item.done', output_index: 0, item })}\n\n`
+      );
+      response.end(
+        `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: payload })}\n\n`
+      );
+      return true;
+    });
+    const models = createDefaultPiAiGatewayModels();
+    const stock = models.getProvider('openai')!;
+    const template = models.getModels().find((model) => model.api === 'openai-responses')!;
+    models.setProvider({ ...stock, models: [{ ...template, id: 'gpt-6-astra' }] });
+    const provider = {
+      id: 'local-stock',
+      adapterId: stock.id,
+      apiKey: INFERENCE_SECRET,
+      baseUrl: `http://127.0.0.1:${providerTransport.port}/v1`,
+      models: ['gpt-6-astra'],
+      requiresApiKey: true,
+      gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+    } as ResolvedLLMProviderConfig;
+    const dispatcher = new LLMGatewayProviderDispatcher({
+      piAiClient: new PiAiGatewayClient({ models }),
+    });
+    const admissionFailures: unknown[] = [];
+    const inference = await responsesServer(async (body, response, nativeRequest) => {
+      const parsed = JSON.parse(body);
+      const metadata = JSON.parse(parsed.client_metadata['x-codex-turn-metadata']);
+      const headers = new Headers();
+      for (const [key, value] of Object.entries(nativeRequest.headers))
+        if (typeof value === 'string') headers.set(key, value);
+      codexInferenceRuntimeHintMapping.map(headers, parsed);
+      const admitted = { ...parsed };
+      for (const field of codexInferenceRuntimeHintMapping.bodyFields) delete admitted[field];
+      requests.push({ kind: metadata.request_kind, body: admitted });
+      try {
+        const stream = await dispatcher.createResponsesStream(
+          provider,
+          admitted as OpenAICompatibleResponsesRequest
+        );
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        const reader = stream.getReader();
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          response.write(chunk.value);
+        }
+        response.end();
+      } catch (error) {
+        admissionFailures.push(error);
+        if (!response.headersSent) response.writeHead(503, { 'content-type': 'application/json' });
+        response.end(
+          JSON.stringify({
+            error: { code: 'provider_unavailable', message: 'Synthetic summary failure.' },
+          })
+        );
+      }
+      return true;
+    });
+    const session = await testAdapter.openSession(
+      openInput(
+        roots,
+        {
+          inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+          capabilityBaseUrl: `http://127.0.0.1:${mcp.port}/capabilities`,
+        },
+        {
+          HTTP_PROXY: 'http://127.0.0.1:9',
+          HTTPS_PROXY: 'http://127.0.0.1:9',
+          ALL_PROXY: 'http://127.0.0.1:9',
+          http_proxy: 'http://127.0.0.1:9',
+          https_proxy: 'http://127.0.0.1:9',
+          all_proxy: 'http://127.0.0.1:9',
+          NO_PROXY: '127.0.0.1,localhost',
+          no_proxy: '127.0.0.1,localhost',
+        }
+      )
+    );
+    sessions.push(session);
+    const selected = {
+      ...route('gpt-6-astra'),
+      modelParameters: {
+        contextWindow: 256000,
+        maxOutputTokens: 16384,
+        inputModalities: ['text'] as const,
+        reasoning: true,
+      },
+    };
+    const firstInput = {
+      ...turnInput(roots, ['alpha'], 'Remember the synthetic word cedar.'),
+      llmRoute: selected,
+      allowedLlmRoutes: [selected],
+    };
+    const secondInput = {
+      ...turnInput(roots, ['alpha'], 'Continue the synthetic fixture.'),
+      llmRoute: selected,
+      allowedLlmRoutes: [selected],
+    };
+    const first = await (await session.startTurn(firstInput)).settled;
+    const second = await (await session.startTurn(secondInput)).settled;
+    expect(first.status).toBe('completed');
+    expect(second.status).toBe(failSummary ? 'failed' : 'completed');
+    if (failSummary) {
+      expect(second.diagnostics?.stderr).toContain('Failed to run pre-sampling compact');
+      expect(second.assistantText).toBeNull();
+      const firstCompaction = requests.findIndex((request) => request.kind === 'compaction');
+      expect(
+        requests.slice(firstCompaction).every((request) => request.kind === 'compaction')
+      ).toBe(true);
+      expect(admissionFailures.length).toBeGreaterThan(0);
+    } else expect(second.assistantText).toContain('Synthetic ordinary reply.');
+
+    const compaction = requests.filter((request) => request.kind === 'compaction');
+    expect(compaction.length).toBeGreaterThan(0);
+    for (const request of compaction) {
+      const input = request.body.input as Array<Record<string, unknown>>;
+      expect(input[0]?.tools).toEqual([]);
+      expect(
+        input.some((item) => item.type === 'function_call' || item.type === 'custom_tool_call')
+      ).toBe(true);
+      expect(
+        input.some(
+          (item) => item.type === 'function_call_output' || item.type === 'custom_tool_call_output'
+        )
+      ).toBe(true);
+      expect(JSON.stringify(input)).toContain('tool-done');
+    }
+    if (!failSummary) {
+      expect(requests.map((request) => request.kind)).toEqual([
+        'turn',
+        'turn',
+        'compaction',
+        'turn',
+      ]);
+      expect(admissionFailures).toEqual([]);
+      expect(providerBodies[2]?.input).toEqual(compaction[0]?.body.input);
+      expect(providerBodies[2]?.tools ?? []).toEqual([]);
+    }
+    for (const body of providerBodies) {
+      expect(body).not.toHaveProperty('compaction_trigger');
+      expect(body).not.toHaveProperty('context_management');
+      expect(body).not.toHaveProperty('client_metadata');
+    }
+    expect(mcp.requests.filter((request) => request.method === 'tools/call')).toHaveLength(1);
+    await session.close().catch(() => undefined);
+    expect(session.childState()).toBe('absent');
+  }, 60_000);
+
   it.each([
     'context-event',
     'mid-frame',
@@ -3507,7 +3760,11 @@ function turnInput(
 
 /** Synthetic authenticated Responses relay; an optional reply directs a native tool call. */
 async function responsesServer(
-  toolReply?: (body: string, response: ServerResponse) => boolean
+  toolReply?: (
+    body: string,
+    response: ServerResponse,
+    request: IncomingMessage
+  ) => boolean | Promise<boolean>
 ): Promise<{
   port: number;
   bodies: string[];
@@ -3537,7 +3794,7 @@ async function responsesServer(
       response.end();
       return;
     }
-    if (toolReply?.(body, response)) return;
+    if (await toolReply?.(body, response, request)) return;
     if (latestMarker(body) === 'hang please') {
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       response.write(

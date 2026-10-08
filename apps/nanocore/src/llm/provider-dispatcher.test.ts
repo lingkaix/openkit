@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { zstdDecompressSync } from 'node:zlib';
 import {
   createModels,
   fauxAssistantMessage,
@@ -5,6 +7,7 @@ import {
   fauxToolCall,
   type StreamOptions,
 } from '@earendil-works/pi-ai';
+import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
@@ -48,6 +51,67 @@ function piProviderConfig(
 }
 
 describe('LLMGatewayProviderDispatcher pi-ai routing', () => {
+  it.each([
+    { declarations: 'anchored', codex: false },
+    { declarations: 'absent', codex: false },
+    { declarations: 'anchored', codex: true },
+    { declarations: 'absent', codex: true },
+  ])('replays the exact pinned Codex compaction request at real Gateway admission: $declarations codex=$codex', async ({
+    declarations,
+    codex,
+  }) => {
+    const request = JSON.parse(
+      readFileSync(new URL('./codex-compaction-request.json', import.meta.url), 'utf8')
+    ) as OpenAICompatibleResponsesRequest;
+    if (declarations === 'absent') request.input = (request.input as unknown[]).slice(1);
+    const stock = codex ? openaiCodexProvider() : openaiProvider();
+    const models = createModels();
+    models.setProvider(stock);
+    const template = models
+      .getModels()
+      .find((model) => model.api === (codex ? 'openai-codex-responses' : 'openai-responses'))!;
+    models.setProvider({ ...stock, models: [{ ...template, id: request.model }] });
+    const client = new PiAiGatewayClient({ models });
+    const dispatcher = new LLMGatewayProviderDispatcher({ piAiClient: client });
+    const provider = piProviderConfig({
+      adapterId: stock.id,
+      apiKey: codex
+        ? `synthetic.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'fixture' } })).toString('base64url')}.synthetic`
+        : 'explicit-secret',
+      models: [request.model],
+      gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+    });
+    const payloads: Record<string, unknown>[] = [];
+    const urls: string[] = [];
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+      urls.push(String(url));
+      const body =
+        new Headers(init?.headers).get('content-encoding') === 'zstd'
+          ? zstdDecompressSync(init?.body as Uint8Array).toString()
+          : String(init?.body);
+      payloads.push(JSON.parse(body));
+      return new Response(
+        `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_summary', status: 'completed', output: [], usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 } } })}\n\n`,
+        { headers: { 'content-type': 'text/event-stream' } }
+      );
+    });
+    try {
+      // Admission success alone is insufficient: both paths must reach stock serialization without changing history or authority.
+      await new Response(await dispatcher.createResponsesStream(provider, request)).text();
+      await new Response(await client.createResponsesStream(provider, request)).text();
+      expect(payloads).toHaveLength(2);
+      for (const payload of payloads) {
+        expect(payload.input).toEqual(request.input);
+        expect(payload.tools ?? []).toEqual([]);
+        expect(payload).not.toHaveProperty('compaction_trigger');
+        expect(payload).not.toHaveProperty('context_management');
+      }
+      expect(urls.every((url) => url.endsWith('/responses'))).toBe(true);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
   it('routes pi-ai backend chat completions through the pi-ai client', async () => {
     const faux = fauxProvider({ provider: 'anthropic_primary', models: [{ id: 'faux-chat' }] });
     const models = createModels();

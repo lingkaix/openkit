@@ -1263,6 +1263,8 @@ export class PiAiGatewayClient {
       options.onProviderStreamEvent = (data) => {
         const event = readRecord(data);
         const item = readRecord(event?.item);
+        if (event?.type === 'response.output_item.done' && item)
+          assertCompletedResponsesToolOutput(item, additionalTools);
         if (event?.type === 'response.output_item.added' && item)
           recordNativePosition(item, event.output_index);
         if (
@@ -1287,6 +1289,7 @@ export class PiAiGatewayClient {
           const item = readRecord(value);
           if (!item) throw new GatewayUnsupportedFeatureError('pi-ai Responses native output');
           recordNativePosition(item, index);
+          assertCompletedResponsesToolOutput(item, additionalTools);
           if (item.type === 'reasoning') {
             if (typeof item.id === 'string' && representedReasoning.has(item.id)) continue;
             assertExactPreservedResponsesItem(item);
@@ -2053,105 +2056,28 @@ export function assertResponsesRequestAdmission(
             { role: 'developer', type: 'additional_tools', tools: request.tools },
           ])
         : undefined;
-    if (declarations?.hasToolSearch) lowerResponsesNativeInput(request.input, declarations);
-    else assertResponsesToolHistoryDeclarations(request.input, declarations);
+    if (Array.isArray(request.input))
+      lowerResponsesNativeInput(request.input, declarations ?? emptyResponsesTools(), true, false);
     return undefined;
   }
   lowerResponsesNativeInput(request.input, additionalTools);
   return additionalTools;
 }
 
-/** Rejects undeclared or type-conflicting tool history before credential or provider access. */
+/** Creates an empty attempt-local callable set; history never populates it. */
+function emptyResponsesTools(): ResponsesAdditionalTools {
+  return readResponsesAdditionalTools([
+    { role: 'developer', type: 'additional_tools', tools: [] },
+  ])!;
+}
+
+/** Reuses native validation with the stricter cross-protocol declaration obligation. */
 function assertResponsesToolHistoryDeclarations(
   input: OpenAICompatibleResponsesRequest['input'],
   additionalTools: ResponsesAdditionalTools | undefined
 ): void {
-  if (!Array.isArray(input)) {
-    return;
-  }
-  const calls = new Map<
-    string,
-    Array<{ readonly kind: ResponsesToolKind; readonly name: string; readonly namespace?: string }>
-  >();
-  const carriers = new Set<string>();
-  for (const value of input) {
-    const item = readRecord(value);
-    if (item?.type === 'additional_tools') {
-      throw new GatewayUnsupportedFeatureError('pi-ai Responses additional tools position');
-    }
-    if (item?.type === 'function_call' || item?.type === 'custom_tool_call') {
-      const kind = item.type === 'custom_tool_call' ? 'custom' : 'function';
-      assertExactResponsesKeys(
-        item,
-        kind === 'custom'
-          ? ['call_id', 'id', 'input', 'name', 'namespace', 'status', 'type']
-          : ['arguments', 'call_id', 'id', 'name', 'namespace', 'status', 'type'],
-        item.type
-      );
-      const namespace = typeof item.namespace === 'string' ? item.namespace : undefined;
-      const declaredKind =
-        typeof item.name === 'string'
-          ? additionalTools?.kinds.get(responsesToolKey(item.name, namespace))
-          : undefined;
-      if (
-        typeof item.call_id !== 'string' ||
-        !item.call_id ||
-        typeof item.name !== 'string' ||
-        !item.name ||
-        (item.id !== undefined && (typeof item.id !== 'string' || !item.id)) ||
-        (item.namespace !== undefined && typeof item.namespace !== 'string') ||
-        (item.status !== undefined && item.status !== 'completed') ||
-        (kind === 'custom'
-          ? typeof item.input !== 'string'
-          : parseToolArguments(item.arguments) === undefined) ||
-        (additionalTools && declaredKind !== kind) ||
-        (!additionalTools && kind === 'custom')
-      ) {
-        throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${item.type} declaration`);
-      }
-      const carrier = typeof item.id === 'string' ? `${item.call_id}|${item.id}` : item.call_id;
-      if (carriers.has(carrier)) {
-        throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${item.type} declaration`);
-      }
-      carriers.add(carrier);
-      const queue = calls.get(item.call_id) ?? [];
-      queue.push({ kind, name: item.name, ...(namespace !== undefined ? { namespace } : {}) });
-      calls.set(item.call_id, queue);
-      continue;
-    }
-    if (item?.type === 'function_call_output' || item?.type === 'custom_tool_call_output') {
-      const kind = item.type === 'custom_tool_call_output' ? 'custom' : 'function';
-      assertExactResponsesKeys(
-        item,
-        kind === 'custom'
-          ? ['call_id', 'id', 'name', 'output', 'type']
-          : ['call_id', 'id', 'name', 'namespace', 'output', 'type'],
-        item.type
-      );
-      const queue = typeof item.call_id === 'string' ? calls.get(item.call_id) : undefined;
-      const call = queue?.shift();
-      if (
-        !item.call_id ||
-        !call ||
-        call.kind !== kind ||
-        (item.id !== undefined && (typeof item.id !== 'string' || !item.id)) ||
-        (item.name !== undefined && item.name !== call.name) ||
-        (item.namespace !== undefined &&
-          (typeof item.namespace !== 'string' ||
-            responsesToolKey(call.name, item.namespace) !==
-              responsesToolKey(call.name, call.namespace)))
-      ) {
-        throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${item.type} lineage`);
-      }
-      readExactResponsesTextContent(item.output, true);
-      continue;
-    }
-    if (!item) throw new GatewayUnsupportedFeatureError('pi-ai Responses input');
-    assertExactPreservedResponsesItem(item, false);
-  }
-  if ([...calls.values()].some((queue) => queue.length > 0)) {
-    throw new GatewayUnsupportedFeatureError('pi-ai Responses tool call lineage');
-  }
+  if (Array.isArray(input))
+    lowerResponsesNativeInput(input, additionalTools ?? emptyResponsesTools(), false, false);
 }
 
 /** Records only identities that have crossed the outward reasoning boundary. */
@@ -2269,23 +2195,6 @@ function toPiResponsesContext(
       }
       const carrierId =
         typeof record.id === 'string' ? `${record.call_id}|${record.id}` : record.call_id;
-      const declaredKind = additionalTools?.kinds.get(
-        responsesToolKey(
-          record.name,
-          typeof record.namespace === 'string' ? record.namespace : undefined
-        )
-      );
-      const reservedSearchCall =
-        kind === 'function' &&
-        record.name === WORKER_CLIENT_TOOL_SEARCH_FUNCTION &&
-        additionalTools?.hasToolSearch === true &&
-        isDefaultResponsesNamespace(record.namespace);
-      if (
-        (!reservedSearchCall && additionalTools && declaredKind !== kind) ||
-        (!additionalTools && kind === 'custom')
-      ) {
-        throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${record.type} declaration`);
-      }
       const argumentsValue =
         kind === 'custom'
           ? typeof record.input === 'string'
@@ -2524,20 +2433,36 @@ function admitPiResponsesNativeRequest(
       typeof request.input === 'string'
         ? [{ role: 'user', content: request.input }]
         : request.input;
+    additionalTools ??= emptyResponsesTools();
+    // An absent declaration still needs an empty output authority map and lossless historical replay.
+    const preserveHistory = input.some((value) => {
+      const item = readRecord(value);
+      return (
+        (item?.type === 'function_call' || item?.type === 'custom_tool_call') &&
+        !additionalTools.kinds.has(
+          responsesToolKey(item.name as string, item.namespace as string | undefined)
+        )
+      );
+    });
+    const lowered = lowerResponsesNativeInput(
+      input,
+      additionalTools,
+      true,
+      anchored || preserveHistory
+    );
     return {
       additionalTools,
-      ...(additionalTools &&
-      (anchored ||
-        additionalTools.item.tools.some(
-          (tool) => tool.type !== 'function' || tool.defer_loading === true
-        ))
-        ? { nativeInput: lowerResponsesNativeInput(input, additionalTools) }
-        : input.some((value) => {
-              const item = readRecord(value);
-              return item?.phase !== undefined && item.id === undefined;
-            })
-          ? { nativeInput: input }
-          : {}),
+      ...(anchored ||
+      preserveHistory ||
+      additionalTools.item.tools.some(
+        (tool) => tool.type !== 'function' || tool.defer_loading === true
+      ) ||
+      input.some((value) => {
+        const item = readRecord(value);
+        return item?.phase !== undefined && item.id === undefined;
+      })
+        ? { nativeInput: lowered }
+        : {}),
     };
   }
   const reasoning = readRecord(request.reasoning);
@@ -2554,7 +2479,8 @@ function admitPiResponsesNativeRequest(
   if (!additionalTools) {
     if (!Array.isArray(request.tools) || request.tools.length === 0) {
       assertResponsesRequestAdmission(request, allowStream);
-      return { additionalTools: undefined };
+      assertResponsesToolHistoryDeclarations(request.input, undefined);
+      return { additionalTools: undefined, bridgeNames: new Map() };
     }
     // Reuse declaration validation without adding a transport-only item to the request.
     const declarations = readResponsesAdditionalTools([
@@ -2571,6 +2497,7 @@ function admitPiResponsesNativeRequest(
   }
   const { bridgedFunctionTools, bridgeNames } =
     bridgedFunctionToolsFromAdditionalTools(additionalTools);
+  assertResponsesToolHistoryDeclarations(request.input, additionalTools);
   return {
     additionalTools: assertResponsesRequestAdmission(request, allowStream),
     bridgedFunctionTools,
@@ -2700,10 +2627,19 @@ function lowerResponsesToolDefinitions(
   });
 }
 
-/** Builds the exact provider input while lowering only client tool-search lifecycle items. */
+/**
+ * Builds native input, admitting complete undeclared local pairs without adding them to callable authority.
+ * @param input Complete attempt history, including optional message-anchored declarations.
+ * @param additionalTools Present callable authority; only valid search lineage may extend it.
+ * @param allowHistorical False for cross-protocol mappings, which still require declarations.
+ * @param native Whether text content must use the exact native item schema.
+ * @returns Ordered native history with only client search lifecycle items lowered.
+ */
 function lowerResponsesNativeInput(
   input: OpenAICompatibleResponsesRequest['input'],
-  additionalTools: ResponsesAdditionalTools
+  additionalTools: ResponsesAdditionalTools,
+  allowHistorical = true,
+  native = true
 ): readonly unknown[] {
   if (!Array.isArray(input)) {
     throw new GatewayUnsupportedFeatureError('pi-ai Responses additional tools input');
@@ -2715,6 +2651,28 @@ function lowerResponsesNativeInput(
   >();
   const searchCalls = new Set<string>();
   const carriers = new Set<string>();
+  // Only undeclared pairs gain the stricter uniqueness rule; declared lineage keeps its existing queues.
+  const historicalKinds = new Map<string, ResponsesToolKind>();
+  const historicalCallIds = new Set<string>();
+  const callIdCounts = new Map<string, number>();
+  const resultIdCounts = new Map<string, number>();
+  const itemIdCounts = new Map<string, number>();
+  for (const value of input) {
+    const item = readRecord(value);
+    if (typeof item?.id === 'string')
+      itemIdCounts.set(item.id, (itemIdCounts.get(item.id) ?? 0) + 1);
+    if (typeof item?.call_id !== 'string') continue;
+    const counts = ['function_call', 'custom_tool_call', 'tool_search_call'].includes(
+      item.type as string
+    )
+      ? callIdCounts
+      : ['function_call_output', 'custom_tool_call_output', 'tool_search_output'].includes(
+            item.type as string
+          )
+        ? resultIdCounts
+        : undefined;
+    if (counts) counts.set(item.call_id, (counts.get(item.call_id) ?? 0) + 1);
+  }
 
   for (const [index, value] of input.entries()) {
     const item = readRecord(value);
@@ -2797,6 +2755,11 @@ function lowerResponsesNativeInput(
         additionalTools.kinds,
         false
       );
+      for (const [key, kind] of historicalKinds) {
+        const discoveredKind = additionalTools.kinds.get(key);
+        if (discoveredKind !== undefined && discoveredKind !== kind)
+          throw new GatewayUnsupportedFeatureError('pi-ai Responses tool definition conflict');
+      }
       lowered.push({
         call_id: item.call_id,
         ...(typeof item.id === 'string' ? { id: item.id } : {}),
@@ -2833,12 +2796,27 @@ function lowerResponsesNativeInput(
         (item.id !== undefined && (typeof item.id !== 'string' || !item.id)) ||
         (item.namespace !== undefined && typeof item.namespace !== 'string') ||
         (item.status !== undefined && item.status !== 'completed') ||
-        (kind === 'custom'
-          ? typeof item.input !== 'string'
-          : parseToolArguments(item.arguments) === undefined) ||
-        declaredKind !== kind
+        (kind === 'custom' && typeof item.input !== 'string') ||
+        (declaredKind !== kind && !(allowHistorical && declaredKind === undefined))
       ) {
         throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${item.type} declaration`);
+      }
+      if (kind === 'function') {
+        if (declaredKind === undefined) assertNativeResponsesFunctionArguments(item.arguments);
+        else parseToolArguments(item.arguments);
+      }
+      if (declaredKind === undefined) {
+        const key = responsesToolKey(item.name, namespace);
+        const previousKind = historicalKinds.get(key);
+        if (
+          callIdCounts.get(item.call_id) !== 1 ||
+          resultIdCounts.get(item.call_id) !== 1 ||
+          (typeof item.id === 'string' && itemIdCounts.get(item.id) !== 1) ||
+          (previousKind !== undefined && previousKind !== kind)
+        )
+          throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${item.type} lineage`);
+        historicalKinds.set(key, kind);
+        historicalCallIds.add(item.call_id);
       }
       const carrier = typeof item.id === 'string' ? `${item.call_id}|${item.id}` : item.call_id;
       if (carriers.has(carrier)) {
@@ -2859,9 +2837,7 @@ function lowerResponsesNativeInput(
       const kind = item.type === 'custom_tool_call_output' ? 'custom' : 'function';
       assertExactResponsesKeys(
         item,
-        kind === 'custom'
-          ? ['call_id', 'id', 'name', 'output', 'type']
-          : ['call_id', 'id', 'name', 'namespace', 'output', 'type'],
+        ['call_id', 'id', 'name', 'namespace', 'output', 'type'],
         item.type
       );
       const call =
@@ -2869,6 +2845,9 @@ function lowerResponsesNativeInput(
       if (
         !call ||
         call.kind !== kind ||
+        (historicalCallIds.has(item.call_id as string) &&
+          typeof item.id === 'string' &&
+          itemIdCounts.get(item.id) !== 1) ||
         (item.id !== undefined && (typeof item.id !== 'string' || !item.id)) ||
         (item.name !== undefined && item.name !== call.name) ||
         (item.namespace !== undefined &&
@@ -2878,11 +2857,11 @@ function lowerResponsesNativeInput(
       ) {
         throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${item.type} lineage`);
       }
-      readExactResponsesTextContent(item.output);
+      readExactResponsesTextContent(item.output, !native);
       lowered.push(item);
       continue;
     }
-    assertExactPreservedResponsesItem(item);
+    assertExactPreservedResponsesItem(item, native);
     lowered.push(item);
   }
 
@@ -3203,6 +3182,47 @@ function readNativeResponsesReasoningItem(
   }
 }
 
+/** Validates completed native tool bytes before the stock parser can normalize malformed syntax or kind. */
+function assertCompletedResponsesToolOutput(
+  item: Record<string, unknown>,
+  additionalTools: ResponsesAdditionalTools | undefined
+): void {
+  if (item.type !== 'function_call' && item.type !== 'custom_tool_call') return;
+  const kind = item.type === 'custom_tool_call' ? 'custom' : 'function';
+  assertExactResponsesKeys(
+    item,
+    kind === 'custom'
+      ? ['call_id', 'id', 'input', 'name', 'namespace', 'status', 'type']
+      : ['arguments', 'call_id', 'id', 'name', 'namespace', 'status', 'type'],
+    'provider tool output'
+  );
+  if (
+    typeof item.id !== 'string' ||
+    !item.id ||
+    typeof item.call_id !== 'string' ||
+    !item.call_id ||
+    typeof item.name !== 'string' ||
+    !item.name ||
+    (item.namespace !== undefined && typeof item.namespace !== 'string') ||
+    (item.status !== undefined && item.status !== 'completed') ||
+    (kind === 'custom' ? typeof item.input !== 'string' : item.arguments === undefined)
+  )
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses provider tool output');
+  if (kind === 'function') assertNativeResponsesFunctionArguments(item.arguments);
+  const search =
+    kind === 'function' &&
+    item.name === WORKER_CLIENT_TOOL_SEARCH_FUNCTION &&
+    additionalTools?.hasToolSearch === true &&
+    isDefaultResponsesNamespace(item.namespace);
+  if (
+    !search &&
+    additionalTools?.kinds.get(
+      responsesToolKey(item.name, item.namespace as string | undefined)
+    ) !== kind
+  )
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses undeclared provider tool output');
+}
+
 /**
  * Reconstructs one public Responses tool item from pi-ai's semantic tool-call block.
  *
@@ -3246,7 +3266,7 @@ function responsesToolCallItem(
     };
   }
   const kind = additionalTools?.kinds.get(responsesToolKey(block.name, block.namespace));
-  if (additionalTools && kind === undefined) {
+  if (!bridgeNames && kind === undefined) {
     throw new GatewayUnsupportedFeatureError('pi-ai Responses undeclared provider tool output');
   }
   if (kind === 'custom') {
@@ -4181,6 +4201,22 @@ function readStreamToolCall(message: AssistantMessage, contentIndex: number) {
     throw new GatewayUnsupportedFeatureError('pi-ai chat tool call stream');
   }
   return block;
+}
+
+/**
+ * Validates native function syntax before conversion can supply empty arguments or accept objects.
+ * Declared history and Chat keep their existing normalization contract.
+ * @param value Undeclared historical or completed Provider function arguments.
+ */
+function assertNativeResponsesFunctionArguments(value: unknown): void {
+  if (typeof value === 'string') {
+    try {
+      if (readRecord(JSON.parse(value))) return;
+    } catch {
+      // Invalid JSON uses the same native-syntax refusal as a non-object or non-string value.
+    }
+  }
+  throw new GatewayUnsupportedFeatureError('pi-ai Responses function arguments');
 }
 
 /**

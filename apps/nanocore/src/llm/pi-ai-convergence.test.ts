@@ -398,7 +398,18 @@ describe('Gateway stock IR convergence', () => {
         { stopReason: 'length' }
       ),
     ]);
-    const request = { model: 'physical', input: 'hello', stream };
+    const request = {
+      model: 'physical',
+      input: 'hello',
+      stream,
+      tools: [
+        {
+          type: 'function',
+          name: 'lookup',
+          parameters: { type: 'object', properties: { path: { type: 'string' } } },
+        },
+      ],
+    };
     const response = stream
       ? (await frames(await client.createResponsesStream(provider, request))).find(
           (event) => event.response?.status === 'incomplete'

@@ -582,7 +582,17 @@ describe('Gateway model retention', () => {
             model: 'capture-model',
             messages: [{ role: 'user' as const, content: '  input 雪\n\t' }],
           }
-        : { model: 'capture-model', input: '  input 雪\n\t' };
+        : {
+            model: 'capture-model',
+            input: '  input 雪\n\t',
+            tools: [
+              {
+                type: 'function' as const,
+                name: 'run',
+                parameters: { type: 'object', properties: { text: { type: 'string' } } },
+              },
+            ],
+          };
       const result = await (method.includes('Chat')
         ? dispatcher[method as 'createChatCompletion' | 'createChatCompletionStream'](
             provider,
