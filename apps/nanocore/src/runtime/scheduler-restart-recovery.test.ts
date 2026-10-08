@@ -2415,6 +2415,111 @@ describe('scheduler restart recovery', () => {
     }
   });
 
+  it.each([
+    false,
+    true,
+  ])('terminalizes a no-operation failed start despite unused-anchor cleanup failure (partial publication=%s)', async (partial) => {
+    const suffix = `no_effect_cleanup_failure_${partial}`;
+    const f = await createFailedStartFixture(suffix, false, false, true);
+    try {
+      f.coreDb.sqlite
+        .prepare("UPDATE scheduler_execution_attempts SET phase = 'open' WHERE attempt_id = ?")
+        .run(`lease_${suffix}`);
+      recordBackendSession(f.coreDb, suffix, 'cleanup-failed');
+      f.coreDb.sqlite
+        .prepare("UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE attempt_id = ?")
+        .run(`lease_${suffix}`);
+      const queued = f.store.createTurn(
+        'ws_demo',
+        f.threadId,
+        'Later queued work',
+        { kind: 'user', id: LOCAL_USER_ID },
+        null,
+        {
+          status: 'pending',
+          agentId: 'agent_codex_host',
+          executorKind: 'worker',
+        }
+      );
+      const admission = createSchedulerAdmissionEntry(f.coreDb, {
+        queueEntryId: `queued_${suffix}`,
+        backendId: 'nanohost',
+        workspaceId: queued.workspaceId,
+        threadId: queued.threadId,
+        turnId: queued.id,
+        requestedAgentId: 'agent_codex_host',
+        triggerActor: queued.triggerActor,
+        turnInput: 'Later queued work',
+      });
+      if (partial)
+        vi.spyOn(f.store, 'emitTurnEvent').mockImplementationOnce(() => {
+          throw new Error('Injected partial terminal publication.');
+        });
+      const recovery = testRecoveryInput(f.coreDb, {
+        ...f.input,
+        cleanupBackendSession: async () => {
+          throw new Error('Unused anchor cleanup unavailable.');
+        },
+      });
+      await expect(runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery)).rejects.toThrow(
+        'Native attempt recovery failed'
+      );
+      await expect(runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery)).rejects.toThrow(
+        'Native attempt recovery failed'
+      );
+      expect(
+        requireSchedulerExecutionAttemptAdmissionContext(f.coreDb, `lease_${suffix}`).status
+      ).toBe('admitted');
+      expect(listQueuedSchedulerAdmissionEntries(f.coreDb)).toContainEqual(admission);
+      expect(f.store.getTurnById(f.turnId)).toMatchObject({
+        status: 'failed',
+        error: {
+          code: 'worker_governance_turn_failed',
+          message: 'The worker attempt failed to start.',
+        },
+      });
+      expect(attempts.requireSchedulerExecutionAttempt(f.coreDb, `lease_${suffix}`)).toMatchObject({
+        phase: 'closed',
+        operationId: null,
+        terminalCause: 'turn-start-failed',
+      });
+      expect(f.store.getTurnById(queued.id)).toEqual(queued);
+      expect(
+        f.store.getTurnEvents(f.turnId).filter((event) => event.event === 'turn.completed')
+      ).toMatchObject([{ data: { stopReason: 'error' } }]);
+      expect(new FsStore({ dataRoot: f.dataRoot }).getTurnById(f.turnId)).toEqual(
+        f.store.getTurnById(f.turnId)
+      );
+    } finally {
+      vi.restoreAllMocks();
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('preserves a backend-busy no-effect deferral as the same queued Turn', async () => {
+    const suffix = 'no_effect_backend_busy';
+    const f = await createFailedStartFixture(suffix, false, false, true);
+    try {
+      f.coreDb.sqlite
+        .prepare(
+          "UPDATE scheduler_execution_attempts SET terminal_cause = 'backend-busy' WHERE attempt_id = ?"
+        )
+        .run(`lease_${suffix}`);
+      f.coreDb.sqlite
+        .prepare("UPDATE scheduler_admission_entries SET status = 'queued' WHERE turn_id = ?")
+        .run(f.turnId);
+      const pending = f.store.updateTurn(f.turnId, { status: 'pending' });
+      await runNanoHostAttemptRecoveryMaintenance(f.coreDb, testRecoveryInput(f.coreDb, f.input));
+      expect(new FsStore({ dataRoot: f.dataRoot }).getTurnById(f.turnId)).toEqual(pending);
+      expect(listQueuedSchedulerAdmissionEntries(f.coreDb).map((entry) => entry.turnId)).toContain(
+        f.turnId
+      );
+      expect(f.store.getTurnEvents(f.turnId)).toEqual([]);
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
   it('retains a closed no-effect attempt and retries its failed product projection after listen', async () => {
     const coreDb = createMigratedCoreDb();
     const suffix = 'prelaunch_projection_retry';

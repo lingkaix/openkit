@@ -2086,7 +2086,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     }
 
     if (errors.length === 0 && backendLifecycle?.session?.state === 'cleaned')
-      await this.releaseTerminalAttempt(store, context.attemptId!);
+      await this.releaseTerminalAttempt(store, context.attemptId!, environmentPackage!);
     if (errors.length > 0) {
       const error =
         errors.length === 1
@@ -2133,7 +2133,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         backendLifecycle.session.workspaceHandoffState === 'complete'
       ) {
         try {
-          await this.releaseTerminalAttempt(store, context.attemptId!);
+          await this.releaseTerminalAttempt(store, context.attemptId!, environmentPackage!);
         } catch (releaseError) {
           throw new AggregateError(
             [error, releaseError],
@@ -2181,7 +2181,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       session,
       this.backend.planSession(environmentPackage)
     );
-    this.bindNativeHandleRecorder(store, environmentPackage);
+    if (session.state !== 'cleaned') this.bindNativeHandleRecorder(store, environmentPackage);
     const turn = store.getTurnById(environmentPackage.scope.turnId);
     const accepted = getWorkerControlAcceptedFinalStatus(this.coreDb, {
       agentSessionId: environmentPackage.scope.agentSessionId,
@@ -2292,7 +2292,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
 
       if (turn.status === recoveredStatus) {
-        await this.releaseTerminalAttempt(store, session.attemptId);
+        await this.releaseTerminalAttempt(store, session.attemptId, environmentPackage);
         return recoveredStatus;
       }
 
@@ -2304,7 +2304,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         accepted,
         environmentPackage.snapshotId
       );
-      await this.releaseTerminalAttempt(store, session.attemptId);
+      await this.releaseTerminalAttempt(store, session.attemptId, environmentPackage);
       return recoveredStatus;
     } finally {
       workspaceDb.sqlite.close();
@@ -2312,7 +2312,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   }
 
   /** Releases only after this owner's full output, evidence, collection, drain and terminal path succeeds. */
-  private async releaseTerminalAttempt(store: FsStore, attemptId: string): Promise<void> {
+  private async releaseTerminalAttempt(
+    store: FsStore,
+    attemptId: string,
+    environmentPackage: AgentEnvironmentPackage
+  ): Promise<void> {
     if (!this.coreDb) throw new Error('Attempt release requires Core authority.');
     let attempt = requireSchedulerExecutionAttempt(this.coreDb, attemptId);
     if (attempt.phase === 'closed') return;
@@ -2336,22 +2340,31 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       routesRevoked: true,
     } as const;
     const correlation = schedulerExecutionCorrelation(attempt);
-    const result = await this.executionBackend.release({ ...correlation, proof });
-    if (
-      result.attemptId !== correlation.attemptId ||
-      result.backendId !== correlation.backendId ||
-      result.bindingRef !== correlation.bindingRef ||
-      result.inputRef !== correlation.inputRef ||
-      result.operationId !== correlation.operationId
-    )
-      throw new Error('Release response contradicts the exact original operation.');
-    if (result.state === 'released' && result.fenceRef)
-      closeSchedulerExecutionAttemptWithFence(this.coreDb, {
-        correlation,
-        proof,
-        fenceRef: result.fenceRef,
-        now: this.now,
-      });
+    for (let pass = 0; pass < 2; pass += 1) {
+      const result = await this.executionBackend.release({ ...correlation, proof });
+      if (
+        result.attemptId !== correlation.attemptId ||
+        result.backendId !== correlation.backendId ||
+        result.bindingRef !== correlation.bindingRef ||
+        result.inputRef !== correlation.inputRef ||
+        result.operationId !== correlation.operationId
+      )
+        throw new Error('Release response contradicts the exact original operation.');
+      if (result.state === 'released' && result.fenceRef) {
+        closeSchedulerExecutionAttemptWithFence(this.coreDb, {
+          correlation,
+          proof,
+          fenceRef: result.fenceRef,
+          now: this.now,
+        });
+        return;
+      }
+      if (pass !== 0 || result.state !== 'unknown') break;
+      // The cleaned Turn anchor does not prove wider resident cleanup.
+      // Continue that existing owner without restoring the obsolete binding or replaying an uncertain effect.
+      await this.backend.cleanupSession(this.backend.planSession(environmentPackage));
+    }
+    throw new Error('Attempt release remains incomplete.');
   }
 
   /**

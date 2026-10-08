@@ -1,4 +1,5 @@
 import type { SchedulerExecutionAttemptRecord } from './execution-attempt-records.js';
+import { NanoHostCleanupFencePendingError } from './nanohost-runtime-target.js';
 
 /** The existing maintenance timer runs independent recovery stages in their required order. */
 export interface SchedulerAttemptMaintenanceInput {
@@ -15,6 +16,27 @@ export interface SchedulerAttemptMaintenanceService {
   readonly runOnce: () => Promise<void>;
   readonly stop: () => void;
 }
+/** Carries unsuccessful stage results while distinguishing already-attributed expected native exclusion. */
+class SchedulerAttemptMaintenanceFailure extends AggregateError {
+  /** Keeps every stage error private without treating an expected fence as successful release. */
+  public constructor(
+    errors: unknown[],
+    public readonly expectedFenceOnly: boolean
+  ) {
+    super(errors, 'Scheduler recovery maintenance failed.');
+  }
+}
+
+/** Recognizes only explicit pending native proof, including nonempty item aggregates; messages are not evidence. */
+function isExpectedNativeCleanupFence(error: unknown): boolean {
+  return (
+    error instanceof NanoHostCleanupFencePendingError ||
+    (error instanceof AggregateError &&
+      error.errors.length > 0 &&
+      error.errors.every(isExpectedNativeCleanupFence))
+  );
+}
+
 /** Runs every stage in one single-flight pass and reports all failures after checkpoint classification. */
 export function startSchedulerAttemptMaintenanceService(
   input: SchedulerAttemptMaintenanceInput
@@ -28,16 +50,20 @@ export function startSchedulerAttemptMaintenanceService(
     if (active) return active;
     const operation = Promise.resolve().then(async () => {
       const errors: unknown[] = [];
+      let expectedFenceOnly = true;
       for (const stage of ['scheduler', 'native', 'checkpoints'] as const) {
         const run = input.runRecoveryMaintenance[stage];
         try {
           await run();
         } catch (error) {
-          logRecoveryMaintenanceFailure(stage);
+          if (stage !== 'native' || !isExpectedNativeCleanupFence(error)) {
+            logRecoveryMaintenanceFailure(stage);
+            expectedFenceOnly = false;
+          }
           errors.push(error);
         }
       }
-      if (errors.length) throw new AggregateError(errors, 'Scheduler recovery maintenance failed.');
+      if (errors.length) throw new SchedulerAttemptMaintenanceFailure(errors, expectedFenceOnly);
     });
     active = operation;
     void operation
@@ -49,6 +75,8 @@ export function startSchedulerAttemptMaintenanceService(
   };
   const tick = () => {
     void runOnce().catch((error) => {
+      // The native owner already identified this held attempt; the next ordinary tick still retries it.
+      if (error instanceof SchedulerAttemptMaintenanceFailure && error.expectedFenceOnly) return;
       if (input.onError) input.onError(error);
       else
         console.warn(

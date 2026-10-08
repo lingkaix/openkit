@@ -87,7 +87,9 @@ import type {
 import {
   createNanoHostSessionDispatch,
   NANO_HOST_EFFECT_OPERATIONS,
+  NanoHostEffectNotEnqueuedError,
 } from './nanohost-session-dispatch.js';
+import { startSchedulerAttemptMaintenanceService } from './scheduler-attempt-maintenance-service.js';
 import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
 import {
   createConfiguredTurnExecutor,
@@ -2045,6 +2047,7 @@ describe('createConfiguredTurnExecutor', () => {
   async function admitIdleSupplyResident(
     label: string,
     options: {
+      exactBinding?: boolean;
       gitBaseline?: { commit: string; tree: string };
       nativeValues?: Record<string, string>;
       inspection?: 'unavailable' | 'stale';
@@ -2177,7 +2180,12 @@ describe('createConfiguredTurnExecutor', () => {
     });
     anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
     const materialization = await backend
-      .materialize(environmentPackage, { workspaceRoots: [] })
+      .materialize(environmentPackage, {
+        workspaceRoots: [],
+        ...(options.exactBinding
+          ? { sandboxBindingRef: factoryPackageBinding(coreDb, environmentPackage) }
+          : {}),
+      })
       .catch((error) => {
         coreDb.sqlite.close();
         throw error;
@@ -2292,6 +2300,7 @@ describe('createConfiguredTurnExecutor', () => {
         .all()
     ).toEqual([{ agentSessionId, digest: readyDigest }]);
     return {
+      runtime,
       backend,
       coreDb,
       environmentPackage,
@@ -10981,7 +10990,7 @@ describe('createConfiguredTurnExecutor', () => {
         expect(effects).toHaveLength(effectsBeforeCleanup);
         expect(
           coreDb.sqlite.prepare('SELECT cleanup_state AS state FROM sandbox_runtime_records').get()
-        ).toEqual({ state: 'unknown' });
+        ).toEqual({ state: 'clean' });
         return;
       }
       if (startupRefused === 'eviction-delete-failed') {
@@ -13681,6 +13690,378 @@ describe('createConfiguredTurnExecutor', () => {
       ]);
     } finally {
       fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'cleanup',
+    'eviction',
+  ] as const)('preserves the shared resident after a pre-dispatch %s failure', async (path) => {
+    const label = `no_effect_${path}`;
+    const f = await admitIdleSupplyResident(label, { exactBinding: true });
+    const { coreDb, backend, environmentPackage: resident } = f;
+    const native = backend as typeof backend & {
+      createCleanupRecoveryResult(...args: unknown[]): unknown;
+      deleteSandbox(...args: unknown[]): Promise<void>;
+    };
+    const store = new FsStore({ dataRoot: coreDb.dataRoot });
+    const sibling = store.createTurn(
+      resident.scope.workspaceId,
+      resident.scope.threadId,
+      'Resident completed',
+      resident.scope.triggerActor,
+      null,
+      {
+        turnId: resident.scope.turnId,
+        status: 'completed',
+        agentId: resident.agent.agentId,
+        agentSessionId: resident.scope.agentSessionId,
+        completedAt: '2026-10-08T00:00:02.000Z',
+        executorKind: 'worker',
+      }
+    );
+    const incoming = completeNanoHostPackage({
+      ...(path === 'eviction'
+        ? {
+            runtime: {
+              image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'2'.repeat(64)}` },
+            },
+          }
+        : {}),
+      scope: {
+        ...resident.scope,
+        agentSessionId: `as_incoming_${path}`,
+        threadId: `thread_incoming_${path}`,
+        turnId: `turn_incoming_${path}`,
+      },
+      snapshotId: `snapshot_incoming_${path}`,
+    });
+    authorizeNanoHostPackage(coreDb, incoming);
+    anchorNanoHostMaterialization(coreDb, backend, incoming);
+    const own = observeExecutionAttempts(coreDb).find(
+      (row) => row.turn_id === incoming.scope.turnId
+    )!;
+    const beforeEffects = f.effects.length;
+    const residentLifecycle = coreDb.sqlite
+      .prepare(
+        'SELECT lifecycle_state, health_state, drain_state, cleanup_state FROM sandbox_runtime_records'
+      )
+      .get();
+    const failure = new Error('Cleanup failed before dispatch.');
+    const injection =
+      path === 'cleanup'
+        ? vi.spyOn(native, 'createCleanupRecoveryResult').mockImplementation(() => {
+            throw failure;
+          })
+        : vi.spyOn(native, 'deleteSandbox').mockRejectedValue(failure);
+    try {
+      if (path === 'eviction') {
+        const materialization = backend.materialize(incoming, {
+          sandboxBindingRef: factoryPackageBinding(coreDb, incoming),
+          workspaceRoots: [],
+        });
+        void materialization.catch(() => undefined);
+        await f.settleNext('session.close', {
+          state: 'closed',
+          privateState: 'absent',
+          childState: 'absent',
+        });
+        await expect(materialization).rejects.toBeInstanceOf(
+          WorkerGovernanceCapacityUnavailableError
+        );
+      }
+      attempts.closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+        attemptId: String(own.attempt_id),
+        cause: 'turn-start-failed',
+        noOutstandingEffects: true,
+      });
+      if (path === 'cleanup')
+        await backend.cleanupSession(backend.planSession(incoming)).catch((error) => {
+          expect(error).toBe(failure);
+        });
+      if (path === 'eviction') expect(injection).toHaveBeenCalledOnce();
+      expect(
+        f.effects
+          .slice(beforeEffects)
+          .filter((effect) => effect.kind === 'bridge.close' || effect.kind === 'sandbox.delete')
+      ).toEqual([]);
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT lifecycle_state, health_state, drain_state, cleanup_state FROM sandbox_runtime_records'
+          )
+          .get()
+      ).toEqual(residentLifecycle);
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT lifecycle_state, drain_state FROM harness_instance_records')
+          .get()
+      ).toEqual({ lifecycle_state: 'open', drain_state: 'accepting' });
+      expect(store.getTurnById(sibling.id)).toEqual(sibling);
+      expect(
+        attempts.requireSchedulerExecutionAttempt(coreDb, String(own.attempt_id))
+      ).toMatchObject({
+        phase: 'closed',
+        disposition: 'not_accepted',
+        operationId: null,
+        terminalCause: 'turn-start-failed',
+      });
+    } finally {
+      injection.mockRestore();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'live',
+    'retained',
+  ] as const)('keeps a definitely closed %s bridge drained when its following delete is not enqueued', async (source) => {
+    const f = await admitIdleSupplyResident(`bridge_closed_delete_refused_${source}`, {
+      exactBinding: true,
+    });
+    const native = f.backend as unknown as {
+      sessionDispatch: NanoHostSessionDispatch;
+      evictIncompatibleIdleSandbox(pkg: AgentEnvironmentPackage, force: boolean): Promise<unknown>;
+      createCleanupRecoveryResult(...args: unknown[]): unknown;
+    };
+    const retained =
+      source === 'retained'
+        ? vi
+            .spyOn(native, 'createCleanupRecoveryResult')
+            .mockReturnValue(Promise.resolve({ kind: 'bridge.close', result: {} }))
+        : null;
+    const effect = native.sessionDispatch.effect.bind(native.sessionDispatch);
+    const injection = vi.spyOn(native.sessionDispatch, 'effect').mockImplementation((request) => {
+      if (request.kind === 'sandbox.delete')
+        throw new NanoHostEffectNotEnqueuedError(request.kind, request.requestId!);
+      return effect(request);
+    });
+    const beforeEffects = f.effects.length;
+    try {
+      await expect(
+        source === 'live'
+          ? native.evictIncompatibleIdleSandbox(f.environmentPackage, true)
+          : f.backend.cleanupSession(f.backend.planSession(f.environmentPackage))
+      ).rejects.toBeInstanceOf(NanoHostEffectNotEnqueuedError);
+      expect(f.effects.slice(beforeEffects).map((entry) => entry.kind)).toEqual(
+        source === 'live' ? ['bridge.close'] : []
+      );
+      expect(
+        f.coreDb.sqlite
+          .prepare('SELECT drain_state, cleanup_state FROM sandbox_runtime_records')
+          .get()
+      ).toEqual({ drain_state: 'draining', cleanup_state: 'clean' });
+      expect(
+        f.coreDb.sqlite.prepare('SELECT drain_state FROM harness_instance_records').get()
+      ).toEqual({ drain_state: 'draining' });
+      expect(f.backend.inspectMaterializationCapacity?.(f.environmentPackage)).toBe(
+        'capacity-saturated'
+      );
+    } finally {
+      injection.mockRestore();
+      retained?.mockRestore();
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    false,
+    true,
+  ])('continues fenced accepted-final closeout through factory maintenance (cold=%s)', async (cold) => {
+    const label = `accepted_closeout_${cold}`;
+    const f = await admitIdleSupplyResident(label, { exactBinding: true });
+    const { coreDb, environmentPackage: pkg } = f;
+    const runtime = cold
+      ? createConfiguredWorkerLifecycleRuntime({
+          coreDb,
+          env: {},
+          nanoHostSessionDispatch: createFactoryNanoHostDispatch(f.effects),
+          workerControlGateway: new WorkerControlGateway(),
+        })
+      : f.runtime;
+    const backend = (runtime.turnExecutor as WorkerGovernanceTurnExecutor).executionBackend;
+    const attemptId = `lease_${label}`;
+    const anchor = getWorkerBackendSession(coreDb, attemptId)!;
+    expect(anchor.state).toBe('cleaned');
+    coreDb.sqlite
+      .prepare(
+        `UPDATE scheduler_execution_attempts SET phase = 'closing', fence_ref = NULL, terminal_cause = 'worker-final-status', outcome_ref = ? WHERE attempt_id = ?`
+      )
+      .run(`turn:${pkg.scope.turnId}:completed`, attemptId);
+    const store = new FsStore({ dataRoot: coreDb.dataRoot });
+    const completed = store.createTurn(
+      pkg.scope.workspaceId,
+      pkg.scope.threadId,
+      'Completed worker',
+      pkg.scope.triggerActor,
+      null,
+      {
+        turnId: pkg.scope.turnId,
+        agentId: pkg.agent.agentId,
+        agentSessionId: pkg.scope.agentSessionId,
+        executorKind: 'worker',
+        status: 'completed',
+        completedAt: '2026-10-08T00:00:02.000Z',
+      }
+    );
+    store.updateAgentSession(pkg.scope.agentSessionId, { status: 'idle' });
+    coreDb.sqlite.exec(`UPDATE sandbox_runtime_records SET lifecycle_state = 'failed', health_state = 'unknown', drain_state = 'draining', cleanup_state = 'unknown';
+      UPDATE harness_instance_records SET lifecycle_state = 'failed', drain_state = 'draining'`);
+    const storage = getWorkerStorageBindingForSandbox(coreDb, {
+      sandboxBindingRef: anchor.sandboxBindingRef,
+    })!;
+    const beforeEffects = f.effects.length;
+    const recovery = {
+      executionBackend: backend,
+      store,
+      cleanupBackendSession: runtime.cleanupBackendSession,
+      prepareBackendCleanup: runtime.prepareBackendCleanup,
+      restoreBackendSession: runtime.restoreBackendSession,
+      reconcileAcceptedFinalStatus: runtime.reconcileAcceptedFinalStatus,
+      projectRecoveredTurn: async () => ({ status: 'completed' as const }),
+    };
+    const assertFence = () => {
+      expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toMatchObject({
+        phase: 'closing',
+        terminalCause: 'worker-final-status',
+      });
+      expect(
+        coreDb.sqlite.prepare('SELECT cleanup_state FROM sandbox_runtime_records').get()
+      ).toEqual({ cleanup_state: 'unknown' });
+      expect(getWorkerStorageBinding(coreDb, { storageRef: storage.storageRef })).toEqual(storage);
+      expect(f.effects).toHaveLength(beforeEffects);
+    };
+    const keepFence = async () => {
+      await expect(runNanoHostAttemptRecoveryMaintenance(coreDb, recovery)).rejects.toThrow(
+        'Native attempt recovery failed'
+      );
+      assertFence();
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const ticks: Array<() => void> = [];
+    const nativeMaintenance = vi.fn(() => runNanoHostAttemptRecoveryMaintenance(coreDb, recovery));
+    const checkpoints = vi.fn(async () => {});
+    const service = startSchedulerAttemptMaintenanceService({
+      intervalMs: 30_000,
+      runRecoveryMaintenance: { scheduler: async () => {}, native: nativeMaintenance, checkpoints },
+      setInterval: (tick) => {
+        ticks.push(tick);
+        return 'closeout-timer';
+      },
+      clearInterval: () => {},
+    });
+    try {
+      for (let pass = 0; pass < 2; pass += 1) {
+        if (pass > 0) ticks[0]!();
+        await expect(service.runOnce()).rejects.toThrow('Scheduler recovery maintenance failed');
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assertFence();
+        expect(nativeMaintenance).toHaveBeenCalledTimes(pass + 1);
+        expect(checkpoints).toHaveBeenCalledTimes(pass + 1);
+        expect(warn.mock.calls.map(([text]) => JSON.parse(String(text)).attributes)).toEqual(
+          Array.from({ length: pass + 1 }, () =>
+            expect.objectContaining({
+              'openkit.error.code': 'scheduler.native_attempt_recovery_failed',
+              'openkit.attempt.id': attemptId,
+              'openkit.turn.id': pkg.scope.turnId,
+            })
+          )
+        );
+      }
+      const successor = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        targetId: anchor.runtimeTargetId,
+        identityId: `identity_${label}`,
+        deploymentId: anchor.deploymentId,
+        observedAt: '2026-10-08T00:01:00.000Z',
+      });
+      upsertNanoHostRuntimeTarget(coreDb, {
+        ...successor,
+        predecessorFenced: true,
+        ready: true,
+        freshEmpty: true,
+        physicalEpoch: 'a'.repeat(64),
+        observedAt: '2026-10-08T00:01:01.000Z',
+      });
+      await keepFence();
+      coreDb.sqlite
+        .prepare(
+          'UPDATE nanohost_runtime_targets SET physical_epoch = ?, ready = 0, fresh_empty = 0, predecessor_fenced = 0'
+        )
+        .run('b'.repeat(64));
+      const beforeContradictoryWarnings = warn.mock.calls.length;
+      ticks[0]!();
+      await expect(service.runOnce()).rejects.toThrow('Scheduler recovery maintenance failed');
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assertFence();
+      expect(nativeMaintenance).toHaveBeenCalledTimes(3);
+      expect(checkpoints).toHaveBeenCalledTimes(3);
+      expect(
+        warn.mock.calls
+          .slice(beforeContradictoryWarnings)
+          .map(([text]) => JSON.parse(String(text)).attributes['openkit.error.code'])
+      ).toEqual([
+        'scheduler.native_attempt_recovery_failed',
+        'scheduler.native_recovery_stage_failed',
+        'scheduler.attempt_maintenance_failed',
+      ]);
+      coreDb.sqlite.exec('UPDATE nanohost_runtime_targets SET ready = 1, fresh_empty = 1');
+      await keepFence();
+      coreDb.sqlite.exec('UPDATE nanohost_runtime_targets SET predecessor_fenced = 1');
+      const actualRelease = backend.release.bind(backend);
+      vi.spyOn(backend, 'release').mockImplementation(async (input) => {
+        const result = await actualRelease(input);
+        if (result.state === 'released') {
+          expect(
+            coreDb.sqlite.prepare('SELECT 1 FROM sandbox_runtime_records').get()
+          ).toBeUndefined();
+          expect(getWorkerStorageBinding(coreDb, { storageRef: storage.storageRef })).toMatchObject(
+            { state: 'idle', revision: storage.revision + 1, currentSandboxBindingRef: null }
+          );
+          expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId).phase).toBe(
+            'closing'
+          );
+        }
+        return result;
+      });
+      const beforeFreshProofWarnings = warn.mock.calls.length;
+      ticks[0]!();
+      await expect(service.runOnce()).resolves.toBeUndefined();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(nativeMaintenance).toHaveBeenCalledTimes(4);
+      expect(checkpoints).toHaveBeenCalledTimes(4);
+      expect(warn.mock.calls).toHaveLength(beforeFreshProofWarnings);
+      expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toMatchObject({
+        phase: 'closed',
+        terminalCause: 'worker-final-status',
+        fenceRef: expect.any(String),
+      });
+      expect(new FsStore({ dataRoot: coreDb.dataRoot }).getTurnById(pkg.scope.turnId)).toEqual(
+        completed
+      );
+      expect(f.effects).toHaveLength(beforeEffects);
+      const next = completeNanoHostPackage({
+        scope: { ...pkg.scope, agentSessionId: `as_next_${label}`, turnId: `turn_next_${label}` },
+        snapshotId: `snapshot_next_${label}`,
+      });
+      authorizeNanoHostPackage(coreDb, next);
+      const native = (runtime.turnExecutor as unknown as { backend: WorkerGovernanceBackend })
+        .backend;
+      anchorNanoHostMaterialization(coreDb, native, next);
+      await expect(
+        native.materialize(next, {
+          sandboxBindingRef: factoryPackageBinding(coreDb, next),
+          workspaceRoots: [],
+        })
+      ).resolves.toMatchObject({ packageSnapshotId: next.snapshotId });
+      expect(f.effects.slice(beforeEffects).map((effect) => effect.kind)).toEqual([
+        'image.acquire',
+        'image.inspect',
+        'sandbox.create',
+      ]);
+    } finally {
+      service.stop();
+      vi.restoreAllMocks();
+      coreDb.sqlite.close();
     }
   });
 

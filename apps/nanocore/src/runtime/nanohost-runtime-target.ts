@@ -7,6 +7,14 @@ import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { CoreMode } from '../config/mode.js';
 import type { CoreDb } from '../storage/db.js';
 
+/** Expected cleanup exclusion while the matching target lacks fresh replacement Epoch proof. */
+export class NanoHostCleanupFencePendingError extends Error {
+  /** Preserves the existing refusal; this diagnostic marker supplies no cleanup or release proof. */
+  public constructor() {
+    super('NanoHost unknown cleanup fence has no different fresh physical Epoch proof.');
+  }
+}
+
 /** Durable configured NanoHost target projection returned to scheduler consumers. */
 export interface NanoHostRuntimeTargetRecord {
   /** Scheduler target id. */

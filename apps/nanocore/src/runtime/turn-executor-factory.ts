@@ -80,7 +80,10 @@ import {
   removeNanoHostSandboxRuntimeByBinding,
   removeNanoHostSandboxRuntimeForHarness,
 } from './nanohost-harness-records.js';
-import { requireStoredNanoHostPhysicalEpoch } from './nanohost-runtime-target.js';
+import {
+  NanoHostCleanupFencePendingError,
+  requireStoredNanoHostPhysicalEpoch,
+} from './nanohost-runtime-target.js';
 import {
   NanoHostEffectNotEnqueuedError,
   type NanoHostEffectOperation,
@@ -406,7 +409,9 @@ function createNanoHostWorkerLifecycleRuntime(
         throw new Error('The self-check executor cannot reconcile a real worker session.');
       }
       const environmentPackage = await restoreDurableSession(session);
-      backend.restoreSession(environmentPackage, session.attemptId);
+      // Cleaned closeout uses durable cleanup and release without restoring an obsolete live binding.
+      if (session.state !== 'cleaned')
+        backend.restoreSession(environmentPackage, session.attemptId);
       const store = sharedStore ?? new FsStore({ dataRoot: coreDb.dataRoot });
       const recoveredStatus = await turnExecutor.resumeAcceptedFinalStatus(
         store,
@@ -1609,9 +1614,25 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           'NanoHost accepted native ready proof could not be recorded before cleanup.'
         );
       }
-      if (this.failedPreSandboxPreparations.has(identity.packageSnapshotId)) {
+      // A closed no-effect incoming attempt has no authority to clean a shared resident.
+      const untouchedResident =
+        !session &&
+        durableSandbox &&
+        this.coreDb.sqlite
+          .prepare(`
+        SELECT 1 FROM scheduler_execution_attempts a WHERE a.attempt_id = ?
+          AND a.backend_id = ? AND a.agent_session_id = ? AND a.input_ref = ?
+          AND a.phase = 'closed' AND a.disposition = 'not_accepted'
+          AND a.operation_id IS NULL AND a.deadline IS NULL
+          AND a.last_accepted_heartbeat_at IS NULL AND a.last_worker_sequence IS NULL
+          AND a.worker_process_key_hash IS NULL AND a.worker_control_token_hash IS NULL
+          AND a.worker_inference_token_hash IS NULL AND a.worker_capability_token_hash IS NULL
+          AND NOT EXISTS (SELECT 1 FROM agent_session_runtime_bindings b
+            WHERE b.agent_session_id = a.agent_session_id OR b.current_attempt_id = a.attempt_id)
+        `)
+          .get(attemptId, this.id, identity.agentSessionId, identity.packageSnapshotId);
+      if (this.failedPreSandboxPreparations.has(identity.packageSnapshotId) || untouchedResident)
         return;
-      }
       if (durableSandbox?.cleanupState === 'unknown') {
         if (
           durableSandbox.lifecycleState !== 'failed' ||
@@ -1625,8 +1646,24 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           durableSandbox.originPhysicalEpoch,
           identity.deploymentId
         );
+        // Physical absence does not erase accepted native proof or its immutable storage lineage.
+        const bindings = this.coreDb.sqlite
+          .prepare(`SELECT b.agent_session_id AS agentSessionId,
+          b.agent_session_runtime_binding_id AS agentSessionRuntimeBindingId,
+          h.harness_instance_id AS harnessInstanceId, h.harness_binding_ref AS harnessBindingRef,
+          h.harness_compatibility_key AS harnessCompatibilityKey,
+          CASE WHEN b.native_handle_state = 'ready' THEN b.native_handle_digest ELSE NULL END AS nativeHandleDigest
+          FROM agent_session_runtime_bindings b JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
+          JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
+          WHERE s.sandbox_binding_ref = ?`)
+          .all(durableSandbox.sandboxBindingRef) as Array<
+          Omit<NanoHostAgentSessionContinuityInspection, 'reusable'>
+        >;
+        for (const binding of bindings)
+          this.handoffDurableAgentSessionProof({ ...binding, reusable: false });
         this.releaseWorkerStorageForSandbox(durableSandbox.sandboxBindingRef);
         removeNanoHostSandboxRuntimeByBinding(this.coreDb, durableSandbox.sandboxBindingRef);
+        this.forgetSharedSandbox(durableSandbox.sandboxCompatibilityKey);
         return;
       }
       if (durableCleanupFailure) {
@@ -1684,6 +1721,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         widenCleanup = true;
       }
       if (widenCleanup) {
+        let awaitingCleanupResult = false;
         try {
           const cleanupInput = {
             attemptId: attemptId,
@@ -1702,11 +1740,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               ))
             : null;
           if (recoveryResult) {
+            awaitingCleanupResult = true;
             const retained = await recoveryResult.finally(() =>
               this.cleanupRecoveryResults.delete(identity.packageSnapshotId)
             );
             requireNanoHostResultObject(retained.result);
+            awaitingCleanupResult = false;
             if (retained.kind === 'bridge.close') {
+              if (durableSandbox)
+                this.drainSandboxAfterCleanupEffect(
+                  durableSandbox.sandboxBindingRef,
+                  durableSandbox.originPhysicalEpoch
+                );
               await this.effect(
                 identity,
                 attemptId,
@@ -1724,19 +1769,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             );
           }
         } catch (error) {
-          const fenceInput = session
-            ? { harnessBindingRef: session.harnessBindingRef }
-            : durableSandbox
-              ? { sandboxBindingRef: durableSandbox.sandboxBindingRef }
-              : null;
-          if (fenceInput) {
+          // A result-only wait accounts for a previously uncertain dispatch, never a new cleanup effect.
+          if (awaitingCleanupResult && durableSandbox) {
             fenceNanoHostSandboxRuntime(this.coreDb, {
-              ...fenceInput,
+              sandboxBindingRef: durableSandbox.sandboxBindingRef,
               timestamp: new Date().toISOString(),
             });
-            this.fenceWorkerStorageForSandbox(
-              session?.sharedHarness.sandbox.sandboxBindingRef ?? durableSandbox!.sandboxBindingRef
-            );
+            this.fenceWorkerStorageForSandbox(durableSandbox.sandboxBindingRef);
           }
           if (session) {
             session.nativeSessionReusable = false;
@@ -2318,11 +2357,25 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         ? releasedBinding
         : null;
     } catch (error) {
-      fenceNanoHostSandboxRuntime(this.coreDb, {
-        sandboxBindingRef: eviction.sandboxBindingRef,
-        timestamp: new Date().toISOString(),
-      });
-      this.fenceWorkerStorageForSandbox(eviction.sandboxBindingRef);
+      // A drain claim is reversible when no uncertain cleanup or failed Harness owns a fence.
+      // The effect owner fences its exact target after dispatch; a pre-dispatch failure cannot.
+      this.coreDb.sqlite
+        .transaction(() => {
+          const restored = this.coreDb.sqlite
+            .prepare(`UPDATE sandbox_runtime_records SET drain_state = 'accepting'
+          WHERE sandbox_runtime_id = ? AND lifecycle_state = 'open' AND health_state = 'ready'
+            AND cleanup_state = 'clean' AND NOT EXISTS (
+              SELECT 1 FROM harness_instance_records WHERE sandbox_runtime_id = ?
+                AND (lifecycle_state <> 'open' OR operation_state IN ('queued', 'dispatched', 'unknown'))
+            )`)
+            .run(eviction.sandboxRuntimeId, eviction.sandboxRuntimeId);
+          if (restored.changes === 1)
+            this.coreDb.sqlite
+              .prepare(`UPDATE harness_instance_records
+          SET drain_state = 'accepting' WHERE sandbox_runtime_id = ? AND lifecycle_state = 'open'`)
+              .run(eviction.sandboxRuntimeId);
+        })
+        .immediate();
       this.forgetSharedSandbox(eviction.sandboxCompatibilityKey);
       throw error;
     }
@@ -3913,9 +3966,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (!this.sessionDispatch) {
       throw new Error('NanoHost fixed-effect dispatcher is not configured.');
     }
-    if (retiringSandboxOrigin === undefined) {
-      this.requireCurrentBackendPhysicalEpoch(identity);
-    } else if (
+    const originPhysicalEpoch =
+      retiringSandboxOrigin ?? this.requireCurrentBackendPhysicalEpoch(identity);
+    if (
+      retiringSandboxOrigin !== undefined &&
       this.requireCurrentPhysicalEpoch(identity.runtimeTargetId) !== retiringSandboxOrigin
     ) {
       throw new Error('NanoHost retiring Sandbox physical Epoch is no longer current.');
@@ -3932,18 +3986,36 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           operationId: request.requestId!,
         })
       : null;
-    let reply: unknown;
+    const cleanupTarget =
+      operation === 'bridge.close' || operation === 'sandbox.delete'
+        ? (this.coreDb.sqlite
+            .prepare(`SELECT sandbox_binding_ref AS sandboxBindingRef
+        FROM sandbox_runtime_records WHERE ('nh-' || substr(sandbox_compatibility_key, 1, 16)) = ?
+          AND origin_physical_epoch = ? AND runtime_target_id = ?`)
+            .get(input.sandboxId, originPhysicalEpoch, identity.runtimeTargetId) as
+            | { sandboxBindingRef: string }
+            | undefined)
+        : undefined;
+    let result: Record<string, unknown>;
     try {
-      reply = await this.sessionDispatch.effect({ ...request, ...(signal ? { signal } : {}) });
+      result = requireNanoHostResultObject(
+        await this.sessionDispatch.effect({ ...request, ...(signal ? { signal } : {}) })
+      );
     } catch (error) {
-      // Only the dispatch owner's correlated pre-enqueue refusal proves this operation absent.
-      // Earlier effects still require the ordinary cleanup fence; arbitrary failures stay unknown.
-      if (
-        recorded &&
+      const notEnqueued =
         error instanceof NanoHostEffectNotEnqueuedError &&
         error.operation === operation &&
-        error.requestId === request.requestId
-      )
+        error.requestId === request.requestId;
+      if (!notEnqueued && cleanupTarget) {
+        fenceNanoHostSandboxRuntime(this.coreDb, {
+          sandboxBindingRef: cleanupTarget.sandboxBindingRef,
+          timestamp: new Date().toISOString(),
+        });
+        this.fenceWorkerStorageForSandbox(cleanupTarget.sandboxBindingRef);
+      }
+      // Only the dispatch owner's correlated pre-enqueue refusal proves this operation absent.
+      // Earlier effects still require the ordinary cleanup fence; arbitrary failures stay unknown.
+      if (recorded && notEnqueued)
         acceptSchedulerExecutionObservation(this.coreDb, {
           ...schedulerExecutionCorrelation(recorded),
           disposition: 'not_accepted',
@@ -3953,7 +4025,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         });
       throw error;
     }
-    const result = requireNanoHostResultObject(reply);
+    if (cleanupTarget)
+      this.drainSandboxAfterCleanupEffect(cleanupTarget.sandboxBindingRef, originPhysicalEpoch);
     if (recorded)
       acceptSchedulerExecutionObservation(this.coreDb, {
         ...schedulerExecutionCorrelation(recorded),
@@ -3963,6 +4036,26 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         outcomeRef: null,
       });
     return result;
+  }
+
+  /** Keeps an exact resident unavailable after definite live or recovered cleanup success. */
+  private drainSandboxAfterCleanupEffect(
+    sandboxBindingRef: string,
+    originPhysicalEpoch: string
+  ): void {
+    this.coreDb.sqlite
+      .transaction(() => {
+        this.coreDb.sqlite
+          .prepare(`UPDATE sandbox_runtime_records SET drain_state = 'draining'
+          WHERE sandbox_binding_ref = ? AND origin_physical_epoch = ?`)
+          .run(sandboxBindingRef, originPhysicalEpoch);
+        this.coreDb.sqlite
+          .prepare(`UPDATE harness_instance_records SET lifecycle_state = 'failed', drain_state = 'draining'
+          WHERE sandbox_runtime_id IN (SELECT sandbox_runtime_id FROM sandbox_runtime_records
+            WHERE sandbox_binding_ref = ? AND origin_physical_epoch = ?)`)
+          .run(sandboxBindingRef, originPhysicalEpoch);
+      })
+      .immediate();
   }
 
   /** Creates one bounded cleanup expectation set containing no command or token. */
@@ -3995,11 +4088,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     readonly originPhysicalEpoch: string;
     readonly runtimeTargetId: string;
     readonly sandboxBindingRef: string;
+    readonly sandboxCompatibilityKey: string;
     readonly updatedAt: string;
   } | null {
     const rows = this.coreDb.sqlite
       .prepare(
         `SELECT DISTINCT s.sandbox_binding_ref AS sandboxBindingRef,
+                s.sandbox_compatibility_key AS sandboxCompatibilityKey,
                 s.runtime_target_id AS runtimeTargetId,
                 t.deployment_id AS deploymentId,
                 s.lifecycle_state AS lifecycleState,
@@ -4031,6 +4126,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       readonly originPhysicalEpoch: string;
       readonly runtimeTargetId: string;
       readonly sandboxBindingRef: string;
+      readonly sandboxCompatibilityKey: string;
       readonly updatedAt: string;
     }>;
     if (rows.length > 1) {
@@ -4132,6 +4228,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       !/^[0-9a-f]{64}$/.test(runtimeTarget.physicalEpoch) ||
       runtimeTarget.physicalEpoch === originPhysicalEpoch
     ) {
+      // Only coherent same-Epoch exclusion is an expected wait; every other proof refusal stays ordinary.
+      if (
+        runtimeTarget?.deploymentId === deploymentId &&
+        runtimeTarget.predecessorFenced === 1 &&
+        runtimeTarget.ready === 1 &&
+        runtimeTarget.freshEmpty === 1 &&
+        runtimeTarget.physicalEpoch &&
+        /^[0-9a-f]{64}$/.test(runtimeTarget.physicalEpoch) &&
+        runtimeTarget.physicalEpoch === originPhysicalEpoch
+      )
+        throw new NanoHostCleanupFencePendingError();
       throw new Error(
         'NanoHost unknown cleanup fence has no different fresh physical Epoch proof.'
       );

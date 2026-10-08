@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { NanoHostCleanupFencePendingError } from './nanohost-runtime-target.js';
 import { startSchedulerAttemptMaintenanceService } from './scheduler-attempt-maintenance-service.js';
 
 describe('scheduler attempt maintenance service', () => {
@@ -44,6 +45,59 @@ describe('scheduler attempt maintenance service', () => {
       service.stop();
       warn.mockRestore();
       errorLog.mockRestore();
+    }
+  });
+
+  it.each([
+    'mixed-native',
+    'same-message',
+    'empty-aggregate',
+    'other-stage',
+  ] as const)('retains broad diagnostics for %s failures', async (kind) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const pending = new NanoHostCleanupFencePendingError();
+    const fault =
+      kind === 'mixed-native'
+        ? new AggregateError([pending, new Error('Unexpected native failure.')])
+        : kind === 'same-message'
+          ? new Error(pending.message)
+          : kind === 'empty-aggregate'
+            ? new AggregateError([])
+            : pending;
+    const checkpoints = vi.fn(async () => {});
+    const service = startSchedulerAttemptMaintenanceService({
+      intervalMs: 30_000,
+      runRecoveryMaintenance: {
+        scheduler: async () => {
+          if (kind === 'other-stage') throw fault;
+        },
+        native: async () => {
+          if (kind !== 'other-stage') throw fault;
+        },
+        checkpoints,
+      },
+      setInterval: () => 'diagnostic-control-timer',
+      clearInterval: () => {},
+    });
+    try {
+      const failure = await service.runOnce().catch((error: AggregateError) => error);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(failure).toMatchObject({
+        errors: [fault],
+        message: 'Scheduler recovery maintenance failed.',
+      });
+      expect(checkpoints).toHaveBeenCalledOnce();
+      expect(
+        warn.mock.calls.map(([text]) => JSON.parse(String(text)).attributes['openkit.error.code'])
+      ).toEqual([
+        kind === 'other-stage'
+          ? 'scheduler.recovery_stage_failed'
+          : 'scheduler.native_recovery_stage_failed',
+        'scheduler.attempt_maintenance_failed',
+      ]);
+    } finally {
+      service.stop();
+      warn.mockRestore();
     }
   });
 

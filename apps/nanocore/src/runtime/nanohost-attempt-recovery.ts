@@ -906,14 +906,31 @@ async function settleTerminalFailedStart(
       throw new Error('Failed-start runtime binding has unproved execution ownership.');
     }
     const backend = getWorkerBackendSession(coreDb, attemptId);
+    const native = backend ? requireNanoHostExecutionAttempt(coreDb, attemptId) : null;
+    // An unused preparation anchor cannot hold the product outcome hostage to cleanup.
+    // Require the closed whole-attempt refusal and absence of every native authority signal.
+    const noEffectAnchor =
+      native !== null &&
+      attempt.phase === 'closed' &&
+      attempt.disposition === 'not_accepted' &&
+      attempt.operationId === null &&
+      attempt.deadline === null &&
+      bindings.length === 0 &&
+      native.lastAcceptedHeartbeatAt === null &&
+      native.lastWorkerSequence === null &&
+      native.workerProcessKeyHash === null &&
+      native.workerControlTokenHash === null &&
+      native.workerInferenceTokenHash === null &&
+      native.workerCapabilityTokenHash === null;
     if (backend) {
       if (
         !pkg ||
         !attempt.bindingRef ||
         backend.sandboxBindingRef !== attempt.bindingRef ||
-        !['physical-cleaned', 'cleaned'].includes(backend.state) ||
-        !backend.physicalCleanedAt ||
-        backend.workspaceHandoffState !== 'complete'
+        (!noEffectAnchor &&
+          (!['physical-cleaned', 'cleaned'].includes(backend.state) ||
+            !backend.physicalCleanedAt ||
+            backend.workspaceHandoffState !== 'complete'))
       )
         throw new Error('Failed-start backend cleanup is not definite for this exact attempt.');
       assertSessionMatchesAttempt(backend, requireNanoHostExecutionAttempt(coreDb, attemptId));
