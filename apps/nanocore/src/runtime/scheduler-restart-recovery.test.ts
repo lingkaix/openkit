@@ -142,7 +142,8 @@ async function createFailedStartFixture(
   suffix: string,
   outcome = false,
   anchored = true,
-  finalized = true
+  finalized = true,
+  workspaceInputIds: readonly string[] = []
 ) {
   const coreDb = createMigratedCoreDb();
   const dataRoot = coreDb.dataRoot;
@@ -294,7 +295,7 @@ async function createFailedStartFixture(
       now: () => anchor.physicalCleanedAt!,
     });
   } else if (finalized)
-    recordTestAgentEnvironmentPackage(workspaceDb, { suffix, workspaceInputIds: [] });
+    recordTestAgentEnvironmentPackage(workspaceDb, { suffix, workspaceInputIds });
   if (anchored) {
     const closing = attempts.markSchedulerExecutionAttemptClosing(coreDb, {
       attemptId: `lease_${suffix}`,
@@ -2550,11 +2551,16 @@ describe('scheduler restart recovery', () => {
   });
 
   it.each([
-    false,
-    true,
-  ])('terminalizes a no-operation failed start despite unused-anchor cleanup failure (partial publication=%s)', async (partial) => {
-    const suffix = `no_effect_cleanup_failure_${partial}`;
-    const f = await createFailedStartFixture(suffix, false, false, true);
+    { partial: false, workspaceInputIds: [] },
+    { partial: true, workspaceInputIds: [] },
+    { partial: false, workspaceInputIds: ['source'] },
+    { partial: true, workspaceInputIds: ['source'] },
+  ])('terminalizes a no-operation failed start despite unused-anchor cleanup failure ($partial, $workspaceInputIds)', async ({
+    partial,
+    workspaceInputIds,
+  }) => {
+    const suffix = `no_effect_cleanup_failure_${partial}_${workspaceInputIds.length}`;
+    const f = await createFailedStartFixture(suffix, false, false, true, workspaceInputIds);
     try {
       f.coreDb.sqlite
         .prepare("UPDATE scheduler_execution_attempts SET phase = 'open' WHERE attempt_id = ?")
@@ -2563,6 +2569,56 @@ describe('scheduler restart recovery', () => {
       f.coreDb.sqlite
         .prepare("UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE attempt_id = ?")
         .run(`lease_${suffix}`);
+      f.store.updateAgentSession(f.agentSessionId, { status: 'created' });
+      expect(
+        f.coreDb.sqlite
+          .prepare(`SELECT
+          (SELECT COUNT(*) FROM scheduler_execution_attempts) AS attempts,
+          (SELECT COUNT(*) FROM agent_session_runtime_bindings) AS bindings,
+          (SELECT COUNT(*) FROM harness_instance_records) AS harnesses,
+          (SELECT COUNT(*) FROM sandbox_runtime_records) AS sandboxes`)
+          .get()
+      ).toEqual({ attempts: 1, bindings: 0, harnesses: 0, sandboxes: 0 });
+      const anchor = getWorkerBackendSession(f.coreDb, `lease_${suffix}`)!;
+      const originalAttempt = requireNanoHostExecutionAttempt(f.coreDb, `lease_${suffix}`);
+      expect(anchor).toMatchObject({
+        state: 'cleanup-failed',
+        workspaceHandoffState: 'pending',
+        physicalCleanedAt: null,
+      });
+      expect(originalAttempt).toMatchObject({
+        phase: 'closed',
+        disposition: 'not_accepted',
+        operationId: null,
+        deadline: null,
+        lastAcceptedHeartbeatAt: null,
+        lastWorkerSequence: null,
+        workerProcessKeyHash: null,
+        workerControlTokenHash: null,
+        workerInferenceTokenHash: null,
+        workerCapabilityTokenHash: null,
+        terminalCause: 'turn-start-failed',
+      });
+      recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
+        targetId: 'runtime-target-test',
+        closedGeneration: 1,
+        authoritativeGeneration: null,
+        observedAt: '2026-10-08T04:30:00.000Z',
+      });
+      const allocated = allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+        deploymentId: 'deployment-test',
+        identityId: 'identity-test',
+        observedAt: '2026-10-08T04:30:01.000Z',
+        targetId: 'runtime-target-test',
+      });
+      upsertNanoHostRuntimeTarget(f.coreDb, {
+        ...allocated,
+        freshEmpty: true,
+        observedAt: '2026-10-08T04:30:02.000Z',
+        physicalEpoch: 'b'.repeat(64),
+        predecessorFenced: true,
+        ready: true,
+      });
       const queued = f.store.createTurn(
         'ws_demo',
         f.threadId,
@@ -2624,8 +2680,108 @@ describe('scheduler restart recovery', () => {
       expect(new FsStore({ dataRoot: f.dataRoot }).getTurnById(f.turnId)).toEqual(
         f.store.getTurnById(f.turnId)
       );
+      const terminal = f.store.getTurnById(f.turnId);
+      const session = f.store.getAgentSession(f.agentSessionId);
+      const events = f.store.getTurnEvents(f.turnId);
+      expect(session.status).toBe('failed');
+      expect(getWorkerBackendSession(f.coreDb, `lease_${suffix}`)).toEqual(anchor);
+      expect(requireNanoHostExecutionAttempt(f.coreDb, `lease_${suffix}`)).toEqual(originalAttempt);
+      f.coreDb.sqlite.close();
+      const restartedCore = openCoreDb(f.dataRoot);
+      try {
+        const restartedStore = new FsStore({ dataRoot: f.dataRoot });
+        const restartedInput = testRecoveryInput(restartedCore, {
+          ...recovery,
+          store: restartedStore,
+          executionBackend: new SimulatedTurnExecutor({ coreDb: restartedCore }),
+        });
+        await recoverTestStartup(restartedCore, restartedInput);
+        for (let pass = 0; pass < 6; pass++)
+          await expect(drainTestRecovery(restartedCore, restartedInput)).rejects.toThrow(
+            'Native attempt recovery failed'
+          );
+        expect(restartedStore.getTurnById(f.turnId)).toEqual(terminal);
+        expect(restartedStore.getAgentSession(f.agentSessionId)).toEqual(session);
+        expect(restartedStore.getTurnEvents(f.turnId)).toEqual(events);
+        expect(getWorkerBackendSession(restartedCore, `lease_${suffix}`)).toEqual(anchor);
+        expect(requireNanoHostExecutionAttempt(restartedCore, `lease_${suffix}`)).toEqual(
+          originalAttempt
+        );
+        expect(restartedStore.getTurnById(queued.id)).toEqual(queued);
+        expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
+      } finally {
+        restartedCore.sqlite.close();
+      }
     } finally {
       vi.restoreAllMocks();
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'materialization',
+    'handle',
+    'native-evidence',
+  ] as const)('refuses unused-anchor failed-start settlement with unproved %s', async (proof) => {
+    const suffix = `no_effect_unproved_${proof}`;
+    const f = await createFailedStartFixture(suffix, false, false, true, ['source']);
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      f.coreDb.sqlite
+        .prepare("UPDATE scheduler_execution_attempts SET phase = 'open' WHERE attempt_id = ?")
+        .run(`lease_${suffix}`);
+      recordBackendSession(f.coreDb, suffix, 'cleanup-failed');
+      f.coreDb.sqlite
+        .prepare("UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE attempt_id = ?")
+        .run(`lease_${suffix}`);
+      const db = openWorkspaceDb(f.dataRoot, 'ws_demo');
+      try {
+        if (proof === 'native-evidence')
+          f.coreDb.sqlite
+            .prepare(
+              'UPDATE scheduler_execution_attempts SET last_worker_sequence = 1 WHERE attempt_id = ?'
+            )
+            .run(`lease_${suffix}`);
+        else {
+          const pkg = requireAgentEnvironmentPackageSnapshot(
+            db,
+            'ws_demo',
+            `aepsnap_turn_${suffix}_as_${suffix}`
+          ).snapshot;
+          recordCanonicalWorkspaceHandoff(db, pkg, '2026-07-05T00:00:04.000Z');
+          if (proof === 'materialization')
+            db.sqlite.prepare('DELETE FROM backend_workspace_handles').run();
+          else {
+            // The retained handle alone must not be mistaken for an unpublished handoff.
+            db.sqlite.prepare('DELETE FROM workspace_materialization_records').run();
+          }
+        }
+      } finally {
+        db.sqlite.close();
+      }
+      const turn = f.store.getTurnById(f.turnId);
+      const session = f.store.getAgentSession(f.agentSessionId);
+      const anchor = getWorkerBackendSession(f.coreDb, `lease_${suffix}`);
+      const recovery = testRecoveryInput(f.coreDb, {
+        ...f.input,
+        cleanupBackendSession: async () => {
+          throw new Error('Unused anchor cleanup unavailable.');
+        },
+      });
+      for (let pass = 0; pass < 2; pass++)
+        await expect(runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery)).rejects.toThrow(
+          'Native attempt recovery failed'
+        );
+      expect(
+        log.mock.calls.map(([line]) => JSON.parse(line).attributes['openkit.error.code'])
+      ).toContain('scheduler.native_failed_start_recovery_required');
+      expect(f.store.getTurnById(f.turnId)).toEqual(turn);
+      expect(f.store.getAgentSession(f.agentSessionId)).toEqual(session);
+      expect(getWorkerBackendSession(f.coreDb, `lease_${suffix}`)).toEqual(anchor);
+      expect(f.store.getTurnEvents(f.turnId)).toEqual([]);
+      expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
       f.coreDb.sqlite.close();
     }
   });

@@ -942,7 +942,19 @@ async function settleTerminalFailedStart(
         throw new Error('Failed-start backend cleanup is not definite for this exact attempt.');
       assertSessionMatchesAttempt(backend, requireNanoHostExecutionAttempt(coreDb, attemptId));
       assertEnvironmentPackageMatchesSession(pkg, backend);
-      requireCompleteBackendWorkspaceHandleHandoff(workspace.db, pkg);
+      // A closed pre-effect refusal can leave declared inputs entirely unpublished.
+      // Publish only the failed product outcome; pending physical cleanup and its fence stay owned separately.
+      // Any published materialization or handle still requires the complete existing handoff proof.
+      const materializationNotPublished =
+        noEffectAnchor &&
+        !listBackendWorkspaceHandles(workspace.db, attempt.workspaceId).some(
+          (handle) => handle.packageSnapshotId === pkg.snapshotId
+        ) &&
+        !listWorkspaceMaterializationRecords(workspace.db, attempt.workspaceId).some(
+          (record) => record.packageSnapshotId === pkg.snapshotId
+        );
+      if (!materializationNotPublished)
+        requireCompleteBackendWorkspaceHandleHandoff(workspace.db, pkg);
     } else if (!hasNanoHostAttemptPreEffectProof(coreDb, attemptId)) {
       throw new Error('Failed-start attempt has no positive pre-effect proof.');
     }
