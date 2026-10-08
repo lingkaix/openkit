@@ -539,7 +539,9 @@ async function dispatchSchedulerAdmission(
     const current = requireSchedulerExecutionAttempt(input.coreDb, attempt.attemptId);
     if (
       error instanceof WorkerGovernanceCapacityUnavailableError &&
+      current.phase === 'open' &&
       current.operationId === null &&
+      input.store.getTurnById(entry.turnId).status === 'pending' &&
       !input.store
         .listThreadAgentSessions(entry.workspaceId, entry.threadId)
         .some((session) => session.id === current.agentSessionId && session.status === 'busy')

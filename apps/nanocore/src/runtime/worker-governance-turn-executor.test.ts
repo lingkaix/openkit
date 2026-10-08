@@ -1019,7 +1019,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     const backend = new FakeWorkerGovernanceBackend();
     const refusal = new Error('NanoHost effect image.acquire already has a pending command.');
-    backend.materialize = async (pkg) => {
+    backend.materialize = async (pkg, context) => {
+      context?.beforeMaterialization?.();
       backend.calls.push('materialize');
       const intent = attempts.recordSchedulerExecutionOperation(f.coreDb, {
         attemptId: `lease_${f.turn.id}`,
@@ -8309,13 +8310,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
         error: { code: 'workspace_access_denied' },
         status: 'interrupted',
       });
-      expect(store.getAgentSession(agentSessionId)).toMatchObject({ status: 'interrupted' });
+      expect(store.listThreadAgentSessions(turn.workspaceId, turn.threadId)).toEqual([]);
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('writes a package-scoped backend anchor before materialization and cleans it for zero-input turns', async () => {
+  it('writes a package-scoped backend anchor before incoming materialization effects and cleans it for zero-input turns', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-anchor-order-')));
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
@@ -8333,12 +8334,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     const materialize = backend.materialize.bind(backend);
     const materializeSpy = vi.spyOn(backend, 'materialize').mockImplementation(async (...args) => {
+      args[1]?.beforeMaterialization?.();
       expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)).toMatchObject({
         backendSessionId: `openkit-${agentSessionId}`,
         packageSnapshotId,
         state: 'materializing',
       });
-      return materialize(...args);
+      return materialize(args[0], { ...args[1], beforeMaterialization: undefined });
     });
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
@@ -9429,6 +9431,7 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
     environmentPackage: AgentEnvironmentPackage,
     context?: Parameters<WorkerGovernanceBackend['materialize']>[1]
   ): Promise<WorkerGovernanceMaterializationRecord> {
+    context?.beforeMaterialization?.();
     this.calls.push('materialize');
     this.lastContext = context ?? null;
     this.lastPackage = environmentPackage;

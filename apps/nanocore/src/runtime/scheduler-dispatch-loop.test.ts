@@ -57,6 +57,7 @@ import {
   transitionWorkerBackendSessionState,
 } from './worker-backend-sessions';
 import { WorkerGovernanceCapacityUnavailableError } from './worker-governance-backend.js';
+import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 
 const extraCoreHandles: ReturnType<typeof openCoreDb>[] = [];
 afterEach(() => {
@@ -2889,6 +2890,85 @@ describe('scheduler dispatch loop', () => {
       } finally {
         workspaceDb.sqlite.close();
       }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('does not report backend-busy queued work after the Turn has failed', async () => {
+    const coreDb = createMigratedCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const refusal = new WorkerGovernanceCapacityUnavailableError();
+    /** Models the conflicting terminal publication at the executor boundary without replacing scheduler decisions. */
+    class TerminalBusyExecutor extends RecordingTurnExecutor {
+      public override async startTurn(
+        owner: FsStore,
+        turnId: string,
+        _input: string,
+        context?: TurnStartRuntimeContext
+      ): Promise<void> {
+        terminalizeGovernedWorkerTurn({
+          store: owner,
+          turnId,
+          agentSessionId: null,
+          requestId: context!.requestId!,
+          outcome: 'failed',
+          completedAt: '2026-07-05T00:00:03.000Z',
+          errorCode: 'worker_governance_turn_failed',
+          message: refusal.message,
+        });
+        throw refusal;
+      }
+    }
+    const turnExecutor = new TerminalBusyExecutor(coreDb);
+    try {
+      publishTestAdmission(
+        store,
+        createSchedulerAdmissionEntry(coreDb, {
+          backendId: 'nanohost',
+          triggerActor: { kind: 'user', id: 'user_local' },
+          queueEntryId: 'queue_terminal_busy',
+          requestId: 'request_terminal_busy',
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          turnId: 'turn_terminal_busy',
+          turnInput: 'Refuse after terminal publication',
+          requestedAgentId: 'agent_codex_host',
+        })
+      );
+      await expect(
+        runSchedulerDispatchLoop({
+          gatewayConfig: createTestGatewayConfig(),
+          coreDb,
+          createAgentSessionId: () => 'as_terminal_busy',
+          createAttemptId: () => 'attempt_terminal_busy',
+          maxDispatches: 1,
+          providerRegistry: localProviderRegistry(),
+          store,
+          turnExecutor,
+          executionBackend: turnExecutor.executionBackend,
+          agentManifests: [agentManifest()],
+        })
+      ).rejects.toBe(refusal);
+      expect(store.getTurnById('turn_terminal_busy').status).toBe('failed');
+      expect(
+        schedulerRecords.requireSchedulerAdmissionEntry(coreDb, 'queue_terminal_busy').status
+      ).toBe('admitted');
+      expect(executionAttempts(coreDb)).toMatchObject([
+        {
+          phase: 'closed',
+          disposition: 'not_accepted',
+          terminal_cause: 'turn-start-failed',
+          operation_id: null,
+        },
+      ]);
+      expect(
+        store
+          .getTurnEvents('turn_terminal_busy')
+          .filter(
+            (event) => event.event === 'turn.completed' && event.data.type === 'turn-completed'
+          )
+      ).toHaveLength(1);
     } finally {
       coreDb.sqlite.close();
     }

@@ -1962,7 +1962,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   public inspectMaterializationCapacity(
     environmentPackage: AgentEnvironmentPackagePreview
   ): 'available' | 'capacity-saturated' {
-    const eviction = this.inspectIncompatibleIdleSandbox(environmentPackage);
+    // A compatible resident is not spare capacity until its prior Turn's full handoff releases it.
+    const eviction = this.inspectIncompatibleIdleSandbox(environmentPackage, true);
     if (eviction === 'capacity-saturated') return 'capacity-saturated';
     for (const binding of eviction?.bindings ?? []) {
       this.handoffDurableAgentSessionProof(binding);
@@ -2238,7 +2239,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     try {
       const inspected = this.inspectIncompatibleIdleSandbox(environmentPackage, forceRetirement);
       if (inspected === 'capacity-saturated') {
-        throw new Error('NanoHost one-Sandbox capacity is occupied or unproved.');
+        throw new WorkerGovernanceCapacityUnavailableError(
+          'NanoHost one-Sandbox capacity is occupied or unproved.'
+        );
       }
       eviction = inspected;
       if (eviction) {
@@ -2482,9 +2485,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     ) {
       throw new Error('NanoHost image build requires the exact V1 empty build-context pair.');
     }
-    const originPhysicalEpoch = this.requireCurrentBackendPhysicalEpoch(identity);
+    // An existing anchor still owns its exact origin; a not-yet-published incoming anchor must use this same Epoch.
+    const capacityPhysicalEpoch =
+      context.beforeMaterialization && !getWorkerBackendSession(this.coreDb, attemptId)
+        ? this.requireCurrentPhysicalEpoch(identity.runtimeTargetId)
+        : this.requireCurrentBackendPhysicalEpoch(identity);
     if (this.inspectIncompatibleIdleSandbox(environmentPackage) === 'capacity-saturated') {
-      throw new Error('NanoHost one-Sandbox capacity is occupied or unproved.');
+      throw new WorkerGovernanceCapacityUnavailableError(
+        'NanoHost one-Sandbox capacity is occupied or unproved.'
+      );
     }
     let releasedSelectedBinding: WorkerStorageBinding | null;
     try {
@@ -2553,12 +2562,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           responsibleUserId,
           threadId: environmentPackage.scope.threadId,
         });
-      if (!replaceSharedSandbox) {
-        sharedSandbox.workerStorageBinding = admitWorkerStorageContributor(this.coreDb, {
-          ...replacementSelection,
-          layout: sharedSandbox.workerStorageBinding.layout,
-        });
-      }
     } else if (sharedSandbox && !choice && existingContributor) {
       const residentWorkSlotRef = requireWorkerStorageWorkSlot(
         sharedSandbox.workerStorageBinding,
@@ -2577,6 +2580,19 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       );
       sharedHarness = null;
       sharedSandbox = null;
+    }
+    // Both resident refusal routes precede publication.
+    // Every incoming reservation or effect requires its durable Core AgentSession, checkpoint, package and backend anchor.
+    context.beforeMaterialization?.();
+    const originPhysicalEpoch = this.requireCurrentBackendPhysicalEpoch(
+      identity,
+      capacityPhysicalEpoch
+    );
+    if (sharedSandbox && choice?.kind === 'selected' && replacementSelection) {
+      sharedSandbox.workerStorageBinding = admitWorkerStorageContributor(this.coreDb, {
+        ...replacementSelection,
+        layout: sharedSandbox.workerStorageBinding.layout,
+      });
     }
     if (!sharedSandbox) {
       const localImageDigest =

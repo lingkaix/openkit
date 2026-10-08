@@ -174,7 +174,8 @@ function fixture(
       stagingDirectoryRef: `server/runtime/worker-backend-sessions/${aep.snapshotId}`,
       transientProviderInstanceId: null,
     }),
-    materialize: async (aep) => {
+    materialize: async (aep, context) => {
+      context?.beforeMaterialization?.();
       // The external materialization fixture publishes its exact live control registration.
       controlGateway.registerSession(aep);
       return {

@@ -28,6 +28,7 @@ import * as attemptActionOwners from '../scheduler-records.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { ensureLayout } from '../storage/fs-layout.js';
+import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
   createTestAgentSetup,
@@ -57,6 +58,7 @@ import {
   recordSchedulerExecutionOperation,
   schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
+import { commandInputHash } from './idempotent-command.js';
 import {
   bindNanoHostAttemptPreparation,
   requireNanoHostExecutionAttempt,
@@ -102,6 +104,11 @@ import {
   markWorkerBackendWorkspaceHandoffComplete,
   transitionWorkerBackendSessionState,
 } from './worker-backend-sessions.js';
+import {
+  createWorkerCheckpointContextDiagnostics,
+  getWorkerCheckpoint,
+  upsertWorkerCheckpoint,
+} from './worker-checkpoints.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 import { createWorkerEnvironmentRuntimeEffects } from './worker-environment-runtime-effects.js';
@@ -8969,6 +8976,391 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it.each([
+    'active',
+    'closeout',
+    'late-capacity',
+    'materialization-initial-guard',
+    'materialization-forced-retirement-guard',
+  ] as const)('keeps an independent Task queued until one-Sandbox release: %s', async (scenario) => {
+    const coreDb = createFactoryCoreDb();
+    const effects: NanoHostSessionEffectRequest[] = [];
+    const setup = createTestAgentSetup({
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    });
+    admitTestNativeEnvironment(coreDb, setup.manifest);
+    coreDb.sqlite
+      .prepare(`INSERT INTO nanohost_runtime_targets
+        (target_id, identity_id, deployment_id, connection_generation, predecessor_fenced,
+         ready, fresh_empty, physical_epoch, observed_at, slot_count)
+        VALUES ('target_busy', 'identity_busy', 'deployment_busy', 1, 1, 1, 1, ?, ?, 1)`)
+      .run('a'.repeat(64), new Date().toISOString());
+    for (const suffix of ['first', 'second'])
+      authorizeNanoHostPackage(
+        coreDb,
+        completeNanoHostPackage({
+          agentSetup: setup,
+          scope: {
+            agentSessionId: `as_busy_${suffix}`,
+            threadId: `thread_busy_${suffix}`,
+            turnId: `turn_busy_${suffix}`,
+            workspaceId: 'workspace_busy',
+          },
+          snapshotId: `snapshot_busy_${suffix}`,
+        })
+      );
+    const store = new FsStore({ dataRoot: coreDb.dataRoot });
+    const runtime = createConfiguredWorkerLifecycleRuntime({
+      coreDb,
+      env: {},
+      store,
+      nanoHostSessionDispatch: createFactoryNanoHostDispatch(effects),
+      workerControlGateway: new WorkerControlGateway(),
+    });
+    const backend = (
+      runtime.turnExecutor as unknown as {
+        backend: WorkerGovernanceBackend & {
+          inspectTerminalHarnessSession(session: unknown): Promise<void>;
+          inspectIncompatibleIdleSandbox(...args: unknown[]): unknown;
+          sessions: Map<string, unknown>;
+        };
+      }
+    ).backend;
+    const release = Promise.withResolvers<void>();
+    const held = Promise.withResolvers<void>();
+    const digest = 'b'.repeat(64);
+    const nativeStarts: string[] = [];
+    backend.collectTranscript = async (id) => {
+      await backend.inspectTerminalHarnessSession(backend.sessions.get(id));
+      if (scenario === 'closeout' && id.includes('turn_busy_first')) {
+        held.resolve();
+        await release.promise;
+      }
+      return { eventsJsonl: '', itemsJsonl: '' };
+    };
+    /** Changes only fixture residency after the real execution precheck yields to package validation. */
+    class CapacityBoundaryExecutor extends WorkerGovernanceTurnExecutor {
+      private capacityChanged = false;
+      public capacityRefusal: WorkerGovernanceCapacityUnavailableError | null = null;
+      public override async startTurn(
+        ...args: Parameters<WorkerGovernanceTurnExecutor['startTurn']>
+      ): Promise<void> {
+        const execution = super.startTurn(...args);
+        if (args[1] === 'turn_busy_second' && !this.capacityChanged) {
+          this.capacityChanged = true;
+          if (scenario === 'materialization-initial-guard') {
+            coreDb.sqlite
+              .prepare("UPDATE sandbox_runtime_records SET drain_state = 'draining'")
+              .run();
+          } else if (scenario === 'materialization-forced-retirement-guard') {
+            // A compatible resident can still acquire unfinished binding ownership before retirement.
+            coreDb.sqlite
+              .prepare(`UPDATE agent_session_runtime_bindings
+              SET current_turn_id = 'turn_busy_first', current_attempt_id = 'attempt_busy_1'`)
+              .run();
+          }
+        }
+        try {
+          await execution;
+        } catch (error) {
+          if (error instanceof WorkerGovernanceCapacityUnavailableError)
+            this.capacityRefusal = error;
+          throw error;
+        }
+      }
+    }
+    const executor = new CapacityBoundaryExecutor({
+      backend,
+      coreDb,
+      awaitWorkerCompletion: async (aep) => {
+        if (scenario !== 'closeout' && aep.scope.turnId === 'turn_busy_first') {
+          held.resolve();
+          await release.promise;
+        }
+        const acceptedAt = new Date().toISOString();
+        recordWorkerControlAcceptedRecord(coreDb, {
+          acceptedAt,
+          lineage: { ...aep.scope, packageSnapshotId: aep.snapshotId },
+          operation: 'final_status',
+          record: { sequence: 1, status: 'completed', stopReason: 'completed' },
+          recordKey: '1',
+          sequence: 1,
+        });
+        return { acceptedAt, status: 'completed', stopReason: 'completed' };
+      },
+    });
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'workspace_busy');
+    applyScopedMigrations(workspaceDb);
+    const entries = ['first', 'second'].map((suffix, index) => {
+      const contextItemId = `it_busy_context_${suffix}`;
+      const requestId = `00000000-0000-4000-8000-00000000030${index}`;
+      const workerRequest = JSON.stringify({
+        schemaVersion: 1,
+        objective: 'Run an independent Task.',
+        acceptanceCriteria: ['Complete once capacity is released.'],
+        contextRefs: [{ kind: 'item', id: contextItemId }],
+        resources: [],
+        expectedArtifacts: [],
+        constraints: { maxContextTokens: 20000, maxWorkerIterations: 1 },
+        verification: [{ kind: 'manual', description: 'Inspect completion.' }],
+        reviewPolicy: { required: true, reviewers: ['human'], instructions: 'Review completion.' },
+        escalationConditions: [],
+        reviewContext: null,
+      });
+      const entry = createSchedulerAdmissionEntry(coreDb, {
+        backendId: backend.id,
+        queueEntryId: `queue_busy_${suffix}`,
+        requestId,
+        requestedAgentId: setup.manifest.id,
+        threadId: `thread_busy_${suffix}`,
+        turnId: `turn_busy_${suffix}`,
+        turnInput: workerRequest,
+        triggerActor: { kind: 'user', id: 'user-factory' },
+        workspaceId: 'workspace_busy',
+      });
+      publishFactoryAdmission(store, entry);
+      store.createItem({
+        id: contextItemId,
+        actor: entry.triggerActor,
+        type: 'user-message',
+        text: 'Independent Task context.',
+        status: 'completed',
+        createdAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        threadId: entry.threadId,
+        turnId: entry.turnId,
+        workspaceId: entry.workspaceId,
+      });
+      const retrievalTraceId = `krt_0190f4c8-0000-7000-8000-00000000030${index}`;
+      retrieveWorkspaceKnowledge({
+        caller: 'task-mode',
+        dataRoot: coreDb.dataRoot,
+        limit: 5,
+        pinnedConceptIds: [],
+        query: 'Run an independent Task',
+        traceId: retrievalTraceId,
+        workspaceId: entry.workspaceId,
+      });
+      upsertWorkerCheckpoint(workspaceDb, {
+        iteration: 0,
+        requestId,
+        requestInputHash: commandInputHash(workerRequest),
+        stage: 'preparing',
+        threadId: entry.threadId,
+        turnId: entry.turnId,
+        workspaceId: entry.workspaceId,
+        diagnosticsSummary: createWorkerCheckpointContextDiagnostics({
+          contextDigest: commandInputHash(workerRequest),
+          contextRefs: [{ kind: 'item', id: contextItemId }],
+          knowledgeSelectionInput: { retrievalTraceId },
+        }),
+      });
+      return entry;
+    });
+    let attemptNumber = 0;
+    const dispatch = {
+      agentManifests: [setup.manifest],
+      coreDb,
+      gatewayConfig: createTestGatewayConfig(),
+      maxDispatches: 1,
+      providerRegistry: new ProviderRegistry([
+        {
+          baseUrl: 'http://127.0.0.1:11434/v1',
+          defaultModel: 'openai/gpt-5.2',
+          displayName: 'Busy fixture',
+          id: 'agent-openrouter',
+          kind: 'local' as const,
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+      store,
+      turnExecutor: executor,
+      executionBackend: backend,
+      createAttemptId: () => `attempt_busy_${++attemptNumber}`,
+    };
+    /** Settles only external Harness replies while the real in-process owners execute. */
+    const drive = async <T>(promise: Promise<T>): Promise<T> => {
+      let done = false;
+      const observed = promise.finally(() => {
+        done = true;
+      });
+      void observed.catch(() => undefined);
+      for (let tick = 0; tick < 5000 && !done; tick += 1) {
+        const integrations = coreDb.sqlite
+          .prepare('SELECT sandbox_integration_binding_ref AS ref FROM sandbox_runtime_records')
+          .all() as { ref: string }[];
+        for (const integration of integrations) {
+          const command = dispatchNanoHostHarnessOperation(coreDb, {
+            sandboxIntegrationBindingRef: integration.ref,
+          });
+          if (!command) continue;
+          runtime.acceptNanoHostHarnessCommand(command);
+          if (command.operation === 'turn.start') nativeStarts.push(String(command.body.turnId));
+          const body =
+            command.operation === 'session.close'
+              ? { state: 'closed', privateState: 'absent', childState: 'absent' }
+              : command.operation === 'turn.start'
+                ? { state: 'started', nativeHandleState: 'ready', nativeHandleDigest: digest }
+                : command.operation === 'session.open'
+                  ? {
+                      maxActiveTurns: 1,
+                      state: 'open',
+                      nativeHandleState: 'ready',
+                      nativeHandleDigest: digest,
+                    }
+                  : {
+                      state: 'open',
+                      childState: 'absent',
+                      cleanupState: 'clean',
+                      nativeHandleState: 'ready',
+                      nativeHandleDigest: digest,
+                    };
+          const result = {
+            body,
+            disposition: 'succeeded' as const,
+            harnessInstanceId: command.harnessInstanceId,
+            operationId: command.operationId,
+            schemaVersion: 2 as const,
+            sequence: command.sequence,
+          };
+          settleNanoHostHarnessOperation(coreDb, {
+            result,
+            sandboxIntegrationBindingRef: integration.ref,
+            timestamp: new Date().toISOString(),
+          });
+          runtime.acceptNanoHostHarnessResult(result);
+        }
+        if (!done) await new Promise<void>((resolve) => setTimeout(resolve, 1));
+      }
+      expect(done).toBe(true);
+      return observed;
+    };
+    const first = runSchedulerDispatchLoop(dispatch);
+    void first.catch(() => undefined);
+    try {
+      await drive(held.promise);
+      const second = entries[1]!;
+      const scope = {
+        workspaceId: second.workspaceId,
+        threadId: second.threadId,
+        actorId: 'user-factory',
+      };
+      const receipt = store.getCommandRequest('turn.start', second.requestId, scope);
+      const checkpoint = getWorkerCheckpoint(
+        workspaceDb,
+        second.workspaceId,
+        second.threadId,
+        second.turnId
+      );
+      expect(receipt).toMatchObject({ response: { kind: 'turn', id: second.turnId } });
+      expect(checkpoint).toMatchObject({ stage: 'preparing', workerSessionId: null });
+      expect(store.getTurnById(entries[0]!.turnId).status).toBe('running');
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 1 });
+      const boundaryRefusal = scenario.startsWith('materialization-');
+      if (boundaryRefusal) {
+        release.resolve();
+        await drive(first);
+      }
+      const effectsBefore = effects.length;
+      // Model capacity changing between preparation and execution, without replacing the deciding backend check.
+      if (scenario === 'late-capacity') {
+        const staleRead = vi.spyOn(backend, 'inspectIncompatibleIdleSandbox').mockReturnValue(null);
+        const commit = executor.commitPreparedAgentSessionForTurn.bind(executor);
+        vi.spyOn(executor, 'commitPreparedAgentSessionForTurn').mockImplementationOnce(
+          async (...args) => {
+            try {
+              return await commit(...args);
+            } finally {
+              staleRead.mockRestore();
+            }
+          }
+        );
+      }
+      const eventsBefore = store.getTurnEvents(second.turnId);
+      const deferred = await drive(runSchedulerDispatchLoop(dispatch));
+      if (boundaryRefusal) {
+        expect(executor.capacityRefusal).toBeInstanceOf(WorkerGovernanceCapacityUnavailableError);
+        expect(executor.capacityRefusal?.stack).toContain(
+          'NanoHostWorkerGovernanceBackend.materialize'
+        );
+        expect(executor.capacityRefusal?.stack?.includes('evictIncompatibleIdleSandbox')).toBe(
+          scenario === 'materialization-forced-retirement-guard'
+        );
+      }
+      expect(deferred).toMatchObject({
+        startedTurns: [],
+        terminalResult: { status: 'queued', reason: 'backend-busy' },
+      });
+      // Read the SSE envelope, so a failed terminal publication cannot satisfy queued admission.
+      expect(
+        store
+          .getTurnEvents(second.turnId)
+          .filter(
+            (event) => event.event === 'turn.completed' && event.data.type === 'turn-completed'
+          )
+      ).toEqual([]);
+      expect(store.getTurnById(second.turnId)).toMatchObject({
+        id: second.turnId,
+        status: 'pending',
+        error: null,
+        completedAt: null,
+      });
+      expect(store.getTurnById(second.turnId).agentSessionId ?? null).toBeNull();
+      expect(store.getTurnEvents(second.turnId)).toEqual(eventsBefore);
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT COUNT(*) AS count FROM worker_backend_sessions WHERE turn_id = ?')
+          .get(second.turnId)
+      ).toEqual({ count: 0 });
+      expect(
+        attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, second.queueEntryId)
+      ).toEqual(second);
+      expect(store.getCommandRequest('turn.start', second.requestId, scope)).toEqual(receipt);
+      expect(
+        getWorkerCheckpoint(workspaceDb, second.workspaceId, second.threadId, second.turnId)
+      ).toEqual(checkpoint);
+      expect(store.listThreadAgentSessions(second.workspaceId, second.threadId)).toEqual([]);
+      expect(effects).toHaveLength(effectsBefore);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 1 });
+      expect(nativeStarts).toEqual([entries[0]!.turnId]);
+      expect(
+        observeExecutionAttempts(coreDb).filter((attempt) => attempt.turn_id === second.turnId)
+      ).toMatchObject([
+        {
+          phase: 'closed',
+          disposition: 'not_accepted',
+          terminal_cause: 'backend-busy',
+          operation_id: null,
+        },
+      ]);
+      if (scenario === 'materialization-initial-guard')
+        coreDb.sqlite.prepare("UPDATE sandbox_runtime_records SET drain_state = 'accepting'").run();
+      if (scenario === 'materialization-forced-retirement-guard')
+        coreDb.sqlite
+          .prepare(`UPDATE agent_session_runtime_bindings
+          SET current_turn_id = NULL, current_attempt_id = NULL`)
+          .run();
+      release.resolve();
+      await drive(first);
+      expect(store.getTurnById(entries[0]!.turnId).status).toBe('completed');
+      const resumed = await drive(runSchedulerDispatchLoop(dispatch));
+      expect(resumed.startedTurns).toHaveLength(1);
+      expect(store.getTurnById(second.turnId).status).toBe('completed');
+      expect(store.getCommandRequest('turn.start', second.requestId, scope)).toEqual(receipt);
+      expect(effects.filter((effect) => effect.kind === 'sandbox.create')).toHaveLength(2);
+      expect(nativeStarts).toEqual(entries.map((entry) => entry.turnId));
+    } finally {
+      release.resolve();
+      await drive(first);
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
     'eviction',
     'missing-fact',
     'handoff',
@@ -10377,7 +10769,10 @@ describe('createConfiguredTurnExecutor', () => {
               sandboxBindingRef: factoryPackageBinding(coreDb, firstPackage),
               workspaceRoots: [],
             })
-          ).rejects.toThrow('NanoHost one-Sandbox capacity is occupied or unproved.');
+          ).rejects.toMatchObject({
+            name: 'WorkerGovernanceCapacityUnavailableError',
+            message: 'NanoHost one-Sandbox capacity is occupied or unproved.',
+          });
           expect(effects.map((effect) => effect.kind)).toEqual([
             'image.acquire',
             'image.inspect',
@@ -11374,7 +11769,10 @@ describe('createConfiguredTurnExecutor', () => {
           workerStorageChoice: otherChoice,
           workspaceRoots: [],
         })
-      ).rejects.toThrow('capacity is occupied or unproved');
+      ).rejects.toMatchObject({
+        name: 'WorkerGovernanceCapacityUnavailableError',
+        message: expect.stringContaining('capacity is occupied or unproved'),
+      });
       expect(getWorkerStorageBinding(coreDb, { storageRef: idleOther.storageRef })?.state).toBe(
         'idle'
       );
@@ -12170,7 +12568,10 @@ describe('createConfiguredTurnExecutor', () => {
             sandboxBindingRef: factoryPackageBinding(coreDb, desiredPackage),
             workspaceRoots: [],
           })
-        ).rejects.toThrow('capacity is occupied or unproved');
+        ).rejects.toMatchObject({
+          name: 'WorkerGovernanceCapacityUnavailableError',
+          message: expect.stringContaining('capacity is occupied or unproved'),
+        });
         expect(effects).toEqual([]);
         expect(
           coreDb.sqlite.prepare('SELECT operation_state FROM harness_instance_records').all()
@@ -12907,7 +13308,10 @@ describe('createConfiguredTurnExecutor', () => {
           threadId: unprovedPackage.scope.threadId,
           workspaceId: unprovedPackage.scope.workspaceId,
         })
-      ).rejects.toThrow('NanoHost one-Sandbox capacity is occupied or unproved.');
+      ).rejects.toMatchObject({
+        name: 'WorkerGovernanceCapacityUnavailableError',
+        message: 'NanoHost one-Sandbox capacity is occupied or unproved.',
+      });
       await expect(
         restartedBackend.prepareAgentSessionContinuity?.({
           admissionAgentSessionId: secondPackage.scope.agentSessionId,

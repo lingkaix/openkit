@@ -288,6 +288,8 @@ export interface WorkerGovernanceNativeResume {
  * Backend-private workspace context used for transport effects.
  */
 export interface WorkerGovernanceMaterializationContext {
+  /** Publishes Core execution lineage synchronously after all no-effect capacity refusals and before any incoming reservation or effect. */
+  beforeMaterialization?: () => void;
   /** Workspace data root used to read verified Skill snapshots for worker-supply imports. */
   dataRoot?: string;
   /** Backend-private provider credentials resolved by NanoCore for this materialization only. */

@@ -1482,6 +1482,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     let backendCapabilities: WorkerGovernanceBackendCapabilities | null = null;
     let backendLifecycle: WorkerTurnBackendLifecycle | null = null;
     let backendCleanupRequired = false;
+    let materializationPublished = false;
     let closeoutAt: string | null = null;
     let environmentPackage: AgentEnvironmentPackage | null = null;
     let preparedWorkerContext: PreparedWorkerTurnContext | null = null;
@@ -1506,7 +1507,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       const resolvedAgentSessionId = agentSessionId ?? this.createAgentSessionId();
       agentSessionId = resolvedAgentSessionId;
       const captureCoverage = this.requireTurnCaptureCoverage(turn);
-      const launchEnvironmentPackage = this.previewAgentEnvironmentPackage(resolvedAgentSessionId, {
+      const launchPreparation: PrepareAgentSessionForTurnInput = {
         agentSetup: context.agentSetup,
         freshAgentSessionId: resolvedAgentSessionId,
         requestId,
@@ -1526,7 +1527,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         ...(context.workspaceSourceRefs
           ? { workspaceSourceRefs: context.workspaceSourceRefs }
           : {}),
-      });
+      };
+      // This inexpensive recheck is a snapshot; materialize owns the final capacity decision.
+      // Publication precedes every incoming reservation or effect.
+      this.requireMaterializationCapacity(resolvedAgentSessionId, launchPreparation);
+      const launchEnvironmentPackage = this.previewAgentEnvironmentPackage(
+        resolvedAgentSessionId,
+        launchPreparation
+      );
       const launchCompatibilityKey =
         agentSessionCompatibilityKeyFromPackage(launchEnvironmentPackage);
       if (
@@ -1543,18 +1551,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       if (workspaceDb) {
         applyScopedMigrations(workspaceDb);
       }
-      if (workspaceDb)
-        bindWorkerCheckpointToPreparedSession({
-          coreDb: this.coreDb!,
-          workspaceDb,
-          store,
-          workspaceId: turn.workspaceId,
-          threadId: turn.threadId,
-          turnId: turn.id,
-          requestId,
-          agentSessionId: resolvedAgentSessionId,
-          attemptId: context.attemptId!,
-        });
       const checkpoint = workspaceDb
         ? getWorkerCheckpoint(workspaceDb, turn.workspaceId, turn.threadId, turn.id)
         : null;
@@ -1736,59 +1732,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         agentSessionId = null;
         throw error;
       }
-      const agentSession = existingAgentSession
-        ? store.updateAgentSession(existingAgentSession.id, {
-            configVersion: turn.configVersion,
-            environmentPackageSnapshotId: environmentPackage.snapshotId,
-            message: null,
-            status: 'initializing',
-            updatedAt: timestamp,
-          })
-        : store.createAgentSession({
-            agentId: manifest.id,
-            configVersion: turn.configVersion,
-            createdAt: timestamp,
-            environmentPackageSnapshotId: environmentPackage.snapshotId,
-            id: resolvedAgentSessionId,
-            message: null,
-            policySnapshotId: WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID,
-            sessionCompatibilityKey: sessionWorkspace.compatibilityKey.digest,
-            status: 'created',
-            threadId: turn.threadId,
-            updatedAt: timestamp,
-            workspaceId: turn.workspaceId,
-            workspaceRoots: context.workspaceRoots,
-          });
-      store.updateTurn(turnId, {
-        agentProfileId: environmentPackage.agent.profileId,
-        agentSessionId: agentSession.id,
-      });
-      const userItem = store.createItem({
-        actor: outcomeInitiated
-          ? pendingRequestSystemActor(responsibleUserIdForActor(context.triggerActor))
-          : context.triggerActor,
-        completedAt: timestamp,
-        createdAt: timestamp,
-        id: `it_user_${turnId}`,
-        status: 'completed',
-        text: contextRequest,
-        threadId: turn.threadId,
-        turnId,
-        type: 'user-message',
-        workspaceId: turn.workspaceId,
-      });
-
-      this.emitTurnStarted(store, environmentPackage, requestId);
-      this.emitItemCreatedAndCompleted(store, environmentPackage, requestId, userItem);
-      this.emitAgentSession(store, environmentPackage, requestId, agentSession);
-
-      if (workspaceDb) {
-        recordAgentEnvironmentPackageSnapshot(workspaceDb, {
-          createdAt: preparedWorkerContext ? timestamp : this.now(),
-          environmentPackage,
-        });
-      }
-
       backendCapabilities = await this.backend.describeCapabilities();
       const backendKind = toWorkspaceSynchronizationBackendKind(backendCapabilities.kind);
       let inputSnapshots = workspaceDb
@@ -1815,22 +1758,98 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           403
         );
       }
-      if (this.coreDb && context.sandboxBindingRef) {
-        backendLifecycle.session = recordWorkerBackendSessionMaterializing(this.coreDb, {
-          backendLineage: workerBackendLineageFromRuntimeImage(environmentPackage.runtime.image),
-          backendVersion: backendCapabilities.version ?? null,
-          identity: backendLifecycle.identity,
-          lineage: {
-            threadId: environmentPackage.scope.threadId,
-            turnId: environmentPackage.scope.turnId,
-            workspaceId: environmentPackage.scope.workspaceId,
-          },
-          now: this.now,
-          sandboxBindingRef: context.sandboxBindingRef,
+      const launchPackage = environmentPackage;
+      const launchContext = context;
+      const launchCapabilities = backendCapabilities;
+      const launchLifecycle = backendLifecycle;
+      /** Publishes the execution binding only after the backend's final no-effect capacity guards. */
+      const publishMaterialization = () => {
+        if (materializationPublished)
+          throw new Error('Worker materialization publication may occur only once.');
+        materializationPublished = true;
+        if (workspaceDb)
+          bindWorkerCheckpointToPreparedSession({
+            coreDb: this.coreDb!,
+            workspaceDb,
+            store,
+            workspaceId: turn.workspaceId,
+            threadId: turn.threadId,
+            turnId: turn.id,
+            requestId,
+            agentSessionId: resolvedAgentSessionId,
+            attemptId: launchContext.attemptId!,
+          });
+        const agentSession = existingAgentSession
+          ? store.updateAgentSession(existingAgentSession.id, {
+              configVersion: turn.configVersion,
+              environmentPackageSnapshotId: launchPackage.snapshotId,
+              message: null,
+              status: 'initializing',
+              updatedAt: timestamp,
+            })
+          : store.createAgentSession({
+              agentId: manifest.id,
+              configVersion: turn.configVersion,
+              createdAt: timestamp,
+              environmentPackageSnapshotId: launchPackage.snapshotId,
+              id: resolvedAgentSessionId,
+              message: null,
+              policySnapshotId: WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID,
+              sessionCompatibilityKey: sessionWorkspace.compatibilityKey.digest,
+              status: 'created',
+              threadId: turn.threadId,
+              updatedAt: timestamp,
+              workspaceId: turn.workspaceId,
+              workspaceRoots: launchContext.workspaceRoots,
+            });
+        store.updateTurn(turnId, {
+          agentProfileId: launchPackage.agent.profileId,
+          agentSessionId: agentSession.id,
         });
-      }
-      backendCleanupRequired = true;
+        const userItem = store.createItem({
+          actor: outcomeInitiated
+            ? pendingRequestSystemActor(responsibleUserIdForActor(launchContext.triggerActor))
+            : launchContext.triggerActor,
+          completedAt: timestamp,
+          createdAt: timestamp,
+          id: `it_user_${turnId}`,
+          status: 'completed',
+          text: contextRequest,
+          threadId: turn.threadId,
+          turnId,
+          type: 'user-message',
+          workspaceId: turn.workspaceId,
+        });
+
+        this.emitTurnStarted(store, launchPackage, requestId);
+        this.emitItemCreatedAndCompleted(store, launchPackage, requestId, userItem);
+        this.emitAgentSession(store, launchPackage, requestId, agentSession);
+
+        if (workspaceDb) {
+          recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+            createdAt: preparedWorkerContext ? timestamp : this.now(),
+            environmentPackage: launchPackage,
+          });
+        }
+
+        if (this.coreDb && launchContext.sandboxBindingRef) {
+          launchLifecycle.session = recordWorkerBackendSessionMaterializing(this.coreDb, {
+            backendLineage: workerBackendLineageFromRuntimeImage(launchPackage.runtime.image),
+            backendVersion: launchCapabilities.version ?? null,
+            identity: launchLifecycle.identity,
+            lineage: {
+              threadId: launchPackage.scope.threadId,
+              turnId: launchPackage.scope.turnId,
+              workspaceId: launchPackage.scope.workspaceId,
+            },
+            now: this.now,
+            sandboxBindingRef: launchContext.sandboxBindingRef,
+          });
+        }
+        backendCleanupRequired = true;
+      };
       const materialization = await this.backend.materialize(environmentPackage, {
+        beforeMaterialization: publishMaterialization,
         ...(this.coreDb?.dataRoot ? { dataRoot: this.coreDb.dataRoot } : {}),
         providerCredentials,
         runtimeEnvCredentials,
@@ -1844,6 +1863,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           ? [...context.workspaceRoots, preparedWorkerContext.preparedContextPackage.workspaceRoot]
           : context.workspaceRoots,
       });
+      if (!materializationPublished)
+        throw new Error('Backend materialization omitted its pre-effect publication boundary.');
       if (materialization.retainedStorage) {
         const sourceStorage = nativeResume
           ? store.getAgentSession(nativeResume.locator).retainedStorage
@@ -1913,7 +1934,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         });
       }
 
-      const busySession = store.updateAgentSession(agentSession.id, {
+      const busySession = store.updateAgentSession(resolvedAgentSessionId, {
         message: null,
         status: 'busy',
         updatedAt: this.now(),
@@ -2003,7 +2024,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     context.onSubmissionSettled?.();
     if (
       primaryError instanceof WorkerGovernanceCapacityUnavailableError &&
-      agentSessionId === null &&
+      !materializationPublished &&
       requireSchedulerExecutionAttempt(this.coreDb!, context.attemptId!).operationId === null
     ) {
       store.updateTurn(turnId, { status: 'pending' });

@@ -1310,44 +1310,47 @@ describe('terminal failed-start product recovery', () => {
         transientProviderInstanceId: null,
       }),
       prepareAgentSessionContinuity: vi.fn(async () => 'absent' as const),
-      materialize: vi.fn(async (pkg) => ({
-        backendKind: 'openshell',
-        backendStatus: {
-          gatewayEndpoint: null,
-          gatewayName: 'openshell',
-          health: 'ready',
-          version: 'test',
-        },
-        command: {
-          argv: pkg.runtime.command.argv,
-          workingDirectory: pkg.runtime.command.workingDirectory,
-        },
-        controlMode: pkg.control.mode,
-        packageId: pkg.packageId,
-        packageSnapshotId: pkg.snapshotId,
-        requiredCapabilities: pkg.backend.requiredCapabilities,
-        workspaceInputs: pkg.workspace.inputs.map((input) => {
-          const sessionWorkspace = (
-            pkg.extensions.openkit as {
-              sessionWorkspace: {
-                layout: { slots: Array<{ id: string; path: string }> };
-                materialization: { inputs: Array<{ inputId: string; slotId: string }> };
-              };
-            }
-          ).sessionWorkspace;
-          const slotId = sessionWorkspace.materialization.inputs.find(
-            (entry) => entry.inputId === input.id
-          )?.slotId;
-          const target = sessionWorkspace.layout.slots.find((slot) => slot.id === slotId)?.path;
-          if (!target) throw new Error(`Fixture workspace target missing for ${input.id}.`);
-          return { access: input.access, id: input.id, kind: input.kind, target };
-        }),
-        sandbox: {
-          name: testNanoHostBackendSessionId(pkg.scope.turnId),
-          source: 'openkit/worker-codex:dev',
-          state: 'created',
-        },
-      })),
+      materialize: vi.fn(async (pkg, context) => {
+        context?.beforeMaterialization?.();
+        return {
+          backendKind: 'openshell',
+          backendStatus: {
+            gatewayEndpoint: null,
+            gatewayName: 'openshell',
+            health: 'ready',
+            version: 'test',
+          },
+          command: {
+            argv: pkg.runtime.command.argv,
+            workingDirectory: pkg.runtime.command.workingDirectory,
+          },
+          controlMode: pkg.control.mode,
+          packageId: pkg.packageId,
+          packageSnapshotId: pkg.snapshotId,
+          requiredCapabilities: pkg.backend.requiredCapabilities,
+          workspaceInputs: pkg.workspace.inputs.map((input) => {
+            const sessionWorkspace = (
+              pkg.extensions.openkit as {
+                sessionWorkspace: {
+                  layout: { slots: Array<{ id: string; path: string }> };
+                  materialization: { inputs: Array<{ inputId: string; slotId: string }> };
+                };
+              }
+            ).sessionWorkspace;
+            const slotId = sessionWorkspace.materialization.inputs.find(
+              (entry) => entry.inputId === input.id
+            )?.slotId;
+            const target = sessionWorkspace.layout.slots.find((slot) => slot.id === slotId)?.path;
+            if (!target) throw new Error(`Fixture workspace target missing for ${input.id}.`);
+            return { access: input.access, id: input.id, kind: input.kind, target };
+          }),
+          sandbox: {
+            name: testNanoHostBackendSessionId(pkg.scope.turnId),
+            source: 'openkit/worker-codex:dev',
+            state: 'created',
+          },
+        };
+      }),
       cleanupSession: vi.fn(async () => {}),
       update: async () => [],
       collectEvidence: async () => [],
