@@ -107,8 +107,10 @@ export interface PiTurnProjection {
   readonly establishes: boolean;
   /** Canonical ready handle text whose digest matched, when the host proved one. */
   readonly readyText: string | null;
+  /** Host-proved request provenance, fixed before shim capture finalization. */
+  readonly interruptRequested?: boolean;
   /** Normalized status. Channel loss is applied by the session, not this function. */
-  readonly status: 'completed' | 'failed' | 'interrupted';
+  readonly status: WorkerAdapterResult['status'];
   /** Host reason, or a closed adapter reason when the host value cannot be trusted. */
   readonly stopReason: string;
 }
@@ -206,6 +208,18 @@ export function projectPiTurnSettlement(
       stopReason: 'stop',
     };
   }
+  if (status === 'length') {
+    if (outcome?.reason !== 'pi-length') return failed('pi-output-malformed');
+    return {
+      validEvidence: true,
+      assistantText: null,
+      compactionEntryIds,
+      establishes: false,
+      readyText: readyText.trusted ? readyText.text : null,
+      status: 'length',
+      stopReason: 'pi-length',
+    };
+  }
   if (status === 'interrupted') {
     if (outcome?.reason !== PI_INTERRUPT_REASON) return failed('pi-output-malformed');
     return {
@@ -215,6 +229,8 @@ export function projectPiTurnSettlement(
       establishes: false,
       readyText: readyText.trusted ? readyText.text : null,
       status: 'interrupted',
+      // The host's closed worker-interrupted outcome already proves request provenance.
+      interruptRequested: true,
       stopReason: PI_INTERRUPT_REASON,
     };
   }
@@ -1034,7 +1050,9 @@ export class PiResidentBinding implements WorkerResidentSession {
       if (
         !response.ok ||
         typeof response.result.outcome !== 'string' ||
-        !['completed', 'failed', 'interrupted', 'not_active'].includes(response.result.outcome)
+        !['completed', 'length', 'failed', 'interrupted', 'not_active'].includes(
+          response.result.outcome
+        )
       ) {
         invalidReply = true;
         throw new PiAdapterError('Pi host interrupt response is invalid.');
@@ -1238,6 +1256,9 @@ export class PiResidentBinding implements WorkerResidentSession {
     };
     active.resolve({
       assistantText: projected.assistantText,
+      ...(projected.interruptRequested === undefined
+        ? {}
+        : { interruptRequested: projected.interruptRequested }),
       ...(diagnostics ? { diagnostics } : {}),
       status,
       stopReason: active.stopReason,

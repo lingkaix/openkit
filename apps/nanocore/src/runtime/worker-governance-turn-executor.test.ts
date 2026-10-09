@@ -47,6 +47,8 @@ import {
   WorkerRuntimeRawStreamManifestSchema,
 } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { SandboxIntegrationClient } from '../../../../packages/worker-shim/src/integration-client.js';
+import { runResidentTurn } from '../../../../packages/worker-shim/src/turn.js';
 import { createApp, createDefaultWorkerControlGateway } from '../app.js';
 import { getArtifactReview } from '../artifact-reviews.js';
 import {
@@ -77,6 +79,7 @@ import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
+import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { seedWritableGitRepository } from '../test-support/git-repository.js';
@@ -929,6 +932,217 @@ function remoteGitInputFixture() {
 }
 
 describe('WorkerGovernanceTurnExecutor', () => {
+  it('closes Harness length as a blocked Task after fencing with zero successor launches', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-length-seam-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: LOCAL_USER_ID });
+    const target = recordTestNativeRuntimeTarget(coreDb);
+    const backend = new FakeWorkerGovernanceBackend();
+    const planSession = backend.planSession.bind(backend);
+    backend.planSession = (pkg) => ({
+      ...planSession(pkg),
+      deploymentId: target.deploymentId,
+      runtimeTargetId: target.targetId,
+    });
+    Object.assign(backend, { prepareAgentSessionContinuity: async () => 'absent' as const });
+    const gateway = createDefaultWorkerControlGateway(coreDb);
+    const tokens = {
+      controlToken: Buffer.alloc(32, 17).toString('base64url'),
+      inferenceToken: Buffer.alloc(32, 34).toString('base64url'),
+      capabilityToken: Buffer.alloc(32, 51).toString('base64url'),
+    };
+    const materialize = backend.materialize.bind(backend);
+    backend.materialize = async (pkg, context) => {
+      const registration = gateway.registerSession(pkg, {
+        sandboxBindingRef: context!.sandboxBindingRef!,
+        workerControlToken: tokens.controlToken,
+        workerInferenceToken: tokens.inferenceToken,
+        workerCapabilityToken: tokens.capabilityToken,
+      });
+      bindNanoHostAttemptRouteTokenHashes(coreDb, {
+        attemptId: attempts.listSchedulerExecutionAttemptsForTurn(coreDb, pkg.scope)[0]!.attemptId,
+        sandboxBindingRef: context!.sandboxBindingRef!,
+        workerControlTokenHash: registration.workerControlTokenHash,
+        workerInferenceTokenHash: registration.workerInferenceTokenHash,
+        workerCapabilityTokenHash: registration.workerCapabilityTokenHash,
+      });
+      return materialize(pkg, context);
+    };
+    let app: ReturnType<typeof createAppWithWorkspaceAuthority>;
+    const fenceEntered = Promise.withResolvers<void>();
+    const permitFence = Promise.withResolvers<void>();
+    const release = backend.release.bind(backend);
+    vi.spyOn(backend, 'release').mockImplementation(async (input) => {
+      fenceEntered.resolve();
+      await permitFence.promise;
+      return release(input);
+    });
+    const setup = createTestAgentSetup();
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      awaitWorkerCompletion: async (pkg) => {
+        const root = join(dataRoot, 'shim');
+        mkdirSync(root, { recursive: true });
+        const packagePath = join(root, 'package.json');
+        const lineage = {
+          workspaceId: pkg.scope.workspaceId,
+          threadId: pkg.scope.threadId,
+          turnId: pkg.scope.turnId,
+          agentSessionId: pkg.scope.agentSessionId,
+          requestId: pkg.scope.requestId,
+          packageSnapshotId: pkg.snapshotId,
+        };
+        // The external sandbox double supplies local paths; both terminal producers and Core consumers are real.
+        writeFileSync(
+          packagePath,
+          JSON.stringify({
+            ...pkg,
+            control: {
+              ...pkg.control,
+              adapter: { kind: 'openkit-worker-shim', targetRuntime: 'fixture' },
+            },
+            extensions: {
+              openkit: {
+                turnInput: 'bounded attempt',
+                sessionWorkspace: {
+                  layout: { slots: [{ kind: 'worktree', access: 'read-write', path: root }] },
+                },
+              },
+            },
+            runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: root } },
+            workspace: { root, inputs: [] },
+            supply: { mcpServers: [{ id: 'echo' }] },
+          })
+        );
+        const integration = {
+          ready: Promise.resolve(),
+          bindTurnRouteTokens() {},
+          clearTurnRouteTokens() {},
+          async drainTurn() {
+            return 0;
+          },
+          workerControlFetch: async (url: string, init: RequestInit) =>
+            app.request(url.replace('/worker-control/', '/api/worker-control/'), init),
+        } as unknown as SandboxIntegrationClient;
+        await runResidentTurn({
+          adapterId: 'fixture',
+          credentialValues: [],
+          environment: {},
+          integration,
+          lineage,
+          onStarted() {},
+          packagePath,
+          resident: {
+            exited: new Promise(() => {}),
+            childState: () => 'running',
+            close: async () => {},
+            nativeHandle: async () => ({ state: 'pending' }),
+            startTurn: async () => ({
+              interrupt: async () => {},
+              settled: Promise.resolve({
+                assistantText: null,
+                status: 'length',
+                stopReason: 'length',
+              }),
+            }),
+          },
+          runtimeEnvironmentNames: new Set(),
+          nativeEnvironment: null,
+          sessionDir: join(root, 'output'),
+          signal: new AbortController().signal,
+          tokens,
+          turnDirectory: join(root, 'turn'),
+        });
+        const transcript = backend.collectTranscript.bind(backend);
+        vi.spyOn(backend, 'collectTranscript').mockImplementation(async () => ({
+          ...(await transcript()),
+          eventsJsonl: readFileSync(join(root, 'output', 'events.jsonl'), 'utf8'),
+          itemsJsonl: readFileSync(join(root, 'output', 'items.jsonl'), 'utf8'),
+        }));
+        return getWorkerControlAcceptedFinalStatus(coreDb, lineage)!;
+      },
+    });
+    app = createAppWithWorkspaceAuthority({
+      coreDb,
+      dataRoot,
+      store,
+      turnExecutor: executor,
+      workerControlGateway: gateway,
+      agentManifests: [setup.manifest],
+      openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
+    });
+    const requestId = '0190f4c8-0000-7000-8000-000000000698';
+    const submit = () =>
+      app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ requestId, input: 'One bounded attempt.' }),
+          }
+        )
+      );
+    try {
+      const accepted = await submit();
+      expect(accepted.status, await accepted.clone().text()).toBe(202);
+      const original = await accepted.json();
+      await vi.waitFor(() => expect(backend.calls).toContain('cleanupSession'), {
+        timeout: 10_000,
+      });
+      await Promise.race([
+        fenceEntered.promise,
+        delay(1_000).then(() => {
+          throw new Error('Expected release fence was not reached.');
+        }),
+      ]);
+      const db = openTestWorkspaceDb(coreDb);
+      try {
+        expect(
+          getWorkerCheckpoint(db, 'ws_demo', original.turn.threadId, original.turn.id)
+        ).not.toBeNull();
+        permitFence.resolve();
+        await vi.waitFor(() =>
+          expect(
+            getWorkerCheckpoint(db, 'ws_demo', original.turn.threadId, original.turn.id)
+          ).toBeNull()
+        );
+      } finally {
+        db.sqlite.close();
+      }
+      expect(store.getTurnById(original.turn.id).status).toBe('completed');
+      const replay = await submit();
+      expect(replay.status, await replay.clone().text()).toBe(202);
+      expect(await replay.json()).toMatchObject({
+        state: 'blocked',
+        turn: { id: original.turn.id, status: 'completed' },
+      });
+      expect(store.getTurnEvents(original.turn.id)).toContainEqual(
+        expect.objectContaining({
+          event: 'turn.completed',
+          data: expect.objectContaining({ stopReason: 'length' }),
+        })
+      );
+      const attempt = attempts.listSchedulerExecutionAttemptsForTurn(coreDb, {
+        workspaceId: 'ws_demo',
+        threadId: original.turn.threadId,
+        turnId: original.turn.id,
+      });
+      expect(attempt).toHaveLength(1);
+      expect(attempt[0]).toMatchObject({ phase: 'closed', fenceRef: expect.any(String) });
+      expect(backend.calls.filter((call) => call === 'submit')).toHaveLength(1);
+      expect(store.listThreadAgentSessions('ws_demo', original.turn.threadId)).toHaveLength(1);
+    } finally {
+      permitFence.resolve();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('refuses the r35 host-dir source during AEP preparation with zero backend dispatch', async () => {
     const fixture = createWorkerContextExecutorFixture('r35-host-dir');
     const backend = new FakeWorkerGovernanceBackend();

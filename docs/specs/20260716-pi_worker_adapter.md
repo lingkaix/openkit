@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: boundary
-updated: 2026-10-08
+updated: "2026-10-09"
 ---
 # Pi Worker Adapter
 
@@ -101,7 +101,18 @@ On reasoning routes, Pi-specific acceptance proves that the SDK host applies the
 
 ## Native Output Mapping
 
-The adapter requires one settled, correlated successful assistant outcome for the admitted prompt. The provider and model must equal the admitted launch. It rejects an error, an abort, length exhaustion, terminal tool-use without a completed continuation, an unresolved retry, and contradictory terminal evidence. It concatenates explicit text content in order with no inserted separators, trims the combined boundary once, and requires a non-empty combined result. Settlement does not require process exit. An admission acknowledgement, an assistant or tool cycle end, or an intermediate agent end is not the completed Turn. Unknown events are ignored and cannot satisfy a lifecycle predicate. Tool and extension envelopes stay inside the adapter. They do not enter `packages/worker-protocol` or NanoCore.
+| Correlated native terminal evidence | Required normalized outcome |
+| --- | --- |
+| Settled successful assistant `stop` with the admitted provider/model and complete prompt correlation | Normal completion with the existing ordered, trimmed, non-empty text predicate. |
+| Settled native `length` with no OpenKit interrupt request | Proved output/context limit carried as `length`, rather than `error`; never completed success. |
+| Native interrupt after the host records an OpenKit interrupt or cancellation request for this Turn | Requested interruption, preserving `aborted`. |
+| Native `aborted`, interrupted, or cancelled outcome without that OpenKit request | Failed outcome carrying `error` and a bounded product-safe diagnostic that the Worker runtime stopped on its own; no user cancellation is inferred. |
+| Native error, prompt rejection, crash or process exit; malformed, missing, or contradictory terminal evidence | Existing failure or uncertainty and fencing rules. |
+| Terminal `toolUse` without completed continuation, unresolved retry, intermediate assistant/tool/agent end, or ambiguous/unsupported native limit | No completed success; existing failure or unproved-settlement rules apply. |
+
+These outcomes use the private [adapter normalization boundary](20260629-worker_runtime_communication_model.md#adapter-normalized-stop-outcomes) and the existing [Core stop mapping](20260531-worker_turn_reliability_envelope.md#worker-turn-envelope). Terminal classification grants no cleanup, retry, or replacement authority. The rationale is recorded in [Truthful Native Stop Classification](../decisions/20261009-truthful_native_stop_classification.md).
+
+For normal completion, the adapter requires one settled, correlated successful assistant outcome for the admitted prompt. The provider and model must equal the admitted launch. It rejects an error, an abort, length exhaustion, terminal tool-use without a completed continuation, an unresolved retry, and contradictory terminal evidence as completed success; a settled correlated limit instead preserves `length` under the mapping above. It concatenates explicit text content in order with no inserted separators, trims the combined boundary once, and requires a non-empty combined result. Settlement does not require process exit. An admission acknowledgement, an assistant or tool cycle end, or an intermediate agent end is not the completed Turn. Unknown events are ignored and cannot satisfy a lifecycle predicate. Tool and extension envelopes stay inside the adapter. They do not enter `packages/worker-protocol` or NanoCore.
 
 Native result content is limited to 16 MiB. The shared process runner retains bounded stdout and stderr prefixes for adapter diagnostics before redaction, including protected-binding warnings on completed results. The JSON-mode event names `agent_settled`, `message_end`, `turn_end`, and `agent_end` are historical names of the removed path, not the SDK product schema.
 
@@ -177,6 +188,8 @@ Whether `/usr/local/lib/openkit/allow-anthropic-api-key` remains is not settled 
 
 ## Failure Semantics
 
+The [native terminal mapping](#native-output-mapping) preserves proved limits and distinguishes requested interruption from a runtime self-stop; none of these classifications proves cleanup or permits automatic continuation.
+
 - Malformed or over-limit native output fails collection closed.
 - Missing trustworthy final assistant content fails collection when the native run claims success.
 - A non-zero or failed native outcome returns a failed adapter classification with bounded, redacted diagnostics.
@@ -209,12 +222,14 @@ The authored manifest is the sole launch-time capability declaration. Adapter co
 
 Required adapter tests cover:
 
+- Native stop mappings above, including requested interruption versus runtime self-stop, bounded actor-neutral diagnostics, proved limits without false success, ambiguous/unsupported evidence, and unchanged failure and cleanup fencing
+
 - Native live-steer qualification above, including the active-work generation, extension-handled refusal, terminal/interrupt queue disposition, lost-response non-redelivery, bounded slot settlement, and no successor-input spill
 - Identity preflight of the exact nonempty session header id and cwd before work, rejection of missing, empty, malformed, symlinked, wrong-id, wrong-cwd, or otherwise mismatched identity, and no inode tracker
 - Close preserving the session file and every other retained byte, and rejection of any file other than the exact retained reference
 - Credential-value absence, direct-route rejection, and no `--api-key`
 - Changed-model continuation of the exact conversation, with that Turn's provider and model required at collection
-- Unknown-event tolerance, the 16 MiB and 16 KiB bounds, one settled correlated successful outcome, rejection of error, abort, length exhaustion, terminal tool-use without a completed continuation, unresolved retry, and contradictory terminal evidence, ordered text concatenation with no inserted separators, one trim of the combined boundary, a non-empty combined result, and settlement without requiring process exit
+- Unknown-event tolerance, the 16 MiB and 16 KiB bounds, one settled correlated successful outcome, rejection as completed success of error, abort, length exhaustion, terminal tool-use without a completed continuation, unresolved retry, and contradictory terminal evidence, ordered text concatenation with no inserted separators, one trim of the combined boundary, a non-empty combined result, and settlement without requiring process exit
 - Inspection of the exact host and session without launching work, rejection of an unknown or mismatched identity, and `harness.drain` refusing new `session.open` and `turn.start` while admitted work and cleanup settle
 - Admitted native prompts, context files and project resources reach the actual model and tool path, a fresh agent directory receives image defaults, a populated one is reused byte-for-byte, and stale auth or a native setting cannot replace the current model, Gateway, managed MCP, credential or exact-session bindings
 - Two prompts in one SDK host, then a new host resuming the exact session file, with the prior context visible in the captured provider input

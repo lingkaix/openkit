@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: boundary
-updated: 2026-10-08
+updated: "2026-10-09"
 ---
 # OpenCode Worker Adapter
 
@@ -96,6 +96,17 @@ On reasoning routes, OpenCode-specific acceptance proves that V2 `session.switch
 
 ## Native Output Mapping
 
+| Correlated native terminal evidence | Required normalized outcome |
+| --- | --- |
+| Successful idle outcome with assistant finish `stop` | Normal completion, subject to the existing correlation and collection predicates; absent text yields no assistant candidate. |
+| Successful idle outcome with assistant finish `length` | Proved output/context limit carried as `length`, never completed success even with partial text. |
+| Native interrupted outcome after an OpenKit interrupt or cancellation request for this Turn | Requested interruption, preserving `aborted`. |
+| Native interrupted, cancelled, or aborted outcome without that OpenKit request | Failed outcome carrying `error` and a bounded product-safe diagnostic that the Worker runtime stopped on its own; no user actor is inferred. |
+| Native error or non-zero exit; malformed, missing, or contradictory terminal evidence | Existing failure or uncertainty and fencing rules; partial text cannot establish success. |
+| Unsupported or ambiguous native limit | Existing failure or uncertainty result; no guessed `length` or `budget_exhausted`. |
+
+These outcomes use the private [adapter normalization boundary](20260629-worker_runtime_communication_model.md#adapter-normalized-stop-outcomes) and the existing [Core stop mapping](20260531-worker_turn_reliability_envelope.md#worker-turn-envelope). Terminal classification grants no cleanup, retry, or replacement authority. The rationale is recorded in [Truthful Native Stop Classification](../decisions/20261009-truthful_native_stop_classification.md).
+
 The adapter requires one correlated server terminal result for the admitted prompt. Native result content is limited to 16 MiB. Exceeding the bound fails collection closed. Unknown events are ignored and cannot complete a lifecycle predicate. Malformed records that prevent a trustworthy final result fail closed. A correlated success with no assistant text returns no assistant candidate. A native error outcome fails even when partial text exists.
 
 Native OpenCode event names, tool-call records, provider payloads, and session objects remain inside the adapter. They are not added to `packages/worker-protocol` and do not enter NanoCore. The pinned V1 sequence `step_start`, `text`, `step_finish`, and `error` is not the product schema.
@@ -144,6 +155,8 @@ OpenCode-specific install commands, binary paths, configuration isolation, and v
 
 ## Failure Semantics
 
+The [native terminal mapping](#native-output-mapping) preserves proved limits and distinguishes requested interruption from a runtime self-stop; none of these classifications proves cleanup or permits automatic continuation.
+
 - Malformed or over-limit native output fails collection closed.
 - A correlated success with no assistant text returns no assistant candidate.
 - A non-zero or native error outcome fails even when partial text exists.
@@ -170,6 +183,8 @@ The authored manifest is the sole launch-time capability declaration. Adapter co
 ## Tests
 
 Required adapter tests cover:
+
+- Native stop mappings above, including requested interruption versus runtime self-stop, bounded actor-neutral diagnostics, proved limits without false success, ambiguous/unsupported evidence, and unchanged failure and cleanup fencing
 
 - Native live-steer qualification above, including exact initial/steering user-message correlation with unrelated-input rejection, inbox/terminal/interrupt races, lost-response non-redelivery, and no restart or successor spill
 - Credential-value absence, the fixed slash-free provider id, exact model id serialization, and direct-route rejection before the session admits work

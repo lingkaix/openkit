@@ -63,13 +63,50 @@ describe('PiTurnOutcomeTracker', () => {
 
   it.each([
     ['error', assistant({ stopReason: 'error' })],
-    ['abort', assistant({ stopReason: 'aborted' })],
-    ['length exhaustion', assistant({ stopReason: 'length' })],
+    ['unknown stop', assistant({ stopReason: 'future-stop' })],
     ['terminal tool use', assistant({ stopReason: 'toolUse' })],
   ])('rejects %s', (_name, message) => {
     const tracker = new PiTurnOutcomeTracker();
     settle(tracker, message);
     expect(finish(tracker)).toEqual({ reason: 'pi-terminal-correlation-failed', status: 'failed' });
+  });
+
+  it('reports a correlated native self-abort without inferring an OpenKit interrupt', () => {
+    const tracker = new PiTurnOutcomeTracker();
+    settle(tracker, assistant({ stopReason: 'aborted' }));
+    expect(finish(tracker)).toEqual({
+      reason: 'Worker runtime stopped on its own without an OpenKit interrupt request.',
+      status: 'failed',
+    });
+    expect(finish(tracker, { interrupted: true })).toEqual({
+      reason: 'worker-interrupted',
+      status: 'interrupted',
+    });
+  });
+
+  it('keeps malformed and uncorrelated native aborts distinct from a self-stop', () => {
+    const malformed = new PiTurnOutcomeTracker();
+    settle(malformed, assistant({ stopReason: 'aborted', content: [{ type: 'text', text: 42 }] }));
+    expect(finish(malformed)).toEqual({ reason: 'pi-output-malformed', status: 'failed' });
+    const uncorrelated = new PiTurnOutcomeTracker();
+    uncorrelated.observe({ type: 'message_end', message: assistant({ stopReason: 'aborted' }) });
+    expect(finish(uncorrelated)).toEqual({
+      reason: 'pi-terminal-correlation-failed',
+      status: 'failed',
+    });
+    const wrongRoute = new PiTurnOutcomeTracker();
+    settle(wrongRoute, assistant({ stopReason: 'aborted', model: 'another-model' }));
+    expect(finish(wrongRoute)).toEqual({ reason: 'pi-route-mismatch', status: 'failed' });
+  });
+
+  it('preserves a correlated native length stop without granting completion', () => {
+    const tracker = new PiTurnOutcomeTracker();
+    settle(tracker, assistant({ stopReason: 'length' }));
+    expect(finish(tracker)).toEqual({ reason: 'pi-length', status: 'length' });
+    expect(finish(tracker, { interrupted: true })).toEqual({
+      reason: 'worker-interrupted',
+      status: 'interrupted',
+    });
   });
 
   it('rejects an unresolved retry', () => {

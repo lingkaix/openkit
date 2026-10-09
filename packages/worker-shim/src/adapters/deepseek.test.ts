@@ -190,6 +190,20 @@ describe('deepseek permission and bounds', () => {
     expect(deepseekSessionUpdateBytes(huge)).toBeGreaterThan(DEEPSEEK_SESSION_UPDATE_LIMIT_BYTES);
   });
 
+  it('preserves native max_tokens as length', () => {
+    expect(
+      classifyDeepSeekStop({
+        badContent: false,
+        cancelRequested: false,
+        hostEnded: false,
+        overLimit: false,
+        promptFailed: false,
+        stopReason: 'max_tokens',
+        text: 'partial',
+      })
+    ).toEqual({ assistantText: null, status: 'length', stopReason: 'max_tokens' });
+  });
+
   it('classifies terminal outcomes without treating partial text as success', () => {
     expect(
       classifyDeepSeekStop({
@@ -239,7 +253,7 @@ describe('deepseek permission and bounds', () => {
         text: 'partial',
       })
     ).toMatchObject({ assistantText: null, status: 'interrupted' });
-    for (const stopReason of ['max_tokens', 'max_turn_requests', 'refusal']) {
+    for (const stopReason of ['max_turn_requests', 'refusal']) {
       expect(
         classifyDeepSeekStop({
           badContent: false,

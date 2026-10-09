@@ -476,7 +476,7 @@ describe('Pi runtime host', () => {
       expect(first.outcome.status).toBe('completed');
       for (const turnId of ['turn-2', 'turn-3']) {
         const failed = await turn(host, turnId, 'b');
-        expect(failed.outcome).toMatchObject({ status: 'failed' });
+        expect(failed.outcome).toMatchObject({ status: turnId === 'turn-2' ? 'length' : 'failed' });
         expect(failed.nativeHandle).toEqual(first.nativeHandle);
       }
       expect((await turn(host, 'turn-4', 'c')).outcome).toEqual({
@@ -488,14 +488,14 @@ describe('Pi runtime host', () => {
   );
 
   it(
-    'grants no ready authority when the first Turn fails and fences the binding for close',
+    'grants no ready authority when the first Turn reaches length and fences the binding for close',
     async () => {
       const f = await fixture(() => ({ finish: 'length', text: 'truncated' }));
       f.capability.bound = true;
       const host = f.start();
       await f.open(host);
       const settled = await turn(host, 'turn-1', 'first');
-      expect(settled.outcome).toMatchObject({ status: 'failed' });
+      expect(settled.outcome).toMatchObject({ status: 'length', reason: 'pi-length' });
       expect(await sessionFileExists(f.directories.stateRoot)).toBe(true);
       expect(settled.nativeHandle).toEqual({ state: 'unknown' });
       expect(await host.request({ op: 'inspect' })).toEqual({

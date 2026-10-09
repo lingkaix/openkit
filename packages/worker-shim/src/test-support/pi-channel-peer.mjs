@@ -67,6 +67,7 @@ channel.on('data', (chunk) => {
       if (
         mode === 'silent' ||
         mode === 'bad-interrupt' ||
+        mode === 'length-interrupt' ||
         (mode.startsWith('interrupt-') && !mode.startsWith('interrupt-after-')) ||
         mode.startsWith('active-inspect-')
       ) {
@@ -235,11 +236,14 @@ channel.on('data', (chunk) => {
         unknown: 'future-result',
       };
       // The completed-Turn vocabulary oracle requires terminal-before-reply ordering.
-      if (mode === 'bad-interrupt')
+      if (mode === 'bad-interrupt' || mode === 'length-interrupt')
         send({
           event: 'turn_settled',
           turnId: request.turnId,
-          outcome: { status: 'failed', reason: 'pi-prompt-failed' },
+          outcome:
+            mode === 'length-interrupt'
+              ? { status: 'length', reason: 'pi-length' }
+              : { status: 'failed', reason: 'pi-prompt-failed' },
           nativeHandle: { state: 'pending' },
           compactionEntryIds: [],
         });
@@ -251,9 +255,11 @@ channel.on('data', (chunk) => {
             ? mode === 'interrupt-no-terminal'
               ? 'interrupted'
               : values[mode.replace('interrupt-after-', '').replace('interrupt-', '')]
-            : mode === 'bad-interrupt'
-              ? 'future-result'
-              : 'not_active',
+            : mode === 'length-interrupt'
+              ? 'length'
+              : mode === 'bad-interrupt'
+                ? 'future-result'
+                : 'not_active',
         },
       });
     }

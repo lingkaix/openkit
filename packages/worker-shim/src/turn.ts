@@ -140,7 +140,7 @@ export interface ResidentTurnResult {
   /** Adapter-owned observations, never inferred from normalized status or host liveness. */
   readonly nativeEvidence?: WorkerNativeEvidence;
   /** Normalized worker terminal status. */
-  readonly status: 'completed' | 'failed' | 'interrupted';
+  readonly status: 'completed' | 'blocked' | 'failed' | 'interrupted';
 }
 
 /**
@@ -360,8 +360,14 @@ async function runResidentTurnImplementation(
     timeline.record({ label: 'native_accepted' });
     const settlement = startedTurn.settled.then(
       (result) => {
-        timeline.record({ label: 'terminal', reason: result.status });
-        return { kind: 'settled' as const, result };
+        timeline.record({
+          label: 'terminal',
+          reason: result.status === 'length' ? 'failed' : result.status,
+        });
+        return {
+          kind: 'settled' as const,
+          result,
+        };
       },
       (error: unknown) => {
         timeline.record({ label: 'terminal', reason: 'rejected' });
@@ -452,11 +458,22 @@ async function runResidentTurnImplementation(
       adapterResult.assistantText,
       credentialValues
     );
-    const status = assistantOutputRejected ? 'failed' : adapterResult.status;
+    // Only the adapter's immutable native-terminal decision can attribute an interruption.
+    const selfStopped =
+      adapterResult.status === 'interrupted' && adapterResult.interruptRequested !== true;
+    const status =
+      assistantOutputRejected || selfStopped
+        ? 'failed'
+        : adapterResult.status === 'length'
+          ? 'blocked'
+          : adapterResult.status;
 
     if (adapterResult.assistantText && status !== 'interrupted' && !assistantOutputRejected) {
       await Promise.race([
-        writer.writeAssistantMessage({ status, text: adapterResult.assistantText }),
+        writer.writeAssistantMessage({
+          status: status === 'blocked' ? 'failed' : status,
+          text: adapterResult.assistantText,
+        }),
         heartbeatFailure,
       ]);
     }
@@ -468,8 +485,10 @@ async function runResidentTurnImplementation(
       // Adapter summaries are already normalized; shared code never reads native protocol fields.
       adapterDiagnostics.failureCause = assistantOutputRejected
         ? 'Assistant output contained a credential value.'
-        : (adapterDiagnostics.failureCause ??
-          summarizeProcessOutput(adapterResult.stopReason, credentialValues));
+        : selfStopped
+          ? 'Worker runtime stopped on its own without an OpenKit interrupt request.'
+          : (adapterDiagnostics.failureCause ??
+            summarizeProcessOutput(adapterResult.stopReason, credentialValues));
     }
     const terminalInput: WorkerTerminalOutcomeInput = {
       ...(status === 'failed' && Object.keys(adapterDiagnostics).length > 0
@@ -477,7 +496,13 @@ async function runResidentTurnImplementation(
         : {}),
       status,
       stopReason:
-        status === 'completed' ? 'completed' : status === 'interrupted' ? 'aborted' : 'error',
+        status === 'completed'
+          ? 'completed'
+          : status === 'blocked'
+            ? 'length'
+            : status === 'interrupted'
+              ? 'aborted'
+              : 'error',
     };
     terminalOutcomeAttempted = true;
     terminalPublication = writeAndReportTerminalOutcome(

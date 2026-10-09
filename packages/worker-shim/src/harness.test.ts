@@ -212,7 +212,12 @@ function fakeAdapter(
           let interrupt!: () => void;
           const interrupted = new Promise<WorkerAdapterResult>((resolve) => {
             interrupt = () =>
-              resolve({ assistantText: null, status: 'interrupted', stopReason: 'aborted' });
+              resolve({
+                assistantText: null,
+                status: 'interrupted',
+                stopReason: 'aborted',
+                interruptRequested: true,
+              });
           });
           if (next.kind === 'reject-settlement') {
             return {

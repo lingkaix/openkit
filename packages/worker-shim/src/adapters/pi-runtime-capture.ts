@@ -136,9 +136,11 @@ export class PiRuntimeCapture {
   /** Joins observed events and the validated original terminal text, independent of the trimmed public result. */
   public finalize(status: PiTurnProjection['status'], assistantText: string | null): Promise<void> {
     return this.enqueue(async () => {
+      // Capture phases keep their existing closed vocabulary; length is a non-success terminal result.
+      const phase = status === 'length' ? 'failed' : status;
       if (assistantText !== null && this.assistantCount === 0)
-        await this.assistant(assistantText, 0, status);
-      await this.emit({ kind: 'origin', runtimeOriginRef: null, phase: status });
+        await this.assistant(assistantText, 0, phase);
+      await this.emit({ kind: 'origin', runtimeOriginRef: null, phase });
       await this.semantic.flushCompleted();
       await this.semantic.interrupt();
       await this.emit({

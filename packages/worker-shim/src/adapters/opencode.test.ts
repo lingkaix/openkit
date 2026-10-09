@@ -132,6 +132,24 @@ describe('OpenCode resident adapter', () => {
     return { adapter, child, client, layout, creds, environment: () => environment };
   }
 
+  it('preserves correlated succeeded idle with native length as length', async () => {
+    const f = timelineFixture('new');
+    const list = f.client.message.list.bind(f.client.message);
+    f.client.message.list = async (...args) => {
+      const response = await list(...args);
+      return {
+        ...response,
+        data: response.data.map((row) =>
+          row.type === 'assistant' ? { ...row, finish: 'length' } : row
+        ),
+      } as never;
+    };
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const turn = await session.startTurn(turnInput(f.layout, f.creds, 'length', 'prompt-model'));
+    expect(await turn.settled).toMatchObject({ status: 'length', stopReason: 'length' });
+  });
+
   it('reports native terminal, exit, pipe drain and retained close independently', async () => {
     const f = timelineFixture('new');
     const session = await f.adapter.openSession(openInput(f.layout, f.creds));

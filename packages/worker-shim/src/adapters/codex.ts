@@ -101,17 +101,24 @@ export function codexLaunchArguments(): readonly string[] {
 
 /**
  * Normalizes one terminal Codex turn. Cancellation wins over partial assistant text.
+ * Request provenance is frozen by the native terminal owner before collection.
  * More than one assistant message, an unknown status, or a result over 16 MiB fails closed.
  */
 export function normalizeCodexAssistant(
   status: string,
-  texts: readonly string[]
+  texts: readonly string[],
+  interruptRequested = false
 ): WorkerAdapterResult {
   if (status === 'process-exited' || status === 'identity-mismatch') {
     return { assistantText: null, status: 'failed', stopReason: status };
   }
   if (status === 'interrupted' || status === 'failed') {
-    return { assistantText: null, status, stopReason: status };
+    return {
+      assistantText: null,
+      status,
+      stopReason: status,
+      ...(status === 'interrupted' ? { interruptRequested } : {}),
+    };
   }
   if (status !== 'completed') {
     return { assistantText: null, status: 'failed', stopReason: 'malformed-result' };
@@ -325,6 +332,8 @@ class CodexResidentSession implements WorkerResidentSession {
   private stopInFlight: Promise<boolean> | null = null;
   private unusable = false;
   private active = false;
+  /** Reset at admission and sampled only when this Turn's native terminal is correlated. */
+  private interruptRequested = false;
   /** Shared observer for native facts unavailable to the Harness. */
   private recordLifecycleFact: WorkerResidentTurnInput['recordLifecycleFact'];
   /** Working directory and MCP ids bound when the thread was loaded. Null until that load. */
@@ -335,12 +344,21 @@ class CodexResidentSession implements WorkerResidentSession {
   private readonly turnWaiters = new Map<
     string,
     {
-      resolve: (value: { status: string; texts: readonly string[] }) => void;
+      resolve: (value: {
+        status: string;
+        texts: readonly string[];
+        interruptRequested: boolean;
+      }) => void;
       reject: (error: Error) => void;
     }
   >();
   /** A terminal can arrive in the same stdout chunk as turn/start acceptance. */
-  private earlyTerminal: { turnId: string; status: string; texts: readonly string[] } | null = null;
+  private earlyTerminal: {
+    turnId: string;
+    status: string;
+    texts: readonly string[];
+    interruptRequested: boolean;
+  } | null = null;
   private acceptingTurn = false;
   /** Per-Turn delivery evidence; no native effort selection is cached. */
   private reasoningEffortDelivery: string | undefined;
@@ -645,6 +663,7 @@ class CodexResidentSession implements WorkerResidentSession {
         : undefined;
     this.boundRoutes = routeSet;
     this.active = true;
+    this.interruptRequested = false;
     this.terminalSeen = false;
     this.terminalProofEvaluated = false;
     this.lastTerminal = null;
@@ -717,6 +736,7 @@ class CodexResidentSession implements WorkerResidentSession {
         interrupt: async (
           deadline = new LifecycleDeadline(LIFECYCLE_DEFAULTS.nativeStopMs, this.stopGraceMs * 2)
         ) => {
+          if (this.currentTurnId === turnId) this.interruptRequested = true;
           if (this.unusable || this.phase !== 'running') {
             if (!(await this.stopProcess(deadline)))
               throw new Error('Codex interrupt stop remains unproved.');
@@ -937,10 +957,18 @@ class CodexResidentSession implements WorkerResidentSession {
     if (status !== 'inProgress') this.terminalSeen = true;
     const completion =
       status === 'inProgress' && !this.earlyTerminal
-        ? new Promise<{ status: string; texts: readonly string[] }>((resolve, reject) => {
-            this.turnWaiters.set(turnId, { resolve, reject });
-          })
-        : Promise.resolve(this.earlyTerminal ?? { status, texts: assistantTexts(turn) });
+        ? new Promise<{ status: string; texts: readonly string[]; interruptRequested: boolean }>(
+            (resolve, reject) => {
+              this.turnWaiters.set(turnId, { resolve, reject });
+            }
+          )
+        : Promise.resolve(
+            this.earlyTerminal ?? {
+              status,
+              texts: assistantTexts(turn),
+              interruptRequested: this.interruptRequested,
+            }
+          );
     this.earlyTerminal = null;
     let collectionIncomplete = false;
     let releaseCollection!: () => void;
@@ -963,7 +991,11 @@ class CodexResidentSession implements WorkerResidentSession {
           outcome.status !== 'inProgress'
         )
           this.lastTerminal = { id: turnId, input, status: outcome.status, texts: outcome.texts };
-        let result = normalizeCodexAssistant(outcome.status, outcome.texts);
+        let result = normalizeCodexAssistant(
+          outcome.status,
+          outcome.texts,
+          outcome.interruptRequested
+        );
         await Promise.race([
           capture?.finalize().catch(() => {
             collectionIncomplete = true;
@@ -1073,9 +1105,11 @@ class CodexResidentSession implements WorkerResidentSession {
       return;
     }
     this.terminalSeen = true;
-    if (waiter) waiter.resolve({ status, texts });
+    // Snapshot at correlation, including terminals arriving before turn/start acknowledges.
+    const interruptRequested = this.interruptRequested;
+    if (waiter) waiter.resolve({ status, texts, interruptRequested });
     else if (this.acceptingTurn && !this.earlyTerminal)
-      this.earlyTerminal = { turnId: turn.id, status, texts };
+      this.earlyTerminal = { turnId: turn.id, status, texts, interruptRequested };
     else void this.invalidateTurn('identity-mismatch').catch(() => undefined);
   }
 
@@ -1108,7 +1142,7 @@ class CodexResidentSession implements WorkerResidentSession {
   private failWaiters(status: string): void {
     for (const [id, waiter] of this.turnWaiters) {
       this.turnWaiters.delete(id);
-      waiter.resolve({ status, texts: [] });
+      waiter.resolve({ status, texts: [], interruptRequested: false });
     }
   }
 

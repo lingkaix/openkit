@@ -410,6 +410,25 @@ function toolNames(request: {
   return request.body.tools?.map((tool) => tool.function.name) ?? [];
 }
 
+it('projects the host native length outcome without establishing a new conversation', () => {
+  expect(
+    projectPiTurnSettlement(
+      {
+        outcome: { status: 'length', reason: 'pi-length' },
+        nativeHandle: { state: 'pending' },
+        compactionEntryIds: [],
+        turnId: 'turn-length',
+      },
+      { expectedHandleText: null, secrets: [] }
+    )
+  ).toMatchObject({
+    status: 'length',
+    stopReason: 'pi-length',
+    establishes: false,
+    validEvidence: true,
+  });
+});
+
 describe('Pi frame projection', () => {
   const handle = JSON.stringify({
     cwd: '/work',
@@ -1654,6 +1673,13 @@ describe('Pi controlled channel faults', () => {
     expect(await turn.settled).toMatchObject({ status: 'failed', stopReason: 'pi-channel-lost' });
   });
 
+  it('joins an already decided length result through the interrupt response', async () => {
+    const { dirs, session } = await peer('length-interrupt');
+    const turn = await session.startTurn(turnInput(dirs));
+    await expect(turn.interrupt()).resolves.toBeUndefined();
+    expect(await turn.settled).toMatchObject({ status: 'length', stopReason: 'pi-length' });
+  });
+
   it('rejects an unknown interrupt result after the Turn settles', async () => {
     const { dirs, session } = await peer('bad-interrupt');
     const turn = await session.startTurn(turnInput(dirs));
@@ -2281,7 +2307,7 @@ export default function (pi) {
   );
 
   it(
-    'records compaction ids and rejects provider failures without ending the host',
+    'records compaction ids and classifies provider stops without ending the host',
     async () => {
       let requests = 0;
       let mode: 'ok' | 'length' | 'status' | 'tool' | 'empty' | 'recovered' = 'ok';
@@ -2359,18 +2385,19 @@ export default function (pi) {
         .map((entry) => entry.id);
       expect(compactionIds).toHaveLength(1);
       expect(retainedIds.filter((id) => id === compactionIds[0])).toEqual(compactionIds);
-      const failures = [
-        ['turn-3', 'length', 'pi-terminal-correlation-failed'],
-        ['turn-4', 'status', 'pi-terminal-correlation-failed'],
-        ['turn-5', 'tool', 'pi-terminal-correlation-failed'],
-        ['turn-6', 'empty', 'pi-final-message-empty'],
+      const outcomes = [
+        ['turn-3', 'length', 'pi-length', 'length'],
+        ['turn-4', 'status', 'pi-terminal-correlation-failed', 'failed'],
+        // This fixture completes a tool call, then settles a correlated native length message.
+        ['turn-5', 'tool', 'pi-length', 'length'],
+        ['turn-6', 'empty', 'pi-final-message-empty', 'failed'],
       ] as const;
-      for (const [turnId, nextMode, reason] of failures) {
+      for (const [turnId, nextMode, reason, status] of outcomes) {
         mode = nextMode;
         const failed = await (
           await successor.startTurn(turnInput(f.dirs, { prompt: turnId, turnId }))
         ).settled;
-        expect(failed.status).toBe('failed');
+        expect(failed.status).toBe(status);
         expect(failed.assistantText).toBeNull();
         expect(failed.stopReason).toBe(reason);
         expect(successor.childState()).toBe('running');

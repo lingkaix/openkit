@@ -52,7 +52,7 @@ const CLI_NAME = '@opencode/cli';
 const RESULT_BYTE_LIMIT = 16 * 1024 * 1024;
 const DIAGNOSTIC_BYTE_LIMIT = 16 * 1024;
 const HANDLE_PREFIX = 'v1:';
-const SUCCESS_FINISH = new Set(['stop', 'length']);
+const SETTLED_ASSISTANT_FINISH = new Set(['stop', 'length']);
 const SERVER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 /** Disables autonomous update and model-catalog traffic while preserving native discovery. */
@@ -890,6 +890,7 @@ async function supervise(
           sessionId,
           startedAt: promptStartedAt,
           stop: () => confirmStopped(interruptDeadline),
+          interruptRequested: () => interruptDeadline !== undefined,
           rpc: (name, work) =>
             Promise.race([
               nativeDeadline(
@@ -1584,6 +1585,7 @@ async function settleTurn(options: {
   sessionId: string;
   startedAt: number;
   stop: () => Promise<boolean>;
+  interruptRequested: () => boolean;
   rpc: NativeRpc;
   observed: (messages: NativeMessage[]) => Promise<void>;
   published: (messages: NativeMessage[]) => Promise<void>;
@@ -1630,7 +1632,11 @@ async function settleTurn(options: {
     }
     const all = await listMessages(options.client, options.sessionId, options.rpc);
     const messages = all.filter((message) => !options.before.has(message.id));
-    const result = interpretMessages(messages, options.promptId, options.secrets, outcome);
+    // Correlate and freeze provenance before structural publication or capture finalization.
+    const result = {
+      ...interpretMessages(messages, options.promptId, options.secrets, outcome),
+      interruptRequested: options.interruptRequested(),
+    };
     await options.published(all);
     return finish(result);
   } catch (error) {
@@ -1969,7 +1975,7 @@ function interpretMessages(
       message.finish !== undefined &&
       message.finish !== 'tool-calls'
   );
-  if (finals.some((message) => message.error && SUCCESS_FINISH.has(message.finish ?? '')))
+  if (finals.some((message) => message.error && SETTLED_ASSISTANT_FINISH.has(message.finish ?? '')))
     throw new Error('OpenCode assistant carries native error evidence.');
   if (finals.length > 1) throw new Error('OpenCode assistant terminal evidence is contradictory.');
   const idles = messages.filter((message) => message.type === 'idle');
@@ -1980,14 +1986,18 @@ function interpretMessages(
     );
   }
   const assistant = [...messages].reverse().find((message) => message.type === 'assistant');
-  if (idle?.outcome === 'succeeded' && assistant && !SUCCESS_FINISH.has(assistant.finish ?? '')) {
+  if (
+    idle?.outcome === 'succeeded' &&
+    assistant &&
+    !SETTLED_ASSISTANT_FINISH.has(assistant.finish ?? '')
+  ) {
     throw new Error('OpenCode terminal evidence is contradictory.');
   }
   if (
     idle?.outcome !== 'succeeded' &&
     idle &&
     assistant &&
-    SUCCESS_FINISH.has(assistant.finish ?? '')
+    SETTLED_ASSISTANT_FINISH.has(assistant.finish ?? '')
   ) {
     throw new Error('OpenCode terminal evidence is contradictory.');
   }
@@ -2002,7 +2012,7 @@ function interpretMessages(
     }
     return failedResult('OpenCode turn ended without an assistant message.', secrets);
   }
-  if (assistant.finish === undefined || !SUCCESS_FINISH.has(assistant.finish)) {
+  if (assistant.finish === undefined || !SETTLED_ASSISTANT_FINISH.has(assistant.finish)) {
     return failedResult(`OpenCode assistant finish is ${assistant.finish ?? 'missing'}.`, secrets);
   }
   if (Buffer.byteLength(assistant.text, 'utf8') > RESULT_BYTE_LIMIT) {
@@ -2011,6 +2021,8 @@ function interpretMessages(
   if (secrets.some((secret) => secret && assistant.text.includes(secret))) {
     return failedResult('OpenCode assistant output contained a loopback credential.', secrets);
   }
+  if (assistant.finish === 'length')
+    return { assistantText: null, status: 'length', stopReason: 'length' };
   return {
     assistantText: assistant.text.length > 0 ? assistant.text : null,
     status: 'completed',

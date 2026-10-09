@@ -83,8 +83,10 @@ export interface WorkerAdapterResult {
   readonly diagnostics?: Readonly<Record<string, string>> | undefined;
   /** Independent native proofs preserved through shared Turn closeout. */
   readonly nativeEvidence?: WorkerNativeEvidence;
-  /** Normalized terminal status. */
-  readonly status: 'completed' | 'failed' | 'interrupted';
+  /** For native interruption, immutable proof that this Turn's OpenKit request preceded adapter terminal correlation. */
+  readonly interruptRequested?: boolean;
+  /** Normalized terminal status; length preserves proved output or context exhaustion. */
+  readonly status: 'completed' | 'length' | 'failed' | 'interrupted';
   /** Product-safe terminal reason. */
   readonly stopReason: string;
 }

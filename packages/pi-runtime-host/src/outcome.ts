@@ -9,9 +9,9 @@ export const PI_RESULT_CONTENT_MAX_BYTES = 16 * 1024 * 1024;
 /** Settled result of one prompt on the resident session. */
 export type PiTurnOutcome =
   | { readonly status: 'completed'; readonly assistantText: string }
-  | { readonly status: 'failed' | 'interrupted'; readonly reason: string };
+  | { readonly status: 'length' | 'failed' | 'interrupted'; readonly reason: string };
 
-/** The admitted route a completed assistant message must name. */
+/** The admitted route a settled assistant message must name. */
 export interface PiAdmittedRoute {
   /** Adapter-owned provider alias. */
   readonly provider: string;
@@ -31,10 +31,7 @@ interface PiAssistantMessage extends Record<string, unknown> {
 /**
  * Correlates the session events of one prompt into one trustworthy outcome.
  *
- * A Turn completes only when one successful assistant message is confirmed by its turn end, by
- * the final non-retrying agent end, and by `agent_settled`, with no terminal event after
- * settlement. An error, abort, length stop, or terminal tool use leaves no candidate. Unknown
- * event types are ignored and cannot satisfy any predicate.
+ * A terminal assistant stop, length, or abort message must match its turn end, final non-retrying agent end, and `agent_settled`, with no terminal event after settlement. Length preserves exhaustion and an unrequested abort preserves a safe self-stop diagnostic, without a successful assistant candidate. Errors and terminal tool use cannot establish success; unknown events cannot satisfy correlation.
  */
 export class PiTurnOutcomeTracker {
   #agentMatched = false;
@@ -61,7 +58,7 @@ export class PiTurnOutcomeTracker {
       return;
     }
     if (type === 'message_end') {
-      this.#candidate = readCompletedAssistantMessage(event.message);
+      this.#candidate = readSettledAssistantMessage(event.message);
       this.#turnMatched = false;
       this.#agentMatched = false;
     } else if (type === 'turn_end') {
@@ -100,8 +97,7 @@ export class PiTurnOutcomeTracker {
    *
    * @param input Whether an interrupt was requested, whether the prompt call rejected, and the
    *   admitted route of this Turn.
-   * @returns Interrupted when interrupted, otherwise completed with the final text, or failed when
-   *   correlation, route, content structure, or the content bound does not hold.
+   * @returns Interrupted when interrupted, otherwise length for proved exhaustion, completed with the final text, or failed when correlation, route, content structure, or the content bound does not hold.
    */
   public finish(input: {
     readonly interrupted: boolean;
@@ -141,6 +137,13 @@ export class PiTurnOutcomeTracker {
       if (typeof part.text !== 'string') return { status: 'failed', reason: 'pi-output-malformed' };
       texts.push(part.text);
     }
+    if (candidate.stopReason === 'length') return { status: 'length', reason: 'pi-length' };
+    if (candidate.stopReason === 'aborted') {
+      return {
+        status: 'failed',
+        reason: 'Worker runtime stopped on its own without an OpenKit interrupt request.',
+      };
+    }
     const assistantText = texts.join('').trim();
     return assistantText
       ? { status: 'completed', assistantText }
@@ -148,12 +151,14 @@ export class PiTurnOutcomeTracker {
   }
 }
 
-/** Reads one completed successful assistant message, or null for any other message. */
-function readCompletedAssistantMessage(value: unknown): PiAssistantMessage | null {
+/** Reads one settled assistant stop, length, or abort message for terminal correlation. */
+function readSettledAssistantMessage(value: unknown): PiAssistantMessage | null {
   if (
     !isRecord(value) ||
     value.role !== 'assistant' ||
-    value.stopReason !== 'stop' ||
+    (value.stopReason !== 'stop' &&
+      value.stopReason !== 'length' &&
+      value.stopReason !== 'aborted') ||
     !Array.isArray(value.content) ||
     typeof value.provider !== 'string' ||
     typeof value.model !== 'string'

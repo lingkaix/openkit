@@ -3,7 +3,7 @@ status: Accepted
 implementation: Partial
 kind: boundary
 date: "2026-09-30"
-updated: 2026-10-08
+updated: "2026-10-09"
 ---
 # DeepSeek Worker Adapter
 
@@ -98,7 +98,18 @@ On reasoning routes, DeepSeek-specific acceptance proves that ACP `session/set_c
 
 ## Native Output Mapping
 
-ACP carries `session/update` over stdio local to the Sandbox, to the extent the pinned profile advertises it. The addressed prompt's correlated native terminal outcome, in addition to those ordered updates, is what classifies the Turn as completed, failed, or interrupted. Partial text or an admission acknowledgement does not establish success. Failure and interruption normalize through the shared adapter-normalized result in [Worker Runtime Communication Model](20260629-worker_runtime_communication_model.md). Final text is the ordered text of the successful terminal outcome, trimmed once. Empty success is a correlated success with no assistant text and returns no assistant candidate. Native event names and SDK methods stay probe-selected. Unknown notifications do not satisfy a lifecycle predicate and do not enter NanoCore. NanoCore alone commits canonical Items.
+| Correlated native terminal evidence | Required normalized outcome |
+| --- | --- |
+| `end_turn` | Normal completion; ordered trimmed text or no assistant candidate for empty success. |
+| `max_tokens` | Proved output/context limit carried as `length`, rather than `error`; never completed success. |
+| `max_turn_requests` or `refusal` | Failed outcome carrying `error`; neither proves `budget_exhausted`. |
+| `cancelled` or another native interrupted/aborted outcome after an OpenKit interrupt or cancellation request for this Turn | Requested interruption, preserving `aborted`. |
+| Native cancelled, interrupted, or aborted outcome without that OpenKit request | Failed outcome carrying `error` and a bounded product-safe diagnostic that the Worker runtime stopped on its own; no user cancellation is inferred. |
+| Native error, prompt rejection, crash or process exit, unsupported content, output collection overflow, malformed or missing terminal evidence, or ambiguous/unsupported native limit | Existing failure or uncertainty and fencing rules; partial updates cannot establish success. |
+
+These outcomes use the private [adapter normalization boundary](20260629-worker_runtime_communication_model.md#adapter-normalized-stop-outcomes) and the existing [Core stop mapping](20260531-worker_turn_reliability_envelope.md#worker-turn-envelope). Terminal classification grants no cleanup, retry, or replacement authority. The rationale is recorded in [Truthful Native Stop Classification](../decisions/20261009-truthful_native_stop_classification.md).
+
+ACP carries `session/update` over stdio local to the Sandbox, to the extent the pinned profile advertises it. The addressed prompt's correlated native terminal outcome, in addition to those ordered updates, selects normal completion, failure, requested interruption, or a proved output/context limit under the mapping above. Partial text or an admission acknowledgement does not establish success. Failure and interruption normalize through the shared adapter-normalized result in [Worker Runtime Communication Model](20260629-worker_runtime_communication_model.md). Final text is the ordered text of the successful terminal outcome, trimmed once. Empty success is a correlated success with no assistant text and returns no assistant candidate. Native event names and SDK methods stay probe-selected. Unknown notifications do not satisfy a lifecycle predicate and do not enter NanoCore. NanoCore alone commits canonical Items.
 
 If the client materializes a byte stream, native output is limited to 16 MiB and diagnostics keep at most a 16 KiB redacted prefix per stream. If the client materializes only session updates, the same 16 MiB bound applies to the accumulated update payload for one Turn, and the same 16 KiB prefix applies to diagnostic text. Credential values never appear in diagnostics. Live native token streaming into product Items is not supported.
 
@@ -145,6 +156,8 @@ Smoke of the deployment image proves the selected DeepSeek binary when the insta
 
 ## Failure Semantics
 
+The [native terminal mapping](#native-output-mapping) preserves proved limits and distinguishes requested interruption from a runtime self-stop; none of these classifications proves cleanup or permits automatic continuation.
+
 - Missing, inactive-but-mismatched, or wrong-workspace resume fails explicitly, with no transcript replay and no fresh-session fallback.
 - Close that cannot drain is not success.
 - Cancel and close report the actual outcome.
@@ -169,6 +182,8 @@ The authored manifest is the sole capability declaration. Adapter conformance do
 ## Tests
 
 Required tests cover:
+
+- Native stop mappings above, including requested interruption versus runtime self-stop, bounded actor-neutral diagnostics, proved limits without false success, ambiguous/unsupported evidence, and unchanged failure and cleanup fencing
 
 - Current-pin `turn.steer` unsupported refusal with zero additional native effects, unchanged original work, and no alternate wire, plugin, cancellation, or new-Turn fallback
 - `session/resume` by exact id after a process restart, then `session/close`, with no further `session/update`

@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: boundary
-updated: 2026-10-08
+updated: "2026-10-09"
 ---
 # Codex Worker Adapter
 
@@ -132,6 +132,17 @@ On reasoning routes, Codex-specific acceptance proves that App Server v2 `turn/s
 
 ## Native Output Mapping
 
+| Correlated native terminal evidence | Required normalized outcome |
+| --- | --- |
+| App Server `turn/completed` with terminal status `completed` | Normal completion, subject to existing correlation and collection predicates; absent text yields no assistant candidate. |
+| App Server terminal status `failed` | Failed outcome carrying `error`, even with partial assistant content. |
+| App Server terminal status `interrupted` after an OpenKit interrupt or cancellation request for this Turn | Requested interruption, preserving `aborted`. |
+| Native interrupted, cancelled, or aborted outcome without that OpenKit request | Failed outcome carrying `error` and a bounded product-safe diagnostic that the Worker runtime stopped on its own; no user cancellation is inferred. |
+| Native limit | Existing classification stays unchanged unless correlated native evidence positively proves an output or context limit, in which case preserve `length`; a label or diagnostic alone does not prove it. |
+| Native error, crash or process exit; malformed, missing, unknown, or in-progress terminal evidence | Existing failure or uncertainty and fencing rules. A standalone error notification, including a retryable one, is not correlated terminal proof. |
+
+These outcomes use the private [adapter normalization boundary](20260629-worker_runtime_communication_model.md#adapter-normalized-stop-outcomes) and the existing [Core stop mapping](20260531-worker_turn_reliability_envelope.md#worker-turn-envelope). Terminal classification grants no cleanup, retry, or replacement authority. The rationale is recorded in [Truthful Native Stop Classification](../decisions/20261009-truthful_native_stop_classification.md).
+
 The final assistant response is the correlated App Server terminal result, not a `--output-last-message` file. The adapter validates that result, applies the shared 16 MiB bound, decodes UTF-8, trims surrounding whitespace, and returns either one assistant message or no message together with the exact native-handle proof.
 
 App Server events are not imported directly into NanoCore product state. When runtime provenance is enabled, the evidence projection is owned by the provenance specification. The accepted design replaces exec JSONL stdout capture. The retention boundary in Provenance stays here.
@@ -199,7 +210,9 @@ No other adapter is required to imitate Codex rollout files. Possession of rollo
 
 ## Failure Semantics
 
-- A correlated terminal result with no assistant text returns a successful normalized result with no assistant candidate.
+The [native terminal mapping](#native-output-mapping) preserves proved limits and distinguishes requested interruption from a runtime self-stop; none of these classifications proves cleanup or permits automatic continuation.
+
+- A correlated successful terminal result with no assistant text returns a successful normalized result with no assistant candidate; failed, interrupted, or positively proved limit outcomes keep the mapping above.
 - A present native result that is not readable UTF-8 or exceeds 16 MiB fails collection closed.
 - A non-zero or failed native outcome returns a failed adapter classification with bounded, redacted stdout and stderr summaries even when partial assistant content exists.
 - Cancellation reports the actual outcome and wins over partial assistant content, and does not by itself close the session.
@@ -226,6 +239,8 @@ The authored manifest is the sole launch-time capability declaration. Adapter co
 ## Tests
 
 Required adapter tests cover:
+
+- Native stop mappings above, including requested interruption versus runtime self-stop, bounded actor-neutral diagnostics, proved limits without false success, ambiguous/unsupported evidence, and unchanged failure and cleanup fencing
 
 - Native live-steer qualification above, including exact input correlation, zero fresh-Turn effects, terminal/interrupt races, lost-response non-redelivery, and no retained-input spill into later work
 - Credential-value absence from argv, native configuration text, diagnostics, and evidence, and direct-route rejection before the native Turn is admitted

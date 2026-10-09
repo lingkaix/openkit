@@ -59,7 +59,7 @@ const PATCH_NAME = 'deepseek-loopback.patch.yml';
 const STDERR_CAPTURE_BYTES = 64 * 1024;
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
-const FAILED_STOP_REASONS = new Set(['max_tokens', 'max_turn_requests', 'refusal']);
+const FAILED_STOP_REASONS = new Set(['max_turn_requests', 'refusal']);
 
 /** One representable logical model in the exact admitted native catalog. */
 interface NativeModel {
@@ -224,12 +224,14 @@ export function classifyDeepSeekStop(input: {
   readonly promptFailed: boolean;
   readonly stopReason: string | undefined;
   readonly text: string;
-}): Pick<WorkerAdapterResult, 'assistantText' | 'status' | 'stopReason'> {
+}): Pick<WorkerAdapterResult, 'assistantText' | 'status' | 'stopReason' | 'interruptRequested'> {
   if (input.promptFailed) return failed('prompt_failed');
   if (input.hostEnded) return failed('host_ended');
   if (input.overLimit) return failed('output_limit');
   if (input.badContent) return failed('unsupported_content');
-  if (input.stopReason === 'cancelled') return interrupted();
+  if (input.stopReason === 'cancelled') return interrupted(input.cancelRequested);
+  if (input.stopReason === 'max_tokens')
+    return { assistantText: null, status: 'length', stopReason: 'max_tokens' };
   if (input.stopReason === 'end_turn') {
     const trimmed = input.text.trim();
     return {
@@ -903,8 +905,10 @@ class DeepSeekSession implements WorkerResidentSession {
     });
     settled.catch(() => undefined);
     let done = false;
-    let nativeResult: Pick<WorkerAdapterResult, 'assistantText' | 'status' | 'stopReason'> | null =
-      null;
+    let nativeResult: Pick<
+      WorkerAdapterResult,
+      'assistantText' | 'status' | 'stopReason' | 'interruptRequested'
+    > | null = null;
     const publish = () => {
       if (done || !nativeResult) return;
       done = true;
@@ -932,7 +936,9 @@ class DeepSeekSession implements WorkerResidentSession {
         return;
       }
       this.queueCapture(turn, async () => {
-        const phase = nativeResult?.status ?? 'failed';
+        // Capture phases describe success or failure; precise limits stay in the terminal result.
+        const phase =
+          nativeResult?.status === 'length' ? 'failed' : (nativeResult?.status ?? 'failed');
         await turn.capture!.emit(turn.sourceRef, {
           kind: 'assistant',
           runtimeOriginRef: turn.originRef,
@@ -1010,6 +1016,7 @@ class DeepSeekSession implements WorkerResidentSession {
       },
       finish: (stopReason, promptFailed) => {
         if (done || nativeResult) return;
+        // Freeze request provenance with the exact native result, before queued capture can yield.
         nativeResult = classifyDeepSeekStop({
           badContent: turn.badContent,
           cancelRequested: turn.cancelRequested,
@@ -1848,9 +1855,16 @@ function failed(
   return { assistantText: null, status: 'failed', stopReason };
 }
 
-/** Records a proved cancel. */
-function interrupted(): Pick<WorkerAdapterResult, 'assistantText' | 'status' | 'stopReason'> {
-  return { assistantText: null, status: 'interrupted', stopReason: 'cancelled' };
+/** Preserves native cancellation and its immutable OpenKit request provenance. */
+function interrupted(
+  interruptRequested: boolean
+): Pick<WorkerAdapterResult, 'assistantText' | 'status' | 'stopReason' | 'interruptRequested'> {
+  return {
+    assistantText: null,
+    status: 'interrupted',
+    stopReason: 'cancelled',
+    interruptRequested,
+  };
 }
 
 /** Resolves the pinned package bin. Tests and the image both install this package. */
