@@ -473,8 +473,14 @@ describe('deepseek resident adapter', () => {
       const held = new Promise<void>((resolve) => {
         release = resolve;
       });
-      let entered = false;
+      let enter: () => void = () => undefined;
+      const entered = new Promise<void>((resolve) => {
+        enter = resolve;
+      });
       const observations: RuntimeObservation[] = [];
+      // Cold native loading is setup, not the interruption deadline under test.
+      // Keep preparation time controlled until the real ACP prompt is admitted.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
       try {
         const active = await session.startTurn({
           ...input,
@@ -482,18 +488,24 @@ describe('deepseek resident adapter', () => {
             ...input.runtimeCapture,
             emit: async (record) => {
               if (record.fact.kind === 'coverage' && record.fact.coverage === 'ended') {
-                entered = true;
+                enter();
                 await held;
               }
               observations.push(record);
             },
           },
         });
-        await waitFor(() => entered);
+        vi.useRealTimers();
+        await entered;
         const interruptStarted = performance.now();
         await active.interrupt(new LifecycleDeadline(800, 400));
         const result = await active.settled;
         expect(performance.now() - interruptStarted).toBeLessThan(1050);
+        expect(result).toMatchObject({
+          assistantText: 'accepted prefix',
+          status: 'completed',
+          nativeEvidence: { nativeTerminal: true, processExited: true },
+        });
         expect(result.diagnostics?.runtimeCapture).toBe('incomplete');
         expect(observations.some(({ fact }) => fact.kind === 'assistant')).toBe(true);
         expect(
@@ -501,7 +513,11 @@ describe('deepseek resident adapter', () => {
             ({ fact }) => fact.kind === 'coverage' && fact.coverage === 'unavailable'
           )
         ).toBe(true);
+        expect(
+          observations.some(({ fact }) => fact.kind === 'coverage' && fact.coverage === 'ended')
+        ).toBe(false);
       } finally {
+        vi.useRealTimers();
         release();
       }
     },
