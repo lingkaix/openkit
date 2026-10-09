@@ -804,17 +804,141 @@ describe('chat starter (board 01)', () => {
     expect(listConversationNavigation).not.toHaveBeenCalledWith({ workspaceId: 'ws_authorized' });
   });
 
-  it('shows the empty state when there are no recent chats', async () => {
-    const listConversationNavigation = vi.fn().mockResolvedValue({ items: [] });
-    renderApp('/chat', makeClient({}, { 'conversation.navigation': listConversationNavigation }));
+  it('shows Recent empty only after Workspace discovery and navigation succeed', async () => {
+    const workspaces = createDeferred<{
+      items: { workspace: typeof QUICK_CHAT_WORKSPACE }[];
+    }>();
+    const navigation = createDeferred<{ items: [] }>();
+    const listWorkspaces = vi.fn().mockReturnValue(workspaces.promise);
+    const listConversationNavigation = vi.fn().mockReturnValue(navigation.promise);
+    renderApp(
+      '/chat',
+      makeClient(
+        { 'workspace.list': listWorkspaces },
+        { 'conversation.navigation': listConversationNavigation }
+      )
+    );
 
-    // Discovery can replace the initial empty block with a loading skeleton.
-    await waitFor(() => {
-      expect(listConversationNavigation).toHaveBeenCalledWith({ workspaceId: 'ws1' });
-      expect(
-        within(screen.getByRole('main', { name: 'Workspace' })).getByText('Start a chat')
-      ).toBeInTheDocument();
+    await screen.findByRole('heading', { name: 'What can we get done?' });
+    const recent = within(screen.getByText('Recent').closest('section')!);
+    expect(listWorkspaces).toHaveBeenCalled();
+    expect(listConversationNavigation).not.toHaveBeenCalled();
+    expect(recent.queryByText('Start a chat')).not.toBeInTheDocument();
+    expect(recent.getByRole('status', { name: 'Loading' })).toBeInTheDocument();
+
+    await act(async () => {
+      workspaces.resolve({ items: [{ workspace: QUICK_CHAT_WORKSPACE }] });
+      await workspaces.promise;
     });
+    await waitFor(() =>
+      expect(listConversationNavigation).toHaveBeenCalledWith({ workspaceId: 'ws_quick_chat' })
+    );
+    expect(recent.queryByText('Start a chat')).not.toBeInTheDocument();
+    expect(recent.getByRole('status', { name: 'Loading' })).toBeInTheDocument();
+
+    await act(async () => {
+      navigation.resolve({ items: [] });
+      await navigation.promise;
+    });
+    expect(await recent.findByText('Start a chat')).toBeInTheDocument();
+    expect(recent.queryByRole('status', { name: 'Loading' })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    'discovery',
+    'navigation',
+  ] as const)('keeps failed %s out of Recent empty and retries its own read', async (failure) => {
+    const user = userEvent.setup();
+    const workspaceResult = { items: [{ workspace: QUICK_CHAT_WORKSPACE }] };
+    const listWorkspaces = vi.fn().mockResolvedValue(workspaceResult);
+    const listNavigation = vi.fn().mockResolvedValue({ items: [] });
+    const failedRead = failure === 'discovery' ? listWorkspaces : listNavigation;
+    failedRead.mockRejectedValue(new Error('Read unavailable'));
+    renderApp(
+      '/chat',
+      makeClient(
+        { 'workspace.list': listWorkspaces },
+        { 'conversation.navigation': listNavigation }
+      )
+    );
+
+    await screen.findByRole('heading', { name: 'What can we get done?' });
+    const recent = within(screen.getByText('Recent').closest('section')!);
+    expect(await recent.findByText("Couldn't load recent chats.")).toBeInTheDocument();
+    expect(recent.queryByText('Start a chat')).not.toBeInTheDocument();
+    if (failure === 'discovery') expect(listNavigation).not.toHaveBeenCalled();
+    const callsBeforeRetry = failedRead.mock.calls.length;
+    failedRead.mockResolvedValue(failure === 'discovery' ? workspaceResult : { items: [] });
+    await user.click(recent.getByRole('button', { name: 'Try again' }));
+    expect(await recent.findByText('Start a chat')).toBeInTheDocument();
+    expect(failedRead).toHaveBeenCalledTimes(callsBeforeRetry + 1);
+    expect(listNavigation).toHaveBeenCalledWith({ workspaceId: 'ws_quick_chat' });
+  });
+
+  it('keeps unresolved and failed identity discovery out of Recent empty', async () => {
+    const user = userEvent.setup();
+    const session = createDeferred<{ user: { id: string } }>();
+    const getSession = vi.fn().mockReturnValue(session.promise);
+    const listNavigation = vi.fn().mockResolvedValue({ items: [] });
+    const client = makeClient(
+      {
+        'workspace.list': vi.fn().mockResolvedValue({
+          items: ['user_local', 'user_other'].map((ownerUserId, index) => ({
+            workspace: { ...QUICK_CHAT_WORKSPACE, id: index ? 'ws_other' : 'ws_quick_chat' },
+            effectiveRole: 'owner',
+            ownerUserId,
+            membershipRevision: 1,
+            registryRevision: 1,
+          })),
+        }),
+      },
+      { 'conversation.navigation': listNavigation }
+    );
+    Object.assign(client, { auth: { email: { getSession } } });
+    renderApp('/chat', client);
+
+    await screen.findByRole('heading', { name: 'What can we get done?' });
+    await waitFor(() => expect(getSession).toHaveBeenCalled());
+    const recent = within(screen.getByText('Recent').closest('section')!);
+    expect(recent.queryByText('Start a chat')).not.toBeInTheDocument();
+    expect(recent.getByRole('status', { name: 'Loading' })).toBeInTheDocument();
+    expect(listNavigation).not.toHaveBeenCalled();
+    await act(async () => session.reject(new Error('Identity unavailable')));
+    expect(await recent.findByText("Couldn't load recent chats.")).toBeInTheDocument();
+    expect(recent.queryByText('Start a chat')).not.toBeInTheDocument();
+    expect(listNavigation).not.toHaveBeenCalled();
+
+    getSession.mockResolvedValue({ user: { id: 'user_local' } });
+    await user.click(recent.getByRole('button', { name: 'Try again' }));
+    expect(await recent.findByText('Start a chat')).toBeInTheDocument();
+    expect(listNavigation).toHaveBeenCalledWith({ workspaceId: 'ws_quick_chat' });
+    expect(listNavigation).not.toHaveBeenCalledWith({ workspaceId: 'ws_other' });
+  });
+
+  it('does not present an unavailable Workspace as Recent empty', async () => {
+    const listNavigation = vi.fn().mockResolvedValue({ items: [] });
+    renderApp(
+      '/chat',
+      makeClient(
+        { 'workspace.list': vi.fn().mockResolvedValue({ items: [] }) },
+        { 'conversation.navigation': listNavigation }
+      )
+    );
+
+    await screen.findByRole('heading', { name: 'What can we get done?' });
+    const recent = within(screen.getByText('Recent').closest('section')!);
+    expect(await recent.findByText('No workspace is available.')).toBeInTheDocument();
+    expect(recent.queryByText('Start a chat')).not.toBeInTheDocument();
+    expect(listNavigation).not.toHaveBeenCalled();
+  });
+
+  it('keeps disconnected Recent in error treatment even after an empty read', async () => {
+    renderApp('/chat', makeClient({ meta: vi.fn().mockRejectedValue(new Error('Offline')) }));
+
+    await screen.findByRole('heading', { name: 'What can we get done?' });
+    const recent = within(screen.getByText('Recent').closest('section')!);
+    expect(await recent.findByText("Couldn't reach the local runtime.")).toBeInTheDocument();
+    expect(recent.queryByText('Start a chat')).not.toBeInTheDocument();
   });
 
   it('switches the active Workspace from Chat', async () => {
