@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: planned
+status: in-progress
 date: "2026-10-07"
 branch: rel-prep
 ---
@@ -25,12 +25,12 @@ This record preserves preparation and eventual verification evidence for the fir
 | Field | Current fact or pending observation |
 | --- | --- |
 | Intended tag | `v0.1.0-rc.1` |
-| Source commit | **PENDING — coordinator freezes the full exact clean `main` commit before counted round 1, proves containment in `origin/main` and that no earlier release used it, and publishes that same commit.** |
+| Source commit | Frozen candidate `06fe389c32d3c86c9320aaae45fcc59defefa18d`. Coordinator observations at `2026-10-09T14:26:22Z`: `git fetch origin` exited 0; `git rev-parse origin/main` printed this candidate; `git merge-base --is-ancestor 06fe389c32d3c86c9320aaae45fcc59defefa18d origin/main` exited 0; `git ls-remote origin refs/heads/main refs/tags/*` returned only `refs/heads/main` at this candidate and no tag. Writer observations at `2026-10-09T14:26:58Z` independently reproduced the local ref, containment and remote-ref read; `git tag --points-at 06fe389c32d3c86c9320aaae45fcc59defefa18d`, `git tag -l 'v*'` and `gh release list --repo lingkaix/openkit` exited 0 with empty output. No earlier release use was observed. Publication must select this same commit. |
 | Repository visibility at preparation | At `2026-10-07T11:19:02Z` the coordinator ran `gh repo view lingkaix/openkit --json visibility,isPrivate` and got `{"isPrivate":false,"visibility":"PUBLIC"}`. |
-| Package visibility and release posture | **PENDING — coordinator records observed visibility of all three release packages, absence where not yet created, and private/controlled/public release posture before publication.** Only `worker-common` has an anonymous-public contract; visibility mutation is separate authorization. |
+| Package visibility and release posture | At `2026-10-09T14:26:58Z`, `gh repo view lingkaix/openkit --json visibility,isPrivate` returned `{"isPrivate":false,"visibility":"PUBLIC"}`. Anonymous GHCR pull-token requests for `openkit-app`, `openkit-worker-common` and `openkit-worker-runtimes` returned HTTP 403 in the coordinator observation at `2026-10-09T14:23:25Z` and writer observations at `2026-10-09T14:27:24Z`: not anonymously pullable or not present. Existence and authenticated visibility are unobserved. At `2026-10-09T14:26:58Z`, the local `gh` token scope read lacked `read:packages`; an authenticated package list was not possible from this checkout and was not run. Pre-publication posture: public repository, release packages not anonymously pullable. Only `worker-common` has an anonymous-public contract; it must become anonymously pullable before GitHub Release creation through the engineer's separate action under Q-REL1. Visibility mutation is separate authorization. |
 | Non-publishing tag-only preparation chain | On 2026-10-07, release preflight, native NanoHost builds on amd64 and arm64, portable packaging, hosted NanoHost qualification on both targets, and packaged-asset verification passed in [GitHub Actions run 37611578953](https://github.com/lingkaix/openkit/actions/runs/37611578953), after commit `3daf363e` fixed packaging and verification defects. The coordinator reports that the temporary probe branch disabled every publication job and was deleted afterwards. Image publication, promotion, GitHub Release creation, image-digest verification, and anonymous `worker-common` pull were not exercised. |
-| Method and frontier | Complete normal preparation/review, reconcile earlier defects, freeze candidate and checklist, and run the fixed scenarios through [Persistent Live Acceptance](../../cookbooks/persistent-live-acceptance.md). Published artifacts are rebuilt from the tested commit; deployment and publication bytes are not claimed identical. |
-| Next Action prediction | Coordinator reconciles current Git and defect evidence and freezes the candidate, scenario inputs, and manual-gate decisions. Expected observable: a reviewable exact-candidate checkpoint and checklist; unresolved blockers or a changed candidate prevent carrying forward a clean-round count. |
+| Method and frontier | Candidate and checklist are frozen below. Step 4.1 is closed by the coordinator's classification of all round-45 residuals as non-blockers, filed as #179–#183; no blocker fix changes the round-45 candidate. Next is counted round 1 on the persistent staging deployment through [Persistent Live Acceptance](../../cookbooks/persistent-live-acceptance.md), then round 2 on the same candidate and frozen checklist, then the tag after the required clean rounds and other release obligations are satisfied. Published artifacts are rebuilt from the tested commit; deployment and publication bytes are not claimed identical. |
+| Next Action prediction | After this freeze record is committed, the coordinator starts counted round 1 on the persistent staging deployment with the frozen inputs. Expected observable: complete candidate-bound results for all twenty-one scenarios and their deciding public evidence, classifications and clean-count judgment. Counted round 2 follows on the same candidate and checklist, then the tag when the release owner's obligations are satisfied; a new product defect, incomplete round, unresolved blocker or changed candidate prevents carrying forward the required clean-round count. |
 
 ### Expected Bundle
 
@@ -50,7 +50,7 @@ The [2026-10-05 ruling](../../decisions/20261005-first_release_lifecycle_and_ver
 
 The [2026-10-09 blockers-only triage ruling](../../decisions/20261009-rc1_blockers_only_triage.md) requires fixing newly found rc.1 defects only for work that gets stuck, data loss or corruption, security or authorization problems, or a wrong terminal state or a false success; non-blockers require a GitHub issue and release-notes disclosure without an extra counted round, while accepted round judgment, gates, CI requirements, the stable-release block, and effect authorization remain unchanged.
 
-**Filed post-acceptance backlog:** the [backlog index #177](https://github.com/lingkaix/openkit/issues/177) tracks the issues the release notes must disclose: [#120](https://github.com/lingkaix/openkit/issues/120) R001 Worker readiness proof; [#121](https://github.com/lingkaix/openkit/issues/121) live Task steer not implemented; [#122](https://github.com/lingkaix/openkit/issues/122) user-selected shared Sandboxes not implemented; [#123](https://github.com/lingkaix/openkit/issues/123) required-compaction failure classification; [#124](https://github.com/lingkaix/openkit/issues/124) upstream historical tool-pair acceptance unproved; [#126](https://github.com/lingkaix/openkit/issues/126) existing authored npm grants need administrator update; [#127](https://github.com/lingkaix/openkit/issues/127) Chat tool-call declaration parity; [#128](https://github.com/lingkaix/openkit/issues/128) bounded Task completion versus objective completion; [#130](https://github.com/lingkaix/openkit/issues/130) Pi self-stop incident unproved; [#131](https://github.com/lingkaix/openkit/issues/131) tool-download network grants; and the already-open [#117](https://github.com/lingkaix/openkit/issues/117) D7 schema guard granularity, [#108](https://github.com/lingkaix/openkit/issues/108) subscription login recovery residuals, and [#116](https://github.com/lingkaix/openkit/issues/116) release cookbook says private.
+**Filed post-acceptance backlog:** the [backlog index #177](https://github.com/lingkaix/openkit/issues/177) tracks the issues the release notes must disclose: [#120](https://github.com/lingkaix/openkit/issues/120) R001 Worker readiness proof; [#121](https://github.com/lingkaix/openkit/issues/121) live Task steer not implemented; [#122](https://github.com/lingkaix/openkit/issues/122) user-selected shared Sandboxes not implemented; [#123](https://github.com/lingkaix/openkit/issues/123) required-compaction failure classification; [#124](https://github.com/lingkaix/openkit/issues/124) upstream historical tool-pair acceptance unproved; [#126](https://github.com/lingkaix/openkit/issues/126) existing authored npm grants need administrator update; [#127](https://github.com/lingkaix/openkit/issues/127) Chat tool-call declaration parity; [#128](https://github.com/lingkaix/openkit/issues/128) bounded Task completion versus objective completion; [#130](https://github.com/lingkaix/openkit/issues/130) Pi self-stop incident unproved; [#131](https://github.com/lingkaix/openkit/issues/131) tool-download network grants; and the already-open [#117](https://github.com/lingkaix/openkit/issues/117) D7 schema guard granularity, [#108](https://github.com/lingkaix/openkit/issues/108) subscription login recovery residuals, and [#116](https://github.com/lingkaix/openkit/issues/116) release cookbook says private. Additional filed non-blockers are [#179](https://github.com/lingkaix/openkit/issues/179) interrupt delays final status and leaves terminal evidence incomplete; [#180](https://github.com/lingkaix/openkit/issues/180) committed inference stream failures keep no product-safe cause; [#181](https://github.com/lingkaix/openkit/issues/181) NanoHost member failure does not name the failing member; [#182](https://github.com/lingkaix/openkit/issues/182) aggregate cleanup wording after later recovery; and [#183](https://github.com/lingkaix/openkit/issues/183) dogfood deployment health check expects outdated HTML.
 
 **R001 remains open:** exact-product no-host-reboot Worker runtime readiness is unproved. NanoHost archives are installable, but supported Worker Agent execution is not yet release-ready; stable preflight remains blocked. CI's generated notes disclose both installable targets and the open R001 gate; post-publication inspection checks that disclosure rather than treating installation as runtime qualification.
 
@@ -76,20 +76,166 @@ Round 35 on 2026-10-07 deployed the selected fresh root on the persistent stagin
 
 Source: uncommitted round-35 operational report, Progress 11, 12, 16, 28 and Final qualification and handoff. Overall qualification failed; at round 35 close the fresh installation was deliberately stopped and fully fenced, both roots were retained offline, and the original unknown attempt was preserved. The same round-35 fresh root was later resumed through same-root upgrades in rounds 36 and 37 and now serves dogfooding on the persistent staging deployment. The cutover evidence does not qualify the future release candidate or contribute a clean release round.
 
-## Frozen 21-Scenario Checklist — Pending Coordinator Entry
+## Frozen 21-Scenario Checklist
 
-**PENDING — no checklist or inputs frozen yet.** Record the exact Git revision of `docs/cookbooks/release.md`, candidate commit, approved deployment identity, non-secret configuration identities, selected issue inputs, acceptance branch/base, runtime/model selections, attempt-owned names, filenames, markers, expected outcomes, and deciding public records. Append the full 21-scenario checklist from that revision; this empty section is not the frozen set.
+Freeze time: `2026-10-09T14:30:12Z` (UTC). Candidate: `06fe389c32d3c86c9320aaae45fcc59defefa18d`. The frozen `docs/cookbooks/release.md` blob is `383550d29d693ac01e4a3ea7c96d86180504adc2`; its last-changing commit is `a5acbc00b777f9a4729eecf45a4d64cd5c108e96`, with Git committer timestamp `2026-10-08T01:29:20+11:00`. Both Git observations were reproduced at `2026-10-09T14:26:58Z`.
+
+### Deployment Identity At Freeze
+
+Target: the persistent staging deployment. Data Root: the retained round-35 Data Root (unchanged path and bind mount since round 35). Identity evidence is the uncommitted operator report, marked `REPORT-COMPLETE`, with host observation at `2026-10-09T14:15:49.907825Z`. This freeze records that observation; it is not a new live deployment read or a counted product result.
+
+The App image digest is `sha256:c8c25441a6f92e780db1ecf76d334c0f4d86b64971bf0ef61bd041dc8b88242c`, equal to the round-45 verified candidate build. The `org.openkit.staging.commit` label is absent from both running container and immutable image; candidate attribution comes from the build/deployment receipts and image identity, without substituting a commit value for the absent label. The public health response was HTTP 200 with `{"status":"ok","service":"nanocore"}`.
+
+| Web entry or asset | SHA-256 | Observation |
+| --- | --- | --- |
+| `/` | `27e3b6d4235ed0e7d6b24abaee6418ad6a851a97567830b9b83a20b9cc99f83f` | HTTP 200; exact bytes equal to candidate build |
+| `/settings` | `27e3b6d4235ed0e7d6b24abaee6418ad6a851a97567830b9b83a20b9cc99f83f` | HTTP 200; exact bytes equal to candidate build |
+| `/assets/index-B7Uu_tz7.css` | `0da34b9e37eae2de6e318f41dac6c23b9070479faa7cdcdb875cdc6683a2aec3` | HTTP 200; exact bytes equal to candidate build |
+| `/assets/index-d1y9Z0fi.js` | `c2dbbe79ce941a06333ea353dd95ad5d071287cd662ea422c5210336beb3c0db` | HTTP 200; exact bytes equal to candidate build |
+| `/assets/rolldown-runtime-QTnfLwEv.js` | `5db5ba82eef00d1dee7e86e663098c9427d01183a88d357437daff295aec3e75` | HTTP 200; exact bytes equal to candidate build |
+| `/assets/vendor-aria-BFTSXPrs.js` | `9aa45eea977978fc8fdb1121214b8f0197b80e462c020ea8b04bcb9d6da70805` | HTTP 200; exact bytes equal to candidate build |
+| `/assets/vendor-react-TOCY5KIu.js` | `973f8ee778c60358a49db281fc28d1ee6440e53d0770794056d618dac45e7eb2` | HTTP 200; exact bytes equal to candidate build |
+| `/assets/vendor-rendering-CePgfnq1.js` | `05ef624e154a3c7ebb71c6760bc7c1872bab12f77cc00d20daf1c1f487d3db6f` | HTTP 200; exact bytes equal to candidate build |
+| `/assets/vendor-schemas-B6W9ZtAV.js` | `3e747090105affbaa118f87580076313f4d96dcfbc7c466dad37fd256e8dec81` | HTTP 200; exact bytes equal to candidate build |
+
+The Worker image digest shared by Codex, Pi, OpenCode V2 and DeepSeek is `sha256:219099b8be76e6b86e32a41b1f3f6c4d80ca96e2b7448aa322886b0facac1759`. The manifest revisions in Frozen Non-Secret Inputs below and their exact authored bytes equal round 45. Image references and revisions come from supported `runtime.file-read`, reconciled with round-45 activation/readback; `agent.read` does not expose an image field.
+
+| NanoHost component | SHA-256 | Observation |
+| --- | --- | --- |
+| NanoHost installed binary SHA256 | `35c186c1ac07e7b3d56610c9fe68643289a0b6fd130a996724d30ff87e8b3c5c` | Equal to round 45 |
+| NanoHost running executable SHA256 | `35c186c1ac07e7b3d56610c9fe68643289a0b6fd130a996724d30ff87e8b3c5c` | Equal to round 45 |
+| NanoHost unit SHA256 | `cdfca68998c6497311d7f2343e0a095a6ca09baf7a38071d3f72abb030891762` | Equal to round 45 |
+| Gateway SHA256 | `35c1e1be9c8766de2bfd457e54918d6b2019c16da815ec4c45ce9ebb45aaa571` | Equal to round 45 |
+
+NanoHost is active; the installed and running executable digests match. Connection generation is `18`, equal to round 45. The public runtime-target record shows `ready=true`, `predecessorFenced=true` and `freshEmpty=true`, retaining its observation timestamp `2026-10-09T09:51:36.551Z`. The uncommitted operator report finds no additional NanoHost exit or restart after the already-recorded round-45 restart through its host observation window.
+
+Workspace `ws_1` has its existing Gateway GitHub binding at revision `5`, enabled and available, equal to round 45. Its selected digest is `sha256:909e5d41fe954e3b13e2bdc9313290d394290ebc50464a9d56737ab88da24fc8`. That digest was captured in the freeze report; the round-45 report did not separately record it.
+
+Enabled tools: `issue_read`, `list_issues`, `search_issues`, `get_file_contents`, `list_branches`, `list_commits`, `get_commit`, `search_code`, `pull_request_read`, `list_pull_requests`, `create_branch`, `push_files`, `create_pull_request`, `issue_write`, `merge_pull_request` and `add_issue_comment`. Approval-required tools: `create_branch`, `push_files`, `create_pull_request`, `issue_write`, `merge_pull_request` and `add_issue_comment`; the binding's `deniedTools` list is empty. No independent round-45 tool-list snapshot is cited; the binding revision matches the expected revision 5.
+
+Authenticated readiness is `acceptingProductWork=true` with `blockingReasons=[]`. The two nonblocking diagnostics match round 45: `storage.index-rebuilt` reports five rebuilt Workspace index sets, and `scheduler.checkpoint_recovery_required` reports four worker checkpoint recovery attempts requiring inspection. The operator verdict is that deployment identity is stable since round 45. The retained Docker health label is `unhealthy` because the known deployment health check expects outdated HTML (#183); this label is an operator observation, not a product result or readiness oracle.
+
+### Frozen Non-Secret Inputs
+
+- Workspace: `ws_1`, with the existing Gateway GitHub binding revision 5 and selected digest recorded above.
+- Read-only issue input: `lingkaix/openkit` [#110](https://github.com/lingkaix/openkit/pull/110), a pull request titled “fix(vault): share injection plan visibility across public and storage schemas”, state `MERGED`. The writer's own `gh issue view 110 --repo lingkaix/openkit --json title,state` read at `2026-10-09T14:26:58Z` returned that title and state.
+- Task issue: `lingkaix/openkit` [#116](https://github.com/lingkaix/openkit/issues/116), “Release cookbook says the repository is private, but it is public”, state `OPEN` in the writer's read at `2026-10-09T14:26:58Z`. Base: `main`. Acceptance branch: `rc1/round-<N>-issue-116`.
+- Attempt-owned Thread names: `rc1 r<N> <scenario> <runtime>`. Markers: `rc1-r<N>-<runtime>-<8 random hex>`. Filenames: `rc1-r<N>-<runtime>.txt`. `<N>` identifies the counted round; runtime names identify Codex, Pi, OpenCode V2 or DeepSeek. These attempt-owned values vary without changing coverage or outcome criteria.
+- Goal contribution: one acceptance note Artifact based on #116, with no GitHub write.
+- External Agent goal: find the shared Thread named `rc1 r<N> task codex` and explain its latest completed result.
+- Task grants: only creation of the exact acceptance branch, file publication to it, and pull-request creation from it into `main`; everything else denied. Inspect each exact Pending Request under the copied scenario criteria; the configured approval-required tools do not supply a blanket grant.
+
+| Runtime | Agent | Recorded manifest revision | Model and configuration selection |
+| --- | --- | --- | --- |
+| Codex | `agent_codex_host` | `sha256:2c2a087cdcd3435f22cbe4e8058d2057b23fe28f3ff703c8262e211759dbe61b` | The model and configuration pinned by the recorded Agent manifest revision |
+| Pi | `agent_pi` | `sha256:45cb8e13ed4c69a9156fc5aa002ee7328b41d61ce07389f6f29fc7437cd65c0b` | The model and configuration pinned by the recorded Agent manifest revision |
+| OpenCode V2 | `agent_opencode_server` | `sha256:05cc36dbf90373f19c145ed9417eed707bf38b4a270e8b6f8379964cc89c37f1` | The model and configuration pinned by the recorded Agent manifest revision |
+| DeepSeek | `agent_deepseek` | `sha256:e29bfefb684cfe18155794a4ca09c02823ca39a8735b54d4663b5959cf46ad0f` | The model and configuration pinned by the recorded Agent manifest revision, plus the retained authorized request-level model override |
+
+### Frozen Cookbook Projection
+
+The following copy is a frozen projection of the candidate's cookbook revision; that cookbook revision remains the source. Its relative links were rebased to resolve from this record; nothing else changed except heading levels.
+
+### First-Release Scenario Set
+
+This checklist projects the release owner's fixed-set rule; it creates no product contracts or story runner. Freeze its revision under the engineer-approved first-release scope before counting rounds. Record the exact candidate source commit and, per round, the App, Web, NanoHost and Worker artifact identities, retained component attribution, protected configuration identities without secret values, and the approved deployment target. Run the same source commit through every scenario in each round. The sixteen runtime cases plus deployment, Chat, Task, Goal and external-Agent cases make twenty-one scenario outcomes per round.
+
+Declare a read-only GitHub issue with independently checkable title and state, a separate small issue authorized for an acceptance branch and pull request, and attempt-owned Workspace, Thread, filename and marker inputs. Keep the selected issue and output criteria fixed across counted rounds; vary only equivalent fixtures or attempt-owned names as the owner permits. Do not reuse unrelated user work or broaden credentials to repair a prerequisite. Scenario selection authorizes no live deployment, Provider consumption, GitHub write or approval resolution; obtain the existing effect-specific authority before execution.
+
+Use public reads for the deciding product results and retain the returned ids and coverage. A terminal Turn alone does not prove its promised output. Inspect complete required Items, Artifacts, capability-call evidence and Pending Requests; note pagination and missing evidence. Use operator evidence for deployment byte identity and diagnostics only, without turning private database or host writes into a product success oracle. Installation qualification, destructive recovery and NanoHost containment remain separate proofs under their owners.
+
+#### Deployment Through The Product Path
+
+Install or update the exact candidate source commit on the persistent deployment through the supported [product deployment procedure](../../../skills/openkit-ops/references/nanocore-deployment-modes.en.md) and the exact-commit path of the [App update procedure](../../specs/20260910-app_update_delivery.md), as applicable, during each round's coordinated maintenance window. Preserve the retained Data Root and protected configuration. For the second round deploy the same exact source commit through that supported path; rebuilding it between rounds does not reset the count. Retain each round's install/update result and receipt, exact deployed artifact identities and any unchanged-component attribution. Publication later rebuilds artifacts from this same source commit; the tag workflow verifies those published bytes without claiming they are byte-identical to either tested deployment.
+
+Expected outcome: the selected bytes serve the public health endpoint and Web entry, authenticated App diagnostics show their readiness, retained Workspace records remain readable, and the public NanoHost runtime-target read shows readiness before Worker admission. Proof: public health response, rendered Web entry, authenticated diagnostics, Workspace read and runtime-target record, together with the supported procedure's install/update receipt and exact artifact identities. This persistent-deployment observation does not claim fresh-install or cold-start qualification.
+
+#### Codex, Pi, OpenCode V2 And DeepSeek
+
+Execute every row below separately for each of Codex, Pi, OpenCode V2 and DeepSeek using its configured real Worker path. That is four scenarios per runtime, not permission to substitute one runtime's pass for another's. Use a fresh Workspace-visible Thread for each runtime, retain its selected Agent and model/configuration identity, and execute sequential Turns on that same Thread after the preceding Turn is terminal. Accepted external behaviour retains its own classification under the release owner rather than becoming a fabricated successful output.
+
+| Scenario for each runtime | Expected observable outcome | Public record that proves it |
+| --- | --- | --- |
+| Plain reply | A bounded request returns the declared marker as an assistant reply and the Turn ends normally. | The exact Turn read and its completed assistant-message Item on the named Thread. |
+| GitHub issue read through Gateway MCP | The Worker reads the designated issue through the Gateway-mediated GitHub MCP and reports its independently checked title and state without modifying GitHub. | The Turn and reply Item, completed GitHub read tool/capability-call evidence, and the GitHub issue's public read record. |
+| Workspace file write | Ask the Worker to write the declared marker to an attempt-owned file in its authorized writable output root, read it back, submit the finished file with `work_submit_artifact` using the declared filename as its title, and report the matching filename and contents. | The exact terminal Turn, completed assistant Item, completed same-Turn `artifact-reference` Item for the submitted Artifact, and `artifact.read` of the submitted Artifact id. The Artifact's `turn-output` origin must identify that Turn, its title must match the declared filename, its exact UTF-8 `content.body` bytes must match the declared marker, and recomputing their digest must verify `contentDigest`; neither SSH nor the assistant's assertion is file proof. |
+| Follow-up Turn on the same Thread | Ask a new Turn to read the earlier file again, submit it with `work_submit_artifact` using the same declared filename as its title and a new submission request id, and report the same filename and contents. The preceding Thread history remains readable. | The same Thread id, distinct terminal Turn ids, retained earlier Items and the requested follow-up assistant output prove conversation continuity. The follow-up Turn's completed same-Turn `artifact-reference` Item for its own submitted Artifact and `artifact.read` of its own submitted Artifact id prove file content: the `turn-output` origin must identify the follow-up Turn, the title must match the earlier filename, the exact UTF-8 `content.body` bytes must match the earlier Artifact and declared marker, and recomputing their digest must verify `contentDigest` and match the earlier Artifact's digest. An assistant assertion alone is not file-content proof. |
+
+Worker-produced public file evidence uses synchronous `work_submit_artifact` on the built-in work MCP supply under [Worker Runtime Communication Model](../../specs/20260629-worker_runtime_communication_model.md#workspace-and-artifact-plane-projections) and [Worker Agent Capability](../../specs/20260703-worker_agent_capability.md#built-in-work-target). Finish writing before submission; the path must be a canonical absolute POSIX strict child of exactly one admitted output root with `registerAsArtifacts=true` and `retention=sync-on-turn-end`. Use the existing Artifact kind `file` and media type `text/plain` for the declared marker. The [Artifact owner](../../specs/20260713-work_resource_interaction_model.md#artifact-and-item-lineage) binds the returned Artifact id to the producing Turn and submission request, with exact captured bytes and digest publicly readable through `artifact.read`. Artifact reads expose a title rather than a separate filename field; using the declared filename as the submission title makes the filename comparison explicit without claiming a public filesystem-path attestation. A follow-up Turn submits the same path under its own new request; the earlier Artifact remains immutable. The proof is the verified exported copy captured during each call, not a filesystem snapshot or an assistant assertion. Keep all eight file cases in the fixed set; do not substitute operator import, an assistant-reported marker, a test-authored declaration or an invented submission procedure.
+
+#### Chat-Mode Exchange
+
+Submit one simple question through the supported Chat surface and inspect the reply. Expected outcome: an ordinary assistant exchange returns a meaningful answer on the addressed Thread without delegating worker work. Proof: the public `conversation.submit` result with `targetRef=internal-role:assistant`, `outcome=answered`, `handoff=null`, and identical originating and receiving Workspace/Thread ids, the exact completed Turn with `agentId=quick-chat`, and its completed assistant-message Item on that addressed Thread. Inspect the complete Thread Turn and Item reads to verify that this exchange created no delegated Worker Turn or handoff Item; dashboard work-status fields do not prove a product mode or routing decision. [Chat Mode](../../specs/20260704-chat_mode_assistant.md) owns that boundary.
+
+#### Task-Mode Issue To Open Pull Request
+
+Start an explicit bounded Task for the designated GitHub issue through the supported product surface. Ask for the small issue fix and an opened pull request on its acceptance branch. The Worker uses the Gateway-mediated GitHub MCP; do not use the retired NanoCore host Git publication path. Allow issue and repository reads without write approval. Resolve Pending Requests only for the authorized branch writes, including branch creation and file commit or push to that branch, and pull-request creation for this issue and repository. Refuse merge, default-branch writes, unrelated repositories and other effects. Inspect each exact request before deciding; do not install a blanket write grant.
+
+Expected outcome: the bounded Task produces the meaningful fix, pauses its governed external writes for the matching Pending Request decisions, and reaches a completed result with an open pull request against the declared base. Answered requests are delivered on later Turns of the same Task Thread under [Pending Requests](../../specs/20260930-pending_requests.md); no step resumes a paused worker or invents an automatic Task loop. Proof: the public `task.start` admission result identifying the exact Task Turn and addressed Thread, its current-owner replay and the same [Task Mode](../../specs/20260704-task_mode_worker_delegation.md) Thread and Turn reads, initiating and completion Items, GitHub capability-call evidence, exact Pending Request intents and granting actors plus recorded execution outcomes, and a fresh GitHub read of the branch, actual changed-file diff and open pull request. Inspect any produced diff Artifact as additional output evidence. An admission response, a granted approval, or a URL in the reply alone does not prove the pull request exists.
+
+#### Goal At The Shipped Scope
+
+Create a small Goal with one bounded contribution, such as an acceptance note Artifact based on the designated issue, through the current [Goal operations](../../specs/20261002-goal.md). Observe its intent, work-intent card and proposed immutable Plan version. The responsible person approves that exact version through its Pending Request. Observe activation and the Coordinator's admission of an ordinary Task linked to the current card revision and approved Plan. Inspect the Task's actual output. When the Coordinator calls accept completion with the exact candidate and evidence, the responsible person decides its Pending Request; observe consumption and the terminal completion disposition.
+
+Expected outcome: no worker starts from creation or Plan approval alone, the approved Plan authorizes the linked Task without a second per-Task approval, and worker completion leaves the Goal open until the human completion grant is consumed. Proof: public Goal read with intent, card, immutable proposed/active Plan identity and digest, linked Task Thread and terminal Turns, readable output Artifact, Plan and completion Pending Requests with exact intents and deciding actors, and the final Goal disposition naming the accepted candidate. Effect-specific approvals remain separate when the chosen Task needs them. Do not add pause/resume, a recipe graph, Sandbox pin, automatic worker retry, Knowledge publication or a deferred evaluation loop to this scenario.
+
+#### External Agent Through Remote MCP
+
+Start a fresh external MCP-capable Agent outside the source checkout with its protected scenario credential configured through the existing owner. Give it a persona and a single user goal, such as locating the designated shared Thread and explaining its latest completed result. Keep the checklist, assertions, expected answer and operator SSH tools outside the Actor's context. Let it discover the product through remote MCP rather than supplying an operation sequence.
+
+Expected outcome: the independent external Agent completes the admitted user goal through the deployment's public remote MCP interface, using the guidance and tools it needs without a prescribed call sequence, and returns an answer grounded in the designated public record on that same deployment. Proof: retained redacted MCP tool descriptions and the requests and responses actually used, served build identity and client/version, the exact Workspace/Thread/Turn or Artifact record it read, and independent recomputation of its deciding fact. Apply [Persistent Deployment Acceptance](../../specs/20260909-persistent_deployment_acceptance.md) and, when run as L6, its admitted story and independent Judge rules; a spot check by the operator alone does not prove the external-Agent flow. Missing an observation required by the governing owner leaves that observation incomplete; not invoking an offered tool, including `guide`, does not by itself make this scenario incomplete.
+
+#### Record And Classify Every Round
+
+Record the following in the existing release change record or its ordinary retained evidence, with no new execution database:
+
+- Round order, UTC start/end and attribution window, frozen checklist revision, exact source commit and deployed component identities, install/update receipt and non-secret configuration identity.
+- Every scenario's declared input, selected runtime/model, Workspace/Thread/Turn ids, expected and observed result, public evidence references, full required read coverage, classification and defect reference. Count executed, incomplete, successful, new-defect, known-defect and accepted-external outcomes separately; do not conflate a clean round with every workflow passing.
+- HTTP 502 response count and connection-reset count in that round's window, including explicit zeroes when covered. Keep client-visible occurrences and available proxy/App diagnostic coverage separate, correlate overlapping observations instead of counting log lines twice, and retain timestamp, route, safe cause and request correlation when available. Missing coverage is unavailable, not zero.
+- Worker failure count by runtime and Task/Goal scenario, counted by distinct Turn, with each Turn's published failure code and cause retained verbatim after redaction, associated public records and classification. A failed Turn without a published cause has unavailable cause evidence; do not replace it with an inferred Provider failure.
+- References to defect records that predate the round, new defect records, accepted external differences and their boundary evidence, environment/tool failures, missing observations, cleanup outcomes and unresolved release blockers.
+- The round's completeness, clean-round count and any reset with its reason, derived under the release owner. Preserve earlier outcomes when retrying; stop when the required consecutive clean rounds on the same candidate are proved and all other release obligations are satisfied.
+
+Optional telemetry remains diagnostic under Persistent Deployment Acceptance; its absence is recorded separately from public product outcomes. A 502, reset or Worker failure is an observation requiring attribution, not automatic permission to classify it as external. When required product evidence cannot be obtained, classify the scenario as incomplete. The release owner decides readiness, while the existing exact-tag publication authorization remains a separate engineer decision.
 
 ## Ordered Round Results — Pending Coordinator Entry
 
-**PENDING — no counted rounds executed or adjudicated here.** Retain round UTC windows, checklist revision, supported deployment receipts and component identities, all scenario inputs and public evidence with complete read coverage, distinct failure causes after redaction, correlated HTTP 502/reset observations and coverage, cleanup, defect references, separate outcome counts, and clean-count/reset reasoning under [Record And Classify Every Round](../../cookbooks/release.md#record-and-classify-every-round).
+**PENDING — no counted rounds executed or adjudicated here.** The counted-round count and consecutive clean count are zero at freeze. Rounds 1 through 45 were dogfood and defect rounds and do not count toward the release exit criterion. Retain round UTC windows, checklist revision, supported deployment receipts and component identities, all scenario inputs and public evidence with complete read coverage, distinct failure causes after redaction, correlated HTTP 502/reset observations and coverage, cleanup, defect references, separate outcome counts, and clean-count/reset reasoning under [Record And Classify Every Round](../../cookbooks/release.md#record-and-classify-every-round).
 
 | Round | Candidate commit | UTC window / checklist revision / deployment evidence | Per-scenario pass/fail/incomplete and classification / evidence | Outcome counts / consecutive clean count / reset reason |
 | --- | --- | --- | --- | --- |
 
-## CI Run On Candidate — Pending Coordinator Entry
+## CI Run On Candidate
 
-**PENDING —** candidate commit, `workflow_dispatch` run URL/id with `gate=full` including selected L4 Web e2e, exact terminal results and retained outputs; no final-candidate full-gate success claimed. The earlier non-publishing tag-only preparation chain is recorded separately in the checkpoint.
+[GitHub Actions run 37937161170](https://github.com/lingkaix/openkit/actions/runs/37937161170) ran on `workflow_dispatch` for `main` at candidate `06fe389c32d3c86c9320aaae45fcc59defefa18d`. It was created at `2026-10-09T13:29:05Z`, completed with final update at `2026-10-09T14:20:08Z`, and has terminal status `completed` and conclusion `success`. The writer read run facts at `2026-10-09T14:27:24Z` and the jobs through `gh run view 37937161170 --repo lingkaix/openkit --json jobs` at the same UTC observation time.
+
+The coordinator reports dispatching `gate=full`. The candidate workflow permits `web-e2e` only for `workflow_dispatch` with `gate=web-e2e` or `gate=full`; the observed `L4 Web e2e` job ran and succeeded. This is consistent with the reported full dispatch and does not independently distinguish those two input values. The tag-only jobs and PR-only lightweight check were skipped as expected for this dispatch. This run proves no tag workflow or product release publication.
+
+| Job name | Conclusion |
+| --- | --- |
+| Test execution image | `success` |
+| NanoHost installer fixed-path gate | `success` |
+| L5 app-image stopped-server recovery | `success` |
+| Container image release matrix | `success` |
+| Smoke worker-common (linux/arm64) | `success` |
+| Smoke worker-runtimes (linux/arm64) | `success` |
+| Smoke worker-runtimes (linux/amd64) | `success` |
+| Smoke worker-common (linux/amd64) | `success` |
+| Workspace portability source | `success` |
+| L3 NanoCore e2e | `success` |
+| L0-L2 static, unit, contract | `success` |
+| L4 Web e2e | `success` |
+| L5 smoke | `success` |
+| Release preflight | `skipped` |
+| Build NanoHost natively on arm64 | `skipped` |
+| PR lightweight repo check | `skipped` |
+| Build NanoHost natively on amd64 | `skipped` |
+| Workspace portability target | `success` |
+| Package portable release assets | `skipped` |
+| Qualify NanoHost on ${{ matrix.architecture }} | `skipped` |
+| Publish GitHub Release | `skipped` |
+| Publish ${{ matrix.id }} image | `skipped` |
+| Verify published release | `skipped` |
 
 ## Tag Workflow Run — Pending Coordinator Entry
 
