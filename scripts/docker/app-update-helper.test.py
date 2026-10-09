@@ -161,6 +161,7 @@ class RecordingEffects:
         self.runtime = "runc"
         self.devices: List[dict] = []
         self.extract_empty = False
+        self.fail_candidate_run = False
         self.containers: Set[str] = {CONTAINER}
         self.running: Set[str] = {CONTAINER}
         self.root: Optional[Path] = None
@@ -316,7 +317,8 @@ class RecordingEffects:
                 return 0, self.release_version_digest + "\n", ""
             return 0, self.release_tag_digest + "\n", ""
         if argv[:2] == ["docker", "ps"]:
-            return 0, "\n".join(sorted(self.running)) + ("\n" if self.running else ""), ""
+            names = self.containers if "-a" in argv else self.running
+            return 0, "\n".join(sorted(names)) + ("\n" if names else ""), ""
         if argv[:2] == ["docker", "inspect"]:
             name = argv[-1]
             if name not in self.containers:
@@ -350,6 +352,8 @@ class RecordingEffects:
             return 0, "", ""
         if argv[:2] == ["docker", "stop"]:
             name = argv[-1]
+            if name not in self.containers:
+                return 1, "", "No such container"
             if self.fail_restore_stop and len(argv) >= 4 and argv[3] == "30":
                 return 1, "", "candidate stop failed"
             self.running.discard(name)
@@ -364,6 +368,8 @@ class RecordingEffects:
             self.containers.add(argv[-1])
             return 0, "", ""
         if argv[:2] == ["docker", "run"] and "--detach" in argv:
+            if self.fail_candidate_run:
+                return 1, "", "candidate run failed before container creation"
             self.replaced = True
             self.containers.add(CONTAINER)
             self.running.add(CONTAINER)
@@ -936,6 +942,246 @@ class ReceiptLifecycleTests(unittest.TestCase):
 
 
 class ApplyJobTests(unittest.TestCase):
+    def test_same_commit_equal_web_tree_succeeds_without_replacing_live_assets(self) -> None:
+        """An exact-source repeat preserves the already matching live Web tree and pointer."""
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            source = {"kind": "commit", "sourceCommit": COMMIT}
+            config_path, effects, _code, prepared = _prepare(module, root, source=source)
+            live = root / "web" / COMMIT
+            (root / "web" / PREV_COMMIT).rename(live)
+            (live / "index.html").write_text('<div id="root"></div>\n', encoding="utf-8")
+            current = root / "web" / "current"
+            current.unlink()
+            current.symlink_to(COMMIT)
+            pointer_before = current.lstat()
+            live_before = live.stat()
+            file_before = (live / "index.html").stat()
+            invoke(
+                module,
+                {"maintenanceConsent": True, "op": "start", "requestId": prepared["requestId"]},
+                config_path,
+                effects=effects,
+            )
+            body = invoke(
+                module, {}, config_path, effects=effects,
+                extra_argv=["--apply", prepared["requestId"]], stdin_bytes=b"",
+            )[1]
+            self.assertEqual(body["stage"], "succeeded", body)
+            self.assertEqual(body["outcome"], "succeeded")
+            self.assertTrue(body["predicates"]["webAssets"])
+            self.assertEqual(current.readlink(), Path(COMMIT))
+            self.assertEqual(current.lstat().st_ino, pointer_before.st_ino)
+            self.assertEqual(current.lstat().st_mtime_ns, pointer_before.st_mtime_ns)
+            self.assertEqual(live.stat().st_ino, live_before.st_ino)
+            self.assertEqual((live / "index.html").stat().st_ino, file_before.st_ino)
+            self.assertEqual((live / "index.html").read_text(), '<div id="root"></div>\n')
+            self.assertFalse((root / "web" / (".%s.partial" % COMMIT)).exists())
+            stored = json.loads((root / "receipts" / (prepared["requestId"] + ".json")).read_text())
+            self.assertEqual(stored["stage"], "succeeded")
+            self.assertEqual(stored["webLiveDigest"], stored["webStagedDigest"])
+
+    def test_same_commit_different_web_tree_refuses_before_stop(self) -> None:
+        """An exact-source repeat cannot replace different bytes at the live Web identity."""
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            source = {"kind": "commit", "sourceCommit": COMMIT}
+            config_path, effects, _code, prepared = _prepare(module, root, source=source)
+            live = root / "web" / COMMIT
+            (root / "web" / PREV_COMMIT).rename(live)
+            current = root / "web" / "current"
+            current.unlink()
+            current.symlink_to(COMMIT)
+            pointer_before = current.lstat()
+            invoke(
+                module,
+                {"maintenanceConsent": True, "op": "start", "requestId": prepared["requestId"]},
+                config_path,
+                effects=effects,
+            )
+            body = invoke(
+                module, {}, config_path, effects=effects,
+                extra_argv=["--apply", prepared["requestId"]], stdin_bytes=b"",
+            )[1]
+            self.assertFalse(any(
+                call[:2] == ["docker", "stop"] and call[-1] == CONTAINER for call in effects.calls
+            ))
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertEqual(body["outcome"], "failed")
+            self.assertEqual(
+                body["error"],
+                "Candidate Web directory is the live current target but its staged digest differs.",
+            )
+            self.assertFalse(body["previousAppRestored"])
+            stored = json.loads((root / "receipts" / (prepared["requestId"] + ".json")).read_text())
+            self.assertFalse(stored["appStopped"])
+            self.assertEqual(effects.running, {CONTAINER})
+            self.assertEqual(effects.containers, {CONTAINER})
+            self.assertEqual(current.readlink(), Path(COMMIT))
+            self.assertEqual(current.lstat().st_ino, pointer_before.st_ino)
+            self.assertEqual(current.lstat().st_mtime_ns, pointer_before.st_mtime_ns)
+            self.assertEqual((live / "index.html").read_text(), "previous-web\n")
+
+    def test_candidate_run_failure_without_container_restores_previous_app(self) -> None:
+        """A failed candidate launch with no container still restores the retained App."""
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.fail_candidate_run = True
+            _config_path, effects, prepared, body = _start_apply(module, root, effects=effects)
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertTrue(body["previousAppRestored"])
+            self.assertRegex(body["error"], "candidate run failed before container creation")
+            self.assertEqual(effects.containers, {CONTAINER})
+            self.assertEqual(effects.running, {CONTAINER})
+            self.assertFalse(effects.replaced)
+            self.assertIn(["docker", "rename", CONTAINER, PREVIOUS], effects.calls)
+            self.assertIn(["docker", "rename", PREVIOUS, CONTAINER], effects.calls)
+            self.assertIn(["docker", "start", CONTAINER], effects.calls)
+            self.assertEqual(
+                [call for call in effects.calls if call[:2] == ["docker", "stop"]],
+                [["docker", "stop", "--time", "60", CONTAINER]],
+            )
+            self.assertFalse(any(
+                call[:3] == ["docker", "rename", CONTAINER] and ".failed-" in call[-1]
+                for call in effects.calls
+            ))
+            self.assertEqual((root / "web" / "current").readlink(), Path(PREV_COMMIT))
+            self.assertEqual((root / "web" / PREV_COMMIT / "index.html").read_text(), "previous-web\n")
+            stored = json.loads((root / "receipts" / (prepared["requestId"] + ".json")).read_text())
+            self.assertTrue(stored["appStopped"])
+            self.assertTrue(stored["previousAppRestored"])
+
+    def test_restoration_refuses_another_running_data_root_writer(self) -> None:
+        """Candidate absence never permits starting the retained App beside another writer."""
+        module = load_helper()
+        for candidate_exists in (False, True):
+            with self.subTest(candidate_exists=candidate_exists):
+                with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+                    root = Path(tmp)
+                    config_path = write_config(root)
+                    effects = RecordingEffects()
+                    effects.bind(root)
+                    effects.containers = {PREVIOUS, "another-writer"}
+                    effects.running = {"another-writer"}
+                    if candidate_exists:
+                        effects.containers.add(CONTAINER)
+                        effects.running.add(CONTAINER)
+                    helper = module.AppUpdateHelper(module.load_config(str(config_path)), effects, lambda: 1_000_000.0)
+                    with self.assertRaisesRegex(module.HelperError, "Active writable Data Root users"):
+                        helper._restore_previous({"retainedContainerName": PREVIOUS})
+                    self.assertFalse(any(call[:2] == ["docker", "start"] for call in effects.calls))
+                    self.assertFalse(any(call[:2] == ["docker", "rename"] for call in effects.calls))
+                    self.assertIn(PREVIOUS, effects.containers)
+                    self.assertEqual(effects.running, {"another-writer"})
+
+    def test_missing_candidate_recovery_refuses_unavailable_writer_inspection(self) -> None:
+        """A listed writer with failed or non-JSON inspection cannot admit retained-App start."""
+        module = load_helper()
+        for observation in ((1, "", "writer inspect failed"), (0, "not-json", "")):
+            with self.subTest(observation=observation):
+                with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+                    root = Path(tmp)
+                    effects = RecordingEffects()
+                    effects.fail_candidate_run = True
+                    original_run = effects.run
+                    inspected_writers = []
+
+                    def run(argv, timeout=None):
+                        result = original_run(argv, timeout=timeout)
+                        if argv[:2] == ["docker", "run"] and "--detach" in argv:
+                            effects.containers.add("another-writer")
+                            effects.running.add("another-writer")
+                        if argv == ["docker", "inspect", "--format", "{{json .}}", "another-writer"]:
+                            inspected_writers.append(argv[-1])
+                            return observation
+                        return result
+
+                    effects.run = run
+                    _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
+                    self.assertEqual(body["stage"], "recovery_required", body)
+                    self.assertFalse(body["previousAppRestored"])
+                    self.assertRegex(body["error"], "candidate run failed before container creation")
+                    self.assertEqual(inspected_writers, ["another-writer"])
+                    self.assertEqual(effects.running, {"another-writer"})
+                    self.assertEqual(effects.containers, {PREVIOUS, "another-writer"})
+                    self.assertFalse(any(call[:2] == ["docker", "start"] for call in effects.calls))
+                    self.assertNotIn(["docker", "rename", PREVIOUS, CONTAINER], effects.calls)
+
+    def test_unavailable_writer_inspection_refuses_before_app_stop(self) -> None:
+        """Unavailable running-container evidence refuses the maintenance window unchanged."""
+        module = load_helper()
+        for observation in ((1, "", "writer inspect failed"), (0, "not-json", "")):
+            with self.subTest(observation=observation):
+                with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+                    root = Path(tmp)
+                    effects = RecordingEffects()
+                    original_run = effects.run
+                    scanning_writers = False
+                    inspected_writers = []
+
+                    def run(argv, timeout=None):
+                        nonlocal scanning_writers
+                        result = original_run(argv, timeout=timeout)
+                        if argv[:2] == ["docker", "ps"] and "status=running" in argv:
+                            scanning_writers = True
+                        if scanning_writers and argv == ["docker", "inspect", "--format", "{{json .}}", CONTAINER]:
+                            inspected_writers.append(argv[-1])
+                            return observation
+                        return result
+
+                    effects.run = run
+                    _config_path, effects, prepared, body = _start_apply(module, root, effects=effects)
+                    self.assertEqual(body["stage"], "failed", body)
+                    self.assertRegex(body["error"], "Running container.*inspect|Running container.*JSON")
+                    self.assertEqual(inspected_writers, [CONTAINER])
+                    self.assertEqual(effects.running, {CONTAINER})
+                    self.assertEqual(effects.containers, {CONTAINER})
+                    self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+                    stored = json.loads((root / "receipts" / (prepared["requestId"] + ".json")).read_text())
+                    self.assertFalse(stored["appStopped"])
+
+    def test_stopped_candidate_existence_probe_failure_restores_previous_app(self) -> None:
+        """An indeterminate existence probe keeps the candidate stop-and-rename recovery path."""
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.accepting_product_work_after = False
+            original_run = effects.run
+            failed_probes = []
+
+            def run(argv, timeout=None):
+                result = original_run(argv, timeout=timeout)
+                if argv[:2] == ["docker", "run"] and "--detach" in argv:
+                    effects.running.discard(CONTAINER)
+                # Inject the same one-shot operational error at the old or revised existence probe.
+                if effects.replaced and not failed_probes and argv in (
+                    ["docker", "inspect", CONTAINER],
+                    ["docker", "ps", "-a", "--format", "{{.Names}}"],
+                ):
+                    self.assertIn(CONTAINER, effects.containers)
+                    self.assertNotIn(CONTAINER, effects.running)
+                    failed_probes.append(list(argv))
+                    return 1, "", "existence probe failed"
+                return result
+
+            effects.run = run
+            _config_path, effects, prepared, body = _start_apply(module, root, effects=effects)
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertTrue(body["previousAppRestored"])
+            self.assertEqual(len(failed_probes), 1)
+            failed = "%s.failed-%s" % (CONTAINER, prepared["requestId"].split("-")[0])
+            self.assertIn(["docker", "stop", "--time", "30", CONTAINER], effects.calls)
+            self.assertIn(["docker", "rename", CONTAINER, failed], effects.calls)
+            self.assertIn(["docker", "rename", PREVIOUS, CONTAINER], effects.calls)
+            self.assertIn(["docker", "start", CONTAINER], effects.calls)
+            self.assertEqual(effects.containers, {CONTAINER, failed})
+            self.assertEqual(effects.running, {CONTAINER})
+
     def test_release_apply_uses_a2_shape_stages_web_before_stop_and_leaves_config(self) -> None:
         module = load_helper()
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:

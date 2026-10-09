@@ -1207,6 +1207,7 @@ class AppUpdateHelper:
         return [str(item) for item in applied]
 
     def _stage_web_assets(self, candidate: Mapping[str, Any]) -> Dict[str, str]:
+        """Extracts Web assets and decides live-target reuse before App interruption."""
         root = self.config["webAssetsDir"]
         current = os.path.join(root, "current")
         if not os.path.islink(current):
@@ -1234,28 +1235,35 @@ class AppUpdateHelper:
         with os.scandir(staged_dir) as entries:
             if not any(entries):
                 raise HelperError("app_update_unavailable", "Candidate Web extract is empty.")
+        staged_digest = digest_tree(staged_dir)
+        if os.path.realpath(os.path.join(root, commit)) == os.path.realpath(current):
+            # A repeated commit may reuse live bytes, but must never replace them in place.
+            _rmtree(staged_dir)
+            if staged_digest != previous_digest:
+                raise HelperError(
+                    "app_update_unavailable",
+                    "Candidate Web directory is the live current target but its staged digest differs.",
+                )
         return {
             "candidate": commit,
             "partial": staged_dir,
             "previous": previous,
             "previous_digest": previous_digest,
-            "staged_digest": digest_tree(staged_dir),
+            "staged_digest": staged_digest,
         }
 
     def _publish_web_assets(self, web_plan: Mapping[str, str]) -> str:
+        """Publishes a different Web target or verifies the prepared live-target no-op."""
         root = self.config["webAssetsDir"]
         final_dir = os.path.join(root, web_plan["candidate"])
         live_current = os.path.join(root, "current")
         live_target = os.path.realpath(live_current) if os.path.lexists(live_current) else ""
-        if os.path.lexists(final_dir) and os.path.realpath(final_dir) != live_target:
-            _rmtree(final_dir)
-        elif os.path.lexists(final_dir) and os.path.realpath(final_dir) == live_target:
-            raise HelperError(
-                "app_update_unavailable",
-                "Candidate Web directory is the live current target; refusing to replace it.",
-            )
-        os.rename(web_plan["partial"], final_dir)
-        self._switch_web_current(web_plan["candidate"])
+        # Staging already assessed identical live assets; leave their directory and pointer intact.
+        if os.path.realpath(final_dir) != live_target:
+            if os.path.lexists(final_dir):
+                _rmtree(final_dir)
+            os.rename(web_plan["partial"], final_dir)
+            self._switch_web_current(web_plan["candidate"])
         pointer = os.readlink(os.path.join(root, "current"))
         if os.path.basename(pointer.rstrip(os.sep)) != web_plan["candidate"]:
             raise HelperError("app_update_unavailable", "Web current pointer is not the candidate identity.")
@@ -1289,6 +1297,7 @@ class AppUpdateHelper:
         self._run_required(["docker", "rename", retained, aside], "Failed to move the existing previous App aside.")
 
     def _restore_previous(self, receipt: Mapping[str, Any]) -> None:
+        """Restores the retained App after candidate handling and a running-writer check."""
         name = self.config["containerName"]
         retained = receipt.get("retainedContainerName")
         previous_web = receipt.get("previousWebAssets")
@@ -1301,24 +1310,26 @@ class AppUpdateHelper:
                     "app_update_recovery_required",
                     "Restored Web assets digest does not match the previous tree.",
                 )
-        code, _, stderr = self.effects.run(["docker", "stop", "--time", "30", name], timeout=60)
-        if code != 0:
-            raise HelperError(
-                "app_update_recovery_required",
-                _redact(stderr or "Failed to stop the candidate App before restoring the previous App.")[:512],
-            )
-        if name in self._active_dataroot_users():
-            raise HelperError(
-                "app_update_recovery_required",
-                "Candidate App is still a writable Data Root user after stop.",
-            )
-        failed = "%s.failed-%s" % (name, str(receipt.get("requestId") or "x").split("-")[0])
-        self.effects.run(["docker", "rename", name, failed], timeout=30)
+        # Nonzero listing exits keep candidate handling; timeouts require explicit host recovery as elsewhere.
+        code, stdout, _ = self.effects.run(["docker", "ps", "-a", "--format", "{{.Names}}"], timeout=15)
+        candidate_exists = code != 0 or name in (stdout or "").splitlines()
+        if candidate_exists:
+            code, _, stderr = self.effects.run(["docker", "stop", "--time", "30", name], timeout=60)
+            if code != 0:
+                raise HelperError(
+                    "app_update_recovery_required",
+                    _redact(stderr or "Failed to stop the candidate App before restoring the previous App.")[:512],
+                )
+        self._assert_exclusive_dataroot_users(set())
+        if candidate_exists:
+            failed = "%s.failed-%s" % (name, str(receipt.get("requestId") or "x").split("-")[0])
+            self.effects.run(["docker", "rename", name, failed], timeout=30)
         if retained:
             self._run_required(["docker", "rename", str(retained), name], "Failed to restore the previous App name.")
             self._run_required(["docker", "start", name], "Failed to start the previous App.")
 
     def _active_dataroot_users(self) -> List[str]:
+        """Lists observed writable users, refusing failed inspections or invalid JSON."""
         code, stdout, stderr = self.effects.run(
             ["docker", "ps", "--filter", "status=running", "--format", "{{.Names}}"],
             timeout=15,
@@ -1327,16 +1338,19 @@ class AppUpdateHelper:
             raise HelperError("app_update_unavailable", stderr or "Running container list failed.")
         users = []
         for name in [line.strip() for line in (stdout or "").splitlines() if line.strip()]:
-            inspect_code, raw, _ = self.effects.run(
+            inspect_code, raw, inspect_error = self.effects.run(
                 ["docker", "inspect", "--format", "{{json .}}", name],
                 timeout=30,
             )
             if inspect_code != 0:
-                continue
+                raise HelperError(
+                    "app_update_unavailable",
+                    "Running container inspect failed: %s" % (inspect_error or name),
+                )
             try:
                 payload = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
+            except json.JSONDecodeError as error:
+                raise HelperError("app_update_unavailable", "Running container inspect is not JSON.") from error
             for item in payload.get("Mounts") or []:
                 if not isinstance(item, dict):
                     continue
