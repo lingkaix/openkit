@@ -279,7 +279,8 @@ export function createWorkerCoordinatorDecision(
       instructions: 'Review the worker result, changed files, and verification evidence.',
     },
     escalationConditions: [
-      'Escalate if repository setup is missing or invalid.',
+      'Escalate if a source, tool or authorization required to complete the objective is unavailable or invalid.',
+      'An empty local work slot alone is not a blocker when admitted tools can complete the objective. Stay within the objective and current authorization, and follow the existing approval requirements for every governed effect.',
       'Escalate if the task requires broader decomposition.',
     ],
     reviewContext: null,

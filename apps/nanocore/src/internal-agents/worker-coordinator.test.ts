@@ -200,7 +200,65 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
         instructions: 'Review the worker result, changed files, and verification evidence.',
       },
       escalationConditions: [
-        'Escalate if repository setup is missing or invalid.',
+        'Escalate if a source, tool or authorization required to complete the objective is unavailable or invalid.',
+        'An empty local work slot alone is not a blocker when admitted tools can complete the objective. Stay within the objective and current authorization, and follow the existing approval requirements for every governed effect.',
+        'Escalate if the task requires broader decomposition.',
+      ],
+      reviewContext: null,
+    });
+  });
+
+  it('allows direct Task defaults to use available tools from an empty workspace', () => {
+    const prompt = 'Read the issue, publish the focused file change, and open a pull request.';
+    const decision = createWorkerCoordinatorDecision({
+      entryIntent: 'explicit_task',
+      prompt,
+      readiness: [READY_CODEX],
+      threadState: { status: 'idle', threadId: 'th_demo' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+    });
+
+    expect(decision.decision).toBe('worker_turn');
+    expect(decision.workerRequest).toEqual({
+      schemaVersion: 1,
+      objective: prompt,
+      acceptanceCriteria: [
+        'The bounded worker task satisfies the requested objective.',
+        'The worker reports verification evidence or a clear blocker.',
+      ],
+      contextRefs: [
+        { kind: 'workspace', id: 'ws_demo' },
+        { kind: 'thread', id: 'th_demo' },
+      ],
+      resources: [],
+      expectedArtifacts: [
+        {
+          kind: 'code-change',
+          description: 'Focused workspace changes needed to satisfy the objective.',
+        },
+        {
+          kind: 'test-result',
+          description: 'Verification evidence from the focused checks.',
+        },
+      ],
+      constraints: {
+        maxContextTokens: 240_000,
+        maxWorkerIterations: 1,
+      },
+      verification: [
+        {
+          kind: 'manual',
+          description: 'Run the checks named by the worker task or explain why they cannot run.',
+        },
+      ],
+      reviewPolicy: {
+        required: false,
+        reviewers: ['human'],
+        instructions: 'Review the worker result, changed files, and verification evidence.',
+      },
+      escalationConditions: [
+        'Escalate if a source, tool or authorization required to complete the objective is unavailable or invalid.',
+        'An empty local work slot alone is not a blocker when admitted tools can complete the objective. Stay within the objective and current authorization, and follow the existing approval requirements for every governed effect.',
         'Escalate if the task requires broader decomposition.',
       ],
       reviewContext: null,
