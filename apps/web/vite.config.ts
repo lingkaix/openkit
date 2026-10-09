@@ -11,7 +11,7 @@ import { defineConfig } from 'vitest/config';
  * - `react()`      — React Fast Refresh + JSX transform.
  * - `tailwindcss()` — Tailwind v4 CSS-first engine; the token bridge in
  *   `src/styles/` feeds it the Spectrum-derived semantic theme (DESIGN.md §4.6).
- * - `Icons()`      — Iconify + Remix Icon (DESIGN.md §8), compiled to inline JSX
+ * - `Icons()`      — Iconify + Remix Icon (DESIGN.md §8.1), compiled to inline JSX
  *   SVG components at build time from the offline `@iconify-json/ri` set, so only
  *   the icons actually imported ship and no runtime icon API is used.
  * - `/api` proxy   — browser-dev requests reach the local NanoCore process.

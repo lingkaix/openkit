@@ -9,8 +9,8 @@
      - Spectrum  (default, light)   → :root  (+ explicit .ok-theme-spectrum reset)
      - Paper     (light, warm)      → .ok-theme-paper
      - Noir      (dark)             → .ok-theme-noir
-   Nothing applied → the Spectrum default. Worker-identity hues, the brand quad,
-   elevation, and motion are theme-invariant (DESIGN.md §4.3, §4.5, §7): they are
+   Nothing applied → the Spectrum default. Worker-identity hues, elevation, and
+   motion are theme-invariant (DESIGN.md §4.3, §4.5, §7): they are
    declared once at :root and never overridden by a theme.
 
    Value provenance: every value below is the resolved Spectrum step used by the
@@ -37,12 +37,6 @@
   --ok-worker-pixel-fg: #612300; /* orange-1200 */
   --ok-worker-you-bg: #cae8ff; /* blue-200 */
   --ok-worker-you-fg: #004491; /* blue-1100 */
-
-  /* ---- Theme-invariant: brand quad (DESIGN.md §3.1, §4.5) ------------------ */
-  --ok-brand-1: #0265dc; /* blue-900 */
-  --ok-brand-2: #00a19a; /* seafoam-700 */
-  --ok-brand-3: #686df4; /* indigo-800 */
-  --ok-brand-4: #f68511; /* orange-600 */
 
   /* ---- Theme-invariant: elevation + motion (DESIGN.md §7) ------------------ */
   --ok-shadow-card: 0 1px 4px rgba(0, 0, 0, 0.09);

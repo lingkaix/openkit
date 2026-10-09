@@ -1,5 +1,7 @@
 # OpenKit
 
+![OpenKit](apps/web/public/brand/openkit-wordmark.svg)
+
 > **The shared AI workspace for smart teams.**
 
 **Shared agents. Shared knowledge. One team.**

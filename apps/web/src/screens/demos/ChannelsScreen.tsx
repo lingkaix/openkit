@@ -55,15 +55,11 @@ export function ChannelsScreen() {
         </Eyebrow>
         <div className="max-w-md rounded-ok-lg border border-separator bg-card p-3.5 shadow-ok-card">
           <div className="flex gap-2.5">
-            <span
-              className="grid size-[30px] shrink-0 grid-cols-2 gap-0.5 overflow-hidden rounded-ok"
-              aria-hidden
-            >
-              <span className="bg-brand-1" />
-              <span className="bg-brand-2" />
-              <span className="bg-brand-3" />
-              <span className="bg-brand-4" />
-            </span>
+            <img
+              className="size-[30px] shrink-0"
+              src={`${import.meta.env.BASE_URL}brand/openkit-mark-small.svg`}
+              alt=""
+            />
             <div className="min-w-0 flex-1">
               <p className="text-sm font-bold text-fg-strong">
                 OpenKit

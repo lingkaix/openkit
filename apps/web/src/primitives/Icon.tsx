@@ -32,7 +32,7 @@ import RiSparkling2Line from '~icons/ri/sparkling-2-line';
 import RiWifiOffLine from '~icons/ri/wifi-off-line';
 
 /**
- * OpenKit icon primitive (DESIGN.md §8).
+ * OpenKit icon primitive (DESIGN.md §8.1).
  *
  * Remix Icon glyphs, compiled offline to inline SVG by `unplugin-icons` — the
  * runtime icon stack the rebuild-stack spec fixes. Icons are monochrome and tint

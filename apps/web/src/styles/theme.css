@@ -91,12 +91,6 @@
   --color-worker-you: var(--ok-worker-you-bg);
   --color-worker-you-fg: var(--ok-worker-you-fg);
 
-  /* ---- Brand quad (theme-invariant) --------------------------------------- */
-  --color-brand-1: var(--ok-brand-1);
-  --color-brand-2: var(--ok-brand-2);
-  --color-brand-3: var(--ok-brand-3);
-  --color-brand-4: var(--ok-brand-4);
-
   /* ---- Radius (DESIGN.md §6) ---------------------------------------------- */
   --radius-ok-sm: 4px;
   --radius-ok: 8px;

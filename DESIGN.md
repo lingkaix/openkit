@@ -2,7 +2,7 @@
 name: OpenKit Web UI
 kind: design.md
 status: Accepted
-updated: 2026-09-28
+updated: 2026-10-09
 canonical: this file (repo root) is the single source of truth for OpenKit Web UI design
 sources:
   - docs/product-vision.md                        # why the product exists
@@ -66,6 +66,13 @@ tokens:
   icons:
     set: "Spectrum workflow icons, baked as tintable data-URI masks (--ic-*)"
     render: "monochrome, currentColor tint, 18px default (16 sm / 20 lg)"
+  logo:                               # see §8.2
+    mark: "Orbit vortex O (three open bands) + three four-point stars"
+    sizes: "golden ladder L(n) = 20 × √φ^n; every logo size is one step"
+    gold: "mark #FFD65E → #FFC233 → #EE9F00 · stars #FFD860 → #F7B400 · wordmark #FFC53D → #EA9C00"
+    wordmark: "the mark is the O of OpenKit; Nunito SemiBold 600, outlined"
+    motion: "loader (full motion, loading) · standby (stars only, waiting / idle)"
+    assets: "apps/web/public/brand/ · favicons in apps/web/public/"
 ---
 
 # OpenKit — Design Guide (DESIGN.md)
@@ -140,7 +147,7 @@ Two persistent regions, plus one optional auxiliary:
 Two modes; never mix them.
 
 **App mode (default):**
-- **Brand row:** the 4-tile quad brand mark and wordmark stay on the left, while an accessible icon-only Search command is right-aligned in the same row and opens the existing global application search. The shell renders no persistent Search strip above routed main content.
+- **Brand row:** the OpenKit wordmark (§8.2) stays on the left, while an accessible icon-only Search command is right-aligned in the same row and opens the existing global application search. The shell renders no persistent Search strip above routed main content.
 - **Workspace context:** an always-visible Workspace switcher sits directly below the brand row and above Overview. It shows the validated selected Workspace's authoritative name, opens an ergonomic authorized Workspace list, changes the shell-wide selected Workspace, and returns lineage-specific Thread, Task, Goal, or Material routes to Chat before another Workspace is addressed.
 - **Prominent destinations:** Overview, Agents, Knowledge, and Artifacts remain above the current-Workspace conversation area. Overview carries a global **needs-you count badge** (`ok-nav-count`).
 - **Scrollable work list:** a visible divider ends the common destinations. Below it, direct **New conversation** access precedes one current-Workspace **Conversations** list of active Threads. Chat and Task are actions within a Thread, not durable Thread kinds, so the shell must not infer or display a false partition. This release does not add the complete collapsible multi-Workspace and Thread tree. Conversation navigation projects current or latest activity from authorized Goal, Turn, and Agent records: Chat, Worker Task, Goal, or explicitly unknown. Active Goal context takes precedence; an unassigned Core Turn remains unknown. The icon carries a top-right blue working dot or yellow viewer-actionable dot, with an accessible text label and hover/focus hint. Yellow takes precedence over blue. A pending submission from this browser also uses blue, labeled Waiting for response, until the request settles. The small yellow attention marker uses the semantic attention-dot fill with a theme notice border; ordinary Notice text and cards retain their existing palette. Eligible Goal plan and Worker-result reviews use the existing Human Attention owner. Working or actionable conversations sort before idle ones; within each bucket, actual Item/Turn/Goal activity sorts newest first with a stable Thread-id tie-breaker. Thread creation is the baseline for an empty conversation; renaming alone is not conversation activity. The selected-Workspace App navigation read model is a derived view, contains only visible active Threads, and introduces no durable kind, read receipt, or inferred Goal hierarchy.
@@ -222,7 +229,7 @@ No decorative gradients, blurred/bokeh backgrounds, floating orbs, or hero compo
 
 ### 4.5 The three themes
 
-OpenKit ships **three color themes**. All three are scoped overrides of the *same* semantic tokens, applied by a class/attribute on the app root (`.ok-app` or the document root). Nothing applied → the stock Spectrum light theme. Worker-identity hues and the brand quad stay constant across all three; only surfaces, text, borders, accent, and the status tint steps retint.
+OpenKit ships **three color themes**. All three are scoped overrides of the *same* semantic tokens, applied by a class/attribute on the app root (`.ok-app` or the document root). Nothing applied → the stock Spectrum light theme. Worker-identity hues and the OpenKit logo (§8.2) stay constant across all three; only surfaces, text, borders, accent, and the status tint steps retint.
 
 1. **Spectrum** — *the default, light.* Neutral Spectrum gray ramp, Spectrum blue accent (`#0265DC`). The reference look; also available as an explicit `.ok-theme-spectrum` reset so a Spectrum preview can render correctly *inside* a page already scoped to another theme (e.g. the Settings theme picker).
 2. **Paper** — *light, cozy/relaxed (`.ok-theme-paper`).* A warm aged-paper canvas (`#E6DDC7`), low-chroma warm ramp, warm near-black ink (`#322F1E`), and a deep **pine-green** accent (`#2E5D45`). Cards lift one warm step off the paper via hairline + soft shadow rather than stark white. Status hues are kept (they read as meaning on the warm canvas). Row/hover overlays are warmed so they never go cool-gray.
@@ -266,11 +273,92 @@ Key roles: page title `26px/800`; item-card title `14px/700`; body `14px/1.5`; m
 
 ---
 
-## 8. Iconography
+## 8. Iconography & logo
+
+### 8.1 UI icons
 
 - **Spectrum workflow icons**, monochrome, single-path, tinted with `currentColor`. Sizes 18px default, 16 sm, 20 lg.
 - Icons are baked as **tintable data-URI mask variables** (`--ic-*`); each `.ok-i` reads `--i:var(--ic-name)` (D-013 — external SVG mask files were tainted by the preview serve endpoint and rendered as solid squares; do not reintroduce them).
 - In the implemented app, **Iconify + Remix Icon** is the runtime icon stack (unchanged from the prior app and confirmed by the rebuild-stack spec). Do not handcraft new SVGs when an appropriate icon exists. Icon-only controls must carry an accessible label.
+
+### 8.2 The OpenKit logo
+
+The logo is a brand asset, not a UI icon: it is gold in every theme and never takes `currentColor` (D-015). The generator (`apps/web/scripts/generate-brand.mjs`) owns every coordinate; this section owns the concept, the number system, and the rules the generator implements. Never hand-edit a generated asset; change the generator and regenerate.
+
+**Concept.** A rotating vortex, read as a galaxy, a black hole, or a magic gate, forms the **O** of OpenKit: three nested open bands of different widths turn inward. A big four-point star sits in the outer band's opening, and two small stars circle the O toward the lower left. The feel is friendly and reliable, yet lively and imaginative: no sharp points anywhere (round band caps; the stars carry a thin round-join stroke that softens their tips), even spacing, and a loose, non-mechanical star rhythm.
+
+**Number system.** Every logo size is one step of a golden ladder, `L(n) = 20 × √φ^n` with `√φ ≈ 1.27202`, so every two steps multiply by φ. Ladder values: L(2) 32.36 · L(1) 25.44 · L(0) 20.00 · L(−1) 15.72 · L(−2) 12.36 · L(−3) 9.72 · L(−4) 7.64 · L(−5) 6.01 · L(−6) 4.72 · L(−7) 3.71.
+
+| Element | Step | Size |
+| --- | --- | --- |
+| O outer radius | L(2) | 32.36 |
+| Big star half-height | L(0) | 20.00 |
+| Lower-left star half-height | L(−4) | 7.64 |
+| Upper star half-height | L(−5) | 6.01 |
+| Outer, middle, inner band width | L(−4), L(−5), L(−6) | 7.64, 6.01, 4.72 |
+| Radial space between bands | L(−7) | 3.71 |
+| Big and lower-left star clearance to the bands | L(−7) | 3.71 |
+| Upper star clearance to the bands | L(−5) | 6.01 |
+
+These relations follow: the O radius is φ × the big star; each band is one step thinner than the band outside it, and the space between bands is the next step down; the two small stars have the sizes of the outer and middle bands; the big star and the lower-left star sit exactly one band space away from the bands, so they belong to the same rhythm as the bands.
+
+**Fixed geometry (not sizes).**
+
+- **Band openings:** 80°, 105°, and 150°, outer to inner, centred at 9:51, 5:30, and 1:30 on a clock face. The outer opening faces the big star so the star sits in its mouth; each opening is about 120° counter-clockwise from the one outside it. Inner openings stay off 12, 3, 6, and 9 o'clock, where the inner band reads as a glyph (a smile, a C, a horseshoe, or an @).
+- **Spin:** each band runs clockwise from its opening and drifts inward by 2.4% of the O radius along its length, so the set reads as an inward spin.
+- **Stars:** upright four-point stars with height : width = 20 : 15.5. Each side is a cubic Bézier whose control points sit 0.3 along its own tip and 0.07 toward the next tip. The stars sit at 9:51 (big), 8:12 (lower-left), and 11:51 (upper). Each star moves inward along its clock ray until its outline is its clearance away from the real band outline.
+
+**Color.** The mark uses one diagonal gradient across the O, `#FFD65E` → `#FFC233` → `#EE9F00` from top left to bottom right. Each star uses `#FFD860` → `#F7B400`. In the wordmark, one vertical ramp from cap height `#FFC53D` to baseline `#EA9C00` covers both the O and the letters, so the O reads as a letter. Opaque assets use white (`#FFFFFF`) or the Noir canvas (`#1E1B14`).
+
+**Wordmark.** The mark is the O, followed by "penKit" in Nunito SemiBold (600, SIL OFL 1.1). At this weight, the letters' stems match the visual weight of the bands. The O's outer diameter is 1.08 × cap height; at 1.32 × it read as an icon placed before a word. The O sits on the baseline with a 2% cap-height overshoot. The O-to-p distance is Nunito's own O-to-p ink gap (12.8 per 100 px of font size). Shipped assets carry the letters as outlines, so no asset depends on a web font.
+
+**Small sizes.** The full mark is for 48 px and larger. Below 48 px, use the **small mark**: the bands and the big star, without the two small stars. A 16 px raster shows the bands only.
+
+**Motion.** There are two animations, each for its own kind of scene. Both are pure CSS inside the SVG, with no script, so they work in `<img>`, as a CSS background, and inline.
+
+- **Loader (full motion), for loading.** It plays an entrance once, then repeats a loop until it is removed.
+- **Standby (stars only), for waiting and idle.** The vortex stays still and the three stars light one after another, in a loop.
+
+The bands turn clockwise about the O centre, one full turn each, from the inside out. The stars light from the biggest to the smallest. The stars are dark while the bands turn, because the big star sits inside the outer band's mouth.
+
+| Loader entrance (plays once) | Inner band | Middle band | Outer band | Big star | Lower-left star | Upper star |
+| --- | --- | --- | --- | --- | --- | --- |
+| Fade in | 0.00–0.60 s | 0.15–0.75 s | 0.30–0.90 s | — | — | — |
+| Turn | 0.00–1.20 s | 0.15–1.35 s | 0.30–1.50 s | — | — | — |
+| Light | — | — | — | 1.40–1.85 s | 1.60–2.05 s | 1.80–2.25 s |
+
+| Loader loop, 3.2 s cycle (starts at 2.25 s) | Time in cycle |
+| --- | --- |
+| Full logo holds | 0.00–0.95 s |
+| Stars go out together | 0.95–1.20 s |
+| Inner, middle, outer band turn | 0.95–2.15 s, 1.10–2.30 s, 1.25–2.45 s |
+| Big, lower-left, upper star light | 2.35–2.80 s, 2.55–3.00 s, 2.75–3.20 s |
+
+- **Easing.** A band turn uses `cubic-bezier(0.45, 0, 0.2, 1)` and a band fade-in uses `cubic-bezier(0.25, 0.1, 0.25, 1)`. A star lights in two stages. First it rises for 0.25 s on `cubic-bezier(0.2, 0.7, 0.3, 1)`: opacity 0 → 1, scale 0.3 → 1.08, rotation −30° → 0°. Then it settles to scale 1 for 0.20 s on `cubic-bezier(0.4, 0, 0.6, 1)`. A star goes out in 0.25 s on `cubic-bezier(0.4, 0, 1, 1)`: opacity → 0, scale → 0.6.
+- **Standby** uses the loader loop's cycle with opacity only. The bands stay visible and still. The stars hold, go out, and fade in at 2.35 s, 2.55 s, and 2.75 s (0.25 s each), every 3.2 s.
+- **Reduced motion.** The loader follows `prefers-reduced-motion`. Under reduced motion, its bands fade in without turning, and then it runs the standby loop, so loading still shows progress without movement. Standby is opacity-only, so it is safe under every motion setting.
+
+**Usage.**
+
+- **Loader.** Use it for app-level loading before any content shape exists. Today that is the Web boot splash, which shows before the bundle mounts. Data loading inside a surface keeps skeletons (§9.12); never use the logo as a control spinner.
+- **Standby.** Use it for waiting and idle states. No current surface uses it; a surface that adopts it records that here.
+- **Logo motion and §7.** Logo motion is a brand moment and is exempt from the UI motion durations in §7. It never applies to controls.
+- **Sidebar.** The sidebar brand row shows the static wordmark (§3.1).
+
+**Asset kit.** The kit lives in `apps/web/public/brand/`:
+
+- Square mark: transparent, white, and Noir backgrounds (SVG, plus 512 px PNG).
+- Horizontal wordmark: transparent, white, and Noir backgrounds (SVG and PNG).
+- Small mark (SVG).
+- `openkit-loader.svg` and `openkit-standby.svg`.
+
+The favicons live in `apps/web/public/`:
+
+- `favicon.svg`: the small mark.
+- `favicon.ico`: 16 px bands only, plus 32 px and 48 px small mark.
+- `apple-touch-icon.png`: 180 px, full mark on the Noir canvas.
+
+Regenerate the kit with `pnpm --filter @openkit/web brand:generate`. A unit test fails when the committed SVGs differ from the generator output.
 
 ---
 
@@ -483,9 +571,11 @@ The rebuilt `apps/web` is React + Vite, with **React Aria Components** for acces
 
 ---
 
-## 18. Decision record (D-001 … D-014)
+## 18. Decision record (D-001 … D-015)
 
 The reasoning behind the guidance above, kept inline so this guide stands on its own. Newest first; each entry states the question, the decision, and why. The body cites these as `(D-0xx)`.
+
+**D-015 · The OpenKit logo: an Orbit vortex O with three stars, sized on a golden ladder.** The four-tile quad brand mark is replaced by the logo in §8.2: three nested open bands of different widths form the O of OpenKit, the outer opening faces a big four-point star, and two small stars circle toward the lower left. Every size is a step of `L(n) = 20 × √φ^n`. The logo is gold in all three themes. Motion has two forms by scene: a full-motion loader for loading, and a stars-only standby for waiting and idle, which is also the loader's reduced-motion form. *Why:* across twelve design rounds the engineer chose this over the Galaxy (wound arms) and Whirl directions, and chose the golden ladder over the Fibonacci and perfect-fourth ladders; the brief is friendly and reliable yet lively and imaginative, the mark doubles as the O so the wordmark reads as one word, and one ratio for every size gives the mark a numerical order the eye feels without measuring.
 
 **D-014 · Boards are non-exhaustive visual references, not surface admission.** A current, contract-backed surface may compose deterministic visual intent from existing boards, tokens, themes, primitives, layout, density, states, responsive rules, and accessibility without receiving a dedicated Claude Design frame. Server-mode account access composes 18/10/11/22, members and invitations compose 10/11/22, and the Plane 1 Material workbench composes 05c/12/11/22. A new frame is required only when those sources leave genuinely new or ambiguous visual language, and every implementation still receives final human fidelity review. *Why:* behavior is admitted only by accepted specifications, while the visual canvas deliberately remains a reusable, non-exhaustive reference library.
 

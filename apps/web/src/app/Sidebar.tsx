@@ -17,18 +17,14 @@ import { AppSearch } from '../screens/operations';
 import { useWorkspaceStore } from '../screens/workspace-store';
 import { type NavGroup, type Surface, surfacesInGroup } from './surfaces';
 
-/** Brand quad + wordmark (DESIGN.md §3.1). */
+/** Static wordmark for the brand row (DESIGN.md §8.2). Height matches the Search control. */
 function BrandMark() {
   return (
-    <div className="flex min-w-0 items-center gap-2 px-2 py-1">
-      <span className="grid size-6 grid-cols-2 gap-0.5 overflow-hidden rounded-ok-sm" aria-hidden>
-        <span className="bg-brand-1" />
-        <span className="bg-brand-2" />
-        <span className="bg-brand-3" />
-        <span className="bg-brand-4" />
-      </span>
-      <span className="text-base font-extrabold text-fg-strong">OpenKit</span>
-    </div>
+    <img
+      className="h-8 w-auto"
+      src={`${import.meta.env.BASE_URL}brand/openkit-wordmark.svg`}
+      alt="OpenKit"
+    />
   );
 }
 

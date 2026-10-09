@@ -91,10 +91,6 @@ const INVARIANT_ROLES = [
   '--ok-worker-pixel-fg',
   '--ok-worker-you-bg',
   '--ok-worker-you-fg',
-  '--ok-brand-1',
-  '--ok-brand-2',
-  '--ok-brand-3',
-  '--ok-brand-4',
   '--ok-shadow-card',
   '--ok-shadow-menu',
   '--ok-shadow-modal',
@@ -136,7 +132,7 @@ describe('token bridge — completeness', () => {
     }
   });
 
-  it('worker hues and the brand quad are theme-invariant (only at :root)', () => {
+  it('worker hues are theme-invariant (only at :root)', () => {
     for (const theme of ['.ok-theme-paper', '.ok-theme-noir']) {
       for (const role of INVARIANT_ROLES) {
         expect(scopes[theme], `${theme} must not override ${role}`).not.toHaveProperty(role);
@@ -156,7 +152,6 @@ describe('token bridge — anchor values match the Spectrum source', () => {
     [':root', '--ok-negative-fg', '#b40000'],
     [':root', '--ok-worker-scout-bg', '#65dad2'],
     [':root', '--ok-worker-ledger-fg', '#4046ca'],
-    [':root', '--ok-brand-1', '#0265dc'],
     // Paper
     ['.ok-theme-paper', '--accent-background-color-default', '#2e5d45'],
     ['.ok-theme-paper', '--surface-page', '#e6ddc7'],

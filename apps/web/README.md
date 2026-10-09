@@ -45,6 +45,16 @@ Scanner-only JSONC highlighting and the assistant-report Markdown parser are und
 
 [`docs/specs/20260710-web_ui_rebuild_stack.md`](../../docs/specs/20260710-web_ui_rebuild_stack.md) (Current Implementation Projection and Stack-Conformance Backlog) owns the pinned A2UI packages and the hand-maintained token bridge. The stack specification stays `Partial` for the reason in that backlog.
 
+## Brand
+
+[`DESIGN.md`](../../DESIGN.md) §8.2 owns the logo. The shipped kit lives in `public/brand/` (square marks, wordmarks, the loading loader, and the standby mark), with `public/favicon.svg`, `public/favicon.ico`, and `public/apple-touch-icon.png` beside it. `scripts/generate-brand.mjs` is the only writer: it ports the golden geometry and motion, embeds Nunito SemiBold outlines for the letters from `scripts/nunito-semibold-penkit.json`, and rasters PNG and ICO through the Playwright Chromium already used by this package. Regenerate with:
+
+```bash
+pnpm --filter @openkit/web brand:generate
+```
+
+Do not hand-edit the generated SVG, PNG, or ICO files.
+
 ## Commands
 
 ```bash
@@ -98,7 +108,9 @@ src/
   primitives/   React Aria and Spectrum-tokened primitives
   styles/       design tokens and Tailwind theme mapping
   test/         Vitest setup and token parity test
-test/           Node-environment checks of browser-reachable built packages
+public/         static files served as-is: favicons and the generated brand kit
+scripts/        brand generator and its Nunito glyph outline data
+test/           Node-environment checks of browser-reachable built packages and generated brand SVGs
 e2e/            L4 Playwright smoke and isolated stack helpers
 ```
 

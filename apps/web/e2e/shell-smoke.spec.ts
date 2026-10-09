@@ -84,7 +84,7 @@ test('loads the rebuilt shell against a live NanoCore', async ({ page }) => {
   await page.setViewportSize({ width: 800, height: 600 });
   await page.goto(stack.webUrl);
 
-  await expect(page.getByText('OpenKit', { exact: true })).toBeVisible();
+  await expect(page.getByRole('img', { name: 'OpenKit', exact: true })).toBeVisible();
   await expect(
     page.getByRole('navigation', { name: 'Primary workspace navigation' })
   ).toBeVisible();

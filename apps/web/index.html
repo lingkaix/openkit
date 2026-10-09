@@ -2,12 +2,26 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" href="%BASE_URL%favicon.ico" sizes="any" />
+    <link rel="icon" href="%BASE_URL%favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="%BASE_URL%apple-touch-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OpenKit</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div
+        role="status"
+        style="display: flex; align-items: center; justify-content: center; min-height: 100vh"
+      >
+        <img
+          src="%BASE_URL%brand/openkit-loader.svg"
+          alt="Loading OpenKit"
+          width="72"
+          height="72"
+        />
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

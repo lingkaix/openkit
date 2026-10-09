@@ -246,6 +246,7 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(screen.getByRole('button', { name: 'Knowledge' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Artifacts' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Search' })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'OpenKit' })).toBeInTheDocument();
     expect(screen.queryByRole('searchbox')).not.toBeInTheDocument();
     expect(screen.getByText('Conversations')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Portability' })).not.toBeInTheDocument();
