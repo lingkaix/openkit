@@ -123,6 +123,12 @@ Turn-dynamic fields include:
 - output files, artifact candidates, worker transcripts, logs, evidence bundles, `WorkerOutputManifest`, and `WorkspaceChangeSet`
 - refreshed credentials and backend-private credential-materialization changes only to the extent the selected backend can make them visible to future process launches or Gateway-mediated traffic without mutating already-running process environments
 
+### Current Source Materialization Admission
+
+In this release, configuration operations MUST refuse unsupported Workspace roots or Agent input selections for work-slot materialization before storage with `workspace_data_source_blocked` and the message "Only credential-free remote Git sources can be materialized into a work slot in this release. Folder and other source kinds are not supported yet. Work without a source input still runs." Authored configuration remains loadable, its use retains the same late refusal, unselected catalog registration remains available, and an empty input list remains valid.
+
+An Agent write MUST check only its own selections against current authored catalogs; a catalog write MUST check every Agent's selections against prospective catalogs after replacing the current file with the candidate: a reference with matches is refused only when none is Git with no `vaultGrantRef` and a valid credential-free HTTPS locator; a reference with no matches keeps its late resolution refusal, and an inline input without `sourceRef` is refused only on an Agent write.
+
 ### Git Source Materialization Boundary
 
 A Git input for a remote Agent Runtime MUST resolve to a network-addressable repository locator and an exact accepted commit. For the first initialization of a new empty slot, the Sandbox Git client fetches that repository and checks out the commit the data source pins, reports its HEAD and tree, and NanoCore compares the reported commit id with that pin. NanoCore reads no host repository for that check. For an existing retained slot, it validates source identity and current authority, preserves tracked, untracked and ignored working bytes, and does not reset or clean the directory. A requested incompatible source/baseline requires an explicit reconciliation, not destructive reinitialization. A NanoCore host path, unpublished local commit, implicit host checkout, tar copy, or Git-bundle fallback is not an alternate source form. The decision and its reason are recorded in [a decision record](../decisions/20261002-hosting_through_gateway_mcp.md).

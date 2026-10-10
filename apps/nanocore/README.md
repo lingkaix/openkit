@@ -259,6 +259,8 @@ Set `OPENKIT_DATA_ROOT` to persist canonical Workspace records under `temp/nanoc
 
 ## Remote Git Sources And Goal Mode
 
+Configuration file creation and update refuse unsupported work-slot source selections before storage with `workspace_data_source_blocked`; authored non-Git configuration remains loadable, unselected catalog registration remains available, and work without a source input still runs.
+
 NanoCore host repository resources, host Git publication, host inspection, and the Repositories screen are removed. Remote Git sources use catalog URL/commit pins and Sandbox-reported baselines; hosted writes use selected vendor MCP through the Gateway.
 
 Goal uses ten canonical JSON POST operations at `/api/app/operations/<operation-id>`: `goal.create`, `goal.intent.revise`, `goal.card.create`, `goal.card.edit`, `goal.card.cancel`, `goal.plan.propose`, `goal.plan.approve`, `goal.cancel`, `goal.completion.accept`, and `goal.read`. Their definition table supplies HTTP, OpenAPI, Core Client, CLI and Coordinator Tools; `runtime/goal-owner.ts` owns their outcomes and Workspace SQL records.

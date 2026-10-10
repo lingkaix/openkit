@@ -44,6 +44,7 @@ import {
   OpenKitConfigSchema,
   ProviderProfileSchema,
   parseWorkspaceDataSourceCatalog,
+  requireCredentialFreeHttpsGitLocator,
   UserConfigSchema,
   WorkspaceConfigSchema,
   type WorkspaceDataSource,
@@ -58,6 +59,7 @@ import {
   diffRuntimeConfig,
   loadRuntimeConfig,
   type RuntimeConfigManager,
+  WORKSPACE_MATERIALIZATION_UNSUPPORTED_MESSAGE,
 } from './runtime-config.js';
 import { unknownConfigKeyMessage, unknownConfigKeys } from './unknown-config-keys.js';
 
@@ -256,6 +258,7 @@ export class RuntimeConfigFileService {
       throw invalidConfigContentError(diagnostics);
     }
 
+    this.assertSupportedWorkspaceMaterialization(spec, content);
     this.writeFileAtomically(spec, content);
     this.auditCatalogAuthorityChanges(spec, null, content);
 
@@ -303,6 +306,7 @@ export class RuntimeConfigFileService {
       ? readFileSync(spec.absolutePath, 'utf8')
       : null;
 
+    this.assertSupportedWorkspaceMaterialization(spec, input.content);
     this.writeFileAtomically(spec, input.content);
     this.auditCatalogAuthorityChanges(spec, currentContent, input.content);
 
@@ -667,6 +671,68 @@ export class RuntimeConfigFileService {
         range: null,
       },
     ];
+  }
+
+  /**
+   * Refuses unsupported work-slot selections at the write boundary, never during authored-file loading.
+   * Catalog registration alone stays available; only sources selected by an Agent are checked.
+   * An Agent write checks only its own selections against current authored catalogs; a catalog write checks every Agent's selections against prospective catalogs.
+   *
+   * @param spec Admitted configuration file identity.
+   * @param content Schema-validated candidate JSONC bytes.
+   * @throws RuntimeConfigFileServiceError before storage for an unsupported materialization selection.
+   */
+  private assertSupportedWorkspaceMaterialization(
+    spec: RuntimeConfigFileSpec,
+    content: string
+  ): void {
+    const blocked = () =>
+      new RuntimeConfigFileServiceError(
+        'workspace_data_source_blocked',
+        WORKSPACE_MATERIALIZATION_UNSUPPORTED_MESSAGE,
+        409
+      );
+    if (spec.kind === 'workspace') {
+      if (WorkspaceConfigSchema.parse(parse(content)).workspace.roots.length > 0) throw blocked();
+      return;
+    }
+    if (spec.kind !== 'agent' && spec.kind !== 'data-source') return;
+
+    const manifests =
+      spec.kind === 'agent'
+        ? [AuthoredAgentConfigSchema.parse(parse(content))]
+        : this.listDirectoryFiles('agents', '.agent.jsonc', 'agent').flatMap((file) => {
+            const result = AuthoredAgentConfigSchema.safeParse(
+              parse(this.readFile(file.id).content)
+            );
+            return result.success ? [result.data] : [];
+          });
+    const catalogs = this.listWorkspaceFiles()
+      .filter((file) => file.kind === 'data-source' && file.id !== spec.relativePath)
+      .map((file) => parseWorkspaceDataSourceCatalog(parse(this.readFile(file.id).content)));
+    if (spec.kind === 'data-source') catalogs.push(parseWorkspaceDataSourceCatalog(parse(content)));
+    for (const manifest of manifests) {
+      for (const input of manifest.workspace?.inputs ?? []) {
+        // Authored inline inputs remain loadable; the release importer requires a catalog reference.
+        if (spec.kind === 'agent' && !input.sourceRef) throw blocked();
+        if (!input.sourceRef) continue;
+        const matches = catalogs.flatMap((catalog) =>
+          catalog.sources.filter((entry) => entry.id === input.sourceRef)
+        );
+        // Shared Agents resolve in the Turn's Workspace; one supported match admits the selection.
+        // Missing references keep their existing late resolution refusal.
+        const supported = matches.some((source) => {
+          if (source.kind !== 'git' || source.vaultGrantRef) return false;
+          try {
+            requireCredentialFreeHttpsGitLocator(source.locator);
+            return true;
+          } catch {
+            return false;
+          }
+        });
+        if (matches.length > 0 && !supported) throw blocked();
+      }
+    }
   }
 
   /**

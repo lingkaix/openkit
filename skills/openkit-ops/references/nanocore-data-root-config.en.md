@@ -211,16 +211,7 @@ Each Agent Manifest declares one reusable Worker Agent and its Harness configura
   "skills": [],
   "mcp": [],
   "sandbox": {
-    "credentialDeclarations": [
-      {
-        "id": "github_token",
-        "requirementId": "github-token",
-        "purpose": "GitHub repository access",
-        "required": true,
-        "visibility": "runtime-env",
-        "targetEnvVarName": "GITHUB_TOKEN"
-      }
-    ],
+    "credentialDeclarations": [],
     "filesystem": [],
     "network": []
   },
@@ -250,12 +241,7 @@ The Workspace file owns shared editable composition.
         "profileId": "default",
         "preferredLogicalModelId": "general",
         "allowedLogicalModelIds": ["general"],
-        "credentialBindings": [
-          {
-            "requirementId": "github-token",
-            "vaultGrantId": "grant_product_github"
-          }
-        ],
+        "credentialBindings": [],
         "skills": [],
         "mcp": []
       }
@@ -274,7 +260,7 @@ The Workspace file owns shared editable composition.
 
 `workspace.name` is required. `workspace.defaultAgentId` is the shared default for warm Sandbox supply and task launch when no explicit or User choice exists; `null` explicitly declines a Workspace default so Server fallback may apply. An Agent binding may select a profile, override model preference and admission, add Skills and MCP entries, extend sandbox declarations, and bind reusable credential requirements. Workspace sandbox extensions may declare only reusable requirements, never a direct concrete grant.
 
-Workspace roots are relative `host-dir` declarations with `read-only` or `read-write` access. `createIfMissing` is valid only for a read-write root. `workspace.assistant.repositoryInspection` remains loadable as inert authored configuration after removal of the host reader. The Assistant's repository inspection target is a selected Gateway vendor MCP read or a Task handoff.
+Authored Workspace roots are relative `host-dir` declarations with `read-only` or `read-write` access and remain loadable. Configuration operations refuse their work-slot materialization in this release; only credential-free remote Git sources can be materialized, and work without a source input still runs. `createIfMissing` is valid only for a read-write root. `workspace.assistant.repositoryInspection` remains loadable as inert authored configuration after removal of the host reader. The Assistant's repository inspection target is a selected Gateway vendor MCP read or a Task handoff.
 
 ## `users/<userId>/config/user.jsonc`
 
@@ -302,6 +288,28 @@ User configuration stores personal preferences and never modifies shared Workspa
 ```
 
 These values win over Workspace and Server defaults for the current User but lose to an explicit request or current Coordinator choice when admitted by the owning command. User configuration cannot publish Provider routes, shared Agent extensions, Vault grants, or Workspace policy.
+
+## Optional GitHub Credential Example
+
+For an Agent explicitly selected for Git or code-host work that needs a read-only GitHub token in its runtime environment, add this declaration to its `sandbox.credentialDeclarations` and bind the requirement in that Workspace's Agent binding:
+
+```jsonc
+{
+  "id": "github_token",
+  "requirementId": "github-token",
+  "purpose": "GitHub repository access",
+  "required": true,
+  "visibility": "runtime-env",
+  "targetEnvVarName": "GITHUB_TOKEN"
+}
+```
+
+```jsonc
+{
+  "requirementId": "github-token",
+  "vaultGrantId": "grant_product_github"
+}
+```
 
 ## Credential Requirements and Vault Scope
 

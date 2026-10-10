@@ -56,6 +56,10 @@ import {
   unknownConfigKeys,
 } from './unknown-config-keys.js';
 
+/** Shared truthful refusal for source kinds outside the release's work-slot importer. */
+export const WORKSPACE_MATERIALIZATION_UNSUPPORTED_MESSAGE =
+  'Only credential-free remote Git sources can be materialized into a work slot in this release. Folder and other source kinds are not supported yet. Work without a source input still runs.';
+
 type RuntimeConfigChange = z.infer<typeof RuntimeConfigChangeSchema>;
 type RuntimeConfigReloadPlan = z.infer<typeof RuntimeConfigReloadPlanSchema>;
 type RuntimeConfigReloadSummary = z.infer<typeof RuntimeConfigReloadSummarySchema>;

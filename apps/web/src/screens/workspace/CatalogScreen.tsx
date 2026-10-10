@@ -265,7 +265,7 @@ export function CatalogScreen() {
                 label="Display name"
                 value={skillName}
                 onChange={setSkillName}
-                placeholder="Repo guidelines"
+                placeholder="Team guidelines"
                 isDisabled={writeBlocked}
               />
               <TextField

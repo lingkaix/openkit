@@ -57,11 +57,26 @@ function cacheBytes(cache: QueryClient) {
 }
 
 describe('Vault secret administration', () => {
+  it('requires an entered secret kind and points gateway grants at the current MCP binding', async () => {
+    const { operations } = setup();
+    const kind = await screen.findByLabelText('Secret kind');
+    await waitFor(() => expect(kind).toBeEnabled());
+    expect(kind).toHaveValue('');
+    await userEvent.type(screen.getByLabelText('Secret value'), SECRET);
+    expect(screen.getByRole('button', { name: 'Add secret' })).toBeDisabled();
+    expect(operations['vault.secret-create']).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(
+        'Bind a gateway grant ID to the selected MCP server through catalog.mcp-binding.'
+      )
+    ).toBeInTheDocument();
+  });
   it('clears password on submit and excludes material from caches and rendered results', async () => {
     const { operations, cache } = setup();
     const field = await screen.findByLabelText('Secret value');
     expect(field).toHaveAttribute('type', 'password');
     await waitFor(() => expect(field).toBeEnabled());
+    await userEvent.type(screen.getByLabelText('Secret kind'), 'github-token');
     await userEvent.type(field, SECRET);
     await userEvent.click(screen.getByRole('button', { name: 'Add secret' }));
     await waitFor(() =>
@@ -75,7 +90,7 @@ describe('Vault secret administration', () => {
     expect(document.body.textContent).not.toContain(SECRET);
     expect(cacheBytes(cache)).not.toContain(SECRET);
   });
-  it('rotates and revokes explicitly, and creates a host-push grant', async () => {
+  it('rotates and revokes explicitly, and creates a gateway grant', async () => {
     const { operations, cache } = setup();
     await userEvent.click(await screen.findByRole('button', { name: 'Rotate vault_example' }));
     await userEvent.type(screen.getByLabelText('Secret value'), SECRET);
@@ -88,7 +103,7 @@ describe('Vault secret administration', () => {
       })
     );
     await userEvent.click(
-      await screen.findByRole('button', { name: 'Grant host push for vault_example' })
+      await screen.findByRole('button', { name: 'Create gateway grant for vault_example' })
     );
     await waitFor(() =>
       expect(operations['vault.grant-create']).toHaveBeenCalledWith({
@@ -119,6 +134,7 @@ describe('Vault secret administration', () => {
     operations['vault.secret-create'].mockRejectedValue(new Error(SECRET));
     const field = await screen.findByLabelText('Secret value');
     await waitFor(() => expect(field).toBeEnabled());
+    await userEvent.type(screen.getByLabelText('Secret kind'), 'github-token');
     await userEvent.type(field, SECRET);
     await userEvent.click(screen.getByRole('button', { name: 'Add secret' }));
     await screen.findByText(/Vault request failed/);

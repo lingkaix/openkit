@@ -467,6 +467,36 @@ function schedulerTurnId(
 }
 
 describe('generic turn routes', () => {
+  it('starts and completes work with an explicit empty Agent input list', async () => {
+    const executor = new RecordingTurnExecutor();
+    const manifest = { ...createTestAgentSetup().manifest, workspace: { inputs: [] } };
+    const fixture = await createSchedulerFixture(executor, 'empty-input', 'local', manifest);
+    try {
+      const response = await fixture.app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            body: JSON.stringify({
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              agentId: manifest.id,
+              input: 'Organize the supplied context',
+              requestId: '00000000-0000-4000-8000-000000000399',
+            }),
+          }
+        )
+      );
+      expect(response.status).toBe(202);
+      const turn = TurnSchema.parse(await response.json());
+      await vi.waitFor(() => expect(executor.startCalls).toBe(1));
+      await vi.waitFor(() =>
+        expect(fixture.store.getTurn('ws_demo', 'th_demo', turn.id).status).toBe('completed')
+      );
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
   it('reads one turn through its owning workspace and thread path', async () => {
     const store = createDemoStore();
     const turn = store.createTurn('ws_demo', 'th_demo', 'Read this turn', LOCAL_ACTOR);

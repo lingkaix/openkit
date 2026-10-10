@@ -1179,7 +1179,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           workspaceRoots,
         })
       ).rejects.toThrow(
-        'NanoHost cannot materialize workspace root r35-output: unsupported source kind host-dir.'
+        'Only credential-free remote Git sources can be materialized into a work slot in this release. Folder and other source kinds are not supported yet. Work without a source input still runs.'
       );
       expect(backend.calls).toEqual([]);
       const commit = 'a'.repeat(40);

@@ -280,7 +280,7 @@ Remote MCP and the administrator CLI can operate Agent Workflow mechanisms throu
 
 The remote MCP guide provides setup guidance, safe workflow policy, operation ordering, review expectations, and recovery playbooks alongside bounded operation discovery.
 
-They do not own workflow state and must not bypass Core-owned workflow mechanisms, approval gates, user-input gates, artifacts, evidence, repository readiness, human decisions, or App API Action Center projections.
+They do not own workflow state and must not bypass Core-owned workflow mechanisms, approval gates, user-input gates, artifacts, evidence, repository readiness when a Git source is selected, human decisions, or App API Action Center projections.
 
 The bundled CLI is a deterministic channel facade over public Core or App API contracts. It is separate from planned worker-side MCP capability supply, which belongs to Agent Capability.
 

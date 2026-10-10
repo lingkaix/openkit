@@ -6,7 +6,11 @@ import {
 } from '@openkit/config-schema';
 
 import type { AgentManifest } from '../agents/manifest.js';
-import { findWorkspaceConfig, type RuntimeConfigSnapshot } from '../config/runtime-config.js';
+import {
+  findWorkspaceConfig,
+  type RuntimeConfigSnapshot,
+  WORKSPACE_MATERIALIZATION_UNSUPPORTED_MESSAGE,
+} from '../config/runtime-config.js';
 import type { FsStore } from '../lib/store.js';
 import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
 import { TurnStartValidationError } from './orchestrator.js';
@@ -36,15 +40,14 @@ export function materializeWorkspaceRootsForTurn(
   }
   if (inputs.length === 1) {
     const input = inputs[0];
+    if (typeof input?.sourceRef !== 'string') {
+      throw blockedWorkspaceSource(WORKSPACE_MATERIALIZATION_UNSUPPORTED_MESSAGE);
+    }
     if (
       typeof input?.id !== 'string' ||
-      typeof input.sourceRef !== 'string' ||
       (input.access !== 'read-only' && input.access !== 'read-write')
     ) {
       throw blockedWorkspaceSource('Agent workspace input requires id, sourceRef, and access.');
-    }
-    if (input.access !== 'read-write') {
-      throw blockedWorkspaceSource('Remote Git workspace input must be read-write.');
     }
     if (
       findWorkspaceConfig(snapshot, workspaceId)?.config.workspace?.roots.some(
@@ -63,6 +66,14 @@ export function materializeWorkspaceRootsForTurn(
       );
     }
 
+    const source = catalog.sources.find((entry) => entry.id === input.sourceRef);
+    if (source && (source.kind !== 'git' || source.vaultGrantRef)) {
+      throw blockedWorkspaceSource(WORKSPACE_MATERIALIZATION_UNSUPPORTED_MESSAGE);
+    }
+    if (input.access !== 'read-write') {
+      throw blockedWorkspaceSource('Remote Git workspace input must be read-write.');
+    }
+
     let resolved: ReturnType<typeof resolveWorkspaceDataSourceReference>;
     try {
       resolved = resolveWorkspaceDataSourceReference({
@@ -73,9 +84,6 @@ export function materializeWorkspaceRootsForTurn(
       });
     } catch (error) {
       throw blockedWorkspaceSource(error instanceof Error ? error.message : String(error));
-    }
-    if (resolved.sourceKind !== 'git' || resolved.vaultGrantRef) {
-      throw blockedWorkspaceSource('Workspace source must be credential-free remote Git.');
     }
 
     let locator: ReturnType<typeof requireCredentialFreeHttpsGitLocator>;

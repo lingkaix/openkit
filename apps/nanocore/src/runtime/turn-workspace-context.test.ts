@@ -16,6 +16,94 @@ const REMOTE_COMMIT = '0123456789abcdef0123456789abcdef01234567';
 const REMOTE_URL = 'https://git.example.test/openkit/repository.git';
 
 describe('turn workspace context', () => {
+  it.each([
+    'read-write',
+    'read-only',
+  ] as const)('retains the exact source-kind refusal for an authored %s folder input', (access) => {
+    const setup = createTestAgentSetup();
+    const manifest = {
+      ...setup.manifest,
+      workspace: { inputs: [{ id: 'documents', access, sourceRef: 'main-repo' }] },
+    };
+    const catalog = remoteGitCatalog({ path: 'files/contracts' });
+    catalog.sources[0]!.kind = 'workspace-dir';
+    catalog.sources[0]!.allowedSlotKinds = ['input'];
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      workspaceDataSourceCatalogs: [
+        { catalog, path: 'workspaces/ws_demo/config/data-sources.jsonc', workspaceId: 'ws_demo' },
+      ],
+    });
+    expect(() =>
+      materializeWorkspaceRootsForTurn(snapshot, createDemoStore(), 'ws_demo', manifest)
+    ).toThrowError(
+      expect.objectContaining({
+        code: 'workspace_data_source_blocked',
+        status: 409,
+        message:
+          'Only credential-free remote Git sources can be materialized into a work slot in this release. Folder and other source kinds are not supported yet. Work without a source input still runs.',
+      })
+    );
+  });
+  it('retains the exact source-kind refusal for an authored inline folder input', () => {
+    const manifest = {
+      ...createTestAgentSetup().manifest,
+      workspace: {
+        inputs: [
+          {
+            id: 'documents',
+            access: 'read-write',
+            source: { kind: 'workspace-dir', pathRef: 'files/contracts' },
+          },
+        ],
+      },
+    };
+    expect(() =>
+      materializeWorkspaceRootsForTurn(
+        createInMemoryRuntimeConfigSnapshot({ dataRoot: null }),
+        createDemoStore(),
+        'ws_demo',
+        manifest
+      )
+    ).toThrowError(
+      expect.objectContaining({
+        code: 'workspace_data_source_blocked',
+        status: 409,
+        message:
+          'Only credential-free remote Git sources can be materialized into a work slot in this release. Folder and other source kinds are not supported yet. Work without a source input still runs.',
+      })
+    );
+  });
+  it('admits an empty source input list into a plain work slot', () => {
+    const store = createDemoStore();
+    const agentSetup = createTestAgentSetup();
+    agentSetup.manifest.workspace = { inputs: [] };
+    const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot: null });
+    const workspaceRoots = materializeWorkspaceRootsForTurn(
+      snapshot,
+      store,
+      'ws_demo',
+      agentSetup.manifest
+    );
+    expect(workspaceRoots).toEqual([]);
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Organize the supplied context', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const pkg = resolveAgentEnvironmentPackage({
+      agentSetup,
+      agentSessionId: 'as_empty',
+      triggerActor: turn.triggerActor,
+      backend: { kind: 'openshell' },
+      createdAt: '2026-10-10T00:00:00.000Z',
+      turn,
+      userId: LOCAL_USER_ID,
+      workspaceRoots,
+    });
+    expect(pkg.workspace.inputs).toEqual([]);
+    expect(pkg.runtime.command.workingDirectory).toBe(
+      `/workspace/worktrees/${workerStorageDefaultWorkSlotRef(turn.workspaceId, turn.threadId)}`
+    );
+  });
   it('resolves one authored remote Git source without projecting a NanoCore host path', () => {
     const store = createDemoStore();
     const agentSetup = createTestAgentSetup({ imageRef: 'openkit/worker-codex:dev' });

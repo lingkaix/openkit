@@ -17,7 +17,7 @@ function safeError(error: unknown) {
 export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: string }) {
   const client = useCoreClient();
   const queryClient = useQueryClient();
-  const [secretKind, setSecretKind] = useState('github-token');
+  const [secretKind, setSecretKind] = useState('');
   const [material, setMaterial] = useState('');
   const [rotating, setRotating] = useState<string | null>(null);
   const hold = useRef<string | null>(null);
@@ -162,7 +162,7 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
       />
       {rotating ? <p>Replacing {rotating}</p> : null}
       <Button
-        isDisabled={disabled || !material || !secretKind}
+        isDisabled={disabled || !material || (!rotating && !secretKind.trim())}
         onPress={() => {
           if (disabled || !material) return;
           hold.current = material;
@@ -210,7 +210,7 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
                 isDisabled={disabled}
                 onPress={() => mutation.mutate({ action: 'grant', id: reference.referenceId })}
               >
-                Grant host push for {reference.referenceId}
+                Create gateway grant for {reference.referenceId}
               </Button>
               <Button
                 variant="outline"
@@ -225,8 +225,7 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
       ))}
       <h3 className="font-semibold text-fg">Grants</h3>
       <p className="text-sm text-fg-muted">
-        Bind a grant ID to the repository through the public repository.set-default operation. Each
-        push still requires approval.
+        Bind a gateway grant ID to the selected MCP server through catalog.mcp-binding.
       </p>
       {inventory.data?.grants.map((grant) => (
         <div key={grant.grantId} className="flex flex-col gap-2">

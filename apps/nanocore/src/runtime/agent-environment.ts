@@ -28,6 +28,7 @@ import {
   currentWorkerLineageWorkspaceAuthority,
 } from '../auth/operation-authorizer.js';
 import { loadWorkspaceResourceCatalog } from '../catalog/resource-catalog.js';
+import { WORKSPACE_MATERIALIZATION_UNSUPPORTED_MESSAGE } from '../config/runtime-config.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import type { CoreDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
@@ -1748,7 +1749,7 @@ function workspaceInputMaterialization(root: MaterializedWorkspaceRoot): Record<
   // NanoHost supports remote Git checkout; authored directory snapshot import is unavailable.
   if (root.sourceKind !== 'remote-git') {
     throw new DeterministicAgentPreparationError(
-      `NanoHost cannot materialize workspace root ${root.id}: unsupported source kind ${root.sourceKind}.`,
+      WORKSPACE_MATERIALIZATION_UNSUPPORTED_MESSAGE,
       'workspace_data_source_blocked',
       409
     );

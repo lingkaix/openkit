@@ -2065,7 +2065,7 @@ describe('Catalog', () => {
 
     const [skillName, mcpName] = screen.getAllByRole('textbox', { name: 'Display name' });
     expect(skillName).toHaveValue('');
-    expect(skillName).toHaveAttribute('placeholder', 'Repo guidelines');
+    expect(skillName).toHaveAttribute('placeholder', 'Team guidelines');
     const candidateSummary = screen.getByRole('textbox', { name: 'Candidate summary' });
     expect(candidateSummary).toHaveValue('');
     expect(candidateSummary).toHaveAttribute('placeholder', 'Clarify the rollback section.');

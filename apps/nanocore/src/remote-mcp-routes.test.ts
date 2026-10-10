@@ -957,6 +957,12 @@ describe('remote MCP App endpoint', () => {
     const f = await fixture();
     const token = f.token();
     const guide = await f.call('guide', {}, token.secret);
+    expect(guide.content[0].text.split('\n\n')[2]).toBe(
+      'Follow the product loop: select a Workspace, inspect authorized resources and data sources, select or create a Thread, and read its durable state. Inspect repositories only when a Git source or code host is selected. Use Chat for a lightweight answer, Task for bounded delegated work, or Goal for a continuous outcome with immutable Plan approval and completion acceptance. Describe Goal operations before use; card and intent edits do not steer running workers, and there is no Goal step, pause or resume. Formal Task/Goal Threads use workspace visibility explicitly. Read Action Center, the exact receiving Thread and Turn, artifacts, evidence, audit and usage before reporting completion. Command acceptance and configured Worker health do not prove Worker success. Private audiences and credential limits remain enforced even when operation metadata is visible.'
+    );
+    expect(guide.content[0].text.split('\n\n')[3]).toBe(
+      'Read durable state after a mutation. A transport failure does not prove that an effect did not happen. Inspect the owner outcome before retrying; reuse the exact requestId only for an exact replay with unchanged input. Never claim cancellation from a disconnected client. Follow long work through bounded reads with a deadline. For recovery_required, stale lineage, denied admission or contradictory evidence, retain the typed refusal and inspect the owning records; do not manufacture receipts, edit storage, silently substitute Worker storage or automatically rerun work. Worker storage selection is an eligibility preview, not attachment or retained work-slot recovery. Preserve exact storage revisions and predecessor work-slot lineage. Administrator-originated Tasks retain the presented credential for later effect revalidation.'
+    );
     expect(guide.content[0].text).toContain('Ask the user');
     expect(guide.content[0].text).toContain('default_tools_approval_mode');
     expect(guide.content[0].text).not.toMatch(
