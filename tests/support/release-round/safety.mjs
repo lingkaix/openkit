@@ -96,7 +96,7 @@ function absolute(value, name) {
     throw Error(`${name}: absolute path required`);
 }
 
-/** All deployment-specific inputs are declared; no command, verdict, or secret values are admitted. */
+/** Declare deployment inputs independently of final sequence; refuse commands, verdicts and secrets. */
 export function validateParams(p) {
   object(
     p,
@@ -116,7 +116,6 @@ export function validateParams(p) {
       'goal',
       'external',
       'bounds',
-      'sequence',
       'authority',
       'knownReferences',
     ],
@@ -285,11 +284,16 @@ export function validateParams(p) {
     if (!Number.isInteger(v) || v < 1 || v > 3600000)
       throw Error(`${k}: bounded positive integer required`);
   if (p.bounds.readAttempts > 10) throw Error('readAttempts exceeds ten');
-  object(p.sequence, ['priorCount', 'resetReason'], 'sequence');
-  if (!Number.isInteger(p.sequence.priorCount) || p.sequence.priorCount < 0)
-    throw Error('priorCount required');
-  if (p.sequence.resetReason !== null) text(p.sequence.resetReason, 'resetReason');
   return p;
+}
+/** Admit only the coordinator's accepted prior count and nullable reset reason for final summary. */
+export function validateSequence(sequence) {
+  object(sequence, ['priorCount', 'resetReason'], 'sequence');
+  noSecrets(sequence);
+  if (!Number.isInteger(sequence.priorCount) || sequence.priorCount < 0)
+    throw Error('priorCount required');
+  if (sequence.resetReason !== null) text(sequence.resetReason, 'resetReason');
+  return sequence;
 }
 /** Decode retained JSON without transport, interpretation or recovery. */
 export async function readJson(file) {

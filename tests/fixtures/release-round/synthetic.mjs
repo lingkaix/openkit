@@ -5,7 +5,7 @@ export const ok = (data) => ({ ok: true, data });
 /** Closed clock interval shared by all invented deciding records. */
 export const start = '2026-01-01T00:00:00.000Z',
   end = '2026-01-01T01:00:00.000Z';
-/** Complete private-input stand-in with no real deployment or credential coordinates. */
+/** Complete round-input stand-in without final sequence or real deployment and credential coordinates. */
 export function parameters() {
   const hash = 'a'.repeat(40),
     d = `sha256:${'b'.repeat(64)}`;
@@ -90,7 +90,6 @@ export function parameters() {
       judgeFile: '/example/judgment.json',
     },
     bounds: { readAttempts: 2, pollMs: 1, observationMs: 100, decisionMs: 100, processMs: 100 },
-    sequence: { priorCount: 0, resetReason: null },
     authority: ['example-effect-authorization'],
     knownReferences: ['example-known-boundary'],
   };

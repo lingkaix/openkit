@@ -5,11 +5,11 @@ import { fileURLToPath } from 'node:url';
 import { summarize } from './release-round/evidence.mjs';
 import { decide, prepare, round } from './release-round/live.mjs';
 
-/** Parse only the four declared commands; live commands use pinned private evidence inputs. */
+/** Parse four declared commands; only offline summary accepts the coordinator's sequence input. */
 export async function main(args = process.argv.slice(2)) {
   if (args.includes('--help') || !args.length) {
     process.stdout.write(
-      'Usage: node tests/support/release-round.mjs prepare --params FILE --evidence-dir NEW_DIR\n       round --evidence-dir DIR\n       decide --evidence-dir DIR --request ID --decision grant|deny\n       summarize --evidence-dir DIR [--legacy-prefix PREFIX] [--adjudications FILE]\n'
+      'Usage: node tests/support/release-round.mjs prepare --params FILE --evidence-dir NEW_DIR\n       round --evidence-dir DIR\n       decide --evidence-dir DIR --request ID --decision grant|deny\n       summarize --evidence-dir DIR [--legacy-prefix PREFIX] [--adjudications FILE] [--sequence FILE]\n'
     );
     return;
   }
@@ -18,7 +18,7 @@ export async function main(args = process.argv.slice(2)) {
       prepare: ['params', 'evidence-dir'],
       round: ['evidence-dir'],
       decide: ['evidence-dir', 'request', 'decision'],
-      summarize: ['evidence-dir', 'legacy-prefix', 'adjudications'],
+      summarize: ['evidence-dir', 'legacy-prefix', 'adjudications', 'sequence'],
     }[command];
   if (!allowed) throw Error('Unknown subcommand');
   const options = {};
@@ -50,6 +50,7 @@ export async function main(args = process.argv.slice(2)) {
     result = await summarize(dir, {
       legacyPrefix: options['legacy-prefix'],
       adjudicationsFile: options.adjudications,
+      sequenceFile: options.sequence,
     });
   process.stdout.write(
     `${JSON.stringify({ command, status: result?.classified === false ? 'unclassified' : 'recorded', counts: result?.counts, complete: result?.complete, clean: result?.clean })}\n`

@@ -60,12 +60,14 @@ node tests/support/release-round.mjs --help
 node tests/support/release-round.mjs prepare --params /example/private/params.json --evidence-dir /example/private/round
 node tests/support/release-round.mjs round --evidence-dir /example/private/round
 node tests/support/release-round.mjs decide --evidence-dir /example/private/round --request example-request --decision grant
-node tests/support/release-round.mjs summarize --evidence-dir /example/private/round --adjudications /example/private/checks.json
+node tests/support/release-round.mjs summarize --evidence-dir /example/private/round --adjudications /example/private/checks.json --sequence /example/private/sequence.json
 ```
 
-`prepare` refuses an existing evidence directory, pins the entire instrument, parameters and candidate checklist blob, archives exact source, checks the remote machine identity and archive digest, records exact changed Worker input paths and unchanged NanoHost attribution, and performs the isolated client's tool-visibility preflight outside the round window.
+`prepare` refuses an existing evidence directory, pins the entire instrument, parameters and candidate checklist blob, archives exact source, checks the remote machine identity and archive digest, records exact changed Worker input paths and unchanged NanoHost attribution, and performs the isolated client's tool-visibility preflight outside the round window. It also preflights the rendered-Web browser with the same environment construction and bounds as `round`: open `<origin>/settings`, wait for `Sign in`, snapshot, then close in a `finally`, using a distinct `preflight-<roundId>` session. Any nonzero check-command exit refuses preparation; `browser-preflight.json` retains each command's arguments and exit code. This proves the tool works; the round's separate browser check proves the deployed candidate renders.
 
 `round` requires completed preparation and admits one writer, performs exact-source App build/smoke/replacement and Web extraction, proves authenticated readiness, updates changed Worker images through administrator-reviewed admission before Worker rows, runs each runtime's A–D rows sequentially and the four runtime groups sequentially, then Chat, Task, Goal, External Agent, telemetry and cleanup observation.
+
+`round` runs for tens of minutes and must be launched as a process that survives the operator's shell call, in its own session, for example with Python `subprocess.Popen(..., start_new_session=True)` or `setsid`. Supply standard input from the null device, append output to a private process log such as `/example/private/round-process.log`, use the same environment used for the browser preflight, and record the round process's exit status in that log.
 
 A failed or refused independent scenario does not authorize a retry or stop unrelated scenarios; an unknown mutation outcome seals the entire round for inspection, and the start receipt refuses a second invocation.
 
@@ -93,7 +95,6 @@ All parameter keys below are required, objects are closed, and unknown keys, sec
 | `goal` | `intent`, `filename`, `decidingActorId`, `requiredContent` strings for the acceptance note |
 | `external` | Absolute maintained client `executable`, `modelId`, `persona`, `goal`, private independent `judgeFile` |
 | `bounds` | Positive bounded `readAttempts` (at most ten), `pollMs`, `observationMs`, `decisionMs`, `processMs` |
-| `sequence` | Nonnegative declared `priorCount` and nullable `resetReason`; the coordinator must supply the accepted prior sequence and any product-input/configuration/reset ruling |
 
 The configuration digest identifies environment-file bytes without saving them, the binding digest identifies the protected catalog configuration, and payload digests plus metadata observations protect retained host payloads and authority-bearing files.
 
@@ -131,9 +132,11 @@ Worker and scheduler inventories are complete array operations, not paginated It
 
 `summarize` is offline and writes only derived evidence projections, validates pins and closed-window coverage, recomputes Artifact bytes and origins and the deciding public-record predicates, and proposes non-pass outcomes with evidence references.
 
+At final summary the coordinator supplies `--sequence /example/private/sequence.json` from the previous round's accepted result, including any product-input, configuration or reset ruling. This private JSON file has exactly `priorCount` (a nonnegative integer) and `resetReason` (null or nonempty text); it is a checker input, never a round parameter. The manifest hashes its retained exact bytes as `sequence.json`, and the private summary records its values. A supplied sequence yields `consecutive = clean ? (resetReason ? 0 : priorCount) + 1 : 0`; a declared reset stays `reset=declared; details=summary` in the public row. Without `--sequence`, summarization still produces rows, counts, `complete` and `clean`, but records `sequence: null` and `consecutive: null` privately and `consecutive=not supplied` publicly, even if a sequence file remains in the evidence directory from an earlier summary. Only an explicitly supplied sequence establishes a count.
+
 An independent checker supplies a JSON array of `{ "scenario": "pi.A", "code": "E", "reference": "example-accepted-boundary", "checker": "example-checker" }` entries for non-pass rows only; allowed final codes are `K`, `E`, `N`, `T`, `I`, and known references must predate the round.
 
-An adjudication for a mechanical `P`, a duplicate adjudication, or promotion of missing deciding evidence to a definite failure is refused; a missing adjudication leaves the round unclassified and its consecutive count at zero; final `I` and `T` rows both leave the round incomplete.
+An adjudication for a mechanical `P`, a duplicate adjudication, or promotion of missing deciding evidence to a definite failure is refused; a missing adjudication leaves the round unclassified and its consecutive count at zero when a sequence is supplied; final `I` and `T` rows both leave the round incomplete.
 
 The External Agent also requires an independent semantic judgment identifying `checker`, exact `recordId`, recomputed `publicReplyDigest`, `answerDigest`, `servedCandidate`, `servedImage` and `grounded`; retain it as `external-judgment.json` before final offline summarization if it was unavailable during collection.
 
@@ -141,7 +144,7 @@ Task meaningfulness is bounded by the reviewed file set and expected patch; the 
 
 `summary.json` retains complete private classifications, evidence references, transport coverage and Worker failures by distinct failed Turn; `row.md` contains exactly seven columns with neutral receipt/check aliases and the SHA-256 of `manifest.json`.
 
-The manifest hashes every retained source evidence file and the checker input, excluding the derived `summary.json`, `row.md` and `manifest.json` to avoid recursive hashes; preserve the private bundle in the existing access-controlled custody before temporary files expire.
+The manifest hashes every retained source evidence file and the checker inputs, including the supplied sequence file, excluding the derived `summary.json`, `row.md` and `manifest.json` to avoid recursive hashes; preserve the private bundle in the existing access-controlled custody before temporary files expire.
 
 Client, proxy, App, external MCP and sampled health observations remain separate; missing diagnostic coverage is `unavailable`, not a covered zero, and sshd diagnostic lines do not count as product resets.
 

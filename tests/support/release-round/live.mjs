@@ -289,7 +289,7 @@ assert protected=={p:metadata(p) for p in d['protectedMetadataPaths']} and all(h
 print(json.dumps({'ok':True,'candidate':x['candidate'],'image':image['Id'],'newContainerId':new['Id'],'newContainerImage':new['Image'],'newContainerConfigImage':new['Config']['Image'],'oldContainerId':old['Id'],'retainedPreviousContainer':retained,'settingsBefore':settings(old),'settingsAfter':settings(new),'sameEnvironmentInMemoryComparison':True,'sameMounts':True,'protectedRootKeyTrustSlotMetadataUnchangedAtStart':True,'dataRoot':d['root'],'configurationDigest':'sha256:'+h(d['environmentFile']),'webFileCount':len(entries),'liveWebPointsAtCommitNamedDirectory':current.resolve()==destination,'webDirectoryDigest':wd(entries)}))
 `;
 
-/** Preparation pins source/instrument identities before archive transfer and client preflight. */
+/** Pin source/instrument identities and prove browser and client tooling outside the round window. */
 export async function prepare(paramsFile, dir, seams = {}) {
   const io = { ...defaults, ...seams },
     raw = await fs.readFile(paramsFile),
@@ -386,6 +386,12 @@ export async function prepare(paramsFile, dir, seams = {}) {
     });
 
     await externalClient(p, dir, io, true, secret);
+    const rendered = { commands: [] };
+    try {
+      await renderedWeb(p, io, rendered.commands, `preflight-${p.roundId}`);
+    } finally {
+      await save(path.join(dir, 'browser-preflight.json'), rendered, [secret]);
+    }
     await scan(dir, [secret]);
     await save(path.join(dir, 'prepare-complete.json'), {
       completedAt: io.now(),
@@ -1665,6 +1671,7 @@ async function decideWorker(dir, requestId, decision, p, pending, io, seams) {
   return response;
 }
 
+/** Replace the exact-source App, prove readiness, then independently check its rendered Web entry. */
 async function deploy(client, archive, result) {
   const { p, dir, io } = client,
     start = Date.parse(io.now());
@@ -1751,10 +1758,29 @@ async function deploy(client, archive, result) {
     result.workerUpdate = {};
     await updateWorker(client, build, result);
   }
-  // Browser automation uses a named isolated session and fixed public entry only.
+  // The round independently proves the deployed candidate renders after readiness.
   await guard(p, dir, io);
-  const commands = [],
-    session = `release-${p.roundId}`;
+  result.rendered = { commands: [] };
+  await renderedWeb(p, io, result.rendered.commands, `release-${p.roundId}`);
+  return Object.assign(result, {
+    build,
+    replace,
+    startup: { rows, ready },
+    baselineGeneration: baseline.data.connectionGeneration,
+    configurationDigest: replace.configurationDigest,
+    public: {
+      diagnostics: diagnostic,
+      'workspace-retained': workspace,
+      'target-1': target,
+      binding,
+      closedAt: io.now(),
+      readyBeforeAdmission: true,
+    },
+  });
+}
+
+/** Capture the bounded rendered-Web commands in an isolated session and always attempt closure. */
+async function renderedWeb(p, io, commands, session) {
   try {
     for (const args of [
       ['open', new URL('/settings', p.cli.origin).href],
@@ -1769,25 +1795,12 @@ async function deploy(client, archive, result) {
       if (r.exitCode !== 0) throw Error('Rendered Web entry unavailable');
     }
   } finally {
-    const r = await io.exec('agent-browser', ['--session', session, 'close'], { timeout: 20000 });
+    const r = await io.exec('agent-browser', ['--session', session, 'close'], {
+      timeout: 20000,
+      env: cleanEnvironment(),
+    });
     commands.push({ arguments: ['close'], ...r });
   }
-  return Object.assign(result, {
-    build,
-    replace,
-    startup: { rows, ready },
-    rendered: { commands },
-    baselineGeneration: baseline.data.connectionGeneration,
-    configurationDigest: replace.configurationDigest,
-    public: {
-      diagnostics: diagnostic,
-      'workspace-retained': workspace,
-      'target-1': target,
-      binding,
-      closedAt: io.now(),
-      readyBeforeAdmission: true,
-    },
-  });
 }
 
 const diagnosticsSource =

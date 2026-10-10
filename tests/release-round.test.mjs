@@ -172,6 +172,97 @@ test('parameter validation requires the exact Goal filename in its intent', () =
   p.goal.intent = `Write ${p.goal.filename} as the acceptance-note Artifact.`;
   assert.equal(validateParams(p), p);
 });
+test('parameter validation refuses sequence in round parameters', () => {
+  const p = { ...parameters(), sequence: { priorCount: 0, resetReason: null } };
+  assert.throws(() => validateParams(p), /params: unknown key sequence/);
+});
+test('parameter validation admits round parameters without sequence', () => {
+  const p = parameters();
+  delete p.sequence;
+  assert.equal(validateParams(p), p);
+});
+for (const failed of ['open', 'wait', 'snapshot'])
+  test(`prepare refuses browser ${failed} failure and retains commands before closing`, async (t) => {
+    const parent = await temp(t),
+      p = parameters(),
+      input = path.join(parent, 'params.json'),
+      dir = path.join(parent, 'round'),
+      source = 'synthetic exact source',
+      commands = [];
+    await save(input, p);
+    await assert.rejects(
+      prepare(input, dir, {
+        credential: 'synthetic-private-value',
+        exec: async (exe, args, options) => {
+          if (exe === 'agent-browser') {
+            commands.push({ args, options });
+            return { exitCode: args[2] === failed ? 1 : 0, stdout: 'Sign in', stderr: '' };
+          }
+          if (exe === p.external.executable) {
+            if (args[0] === 'exec')
+              await save(path.join(dir, 'preflight', 'mcp', '000001.json'), {
+                method: 'tools/list',
+                httpStatus: 200,
+                response: {
+                  result: {
+                    tools: ['guide', 'search', 'describe', 'call'].map((name) => ({ name })),
+                  },
+                },
+              });
+            return { exitCode: 0, stdout: 'guide search describe call', stderr: '' };
+          }
+          if (exe === 'scp') return { exitCode: 0, stdout: '', stderr: '' };
+          assert.equal(exe, 'git');
+          if (args[0] === 'archive') await fs.writeFile(args[2].slice('--output='.length), source);
+          return {
+            exitCode: 0,
+            stdout:
+              args[0] === 'show'
+                ? '## First-Release Scenario Set\nsynthetic'
+                : args[0] === 'diff'
+                  ? ''
+                  : p.checklistBlob,
+            stderr: '',
+          };
+        },
+        ssh: async (_exe, args, options) => ({
+          exitCode: 0,
+          stdout:
+            args.at(-1) === 'cat /etc/machine-id'
+              ? p.deployment.machineId
+              : JSON.stringify(JSON.parse(options.input).remotePath ? { sha256: sha(source) } : {}),
+          stderr: '',
+        }),
+      }),
+      /Rendered Web entry unavailable/
+    );
+    const expected = [
+      ['open', new URL('/settings', p.cli.origin).href],
+      ['wait', '--text', 'Sign in'],
+      ['snapshot'],
+    ].slice(0, ['open', 'wait', 'snapshot'].indexOf(failed) + 1);
+    expected.push(['close']);
+    assert.deepEqual(
+      commands.map((v) => v.args),
+      expected.map((args) => ['--session', `preflight-${p.roundId}`, ...args])
+    );
+    const retained = await readJson(path.join(dir, 'browser-preflight.json'));
+    assert.deepEqual(
+      retained.commands.map((v) => v.arguments),
+      expected
+    );
+    assert.equal(retained.commands.at(-2).exitCode, 1);
+    assert.equal(retained.commands.at(-1).exitCode, 0);
+    for (const { args, options } of commands) {
+      assert.equal(options.timeout, args[2] === 'close' ? 20000 : p.bounds.processMs);
+      assert.equal(options.env.NODE_OPTIONS, undefined);
+      assert.equal(options.env.OPENKIT_NANOCORE_TOKEN, undefined);
+      assert.equal(options.env.RELEASE_ROUND_BRIDGE, undefined);
+      assert.equal(options.env.RELEASE_ROUND_TRANSPORT, undefined);
+    }
+    await assert.rejects(fs.access(path.join(dir, 'prepare-complete.json')), /ENOENT/);
+    await assert.rejects(fs.access(path.join(dir, 'round-start.json')), /ENOENT/);
+  });
 test('prepare passes the exact unquoted SFTP scp destination', async (t) => {
   const parent = await temp(t),
     p = parameters(),
@@ -273,6 +364,7 @@ if (process.argv.includes('--version')) {
   );
   const source = 'synthetic exact source';
   let launches = 0;
+  const browserCommands = [];
   await prepare(input, dir, {
     credential: 'synthetic-private-value',
     exec: async (exe, args, options) => {
@@ -288,6 +380,10 @@ if (process.argv.includes('--version')) {
         return result;
       }
       if (exe === 'scp') return { exitCode: 0, stdout: '', stderr: '' };
+      if (exe === 'agent-browser') {
+        browserCommands.push(args);
+        return { exitCode: 0, stdout: 'Sign in', stderr: '' };
+      }
       assert.equal(exe, 'git');
       if (args[0] === 'archive') await fs.writeFile(args[2].slice('--output='.length), source);
       return {
@@ -312,6 +408,16 @@ if (process.argv.includes('--version')) {
     }),
   });
   assert.equal(launches, 1);
+  assert.deepEqual(browserCommands, [
+    ['--session', `preflight-${p.roundId}`, 'open', new URL('/settings', p.cli.origin).href],
+    ['--session', `preflight-${p.roundId}`, 'wait', '--text', 'Sign in'],
+    ['--session', `preflight-${p.roundId}`, 'snapshot'],
+    ['--session', `preflight-${p.roundId}`, 'close'],
+  ]);
+  assert.deepEqual(
+    (await readJson(path.join(dir, 'browser-preflight.json'))).commands.map((v) => v.exitCode),
+    [0, 0, 0, 0]
+  );
   assert.equal((await readJson(path.join(dir, 'preflight-receipt.json'))).passed, true);
   assert.equal(
     typeof (await readJson(path.join(dir, 'prepare-complete.json'))).runnerSha256,
@@ -484,7 +590,8 @@ test('missing adjudication leaves the round unclassified; known linkage is exact
   const r = evaluate(b, parameters()),
     s = classify(r, parameters());
   assert.equal(s.classified, false);
-  assert.equal(s.consecutive, 0);
+  assert.equal(s.consecutive, null);
+  assert.equal(classify(r, parameters(), [], { priorCount: 2, resetReason: null }).consecutive, 0);
   assert.throws(
     () =>
       classify(r, parameters(), [
@@ -524,13 +631,23 @@ test('observed failure, missing evidence and timeout remain distinguishable', ()
 });
 test('offline summarize produces all seven compact columns and deterministic manifest', async (t) => {
   const dir = await temp(t),
-    p = parameters(),
-    raw = JSON.stringify(p);
-  await fs.writeFile(path.join(dir, 'params.json'), raw);
-  const b = bundle(p),
+    p = parameters();
+  await summaryFixture(dir, p);
+  const s = await summarize(dir);
+  assert.equal(s.counts.successful, 21);
+  const row = await fs.readFile(path.join(dir, 'row.md'), 'utf8');
+  assert.equal(row.split('\n')[2].split(' | ').length, 7);
+  const again = await summarize(dir);
+  assert.equal(again.manifestSha256, s.manifestSha256);
+});
+
+/** Retain complete synthetic round records with internally consistent source pins. */
+async function summaryFixture(dir, p, b = bundle(p)) {
+  const raw = JSON.stringify(p),
     entries = [{ file: 'synthetic-instrument', sha256: sha('example') }];
   b.attribution.runnerSha256 = sha(canonical(entries));
   b.attribution.parameterSha256 = sha(raw);
+  await fs.writeFile(path.join(dir, 'params.json'), raw);
   await save(path.join(dir, 'prepare.json'), {
     parameterSha256: sha(raw),
     runnerSha256: b.attribution.runnerSha256,
@@ -540,12 +657,141 @@ test('offline summarize produces all seven compact columns and deterministic man
   });
   await save(path.join(dir, 'checklist-section.json'), { text: 'example' });
   await save(path.join(dir, 'round.json'), b);
-  const s = await summarize(dir);
-  assert.equal(s.counts.successful, 21);
-  const row = await fs.readFile(path.join(dir, 'row.md'), 'utf8');
-  assert.equal(row.split('\n')[2].split(' | ').length, 7);
-  const again = await summarize(dir);
-  assert.equal(again.manifestSha256, s.manifestSha256);
+}
+
+test('summarize without sequence states no consecutive count', async (t) => {
+  const dir = await temp(t),
+    p = parameters();
+  await summaryFixture(dir, p);
+  const result = await summarize(dir);
+  assert.equal(result.counts.successful, 21);
+  assert.equal(result.complete, true);
+  assert.equal(result.clean, true);
+  assert.equal(result.consecutive, null);
+  assert.equal(result.sequence, null);
+  assert.equal((await readJson(path.join(dir, 'summary.json'))).consecutive, null);
+  assert.match(await fs.readFile(path.join(dir, 'row.md'), 'utf8'), /consecutive=not supplied/);
+});
+for (const [name, sequence, nonClean, expected] of [
+  ['clean', { priorCount: 4, resetReason: null }, false, 5],
+  ['non-clean', { priorCount: 4, resetReason: null }, true, 0],
+  ['reset', { priorCount: 4, resetReason: '/example/private/reset' }, false, 1],
+])
+  test(`summarize with sequence applies the ${name} formula and pins its input`, async (t) => {
+    const parent = await temp(t),
+      dir = path.join(parent, 'round'),
+      p = parameters(),
+      b = bundle(p),
+      sequenceFile = path.join(parent, 'sequence.json'),
+      adjudicationsFile = path.join(parent, 'checks.json');
+    await fs.mkdir(dir);
+    if (nonClean) b.runtimes.pi.steps[0].itemCoverage.items[0].text = 'Refused';
+    await summaryFixture(dir, p, b);
+    await save(sequenceFile, sequence);
+    await save(
+      adjudicationsFile,
+      nonClean
+        ? [{ scenario: 'pi.A', code: 'N', reference: 'example-defect', checker: 'example-checker' }]
+        : []
+    );
+    const result = await summarize(dir, { sequenceFile, adjudicationsFile });
+    assert.equal(result.consecutive, expected);
+    assert.equal(result.clean, !nonClean);
+    assert.deepEqual(result.sequence, sequence);
+    assert.deepEqual((await readJson(path.join(dir, 'summary.json'))).sequence, sequence);
+    assert.deepEqual(
+      await fs.readFile(path.join(dir, 'sequence.json')),
+      await fs.readFile(sequenceFile)
+    );
+    const manifest = await readJson(path.join(dir, 'manifest.json'));
+    assert.equal(
+      manifest.entries.find((v) => v.file === 'sequence.json').sha256,
+      sha(await fs.readFile(sequenceFile))
+    );
+    const row = await fs.readFile(path.join(dir, 'row.md'), 'utf8');
+    assert.match(row, new RegExp(`consecutive=${expected};`));
+    if (sequence.resetReason) {
+      assert.match(row, /reset=declared; details=summary/);
+      assert.equal(row.includes('/example/private/reset'), false);
+    }
+  });
+
+test('summarize changes the sequence on retained evidence without rerunning the round', async (t) => {
+  const parent = await temp(t),
+    dir = path.join(parent, 'round'),
+    p = parameters(),
+    sequenceFile = path.join(parent, 'sequence.json');
+  await fs.mkdir(dir);
+  await summaryFixture(dir, p);
+  const original = await fs.readFile(path.join(dir, 'round.json'));
+  await save(sequenceFile, { priorCount: 1, resetReason: null });
+  assert.equal((await summarize(dir, { sequenceFile })).consecutive, 2);
+  const first = await readJson(path.join(dir, 'manifest.json'));
+  await save(sequenceFile, { priorCount: 0, resetReason: null }, [], false);
+  assert.equal((await summarize(dir, { sequenceFile })).consecutive, 1);
+  const second = await readJson(path.join(dir, 'manifest.json'));
+  assert.notEqual(first.sha256, second.sha256);
+  assert.equal(second.entries.filter((v) => v.file === 'sequence.json').length, 1);
+  assert.equal(
+    second.entries.find((v) => v.file === 'sequence.json').sha256,
+    sha(await fs.readFile(sequenceFile))
+  );
+  assert.equal((await summarize(dir)).consecutive, null);
+  assert.match(await fs.readFile(path.join(dir, 'row.md'), 'utf8'), /consecutive=not supplied/);
+  assert.deepEqual(await fs.readFile(path.join(dir, 'round.json')), original);
+});
+
+test('summarize refuses invalid private sequence inputs before derived evidence', async (t) => {
+  const parent = await temp(t),
+    dir = path.join(parent, 'round'),
+    p = parameters(),
+    sequenceFile = path.join(parent, 'sequence.json');
+  await fs.mkdir(dir);
+  await summaryFixture(dir, p);
+  for (const sequence of [
+    null,
+    [],
+    {},
+    { priorCount: 0 },
+    { resetReason: null },
+    { priorCount: 0, resetReason: null, extra: true },
+    ...[-1, 0.5, '0'].map((priorCount) => ({ priorCount, resetReason: null })),
+    ...['', 1, 'line\nbreak', 'Bearer exampleCredentialValue'].map((resetReason) => ({
+      priorCount: 0,
+      resetReason,
+    })),
+  ]) {
+    await fs.writeFile(sequenceFile, JSON.stringify(sequence), { mode: 0o600 });
+    await assert.rejects(summarize(dir, { sequenceFile }));
+    await assert.rejects(fs.access(path.join(dir, 'summary.json')), /ENOENT/);
+    await assert.rejects(fs.access(path.join(dir, 'sequence.json')), /ENOENT/);
+  }
+});
+
+test('summarize refuses retained parameters containing the earlier runner sequence', async (t) => {
+  const dir = await temp(t),
+    p = { ...parameters(), sequence: { priorCount: 0, resetReason: null } };
+  await summaryFixture(dir, p);
+  await assert.rejects(summarize(dir), /params: unknown key sequence/);
+});
+
+test('summarize CLI admits only the final sequence input', async (t) => {
+  const dir = await temp(t),
+    p = parameters(),
+    sequenceFile = path.join(dir, 'sequence.json');
+  await summaryFixture(dir, p);
+  await save(sequenceFile, { priorCount: 1, resetReason: null });
+  const result = await defaults.exec(process.execPath, [
+    fileURLToPath(new URL('./support/release-round.mjs', import.meta.url)),
+    'summarize',
+    '--evidence-dir',
+    dir,
+    '--sequence',
+    sequenceFile,
+  ]);
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).clean, true);
+  assert.equal((await readJson(path.join(dir, 'summary.json'))).consecutive, 2);
 });
 
 async function pinnedFixture(dir, p) {
@@ -1099,24 +1345,11 @@ test('public row hashes private revision text and uses neutral reset and unavail
   const dir = await temp(t),
     p = parameters();
   p.scenarioRevision = '/example/private/scenario';
-  p.sequence.resetReason = '/example/private/reset';
   p.deployment.workerDigest = '/example/private/worker';
-  const b = bundle(p),
-    raw = JSON.stringify(p),
-    entries = [{ file: 'synthetic-instrument', sha256: sha('example') }];
-  b.attribution.runnerSha256 = sha(canonical(entries));
-  b.attribution.parameterSha256 = sha(raw);
-  await fs.writeFile(path.join(dir, 'params.json'), raw);
-  await save(path.join(dir, 'prepare.json'), {
-    parameterSha256: sha(raw),
-    runnerSha256: b.attribution.runnerSha256,
-    instrumentFiles: entries,
-    checklistBlob: p.checklistBlob,
-    checklistSectionSha256: sha('example'),
-  });
-  await save(path.join(dir, 'checklist-section.json'), { text: 'example' });
-  await save(path.join(dir, 'round.json'), b);
-  await summarize(dir);
+  await summaryFixture(dir, p);
+  const sequenceFile = path.join(dir, 'sequence.json');
+  await save(sequenceFile, { priorCount: 0, resetReason: '/example/private/reset' });
+  await summarize(dir, { sequenceFile });
   const row = await fs.readFile(path.join(dir, 'row.md'), 'utf8');
   assert.equal(row.includes('/example/private'), false);
   assert(row.includes('Worker=unavailable'));

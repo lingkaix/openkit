@@ -11,6 +11,7 @@ import {
   save,
   sha,
   validateParams,
+  validateSequence,
   workerActivationInput,
   workerPreparedMatches,
 } from './safety.mjs';
@@ -1043,8 +1044,8 @@ export function evaluate(bundle, p) {
   return { rows, global };
 }
 
-/** Keep non-pass causation with an independent checker; reject manufactured pass adjudications. */
-export function classify(result, p, adjudications = []) {
+/** Keep independent non-pass causation and establish a sequence count only from a supplied input. */
+export function classify(result, p, adjudications = [], sequence = null) {
   const seen = new Set();
   for (const a of adjudications) {
     if (
@@ -1092,8 +1093,13 @@ export function classify(result, p, adjudications = []) {
     counts,
     complete: completeRound,
     clean,
-    consecutive: clean ? (p.sequence.resetReason ? 0 : p.sequence.priorCount) + 1 : 0,
-    reset: p.sequence.resetReason ?? (clean ? null : 'unclassified or non-clean round'),
+    sequence,
+    consecutive: sequence
+      ? clean
+        ? (sequence.resetReason ? 0 : sequence.priorCount) + 1
+        : 0
+      : null,
+    reset: sequence?.resetReason ?? (clean ? null : 'unclassified or non-clean round'),
   };
 }
 
@@ -1257,11 +1263,13 @@ export function telemetry(spans, coverage) {
   };
 }
 
-/** Produce a neutral public row backed by a content-addressed private evidence manifest. */
-export async function summarize(dir, { legacyPrefix, adjudicationsFile } = {}) {
+/** Derive rows offline, retaining checker inputs and counting only an explicitly supplied sequence. */
+export async function summarize(dir, { legacyPrefix, adjudicationsFile, sequenceFile } = {}) {
   if (legacyPrefix && !/^[a-z0-9][a-z0-9-]*$/.test(legacyPrefix))
     throw Error('Invalid legacy evidence prefix');
-  const p = validateParams(await readJson(path.join(dir, 'params.json')));
+  const p = validateParams(await readJson(path.join(dir, 'params.json'))),
+    sequenceBytes = sequenceFile ? await fs.readFile(sequenceFile) : null,
+    sequence = sequenceBytes ? validateSequence(JSON.parse(sequenceBytes)) : null;
   let bundle, refs;
   if (legacyPrefix) ({ bundle, refs } = await legacy(dir, legacyPrefix, p));
   else {
@@ -1296,7 +1304,7 @@ export async function summarize(dir, { legacyPrefix, adjudicationsFile } = {}) {
   const evaluation = evaluate(bundle, p),
     adjudications = adjudicationsFile ? await readJson(adjudicationsFile) : [];
   if (!Array.isArray(adjudications)) throw Error('Adjudications must be an array');
-  const summary = classify(evaluation, p, adjudications);
+  const summary = classify(evaluation, p, adjudications, sequence);
   if (legacyPrefix) {
     for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
       if (['logs', 'summary.json', 'row.md', 'manifest.json'].includes(entry.name)) continue;
@@ -1337,6 +1345,12 @@ export async function summarize(dir, { legacyPrefix, adjudicationsFile } = {}) {
     await fs.writeFile(path.join(dir, 'adjudications.json'), copy, { mode: 0o600 });
     if (!entries.some((v) => v.file === 'adjudications.json'))
       entries.push({ file: 'adjudications.json', sha256: sha(copy) });
+  }
+  if (sequenceBytes) {
+    const previous = entries.findIndex((v) => v.file === 'sequence.json');
+    if (previous >= 0) entries.splice(previous, 1);
+    await fs.writeFile(path.join(dir, 'sequence.json'), sequenceBytes, { mode: 0o600 });
+    entries.push({ file: 'sequence.json', sha256: sha(sequenceBytes) });
   }
   entries.sort((a, b) => a.file.localeCompare(b.file));
   const manifestSha256 = sha(canonical(entries));
@@ -1386,7 +1400,7 @@ export async function summarize(dir, { legacyPrefix, adjudicationsFile } = {}) {
     `${p.candidateCommit}; set=${p.checklistBlob}; revision=sha256:${sha(p.scenarioRevision)}`,
     `App=${identity(bundle.deployment?.build?.imageId)}; Web=${identity(bundle.deployment?.build?.web?.directoryDigest)}; NanoHost=${identity(p.deployment.nanoHostDigest)}; Worker=${identity(bundle.deployment?.components?.worker?.digest ?? p.deployment.workerDigest)}; config=${identity(p.deployment.configurationDigest)}; receipt=${p.evidenceAlias}; UTC=${utc(bundle.attribution?.start)}/${utc(bundle.attribution?.end)}`,
     summary.rows.map((r) => `${r.scenario}=${r.code ?? 'unclassified'}`).join('; '),
-    `executed=${counts.executed}/21; incomplete=${counts.incomplete}; successful=${counts.successful}; new=${counts.new}; known=${counts.known}; external=${counts.external}; complete=${summary.complete ? 'yes' : 'no'}; clean=${summary.clean ? 'yes' : 'no'}; consecutive=${summary.consecutive}; reset=${p.sequence.resetReason ? 'declared; details=summary' : (summary.reset ?? 'none')}`,
+    `executed=${counts.executed}/21; incomplete=${counts.incomplete}; successful=${counts.successful}; new=${counts.new}; known=${counts.known}; external=${counts.external}; complete=${summary.complete ? 'yes' : 'no'}; clean=${summary.clean ? 'yes' : 'no'}; consecutive=${summary.consecutive ?? 'not supplied'}; reset=${sequence?.resetReason ? 'declared; details=summary' : (summary.reset ?? 'none')}`,
     dispositions.join('; ') || 'none',
     `${p.evidenceAlias}; manifest=sha256:${manifestSha256}; instrument=${bundle.attribution?.runnerSha256}; non-pass checks=${summary.classified ? 'complete' : 'pending'}; telemetry/cleanup=summary`,
   ];
