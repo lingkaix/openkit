@@ -1,7 +1,8 @@
 ---
-status: Accepted
+status: Superseded
 date: "2026-10-05"
 decider: Engineer
+superseded-by: docs/decisions/20261010-release_exit_criterion_revised.md
 ---
 # A Fixed Scenario Set And Consecutive Clean Release Rounds
 
