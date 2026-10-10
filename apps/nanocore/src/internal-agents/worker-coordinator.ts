@@ -254,12 +254,9 @@ export function createWorkerCoordinatorDecision(
     ],
     expectedArtifacts: [
       {
-        kind: 'code-change' as const,
-        description: 'Focused workspace changes needed to satisfy the objective.',
-      },
-      {
-        kind: 'test-result' as const,
-        description: 'Verification evidence from the focused checks.',
+        kind: 'artifact' as const,
+        description:
+          'The outputs the objective requires, such as changed files, documents or submitted Artifacts.',
       },
     ],
     resources: [],
@@ -270,13 +267,14 @@ export function createWorkerCoordinatorDecision(
     verification: [
       {
         kind: 'manual' as const,
-        description: 'Run the checks named by the worker task or explain why they cannot run.',
+        description:
+          'Check the result against the objective, run any checks the objective names, or explain why they cannot run.',
       },
     ],
     reviewPolicy: {
       required: false,
       reviewers: ['human'],
-      instructions: 'Review the worker result, changed files, and verification evidence.',
+      instructions: 'Review the worker result, its outputs and verification evidence.',
     },
     escalationConditions: [
       'Escalate if a source, tool or authorization required to complete the objective is unavailable or invalid.',

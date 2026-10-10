@@ -176,12 +176,9 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       resources: [],
       expectedArtifacts: [
         {
-          kind: 'code-change',
-          description: 'Focused workspace changes needed to satisfy the objective.',
-        },
-        {
-          kind: 'test-result',
-          description: 'Verification evidence from the focused checks.',
+          kind: 'artifact',
+          description:
+            'The outputs the objective requires, such as changed files, documents or submitted Artifacts.',
         },
       ],
       constraints: {
@@ -191,13 +188,14 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       verification: [
         {
           kind: 'manual',
-          description: 'Run the checks named by the worker task or explain why they cannot run.',
+          description:
+            'Check the result against the objective, run any checks the objective names, or explain why they cannot run.',
         },
       ],
       reviewPolicy: {
         required: false,
         reviewers: ['human'],
-        instructions: 'Review the worker result, changed files, and verification evidence.',
+        instructions: 'Review the worker result, its outputs and verification evidence.',
       },
       escalationConditions: [
         'Escalate if a source, tool or authorization required to complete the objective is unavailable or invalid.',
@@ -208,8 +206,9 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
     });
   });
 
-  it('allows direct Task defaults to use available tools from an empty workspace', () => {
-    const prompt = 'Read the issue, publish the focused file change, and open a pull request.';
+  it('emits domain-neutral defaults for a non-software direct Task', () => {
+    const prompt =
+      'Collect the March supplier invoices into one summary table and list any invoice missing a tax number.';
     const decision = createWorkerCoordinatorDecision({
       entryIntent: 'explicit_task',
       prompt,
@@ -233,12 +232,9 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       resources: [],
       expectedArtifacts: [
         {
-          kind: 'code-change',
-          description: 'Focused workspace changes needed to satisfy the objective.',
-        },
-        {
-          kind: 'test-result',
-          description: 'Verification evidence from the focused checks.',
+          kind: 'artifact',
+          description:
+            'The outputs the objective requires, such as changed files, documents or submitted Artifacts.',
         },
       ],
       constraints: {
@@ -248,13 +244,14 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       verification: [
         {
           kind: 'manual',
-          description: 'Run the checks named by the worker task or explain why they cannot run.',
+          description:
+            'Check the result against the objective, run any checks the objective names, or explain why they cannot run.',
         },
       ],
       reviewPolicy: {
         required: false,
         reviewers: ['human'],
-        instructions: 'Review the worker result, changed files, and verification evidence.',
+        instructions: 'Review the worker result, its outputs and verification evidence.',
       },
       escalationConditions: [
         'Escalate if a source, tool or authorization required to complete the objective is unavailable or invalid.',
