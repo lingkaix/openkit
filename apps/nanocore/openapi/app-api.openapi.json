@@ -11084,7 +11084,7 @@
         "tags": [
           "app-update"
         ],
-        "summary": "Prepare one exact App update source and current-image binding.",
+        "summary": "Prepare one published App release and current-image binding.",
         "security": [
           {
             "bearerAuth": []
@@ -11105,7 +11105,7 @@
         },
         "responses": {
           "200": {
-            "description": "Prepare one exact App update source and current-image binding.",
+            "description": "Prepare one published App release and current-image binding.",
             "content": {
               "application/json": {
                 "schema": {
@@ -80945,54 +80945,27 @@
             "pattern": "^sha256:[a-f0-9]{64}$"
           },
           "source": {
-            "oneOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "appDigest": {
-                    "type": "string",
-                    "pattern": "^sha256:[a-f0-9]{64}$"
-                  },
-                  "kind": {
-                    "type": "string",
-                    "const": "release"
-                  },
-                  "sourceCommit": {
-                    "type": "string",
-                    "pattern": "^[0-9a-f]{40}$"
-                  },
-                  "tag": {
-                    "type": "string",
-                    "pattern": "^v(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?$"
-                  }
-                },
-                "required": [
-                  "appDigest",
-                  "kind",
-                  "sourceCommit",
-                  "tag"
-                ],
-                "additionalProperties": false
+            "type": "object",
+            "properties": {
+              "appDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
               },
-              {
-                "type": "object",
-                "properties": {
-                  "kind": {
-                    "type": "string",
-                    "const": "commit"
-                  },
-                  "sourceCommit": {
-                    "type": "string",
-                    "pattern": "^[0-9a-f]{40}$"
-                  }
-                },
-                "required": [
-                  "kind",
-                  "sourceCommit"
-                ],
-                "additionalProperties": false
+              "sourceCommit": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "tag": {
+                "type": "string",
+                "pattern": "^v(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?$"
               }
-            ]
+            },
+            "required": [
+              "appDigest",
+              "sourceCommit",
+              "tag"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
@@ -81019,54 +80992,27 @@
             "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
           },
           "source": {
-            "oneOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "appDigest": {
-                    "type": "string",
-                    "pattern": "^sha256:[a-f0-9]{64}$"
-                  },
-                  "kind": {
-                    "type": "string",
-                    "const": "release"
-                  },
-                  "sourceCommit": {
-                    "type": "string",
-                    "pattern": "^[0-9a-f]{40}$"
-                  },
-                  "tag": {
-                    "type": "string",
-                    "pattern": "^v(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?$"
-                  }
-                },
-                "required": [
-                  "appDigest",
-                  "kind",
-                  "sourceCommit",
-                  "tag"
-                ],
-                "additionalProperties": false
+            "type": "object",
+            "properties": {
+              "appDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
               },
-              {
-                "type": "object",
-                "properties": {
-                  "kind": {
-                    "type": "string",
-                    "const": "commit"
-                  },
-                  "sourceCommit": {
-                    "type": "string",
-                    "pattern": "^[0-9a-f]{40}$"
-                  }
-                },
-                "required": [
-                  "kind",
-                  "sourceCommit"
-                ],
-                "additionalProperties": false
+              "sourceCommit": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "tag": {
+                "type": "string",
+                "pattern": "^v(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?$"
               }
-            ]
+            },
+            "required": [
+              "appDigest",
+              "sourceCommit",
+              "tag"
+            ],
+            "additionalProperties": false
           },
           "stage": {
             "type": "string",
@@ -81347,54 +81293,27 @@
             "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
           },
           "source": {
-            "oneOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "appDigest": {
-                    "type": "string",
-                    "pattern": "^sha256:[a-f0-9]{64}$"
-                  },
-                  "kind": {
-                    "type": "string",
-                    "const": "release"
-                  },
-                  "sourceCommit": {
-                    "type": "string",
-                    "pattern": "^[0-9a-f]{40}$"
-                  },
-                  "tag": {
-                    "type": "string",
-                    "pattern": "^v(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?$"
-                  }
-                },
-                "required": [
-                  "appDigest",
-                  "kind",
-                  "sourceCommit",
-                  "tag"
-                ],
-                "additionalProperties": false
+            "type": "object",
+            "properties": {
+              "appDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
               },
-              {
-                "type": "object",
-                "properties": {
-                  "kind": {
-                    "type": "string",
-                    "const": "commit"
-                  },
-                  "sourceCommit": {
-                    "type": "string",
-                    "pattern": "^[0-9a-f]{40}$"
-                  }
-                },
-                "required": [
-                  "kind",
-                  "sourceCommit"
-                ],
-                "additionalProperties": false
+              "sourceCommit": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "tag": {
+                "type": "string",
+                "pattern": "^v(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?$"
               }
-            ]
+            },
+            "required": [
+              "appDigest",
+              "sourceCommit",
+              "tag"
+            ],
+            "additionalProperties": false
           },
           "stage": {
             "type": "string",
@@ -81707,54 +81626,27 @@
             "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
           },
           "source": {
-            "oneOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "appDigest": {
-                    "type": "string",
-                    "pattern": "^sha256:[a-f0-9]{64}$"
-                  },
-                  "kind": {
-                    "type": "string",
-                    "const": "release"
-                  },
-                  "sourceCommit": {
-                    "type": "string",
-                    "pattern": "^[0-9a-f]{40}$"
-                  },
-                  "tag": {
-                    "type": "string",
-                    "pattern": "^v(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?$"
-                  }
-                },
-                "required": [
-                  "appDigest",
-                  "kind",
-                  "sourceCommit",
-                  "tag"
-                ],
-                "additionalProperties": false
+            "type": "object",
+            "properties": {
+              "appDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
               },
-              {
-                "type": "object",
-                "properties": {
-                  "kind": {
-                    "type": "string",
-                    "const": "commit"
-                  },
-                  "sourceCommit": {
-                    "type": "string",
-                    "pattern": "^[0-9a-f]{40}$"
-                  }
-                },
-                "required": [
-                  "kind",
-                  "sourceCommit"
-                ],
-                "additionalProperties": false
+              "sourceCommit": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "tag": {
+                "type": "string",
+                "pattern": "^v(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?$"
               }
-            ]
+            },
+            "required": [
+              "appDigest",
+              "sourceCommit",
+              "tag"
+            ],
+            "additionalProperties": false
           },
           "stage": {
             "type": "string",
@@ -90015,54 +89907,27 @@
             "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
           },
           "source": {
-            "oneOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "appDigest": {
-                    "type": "string",
-                    "pattern": "^sha256:[a-f0-9]{64}$"
-                  },
-                  "kind": {
-                    "type": "string",
-                    "const": "release"
-                  },
-                  "sourceCommit": {
-                    "type": "string",
-                    "pattern": "^[0-9a-f]{40}$"
-                  },
-                  "tag": {
-                    "type": "string",
-                    "pattern": "^v(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?$"
-                  }
-                },
-                "required": [
-                  "appDigest",
-                  "kind",
-                  "sourceCommit",
-                  "tag"
-                ],
-                "additionalProperties": false
+            "type": "object",
+            "properties": {
+              "appDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
               },
-              {
-                "type": "object",
-                "properties": {
-                  "kind": {
-                    "type": "string",
-                    "const": "commit"
-                  },
-                  "sourceCommit": {
-                    "type": "string",
-                    "pattern": "^[0-9a-f]{40}$"
-                  }
-                },
-                "required": [
-                  "kind",
-                  "sourceCommit"
-                ],
-                "additionalProperties": false
+              "sourceCommit": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "tag": {
+                "type": "string",
+                "pattern": "^v(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?$"
               }
-            ]
+            },
+            "required": [
+              "appDigest",
+              "sourceCommit",
+              "tag"
+            ],
+            "additionalProperties": false
           },
           "stage": {
             "type": "string",
@@ -91194,5 +91059,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:542c33939f885078433b4a62a25410160da39e7831b1312b294f5a709f330082"
+  "x-openkit-source-digest": "sha256:742d8588a04edfdbcca915a5be45bb437c3b3d4127cc5053e212dfafbb945a8d"
 }

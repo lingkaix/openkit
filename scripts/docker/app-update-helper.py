@@ -13,7 +13,6 @@ import select
 import stat
 import subprocess
 import sys
-import tarfile
 import tempfile
 import urllib.error
 import urllib.request
@@ -26,6 +25,8 @@ STDIN_LIMIT_BYTES = 16 * 1024
 STDIN_DEADLINE_SECONDS = 10
 RECEIPT_LIMIT_BYTES = 64 * 1024
 RECEIPT_CAPACITY = 1000
+# Current default: ~1.15 GB uncompressed App plus pull/extraction headroom and receipts.
+RELEASE_MIN_FREE_BYTES = 3 * 1024 ** 3
 PREPARE_TTL_SECONDS = 600
 LAUNCH_UNKNOWN_AFTER_SECONDS = 30
 JOB_TIMEOUT_SECONDS = 1800
@@ -112,9 +113,6 @@ CONFIG_KEYS = {
     "receiptDir",
     "lockPath",
     "sourceRepository",
-    "sourceBranch",
-    "sourceWorkDir",
-    "stagedSourceDir",
     "imageRepository",
     "appBaseUrl",
     "helperArgv",
@@ -136,9 +134,6 @@ REQUIRED_CONFIG_KEYS = (
     "receiptDir",
     "lockPath",
     "sourceRepository",
-    "sourceBranch",
-    "sourceWorkDir",
-    "stagedSourceDir",
     "imageRepository",
     "appBaseUrl",
     "helperArgv",
@@ -311,7 +306,7 @@ def _parse_argv(argv: Sequence[str]) -> Tuple[Optional[str], str]:
 
 
 def load_config(path: str) -> Dict[str, Any]:
-    """Load protected operator configuration and reject invalid paths or fields."""
+    """Load the known operator configuration core, ignoring additive fields."""
     try:
         metadata = os.lstat(path)
     except OSError as error:
@@ -334,9 +329,7 @@ def load_config(path: str) -> Dict[str, Any]:
         raise HelperError("app_update_unconfigured", "Helper config is not valid JSON.") from error
     if not isinstance(parsed, dict) or parsed.get("schemaVersion") != SCHEMA_VERSION:
         raise HelperError("app_update_unconfigured", "Helper config schema is unsupported.")
-    extra = set(parsed) - CONFIG_KEYS
-    if extra:
-        raise HelperError("app_update_unconfigured", "Helper config contains unknown fields.")
+    parsed = {key: value for key, value in parsed.items() if key in CONFIG_KEYS}
     for key in REQUIRED_CONFIG_KEYS:
         if key not in parsed:
             raise HelperError("app_update_unconfigured", "Helper config is incomplete.")
@@ -344,8 +337,6 @@ def load_config(path: str) -> Dict[str, Any]:
         "dataRoot",
         "receiptDir",
         "lockPath",
-        "sourceWorkDir",
-        "stagedSourceDir",
         "webAssetsDir",
         "vaultKeyFile",
         "nanohostCredentialsDir",
@@ -375,7 +366,7 @@ def load_config(path: str) -> Dict[str, Any]:
     except HelperError as error:
         raise HelperError("app_update_unconfigured", error.message) from error
     data_root = os.path.realpath(parsed["dataRoot"])
-    for key in ("receiptDir", "lockPath", "stagedSourceDir"):
+    for key in ("receiptDir", "lockPath"):
         candidate = os.path.realpath(parsed[key]) if os.path.exists(parsed[key]) else parsed[key]
         if _path_inside(candidate, data_root):
             raise HelperError(
@@ -486,43 +477,33 @@ def _require_commit(value: Any) -> str:
     return value
 
 
-def _require_source(value: Any) -> Dict[str, Any]:
-    if not isinstance(value, dict) or "kind" not in value:
-        raise HelperError("app_update_invalid_request", "Source must be a closed release or commit object.")
-    kind = value["kind"]
-    if kind == "release":
-        extra = set(value) - {"appDigest", "kind", "sourceCommit", "tag"}
-        if extra:
-            raise HelperError("app_update_invalid_request", "Release source contains unknown fields.")
-        tag = value.get("tag")
-        if not isinstance(tag, str) or not TAG_RE.match(tag) or tag == "latest":
-            raise HelperError("app_update_invalid_request", "Release tag must be an immutable version.")
-        return {
-            "appDigest": _require_digest(value.get("appDigest")),
-            "kind": "release",
-            "sourceCommit": _require_commit(value.get("sourceCommit")),
-            "tag": tag,
-        }
-    if kind == "commit":
-        extra = set(value) - {"kind", "sourceCommit"}
-        if extra:
-            raise HelperError("app_update_invalid_request", "Commit source contains unknown fields.")
-        return {"kind": "commit", "sourceCommit": _require_commit(value.get("sourceCommit"))}
-    raise HelperError("app_update_invalid_request", "Source kind is not admitted.")
+def _require_source(value: Any, observed: bool = False) -> Dict[str, Any]:
+    """Validate release identity; descriptive readers discard unknown fields."""
+    if not isinstance(value, dict):
+        raise HelperError("app_update_invalid_request", "Source must be a release object.")
+    if not observed and set(value) - {"appDigest", "sourceCommit", "tag"}:
+        raise HelperError("app_update_invalid_request", "Release source contains unknown fields.")
+    tag = value.get("tag")
+    if not isinstance(tag, str) or not TAG_RE.match(tag) or tag == "latest":
+        raise HelperError("app_update_invalid_request", "Release tag must be an immutable version.")
+    return {
+        "appDigest": _require_digest(value.get("appDigest")),
+        "sourceCommit": _require_commit(value.get("sourceCommit")),
+        "tag": tag,
+    }
 
 
 def _require_compatibility(value: Any) -> Dict[str, Any]:
     if not isinstance(value, dict):
         raise HelperError("app_update_unconfigured", "Helper compatibility assessment is missing.")
-    extra = set(value) - {"appliedMigrations", "candidate", "currentImageId"}
-    if extra or {"appliedMigrations", "candidate", "currentImageId"} - set(value):
-        raise HelperError("app_update_unconfigured", "Helper compatibility assessment is not a closed object.")
+    if {"appliedMigrations", "candidate", "currentImageId"} - set(value):
+        raise HelperError("app_update_unconfigured", "Helper compatibility assessment is incomplete.")
     applied = value.get("appliedMigrations")
     if not isinstance(applied, list) or not applied or any(not isinstance(item, str) or not item for item in applied):
         raise HelperError("app_update_unconfigured", "Helper compatibility appliedMigrations is invalid.")
     return {
         "appliedMigrations": [str(item) for item in applied],
-        "candidate": _require_source(value.get("candidate")),
+        "candidate": _require_source(value.get("candidate"), observed=True),
         "currentImageId": _require_digest(value.get("currentImageId")),
     }
 
@@ -648,7 +629,7 @@ class AppUpdateHelper:
                 self._write_receipt(receipt)
                 candidate = self._acquire_candidate(receipt["source"])
                 receipt["candidateLocalImageId"] = candidate["image_id"]
-                receipt["candidateImageId"] = candidate["record_id"]
+                receipt["candidateImageId"] = candidate["published_digest"]
                 receipt["candidateRef"] = candidate["ref"]
                 receipt["sourceImageMap"] = {
                     "imageId": candidate["image_id"],
@@ -727,50 +708,58 @@ class AppUpdateHelper:
         receipt["previousAppRestored"] = restored
         receipt["completedAt"] = isoformat(self.now())
         receipt["error"] = message
-        self._write_receipt(receipt)
+        try:
+            self._write_receipt(receipt)
+        except Exception:
+            # A failed durable write cannot replace the original cause or invent a terminal observation.
+            if isinstance(error, HelperError):
+                raise error
+            raise HelperError("app_update_unavailable", message) from error
+        if isinstance(error, HelperError) and error.code == "app_update_capacity":
+            raise error
         return project_status(receipt)
 
     def _acquire_candidate(self, source: Mapping[str, Any]) -> Dict[str, Any]:
-        if source["kind"] == "release":
-            verified_commit = self._verify_release_attribution(source)
-            ref = "%s@%s" % (self.config["imageRepository"], source["appDigest"])
-            code, _, stderr = self.effects.run(["docker", "pull", ref], timeout=600)
-            if code != 0:
-                raise HelperError("app_update_unavailable", stderr or "Published digest pull failed.")
-            identity = self._image_identity(ref)
-            if source["appDigest"] not in identity["repo_digest_ids"]:
+        """Pull the verified published digest only after checking host capacity."""
+        verified_commit = self._verify_release_attribution(source)
+        self._assert_pull_capacity()
+        ref = "%s@%s" % (self.config["imageRepository"], source["appDigest"])
+        code, _, stderr = self.effects.run(["docker", "pull", ref], timeout=600)
+        if code != 0:
+            raise HelperError("app_update_unavailable", stderr or "Published digest pull failed.")
+        identity = self._image_identity(ref)
+        if source["appDigest"] not in identity["repo_digest_ids"]:
+            raise HelperError(
+                "app_update_invalid_request",
+                "Pulled image RepoDigests do not contain the published release digest.",
+            )
+        return {
+            "image_id": identity["id"],
+            "published_digest": source["appDigest"],
+            "ref": ref,
+            "source_commit": verified_commit,
+        }
+
+    def _assert_pull_capacity(self) -> None:
+        """Check Docker storage and receipt storage before pulling or interrupting the App."""
+        code, stdout, stderr = self.effects.run(
+            ["docker", "info", "--format", "{{.DockerRootDir}}"], timeout=30,
+        )
+        docker_root = (stdout or "").strip()
+        if code != 0 or not os.path.isabs(docker_root):
+            raise HelperError("app_update_unavailable", stderr or "Docker data root could not be observed.")
+        for name, path in (("Docker data root", docker_root), ("receipt directory", self.config["receiptDir"])):
+            try:
+                usage = os.statvfs(path)
+            except OSError as error:
+                raise HelperError("app_update_unavailable", "%s free bytes could not be observed." % name) from error
+            free_bytes = usage.f_bavail * usage.f_frsize
+            if free_bytes < RELEASE_MIN_FREE_BYTES:
                 raise HelperError(
-                    "app_update_invalid_request",
-                    "Pulled image RepoDigests do not contain the published release digest.",
+                    "app_update_capacity",
+                    "%s has %s free bytes; requires at least %s bytes before release pull."
+                    % (name, free_bytes, RELEASE_MIN_FREE_BYTES),
                 )
-            return {
-                "image_id": identity["id"],
-                "published_digest": source["appDigest"],
-                "record_id": source["appDigest"],
-                "ref": ref,
-                "source_commit": verified_commit,
-                "tag": source["tag"],
-            }
-        resolved = self._resolve_commit_source(source["sourceCommit"])
-        try:
-            context = resolved["context"]
-            tag = "openkit/app:staging-%s" % resolved["source_commit"]
-            build = os.path.join(context, "scripts", "docker", "build-image.sh")
-            code, _, stderr = self.effects.run(["bash", build, "app", tag], timeout=1800)
-            if code != 0:
-                raise HelperError("app_update_unavailable", stderr or "Exact-commit image build failed.")
-            identity = self._image_identity(tag)
-            return {
-                "image_id": identity["id"],
-                "published_digest": None,
-                "record_id": identity["id"],
-                "ref": tag,
-                "source_commit": resolved["source_commit"],
-            }
-        finally:
-            scratch = resolved.get("scratch")
-            if scratch:
-                _rmtree(scratch)
 
     def _verify_release_attribution(self, source: Mapping[str, Any]) -> str:
         """Verifies fixed-repo tag, source-revision, and digest attribution."""
@@ -848,136 +837,6 @@ class AppUpdateHelper:
                 stderr or "Published release digest inspect failed.",
             )
         return digest
-
-    def _resolve_commit_source(self, commit: str) -> Dict[str, Optional[str]]:
-        staged = os.path.join(self.config["stagedSourceDir"], commit)
-        identity_path = os.path.join(staged, "IDENTITY.json")
-        if os.path.lexists(identity_path):
-            if os.path.islink(staged) or os.path.islink(identity_path):
-                raise HelperError("app_update_recovery_required", "Staged source must not be a symbolic link.")
-            metadata = os.lstat(identity_path)
-            if not stat.S_ISREG(metadata.st_mode):
-                raise HelperError("app_update_recovery_required", "Staged source identity is not a regular file.")
-            with open(identity_path, "r", encoding="utf-8") as handle:
-                identity = json.loads(handle.read())
-            recorded = str(identity.get("contentDigest", ""))
-            if identity.get("sourceCommit") != commit or not DIGEST_RE.match(recorded):
-                raise HelperError("app_update_invalid_request", "Staged source identity does not match the commit.")
-            observed = digest_tree(staged, exclude=("IDENTITY.json",))
-            if observed != recorded:
-                raise HelperError(
-                    "app_update_invalid_request",
-                    "Staged source content digest does not match the recorded identity.",
-                )
-            if os.path.realpath(staged) == os.path.realpath(self.config["sourceWorkDir"]):
-                raise HelperError(
-                    "app_update_invalid_request",
-                    "Staged source must not be the configured source workdir.",
-                )
-            return {"context": staged, "scratch": None, "source_commit": commit}
-        workdir = self._ensure_source_work_dir()
-        code, _, stderr = self.effects.run(
-            [
-                "git",
-                "-C",
-                workdir,
-                "fetch",
-                "--no-tags",
-                self.config["sourceRepository"],
-                self.config["sourceBranch"],
-            ],
-            timeout=300,
-        )
-        if code != 0:
-            raise HelperError("app_update_unavailable", stderr or "Configured source fetch failed.")
-        ancestor = [
-            "git",
-            "-C",
-            workdir,
-            "merge-base",
-            "--is-ancestor",
-            commit,
-            "FETCH_HEAD",
-        ]
-        code, _, _ = self.effects.run(ancestor, timeout=30)
-        if code != 0:
-            raise HelperError(
-                "app_update_invalid_request",
-                "Commit is not reachable from the configured branch and is not a staged source.",
-            )
-        parsed = self.effects.run(
-            ["git", "-C", workdir, "rev-parse", "--verify", "%s^{commit}" % commit],
-            timeout=30,
-        )
-        verified = (parsed[1] or "").strip()
-        if parsed[0] != 0 or not COMMIT_RE.match(verified):
-            raise HelperError("app_update_unavailable", parsed[2] or "Exact-commit identity could not be verified.")
-        parent = tempfile.mkdtemp(prefix="openkit-app-update-src-")
-        tar_path = os.path.join(parent, "source.tar")
-        context = os.path.join(parent, "tree")
-        os.makedirs(context, mode=0o755)
-        try:
-            code, _, stderr = self.effects.run(
-                ["git", "-C", workdir, "archive", "--format=tar", "-o", tar_path, verified],
-                timeout=120,
-            )
-            if code != 0:
-                raise HelperError("app_update_unavailable", stderr or "Exact-commit archive failed.")
-            with tarfile.open(tar_path, "r") as archive:
-                archive.extractall(context)
-            return {"context": context, "scratch": parent, "source_commit": verified}
-        except Exception:
-            _rmtree(parent)
-            raise
-
-    def _ensure_source_work_dir(self) -> str:
-        """Initializes the configured Git source cache when that path is still missing."""
-        workdir = self.config["sourceWorkDir"]
-        try:
-            os.lstat(workdir)
-        except FileNotFoundError:
-            try:
-                os.makedirs(workdir, mode=0o700)
-            except OSError as error:
-                raise HelperError(
-                    "app_update_unavailable",
-                    "Configured source workdir could not be initialized.",
-                ) from error
-        except OSError as error:
-            raise HelperError(
-                "app_update_unavailable",
-                "Configured source workdir could not be inspected.",
-            ) from error
-        try:
-            meta = os.lstat(workdir)
-        except OSError as error:
-            raise HelperError(
-                "app_update_unavailable",
-                "Configured source workdir could not be inspected.",
-            ) from error
-        if stat.S_ISLNK(meta.st_mode) or not stat.S_ISDIR(meta.st_mode):
-            raise HelperError(
-                "app_update_invalid_request",
-                "Configured source workdir must be a non-linked directory.",
-            )
-        git_dir = os.path.join(workdir, ".git")
-        if os.path.islink(git_dir):
-            raise HelperError(
-                "app_update_recovery_required",
-                "Configured source workdir Git metadata must not be a symbolic link.",
-            )
-        if os.path.lexists(git_dir):
-            return workdir
-        if os.listdir(workdir):
-            raise HelperError(
-                "app_update_recovery_required",
-                "Configured source workdir contains non-Git data.",
-            )
-        self._run_required(
-            ["git", "init", "--", workdir],
-            "Configured source workdir could not be initialized.",
-        )
-        return workdir
 
     def _image_identity(self, reference: str) -> Dict[str, Any]:
         code, stdout, stderr = self.effects.run(
@@ -1651,7 +1510,7 @@ class AppUpdateHelper:
         if boot is None or parsed is None or running_identity is None:
             raise RuntimeError("candidate boot observation is missing")
         receipt["candidateBoot"] = boot
-        image_match = self._running_matches_candidate(running_identity, candidate)
+        image_match = candidate["published_digest"] in running_identity["repo_digest_ids"]
         mapped = receipt.get("sourceImageMap") if isinstance(receipt.get("sourceImageMap"), dict) else {}
         source_match = (
             COMMIT_RE.match(str(candidate["source_commit"])) is not None
@@ -1659,9 +1518,7 @@ class AppUpdateHelper:
             and mapped.get("imageId") == candidate["image_id"]
             and running_identity["id"] == candidate["image_id"]
         )
-        if candidate["published_digest"]:
-            source_match = source_match and candidate["published_digest"] in running_identity["repo_digest_ids"]
-            image_match = candidate["published_digest"] in running_identity["repo_digest_ids"]
+        source_match = source_match and image_match
         retained_ok = self._retained_auth_read(receipt)
         previous_nanohost = receipt.get("previousNanoHost")
         nanohost_ok: Optional[bool]
@@ -1727,11 +1584,6 @@ class AppUpdateHelper:
             and body.get("deploymentId") == previous.get("deploymentId")
             and generation > previous_generation
         )
-
-    def _running_matches_candidate(self, running: Mapping[str, Any], candidate: Mapping[str, Any]) -> bool:
-        if candidate["published_digest"]:
-            return candidate["published_digest"] in running["repo_digest_ids"]
-        return running["id"] == candidate["image_id"]
 
     def _authorized_json(self, path: str, method: str = "GET", body: Optional[Any] = None) -> Tuple[int, Any]:
         headers = {}
@@ -1882,7 +1734,7 @@ class AppUpdateHelper:
         if not isinstance(request_id, str) or filename != expected_name:
             raise HelperError("app_update_recovery_required", "App-update receipt identity is contradictory.")
         try:
-            source = _require_source(parsed.get("source"))
+            source = _require_source(parsed.get("source"), observed=True)
             expected = _require_digest(parsed.get("expectedCurrentImageId"))
         except HelperError as error:
             raise HelperError("app_update_recovery_required", error.message) from error
@@ -1953,6 +1805,10 @@ def project_status(receipt: Mapping[str, Any]) -> Dict[str, Any]:
     status = {key: receipt.get(key, None) for key in PUBLIC_STATUS_KEYS}
     status["stage"] = stage
     status["outcome"] = collapse_outcome(stage)
+    for key in ("candidateBoot", "previousBoot"):
+        boot = status[key]
+        if isinstance(boot, dict):
+            status[key] = {name: boot.get(name) for name in ("acceptingProductWork", "blockingReasons", "bootId", "imageId", "sourceCommit")}
     if stage in {"prepared", "launching", "applying"} or not isinstance(receipt.get("predicates"), dict):
         status["predicates"] = None
     else:
@@ -2022,15 +1878,13 @@ def repo_digest_ids(values: Sequence[Any]) -> List[str]:
     return ids
 
 
-def digest_tree(path: str, exclude: Sequence[str] = ()) -> str:
-    """Hashes file names and contents under path, skipping optional root names."""
+def digest_tree(path: str) -> str:
+    """Hashes Web file names and contents under path."""
     digest = hashlib.sha256()
     root = os.path.realpath(path)
     for current, dirnames, filenames in os.walk(root):
         dirnames.sort()
         for name in sorted(filenames):
-            if current == root and name in exclude:
-                continue
             full = os.path.join(current, name)
             relative = os.path.relpath(full, root).replace(os.sep, "/")
             digest.update(relative.encode("utf-8"))

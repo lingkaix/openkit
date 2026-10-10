@@ -27,6 +27,54 @@ const skillRoot = join(repoRoot, 'skills', 'openkit-ops');
 const cliPath = join(skillRoot, 'scripts', 'openkit');
 const protocolExports = new Map(Object.entries(protocol));
 
+test('App update CLI admits only exact release requests and strips retained status annotations', async () => {
+  const { operationCatalog } = await operations();
+  const prepare = operationCatalog.find((entry) => entry.id === 'app-update.prepare');
+  const status = operationCatalog.find((entry) => entry.id === 'app-update.status');
+  const source = {
+    tag: 'v0.1.0',
+    sourceCommit: 'a'.repeat(40),
+    appDigest: `sha256:${'b'.repeat(64)}`,
+  };
+  const request = { source, expectedCurrentImageId: source.appDigest };
+  assert.deepEqual(prepare.inputSchema.parse(request), request);
+  for (const rejected of [
+    { kind: 'commit', sourceCommit: source.sourceCommit },
+    { ...source, kind: 'release' },
+  ]) {
+    assert.equal(prepare.inputSchema.safeParse({ ...request, source: rejected }).success, false);
+  }
+  const receipt = {
+    candidateBoot: null,
+    candidateImageId: null,
+    completedAt: null,
+    error: null,
+    expectedCurrentImageId: source.appDigest,
+    jobId: null,
+    outcome: 'prepared',
+    predicates: null,
+    preparedAt: '2026-10-10T00:00:00.000Z',
+    previousAppRestored: null,
+    previousBoot: null,
+    previousImageId: null,
+    requestId: '11111111-1111-4111-8111-111111111111',
+    source,
+    stage: 'prepared',
+    startedAt: null,
+  };
+  assert.deepEqual(
+    status.outputSchema.parse({ ...receipt, source: { ...source, kind: 'release' } }),
+    receipt
+  );
+  assert.equal(
+    status.outputSchema.safeParse({
+      ...receipt,
+      source: { kind: 'commit', sourceCommit: source.sourceCommit },
+    }).success,
+    false
+  );
+});
+
 test('pending request commands forward exact path identities and bodies', async () => {
   const { operationCatalog } = await operations();
   const answer = operationCatalog.find((entry) => entry.id === 'question.answer');

@@ -271,7 +271,7 @@ Settings Administration **Workspace access recovery** at `/settings/workspace-ac
 
 ### App update
 
-Settings **App update** projects deployment-admin `app-update.prepare`, `app-update.start` and `app-update.status` through `client.operations`. It is scoped to the deployment, independent of the selected Workspace. The administrator reviews an immutable prepared source and explicitly consents to maintenance; the host receipt owns the result across App restarts. The deployed host helper must be configured before this surface can perform an update.
+Settings **App update** projects deployment-admin `app-update.prepare`, `app-update.start` and `app-update.status` through `client.operations`. It is scoped to the deployment, independent of the selected Workspace. The administrator supplies a published release tag, release attribution commit and App digest, reviews the immutable prepared source and explicitly consents to maintenance; the host receipt owns the result across App restarts. The deployed host helper must be configured before this surface can perform an update.
 
 ### Composer
 

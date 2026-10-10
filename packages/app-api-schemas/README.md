@@ -52,7 +52,7 @@ Do not add stable Core protocol records here. Core records, commands, events, er
 
 App Diagnostics includes a strict process sample with nested telemetry configuration booleans. The schema does not grant access or interpret exporter delivery; NanoCore samples only after deployment-admin authorization.
 
-App-update schemas define the closed release/exact-commit prepare request, maintenance-consented start, and redacted host receipt projection. A UUID identifies the prepared request across App restarts. These schemas do not grant deployment-admin authority or turn the host receipt into a Core Task lifecycle.
+App-update schemas define the closed published-release prepare request (`tag`, `sourceCommit`, `appDigest`, without a source discriminator), maintenance-consented start, and redacted host receipt projection. A UUID identifies the prepared request across App restarts. Status and prepare-review readers discard unknown descriptive fields, including an old source `kind`; missing release identity or unknown core values fail closed. These schemas do not grant deployment-admin authority or turn the host receipt into a Core Task lifecycle.
 
 Worker environment schemas project bounded retained-storage summaries, explicit ordinary Task and Goal storage choices, exact host observations, immutable authored/resolved candidate references, canonical human activation and purge confirmations, and truthful unknown outcomes. They expose no administrator Token, host path, native runtime handle, credential, or retained file content. The administration conversation request names only private conversation input and optional continuity; NanoCore derives and authorizes its private Workspace.
 

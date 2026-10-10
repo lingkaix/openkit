@@ -18,14 +18,14 @@ describe('app-update host command', () => {
       encodeAppUpdateHostCommand({
         expectedCurrentImageId: DIGEST,
         op: 'prepare',
-        source: { kind: 'commit', sourceCommit: COMMIT },
+        source: { appDigest: DIGEST, sourceCommit: COMMIT, tag: 'v0.1.0' },
       })
     );
 
     expect(command).toEqual({
       expectedCurrentImageId: DIGEST,
       op: 'prepare',
-      source: { kind: 'commit', sourceCommit: COMMIT },
+      source: { appDigest: DIGEST, sourceCommit: COMMIT, tag: 'v0.1.0' },
     });
   });
 
@@ -34,7 +34,7 @@ describe('app-update host command', () => {
       command: 'docker restart',
       op: 'prepare',
       expectedCurrentImageId: DIGEST,
-      source: { kind: 'commit', sourceCommit: COMMIT },
+      source: { appDigest: DIGEST, sourceCommit: COMMIT, tag: 'v0.1.0' },
     },
     { op: 'stage', sourceCommit: COMMIT },
     { op: 'status', requestId: 'req_not_a_host_uuid' },
@@ -106,7 +106,7 @@ function succeededReceipt() {
     },
     previousImageId: `sha256:${'c'.repeat(64)}`,
     requestId,
-    source: { kind: 'release', sourceCommit: COMMIT, appDigest: DIGEST, tag: 'v0.1.0' },
+    source: { sourceCommit: COMMIT, appDigest: DIGEST, tag: 'v0.1.0' },
     stage: 'succeeded',
     startedAt: '2026-09-10T00:01:00.000Z',
   };
@@ -120,7 +120,7 @@ it('reads and rewrites an extended helper receipt without forwarding observed an
     const extended = {
       ...receipt,
       futureAnnotation: true,
-      source: { ...receipt.source, futureAnnotation: true },
+      source: { ...receipt.source, kind: 'release', futureAnnotation: true },
       candidateBoot: { ...receipt.candidateBoot, futureAnnotation: true },
       previousBoot: { ...receipt.previousBoot, futureAnnotation: true },
       predicates: { ...receipt.predicates, futureAnnotation: true },
@@ -152,7 +152,8 @@ it('reads and rewrites an extended helper receipt without forwarding observed an
       { ...extended, stage: 'future-stage' },
       { ...extended, outcome: 'running' },
       { ...extended, predicates: { ...extended.predicates, sourceMatch: false } },
-      { ...extended, source: { ...extended.source, kind: 'latest' } },
+      { ...extended, source: { ...extended.source, tag: 'latest' } },
+      { ...extended, source: { kind: 'commit', sourceCommit: COMMIT } },
     ]) {
       expect(parseAppUpdateHostOutput(Buffer.from(JSON.stringify(invalid)))).toMatchObject({
         ok: false,

@@ -14,7 +14,6 @@ import {
   ErrorBanner,
   Page,
   PageHeader,
-  RadioGroup,
   Skeleton,
   StatusChip,
   type StatusTone,
@@ -22,12 +21,9 @@ import {
   TextField,
 } from '../../primitives';
 
-type SourceKind = 'release' | 'commit';
-
 /** Deployment-admin App update: prepare a source, then start with maintenance consent. */
 export function AppUpdateScreen() {
   const client = useCoreClient();
-  const [kind, setKind] = useState<SourceKind>('release');
   const [tag, setTag] = useState('');
   const [sourceCommit, setSourceCommit] = useState('');
   const [appDigest, setAppDigest] = useState('');
@@ -46,15 +42,11 @@ export function AppUpdateScreen() {
     mutationFn: () =>
       client.operations['app-update.prepare']({
         expectedCurrentImageId: expectedCurrentImageId.trim(),
-        source:
-          kind === 'release'
-            ? {
-                appDigest: appDigest.trim(),
-                kind: 'release',
-                sourceCommit: sourceCommit.trim(),
-                tag: tag.trim(),
-              }
-            : { kind: 'commit', sourceCommit: sourceCommit.trim() },
+        source: {
+          appDigest: appDigest.trim(),
+          sourceCommit: sourceCommit.trim(),
+          tag: tag.trim(),
+        },
       }),
     onSuccess: (prepared) => {
       setReview(prepared);
@@ -80,9 +72,9 @@ export function AppUpdateScreen() {
     },
   });
 
-  const canPrepare =
-    Boolean(expectedCurrentImageId.trim() && sourceCommit.trim()) &&
-    (kind === 'commit' || Boolean(tag.trim() && appDigest.trim()));
+  const canPrepare = Boolean(
+    expectedCurrentImageId.trim() && sourceCommit.trim() && tag.trim() && appDigest.trim()
+  );
   const requestId = knownRequestId.trim();
   const binding = reviewBinding(review, status, requestId);
   const error = prepare.error ?? start.error ?? refresh.error;
@@ -131,22 +123,13 @@ export function AppUpdateScreen() {
         <>
           {error ? <ErrorBanner message={errorMessage(error)} /> : null}
           <Card className="flex flex-col gap-4">
-            <RadioGroup
-              aria-label="Source"
-              value={kind}
-              onChange={(value) => setKind(value as SourceKind)}
-              items={[
-                { id: 'release', label: 'Published release' },
-                { id: 'commit', label: 'Exact commit' },
-              ]}
+            <TextField label="Release tag" value={tag} onChange={setTag} />
+            <TextField label="Published App digest" value={appDigest} onChange={setAppDigest} />
+            <TextField
+              label="Release source commit"
+              value={sourceCommit}
+              onChange={setSourceCommit}
             />
-            {kind === 'release' ? (
-              <>
-                <TextField label="Release tag" value={tag} onChange={setTag} />
-                <TextField label="Published App digest" value={appDigest} onChange={setAppDigest} />
-              </>
-            ) : null}
-            <TextField label="Source commit" value={sourceCommit} onChange={setSourceCommit} />
             <TextField
               label="Expected current image"
               value={expectedCurrentImageId}
@@ -248,9 +231,9 @@ function ReviewLines({
 }) {
   return (
     <div className="flex flex-col gap-1 text-xs text-fg-muted">
-      {source.kind === 'release' ? <p>Tag {source.tag}</p> : null}
+      <p>Tag {source.tag}</p>
       <p>Commit {source.sourceCommit}</p>
-      {source.kind === 'release' ? <p>App digest {source.appDigest}</p> : null}
+      <p>App digest {source.appDigest}</p>
       <p>Current image {expectedCurrentImageId}</p>
     </div>
   );

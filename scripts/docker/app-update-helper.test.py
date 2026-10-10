@@ -3,19 +3,21 @@
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import importlib.util
 import io
 import json
 import os
 import subprocess
-import tarfile
 import tempfile
 import threading
 import unittest
 import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 HELPER_PATH = Path(__file__).with_name("app-update-helper.py")
@@ -42,7 +44,6 @@ APP_UPDATE_KNOWN_HOSTS_DEST = "/run/openkit/app-update/known_hosts"
 IMAGE_ENTRYPOINT = ["tini", "--", "/usr/local/bin/openkit-app-entrypoint"]
 RELEASE_SOURCE = {
     "appDigest": DIGEST,
-    "kind": "release",
     "sourceCommit": COMMIT,
     "tag": "v0.1.0",
 }
@@ -153,7 +154,6 @@ class RecordingEffects:
         self.tokens = json.loads(json.dumps(RETAINED_TOKENS))
         self.status_probe: Optional[dict] = None
         self.fail_commands: Dict[str, int] = {}
-        self.ancestor_ok = True
         self.replaced = False
         self.candidate_boot_id = CANDIDATE_BOOT_ID
         self.pull_error: Optional[str] = None
@@ -179,7 +179,6 @@ class RecordingEffects:
         self.release_version_digest = DIGEST
         self.release_sha_digest = DIGEST
         self.ls_remote_commit = COMMIT
-        self.rev_parse_commit = COMMIT
         self.real_ls_remote = False
         self.fail_restore_stop = False
         self.diagnostics_payloads: List[dict] = []
@@ -324,6 +323,8 @@ class RecordingEffects:
             if name not in self.containers:
                 return 1, "", "No such object"
             return 0, json.dumps(self._container_payload()), ""
+        if argv[:2] == ["docker", "info"]:
+            return 0, str(self.root) + "\n", ""
         if argv[:2] == ["docker", "pull"]:
             if self.pull_error:
                 return 1, "", self.pull_error
@@ -386,36 +387,8 @@ class RecordingEffects:
                 return completed.returncode, completed.stdout, completed.stderr
             tag_ref = argv[-1]
             return 0, "%s\t%s\n" % (self.ls_remote_commit, tag_ref), ""
-        if "rev-parse" in argv:
-            return 0, self.rev_parse_commit + "\n", ""
-        if "archive" in argv:
-            return self._write_git_archive(argv)
-        if "fetch" in argv:
-            try:
-                workdir = argv[argv.index("-C") + 1]
-            except (IndexError, ValueError):
-                return 1, "", "git fetch requires -C"
-            if not os.path.isdir(workdir):
-                return 128, "", "fatal: cannot change to '%s': No such file or directory" % workdir
-            return 0, "", ""
-        if "merge-base" in argv:
-            return (0, "", "") if self.ancestor_ok else (1, "", "not ancestor")
-        if "build-image.sh" in joined:
-            return 0, "", ""
         return 0, "", ""
 
-    def _write_git_archive(self, argv: List[str]) -> Tuple[int, str, str]:
-        output = _flag_value(argv, "-o")
-        if not output:
-            return 1, "", "git archive requires -o"
-        dest = Path(output)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        script = b"#!/bin/sh\n"
-        with tarfile.open(dest, "w") as archive:
-            info = tarfile.TarInfo(name="scripts/docker/build-image.sh")
-            info.size = len(script)
-            archive.addfile(info, io.BytesIO(script))
-        return 0, "", ""
 
     def http_json(self, url: str, headers: Optional[dict] = None, timeout: Optional[float] = None, method: str = "GET", body=None):
         self.http_calls.append(url)
@@ -501,8 +474,6 @@ def _flag_value(argv: List[str], flag: str) -> Optional[str]:
 def write_config(root: Path, **overrides) -> Path:
     data_root = root / "data"
     receipts = root / "receipts"
-    staged = root / "staged"
-    source = root / "src"
     secrets = root / "secrets"
     web = root / "web"
     previous_web = web / PREV_COMMIT
@@ -513,8 +484,6 @@ def write_config(root: Path, **overrides) -> Path:
         encoding="utf-8",
     )
     receipts.mkdir(exist_ok=True)
-    staged.mkdir(exist_ok=True)
-    source.mkdir(exist_ok=True)
     secrets.mkdir(exist_ok=True)
     (secrets / "nanohost").mkdir(exist_ok=True)
     (secrets / "openkit-vault.key").write_text("vault-placeholder\n", encoding="utf-8")
@@ -537,9 +506,6 @@ def write_config(root: Path, **overrides) -> Path:
         "receiptDir": str(receipts),
         "lockPath": str(root / "update.lock"),
         "sourceRepository": "https://example.invalid/openkit.git",
-        "sourceBranch": "main",
-        "sourceWorkDir": str(source),
-        "stagedSourceDir": str(staged),
         "imageRepository": "ghcr.io/example/openkit-app",
         "appBaseUrl": "http://127.0.0.1:4317",
         "helperArgv": ["/usr/bin/python3", str(HELPER_PATH)],
@@ -661,6 +627,168 @@ def _prepare(module, root: Path, source=None, expected=DIGEST, now=None, effects
         now=now,
     )
     return config_path, effects, code, body
+
+
+class ReleaseOnlyRegressionTests(unittest.TestCase):
+    def test_config_ignores_unknown_fields_and_old_commit_only_keys(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_config(Path(tmp), futureAnnotation=True, sourceBranch="main", sourceWorkDir="old-cache", stagedSourceDir="old-staging")
+            config = module.load_config(str(path))
+            authored = json.loads(path.read_text())
+            authored["compatibility"]["candidate"]["kind"] = "release"
+            authored["compatibility"]["futureAnnotation"] = True
+            path.write_text(json.dumps(authored))
+            self.assertEqual(module.load_config(str(path))["compatibility"], config["compatibility"])
+            self.assertNotIn("futureAnnotation", config)
+            for key in ("sourceBranch", "sourceWorkDir", "stagedSourceDir"):
+                self.assertNotIn(key, config)
+
+    def test_release_capacity_refuses_each_filesystem_before_pull_or_app_effect(self) -> None:
+        module = load_helper()
+        required = 3 * 1024 ** 3
+        for low_filesystem in ("docker", "receipts"):
+            with self.subTest(filesystem=low_filesystem), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                config_path, effects, _, prepared = _prepare(module, root)
+                docker_root = str(root / "docker-data")
+                original_run = effects.run
+                def run(argv, timeout=None):
+                    if list(argv)[:2] == ["docker", "info"]:
+                        effects.calls.append(list(argv))
+                        return 0, docker_root + "\n", ""
+                    return original_run(argv, timeout)
+                effects.run = run
+                observed = []
+                def statvfs(path):
+                    observed.append(str(path))
+                    low = (str(path) == docker_root) if low_filesystem == "docker" else (str(path) == str(root / "receipts"))
+                    return SimpleNamespace(f_bavail=required // 4096 - 1 if low else required // 4096, f_frsize=4096)
+                with patch.object(module.os, "statvfs", side_effect=statvfs):
+                    _, body = invoke(module, {}, config_path, effects=effects,
+                                     extra_argv=["--apply", prepared["requestId"]])
+                self.assertEqual((body.get("error") or {}).get("code"), "app_update_capacity", body)
+                self.assertIn(str(required - 4096), body["error"]["message"])
+                self.assertIn(str(required), body["error"]["message"])
+                self.assertFalse(any(call[:2] == ["docker", "pull"] for call in effects.calls))
+                self.assertFalse(any(call[:2] in (["docker", "stop"], ["docker", "rename"]) for call in effects.calls))
+                self.assertEqual(effects.running, {CONTAINER})
+                self.assertIn(docker_root if low_filesystem == "docker" else str(root / "receipts"), observed)
+                stored = json.loads((root / "receipts" / (prepared["requestId"] + ".json")).read_text())
+                self.assertEqual(stored["stage"], "failed")
+                self.assertFalse(stored["appStopped"])
+
+    def test_capacity_threshold_allows_pull_only_after_both_observations(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path, effects, _, prepared = _prepare(module, root)
+            observed = []
+            def statvfs(path):
+                observed.append(str(path))
+                return SimpleNamespace(f_bavail=3 * 1024 ** 3 // 4096, f_frsize=4096)
+            run = effects.run
+            def assert_pull(argv, timeout=None):
+                if list(argv)[:2] == ["docker", "pull"]:
+                    self.assertEqual(observed, [str(root), str(root / "receipts")])
+                return run(argv, timeout)
+            effects.run = assert_pull
+            with patch.object(module.os, "statvfs", side_effect=statvfs):
+                _, body = invoke(module, {}, config_path, effects=effects,
+                                 extra_argv=["--apply", prepared["requestId"]])
+            self.assertEqual(body["stage"], "succeeded", body)
+            self.assertTrue(any(call[:2] == ["docker", "pull"] for call in effects.calls))
+
+    def test_unobservable_free_space_refuses_before_pull(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path, effects, _, prepared = _prepare(module, root)
+            with patch.object(module.os, "statvfs", side_effect=OSError(errno.EACCES, "Cannot inspect")):
+                _, body = invoke(module, {}, config_path, effects=effects,
+                                 extra_argv=["--apply", prepared["requestId"]])
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertIn("free bytes could not be observed", body["error"])
+            self.assertFalse(any(call[:2] == ["docker", "pull"] for call in effects.calls))
+            self.assertEqual(effects.running, {CONTAINER})
+
+    def test_source_commands_refuse_removed_discriminator_and_commit_only_shape(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_config(Path(tmp))
+            for source in ({**RELEASE_SOURCE, "kind": "release"}, {"kind": "commit", "sourceCommit": COMMIT}):
+                _, body = invoke(module, {"op": "prepare", "source": source, "expectedCurrentImageId": DIGEST}, path)
+                self.assertEqual(body["error"]["code"], "app_update_invalid_request", body)
+            self.assertEqual(list((Path(tmp) / "receipts").iterdir()), [])
+
+    def test_receipt_write_enospc_retains_original_code_and_redacted_message(self) -> None:
+        module = load_helper()
+        for cause in ("pull", "apply"):
+            with self.subTest(cause=cause), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                config_path, effects, _, prepared = _prepare(module, root)
+                original = module.AppUpdateHelper._write_receipt
+                def write(helper, receipt, exclusive=False):
+                    if receipt["stage"] in {"failed", "recovery_required"}:
+                        raise OSError(errno.ENOSPC, "No space left on device")
+                    return original(helper, receipt, exclusive)
+                code = "app_update_invalid_request" if cause == "apply" else "app_update_unavailable"
+                def fail(*args):
+                    raise module.HelperError(code, "Original %s failure okt_do_not_leak" % cause)
+                if cause == "pull":
+                    effects.pull_error = "Original pull failure okt_do_not_leak"
+                target = "_replacement_argv"
+                replacement = fail if cause == "apply" else module.AppUpdateHelper._replacement_argv
+                with patch.object(module.AppUpdateHelper, "_write_receipt", write), patch.object(module.AppUpdateHelper, target, replacement):
+                    _, body = invoke(module, {}, config_path, effects=effects,
+                                     extra_argv=["--apply", prepared["requestId"]])
+                self.assertEqual(body["error"]["code"], code, body)
+                self.assertEqual(body["error"]["message"], "Original %s failure [redacted]" % cause)
+                stored = json.loads((root / "receipts" / (prepared["requestId"] + ".json")).read_text())
+                self.assertEqual(stored["stage"], "applying")
+                self.assertNotIn("stage", body)
+
+    def test_old_release_kind_and_unknown_receipt_fields_are_ignored(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path, effects, _, prepared = _prepare(module, root)
+            path = root / "receipts" / (prepared["requestId"] + ".json")
+            stored = json.loads(path.read_text())
+            stored["futureAnnotation"] = True
+            stored["source"]["kind"] = "release"
+            stored["source"]["futureAnnotation"] = True
+            path.write_text(json.dumps(stored))
+            _, status = invoke(module, {"op": "status", "requestId": prepared["requestId"]}, config_path, effects=effects)
+            self.assertEqual(status["source"], RELEASE_SOURCE)
+            self.assertNotIn("futureAnnotation", status)
+
+    def test_old_commit_receipt_requires_recovery_without_blocking_new_release(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path, effects, _, old = _prepare(module, root)
+            path = root / "receipts" / (old["requestId"] + ".json")
+            stored = json.loads(path.read_text())
+            stored["source"] = {"kind": "commit", "sourceCommit": COMMIT}
+            stored["stage"] = "launching"
+            stored["outcome"] = "running"
+            stored["startedAt"] = old["preparedAt"]
+            path.write_text(json.dumps(stored))
+            for op in ("status", "start"):
+                payload = {"op": op, "requestId": old["requestId"]}
+                if op == "start":
+                    payload["maintenanceConsent"] = True
+                _, body = invoke(module, payload, config_path, effects=effects)
+                self.assertEqual((body.get("error") or {}).get("code"), "app_update_recovery_required", body)
+            _, newer = invoke(module, {"op": "prepare", "expectedCurrentImageId": DIGEST, "source": RELEASE_SOURCE}, config_path, effects=effects)
+            _, status = invoke(module, {"op": "status", "requestId": newer["requestId"]}, config_path, effects=effects)
+            self.assertEqual(status["stage"], "prepared")
+            _, started = invoke(module, {"op": "start", "maintenanceConsent": True, "requestId": newer["requestId"]}, config_path, effects=effects)
+            self.assertEqual(started["stage"], "launching")
+            self.assertEqual(json.loads(path.read_text()), stored)
+            helper = module.AppUpdateHelper(module.load_config(str(config_path)), effects, lambda: 1_000_000.0)
+            self.assertEqual(len(helper._receipt_files()), 2)
 
 
 class PrepareReceiptTests(unittest.TestCase):
@@ -942,12 +1070,12 @@ class ReceiptLifecycleTests(unittest.TestCase):
 
 
 class ApplyJobTests(unittest.TestCase):
-    def test_same_commit_equal_web_tree_succeeds_without_replacing_live_assets(self) -> None:
-        """An exact-source repeat preserves the already matching live Web tree and pointer."""
+    def test_same_release_equal_web_tree_succeeds_without_replacing_live_assets(self) -> None:
+        """A repeated release preserves the already matching live Web tree and pointer."""
         module = load_helper()
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
             root = Path(tmp)
-            source = {"kind": "commit", "sourceCommit": COMMIT}
+            source = RELEASE_SOURCE
             config_path, effects, _code, prepared = _prepare(module, root, source=source)
             live = root / "web" / COMMIT
             (root / "web" / PREV_COMMIT).rename(live)
@@ -982,12 +1110,12 @@ class ApplyJobTests(unittest.TestCase):
             self.assertEqual(stored["stage"], "succeeded")
             self.assertEqual(stored["webLiveDigest"], stored["webStagedDigest"])
 
-    def test_same_commit_different_web_tree_refuses_before_stop(self) -> None:
-        """An exact-source repeat cannot replace different bytes at the live Web identity."""
+    def test_same_release_different_web_tree_refuses_before_stop(self) -> None:
+        """A repeated release cannot replace different bytes at the live Web identity."""
         module = load_helper()
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
             root = Path(tmp)
-            source = {"kind": "commit", "sourceCommit": COMMIT}
+            source = RELEASE_SOURCE
             config_path, effects, _code, prepared = _prepare(module, root, source=source)
             live = root / "web" / COMMIT
             (root / "web" / PREV_COMMIT).rename(live)
@@ -1473,67 +1601,6 @@ class ApplyJobTests(unittest.TestCase):
             self.assertRegex(body["error"] or "", r"non-linked directory")
             self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
 
-    def test_commit_source_uses_configured_branch_or_staged_archive(self) -> None:
-        module = load_helper()
-        commit_source = {"kind": "commit", "sourceCommit": COMMIT}
-        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
-            root = Path(tmp)
-            effects = RecordingEffects()
-            effects.ancestor_ok = False
-            config_path, effects, _code, prepared = _prepare(
-                module, root, source=commit_source, effects=effects
-            )
-            invoke(
-                module,
-                {
-                    "maintenanceConsent": True,
-                    "op": "start",
-                    "requestId": prepared["requestId"],
-                },
-                config_path,
-                effects=effects,
-            )
-            body = invoke(
-                module,
-                {},
-                config_path,
-                effects=effects,
-                extra_argv=["--apply", prepared["requestId"]],
-                stdin_bytes=b"",
-            )[1]
-            self.assertEqual(body["stage"], "failed")
-            self.assertRegex(body["error"] or "", r"reachable|staged")
-            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
-
-        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
-            root = Path(tmp)
-            effects = RecordingEffects()
-            config_path, effects, _code, prepared = _prepare(
-                module, root, source=commit_source, effects=effects
-            )
-            _write_staged_archive(module, root, COMMIT)
-            invoke(
-                module,
-                {
-                    "maintenanceConsent": True,
-                    "op": "start",
-                    "requestId": prepared["requestId"],
-                },
-                config_path,
-                effects=effects,
-            )
-            effects.status_probe = {"requestId": prepared["requestId"]}
-            body = invoke(
-                module,
-                {},
-                config_path,
-                effects=effects,
-                extra_argv=["--apply", prepared["requestId"]],
-                stdin_bytes=b"",
-            )[1]
-            self.assertEqual(body["stage"], "succeeded", body)
-            self.assertTrue(any("build-image.sh" in " ".join(call) for call in effects.calls))
-            self.assertFalse(any(call[:2] == ["docker", "pull"] for call in effects.calls))
 
     def test_verify_failure_restores_previous_app_and_exact_web_assets(self) -> None:
         module = load_helper()
@@ -1868,20 +1935,6 @@ def _start_apply(module, root: Path, source=None, effects=None, **config):
     return config_path, effects, prepared, body
 
 
-def _write_staged_archive(module, root: Path, commit: str) -> Path:
-    staged = root / "staged" / commit
-    staged.mkdir(parents=True)
-    (staged / "scripts" / "docker").mkdir(parents=True)
-    (staged / "scripts" / "docker" / "build-image.sh").write_text("#!/bin/sh\n", encoding="utf-8")
-    digest = module.digest_tree(str(staged), exclude=("IDENTITY.json",))
-    (staged / "IDENTITY.json").write_text(
-        json.dumps({"contentDigest": digest, "sourceCommit": commit}),
-        encoding="utf-8",
-    )
-    os.chmod(staged / "IDENTITY.json", 0o444)
-    return staged
-
-
 class ContractCorrectionTests(unittest.TestCase):
     def test_prepare_and_start_emit_json_null_predicates(self) -> None:
         module = load_helper()
@@ -1933,183 +1986,6 @@ class ContractCorrectionTests(unittest.TestCase):
             self.assertRegex(body["error"] or "", r"attribution|source-revision|sha-")
             self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
 
-    def test_missing_source_workdir_initializes_before_fetch(self) -> None:
-        module = load_helper()
-        commit_source = {"kind": "commit", "sourceCommit": COMMIT}
-        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
-            root = Path(tmp)
-            missing = root / "source-cache"
-            effects = RecordingEffects()
-            _config_path, effects, _prepared, body = _start_apply(
-                module,
-                root,
-                source=commit_source,
-                effects=effects,
-                sourceWorkDir=str(missing),
-            )
-            self.assertEqual(body["stage"], "succeeded", body)
-            self.assertTrue(missing.is_dir())
-            self.assertFalse(missing.is_symlink())
-            self.assertTrue(
-                any(call[:2] == ["git", "init"] and call[-1] == str(missing) for call in effects.calls)
-            )
-            self.assertTrue(
-                any(call[:1] == ["git"] and "-C" in call and "fetch" in call for call in effects.calls)
-            )
-            self.assertTrue(
-                any(call[:1] == ["git"] and "merge-base" in call for call in effects.calls)
-            )
-            self.assertFalse(any(call[:2] == ["docker", "pull"] for call in effects.calls))
-            git_cmds = [call for call in effects.calls if call[:1] == ["git"]]
-            init_at = next(i for i, call in enumerate(git_cmds) if call[:2] == ["git", "init"])
-            fetch_at = next(i for i, call in enumerate(git_cmds) if "fetch" in call)
-            ancestor_at = next(i for i, call in enumerate(git_cmds) if "merge-base" in call)
-            self.assertLess(init_at, fetch_at)
-            self.assertLess(fetch_at, ancestor_at)
-
-    def test_nonempty_nongit_source_workdir_refuses_before_git_effects(self) -> None:
-        module = load_helper()
-        commit_source = {"kind": "commit", "sourceCommit": COMMIT}
-        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
-            root = Path(tmp)
-            occupied = root / "source-cache"
-            occupied.mkdir()
-            kept = occupied / "keep-me.txt"
-            kept.write_text("operator-data\n", encoding="utf-8")
-            before = kept.read_bytes()
-            listing = sorted(path.name for path in occupied.iterdir())
-            effects = RecordingEffects()
-            _config_path, effects, _prepared, body = _start_apply(
-                module,
-                root,
-                source=commit_source,
-                effects=effects,
-                sourceWorkDir=str(occupied),
-            )
-            self.assertEqual(body["stage"], "failed", body)
-            self.assertRegex(body["error"] or "", r"non-Git")
-            self.assertFalse(any(call[:2] == ["git", "init"] for call in effects.calls))
-            self.assertFalse(any(call[:1] == ["git"] and "fetch" in call for call in effects.calls))
-            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
-            self.assertTrue(occupied.is_dir())
-            self.assertFalse(occupied.is_symlink())
-            self.assertEqual(kept.read_bytes(), before)
-            self.assertEqual(sorted(path.name for path in occupied.iterdir()), listing)
-
-    def test_source_workdir_symlinks_refuse_before_git_effects(self) -> None:
-        module = load_helper()
-        commit_source = {"kind": "commit", "sourceCommit": COMMIT}
-        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
-            root = Path(tmp)
-            target = root / "real-source"
-            target.mkdir()
-            kept = target / "keep-me.txt"
-            kept.write_text("linked-data\n", encoding="utf-8")
-            before = kept.read_bytes()
-            link = root / "source-link"
-            link.symlink_to(target)
-            effects = RecordingEffects()
-            _config_path, effects, _prepared, body = _start_apply(
-                module,
-                root,
-                source=commit_source,
-                effects=effects,
-                sourceWorkDir=str(link),
-            )
-            self.assertEqual(body["stage"], "failed", body)
-            self.assertRegex(body["error"] or "", r"non-linked directory")
-            self.assertFalse(any(call[:2] == ["git", "init"] for call in effects.calls))
-            self.assertFalse(any(call[:1] == ["git"] and "fetch" in call for call in effects.calls))
-            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
-            self.assertTrue(link.is_symlink())
-            self.assertEqual(kept.read_bytes(), before)
-            self.assertFalse((target / ".git").exists())
-
-        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
-            root = Path(tmp)
-            cache = root / "source-cache"
-            cache.mkdir()
-            git_target = root / "git-target"
-            git_target.mkdir()
-            (git_target / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
-            git_link = cache / ".git"
-            git_link.symlink_to(git_target)
-            kept = cache / "keep-me.txt"
-            kept.write_text("cache-data\n", encoding="utf-8")
-            before = kept.read_bytes()
-            effects = RecordingEffects()
-            _config_path, effects, _prepared, body = _start_apply(
-                module,
-                root,
-                source=commit_source,
-                effects=effects,
-                sourceWorkDir=str(cache),
-            )
-            self.assertEqual(body["stage"], "failed", body)
-            self.assertRegex(body["error"] or "", r"symbolic link")
-            self.assertFalse(any(call[:2] == ["git", "init"] for call in effects.calls))
-            self.assertFalse(any(call[:1] == ["git"] and "fetch" in call for call in effects.calls))
-            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
-            self.assertTrue(git_link.is_symlink())
-            self.assertEqual(kept.read_bytes(), before)
-            self.assertEqual((git_target / "HEAD").read_text(encoding="utf-8"), "ref: refs/heads/main\n")
-
-    def test_fetch_builds_clean_archive_not_dirty_source_workdir(self) -> None:
-        module = load_helper()
-        commit_source = {"kind": "commit", "sourceCommit": COMMIT}
-        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
-            root = Path(tmp)
-            dirty = root / "src" / "dirty-uncommitted.txt"
-            config_path, effects, _code, prepared = _prepare(module, root, source=commit_source)
-            (root / "src" / ".git").mkdir()
-            dirty.write_text("not part of the commit\n", encoding="utf-8")
-            invoke(
-                module,
-                {
-                    "maintenanceConsent": True,
-                    "op": "start",
-                    "requestId": prepared["requestId"],
-                },
-                config_path,
-                effects=effects,
-            )
-            effects.status_probe = {"requestId": prepared["requestId"]}
-            body = invoke(
-                module,
-                {},
-                config_path,
-                effects=effects,
-                extra_argv=["--apply", prepared["requestId"]],
-                stdin_bytes=b"",
-            )[1]
-            self.assertEqual(body["stage"], "succeeded", body)
-            self.assertTrue(any("archive" in call for call in effects.calls))
-            builds = [call for call in effects.calls if any("build-image.sh" in item for item in call)]
-            self.assertTrue(builds)
-            build_context = Path(builds[0][1]).parents[2]
-            self.assertNotEqual(build_context.resolve(), (root / "src").resolve())
-            self.assertFalse((build_context / "dirty-uncommitted.txt").exists())
-            self.assertEqual(body["candidateBoot"]["sourceCommit"], effects.rev_parse_commit)
-
-    def test_staged_content_digest_mismatch_refuses_before_stop(self) -> None:
-        module = load_helper()
-        commit_source = {"kind": "commit", "sourceCommit": COMMIT}
-        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
-            root = Path(tmp)
-            staged = root / "staged" / COMMIT
-            staged.mkdir(parents=True)
-            (staged / "IDENTITY.json").write_text(
-                json.dumps({"contentDigest": DIGEST, "sourceCommit": COMMIT}),
-                encoding="utf-8",
-            )
-            (staged / "scripts" / "docker").mkdir(parents=True)
-            (staged / "scripts" / "docker" / "build-image.sh").write_text("#!/bin/sh\n", encoding="utf-8")
-            _config_path, effects, _prepared, body = _start_apply(
-                module, root, source=commit_source
-            )
-            self.assertEqual(body["stage"], "failed")
-            self.assertRegex(body["error"] or "", r"content digest|contentDigest")
-            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
 
     def test_running_previous_dataroot_user_refuses_before_stop(self) -> None:
         module = load_helper()
@@ -2308,7 +2184,6 @@ class ContractCorrectionTests(unittest.TestCase):
             self.assertEqual(suppressed.stdout.strip(), "")
             source = {
                 "appDigest": DIGEST,
-                "kind": "release",
                 "sourceCommit": peeled,
                 "tag": "v0.1.0",
             }

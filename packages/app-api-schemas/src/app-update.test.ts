@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AppUpdateHostErrorSchema,
   AppUpdateHostOutputSchema,
+  AppUpdateStatusResponseReaderSchema,
   AppUpdateStatusResponseSchema,
   PrepareAppUpdateRequestSchema,
   PrepareAppUpdateResponseSchema,
@@ -25,7 +26,6 @@ const candidateBoot = {
 
 const releaseSource = {
   appDigest: DIGEST,
-  kind: 'release' as const,
   sourceCommit: COMMIT,
   tag: 'v0.1.0',
 };
@@ -52,21 +52,12 @@ describe('app update schemas', () => {
     ).toEqual(releaseSource);
   });
 
-  it('pins an exact-commit source without a local-build digest', () => {
-    expect(
-      PrepareAppUpdateRequestSchema.parse({
-        expectedCurrentImageId: DIGEST,
-        source: { kind: 'commit', sourceCommit: COMMIT },
-      }).source
-    ).toEqual({ kind: 'commit', sourceCommit: COMMIT });
-  });
-
   it.each([
-    { kind: 'release', tag: 'latest', sourceCommit: COMMIT, appDigest: DIGEST },
-    { kind: 'release', tag: 'v0.1.0', sourceCommit: COMMIT.toUpperCase(), appDigest: DIGEST },
-    { kind: 'release', tag: 'v0.1.0', sourceCommit: COMMIT, appDigest: 'sha256:latest' },
-    { kind: 'commit', sourceCommit: COMMIT, appDigest: DIGEST },
-    { kind: 'latest', sourceCommit: COMMIT },
+    { tag: 'latest', sourceCommit: COMMIT, appDigest: DIGEST },
+    { tag: 'v0.1.0', sourceCommit: COMMIT.toUpperCase(), appDigest: DIGEST },
+    { tag: 'v0.1.0', sourceCommit: COMMIT, appDigest: 'sha256:latest' },
+    { ...releaseSource, kind: 'release' },
+    { kind: 'commit', sourceCommit: COMMIT },
   ])('rejects mutable or mixed source selectors: %j', (source) => {
     expect(
       PrepareAppUpdateRequestSchema.safeParse({
@@ -139,6 +130,18 @@ describe('app update schemas', () => {
     expect(status.stage).toBe('prepared');
     expect(status.outcome).toBe('prepared');
     expect(status.predicates).toBeNull();
+    expect(
+      AppUpdateStatusResponseReaderSchema.parse({
+        ...status,
+        source: { ...releaseSource, kind: 'release', futureAnnotation: true },
+      })
+    ).toEqual(status);
+    expect(
+      AppUpdateStatusResponseReaderSchema.safeParse({
+        ...status,
+        source: { kind: 'commit', sourceCommit: COMMIT },
+      }).success
+    ).toBe(false);
     expect(
       AppUpdateStatusResponseSchema.safeParse({
         ...status,

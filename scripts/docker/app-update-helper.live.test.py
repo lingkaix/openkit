@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
 """Opt-in host-mechanism fixture for the App-update helper.
 
-Not a production helper install and not an A2 product update. One live test
-proves systemd job lifetime after the caller exits, live lock concurrency, and
-failed-candidate Docker/Web restore. Candidate images follow the current helper
-commit path (fetch, ancestor, git archive, build-image.sh). Missing/expired IDs
-stay in app-update-helper.test.py.
+Not a production helper install and not an A2 product update. One live test proves systemd job lifetime after the caller exits, live lock concurrency, and failed-candidate Docker/Web restore. Fixture images are built before the job; only candidate acquisition is doubled with an exact local image handoff. This fixture does not prove registry publication, release attribution, or pull capacity. Missing/expired IDs and real release acquisition decisions stay in app-update-helper.test.py.
 
-Enable with OPENKIT_APP_UPDATE_HELPER_LIVE=1 on Linux with git, docker,
-systemd-run, and systemctl.
+Enable with OPENKIT_APP_UPDATE_HELPER_LIVE=1 on Linux with docker, systemd-run, and systemctl.
 """
 
 from __future__ import annotations
@@ -40,7 +35,7 @@ PRODUCTION_CONFIG_PATH = "/etc/openkit/app-update/helper.json"
 CURRENT_BOOT = "boot_11111111-1111-4111-8111-111111111111"
 CANDIDATE_BOOT = "boot_22222222-2222-4222-8222-222222222222"
 MIGRATION = "core_0000_setup"
-BUILD_HOLD_SECONDS = 20
+ACQUISITION_HOLD_SECONDS = 20
 HTTP_READY_SECONDS = 30
 APPLY_WAIT_SECONDS = 900
 PORT_RANGE_START = 18791
@@ -62,10 +57,10 @@ def fixture_current_image_ref(run_id: str) -> str:
     return "%s:current" % run_id.lower()
 
 
-def fixture_candidate_image_ref(source_commit: str) -> str:
-    """Matches the helper commit-build tag, which is already a lowercase repository."""
+def fixture_candidate_image_ref(run_id: str) -> str:
+    """Isolated fixture build tag; the supervised job receives only its immutable local id."""
 
-    return "openkit/app:staging-%s" % source_commit
+    return "%s:candidate" % run_id.lower()
 
 
 def fixture_image_repository(run_id: str) -> str:
@@ -126,16 +121,6 @@ def wait_fixture_auth_tokens(authorized_get, timeout: float = HTTP_READY_SECONDS
         time.sleep(0.1)
     return {"status": last_status, "body": last_body, "error": last_error}
 
-
-BUILD_IMAGE_SH = """#!/usr/bin/env bash
-set -euo pipefail
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-cd "${REPO_ROOT}"
-tag="${2:?tag required}"
-sleep %s
-docker build -t "${tag}" .
-"""
 
 ENTRYPOINT_PY = r"""#!/usr/bin/env python3
 import json, os, sys
@@ -266,9 +251,7 @@ def fixture_boot_projection(*, boot_id: str, product_ready: bool) -> Dict[str, A
     }
 
 
-def write_source_tree(root: Path, *, accepting: bool, boot_id: str, web_body: str, hold_seconds: int) -> None:
-    docker_dir = root / "scripts" / "docker"
-    docker_dir.mkdir(parents=True, exist_ok=True)
+def write_source_tree(root: Path, *, accepting: bool, boot_id: str, web_body: str) -> None:
     web = root / "web"
     web.mkdir(exist_ok=True)
     (web / "index.html").write_text(web_body, encoding="utf-8")
@@ -286,8 +269,6 @@ def write_source_tree(root: Path, *, accepting: bool, boot_id: str, web_body: st
         + "\n",
         encoding="utf-8",
     )
-    (docker_dir / "build-image.sh").write_text(BUILD_IMAGE_SH % hold_seconds, encoding="utf-8")
-    os.chmod(docker_dir / "build-image.sh", 0o755)
 
 
 def start_generated_fixture_app(tree: Path, port: int) -> subprocess.Popen:
@@ -307,39 +288,20 @@ def start_generated_fixture_app(tree: Path, port: int) -> subprocess.Popen:
     )
 
 
-def git_archive_tree(workdir: str, commit: str, dest: Path) -> None:
-    dest.mkdir(parents=True, exist_ok=True)
-    tar_path = dest.parent / ("%s.tar" % dest.name)
-    stdout(["git", "-C", workdir, "archive", "--format=tar", "-o", str(tar_path), commit])
-    stdout(["tar", "-xf", str(tar_path), "-C", str(dest)])
-
-
-def build_tiny_git_fixture(root: Path) -> Dict[str, str]:
-    root.mkdir(parents=True, exist_ok=True)
-    tree = root / "tree"
-    tree.mkdir(exist_ok=True)
-    stdout(["git", "init", "-b", "main"], cwd=tree)
-    stdout(["git", "config", "user.email", "fixture@openkit.invalid"], cwd=tree)
-    stdout(["git", "config", "user.name", "App Update Fixture"], cwd=tree)
-    write_source_tree(tree, accepting=True, boot_id=CURRENT_BOOT, web_body="fixture-current-web\n", hold_seconds=0)
-    stdout(["git", "add", "-A"], cwd=tree)
-    stdout(["git", "commit", "-m", "fixture current app"], cwd=tree)
-    current = stdout(["git", "rev-parse", "HEAD"], cwd=tree)
-    write_source_tree(tree, accepting=False, boot_id=CANDIDATE_BOOT, web_body="fixture-candidate-web\n", hold_seconds=BUILD_HOLD_SECONDS)
-    stdout(["git", "add", "-A"], cwd=tree)
-    stdout(["git", "commit", "-m", "fixture failed candidate"], cwd=tree)
-    candidate = stdout(["git", "rev-parse", "HEAD"], cwd=tree)
-    bare = root / "source.git"
-    stdout(["git", "clone", "--bare", str(tree), str(bare)])
-    work = root / "source-work"
-    stdout(["git", "clone", str(bare), str(work)])
-    return {
-        "bare": str(bare.resolve()),
-        "candidate": candidate,
-        "current": current,
-        "repository": "file://%s" % bare.resolve(),
-        "workdir": str(work.resolve()),
-    }
+def load_fixture_helper():
+    """Double acquisition only; real receipts, systemd, Docker replacement and restoration remain owned by the helper."""
+    module = load_helper()
+    class FixtureHelper(module.AppUpdateHelper):
+        """A host mechanism fixture with prebuilt local images, never a published-release proof."""
+        def _acquire_candidate(self, source):
+            image = self._image_identity(source["appDigest"])
+            time.sleep(ACQUISITION_HOLD_SECONDS)
+            return {
+                "image_id": image["id"], "published_digest": source["appDigest"],
+                "ref": image["id"], "source_commit": source["sourceCommit"],
+            }
+    module.AppUpdateHelper = FixtureHelper
+    return module
 
 
 NO_SUCH_OBJECT = re.compile(r"No such (?:object|container|image)\b", re.IGNORECASE)
@@ -483,102 +445,16 @@ def invoke_helper(config_path: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
     return json.loads(lines[-1])
 
 
-class GitAcquireShapeTests(unittest.TestCase):
-    """Always-on check that the fixture source matches the helper commit path."""
-
-    def test_tiny_git_archive_contains_exact_commit_build_script(self) -> None:
-        module = load_helper()
-        with tempfile.TemporaryDirectory(prefix="ok-upd-fx-git-") as tmp:
-            source = build_tiny_git_fixture(Path(tmp))
-            self.assertRegex(source["current"], r"^[0-9a-f]{40}$")
-            self.assertRegex(source["candidate"], r"^[0-9a-f]{40}$")
-            self.assertNotEqual(source["current"], source["candidate"])
-            tree = Path(tmp) / "archive-tree"
-            git_archive_tree(source["workdir"], source["candidate"], tree)
-            build = tree / "scripts" / "docker" / "build-image.sh"
-            self.assertTrue(build.is_file())
-            self.assertIn("docker build -t", build.read_text(encoding="utf-8"))
-            self.assertFalse((tree / "IDENTITY.json").exists())
-            self.assertEqual(subprocess.run(["git", "-C", source["workdir"], "merge-base", "--is-ancestor", source["candidate"], "HEAD"]).returncode, 0)
-            self.assertRegex(module.digest_tree(str(tree)), r"^sha256:[a-f0-9]{64}$")
-
-    def test_emitted_build_image_sh_foreign_cwd_points_at_existing_dockerfile(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="ok-upd-fx-buildcwd-") as tmp:
-            root = Path(tmp) / "src"
-            foreign = Path(tmp) / "foreign"
-            fake_bin = Path(tmp) / "bin"
-            capture = Path(tmp) / "capture.txt"
-            root.mkdir()
-            foreign.mkdir()
-            fake_bin.mkdir()
-            write_source_tree(
-                root,
-                accepting=False,
-                boot_id=CANDIDATE_BOOT,
-                web_body="fixture-candidate-web\n",
-                hold_seconds=BUILD_HOLD_SECONDS,
-            )
-            dockerfile = (root / "Dockerfile").resolve()
-            self.assertTrue(dockerfile.is_file())
-            self.assertFalse((foreign / "Dockerfile").exists())
-            build = root / "scripts" / "docker" / "build-image.sh"
-            text = build.read_text(encoding="utf-8")
-            self.assertIn('BASH_SOURCE[0]', text)
-            self.assertIn("SCRIPT_DIR", text)
-            self.assertIn("REPO_ROOT", text)
-            (fake_bin / "sleep").write_text(
-                '#!/usr/bin/env bash\nprintf \'sleep=%s\\n\' "$*" >>"${CAPTURE_FILE}"\n',
-                encoding="utf-8",
-            )
-            (fake_bin / "docker").write_text(
-                "#!/usr/bin/env bash\n"
-                "set -euo pipefail\n"
-                "{\n"
-                '  printf \'pwd=%s\\n\' "$(pwd)"\n'
-                '  printf \'args=%s\\n\' "$*"\n'
-                '  printf \'dockerfile=%s\\n\' "$(pwd)/Dockerfile"\n'
-                '} >>"${CAPTURE_FILE}"\n'
-                'test -f "$(pwd)/Dockerfile"\n',
-                encoding="utf-8",
-            )
-            os.chmod(fake_bin / "sleep", 0o755)
-            os.chmod(fake_bin / "docker", 0o755)
-            env = dict(os.environ)
-            env["PATH"] = "%s%s%s" % (fake_bin, os.pathsep, env.get("PATH", ""))
-            env["CAPTURE_FILE"] = str(capture)
-            capture.write_text("", encoding="utf-8")
-            completed = subprocess.run(
-                ["bash", str(build), "app", "openkit/app:staging-foreign-cwd"],
-                cwd=str(foreign),
-                env=env,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            recorded = capture.read_text(encoding="utf-8")
-            self.assertIn("sleep=%s" % BUILD_HOLD_SECONDS, recorded)
-            pwd_lines = [line for line in recorded.splitlines() if line.startswith("pwd=")]
-            self.assertEqual(len(pwd_lines), 1, recorded)
-            captured_pwd = Path(pwd_lines[0].split("=", 1)[1])
-            self.assertTrue((captured_pwd / "Dockerfile").is_file())
-            self.assertEqual(captured_pwd.resolve(), dockerfile.parent.resolve())
-            self.assertNotEqual(captured_pwd.resolve(), foreign.resolve())
-            self.assertIn("dockerfile=%s" % (captured_pwd / "Dockerfile"), recorded)
-            self.assertIn("-t openkit/app:staging-foreign-cwd", recorded)
-
-
 class FixtureDockerRefTests(unittest.TestCase):
     """Always-on check that generated Docker refs cannot repeat the uppercase run_id tag failure."""
 
     def test_generated_docker_refs_are_lowercase(self) -> None:
         run_id = "ok-upd-fx-20260910T072604Z-225540c0"
-        commit = "b" * 40
         current = fixture_current_image_ref(run_id)
-        candidate = fixture_candidate_image_ref(commit)
+        candidate = fixture_candidate_image_ref(run_id)
         repository = fixture_image_repository(run_id)
         self.assertEqual(current, "ok-upd-fx-20260910t072604z-225540c0:current")
-        self.assertEqual(candidate, "openkit/app:staging-%s" % commit)
+        self.assertEqual(candidate, "ok-upd-fx-20260910t072604z-225540c0:candidate")
         self.assertEqual(repository, "ok-upd-fx.invalid/ok-upd-fx-20260910t072604z-225540c0")
         self.assertNotEqual(current, "%s:current" % run_id)
         for ref in (current, candidate, repository):
@@ -707,7 +583,6 @@ class FixtureAdmissionTests(unittest.TestCase):
                 accepting=True,
                 boot_id=CURRENT_BOOT,
                 web_body="fixture-current-web\n",
-                hold_seconds=0,
             )
             written = (tree / "openkit-app-entrypoint").read_text(encoding="utf-8")
             self.assertEqual(written, ENTRYPOINT_PY)
@@ -787,7 +662,6 @@ class FixtureAdmissionTests(unittest.TestCase):
                 accepting=False,
                 boot_id=CANDIDATE_BOOT,
                 web_body="fixture-candidate-web\n",
-                hold_seconds=0,
             )
             cand_port = choose_free_port()
             cand_proc = start_generated_fixture_app(cand_tree, cand_port)
@@ -852,7 +726,7 @@ class AppUpdateHelperLiveTests(unittest.TestCase):
     def setUp(self) -> None:
         if sys.platform != "linux":
             self.skipTest("live host-mechanism fixture requires Linux")
-        for name in ("git", "docker", "systemd-run", "systemctl"):
+        for name in ("docker", "systemd-run", "systemctl"):
             if shutil.which(name) is None:
                 self.fail("live fixture requires %s on PATH" % name)
         self.run_id = "ok-upd-fx-%s-%s" % (time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()), uuid.uuid4().hex[:8])
@@ -898,31 +772,38 @@ class AppUpdateHelperLiveTests(unittest.TestCase):
     def test_job_survives_caller_rejects_concurrency_and_restores_failed_candidate(self) -> None:
         self.run_root.mkdir(mode=0o700)
         port = choose_free_port()
-        source = build_tiny_git_fixture(self.run_root / "git")
+        source = {"current": "a" * 40, "candidate": "b" * 40}
         current_tag = fixture_current_image_ref(self.run_id)
         current_ctx = self.run_root / "current-src"
-        git_archive_tree(source["workdir"], source["current"], current_ctx)
-        stdout(["bash", str(current_ctx / "scripts" / "docker" / "build-image.sh"), "app", current_tag], cwd=current_ctx)
+        write_source_tree(current_ctx, accepting=True, boot_id=CURRENT_BOOT, web_body="fixture-current-web\n")
+        stdout(["docker", "build", "-t", current_tag, str(current_ctx)])
         current_image, image_state = inspect_object("image", current_tag)
         self.assertEqual(image_state, "present", "current fixture image inspect is %s" % image_state)
         if not current_image:
             self.fail("current fixture image id is missing")
         self._note_image(current_image, current_tag)
-        candidate_tag = fixture_candidate_image_ref(source["candidate"])
-        self.image_tags.add(candidate_tag)
+        candidate_tag = fixture_candidate_image_ref(self.run_id)
+        candidate_ctx = self.run_root / "candidate-src"
+        write_source_tree(candidate_ctx, accepting=False, boot_id=CANDIDATE_BOOT, web_body="fixture-candidate-web\n")
+        stdout(["docker", "build", "-t", candidate_tag, str(candidate_ctx)])
+        candidate_image, candidate_state = inspect_object("image", candidate_tag)
+        self.assertEqual(candidate_state, "present")
+        self.assertTrue(candidate_image)
+        self._note_image(candidate_image, candidate_tag)
+        release_source = {"tag": "v0.0.0-fixture", "sourceCommit": source["candidate"], "appDigest": candidate_image}
+        self.evidence["releaseAcquisition"] = "doubled with prebuilt local image; no published-release proof"
         self._write_report()
 
         data_root = (self.run_root / "data").resolve()
         web_root = (self.run_root / "web").resolve()
         receipts = (self.run_root / "receipts").resolve()
-        staged = (self.run_root / "staged").resolve()
         secrets = (self.run_root / "secrets").resolve()
         nanohost = secrets / "nanohost"
         vault = secrets / "openkit-vault.key"
         caddy = (self.run_root / "app.Caddyfile").resolve()
         lock_path = (self.run_root / "update.lock").resolve()
         token = (self.run_root / "token").resolve()
-        for path in (data_root, receipts, staged, nanohost, web_root, data_root / "retained"):
+        for path in (data_root, receipts, nanohost, web_root, data_root / "retained"):
             path.mkdir(parents=True)
         sentinel = "sentinel-%s\n" % self.run_id
         (data_root / "retained" / "marker.txt").write_text(sentinel, encoding="utf-8")
@@ -958,13 +839,10 @@ class AppUpdateHelperLiveTests(unittest.TestCase):
             "dataRoot": str(data_root),
             "receiptDir": str(receipts),
             "lockPath": str(lock_path),
-            "sourceRepository": source["repository"],
-            "sourceBranch": "main",
-            "sourceWorkDir": source["workdir"],
-            "stagedSourceDir": str(staged),
+            "sourceRepository": "https://example.invalid/fixture.git",
             "imageRepository": fixture_image_repository(self.run_id),
             "appBaseUrl": "http://127.0.0.1:%s" % port,
-            "helperArgv": [sys.executable, str(HELPER_PATH), "--config", str(config_path)],
+            "helperArgv": [sys.executable, str(Path(__file__).resolve()), "--fixture-helper", "--config", str(config_path)],
             "adminTokenFile": str(token),
             "webAssetsDir": str(web_root),
             "vaultKeyFile": str(vault),
@@ -973,7 +851,7 @@ class AppUpdateHelperLiveTests(unittest.TestCase):
             "jobTimeoutSeconds": APPLY_WAIT_SECONDS,
             "compatibility": {
                 "appliedMigrations": [MIGRATION],
-                "candidate": {"kind": "commit", "sourceCommit": source["candidate"]},
+                "candidate": release_source,
                 "currentImageId": current_image,
             },
         }
@@ -1021,7 +899,7 @@ class AppUpdateHelperLiveTests(unittest.TestCase):
         self.assertEqual((observed["body"] or {}).get("items"), [FIXTURE_TOKEN])
         self.assertEqual(identity[0]["tokenId"], FIXTURE_TOKEN["tokenId"])
 
-        prepared = invoke_helper(config_path, {"op": "prepare", "expectedCurrentImageId": current_image, "source": {"kind": "commit", "sourceCommit": source["candidate"]}})
+        prepared = invoke_helper(config_path, {"op": "prepare", "expectedCurrentImageId": current_image, "source": release_source})
         self.assertIsNone(prepared.get("error"), prepared)
         self.request_id = prepared["requestId"]
         start_proc = subprocess.Popen(
@@ -1048,9 +926,9 @@ class AppUpdateHelperLiveTests(unittest.TestCase):
             self._preserve_external_report({"jobObs": job_obs}, "first-job-not-live")
         self.assertTrue(job_obs.get("observable"), "job status unobservable after caller exit: %s" % job_obs)
         self.assertTrue(job_obs.get("live"), "job did not remain live after caller exit: %s" % job_obs)
-        self._wait_first_applying_build(config_path)
+        self._wait_first_applying_acquisition(config_path)
 
-        busy = invoke_helper(config_path, {"op": "prepare", "expectedCurrentImageId": current_image, "source": {"kind": "commit", "sourceCommit": source["candidate"]}})
+        busy = invoke_helper(config_path, {"op": "prepare", "expectedCurrentImageId": current_image, "source": release_source})
         self.assertIsNone(busy.get("error"), busy)
         concurrent = invoke_helper(config_path, {"maintenanceConsent": True, "op": "start", "requestId": busy["requestId"]})
         concurrent_error = concurrent.get("error")
@@ -1168,18 +1046,18 @@ class AppUpdateHelperLiveTests(unittest.TestCase):
         }
         self._write_report()
 
-    def _wait_first_applying_build(self, config_path: Path) -> Dict[str, Any]:
-        """Wait until applying persists past instant admission fail; build hold is 20s."""
+    def _wait_first_applying_acquisition(self, config_path: Path) -> Dict[str, Any]:
+        """Wait until applying persists past instant admission fail; acquisition hold is 20s."""
 
-        deadline = time.time() + BUILD_HOLD_SECONDS + 10
+        deadline = time.time() + ACQUISITION_HOLD_SECONDS + 10
         last: Dict[str, Any] = {}
         applying_since: Optional[float] = None
         while time.time() < deadline:
             last = invoke_helper(config_path, {"op": "status", "requestId": self.request_id})
             stage = last.get("stage")
             if stage in {"failed", "recovery_required", "unknown", "succeeded"}:
-                self._preserve_external_report(last, "first-job-terminal-before-build")
-                self.fail("first job exited before apply/build: %s" % last)
+                self._preserve_external_report(last, "first-job-terminal-before-acquisition")
+                self.fail("first job exited before apply/acquisition: %s" % last)
             if stage == "applying":
                 if applying_since is None:
                     applying_since = time.time()
@@ -1189,7 +1067,7 @@ class AppUpdateHelperLiveTests(unittest.TestCase):
                 applying_since = None
             time.sleep(0.2)
         self._preserve_external_report(last, "first-job-did-not-reach-applying")
-        self.fail("first job did not reach applying/build within bound: %s" % last)
+        self.fail("first job did not reach applying/acquisition within bound: %s" % last)
 
     def _owned_names(self) -> Set[str]:
         names = {self.container_name, "%s-previous" % self.container_name}
@@ -1394,4 +1272,7 @@ class AppUpdateHelperLiveTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--fixture-helper":
+        module = load_fixture_helper()
+        raise SystemExit(module.main(argv=[sys.argv[0], *sys.argv[2:]]))
     unittest.main()

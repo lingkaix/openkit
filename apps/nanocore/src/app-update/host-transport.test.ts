@@ -38,7 +38,7 @@ const PREPARED_RECEIPT = {
   previousBoot: null,
   previousImageId: null,
   requestId: '11111111-1111-4111-8111-111111111111',
-  source: { kind: 'commit' as const, sourceCommit: COMMIT },
+  source: { appDigest: DIGEST, sourceCommit: COMMIT, tag: 'v0.1.0' },
   stage: 'prepared' as const,
   startedAt: null,
 };

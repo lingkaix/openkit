@@ -17,7 +17,6 @@ const PREPARED = {
   requestId: REQUEST_ID,
   source: {
     appDigest: DIGEST,
-    kind: 'release' as const,
     sourceCommit: COMMIT,
     tag: 'v0.1.0',
   },
@@ -98,7 +97,7 @@ async function fillPublishedSource(user: ReturnType<typeof userEvent.setup>) {
   await screen.findByRole('button', { name: 'Prepare' });
   await user.type(screen.getByLabelText('Release tag'), 'v0.1.0');
   await user.type(screen.getByLabelText('Published App digest'), DIGEST);
-  await user.type(screen.getByLabelText('Source commit'), COMMIT);
+  await user.type(screen.getByLabelText('Release source commit'), COMMIT);
   await user.type(screen.getByLabelText('Expected current image'), DIGEST);
 }
 
@@ -108,6 +107,8 @@ describe('App update administration', () => {
     const client = makeClient();
     renderScreen(client);
 
+    await screen.findByRole('button', { name: 'Prepare' });
+    expect(screen.queryByRole('radio', { name: 'Exact commit' })).not.toBeInTheDocument();
     await fillPublishedSource(user);
     await user.click(screen.getByRole('button', { name: 'Prepare' }));
 

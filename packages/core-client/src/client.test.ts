@@ -693,7 +693,6 @@ function appUpdatePrepared() {
     requestId: '11111111-1111-4111-8111-111111111111',
     source: {
       appDigest: `sha256:${'b'.repeat(64)}`,
-      kind: 'release' as const,
       sourceCommit: 'a'.repeat(40),
       tag: 'v0.1.0',
     },
@@ -2703,6 +2702,26 @@ describe('createCoreClient', () => {
     expect(parseWorkspaceSharingError(genericRecovery)).toBeNull();
   });
 
+  it('reads retained release kind annotations without admitting commit-only update observations', async () => {
+    const status = appUpdateStatus();
+    const { client } = createFakeClient({
+      'POST /api/app/operations/app-update.status': {
+        body: { ...status, source: { ...status.source, kind: 'release' } },
+      },
+    });
+    await expect(
+      client.operations['app-update.status']({ requestId: status.requestId })
+    ).resolves.toEqual(status);
+    const invalid = createFakeClient({
+      'POST /api/app/operations/app-update.status': {
+        body: { ...status, source: { kind: 'commit', sourceCommit: status.source.sourceCommit } },
+      },
+    });
+    await expect(
+      invalid.client.operations['app-update.status']({ requestId: status.requestId })
+    ).rejects.toThrow();
+  });
+
   it('routes NanoCore App API calls through app-owned schemas', async () => {
     const retrievalTraceId = 'krt_123e4567-e89b-42d3-a456-426614174000';
     const retrievalRequestDigest = `sha256:${'b'.repeat(64)}`;
@@ -3353,7 +3372,6 @@ describe('createCoreClient', () => {
         expectedCurrentImageId: `sha256:${'b'.repeat(64)}`,
         source: {
           appDigest: `sha256:${'b'.repeat(64)}`,
-          kind: 'release',
           sourceCommit: 'a'.repeat(40),
           tag: 'v0.1.0',
         },

@@ -22,28 +22,13 @@ export const AppUpdateReleaseTagSchema = z
   .regex(/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/);
 
 /** Published-release source pinned by tag, commit, and verified App digest. */
-export const AppUpdateReleaseSourceSchema = z
+export const AppUpdateSourceSchema = z
   .object({
     appDigest: AppUpdateImageDigestSchema,
-    kind: z.literal('release'),
     sourceCommit: AppUpdateGitCommitIdSchema,
     tag: AppUpdateReleaseTagSchema,
   })
   .strict();
-
-/** Exact-commit source that later records a locally built candidate digest. */
-export const AppUpdateCommitSourceSchema = z
-  .object({
-    kind: z.literal('commit'),
-    sourceCommit: AppUpdateGitCommitIdSchema,
-  })
-  .strict();
-
-/** Closed App-update source selected by prepare. */
-export const AppUpdateSourceSchema = z.discriminatedUnion('kind', [
-  AppUpdateReleaseSourceSchema,
-  AppUpdateCommitSourceSchema,
-]);
 
 /** Host observation of one App boot after replacement or restoration. */
 export const AppUpdateBootObservationSchema = z
@@ -94,7 +79,7 @@ const SUCCEEDED_OPTIONAL_PREDICATES = ['nanohostReady', 'webAssets'] as const;
 /**
  * Closed verification predicates projected from the host receipt.
  *
- * `sourceMatch` is observed from verified candidate build lineage, not echoed from prepare input.
+ * `sourceMatch` is observed from verified published-release attribution, not echoed from prepare input.
  * `nanohostReady` is null only when no NanoHost was connected before the update.
  * `webAssets` is null only when Web assets are bundled in the App image.
  */
@@ -269,10 +254,12 @@ export const AppUpdateHostOutputSchema = z.union([
 export type AppUpdateHostOutput = z.infer<typeof AppUpdateHostOutputSchema>;
 
 /** Descriptive source observation; source-selection commands keep exact source schemas. */
-const AppUpdateObservedSourceSchema = z.discriminatedUnion('kind', [
-  AppUpdateReleaseSourceSchema.strip(),
-  AppUpdateCommitSourceSchema.strip(),
-]);
+const AppUpdateObservedSourceSchema = AppUpdateSourceSchema.strip();
+
+/** Release review reader discarding descriptive additions, including retained source annotations. */
+export const PrepareAppUpdateResponseReaderSchema = PrepareAppUpdateResponseSchema.safeExtend({
+  source: AppUpdateObservedSourceSchema,
+}).strip();
 
 /** Helper stdout error reader that emits only the validated error core. */
 export const AppUpdateHostErrorReaderSchema = AppUpdateHostErrorSchema.safeExtend({

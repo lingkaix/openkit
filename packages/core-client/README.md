@@ -47,7 +47,7 @@ NanoCore App API payloads come from `@openkit/app-api-schemas`.
 
 Deprecated flat aliases are not exported.
 
-`client.operations['app-update.prepare']`, `client.operations['app-update.start']` and `client.operations['app-update.status']` project the deployment-admin App-update contract. Keep the host-assigned request ID before starting; an uncertain response requires status for that ID, not a new update. The client does not perform host effects or infer completion from a successful HTTP submission.
+`client.operations['app-update.prepare']`, `client.operations['app-update.start']` and `client.operations['app-update.status']` project the deployment-admin App-update contract. Keep the host-assigned request ID before starting; an uncertain response requires status for that ID, not a new update. Sources are published-release identities (`tag`, `sourceCommit`, `appDigest`). Observed status and prepare reviews discard additive fields such as an old `kind` through the shared readers; commit-only observations are invalid. The client does not perform host effects or infer completion from a successful HTTP submission.
 
 `client.operations['catalog.mcp-binding']` sends optional Vault credential bindings through the existing Workspace binding operation. A supplied array replaces those bindings, including an empty array to clear them; omission preserves current credentials for policy-only updates. Input and response types remain derived from the shared App API schemas.
 

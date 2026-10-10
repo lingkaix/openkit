@@ -97,7 +97,7 @@ const inputs = [
     '/api/app/app-update/prepare',
     {
       expectedCurrentImageId: digest,
-      source: { kind: 'release', appDigest: digest, sourceCommit: 'a'.repeat(40), tag: 'v0.1.0' },
+      source: { appDigest: digest, sourceCommit: 'a'.repeat(40), tag: 'v0.1.0' },
     },
   ],
   ['POST', '/api/app/app-update/start', { requestId, maintenanceConsent: true }],

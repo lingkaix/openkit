@@ -22,7 +22,6 @@ const PREPARE_BODY = {
   expectedCurrentImageId: DIGEST,
   source: {
     appDigest: DIGEST,
-    kind: 'release',
     sourceCommit: COMMIT,
     tag: 'v0.1.0',
   },
@@ -162,7 +161,7 @@ describe('app-update routes', () => {
     );
     const review = (await prepared.json()) as {
       requestId: string;
-      source: { appDigest: string; kind: string };
+      source: typeof PREPARE_BODY.source;
       stage: string;
     };
 
