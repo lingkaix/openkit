@@ -1,8 +1,9 @@
 ---
-status: Accepted
+status: Superseded
 date: "2026-10-10"
 decider: Engineer
 supersedes: docs/decisions/20261005-release_exit_criterion.md
+superseded-by: docs/decisions/20261010-release_acceleration.md
 ---
 # The Release Exit Criterion, Revised
 

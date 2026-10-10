@@ -3,7 +3,7 @@ status: Accepted
 implementation: Partial
 kind: process
 date: 2026-08-29
-updated: "2026-10-05"
+updated: "2026-10-10"
 ---
 # Release Management
 
@@ -124,7 +124,7 @@ Changing repository or package visibility is a separate explicitly authorized ex
 
 ### Release Exit Criterion
 
-Release readiness requires consecutive complete acceptance rounds on a fixed scenario set with zero new product defects. The current default is two clean rounds, protecting repeatability after defects stop emerging rather than relying on elapsed time or operator confidence. [The release exit decision](../decisions/20261010-release_exit_criterion_revised.md) records the ruling and its reason. This criterion applies to the first release, including its release candidates, and does not replace other applicable release blockers or deciding checks.
+Release readiness requires consecutive complete acceptance rounds on a fixed scenario set with zero new product defects. The current default is two clean rounds, protecting repeatability after defects stop emerging rather than relying on elapsed time or operator confidence. [Release Acceleration](../decisions/20261010-release_acceleration.md) records the amended reset rule and its reason, while retaining the earlier deployment-path ruling. This criterion applies to the first release, including its release candidates, and does not replace other applicable release blockers or deciding checks.
 
 #### Scenario Set And Authority
 
@@ -134,7 +134,11 @@ This specification owns the readiness rule. The existing release change record r
 
 #### Round And Classification
 
-One round executes every scenario against one exact candidate source commit on the authorized persistent deployment. That commit is deployed in each round by an authorized external operator through the maintained [exact-source deployment procedure](../cookbooks/persistent-live-acceptance.md#update-an-exact-source-build), under [the update-mode removal decision](../decisions/20261010-remove_app_update_exact_commit.md). Both clean rounds MUST use the same source commit and frozen scenario revision. Record the exact deployed artifact identities for the components exercised in each round; a version label alone is insufficient. Rebuilding the same commit through that maintained procedure between rounds does not reset the count. Publication MUST be from that same commit. Published bytes are rebuilt from the tested commit and are not claimed to be byte-identical to the tested deployment; the tag workflow's existing exact-digest smoke and asset verification verify the published bytes.
+One round executes every scenario against one exact tested source commit T on the authorized persistent deployment. T is deployed in each round by an authorized external operator through the maintained [exact-source deployment procedure](../cookbooks/persistent-live-acceptance.md#update-an-exact-source-build), under [the update-mode removal decision](../decisions/20261010-remove_app_update_exact_commit.md). Both clean rounds MUST use T and the same frozen scenario revision. Record the exact deployed artifact identities for the components exercised in each round; a version label alone is insufficient. Rebuilding T through that maintained procedure between rounds does not reset the count.
+
+Publication MUST select T or a later `main` commit P proved to differ from T only in non-product inputs. Non-product paths are exactly `docs/**`, `tests/**`, `.github/**`, and Markdown files at the repository root. Everything else is product, including `scripts/**`, `skills/**`, `containers/**`, every file under `apps/**` and `packages/**`, lockfiles, root manifests, and unknown paths. Symlinks and gitlinks anywhere are product, including in an otherwise non-product path. This classification governs live-round counting and makes no byte-reproducibility claim. A scenario-set change remains a reset even when its path is non-product. Missing, stale, conflicting, or unproved comparison evidence leaves publication readiness unproved. Retain T, P, the complete classified diff, and the successful product-input comparison result in the release record.
+
+Published bytes are rebuilt from P and are not claimed to be byte-identical to the tested deployment; the tag workflow's existing exact-digest smoke and asset verification verify the published bytes.
 
 Each scenario retains its observed outcome and deciding public records under Persistent Deployment Acceptance. Classify adverse observations as follows; classification never rewrites a product result or an L6 verdict.
 
@@ -150,11 +154,35 @@ A round is complete only when every scenario executed and its product outcome ca
 
 #### Count, Retry, And Readiness
 
-Start the count at zero after freezing the set and candidate. A complete clean round increments it. Any new product defect, any change of the candidate source commit, or any change to the scenario set resets it to zero. An incomplete round breaks the consecutive clean sequence and contributes no clean round. Relevant configuration changes or operator repairs end the evidence attribution window under Persistent Deployment Acceptance; begin a fresh sequence rather than carrying a count across that boundary. Deployment of the same exact commit through the maintained exact-source procedure for the next round begins that round's attribution window and does not by itself reset the count.
+Start the count at zero after freezing the set and tested commit T. A complete clean round increments it. Any new product defect, product-input change, or scenario-set change resets it to zero. A change to any part of the cookbook's "First-Release Scenario Set" section is a scenario-set change, even though the path is non-product. A later publishing commit P proved to differ from T only in non-product paths does not reset the live-round count. An incomplete round breaks the consecutive clean sequence and contributes no clean round. Relevant configuration changes or operator repairs end the evidence attribution window under Persistent Deployment Acceptance; begin a fresh sequence rather than carrying a count across that boundary. Deployment of the same exact commit through the maintained exact-source procedure for the next round begins that round's attribution window and does not by itself reset the count.
 
 Retain failed and incomplete round evidence. Retry missing execution as a new round on the current candidate and set, without replacing the earlier outcome. Complete retained observations may be re-adjudicated after an evidence-tool correction under Persistent Deployment Acceptance; missing observations cannot be reconstructed into a clean result. Restarting an acceptance client restores the count only from retained, ordered, exact-candidate evidence. Missing, stale, or conflicting evidence leaves readiness unproved; model memory and a producer summary are insufficient.
 
-The criterion is met when the release record proves the required consecutive complete clean rounds for the unchanged set and candidate, with every observed defect classified and linked. A later candidate-commit or scenario-set change invalidates that readiness claim and restarts the count. This is a manually selected release-readiness check; real-provider and real-worker execution retains explicit opt-in authorization and stays outside automatic tag CI. Publication authorization still follows Publication Authorization below; this criterion never authorizes publication by itself.
+The criterion is met when the release record proves the required consecutive complete clean rounds on T for the unchanged set and product inputs, with every observed defect classified and linked. A later product-input or scenario-set change or new product defect invalidates that readiness claim and restarts the count. Publication from P additionally requires the retained non-product comparison proof and exact-P candidate CI evidence below; neither substitutes for the rounds. This is a manually selected release-readiness check; real-provider and real-worker execution retains explicit opt-in authorization and stays outside automatic tag CI. Publication authorization still follows Publication Authorization below; this criterion never authorizes publication by itself.
+
+### Compact Release Record
+
+Retain one release-level header with the tag and controlled asset set, publication authorization and its conditions, tested commit T and publishing commit P, classified non-product diff and comparison result, candidate CI proof, visibility posture, frozen checklist identity, and known-defect dispositions. Retain one row per round with exactly these columns:
+
+| Round | Tested candidate / frozen set | Deployment identity / window | Per-scenario outcomes | Counts / sequence | New defects / other dispositions | Retained evidence / non-pass checks |
+| --- | --- | --- | --- | --- | --- | --- |
+| Round order | T and frozen checklist identity | Exercised component digests, non-secret configuration identity, UTC start and end | Deploy; each of the four runtimes' A to D rows; Chat; Task; Goal; External | Executed, incomplete, successful, new, known, external, complete, clean, consecutive count, reset reason | New defect references and other dispositions | Neutral private-evidence alias and digest, runner commit/digest and parameter-file digest, independent check reference for each non-pass row or row the kit cannot decide |
+
+Outcome codes are P (pass), K (known defect), E (accepted external), N (new defect), T (environment or tool failure), and I (inconclusive). The outcome code T is distinct from tested commit T. The maintained round kit generates verdicts from retained product records. An independent check is required only for non-pass rows and rows the kit cannot decide; scenario-owned independent proof, including the external Actor's deciding recomputation and any L6 Judge, remains required. Do not add per-pass narrative review. Complete evidence remains retained privately under Persistent Deployment Acceptance, including per-scenario attribution, deciding records and diagnostic coverage; the public record contains no host names, private paths, Thread identifiers, or transcripts. The compact projection never replaces that evidence or creates a product record owner.
+
+### Candidate CI And Tag Reuse
+
+The candidate gate is a completed successful `workflow_dispatch` run selecting `release-gate` or `full` on exactly publishing commit P. If P differs from tested commit T, it needs its own candidate gate; CI reuse never crosses commits.
+
+In a tag run, each of `L0-L2 static, unit, contract` and `L3 NanoCore e2e` first looks for a completed `workflow_dispatch` run of the same workflow on exactly the tagged commit in which that same job succeeded in its latest attempt. When found, the tag job records the supporting run and skips its tests; otherwise it runs its tests as before. Reuse is decided separately for each job and establishes no other job's result.
+
+Every other tag job still runs: preflight and `main` membership, L5 smoke, portability, the installer gate, NanoHost builds and qualification, packaging, image build, per-platform exact-digest smoke, promotion, anonymous `worker-common` inspection, GitHub Release creation and upload, and published-release download verification.
+
+### Publication-Path Proof
+
+An image publication and promotion job, GitHub Release creation and upload job, or published-release verification job is proved when an earlier real tag run executed it successfully and that job is unchanged since then. Retain the earlier tag/run, successful job evidence, and comparison establishing the unchanged job. Skipped publication jobs or non-publishing probes do not establish this proof.
+
+A changed publication job MUST be rehearsed before the real tag in a scratch repository under a different GitHub owner. The rehearsal executes the real changed publication path while leaving the real package names, tags, and Latest pointers untouched. Creating the scratch target and its packages is a separate external effect requiring the engineer's authorization at that time. Missing or conflicting proof blocks the real tag until qualifying evidence exists; no routine different-owner rehearsal is required for an unchanged proved job. [Release Acceleration](../decisions/20261010-release_acceleration.md) records the decision and exclusions.
 
 ### Publication Authorization
 
@@ -224,7 +252,7 @@ The GitHub Release prerelease state MUST agree with the tag, and its notes MUST 
 
 The operations-only Skill composition, executable preflight, packaging and local verification are implemented. This local change does not demonstrate release publication or live-client acceptance.
 
-The existing `.github/workflows/ci.yml` already runs tag preflight, L0-L3, L5, a catalog-derived image matrix, GHCR publication, anonymous `worker-common` inspection, and GitHub Release creation.
+The `.github/workflows/ci.yml` workflow implements tag preflight, L0-L3, L5, a catalog-derived image matrix, GHCR publication, anonymous `worker-common` inspection, and GitHub Release creation. The tag-only reuse steps in its `l0-l2` and `nano-core-e2e` jobs use `scripts/release-ci-reuse.mjs` for exact-commit candidate evidence reuse. No tag run has used this reuse yet; its first use is the rc.3 tag run. `scripts/release-product-inputs.mjs` implements the product-input comparison, invoked as `node scripts/release-product-inputs.mjs --tested <T> --publishing <P>`; publication from a later P requires exit 0 and retained output.
 
 The current implementation removes package-version coupling, makes tag parsing lowercase-only, pins every release image base, packages the complete operations Skill including the administrator executable, separates digest candidates from tag promotion, serializes releases, preserves same-tag image identity, applies GitHub prerelease semantics, and performs post-publication verification.
 

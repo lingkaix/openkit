@@ -276,7 +276,7 @@ Pull requests should run only the lightweight repository check by default.
 
 Ordinary branch pushes should not run CI by default.
 
-Lowercase version tags matching `v*.*.*` should run the release gate as separate named jobs: `l0-l2`, `nanocore-e2e`, and `smoke`.
+Lowercase version tags matching `v*.*.*` should run the release gate as separate named jobs: `l0-l2`, `nanocore-e2e`, and `smoke`. Under [Release Management](20260829-release_management.md#candidate-ci-and-tag-reuse), the L0-L2 and NanoCore e2e tag jobs each first seek a completed `workflow_dispatch` run of the same workflow on exactly the tagged commit where that same job succeeded in its latest attempt. Each records the qualifying run and skips its tests when found, or runs its tests as before when absent. The candidate gate selects `release-gate` or `full` on exactly the publishing commit; reuse never crosses commits. L5 and every other tag job still run, including preflight/main membership, portability, installer, NanoHost build/qualification, packaging, image build and per-platform exact-digest smoke, promotion, anonymous worker-common inspection, GitHub Release creation/upload, and download verification.
 
 Manual workflow dispatch should expose `pr-check`, `l0-l2`, `nanocore-e2e`, `web-e2e`, `smoke`, `release-gate`, and `full` selections.
 
@@ -354,7 +354,7 @@ For worker scheduling, high-risk coverage means launch authorization, exact work
 The repository implements the established layer gates and deterministic test placement:
 
 - Root scripts expose the accepted deterministic gates: `verify`, `verify:l0-l2`, `verify:release`, `verify:full`, `test:e2e:nano`, `test:e2e:web`, and `test:smoke`, plus explicitly gated real-provider and real-worker L3 commands.
-- `.github/workflows/ci.yml` implements the accepted trigger posture: lightweight PR checks, tag-triggered release gate jobs for L0-L2, NanoCore e2e, and smoke, plus manual workflow dispatch for `pr-check`, `l0-l2`, `nanocore-e2e`, `web-e2e`, `smoke`, `release-gate`, and `full`.
+- `.github/workflows/ci.yml` implements the accepted trigger posture: lightweight PR checks, tag-triggered release gate jobs for L0-L2, NanoCore e2e, and smoke, plus manual workflow dispatch for `pr-check`, `l0-l2`, `nanocore-e2e`, `web-e2e`, `smoke`, `release-gate`, and `full`. The tag-only reuse steps in `l0-l2` and `nano-core-e2e` use `scripts/release-ci-reuse.mjs` to implement the exact-commit reuse contract above. No tag run has used this reuse yet; its first use is the rc.3 tag run.
 - Unit, contract, NanoCore e2e, Web e2e, staging e2e, and smoke entrypoints exist in the repository-owned locations named by this spec.
 - `apps/web/e2e/openkit-local-self-check.spec.ts` is the C01 L4 entrypoint under `pnpm -w test:e2e:web`. The C02-C04 L3 entrypoints are `apps/nanocore/e2e/pi-ai-real-provider-runner.mjs`, `apps/nanocore/e2e/task-mode-real-worker-runner.mjs`, and `apps/nanocore/e2e/provider-subscription-real-lifecycle-runner.mjs`, behind `pnpm -w test:e2e:real-provider`, `pnpm -w test:e2e:real-task-mode`, and `pnpm -w test:e2e:real-subscription` respectively.
 - L6 story artifacts remain outside the deterministic gate and follow `docs/specs/20260529-l6_story_acceptance.md`.
@@ -385,7 +385,7 @@ Mitigation: Limit smoke tests to boot, health, route availability, and minimal r
 
 Risk: Release gates become too expensive for normal development.
 
-Mitigation: Keep PR gates to the lightweight repository check, run L0-L3 plus L5 only on version tags or manual release-gate dispatch, and reserve L4, L6, staging, real-provider, and real-subscription tests for explicit manual workflows.
+Mitigation: Keep PR gates to the lightweight repository check, require L0-L3 evidence plus fresh L5 only on version tags or explicit manual release-gate dispatch, allowing exact-commit reuse for tag L0-L3 where the release owner permits it, and reserve L4, L6, staging, real-provider, and real-subscription tests for explicit manual workflows.
 
 ## Resolved Decisions
 

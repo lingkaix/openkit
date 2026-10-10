@@ -3,7 +3,7 @@ status: Accepted
 implementation: Implemented
 kind: process
 date: "2026-09-09"
-updated: "2026-09-10"
+updated: "2026-10-10"
 ---
 # Persistent Deployment Acceptance
 
@@ -68,7 +68,7 @@ Collect user-visible responses and the minimum named product records that decide
 
 Operational telemetry supplements those records with process and request diagnostics; it never supplies missing product truth. Its absence is reported separately. No complete raw database export, full transcript, blanket environment dump or private host filesystem scan is required by default. SSH can establish an authorized diagnostic fact but cannot become a hidden product success oracle; a recurring missing product observation returns to its owning interface.
 
-Reusable setup, public-client invocation, evidence collection and deterministic comparison helpers may be maintained in existing support locations when repeated use demonstrates the need. They do not prescribe an L6 Actor's trajectory, create private authentication or transport, or manage a second workflow. The L6 owner controls Actor/Judge isolation and product classifications. Infrastructure support exposes errors and partial evidence; it must not discard a deciding exception into a bare FAIL.
+Reusable setup, public-client invocation, evidence collection and deterministic comparison helpers may be maintained in existing support locations when repeated use demonstrates the need. They do not prescribe an L6 Actor's trajectory, create private authentication or transport, or manage a second workflow. The L6 owner controls Actor/Judge isolation and product classifications. Infrastructure support exposes errors and partial evidence; it must not discard a deciding exception into a bare FAIL. A maintained parameterized round kit may generate a compact report from retained product records without per-pass narrative review. Independent checks are required for non-pass rows and rows the kit cannot decide; the L6 owner's Actor/Judge isolation and scenario-owned independent proof remain binding. Complete attempt evidence, attribution, coverage, failures and cleanup observations stay retained privately; compact reporting removes no evidence obligation. [Release Management](20260829-release_management.md#compact-release-record) owns the release projection, and [Persistent Live Acceptance](../cookbooks/persistent-live-acceptance.md#maintained-round-kit) describes the operator kit contract.
 
 If an attempt fails, retain sufficient redacted evidence to diagnose or re-adjudicate it. Fixing a collector or judge over the same retained complete observations may permit a new adjudication without repeating product work. If required observations are absent, the result remains inconclusive; do not synthesize them or infer a pass. Product mutation or operator repair requires a new execution before claiming the repaired behavior works. Cleanup failure is a separate observation.
 
