@@ -12,7 +12,7 @@ The tag workflow currently rejects stable tags because the exact-product R001 Na
 
 Do not change the release preflight CLI's prerelease-only default until an accepted owner closes that stable-release blocker.
 
-The repository is currently private, and only `worker-common` is required to be anonymously public in GHCR.
+The repository is public, and only `worker-common` is required to be anonymously public in GHCR.
 
 Do not change repository or package visibility as an implied part of preparation or publication.
 
