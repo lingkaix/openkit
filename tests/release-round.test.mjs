@@ -158,6 +158,20 @@ for (const [name, mutate] of [
     mutate(p);
     assert.throws(() => validateParams(p));
   });
+test('parameter validation requires the exact Goal filename in its intent', () => {
+  const p = parameters();
+  p.goal.filename = 'rc3-r1f-issue-116-acceptance.md';
+  p.goal.intent = 'Write rc3-r1-issue-116-acceptance.md as the acceptance-note Artifact.';
+  assert.throws(() => validateParams(p), {
+    message: 'goal.intent must contain goal.filename exactly',
+  });
+  p.goal.intent = 'Write RC3-R1F-ISSUE-116-ACCEPTANCE.MD as the acceptance-note Artifact.';
+  assert.throws(() => validateParams(p), {
+    message: 'goal.intent must contain goal.filename exactly',
+  });
+  p.goal.intent = `Write ${p.goal.filename} as the acceptance-note Artifact.`;
+  assert.equal(validateParams(p), p);
+});
 test('prepare passes the exact unquoted SFTP scp destination', async (t) => {
   const parent = await temp(t),
     p = parameters(),
@@ -554,6 +568,271 @@ async function pinnedFixture(dir, p) {
     runnerSha256: sha(canonical(entries)),
   });
 }
+/** Model the distinct Goal and dashboard projections observed in rc3-r1f. */
+function goalPlanProjections(p) {
+  const goalId = 'goal-example',
+    planVersionId = 'plan-example',
+    requestId = 'request-example-plan',
+    commitment = {
+      intentBasis: { revision: 0, intent: p.goal.intent },
+      cards: [{ cardId: 'card-example', revision: 0, description: 'Example note', priority: 0 }],
+      permittedAdjustments: 'Wording only',
+      completionEvidence: ['One readable note Artifact'],
+      boundaries: 'No GitHub writes',
+    },
+    bytes = JSON.stringify(commitment),
+    exactIntent = {
+      operation: 'goal.plan.approve',
+      goalId,
+      planVersionId,
+      digest: digest(bytes),
+      bytes,
+    },
+    request = {
+      requestId,
+      operation: 'goal.plan.approve',
+      state: 'pending',
+      resolution: null,
+      reason: null,
+      decidingActorId: null,
+      claim: 'unclaimed',
+      disposition: null,
+      exactIntent,
+    },
+    early = {
+      goal: { goalId, intentRevision: 0, proposedPlanVersionId: null, activePlanVersionId: null },
+      cards: commitment.cards,
+      versions: [],
+      tasks: [],
+      requests: [],
+    };
+  return {
+    early,
+    proposed: {
+      ...early,
+      goal: { ...early.goal, proposedPlanVersionId: planVersionId },
+      versions: [
+        {
+          planVersionId,
+          goalId,
+          sequence: 1,
+          bytes,
+          digest: digest(bytes),
+          commitment,
+          pendingRequestId: requestId,
+        },
+      ],
+      requests: [request],
+    },
+    dashboard: {
+      pendingRequests: [
+        {
+          requestId,
+          approvalEffect: {
+            status: 'available',
+            summary: 'Approve Goal Plan',
+            detail: JSON.stringify(exactIntent),
+          },
+          canRespond: true,
+          state: 'pending',
+          resolution: null,
+          ending: null,
+          disposition: null,
+        },
+      ],
+    },
+  };
+}
+test('Goal capture refreshes a read that preceded the dashboard Plan approval before deciding', async (t) => {
+  const dir = await temp(t),
+    p = parameters(),
+    { early, proposed, dashboard } = goalPlanProjections(p),
+    request = proposed.requests[0],
+    tid = 'thread-example-goal',
+    operations = [],
+    sleeps = [];
+  await pinnedFixture(dir, p);
+  let time = Date.parse('2026-01-01T00:00:00Z'),
+    goalReads = 0,
+    captured,
+    result,
+    decisionError = null;
+  const seams = {
+    credential: 'synthetic-private-value',
+    now: () => new Date(time).toISOString(),
+    ssh: async () => ({ exitCode: 0, stdout: p.deployment.machineId }),
+    cli: async (_exe, args, options) => {
+      const op = args[2],
+        input = JSON.parse(options.input);
+      operations.push(op);
+      assert.equal(input.threadId, tid);
+      let data;
+      if (op === 'goal.read') {
+        assert.equal(input.goalId, early.goal.goalId);
+        goalReads++;
+        data = captured || goalReads > 2 ? proposed : early;
+      } else if (op === 'thread.dashboard') data = dashboard;
+      else {
+        assert.equal(op, 'goal.plan.approve');
+        assert.equal(input.pendingRequestId, request.requestId);
+        assert.equal(input.decision, 'granted');
+        data = { ...request, state: 'resolved', resolution: 'granted' };
+      }
+      return { exitCode: 0, stdout: JSON.stringify(ok(data)), stderr: '' };
+    },
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      time += ms;
+      try {
+        captured = await readJson(path.join(dir, 'pending', `${sha(request.requestId)}.json`));
+      } catch (e) {
+        if (e.code === 'ENOENT') return;
+        throw e;
+      }
+      result = await decide(dir, request.requestId, 'grant', seams);
+    },
+  };
+  const client = new RoundClient(p, dir, { ...defaults, ...seams }, []);
+  client.phase = 'goal';
+  await client.own(tid);
+  const goal = await client.call('goal.read', {
+      workspaceId: p.workspaceId,
+      threadId: tid,
+      goalId: early.goal.goalId,
+    }),
+    board = await client.call('thread.dashboard', { workspaceId: p.workspaceId, threadId: tid });
+  await client.waitDecisions(tid, board.data, goal).catch((e) => {
+    decisionError = e.message;
+  });
+  assert.deepEqual(
+    { hasExactIntent: !!captured?.request.exactIntent, decisionError },
+    { hasExactIntent: true, decisionError: null }
+  );
+  assert.deepEqual(captured.request, request);
+  assert.deepEqual(captured.goal, proposed);
+  assert.equal(result.ok, true);
+  assert.deepEqual(operations, [
+    'goal.read',
+    'thread.dashboard',
+    'goal.read',
+    'goal.read',
+    'goal.read',
+    'goal.plan.approve',
+  ]);
+  assert.deepEqual(sleeps, [p.bounds.pollMs, p.bounds.pollMs]);
+  assert.equal(
+    captured.expiresAt,
+    new Date(time - p.bounds.pollMs + p.bounds.decisionMs).toISOString()
+  );
+  await assert.rejects(decide(dir, request.requestId, 'grant', seams), /EEXIST/);
+  assert.equal(operations.filter((op) => op === 'goal.plan.approve').length, 1);
+});
+for (const mode of ['missing', 'refused', 'different request', 'missing exact intent'])
+  test(`Goal capture fails closed for ${mode} without a dashboard fallback`, async (t) => {
+    const dir = await temp(t),
+      p = parameters(),
+      { early, proposed, dashboard } = goalPlanProjections(p),
+      sleeps = [];
+    let reads = 0;
+    const client = new RoundClient(
+      p,
+      dir,
+      {
+        ...defaults,
+        ssh: async () => ({ exitCode: 0, stdout: p.deployment.machineId }),
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+        cli: async (_exe, args) => {
+          assert.equal(args[2], 'goal.read', 'capture performs reads only');
+          reads++;
+          const data = structuredClone(mode === 'missing' ? early : proposed);
+          if (mode === 'different request') data.requests[0].requestId = 'another-example-request';
+          if (mode === 'missing exact intent') delete data.requests[0].exactIntent;
+          const response =
+            mode === 'refused' ? { ok: false, error: { code: 'conflict' } } : ok(data);
+          return { exitCode: 0, stdout: JSON.stringify(response), stderr: '' };
+        },
+      },
+      []
+    );
+    client.phase = 'goal';
+    await client.own('thread-example-goal');
+    await assert.rejects(
+      client.waitDecisions('thread-example-goal', dashboard, ok(early)),
+      /Goal Pending Request exact intent unavailable within bounded Goal reads; no grant submitted/
+    );
+    const expectedReads = mode === 'missing exact intent' ? 1 : p.bounds.readAttempts;
+    assert.equal(reads, expectedReads);
+    assert.deepEqual(sleeps, Array(expectedReads - 1).fill(p.bounds.pollMs));
+    await assert.rejects(fs.access(path.join(dir, 'pending')), { code: 'ENOENT' });
+    await assert.rejects(fs.access(path.join(dir, 'decisions')), { code: 'ENOENT' });
+  });
+test('Goal capture reuses the complete Goal read already in hand', async (t) => {
+  const dir = await temp(t),
+    p = parameters(),
+    { proposed, dashboard } = goalPlanProjections(p),
+    key = sha(proposed.requests[0].requestId),
+    client = new RoundClient(
+      p,
+      dir,
+      {
+        ...defaults,
+        cli: async () => {
+          throw Error('Unexpected extra read');
+        },
+        sleep: async () => {
+          throw Error('Unexpected wait');
+        },
+      },
+      []
+    );
+  client.phase = 'goal';
+  await save(path.join(dir, 'decisions', `${key}-result.json`), { ok: true });
+  await client.waitDecisions('thread-example-goal', dashboard, ok(proposed));
+  const captured = await readJson(path.join(dir, 'pending', `${key}.json`));
+  assert.deepEqual(captured.request, proposed.requests[0]);
+  assert.deepEqual(captured.goal, proposed);
+});
+for (const [mode, message] of [
+  ['resolved', 'Pending Request no longer pending'],
+  ['changed', 'Pending exact intent changed'],
+])
+  test(`Goal decide distinguishes ${mode} requests without a mutation`, async (t) => {
+    const dir = await temp(t),
+      p = parameters(),
+      { proposed } = goalPlanProjections(p),
+      request = proposed.requests[0],
+      current = structuredClone(proposed),
+      tid = 'thread-example-goal';
+    if (mode === 'resolved') current.requests[0].state = 'resolved';
+    else current.requests[0].exactIntent.bytes = 'changed';
+    await pinnedFixture(dir, p);
+    await save(path.join(dir, 'owned', 'example.json'), { threadId: tid });
+    await save(path.join(dir, 'pending', `${sha(request.requestId)}.json`), {
+      request,
+      goal: proposed,
+      phase: 'goal',
+      threadId: tid,
+      expiresAt: '2026-01-01T01:00:00Z',
+    });
+    let reads = 0;
+    await assert.rejects(
+      decide(dir, request.requestId, 'grant', {
+        credential: 'synthetic-private-value',
+        now: () => '2026-01-01T00:00:00Z',
+        ssh: async () => ({ exitCode: 0, stdout: p.deployment.machineId }),
+        cli: async (_exe, args) => {
+          assert.equal(args[2], 'goal.read', 'refused decision performs reads only');
+          reads++;
+          return { exitCode: 0, stdout: JSON.stringify(ok(current)), stderr: '' };
+        },
+      }),
+      { message }
+    );
+    assert.equal(reads, 1);
+    await assert.rejects(fs.access(path.join(dir, 'decisions')), { code: 'ENOENT' });
+  });
 test('decide refuses the actual wrong-intent request without a mutation', async (t) => {
   const dir = await temp(t),
     p = parameters(),

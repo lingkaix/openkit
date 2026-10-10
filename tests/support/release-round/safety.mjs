@@ -269,6 +269,8 @@ export function validateParams(p) {
   strings(p.task.allowedFiles, 'allowedFiles');
   object(p.goal, ['intent', 'filename', 'decidingActorId', 'requiredContent'], 'goal');
   for (const k of ['intent', 'filename', 'decidingActorId']) text(p.goal[k], k);
+  if (!p.goal.intent.includes(p.goal.filename))
+    throw Error('goal.intent must contain goal.filename exactly');
   strings(p.goal.requiredContent, 'requiredContent');
   object(p.external, ['executable', 'modelId', 'persona', 'goal', 'judgeFile'], 'external');
   absolute(p.external.executable, 'external executable');

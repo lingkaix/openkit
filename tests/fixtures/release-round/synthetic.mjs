@@ -77,7 +77,7 @@ export function parameters() {
       decidingActorId: 'actor-example',
     },
     goal: {
-      intent: 'Produce one example note Artifact without external writes.',
+      intent: 'Produce one example-note.md Artifact without external writes.',
       filename: 'example-note.md',
       decidingActorId: 'actor-example',
       requiredContent: ['Example', 'note'],

@@ -668,8 +668,30 @@ export class RoundClient {
         exists = true;
       } catch {}
       if (!exists) {
-        const full =
-          goal?.data?.requests?.find((v) => v.requestId === request.requestId) ?? request;
+        let full = goal?.data?.requests?.find((v) => v.requestId === request.requestId) ?? request;
+        if (this.phase === 'goal') {
+          const goalId = goal?.data?.goal?.goalId;
+          if (!goalId) throw Error('Goal identity unavailable for Pending Request capture');
+          // The dashboard may expose a Plan proposed after the preceding Goal read.
+          full = goal.ok
+            ? goal.data.requests?.find((v) => v.requestId === request.requestId)
+            : undefined;
+          for (let i = 0; !full && i < this.p.bounds.readAttempts; i++) {
+            if (i) await this.io.sleep(this.p.bounds.pollMs);
+            goal = await this.call('goal.read', {
+              workspaceId: this.p.workspaceId,
+              threadId: tid,
+              goalId,
+            });
+            full = goal.ok
+              ? goal.data.requests?.find((v) => v.requestId === request.requestId)
+              : undefined;
+          }
+          if (!full?.exactIntent)
+            throw Error(
+              'Goal Pending Request exact intent unavailable within bounded Goal reads; no grant submitted'
+            );
+        }
         if (!full.approvalEffect && !full.exactIntent)
           throw Error('Full Pending Request unavailable; no unsupported read invented');
         await save(f, {
@@ -922,8 +944,8 @@ export async function decide(dir, requestId, decision, seams = {}) {
         (q) => q.requestId === requestId && q.state === 'pending'
       );
     }
-    if (!request || !sameIntent(request, pending.request))
-      throw Error('Pending exact intent changed or no longer pending');
+    if (!request) throw Error('Pending Request no longer pending');
+    if (!sameIntent(request, pending.request)) throw Error('Pending exact intent changed');
     if (
       decision === 'grant' &&
       !(pending.phase === 'task'
