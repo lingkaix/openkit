@@ -362,10 +362,10 @@ export async function prepare(paramsFile, dir, seams = {}) {
       p.deployment.archiveDirectory,
       `${p.roundId}-${p.candidateCommit}.tar`
     );
-    // The remote destination is a declared absolute path, escaped for scp's remote shell.
+    // SFTP-mode scp uses the validated path literally, without remote shell quoting.
     const transfer = await io.exec(
       'scp',
-      ['-o', 'BatchMode=yes', archive, `${p.deployment.sshAlias}:${q(remotePath)}`],
+      ['-o', 'BatchMode=yes', archive, `${p.deployment.sshAlias}:${remotePath}`],
       { timeout: p.bounds.processMs }
     );
     await save(path.join(dir, 'archive-transfer.json'), transfer, [secret]);

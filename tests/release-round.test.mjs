@@ -157,6 +157,90 @@ for (const [name, mutate] of [
     mutate(p);
     assert.throws(() => validateParams(p));
   });
+test('prepare passes the exact unquoted SFTP scp destination', async (t) => {
+  const parent = await temp(t),
+    p = parameters(),
+    input = path.join(parent, 'params.json'),
+    dir = path.join(parent, 'round');
+  await save(input, p);
+  let archive, transferArgs;
+  const exec = async (exe, args) => {
+    if (exe === 'scp') {
+      transferArgs = args;
+      return { exitCode: 1, stdout: '', stderr: 'synthetic transfer stop' };
+    }
+    assert.equal(exe, 'git');
+    if (args[0] === 'archive') {
+      archive = args[2].slice('--output='.length);
+      await fs.writeFile(archive, 'synthetic exact source');
+    }
+    return {
+      exitCode: 0,
+      stdout:
+        args[0] === 'show'
+          ? '## First-Release Scenario Set\nsynthetic'
+          : args[0] === 'diff'
+            ? ''
+            : p.checklistBlob,
+      stderr: '',
+    };
+  };
+  await assert.rejects(
+    prepare(input, dir, {
+      exec,
+      credential: 'synthetic-private-value',
+      // Capacity inspection uses the SSH seam; no real host is contacted.
+      ssh: async (_exe, args) => ({
+        exitCode: 0,
+        stdout: args.at(-1) === 'cat /etc/machine-id' ? p.deployment.machineId : '{}',
+        stderr: '',
+      }),
+    }),
+    /Archive transfer failed/
+  );
+  assert.equal(typeof archive, 'string');
+  assert.deepEqual(transferArgs, [
+    '-o',
+    'BatchMode=yes',
+    archive,
+    `${p.deployment.sshAlias}:${p.deployment.archiveDirectory}/${p.roundId}-${p.candidateCommit}.tar`,
+  ]);
+});
+test('parameter validation refuses unsafe or non-normalized archive directories', () => {
+  for (const archiveDirectory of [
+    'relative/archive',
+    '/srv/../archive',
+    '/srv/..',
+    '/srv/./archive',
+    '/srv//archive',
+    '//srv/archive',
+    '/srv/archive dir',
+    '/srv/archive\tdata',
+    '/srv/archive\ndata',
+    "/srv/archive'dir",
+    '/srv/archive"dir',
+    '/srv/archive*',
+    '/srv/archive?',
+    '/srv/archive[1]',
+    '/srv/archive;command',
+    '/srv/archive$(command)',
+    '/srv/archive`command`',
+    '/srv/archive&command',
+    '/srv/archive|command',
+    '/srv/archive>file',
+    '/srv/archive\\dir',
+    '/srv/archivé',
+  ]) {
+    const p = parameters();
+    p.deployment.archiveDirectory = archiveDirectory;
+    assert.throws(() => validateParams(p), /archiveDirectory/, archiveDirectory);
+  }
+  for (const archiveDirectory of ['/', '/srv/Release_1.2/archive-dir', '/srv/.archive..dir']) {
+    const p = parameters();
+    p.deployment.archiveDirectory = archiveDirectory;
+    assert.equal(validateParams(p), p);
+  }
+});
 test('prepare refuses an existing directory before any effect', async (t) => {
   const dir = await temp(t),
     f = path.join(dir, 'input.json');

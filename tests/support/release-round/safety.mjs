@@ -180,6 +180,15 @@ export function validateParams(p) {
   text(d.machineId, 'machineId', /^[a-f0-9]{32}$/);
   for (const k of ['root', 'archiveDirectory', 'buildDirectory', 'webDirectory', 'environmentFile'])
     absolute(d[k], k);
+  // Unquoted SFTP destinations require literal, normalized paths with no expansion syntax.
+  if (
+    !/^\/[A-Za-z0-9._/-]*$/.test(d.archiveDirectory) ||
+    path.posix.normalize(d.archiveDirectory) !== d.archiveDirectory ||
+    d.archiveDirectory.split('/').includes('..')
+  )
+    throw Error(
+      'archiveDirectory: normalized absolute path with only A-Z a-z 0-9 . _ / - required'
+    );
   for (const k of ['container', 'imageRepository', 'diagnosticUnit'])
     text(d[k], k, /^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/);
   for (const k of [

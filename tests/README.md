@@ -99,6 +99,8 @@ The configuration digest identifies environment-file bytes without saving them, 
 
 Live preparation requires exact SHA-256 configuration, NanoHost and Worker pins; historical unavailable identities are confined to offline replay and appear as `unavailable` in the public row.
 
+`deployment.archiveDirectory` must be a normalized absolute POSIX path containing only `A-Z a-z 0-9 . _ / -`, with no `..` segment; the archive destination is passed literally to SFTP-mode `scp` without shell quoting.
+
 The public row hashes the scenario-revision description and expands declared reset reasons only in the private summary.
 
 Changed NanoHost inputs still refuse preparation and require the maintained NanoHost build/install and Initial NanoHost Provisioning procedure; this runner does not build or restart NanoHost.
