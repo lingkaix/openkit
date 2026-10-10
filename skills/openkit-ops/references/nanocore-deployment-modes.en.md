@@ -34,6 +34,8 @@ openkit/worker-runtimes:dev
 
 A local build does not publish these images. GHCR publication is a separate, later version-tag release step. Production-style deployments should use an exact published version tag or digest-pinned image reference and should not use `latest`.
 
+For a published Worker image selected by its release-note digest, follow [Maintain Local Worker Images](nanocore-operations.en.md#maintain-local-worker-images) for the host platform step before preparation or import.
+
 Use [Release Cookbook](https://github.com/lingkaix/openkit/blob/main/docs/cookbooks/release.md) for release tags and [Docker App Image](https://github.com/lingkaix/openkit/blob/main/docs/cookbooks/docker-app.md) for local app-image build, run, persistence smoke, and packaged UI checks.
 
 ## Shared Prerequisites

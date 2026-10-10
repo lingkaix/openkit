@@ -147,6 +147,8 @@ Retain the exact failure and partial outcome. A fresh task may continue after re
 
 ### Maintain Local Worker Images
 
+Published OpenKit image digests in release notes name multi-platform Open Container Initiative (OCI) image indexes. The NanoHost Image Store holds one platform image manifest per digest. Registry preparation or `image import` using the index digest fails under the known limitation in [issue #206](https://github.com/lingkaix/openkit/issues/206). Use the platform steps below until the NanoHost change in that issue lands; remove this workaround when it does.
+
 Use these commands on the selected NanoHost only with authorized host administrator access. They operate on `/var/lib/openkit/nanohost-images` and do not read transport credentials, connect to NanoCore or start the service:
 
 ```bash
@@ -157,6 +159,15 @@ sudo /usr/lib/openkit/nanohost image capacity <positive-byte-count>
 sudo /usr/lib/openkit/nanohost image remove sha256:<exact-manifest-digest>
 ```
 
+For a published Worker image:
+
+1. Read the published index with a registry client, for example `skopeo`, and resolve the manifest digest matching the NanoHost's OS and architecture.
+2. Copy only that platform into an OCI archive. Check that the archive's `index.json` contains a single image-manifest descriptor whose digest matches the resolved platform manifest digest.
+3. Run the import command above with that archive and the platform manifest digest as `<expected-manifest-digest>`.
+4. Prepare and activate through the public `worker-environment.prepare` and `worker-environment.activate` operations using the image reference pinned to that platform manifest digest and `pullPolicy` `never`. Follow [the preparation and activation review procedure](#prepare-and-reuse-a-worker-environment). Verify that the owner reports the platform manifest digest as the resolved image.
+
+This route was observed to work on `linux/arm64` in issue #206. Registry acquisition by a platform manifest digest was not exercised.
+
 Replace placeholders with the reviewed archive, exact lowercase digest or positive integer byte count before execution. Import verifies the archive and does not fetch missing images or run its contents. Before pointing an Agent at a newly imported Worker image, admit it through the administrator CLI operations `worker-environment.prepare` and `worker-environment.activate`; local import alone does not admit its environment defaults, and direct Agent-file edits do not replace those operations. The default capacity is 214748364800 bytes (200 GiB); changes take effect without a restart. Lowering it below usage keeps all stored images and running Workers but refuses further growth. Images are not automatically evicted. Listing includes incomplete entries and attributed temporary content so an interrupted import can be inspected and explicitly removed by exact digest. A busy store fails the current command; wait for the active transaction and make a fresh authorized request.
 
 Before removing an image, inspect affected Agent configurations through public operations. The local command cannot determine which NanoCore configurations reference it. Removal can block later admissions, and local-only content may not be recoverable without its source archive. It does not delete backend containers, retained Worker volumes or running processes. Never remove the whole store or restart NanoHost to resolve capacity pressure.
@@ -166,6 +177,8 @@ Before removing an image, inspect affected Agent configurations through public o
 Use the installed bundled administrator CLI to discover and describe Worker environment operations. If the installed server does not expose them, report the version prerequisite; do not substitute Docker commands against NanoHost's private runtime. These technical operations require the requesting user's current administrator authority and independent access to the Agent configuration and every affected Workspace and source audience. Ordinary Workspace membership and a user's willingness to continue do not grant administration authority.
 
 Inspect eligible retained environments for the exact target work. Prefer useful existing data for related Tasks or Goals in the same Workspace, considering its source lineage, current occupancy and compatibility; choose fresh storage when reuse is unsuitable. Never share storage across Workspaces. Current Core admission decides eligibility and exclusive attachment; an image family label, an earlier successful mount or an Agent's relatedness judgment cannot authorize reuse.
+
+For a published Worker image selected by its release-note digest, first follow [Maintain Local Worker Images](#maintain-local-worker-images) to resolve and import the host platform manifest before preparation.
 
 Prepare the exact image declaration through the public owner and retain its immutable candidate reference. A digest-pinned Dockerfile base already verified in the selected NanoHost Image Store is used locally without publishing it to a registry; retain the exact authored `FROM` reference. Only a missing digest permits the existing authorized registry lookup. Corrupt, busy or unreadable retained content stops preparation for inspection, and the existing strict Buildx policy remains required. Preparation must not mount the retained data or interrupt the existing Worker. Review the resolved image, complete storage layout, target revision, affected work and stated interruption before confirming activation. Bind confirmation to that exact candidate; a changed target, image, revision or impact requires a new review. Activation must prove the old writer fenced before attaching retained volumes. Missing storage, an incompatible layout or an unknown attachment is a reason to inspect and stop the dependent action, never to initialize an empty replacement or force another mount.
 
