@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -78,6 +78,89 @@ test('release workflow smokes one digest on every platform before tag promotion'
   assert.ok(job.steps.indexOf(verify) < job.steps.indexOf(anonymous));
   assert.equal(record.env.ANONYMOUS_PULL, actionExpression('matrix.anonymousPull'));
 });
+
+test('candidate smoke runs every platform once against the same digest in a classic image store', () => {
+  const { result, runs } = runCandidateSmoke();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(runs, [
+    'run linux/amd64 ghcr.io/example/image@sha256:candidate candidate-smoke',
+    'run linux/arm64 ghcr.io/example/image@sha256:candidate candidate-smoke',
+  ]);
+});
+
+test('candidate smoke fails the step when a platform smoke fails', () => {
+  const { result, runs } = runCandidateSmoke('linux/amd64');
+  assert.equal(result.status, 42, result.stderr);
+  assert.match(result.stderr, /smoke failed for linux\/amd64/u);
+  assert.deepEqual(runs, [
+    'run linux/amd64 ghcr.io/example/image@sha256:candidate candidate-smoke',
+  ]);
+});
+
+/** Executes the workflow body with a per-reference, single-platform Docker store double. */
+function runCandidateSmoke(failPlatform = '') {
+  const directory = mkdtempSync(join(tmpdir(), 'openkit-candidate-smoke-'));
+  const stateFile = join(directory, 'state.json');
+  const logFile = join(directory, 'runs.log');
+  try {
+    writeFileSync(stateFile, '{}');
+    writeFileSync(logFile, '');
+    writeFileSync(
+      join(directory, 'docker'),
+      `#!${process.execPath}
+const { appendFileSync, readFileSync, writeFileSync } = require('node:fs');
+const args = process.argv.slice(2);
+const state = JSON.parse(readFileSync(process.env.DOCKER_STATE, 'utf8'));
+if (args.length === 6 && args[0] === 'run' && args[1] === '--rm' && args[2] === '--platform') {
+  const [, , , platform, reference, command] = args;
+  if (Object.hasOwn(state, reference) && state[reference] !== platform) {
+    console.error('docker: cannot overwrite digest ' + reference.split('@')[1]);
+    process.exit(125);
+  }
+  state[reference] = platform;
+  writeFileSync(process.env.DOCKER_STATE, JSON.stringify(state));
+  appendFileSync(process.env.DOCKER_LOG, 'run ' + platform + ' ' + reference + ' ' + command + '\\n');
+  if (platform === process.env.FAIL_PLATFORM) {
+    console.error('smoke failed for ' + platform);
+    process.exit(42);
+  }
+} else if ((args.length === 3 && args[0] === 'image' && args[1] === 'rm') ||
+           (args.length === 2 && args[0] === 'rmi')) {
+  const reference = args.at(-1);
+  if (!Object.hasOwn(state, reference)) {
+    console.error('docker: no such image: ' + reference);
+    process.exit(1);
+  }
+  delete state[reference];
+  writeFileSync(process.env.DOCKER_STATE, JSON.stringify(state));
+} else {
+  console.error('unsupported docker arguments: ' + JSON.stringify(args));
+  process.exit(1);
+}
+`,
+      { mode: 0o755 }
+    );
+    const smoke = step(workflow.jobs['publish-container-images'], 'Smoke every candidate platform');
+    const result = spawnSync('bash', ['-e', '-c', smoke.run], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        PATH: `${directory}:${process.env.PATH}`,
+        IMAGE: 'ghcr.io/example/image',
+        DIGEST: 'sha256:candidate',
+        PLATFORMS: 'linux/amd64,linux/arm64',
+        SMOKE_COMMAND: 'candidate-smoke',
+        DOCKER_STATE: stateFile,
+        DOCKER_LOG: logFile,
+        FAIL_PLATFORM: failPlatform,
+      },
+      encoding: 'utf8',
+    });
+    return { result, runs: readFileSync(logFile, 'utf8').trim().split('\n') };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
 
 test('manual release gate derives a nonpublishing worker image smoke matrix', () => {
   const matrixJob = workflow.jobs['container-image-matrix'];

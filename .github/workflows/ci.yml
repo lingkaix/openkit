@@ -1096,8 +1096,10 @@ jobs:
           SMOKE_COMMAND: ${{ matrix.smokeCommand }}
         run: |
           IFS=',' read -ra platforms <<< "${PLATFORMS}"
+          # The classic image store holds only one platform per index-digest reference.
           for platform in "${platforms[@]}"; do
             docker run --rm --platform "${platform}" "${IMAGE}@${DIGEST}" "${SMOKE_COMMAND}"
+            docker image rm "${IMAGE}@${DIGEST}"
           done
 
       - name: Promote the smoked digest
