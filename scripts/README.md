@@ -4,6 +4,10 @@ Root `package.json` owns the command surface and `docs/toolchain.md` owns setup 
 
 ## Release Inputs And Verification
 
+`release-product-inputs.mjs --tested <full sha> --publishing <full sha>` classifies an ancestor-to-descendant raw Git diff for live-round reuse, excluding only `docs/`, root `tests/`, `.github/`, and repository-root Markdown while retaining symlinks and gitlinks as product inputs. It emits every classified change and exits 0 for eligibility, 1 for product changes or non-ancestry, and 2 for usage or unreadable Git evidence.
+
+`release-ci-reuse.mjs --repository <owner/repo> --workflow ci.yml --sha <full sha> --job <exact job name>` reads GitHub Actions with the job-scoped `GITHUB_TOKEN` and reports the run, latest attempt, and successful job identity for one completed exact-commit dispatch. It paginates runs and attempt jobs, rechecks the selected attempt, and exits 1 when no job qualifies or 2 on usage/API errors. The tag-only L0-L2 and NanoCore e2e steps use either failure result to run their normal tests; fixtures inject HTTP responses without network access.
+
 `release-preflight.mjs` validates the selected release inputs and the schema-version-2 NanoHost capability profile. `package-release-assets.mjs` reads checkout-owned inputs from the selected Git revision and produces the controlled release archives. NanoHost packaging selects `linux/amd64` and `linux/arm64` from the distribution table in `lib/nanohost-elf.mjs`; it bundles exact `host-manifest.json` bytes, profile id and digest, product commit, and libc symbol-version requirements derived from both ELF executables. `verify-nanohost-release.mjs` checks the archive tree, checksums, checkout-owned bytes, provenance, ELF and derived requirements, then performs a contained staging install.
 
 Run `pnpm release:preflight -- --tag <tag>` and `pnpm release:package -- --tag <tag>` through the release cookbook. Release and pre-release tag CI runs target-native real-host qualification before publication under the release and NanoHost specifications; pull-request and manual gates do not run it.

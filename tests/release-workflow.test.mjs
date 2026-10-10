@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { parse } from 'yaml';
 
-const workflow = parse(readFileSync(join(process.cwd(), '.github', 'workflows', 'ci.yml'), 'utf8'));
+const workflowBytes = readFileSync(join(process.cwd(), '.github', 'workflows', 'ci.yml'), 'utf8');
+const workflow = parse(workflowBytes);
 
 test('test image jobs reap orphaned processes through Docker init', () => {
   const jobs = Object.entries(workflow.jobs).filter(
@@ -487,4 +489,117 @@ test('release qualification runs both exact archives natively before publication
   assert.match(commands, /ImageVersion/);
   assert.match(commands, /dpkg-query/);
   assert.doesNotMatch(commands, /systemctl|docker run|host:nanohost|worker.*job/);
+});
+
+// Recorded from main at a6f40272f7566244d55aa1dc5d4e4a59d335ac9a, before CI reuse edits.
+const unchangedJobBaseline = {
+  'test-image': 'b0504dcc37a38fb459ba4ba8fc8400d50128765479cf6a3473a8717d068dfe38',
+  'pr-check': '21bf4f4ac3b3d36600ca9d88daf93ac86c613397e545f1560b37a3fa63fd2885',
+  'nanohost-installer': 'eb04e2ebaa480c04d22f8eaa91b776baa238a0cdae2e31462d282cf74b10481f',
+  'release-preflight': 'cb0388e3b0b6dfb271925b3cbf3c5fc9e7b945dcae59bd03a361cc19975ac9a6',
+  'workspace-portability-source':
+    'e33d1577679a0bba824a60d2ab8a2bf24e2f1a47608e872c824951efa70c6ace',
+  'workspace-portability-target':
+    '797453722686d9086ed90ccc253580ee7c74a87c3d41b2dec96a3b50bf6fcd27',
+  'web-e2e': '9648f5055d4cbfb7dce59b6a7bf8609ed75ddd0125cc5972658c1643aaf919e0',
+  smoke: '809f71ab17a0109adbc1775f9d7dcdb37118c99d38f30f8842981a09a925d048',
+  'app-image-admin-recovery': '9c224480a78632a0bf6cee04ad6219264bfcad3601c413dc7d5196235aba0c87',
+  'build-nanohost-amd64': '346b895871f280deff3d571843906b4952431d5dcf4870f64a53b7f140169180',
+  'build-nanohost-arm64': 'd0b7cdb6291ef8eedacddda56ad81b8f602398ce35acd2ef3eb32a4ae9c9cf32',
+  'package-release-assets': '9bb6035b4d43646481b89f1a40651ec23203e343a29a9506d209e5f551de4eea',
+  'qualify-nanohost': '9c42422c9716a0ad27688e745ac4ca1716671c9709349dfdca2fd01abe619474',
+  'container-image-matrix': '9c7bb0793a5b45481b14a25502b41d5aea5ec7118d086fdef68867808dcca36d',
+  'smoke-worker-images': 'be01e798f959e57e037827b605e89cb36da82d9c986ff3b3742df12e26c67606',
+  'publish-container-images': '3731147f50b71e9fb2bb3c2436ac368689614e08f1a7d9c29776835b65ab399a',
+  'github-release': '28c950ef1d1575124f2a1887cd49594861bfdaa26634f6c05be71a1805b28704',
+  'verify-release': 'fc6ce1a83c127a9ed195a082f7d28a82a8c07149d778e7131dc96d0f76e8ac49',
+};
+
+test('publication, packaging and all other jobs remain byte-identical to the recorded main baseline', () => {
+  const blocks = new Map(
+    [
+      ...workflowBytes
+        .slice(workflowBytes.indexOf('jobs:\n') + 6)
+        .matchAll(/^ {2}([a-z0-9-]+):\n(.*?)(?=^ {2}[a-z0-9-]+:\n|(?![\s\S]))/gms),
+    ].map((match) => [match[1], match[2]])
+  );
+  assert.deepEqual(
+    Object.keys(workflow.jobs)
+      .filter((name) => !['l0-l2', 'nano-core-e2e'].includes(name))
+      .sort(),
+    Object.keys(unchangedJobBaseline).sort()
+  );
+  for (const [name, digest] of Object.entries(unchangedJobBaseline)) {
+    assert.equal(createHash('sha256').update(blocks.get(name)).digest('hex'), digest, name);
+  }
+});
+
+test('only L0-L2 and NanoCore e2e gain actions read and tag-only reuse directly after checkout', () => {
+  const selected = ['l0-l2', 'nano-core-e2e'];
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    if (!selected.includes(name)) {
+      assert.equal(job.permissions?.actions, undefined, name);
+      assert.ok(!job.steps?.some((entry) => entry.id === 'reuse'), name);
+      continue;
+    }
+    assert.deepEqual(job.permissions, { contents: 'read', packages: 'read', actions: 'read' });
+    assert.equal(job.needs, 'test-image');
+    assert.equal(job.container.image, actionExpression('needs.test-image.outputs.image'));
+    assert.equal(job.steps[0].name, 'Checkout');
+    const reuse = job.steps[1];
+    assert.equal(reuse.id, 'reuse');
+    assert.equal(reuse.if, "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')");
+    assert.deepEqual(reuse.env, {
+      GITHUB_TOKEN: actionExpression('secrets.GITHUB_TOKEN'),
+      REUSE_JOB_NAME: job.name,
+    });
+    assert.match(reuse.run, /node scripts\/release-ci-reuse\.mjs/u);
+    assert.match(reuse.run, /--repository "\$\{GITHUB_REPOSITORY\}"/u);
+    assert.match(reuse.run, /--workflow ci\.yml/u);
+    assert.match(reuse.run, /--sha "\$\{GITHUB_SHA\}"/u);
+    assert.match(reuse.run, /--job "\$\{REUSE_JOB_NAME\}"/u);
+    for (const later of job.steps.slice(2)) {
+      assert.equal(later.if, "steps.reuse.outputs.reused != 'true'", later.name);
+    }
+  }
+});
+
+test('reuse shell succeeds for proof and falls back on either unavailable or erroneous API evidence', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'openkit-release-reuse-step-'));
+  try {
+    writeFileSync(
+      join(directory, 'node'),
+      '#!/bin/sh\nprintf "%s\\n" "$REUSE_RESULT"\nexit "$REUSE_STATUS"\n',
+      { mode: 0o755 }
+    );
+    for (const name of ['l0-l2', 'nano-core-e2e']) {
+      const reuse = step(workflow.jobs[name], 'Reuse exact-commit candidate job');
+      for (const status of [0, 1, 2]) {
+        const output = join(directory, 'output');
+        const summary = join(directory, 'summary');
+        writeFileSync(output, '');
+        writeFileSync(summary, '');
+        const proof = 'Reused run 10 attempt 2 job 20';
+        const result = spawnSync('sh', ['-e', '-c', reuse.run], {
+          env: {
+            ...process.env,
+            PATH: `${directory}:${process.env.PATH}`,
+            GITHUB_OUTPUT: output,
+            GITHUB_STEP_SUMMARY: summary,
+            GITHUB_REPOSITORY: 'example/openkit',
+            GITHUB_SHA: 'a'.repeat(40),
+            REUSE_JOB_NAME: workflow.jobs[name].name,
+            REUSE_RESULT: proof,
+            REUSE_STATUS: String(status),
+          },
+          encoding: 'utf8',
+        });
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(readFileSync(output, 'utf8'), `reused=${status === 0}\n`);
+        assert.equal(readFileSync(summary, 'utf8'), status === 0 ? `${proof}\n` : '');
+      }
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
