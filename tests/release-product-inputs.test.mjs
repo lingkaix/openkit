@@ -170,9 +170,10 @@ test('NUL-delimited paths preserve whitespace and newline identity', () => {
 
 test('gitlink added under docs exits 1 even when Git configuration ignores submodules', () => {
   fixture(({ directory, tested }) => {
-    git(directory, 'config', 'diff.ignoreSubmodules', 'all');
     git(directory, 'update-index', '--add', '--cacheinfo', `160000,${tested},docs/module`);
     git(directory, 'commit', '-qm', 'gitlink fixture');
+    // Git 2.39 ignores staged gitlinks during commit when this configuration is already set.
+    git(directory, 'config', 'diff.ignoreSubmodules', 'all');
     const result = check(directory, tested, git(directory, 'rev-parse', 'HEAD'));
     assert.equal(result.status, 1, result.stderr);
     assert.match(result.stdout, /product A "docs\/module" \(000000 -> 160000\)/u);
