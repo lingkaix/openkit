@@ -196,7 +196,9 @@ describe('administration conversation route', () => {
           'Never infer that NanoHost is unconfigured or unready from Provider catalog absence or zero Worker environments.'
         );
         expect(request.tools.map((tool: { name: string }) => tool.name)).toEqual([
-          ...ADMINISTRATION_TOOL_NAMES,
+          ...ADMINISTRATION_TOOL_NAMES.map((name) =>
+            name.replaceAll('.', '_').replaceAll('-', '_')
+          ),
         ]);
         primaryConfigured = true;
         return {
@@ -207,7 +209,7 @@ describe('administration conversation route', () => {
             {
               type: 'function_call',
               call_id: 'call_environment_list',
-              name: 'worker_environment.list',
+              name: 'worker_environment_list',
               arguments: JSON.stringify({ workspaceId }),
             },
           ],

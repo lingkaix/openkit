@@ -56,6 +56,7 @@ import { GatewayUnsupportedFeatureError, PiAiGatewayClient } from '../llm/pi-ai-
 import { attachPiAiFailure } from '../llm/pi-ai-failure.js';
 import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { createInternalAgentGatewayProvider } from './gateway-provider.js';
+import { type InternalAgentProviderRequest, runInternalAgentLoop } from './internal-agent-loop.js';
 
 const logicalModel: ResolvedLogicalModel = {
   id: 'assistant',
@@ -382,7 +383,7 @@ describe('internal Agent Gateway provider', () => {
                 {
                   type: 'function_call',
                   call_id: 'call',
-                  name: 'task_start',
+                  name: 'environment_status',
                   arguments: 'argument-canary',
                 },
               ],
@@ -592,7 +593,7 @@ describe('internal Agent Gateway provider', () => {
         {
           type: 'function_call',
           call_id: 'call_status',
-          name: 'environment.status',
+          name: 'environment_status',
           arguments: '{"workspaceId":"ws_target"}',
         },
       ],
@@ -617,32 +618,109 @@ describe('internal Agent Gateway provider', () => {
       onDispatch,
     });
 
-    const response = await provider(request());
-
-    expect(createResponses).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        parallel_tool_calls: false,
-        tools: [
-          {
-            type: 'function',
-            name: 'environment.status',
-            description: 'Read status.',
-            parameters: { type: 'object' },
-            strict: false,
-          },
-        ],
-      }),
-      expect.objectContaining({
-        transport: {
-          signal: expect.any(AbortSignal),
-          deadline: expect.any(Number),
-          onModelEvent: expect.any(Function),
-          onProviderHandoff: expect.any(Function),
+    const currentRequest: InternalAgentProviderRequest = {
+      ...request(),
+      tools: [
+        ...request().tools,
+        {
+          name: 'nanohost.runtime-target',
+          description: 'Read target.',
+          inputSchema: { type: 'object' },
         },
-      })
-    );
+        { name: 'task_start', description: 'Start task.', inputSchema: { type: 'object' } },
+        { name: 'a'.repeat(64), description: 'Boundary.', inputSchema: { type: 'object' } },
+      ],
+      messages: [
+        ...request().messages,
+        {
+          role: 'assistant',
+          truncated: false,
+          content: [
+            {
+              type: 'toolCall',
+              callId: 'earlier_status',
+              name: 'environment.status',
+              arguments: { workspaceId: 'ws_target' },
+            },
+            {
+              type: 'toolCall',
+              callId: 'earlier_target',
+              name: 'nanohost.runtime-target',
+              arguments: {},
+            },
+            { type: 'toolCall', callId: 'earlier_task', name: 'task_start', arguments: {} },
+          ],
+        },
+      ],
+    };
+    const response = await provider(currentRequest);
+
+    expect(createResponses).toHaveBeenCalledTimes(1);
+    expect(createResponses.mock.calls[0]![1]).toMatchObject({
+      parallel_tool_calls: false,
+      tools: [
+        {
+          type: 'function',
+          name: 'environment_status',
+          description: 'Read status.',
+          parameters: { type: 'object' },
+          strict: false,
+        },
+        {
+          type: 'function',
+          name: 'nanohost_runtime_target',
+          description: 'Read target.',
+          parameters: { type: 'object' },
+          strict: false,
+        },
+        {
+          type: 'function',
+          name: 'task_start',
+          description: 'Start task.',
+          parameters: { type: 'object' },
+          strict: false,
+        },
+        {
+          type: 'function',
+          name: 'a'.repeat(64),
+          description: 'Boundary.',
+          parameters: { type: 'object' },
+          strict: false,
+        },
+      ],
+    });
+    expect(createResponses.mock.calls[0]![2]).toMatchObject({
+      transport: {
+        signal: expect.any(AbortSignal),
+        deadline: expect.any(Number),
+        onModelEvent: expect.any(Function),
+        onProviderHandoff: expect.any(Function),
+      },
+    });
     expect(createResponses.mock.calls[0]?.[1]).not.toHaveProperty('metadata');
+    const payload = createResponses.mock.calls[0]![1];
+    for (const tool of payload.tools) expect(tool.name).toMatch(/^[a-zA-Z0-9_-]{1,64}$/);
+    expect(payload.input.slice(1)).toEqual([
+      {
+        type: 'function_call',
+        call_id: 'earlier_status',
+        name: 'environment_status',
+        arguments: '{"workspaceId":"ws_target"}',
+      },
+      {
+        type: 'function_call',
+        call_id: 'earlier_target',
+        name: 'nanohost_runtime_target',
+        arguments: '{}',
+      },
+      { type: 'function_call', call_id: 'earlier_task', name: 'task_start', arguments: '{}' },
+    ]);
+    expect(currentRequest.tools.map(({ name }) => name)).toEqual([
+      'environment.status',
+      'nanohost.runtime-target',
+      'task_start',
+      'a'.repeat(64),
+    ]);
     expect(response.message).toEqual({
       role: 'assistant',
       truncated: false,
@@ -657,6 +735,266 @@ describe('internal Agent Gateway provider', () => {
       ],
     });
     expect(onDispatch).toHaveBeenCalledWith({ providerId: 'provider' });
+  });
+
+  it.each([
+    ['undeclared', 'undeclared'],
+    ['environment.status', 'openkit_unavailable_tool'],
+    ['environment-status', 'environment-status'],
+    ['environment__status', 'environment__status'],
+    ['invalid/name', 'openkit_unavailable_tool'],
+    ['a'.repeat(65), 'openkit_unavailable_tool'],
+  ])('projects unadmitted returned names for loop correction: %s', async (name, expectedName) => {
+    const createResponses = vi.fn().mockResolvedValue({
+      id: 'response',
+      object: 'response',
+      status: 'completed',
+      output: [{ type: 'function_call', call_id: 'call_status', name, arguments: '{}' }],
+    });
+    const onDispatch = vi.fn();
+    const provider = createInternalAgentGatewayProvider({
+      capture: captureBinding(),
+      logicalModel,
+      resolveLogicalModel: () => logicalModel,
+      dispatcher: { createResponses },
+      resolveGatewayProvider: () =>
+        ({
+          id: 'provider',
+          models: ['model'],
+          gatewayCapabilities: {},
+          modelMetadata: { model: { tool_call: true } },
+        }) as never,
+      promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
+      usageEndpoint: 'responses',
+      onDispatch,
+    });
+    await expect(provider(request())).resolves.toMatchObject({
+      message: {
+        content: [{ type: 'toolCall', callId: 'call_status', name: expectedName, arguments: {} }],
+      },
+    });
+    expect(createResponses).toHaveBeenCalledTimes(1);
+    expect(onDispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['environment.status', 'openkit_unavailable_tool', 'environment.status'],
+    ['undeclared', 'undeclared', 'environment.status'],
+    ['invalid/name', 'openkit_unavailable_tool', 'environment.status'],
+    ['environment-status', 'openkit_unavailable_tool', 'environment-status'],
+  ])('corrects an unadmitted spelling through the real loop and Gateway history: %s', async (name, historyName, canonicalName) => {
+    const execute = vi.fn(async () => ({
+      content: [{ type: 'text' as const, text: 'Available.' }],
+    }));
+    const args = { workspaceId: 'ws_target' };
+    const createResponses = vi
+      .fn()
+      .mockResolvedValueOnce({
+        id: 'response_unknown',
+        object: 'response',
+        status: 'completed',
+        output: [
+          { type: 'function_call', call_id: 'unknown_call', name, arguments: JSON.stringify(args) },
+        ],
+      })
+      .mockImplementationOnce(async (_provider, payload) => {
+        expect(execute).not.toHaveBeenCalled();
+        expect(payload.tools.map((tool: { name: string }) => tool.name)).toEqual([
+          'environment_status',
+        ]);
+        expect(payload.input.slice(1)).toEqual([
+          {
+            type: 'function_call',
+            call_id: 'unknown_call',
+            name: historyName,
+            arguments: JSON.stringify(args),
+          },
+          {
+            type: 'function_call_output',
+            call_id: 'unknown_call',
+            output: 'The requested Tool is unavailable.',
+          },
+        ]);
+        for (const item of payload.input) {
+          if (item.type === 'function_call') expect(item.name).toMatch(/^[a-zA-Z0-9_-]{1,64}$/);
+        }
+        return {
+          id: 'response_corrected',
+          object: 'response',
+          status: 'completed',
+          output: [
+            {
+              type: 'function_call',
+              call_id: 'admitted_call',
+              name: 'environment_status',
+              arguments: JSON.stringify(args),
+            },
+          ],
+        };
+      })
+      .mockResolvedValueOnce({
+        id: 'response_done',
+        object: 'response',
+        status: 'completed',
+        output: [
+          {
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'Ready.' }],
+          },
+        ],
+      });
+    const provider = createInternalAgentGatewayProvider({
+      capture: captureBinding(),
+      logicalModel,
+      resolveLogicalModel: () => logicalModel,
+      dispatcher: { createResponses },
+      resolveGatewayProvider: () =>
+        ({
+          id: 'provider',
+          models: ['model'],
+          gatewayCapabilities: {},
+          modelMetadata: { model: { tool_call: true } },
+        }) as never,
+      promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
+      usageEndpoint: 'responses',
+    });
+    const result = await runInternalAgentLoop(
+      {
+        ...request(),
+        tools: [{ ...request().tools[0]!, name: canonicalName, execute }],
+        limits: { maxModelTurns: 3, maxToolCalls: 1, deadlineMs: 10_000 },
+      },
+      provider
+    );
+    expect(result.kind).toBe('quiescent');
+    expect(createResponses).toHaveBeenCalledTimes(3);
+    expect(execute).toHaveBeenCalledExactlyOnceWith(args, {
+      callId: 'admitted_call',
+      signal: expect.any(AbortSignal),
+    });
+    expect(createResponses.mock.calls[2]![1].input.slice(-2)).toEqual([
+      {
+        type: 'function_call',
+        call_id: 'admitted_call',
+        name: 'environment_status',
+        arguments: JSON.stringify(args),
+      },
+      { type: 'function_call_output', call_id: 'admitted_call', output: 'Available.' },
+    ]);
+    expect(result.messages).toContainEqual({
+      role: 'assistant',
+      truncated: false,
+      content: [
+        { type: 'toolCall', callId: 'admitted_call', name: canonicalName, arguments: args },
+      ],
+    });
+  });
+
+  it('keeps malformed Tool calls and arguments fatal instead of requesting correction', async () => {
+    const createResponses = vi.fn();
+    const provider = createInternalAgentGatewayProvider({
+      capture: captureBinding(),
+      logicalModel,
+      resolveLogicalModel: () => logicalModel,
+      dispatcher: { createResponses },
+      resolveGatewayProvider: () =>
+        ({
+          id: 'provider',
+          models: ['model'],
+          gatewayCapabilities: {},
+          modelMetadata: { model: { tool_call: true } },
+        }) as never,
+      promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
+      usageEndpoint: 'responses',
+    });
+    const invalidCalls = [
+      { call_id: undefined },
+      { call_id: '' },
+      { name: '' },
+      { name: 7 },
+      { arguments: {} },
+    ];
+    for (const invalid of invalidCalls) {
+      createResponses.mockResolvedValueOnce({
+        id: 'response',
+        object: 'response',
+        status: 'completed',
+        output: [
+          {
+            type: 'function_call',
+            call_id: 'call_status',
+            name: 'undeclared',
+            arguments: '{}',
+            ...invalid,
+          },
+        ],
+      });
+      await expect(provider(request())).rejects.toThrow('Gateway returned invalid Tool calls.');
+    }
+    createResponses.mockResolvedValueOnce({
+      id: 'response',
+      object: 'response',
+      status: 'completed',
+      output: [
+        { type: 'function_call', call_id: 'call_status', name: 'undeclared', arguments: '{' },
+      ],
+    });
+    await expect(provider(request())).rejects.toThrow('Gateway returned invalid Tool arguments.');
+    expect(createResponses).toHaveBeenCalledTimes(6);
+  });
+
+  it.each([
+    ['environment.status', 'environment_status'],
+    ['nanohost.runtime-target', 'nanohost.runtime_target'],
+    [''],
+    ['a'.repeat(65)],
+    ['invalid/name'],
+    ['openkit_unavailable_tool'],
+    ['openkit.unavailable-tool'],
+  ])('rejects invalid or colliding Tool aliases before dispatch: %j', async (...names) => {
+    const createResponses = vi.fn().mockResolvedValue({
+      id: 'response',
+      object: 'response',
+      status: 'completed',
+      output: [
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'Ready.' }],
+        },
+      ],
+    });
+    const resolveGatewayProvider = vi.fn(
+      () =>
+        ({
+          id: 'provider',
+          models: ['model'],
+          gatewayCapabilities: {},
+          modelMetadata: { model: { tool_call: true } },
+        }) as never
+    );
+    const provider = createInternalAgentGatewayProvider({
+      capture: captureBinding(),
+      logicalModel,
+      resolveLogicalModel: () => logicalModel,
+      dispatcher: { createResponses },
+      resolveGatewayProvider,
+      promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
+      usageEndpoint: 'responses',
+    });
+    await expect(
+      provider({
+        ...request(),
+        tools: names.map((name) => ({
+          name,
+          description: 'Read.',
+          inputSchema: { type: 'object' },
+        })),
+      })
+    ).rejects.toThrow('Internal Agent Tool aliases must be unique Responses function names.');
+    expect(resolveGatewayProvider).not.toHaveBeenCalled();
+    expect(createResponses).not.toHaveBeenCalled();
   });
 
   it('fails before provider contact when unsupported compaction is required', async () => {
@@ -1123,7 +1461,7 @@ describe('internal role shares Gateway planning and replay rules', () => {
       object: 'response',
       status: 'completed',
       output: [
-        { type: 'function_call', call_id: 'call', name: 'environment.status', arguments: '{' },
+        { type: 'function_call', call_id: 'call', name: 'environment_status', arguments: '{' },
       ],
     }));
     const onDispatch = vi.fn();

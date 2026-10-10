@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer';
+import { operationToolName } from '@openkit/app-api-schemas';
 
 import {
   finishCapabilityCall,
@@ -22,6 +23,11 @@ import type {
   InternalAgentProviderCall,
 } from './internal-agent-loop.js';
 import { InternalAgentProviderError } from './internal-agent-loop.js';
+
+/** Responses function-name admission applies equally to definitions and correction history. */
+const RESPONSES_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+/** Reserved non-executable spelling lets the loop correct unadmitted canonical or invalid names. */
+const UNAVAILABLE_TOOL_NAME = 'openkit_unavailable_tool';
 
 /** Allowlisted diagnostic phases; stock handoff alone does not establish transport delivery. */
 type InternalGatewayFailurePhase =
@@ -79,10 +85,28 @@ export function createInternalAgentGatewayProvider(
       );
     }
 
-    const providerInput = request.messages.flatMap(toResponsesInput);
+    // Transport aliases are request-local; only this exact map may restore canonical identity.
+    const canonicalToAlias = new Map<string, string>();
+    const aliasToCanonical = new Map<string, string>();
+    for (const { name } of request.tools) {
+      const alias = operationToolName(name);
+      if (
+        !RESPONSES_TOOL_NAME_PATTERN.test(alias) ||
+        aliasToCanonical.has(alias) ||
+        name === UNAVAILABLE_TOOL_NAME ||
+        alias === UNAVAILABLE_TOOL_NAME
+      ) {
+        throw new Error('Internal Agent Tool aliases must be unique Responses function names.');
+      }
+      canonicalToAlias.set(name, alias);
+      aliasToCanonical.set(alias, name);
+    }
+    const providerInput = request.messages.flatMap((message) =>
+      toResponsesInput(message, canonicalToAlias)
+    );
     const providerTools = request.tools.map(({ name, description, inputSchema }) => ({
       type: 'function',
-      name,
+      name: canonicalToAlias.get(name)!,
       description,
       parameters: inputSchema,
       // The loop validates the original schema before execution; stock strict generation rewrites optional fields and rejects valid Tool schemas such as task_start's tuple prefixItems.
@@ -207,7 +231,7 @@ export function createInternalAgentGatewayProvider(
               throw error;
             });
           failurePhase = 'output-projection';
-          const message = fromResponses(response);
+          const message = fromResponses(response, aliasToCanonical, canonicalToAlias);
           if (call)
             execution.addUsageRecordIds(
               recordInternalLlmGatewayUsage({
@@ -287,7 +311,11 @@ function internalGatewayFailureKind(error: unknown): PiAiFailureKind {
   }
 }
 
-function toResponsesInput(message: AgentMessage): readonly Record<string, unknown>[] {
+/** Projects canonical calls through the admitted map and carries safe unknown names for correction. */
+function toResponsesInput(
+  message: AgentMessage,
+  canonicalToAlias: ReadonlyMap<string, string>
+): readonly Record<string, unknown>[] {
   if (message.role === 'user') {
     return [
       {
@@ -315,19 +343,27 @@ function toResponsesInput(message: AgentMessage): readonly Record<string, unknow
       },
     ];
   }
-  return message.content.map((part) =>
-    part.type === 'text'
-      ? { role: 'assistant', content: [{ type: 'output_text', text: part.text }] }
-      : {
-          type: 'function_call',
-          call_id: part.callId,
-          name: part.name,
-          arguments: JSON.stringify(part.arguments),
-        }
-  );
+  return message.content.map((part) => {
+    if (part.type === 'text')
+      return { role: 'assistant', content: [{ type: 'output_text', text: part.text }] };
+    const name = canonicalToAlias.get(part.name) ?? part.name;
+    if (!RESPONSES_TOOL_NAME_PATTERN.test(name))
+      throw new Error('Gateway returned invalid Tool calls.');
+    return {
+      type: 'function_call',
+      call_id: part.callId,
+      name,
+      arguments: JSON.stringify(part.arguments),
+    };
+  });
 }
 
-function fromResponses(response: OpenAICompatibleResponsesResponse): AgentAssistantMessage {
+/** Restores admitted canonical IDs by exact lookup; unadmitted spellings stay non-executable for correction. */
+function fromResponses(
+  response: OpenAICompatibleResponsesResponse,
+  aliasToCanonical: ReadonlyMap<string, string>,
+  canonicalToAlias: ReadonlyMap<string, string>
+): AgentAssistantMessage {
   if (!Array.isArray(response.output)) {
     throw new Error('Gateway returned an invalid internal Agent response.');
   }
@@ -358,6 +394,11 @@ function fromResponses(response: OpenAICompatibleResponsesResponse): AgentAssist
       ) {
         throw new Error('Gateway returned invalid Tool calls.');
       }
+      const name =
+        aliasToCanonical.get(output.name) ??
+        (RESPONSES_TOOL_NAME_PATTERN.test(output.name) && !canonicalToAlias.has(output.name)
+          ? output.name
+          : UNAVAILABLE_TOOL_NAME);
       let args: unknown;
       try {
         args = JSON.parse(output.arguments);
@@ -367,7 +408,7 @@ function fromResponses(response: OpenAICompatibleResponsesResponse): AgentAssist
       content.push({
         type: 'toolCall',
         callId: output.call_id,
-        name: output.name,
+        name,
         arguments: args,
       });
       continue;

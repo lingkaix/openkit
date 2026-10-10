@@ -7,6 +7,7 @@ import { expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
+import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { assembleBuiltInSystemPrompt } from '../internal-agents/builtin-prompts.js';
 import { quickChatWorkspaceIdForUser } from '../lib/store.js';
@@ -175,8 +176,25 @@ it('binds the actual Administration prompt and ordered tools before model access
     expect((await response.json()).outcome).toBe('answered');
     expect(createResponses).toHaveBeenCalledOnce();
     const request = createResponses.mock.calls[0]![1];
+    const providerToolNames = [
+      'administration_configuration_read',
+      'administration_schema_read',
+      'administration_configuration_propose',
+      'worker_environment_list',
+      'worker_environment_status',
+      'worker_environment_prepare',
+      'worker_environment_recover',
+      'nanohost_runtime_target',
+    ];
+    expect(request.tools.map((tool: { name: string }) => tool.name)).toEqual(providerToolNames);
     expect(rowsAtModelAccess).toHaveLength(1);
     const turn = store.listThreadTurns(workspaceId, thread.id)[0]!;
+    const retainedItems = store.listThreadItems(workspaceId, thread.id);
+    expect(retainedItems.map(({ type, text }) => ({ type, text }))).toEqual([
+      { type: 'user-message', text: 'Describe current administration options.' },
+      { type: 'assistant-message', text: 'Ready.' },
+    ]);
+    for (const name of providerToolNames) expect(JSON.stringify(retainedItems)).not.toContain(name);
     expect(request.instructions).toBe(
       assembleBuiltInSystemPrompt('administration', {
         workspaceId,
@@ -190,8 +208,8 @@ it('binds the actual Administration prompt and ordered tools before model access
         .version,
       workspaceId,
       systemPromptDigest: digestLlmSystemPrompt({ endpoint: 'responses', request }),
-      tools: request.tools.map((tool: { name: string; parameters: unknown }) => ({
-        name: tool.name,
+      tools: request.tools.map((tool: { parameters: unknown }, index: number) => ({
+        name: ADMINISTRATION_TOOL_NAMES[index],
         inputSchemaDigest: createHash('sha256')
           .update(JSON.stringify(tool.parameters))
           .digest('hex'),
@@ -204,6 +222,9 @@ it('binds the actual Administration prompt and ordered tools before model access
     expect(JSON.stringify(rowsAtModelAccess)).not.toContain(request.instructions);
     const db = openWorkspaceDb(dataRoot, workspaceId);
     try {
+      expect(listWorkspaceCapabilityCalls(db, workspaceId)).toMatchObject([
+        { capabilityId: 'inference.local.administration', status: 'succeeded' },
+      ]);
       expect(
         readWorkObservationTurnBinding(db, { threadId: thread.id, turnId: turn.id }).coverage
       ).toEqual({ scope: 'server', value: 'off' });
