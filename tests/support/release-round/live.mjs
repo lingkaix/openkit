@@ -1096,6 +1096,8 @@ async function externalClient(p, dir, io, preflight, secret) {
     log_dir: path.join(work, 'logs'),
     'mcp_servers.openkit.command': process.execPath,
     'mcp_servers.openkit.args': [here],
+    // Codex filters stdio MCP environments; explicitly forward the bridge's launch context.
+    'mcp_servers.openkit.env_vars': ['RELEASE_ROUND_BRIDGE', 'RELEASE_ROUND_BRIDGE_PHASE'],
     'mcp_servers.openkit.default_tools_approval_mode': 'approve',
     'mcp_servers.openkit.startup_timeout_sec': 60,
     'mcp_servers.openkit.tool_timeout_sec': 120,

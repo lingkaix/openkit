@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import {
   bundle,
   end,
@@ -205,6 +206,103 @@ test('prepare passes the exact unquoted SFTP scp destination', async (t) => {
     archive,
     `${p.deployment.sshAlias}:${p.deployment.archiveDirectory}/${p.roundId}-${p.candidateCommit}.tar`,
   ]);
+});
+test('prepare forwards only the bridge evidence directory and phase through Codex MCP filtering', async (t) => {
+  const parent = await temp(t),
+    p = parameters(),
+    input = path.join(parent, 'params.json'),
+    dir = path.join(parent, 'round'),
+    fake = path.join(parent, 'codex.mjs'),
+    bridge = fileURLToPath(new URL('./support/release-round/live.mjs', import.meta.url));
+  p.external.executable = fake;
+  p.bounds.processMs = 5000;
+  await save(input, p);
+  // Model Codex's observed stdio inheritance rule before synthesizing tool visibility.
+  await fs.writeFile(
+    fake,
+    `#!${process.execPath}
+import assert from 'node:assert/strict';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+if (process.argv.includes('--version')) {
+  console.log('synthetic Codex environment-filter stand-in');
+} else {
+  const args = process.argv.slice(2), config = {};
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] !== '-c') continue;
+    const entry = args[++i], split = entry.indexOf('=');
+    config[entry.slice(0, split)] = JSON.parse(entry.slice(split + 1));
+  }
+  const prefix = 'mcp_servers.openkit.',
+    allowlist = ['HOME', 'LANG', 'LOGNAME', 'PATH', 'SHELL', 'TERM', 'TMPDIR', 'USER', '__CF_USER_TEXT_ENCODING'],
+    env = {};
+  for (const name of [...allowlist, ...(config[prefix + 'env_vars'] ?? [])])
+    if (process.env[name] !== undefined) env[name] = process.env[name];
+  Object.assign(env, config[prefix + 'env'] ?? {});
+  assert.equal(env.RELEASE_ROUND_BRIDGE, ${JSON.stringify(dir)}, 'MCP bridge start condition requires the evidence directory');
+  assert.equal(env.RELEASE_ROUND_BRIDGE_PHASE, 'preflight');
+  assert.equal(config[prefix + 'command'], ${JSON.stringify(process.execPath)});
+  assert.deepEqual(config[prefix + 'args'], [${JSON.stringify(bridge)}]);
+  assert.deepEqual(config[prefix + 'env_vars'], ['RELEASE_ROUND_BRIDGE', 'RELEASE_ROUND_BRIDGE_PHASE']);
+  assert.deepEqual(config[prefix + 'env'] ?? {}, {});
+  assert.equal(env.RELEASE_ROUND_UNRELATED, undefined);
+  const tools = ['guide', 'search', 'describe', 'call'];
+  const records = path.join(env.RELEASE_ROUND_BRIDGE, env.RELEASE_ROUND_BRIDGE_PHASE, 'mcp');
+  await fs.mkdir(records, { recursive: true });
+  await fs.writeFile(path.join(records, '000001.json'), JSON.stringify({
+    method: 'tools/list', httpStatus: 200, response: { result: { tools: tools.map(name => ({ name })) } }
+  }));
+  console.log(tools.join(' '));
+}
+`,
+    { mode: 0o700 }
+  );
+  const source = 'synthetic exact source';
+  let launches = 0;
+  await prepare(input, dir, {
+    credential: 'synthetic-private-value',
+    exec: async (exe, args, options) => {
+      if (exe === fake) {
+        const result = await defaults.exec(exe, args, {
+          ...options,
+          ...(args[0] === 'exec'
+            ? { env: { ...options.env, RELEASE_ROUND_UNRELATED: 'synthetic-unrelated' } }
+            : {}),
+        });
+        assert.equal(result.exitCode, 0, result.stderr);
+        if (args[0] === 'exec') launches++;
+        return result;
+      }
+      if (exe === 'scp') return { exitCode: 0, stdout: '', stderr: '' };
+      assert.equal(exe, 'git');
+      if (args[0] === 'archive') await fs.writeFile(args[2].slice('--output='.length), source);
+      return {
+        exitCode: 0,
+        stdout:
+          args[0] === 'show'
+            ? '## First-Release Scenario Set\nsynthetic'
+            : args[0] === 'diff'
+              ? ''
+              : p.checklistBlob,
+        stderr: '',
+      };
+    },
+    // Reach preflight through prepare without a real archive transfer or host.
+    ssh: async (_exe, args, options) => ({
+      exitCode: 0,
+      stdout:
+        args.at(-1) === 'cat /etc/machine-id'
+          ? p.deployment.machineId
+          : JSON.stringify(JSON.parse(options.input).remotePath ? { sha256: sha(source) } : {}),
+      stderr: '',
+    }),
+  });
+  assert.equal(launches, 1);
+  assert.equal((await readJson(path.join(dir, 'preflight-receipt.json'))).passed, true);
+  assert.equal(
+    typeof (await readJson(path.join(dir, 'prepare-complete.json'))).runnerSha256,
+    'string'
+  );
 });
 test('parameter validation refuses unsafe or non-normalized archive directories', () => {
   for (const archiveDirectory of [
