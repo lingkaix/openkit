@@ -70,6 +70,8 @@ const INFERENCE = 'inference-credential-deepseek-w5';
 const CAPABILITY = 'capability-credential-deepseek-w5';
 const CONTROL = 'worker-control-token-deepseek-w5';
 const LIVE = 180_000;
+/** Test-only hosted scheduling allowance for #200; the product stop deadline stays unchanged. */
+const INTERRUPT_SCHEDULING_MARGIN_MS = 2_000;
 /** Two bounded 2 s signals plus exit delivery; measured fault-to-stop completion exceeded 2 s. */
 const NATIVE_STOP_MS = 5_000;
 const CAUSE_CANARIES = [
@@ -2062,19 +2064,40 @@ describe('deepseek resident adapter', () => {
     LIVE
   );
 
-  it('bounds an interrupt whose cancel response and prompt never arrive', async () => {
-    const inference = await startSyntheticInference(() => ({ hang: true }));
-    closers.push(() => inference.close());
-    const roots = tempRoots();
-    const session = await open(roots, inference, null);
-    const active = await session.startTurn(turn(roots, inference, 'hang', [], 'turn-1'));
-    await waitFor(() => inference.requests.length > 0);
-    const internals = session as unknown as { agent: { cancel(): Promise<unknown> } };
-    internals.agent.cancel = async () => new Promise(() => undefined);
-    await active.interrupt();
-    expect(['interrupted', 'failed']).toContain((await active.settled).status);
-    expect(session.childState()).toBe('absent');
-  }, 12_000);
+  it(
+    'bounds an interrupt whose cancel response and prompt never arrive',
+    async () => {
+      const inference = await startSyntheticInference(() => ({ hang: true }));
+      closers.push(() => inference.close());
+      const roots = tempRoots();
+      const session = await open(roots, inference, null);
+      const active = await session.startTurn(turn(roots, inference, 'hang', [], 'turn-1'));
+      await waitFor(() => inference.requests.length > 0);
+      const internals = session as unknown as { agent: { cancel(): Promise<unknown> } };
+      internals.agent.cancel = async () => new Promise(() => undefined);
+      const interruptBoundMs = LIFECYCLE_DEFAULTS.nativeStopMs + INTERRUPT_SCHEDULING_MARGIN_MS;
+      let watchdog: ReturnType<typeof setTimeout> | undefined;
+      const interruptStarted = performance.now();
+      try {
+        // Bound interruption and settlement together, independently of cold native setup.
+        const result = await Promise.race([
+          active.interrupt().then(() => active.settled),
+          new Promise<never>((_resolve, reject) => {
+            watchdog = setTimeout(
+              () => reject(new Error('DeepSeek interrupt did not settle within its test bound.')),
+              interruptBoundMs
+            );
+          }),
+        ]);
+        expect(performance.now() - interruptStarted).toBeLessThan(interruptBoundMs);
+        expect(['interrupted', 'failed']).toContain(result.status);
+        expect(session.childState()).toBe('absent');
+      } finally {
+        clearTimeout(watchdog);
+      }
+    },
+    LIVE
+  );
 
   it(
     'keeps multibyte text across every stdout byte split',

@@ -81,6 +81,10 @@ The shim prepares the declared generated `turn-output` directory before native s
 - `pnpm --filter @openkit/worker-shim build`
 - `pnpm --filter @openkit/worker-shim lint`
 
+The test commands select three required Vitest projects: `parallel` for ordinary files, `fixed-listeners` for Integration and Pi Harness files sharing port 17892, and `deepseek-native` for exactly `src/adapters/deepseek.test.ts`. Both sequential projects use `fileParallelism: false`, so Vitest runs their files one at a time after the parallel group finishes. The parallel project excludes those two groups, and the three projects together select every `src/**/*.test.ts` file once. This removes competing worker-shim native fixtures from DeepSeek's unchanged RPC deadlines; separate packages scheduled by Turbo still need root-level scheduling evidence.
+
+The DeepSeek hung-cancel regression allows the shared `LIVE` fixture budget for setup and measures interrupt invocation through Turn settlement against `LIFECYCLE_DEFAULTS.nativeStopMs` plus the named test-only two-second scheduling margin. A watchdog rejects a nonsettling interrupt at the same measured boundary; native cleanup and child absence remain required. The margin changes no product deadline.
+
 CI runs L0-L2 verification as the test image's unprivileged `node` user. Permission-refusal fixtures require ordinary filesystem authority and run without skips; running them as root does not prove their unreadability or cleanup-refusal predicates.
 
 Pi fixtures prove their private request listener is responsive before starting control and fault-injection deadlines, using a closed invalid request that opens no native session. Cold SDK module loading is fixture setup, while production startup and operation deadlines remain unchanged. The R5 real-host successor case uses the existing 120-second native-fixture test budget because it starts two SDK processes. The OpenCode binary-literal evidence check searches the actual pinned bytes with Node and requires no external search executable.
