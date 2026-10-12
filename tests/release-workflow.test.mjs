@@ -491,12 +491,39 @@ test('release qualification runs both exact archives natively before publication
   assert.doesNotMatch(commands, /systemctl|docker run|host:nanohost|worker.*job/);
 });
 
+test('release notes are checked before publication and verified against the generator', () => {
+  const preflightCommands = workflow.jobs['release-preflight'].steps
+    .map((entry) => entry.run ?? '')
+    .join('\n');
+  const publishCommands = workflow.jobs['publish-container-images'].steps
+    .map((entry) => entry.run ?? '')
+    .join('\n');
+  const githubRelease = workflow.jobs['github-release'];
+  const create = step(githubRelease, 'Create release notes');
+  const verifyDownload = step(
+    workflow.jobs['verify-release'],
+    'Download and verify GitHub Release assets'
+  );
+
+  assert.match(preflightCommands, /scripts\/release-notes\.mjs --check/);
+  assert.ok(step(githubRelease, 'Checkout'));
+  assert.match(create.run, /scripts\/release-notes\.mjs/);
+  assert.match(create.run, /--output release-notes\.md/);
+  assert.match(publishCommands, /imagetools', 'inspect', '--raw'/);
+  assert.match(publishCommands, /Platform manifest/);
+  assert.match(verifyDownload.run, /scripts\/release-notes\.mjs/);
+  assert.match(verifyDownload.run, /--compare-body/);
+  assert.doesNotMatch(workflowBytes, /R001 exact-product no-host-reboot runtime gate remains open/);
+});
+
 // Recorded from main at a6f40272f7566244d55aa1dc5d4e4a59d335ac9a, before CI reuse edits.
+// release-preflight, publish-container-images, github-release, and verify-release were re-recorded for the release-notes generator.
+// verify-release was re-recorded again when the published-body comparison moved into scripts/release-notes.mjs.
 const unchangedJobBaseline = {
   'test-image': 'b0504dcc37a38fb459ba4ba8fc8400d50128765479cf6a3473a8717d068dfe38',
   'pr-check': '21bf4f4ac3b3d36600ca9d88daf93ac86c613397e545f1560b37a3fa63fd2885',
   'nanohost-installer': 'eb04e2ebaa480c04d22f8eaa91b776baa238a0cdae2e31462d282cf74b10481f',
-  'release-preflight': 'cb0388e3b0b6dfb271925b3cbf3c5fc9e7b945dcae59bd03a361cc19975ac9a6',
+  'release-preflight': 'b25f38ec37f6cb1e8524a84f981f8cc21f243c5bd5e8ce7d568c550a65b70ab8',
   'workspace-portability-source':
     'e33d1577679a0bba824a60d2ab8a2bf24e2f1a47608e872c824951efa70c6ace',
   'workspace-portability-target':
@@ -510,9 +537,9 @@ const unchangedJobBaseline = {
   'qualify-nanohost': '9c42422c9716a0ad27688e745ac4ca1716671c9709349dfdca2fd01abe619474',
   'container-image-matrix': '9c7bb0793a5b45481b14a25502b41d5aea5ec7118d086fdef68867808dcca36d',
   'smoke-worker-images': 'be01e798f959e57e037827b605e89cb36da82d9c986ff3b3742df12e26c67606',
-  'publish-container-images': '3731147f50b71e9fb2bb3c2436ac368689614e08f1a7d9c29776835b65ab399a',
-  'github-release': '28c950ef1d1575124f2a1887cd49594861bfdaa26634f6c05be71a1805b28704',
-  'verify-release': 'fc6ce1a83c127a9ed195a082f7d28a82a8c07149d778e7131dc96d0f76e8ac49',
+  'publish-container-images': '544c64650e8964bd5730c68d8bee11bc3a3fed37ab9217b56b0eb7ab62b0c9d8',
+  'github-release': '342e687fc7bcb4773a791cc7d8925fb4bab7306f4cabade9513ac69238407cfd',
+  'verify-release': '20c614ff0f1300b403789cfb9145f5ca26fdfa2f5482d7a3089f0682681b5c9f',
 };
 
 test('publication, packaging and all other jobs remain byte-identical to the recorded main baseline', () => {

@@ -96,7 +96,7 @@ The current release bundle contains exactly these controlled assets:
 | Operations `openkit-ops` Skill | GitHub Release attachment | `openkit-ops-skill-<tag>.tar.gz` containing the complete `skills/openkit-ops/` tree and repository license |
 | NanoHost Distributions | GitHub Release attachments | `openkit-nanohost-<tag>-linux-amd64.tar.gz` and `openkit-nanohost-<tag>-linux-arm64.tar.gz`, each satisfying the exact target, tree, pin, installer, license, and reproducibility contract owned by the NanoHost specification |
 | Portable-asset checksum | GitHub Release attachment | `SHA256SUMS` over the attached operations Skill archive and the NanoHost archives |
-| Release record | GitHub Release | Tag, source commit, workflow run, image tags and digests, automatic gate result, manual-gate disposition, and portable-asset checksum |
+| Release record | GitHub Release | Tag, source commit, workflow run, image tags and digests, per-platform manifest digests, the reviewed sections `Changes since the previous candidate` and `Known issues`, automatic gate result, manual-gate disposition, and portable-asset checksum |
 
 The first-release Skill composition contains only the operations package with its definition-derived administrator executable. Remote MCP guide and every eligible release-operation dispatch are covered by the retirement regressions; one-time-secret procedures and Web/administrator archive transfers retain their accepted owners. New releases produce no end-user Skill archive or fallback package. Previously published immutable assets are unchanged. [Agent Operator Skill](20260910-agent_operator_skill.md) owns the installed package and [Operation Definition](20261002-operation_definition.md) owns the projection.
 
@@ -109,6 +109,16 @@ All root, app, and workspace package manifests remain private and produce no npm
 The NanoHost owner admits exactly two distribution targets, `linux/amd64` and `linux/arm64`. Release composition MUST use both exact target-matched archives without redefining their contents, destinations, installer semantics, or readiness, and MUST bind each generated manifest to its exact target plus the host-profile id and digest owned by the deployment-host specification. Current packaging implements both admitted targets.
 
 R001 remains open pending fresh exact-product no-host-reboot A1 evidence. Until that runtime gate closes, a release MUST remain a prerelease and its notes MUST state that the NanoHost archive is installable but supported Worker Agent execution is not yet release-ready.
+
+The publishing commit carries `release-notes/<tag>.md` for the tag being published.
+
+That file contains exactly two sections, `Changes since the previous candidate` and `Known issues`, and each section has a non-empty body.
+
+The tag run reads that file and fails before image promotion or GitHub Release creation when the file is missing or malformed.
+
+The published notes include both sections unchanged.
+
+For every published release image, the notes list the index digest and the manifest digest of each catalog platform beside it.
 
 The first stable release requires both an accepted NanoHost distribution artifact and closure of the current R001 runtime gate, or a later accepted product-scope decision to remove Worker Agent execution from that stable release.
 

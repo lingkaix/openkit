@@ -220,6 +220,9 @@ jobs:
             --main-ref origin/main \
             --require-main
 
+      - name: Check release notes input
+        run: node scripts/release-notes.mjs --check --repo-root . --tag "${GITHUB_REF_NAME}"
+
   l0-l2:
     name: L0-L2 static, unit, contract
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["l0-l2","release-gate","full"]'), inputs.gate))
@@ -1204,32 +1207,73 @@ jobs:
           IMAGE: ${{ steps.image.outputs.image }}
           IMAGE_ID: ${{ matrix.id }}
           IMAGE_TAGS: ${{ steps.image.outputs.tags }}
+          PLATFORMS: ${{ matrix.platforms }}
           PRERELEASE: ${{ steps.image.outputs.prerelease }}
           REUSED: ${{ steps.release.outputs.reused }}
         run: |
           mkdir -p release-records
-          {
-            echo "### ${IMAGE_ID}"
-            echo ""
-            echo "- Image: \`${IMAGE}\`"
-            echo "- Digest: \`${DIGEST}\`"
-            echo "- Reused immutable release identity: \`${REUSED}\`"
-            echo "- Tags:"
-            while IFS= read -r tag; do echo "  - \`${tag}\`"; done <<< "${IMAGE_TAGS}"
-          } > "release-records/${IMAGE_ID}.md"
-          node <<'NODE' > "release-records/${IMAGE_ID}.json"
-          const record = {
-            id: process.env.IMAGE_ID,
-            image: process.env.IMAGE,
-            digest: process.env.DIGEST,
-            anonymousPull: process.env.ANONYMOUS_PULL === 'true',
-            prerelease: process.env.PRERELEASE === 'true',
-            reused: process.env.REUSED === 'true',
-            tags: process.env.IMAGE_TAGS.split('\n').filter(Boolean),
-          };
-          process.stdout.write(`${JSON.stringify(record, null, 2)}\n`);
+          node <<'NODE'
+          const { execFileSync } = require('node:child_process');
+          const fs = require('node:fs');
+          const image = process.env.IMAGE;
+          const digest = process.env.DIGEST;
+          const imageId = process.env.IMAGE_ID;
+          const raw = execFileSync(
+            'docker',
+            ['buildx', 'imagetools', 'inspect', '--raw', `${image}@${digest}`],
+            { encoding: 'utf8' },
+          );
+          const index = JSON.parse(raw);
+          const manifests = Array.isArray(index.manifests) ? index.manifests : [];
+          const platforms = process.env.PLATFORMS.split(',').filter(Boolean).map((platform) => {
+            const separator = platform.indexOf('/');
+            const os = platform.slice(0, separator);
+            const architecture = platform.slice(separator + 1);
+            const matches = manifests.filter(
+              (item) =>
+                item?.platform?.os === os &&
+                item?.platform?.architecture === architecture &&
+                typeof item.digest === 'string',
+            );
+            if (matches.length !== 1) {
+              throw new Error(`Index for ${imageId} has ${matches.length} manifests for ${platform}.`);
+            }
+            return { platform, digest: matches[0].digest };
+          });
+          platforms.sort((left, right) => left.platform.localeCompare(right.platform));
+          const tags = process.env.IMAGE_TAGS.split('\n').filter(Boolean);
+          const lines = [
+            `### ${imageId}`,
+            '',
+            `- Image: \`${image}\``,
+            `- Digest: \`${digest}\``,
+            ...platforms.map(
+              (entry) => `- Platform manifest \`${entry.platform}\`: \`${entry.digest}\``,
+            ),
+            `- Reused immutable release identity: \`${process.env.REUSED}\``,
+            '- Tags:',
+            ...tags.map((tag) => `  - \`${tag}\``),
+          ];
+          fs.writeFileSync(`release-records/${imageId}.md`, `${lines.join('\n')}\n`);
+          fs.writeFileSync(
+            `release-records/${imageId}.json`,
+            `${JSON.stringify(
+              {
+                id: imageId,
+                image,
+                digest,
+                anonymousPull: process.env.ANONYMOUS_PULL === 'true',
+                prerelease: process.env.PRERELEASE === 'true',
+                reused: process.env.REUSED === 'true',
+                tags,
+                platforms,
+              },
+              null,
+              2,
+            )}\n`,
+          );
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, fs.readFileSync(`release-records/${imageId}.md`));
           NODE
-          cat "release-records/${IMAGE_ID}.md" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload image release record
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -1249,6 +1293,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
       - name: Download image release records
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -1269,37 +1316,15 @@ jobs:
           visibility=public
           if [ "${REPOSITORY_PRIVATE}" = "true" ]; then visibility=private; fi
           checksum="$(sha256sum portable-assets/SHA256SUMS | cut -d ' ' -f1)"
-          {
-            echo "# OpenKit ${GITHUB_REF_NAME}"
-            echo ""
-            echo "- Source commit: \`${GITHUB_SHA}\`"
-            echo "- Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-            echo "- Repository visibility at publication: \`${visibility}\`"
-            echo "- Portable asset checksum-file SHA-256: \`${checksum}\`"
-            echo "- NanoHost targets: \`linux/amd64\`, \`linux/arm64\`"
-            echo ""
-            echo "## Images"
-            echo ""
-            cat release-records/*.md
-            echo ""
-            echo "## Automatic Gates"
-            echo ""
-            echo "- L0-L2 static, unit, and contract verification passed."
-            echo "- L3 NanoCore e2e passed."
-            echo "- L5 built-artifact smoke passed."
-            echo "- Every release image platform passed smoke before tag promotion."
-            echo "- Public worker-common anonymous exact-digest inspection passed."
-            echo "- The Skill and NanoHost archives and their shared checksum passed local verification."
-            echo "- Both NanoHost targets passed fresh hosted requirement, no-write disposition, and contained staging qualification."
-            echo ""
-            echo "## Manual Gates"
-            echo ""
-            echo "- L4 Web e2e and L6 story acceptance were not required by the automatic release policy."
-            echo ""
-            echo "## Current Limitation"
-            echo ""
-            echo "- linux/amd64 and linux/arm64 archives are installable; R001 exact-product no-host-reboot runtime gate remains open."
-          } > release-notes.md
+          node scripts/release-notes.mjs \
+            --repo-root . \
+            --tag "${GITHUB_REF_NAME}" \
+            --records release-records \
+            --checksum "${checksum}" \
+            --visibility "${visibility}" \
+            --sha "${GITHUB_SHA}" \
+            --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --output release-notes.md
 
       - name: Create immutable GitHub Release
         env:
@@ -1384,15 +1409,17 @@ jobs:
       - name: Download and verify GitHub Release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
           TEST_IMAGE: ${{ needs.test-image.outputs.image }}
         run: |
           release_json="$(gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --json tagName,isDraft,isPrerelease,assets,body)"
           mkdir release-download
           gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --dir release-download
           checksum="$(sha256sum release-download/SHA256SUMS | cut -d ' ' -f1)"
-          CHECKSUM="${checksum}" RELEASE_JSON="${release_json}" node <<'NODE'
+          visibility=public
+          if [ "${REPOSITORY_PRIVATE}" = "true" ]; then visibility=private; fi
+          RELEASE_JSON="${release_json}" node <<'NODE'
           const fs = require('node:fs');
-          const path = require('node:path');
           const release = JSON.parse(process.env.RELEASE_JSON);
           const expectedPrerelease = process.env.GITHUB_REF_NAME.includes('-');
           const names = release.assets.map((asset) => asset.name).sort();
@@ -1408,22 +1435,17 @@ jobs:
           if (JSON.stringify(names) !== JSON.stringify(expected)) {
             throw new Error(`GitHub Release assets differ: ${names.join(', ')}`);
           }
-          const required = [
-            process.env.GITHUB_SHA,
-            '/actions/runs/',
-            'Repository visibility at publication:',
-            `Portable asset checksum-file SHA-256: \`${process.env.CHECKSUM}\``,
-            '## Automatic Gates',
-            '## Manual Gates',
-            'linux/amd64 and linux/arm64 archives are installable; R001 exact-product no-host-reboot runtime gate remains open',
-          ];
-          for (const name of fs.readdirSync('release-records').filter((name) => name.endsWith('.json'))) {
-            required.push(JSON.parse(fs.readFileSync(path.join('release-records', name), 'utf8')).digest);
-          }
-          for (const requiredEntry of required) {
-            if (!release.body.includes(requiredEntry)) throw new Error(`GitHub Release notes omit ${requiredEntry}.`);
-          }
+          fs.writeFileSync('release-body.md', String(release.body ?? ''));
           NODE
+          node scripts/release-notes.mjs \
+            --repo-root . \
+            --tag "${GITHUB_REF_NAME}" \
+            --records release-records \
+            --checksum "${checksum}" \
+            --visibility "${visibility}" \
+            --sha "${GITHUB_SHA}" \
+            --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --compare-body release-body.md
           # Docker and gh stay on the host; deterministic asset checks use the authoritative image.
           docker run --rm --init --interactive \
             --volume "${GITHUB_WORKSPACE}:/workspace" \
