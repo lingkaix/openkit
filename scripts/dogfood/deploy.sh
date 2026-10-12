@@ -38,6 +38,12 @@ case "${TARGET}" in
   *) usage ;;
 esac
 
+if [[ -z "${OPENKIT_PUBLIC_HOST:-}" ]]; then
+  echo "OPENKIT_PUBLIC_HOST is unset or empty." >&2
+  exit 1
+fi
+public_host="${OPENKIT_PUBLIC_HOST}"
+
 # Fail before deployment when a required host command is unavailable.
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -76,8 +82,8 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   env_tmp="${ENV_FILE}.tmp"
   printf '%s\n' \
     "BETTER_AUTH_SECRET=${secret}" \
-    "BETTER_AUTH_URL=https://ai.simonxu.net" \
-    "BETTER_AUTH_TRUSTED_ORIGINS=https://ai.simonxu.net" \
+    "BETTER_AUTH_URL=https://${public_host}" \
+    "BETTER_AUTH_TRUSTED_ORIGINS=https://${public_host}" \
     "NODE_ENV=production" >"${env_tmp}"
   chmod 600 "${env_tmp}"
   mv "${env_tmp}" "${ENV_FILE}"
@@ -85,7 +91,7 @@ if [[ ! -f "${ENV_FILE}" ]]; then
 fi
 
 chmod 600 "${ENV_FILE}"
-if ! grep -Eq '^BETTER_AUTH_SECRET=.{32,}$' "${ENV_FILE}" || ! grep -Fxq 'BETTER_AUTH_URL=https://ai.simonxu.net' "${ENV_FILE}" || ! grep -Fxq 'BETTER_AUTH_TRUSTED_ORIGINS=https://ai.simonxu.net' "${ENV_FILE}"; then
+if ! grep -Eq '^BETTER_AUTH_SECRET=.{32,}$' "${ENV_FILE}" || ! grep -Fxq "BETTER_AUTH_URL=https://${public_host}" "${ENV_FILE}" || ! grep -Fxq "BETTER_AUTH_TRUSTED_ORIGINS=https://${public_host}" "${ENV_FILE}"; then
   echo "Invalid staging App environment." >&2
   exit 1
 fi
@@ -221,8 +227,8 @@ build_full_app() {
 # Wait for both Web and NanoCore health on the staging listener.
 wait_for_app() {
   for _attempt in $(seq 1 120); do
-    if curl -fsS -H 'Host: ai.simonxu.net' "http://127.0.0.1:${HOST_PORT}/" 2>/dev/null | grep -Fq '<div id="root"></div>' \
-      && curl -fsS -H 'Host: ai.simonxu.net' "http://127.0.0.1:${HOST_PORT}/api/health" 2>/dev/null | jq -e '.status == "ok" and .service == "nanocore"' >/dev/null; then
+    if curl -fsS -H "Host: ${public_host}" "http://127.0.0.1:${HOST_PORT}/" 2>/dev/null | grep -Fq '<div id="root"></div>' \
+      && curl -fsS -H "Host: ${public_host}" "http://127.0.0.1:${HOST_PORT}/api/health" 2>/dev/null | jq -e '.status == "ok" and .service == "nanocore"' >/dev/null; then
       return
     fi
     sleep 1
@@ -264,7 +270,7 @@ replace_app() {
     --env "CADDY_HTTP_PORT=${HOST_PORT}" \
     --env OPENKIT_CORE_MODE=server \
     --env OPENKIT_DATA_ROOT=/data/openkit \
-    --health-cmd 'curl -fsS -H "Host: ai.simonxu.net" http://127.0.0.1:7080/ | grep -Fq "<div id=\"root\"></div>" && curl -fsS -H "Host: ai.simonxu.net" http://127.0.0.1:7080/api/health | grep -Eq "\"status\"[[:space:]]*:[[:space:]]*\"ok\""' \
+    --health-cmd 'curl -fsS -H "Host: '"${public_host-}"'" http://127.0.0.1:7080/ | grep -Fq "<div id=\"root\"></div>" && curl -fsS -H "Host: '"${public_host-}"'" http://127.0.0.1:7080/api/health | grep -Eq "\"status\"[[:space:]]*:[[:space:]]*\"ok\""' \
     --health-interval 30s \
     --health-timeout 5s \
     --health-retries 3 \
