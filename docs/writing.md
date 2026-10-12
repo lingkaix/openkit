@@ -28,6 +28,35 @@ A specification prescribes architecture, module interfaces, and key technical de
 
 ### Sentences And Words
 
+This section bases its rules on Simplified Technical English (ASD-STE100). Apply only the rules that this section states. Do not adopt its dictionary. Keep docs/glossary.md as the controlled vocabulary for technical names. Read the reason in [a decision record](decisions/20261012-ste_based_writing_rules.md).
+
+Apply the first list to every new or changed sentence in an English repository document. Treat the decision records, the alternatives, the trade-offs, and the consequences as rationale wherever they occur. When the text is rationale, follow the first list except its two length targets. The two length targets are the procedural limit of about 20 words and the descriptive limit of about 25 words.
+
+An L6 story (agentic story acceptance) hands a persona and an ask to its actor. Write that persona as a real user would say it. Write that ask as a real user would say it. Exempt that persona and that ask from both lists. Apply every other rule of the repository to that persona and to that ask.
+
+When a change does not touch existing text, issue #218 brings that text into line.
+
+- Keep a procedural sentence to about 20 words.
+- Keep a descriptive sentence to about 25 words.
+- Treat these lengths as targets.
+- When a target would drop a required meaning, yield to precision.
+- Put one instruction in one sentence.
+- When a sentence has a condition, put the condition first.
+- Use the imperative mood for a procedure.
+- Use the active voice.
+- Name the actor.
+- Within one bounded context, give each technical term one meaning.
+- Do not use a synonym for variety.
+- Use a verb for an action.
+- Do not use a noun phrase for an action.
+- Do not use a noun cluster of more than three words.
+- Keep the articles.
+- Keep each paragraph short.
+- Give each paragraph one topic.
+- Use a list for a sequence.
+
+Except for that persona and that ask, apply the next list to every English repository document.
+
 - One idea per sentence, one topic per paragraph. A sentence over about forty words usually holds two ideas.
 - Prefer positive statements and name who acts. Use a negative definition only where the exclusion is the point.
 - Use the terms of docs/glossary.md with their fixed phrases. Do not coin a term; when no classic term or plain phrase fits, mark the new term project-specific and add it to the glossary in the same change.
