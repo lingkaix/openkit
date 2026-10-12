@@ -30,7 +30,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use credential_slots::{CredentialSelectionContext, SlotPairPaths};
 use epoch_coordinator::{
-    DockerImageBackend, EpochCoordinator, EpochPlan, RuntimeBackend, RuntimeEffectKind,
+    DockerImageBackend, EpochCoordinator, EpochFault, EpochPlan, RuntimeBackend, RuntimeEffectKind,
     configured_backend, resolve_epoch_nameservers,
 };
 use epoch_evidence::{
@@ -213,18 +213,23 @@ impl std::fmt::Display for NanoHostRunFailure {
     ///
     /// Raw upstream errors may contain credentials or request values, so the cause
     /// uses only the session owner's fixed reason, never an upstream Display.
+    /// An observed member failure appends that monitor's closed subject and
+    /// observation tokens, and no status that was not observed.
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Bounded(message) => formatter.write_str(message),
             Self::OuterSession(failure) => {
-                std::fmt::Display::fmt(failure, formatter).and_then(|()| {
-                    write!(
-                        formatter,
-                        "\nnanohost outer session cause: kind={} message={:?}",
-                        failure.reason().replace(' ', "_"),
-                        failure.reason(),
-                    )
-                })
+                std::fmt::Display::fmt(failure, formatter)?;
+                write!(
+                    formatter,
+                    "\nnanohost outer session cause: kind={} message={:?}",
+                    failure.reason().replace(' ', "_"),
+                    failure.reason(),
+                )?;
+                if let Some(member_failure) = failure.member_failure() {
+                    write!(formatter, " {}", member_failure.journal_tokens())?;
+                }
+                Ok(())
             }
         }
     }
@@ -841,6 +846,18 @@ async fn run() -> Result<(), NanoHostRunFailure> {
     run_sessions(session_inputs, coordinator, fence_started).await
 }
 
+/// Copies one observed member failure onto the fixed member-failure cause.
+///
+/// An unspecified member fault keeps the existing cause line.
+fn attach_member_failure(failure: OuterSessionFailure, fault: EpochFault) -> OuterSessionFailure {
+    match fault {
+        EpochFault::MemberExited(Some(member_failure)) => {
+            failure.with_member_failure(member_failure)
+        }
+        _ => failure,
+    }
+}
+
 /// Maintains the admitted epoch's authoritative session without recreating local resources.
 ///
 /// # Errors
@@ -881,8 +898,12 @@ async fn run_sessions(
                     // Core unavailability cannot invalidate an already-admitted healthy epoch.
                     tokio::select! {
                         () = tokio::time::sleep(OUTER_SESSION_RECONNECT_DELAY) => {}
-                        _ = coordinator.wait() => {
-                            return Err(terminal_connect("nanohost epoch member failed").into());
+                        fault = coordinator.wait() => {
+                            return Err(attach_member_failure(
+                                terminal_connect("nanohost epoch member failed"),
+                                fault,
+                            )
+                            .into());
                         }
                     }
                 }
@@ -980,12 +1001,15 @@ async fn run_sessions(
                                         }
                                     }
                                 } => submitted,
-                                _ = coordinator.wait() => {
-                                    return Err(OuterSessionFailure::terminal(
-                                        OuterSessionStage::Result,
-                                        operation,
-                                        None,
-                                        "nanohost epoch member failed",
+                                fault = coordinator.wait() => {
+                                    return Err(attach_member_failure(
+                                        OuterSessionFailure::terminal(
+                                            OuterSessionStage::Result,
+                                            operation,
+                                            None,
+                                            "nanohost epoch member failed",
+                                        ),
+                                        fault,
                                     ));
                                 }
                             };
@@ -1005,12 +1029,15 @@ async fn run_sessions(
                                 &mut cursor,
                                 coordinator.has_live_bridge(),
                             ) => command,
-                            _ = coordinator.wait() => {
-                                return Err(OuterSessionFailure::terminal(
-                                    OuterSessionStage::Poll,
-                                    poll_operation,
-                                    None,
-                                    "nanohost epoch member failed",
+                            fault = coordinator.wait() => {
+                                return Err(attach_member_failure(
+                                    OuterSessionFailure::terminal(
+                                        OuterSessionStage::Poll,
+                                        poll_operation,
+                                        None,
+                                        "nanohost epoch member failed",
+                                    ),
+                                    fault,
                                 ));
                             }
                         };
@@ -1063,12 +1090,15 @@ async fn run_sessions(
                             let executed = execute_effect_command(coordinator, &mut command);
                             // A synchronous effect must not publish success while Harness
                             // completion is still crossing the export-before-fence barrier.
-                            if coordinator.check_member_liveness().is_err() {
-                                return Err(OuterSessionFailure::terminal(
-                                    OuterSessionStage::Execute,
-                                    OuterSessionOperation::from(command.kind),
-                                    None,
-                                    "nanohost epoch member failed",
+                            if let Err(fault) = coordinator.check_member_liveness() {
+                                return Err(attach_member_failure(
+                                    OuterSessionFailure::terminal(
+                                        OuterSessionStage::Execute,
+                                        OuterSessionOperation::from(command.kind),
+                                        None,
+                                        "nanohost epoch member failed",
+                                    ),
+                                    fault,
                                 ));
                             }
                             let result = match executed {
@@ -1124,12 +1154,15 @@ async fn run_sessions(
                                             &command,
                                             failure_result.clone(),
                                         ) => submitted,
-                                        _ = coordinator.wait() => {
-                                            return Err(OuterSessionFailure::terminal(
-                                                OuterSessionStage::Result,
-                                                operation,
-                                                None,
-                                                "nanohost epoch member failed",
+                                        fault = coordinator.wait() => {
+                                            return Err(attach_member_failure(
+                                                OuterSessionFailure::terminal(
+                                                    OuterSessionStage::Result,
+                                                    operation,
+                                                    None,
+                                                    "nanohost epoch member failed",
+                                                ),
+                                                fault,
                                             ));
                                         }
                                     };
@@ -1575,7 +1608,7 @@ mod tests {
             result = &mut host => panic!("Host ended after successor readiness: {}", result.unwrap_err()),
             extra = tokio::time::timeout(Duration::from_millis(20), listener.accept()) => assert!(extra.is_err(), "only one physical successor connection"),
         }
-        members.send(EpochFault::MemberExited).unwrap();
+        members.send(EpochFault::MemberExited(None)).unwrap();
         let terminal = tokio::time::timeout(Duration::from_secs(5), &mut host)
             .await
             .unwrap()
@@ -2036,6 +2069,37 @@ mod tests {
                 )
             );
         }
+    }
+
+    #[test]
+    fn member_failure_cause_line_names_the_observed_exit_without_changing_classification() {
+        use crate::epoch_coordinator::{MemberFailure, MemberFailureSubject, MemberObservation};
+        let failure = OuterSessionFailure::terminal(
+            OuterSessionStage::Poll,
+            OuterSessionOperation::CreateSandbox,
+            None,
+            "nanohost epoch member failed",
+        )
+        .with_member_failure(MemberFailure::new(
+            MemberFailureSubject::Dockerd,
+            MemberObservation::ExitCode(7),
+        ));
+        let classification = failure.to_string();
+        let diagnostic = super::NanoHostRunFailure::from(failure).to_string();
+        assert_eq!(
+            classification,
+            "nanohost outer session failure: disposition=terminal stage=poll operation=sandbox.create status=none"
+        );
+        assert!(
+            !classification.contains("dockerd"),
+            "the classification line stays value-free"
+        );
+        assert_eq!(
+            diagnostic,
+            format!(
+                "{classification}\nnanohost outer session cause: kind=nanohost_epoch_member_failed message=\"nanohost epoch member failed\" subject=dockerd observation=exit-code code=7"
+            )
+        );
     }
 
     #[test]

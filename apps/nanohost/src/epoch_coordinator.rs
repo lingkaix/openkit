@@ -539,14 +539,186 @@ impl CreateUncertainty {
     }
 }
 
+/// Role or watched task that the member monitor names as the first failure.
+///
+/// The tokens are closed so the invalidation report and journal cannot carry
+/// a path, process id, credential, or raw member output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemberFailureSubject {
+    /// Epoch-private containerd, start index 0.
+    Containerd,
+    /// Host-side slirp4netns helper, start index 1.
+    Slirp4netns,
+    /// Epoch-private dockerd, start index 2.
+    Dockerd,
+    /// Stock OpenShell Gateway, start index 3.
+    OpenShellGateway,
+    /// Bootstrap response task retained beside the bridge.
+    HarnessResponse,
+    /// Bridge route task retained beside the bootstrap response.
+    HarnessRoute,
+    /// The failing role or task could not be observed.
+    Unknown,
+}
+
+impl MemberFailureSubject {
+    /// Returns the closed journal and report spelling for this subject.
+    const fn token(self) -> &'static str {
+        match self {
+            Self::Containerd => "containerd",
+            Self::Slirp4netns => "slirp4netns",
+            Self::Dockerd => "dockerd",
+            Self::OpenShellGateway => "openshell-gateway",
+            Self::HarnessResponse => "harness-response",
+            Self::HarnessRoute => "harness-route",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Why the member monitor stopped, without raw output or an invented status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemberObservation {
+    /// Proved child exit code in the closed range `0..=255`.
+    ExitCode(u8),
+    /// Proved terminating signal in the closed range `1..=64`.
+    Signal(u8),
+    /// A watched Harness task finished; its join result is not an exit status.
+    Finished,
+    /// Liveness could not be proved, so no exit status exists.
+    ProofUnavailable(MemberProofKind),
+}
+
+/// Closed reason a member-failure proof did not produce an exit status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemberProofKind {
+    /// `try_wait` failed, or the status was outside the closed code and signal ranges.
+    WaitError,
+    /// The harness observation lock was poisoned.
+    LockFailure,
+    /// The monitor failure channel disconnected without a fault.
+    MonitorDisconnected,
+    /// Explicit close found no retained response and route task pair.
+    TasksAbsent,
+}
+
+impl MemberProofKind {
+    /// Returns the closed `proof` token for this kind.
+    const fn token(self) -> &'static str {
+        match self {
+            Self::WaitError => "wait-error",
+            Self::LockFailure => "lock-failure",
+            Self::MonitorDisconnected => "monitor-disconnected",
+            Self::TasksAbsent => "tasks-absent",
+        }
+    }
+}
+
+/// First observed member or Harness-task failure carried into the report and journal.
+///
+/// `failed_member` uses the same tokens separated by `;`. The journal appends
+/// the same tokens separated by spaces. Neither form includes raw output,
+/// exception text, process ids, paths, or a status that was not observed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemberFailure {
+    subject: MemberFailureSubject,
+    observation: MemberObservation,
+}
+
+/// Fixed start order used to name a child when the monitor only has process handles.
+const MEMBER_ROLE_BY_START_INDEX: [MemberFailureSubject; 4] = [
+    MemberFailureSubject::Containerd,
+    MemberFailureSubject::Slirp4netns,
+    MemberFailureSubject::Dockerd,
+    MemberFailureSubject::OpenShellGateway,
+];
+
+impl MemberFailure {
+    /// Records one already-classified subject and observation.
+    pub(crate) const fn new(subject: MemberFailureSubject, observation: MemberObservation) -> Self {
+        Self {
+            subject,
+            observation,
+        }
+    }
+
+    /// Classifies one `try_wait` result for the child at this start-order index.
+    ///
+    /// `Ok(None)` means the child is still running. A missing role for the index
+    /// stays `Unknown` rather than borrowing another member's name.
+    fn from_child_wait(
+        index: usize,
+        waited: io::Result<Option<std::process::ExitStatus>>,
+    ) -> Option<Self> {
+        let subject = MEMBER_ROLE_BY_START_INDEX
+            .get(index)
+            .copied()
+            .unwrap_or(MemberFailureSubject::Unknown);
+        let observation = match waited {
+            Ok(None) => return None,
+            Ok(Some(status)) => observation_from_exit_status(status),
+            Err(_) => MemberObservation::ProofUnavailable(MemberProofKind::WaitError),
+        };
+        Some(Self {
+            subject,
+            observation,
+        })
+    }
+
+    /// Returns the space-separated cause-line tokens for this observation.
+    pub(crate) fn journal_tokens(self) -> String {
+        let subject = self.subject.token();
+        match self.observation {
+            MemberObservation::ExitCode(code) => {
+                format!("subject={subject} observation=exit-code code={code}")
+            }
+            MemberObservation::Signal(signal) => {
+                format!("subject={subject} observation=signal signal={signal}")
+            }
+            MemberObservation::Finished => format!("subject={subject} observation=finished"),
+            MemberObservation::ProofUnavailable(kind) => format!(
+                "subject={subject} observation=proof-unavailable proof={}",
+                kind.token()
+            ),
+        }
+    }
+
+    /// Returns the semicolon-separated `failed_member` report value.
+    fn report_value(self) -> String {
+        self.journal_tokens().replace(' ', ";")
+    }
+}
+
+/// Maps a proved exit onto the closed code or signal range.
+///
+/// A status outside those ranges is a wait proof failure, not a guessed code.
+fn observation_from_exit_status(status: std::process::ExitStatus) -> MemberObservation {
+    use std::os::unix::process::ExitStatusExt;
+    if let Some(code) = status.code() {
+        return match u8::try_from(code) {
+            Ok(code) => MemberObservation::ExitCode(code),
+            Err(_) => MemberObservation::ProofUnavailable(MemberProofKind::WaitError),
+        };
+    }
+    if let Some(signal) = status.signal()
+        && (1..=64).contains(&signal)
+    {
+        return MemberObservation::Signal(signal as u8);
+    }
+    MemberObservation::ProofUnavailable(MemberProofKind::WaitError)
+}
+
 /// Failure classes that invalidate the entire Runtime Epoch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub enum EpochFault {
     /// At least one member failed during dependency-ordered startup.
     PartialStart,
-    /// A running epoch member exited.
-    MemberExited,
+    /// A running epoch member exited or its liveness proof failed.
+    ///
+    /// `None` is an OpenShell or not-ready bridge failure whose member identity
+    /// was not observed. `Some` is the monitor's first bounded observation.
+    MemberExited(Option<MemberFailure>),
     /// Observed runtime identity does not match the active epoch.
     IdentityMismatch,
     /// Sandbox creation outcome cannot be proved.
@@ -1105,18 +1277,23 @@ impl EpochMemberMonitor {
     }
 
     /// Runs the existing member observation loop independently of outer-session polling.
+    ///
+    /// The first watched-task failure wins over a child, and the first non-running
+    /// child in start order wins over later children. A requested fence fault is
+    /// returned unchanged.
     fn observe_members(
         children: &mut [Child],
         requests: &mpsc::Receiver<Option<EpochFault>>,
         harness_tasks: &Mutex<Option<(AbortHandle, AbortHandle)>>,
     ) -> Option<EpochFault> {
         loop {
-            if Self::harness_failed(harness_tasks)
-                || children
-                    .iter_mut()
-                    .any(|child| !matches!(child.try_wait(), Ok(None)))
-            {
-                return Some(EpochFault::MemberExited);
+            if let Some(failure) = Self::watched_task_failure(harness_tasks) {
+                return Some(EpochFault::MemberExited(Some(failure)));
+            }
+            for (index, child) in children.iter_mut().enumerate() {
+                if let Some(failure) = MemberFailure::from_child_wait(index, child.try_wait()) {
+                    return Some(EpochFault::MemberExited(Some(failure)));
+                }
             }
             match requests.recv_timeout(Duration::from_millis(50)) {
                 Ok(fault) => return fault,
@@ -1126,13 +1303,19 @@ impl EpochMemberMonitor {
         }
     }
 
-    /// Checks retained task completion under the same lock used by explicit close.
-    fn harness_failed(tasks: &Mutex<Option<(AbortHandle, AbortHandle)>>) -> bool {
-        tasks.lock().map_or(true, |tasks| {
-            tasks
-                .as_ref()
-                .is_some_and(|(response, route)| response.is_finished() || route.is_finished())
-        })
+    /// Classifies a poisoned lock or the first finished watched task.
+    ///
+    /// Response is checked before route. An unwatched pair is not a failure.
+    fn watched_task_failure(
+        tasks: &Mutex<Option<(AbortHandle, AbortHandle)>>,
+    ) -> Option<MemberFailure> {
+        match tasks.lock() {
+            Err(_) => Some(MemberFailure::new(
+                MemberFailureSubject::Unknown,
+                MemberObservation::ProofUnavailable(MemberProofKind::LockFailure),
+            )),
+            Ok(tasks) => tasks.as_ref().and_then(finished_watched_task),
+        }
     }
 
     /// Retains the exact response and route task proofs beside the existing child monitor.
@@ -1140,25 +1323,40 @@ impl EpochMemberMonitor {
         let tasks = bootstrap
             .task_handles()
             .ok_or(EpochFault::IdentityMismatch)?;
-        if tasks.0.is_finished() || tasks.1.is_finished() {
-            return Err(EpochFault::MemberExited);
+        if let Some(failure) = finished_watched_task(&tasks) {
+            return Err(EpochFault::MemberExited(Some(failure)));
         }
-        *self
-            .harness_tasks
-            .lock()
-            .map_err(|_| EpochFault::MemberExited)? = Some(tasks);
-        Ok(())
+        match self.harness_tasks.lock() {
+            Ok(mut slot) => {
+                *slot = Some(tasks);
+                Ok(())
+            }
+            Err(_) => Err(EpochFault::MemberExited(Some(MemberFailure::new(
+                MemberFailureSubject::Unknown,
+                MemberObservation::ProofUnavailable(MemberProofKind::LockFailure),
+            )))),
+        }
     }
 
     /// Establishes the explicit-close exemption before bridge ownership is removed.
     fn begin_bridge_close(&self) -> Result<(), EpochFault> {
-        let mut tasks = self
-            .harness_tasks
-            .lock()
-            .map_err(|_| EpochFault::MemberExited)?;
-        let (response, route) = tasks.as_ref().ok_or(EpochFault::MemberExited)?;
-        if response.is_finished() || route.is_finished() {
-            return Err(EpochFault::MemberExited);
+        let mut tasks = match self.harness_tasks.lock() {
+            Ok(tasks) => tasks,
+            Err(_) => {
+                return Err(EpochFault::MemberExited(Some(MemberFailure::new(
+                    MemberFailureSubject::Unknown,
+                    MemberObservation::ProofUnavailable(MemberProofKind::LockFailure),
+                ))));
+            }
+        };
+        if tasks.is_none() {
+            return Err(EpochFault::MemberExited(Some(MemberFailure::new(
+                MemberFailureSubject::Unknown,
+                MemberObservation::ProofUnavailable(MemberProofKind::TasksAbsent),
+            ))));
+        }
+        if let Some(failure) = tasks.as_ref().and_then(finished_watched_task) {
+            return Err(EpochFault::MemberExited(Some(failure)));
         }
         tasks.take();
         Ok(())
@@ -1169,7 +1367,12 @@ impl EpochMemberMonitor {
         loop {
             match self.member_failure.try_recv() {
                 Ok(fault) => return fault,
-                Err(mpsc::TryRecvError::Disconnected) => return EpochFault::MemberExited,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return EpochFault::MemberExited(Some(MemberFailure::new(
+                        MemberFailureSubject::Unknown,
+                        MemberObservation::ProofUnavailable(MemberProofKind::MonitorDisconnected),
+                    )));
+                }
                 Err(mpsc::TryRecvError::Empty) => sleep(Duration::from_millis(50)).await,
             }
         }
@@ -1179,11 +1382,14 @@ impl EpochMemberMonitor {
     fn check_liveness(&mut self) -> Result<(), EpochFault> {
         let fault = match self.member_failure.try_recv() {
             Ok(fault) => Some(fault),
-            Err(mpsc::TryRecvError::Disconnected) => Some(EpochFault::MemberExited),
-            Err(mpsc::TryRecvError::Empty) if Self::harness_failed(&self.harness_tasks) => {
-                Some(EpochFault::MemberExited)
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Some(EpochFault::MemberExited(Some(MemberFailure::new(
+                    MemberFailureSubject::Unknown,
+                    MemberObservation::ProofUnavailable(MemberProofKind::MonitorDisconnected),
+                ))))
             }
-            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Empty) => Self::watched_task_failure(&self.harness_tasks)
+                .map(|failure| EpochFault::MemberExited(Some(failure))),
         };
         if let Some(fault) = fault {
             self.fence(fault.clone());
@@ -1428,7 +1634,7 @@ impl EpochCoordinator {
                                 Err(EpochFault::IdentityMismatch) => {
                                     break Err(EpochFault::IdentityMismatch);
                                 }
-                                Err(EpochFault::PartialStart | EpochFault::MemberExited) => {
+                                Err(EpochFault::PartialStart | EpochFault::MemberExited(_)) => {
                                     sleep(Duration::from_millis(50)).await;
                                 }
                                 Err(fault) => break Err(fault),
@@ -1878,7 +2084,7 @@ impl EpochCoordinator {
                     .as_ref()
                     .is_some_and(OpenSandboxBridge::harness_ready);
                 if !harness_ready {
-                    return self.settle(Err(EpochFault::MemberExited));
+                    return self.settle(Err(EpochFault::MemberExited(None)));
                 }
                 Ok("open".to_string())
             }
@@ -2264,7 +2470,7 @@ impl EpochCoordinator {
                 | EpochFault::CreateOutcomeUncertain(_)
                 | EpochFault::DeleteOutcomeUncertain
                 | EpochFault::PartialStart
-                | EpochFault::MemberExited => {
+                | EpochFault::MemberExited(_) => {
                     self.monitor.fence(fault.clone());
                 }
             }
@@ -2313,10 +2519,27 @@ fn fence_initiated(evidence: &mut EpochEvidenceWriter, children: &mut [Child], f
 fn invalidation_trigger(fault: &EpochFault) -> EpochInvalidationTrigger {
     match fault {
         EpochFault::PartialStart => EpochInvalidationTrigger::EpochCreationFailure,
-        EpochFault::MemberExited => EpochInvalidationTrigger::MemberExit,
+        EpochFault::MemberExited(_) => EpochInvalidationTrigger::MemberExit,
         EpochFault::IdentityMismatch => EpochInvalidationTrigger::MemberIdentityChange,
         EpochFault::CreateOutcomeUncertain(_) => EpochInvalidationTrigger::UncertainCreate,
         EpochFault::DeleteOutcomeUncertain => EpochInvalidationTrigger::UncertainDelete,
+    }
+}
+
+/// Names the first finished watched task, response before route.
+fn finished_watched_task(tasks: &(AbortHandle, AbortHandle)) -> Option<MemberFailure> {
+    if tasks.0.is_finished() {
+        Some(MemberFailure::new(
+            MemberFailureSubject::HarnessResponse,
+            MemberObservation::Finished,
+        ))
+    } else if tasks.1.is_finished() {
+        Some(MemberFailure::new(
+            MemberFailureSubject::HarnessRoute,
+            MemberObservation::Finished,
+        ))
+    } else {
+        None
     }
 }
 
@@ -2332,6 +2555,10 @@ fn invalidation_report_fields(fault: &EpochFault) -> Vec<(&'static str, String)>
                 context.certainty_loss.as_str().to_string(),
             ),
             ("timing", format!("elapsed_ms={}", context.elapsed_ms)),
+            ("fence", "initiated".to_string()),
+        ],
+        EpochFault::MemberExited(Some(failure)) => vec![
+            ("failed_member", failure.report_value()),
             ("fence", "initiated".to_string()),
         ],
         _ => vec![("fence", "initiated".to_string())],
@@ -2820,11 +3047,13 @@ mod tests {
         AttemptImportOutcome, CreateCertaintyLossPoint, CreateUncertainty, EpochAction,
         EpochEvidenceWriter, EpochFault, EpochInvalidationTrigger, EpochMemberMonitor,
         EpochNetworkNamespaceMode, EpochPlan, EpochProcessRole, ImageBackend, ImageImportError,
-        MID_EPOCH_IMPORT_TIMEOUT, OPENKIT_NANOHOST_SLICE, RuntimeEffectKind, compose_epoch_name,
-        dockerd_dns_arguments, gateway_cert_command, has_up_tap0_default_route,
-        import_attempt_image, invalidation_report_fields, invalidation_trigger,
-        is_canonical_local_digest, physical_epoch_for_plan, preflight_lifecycle_result,
-        resolve_epoch_nameservers, run_image_metadata_command, wait_for_success,
+        MID_EPOCH_IMPORT_TIMEOUT, MemberFailure, MemberFailureSubject, MemberObservation,
+        MemberProofKind, OPENKIT_NANOHOST_SLICE, RuntimeEffectKind, compose_epoch_name,
+        dockerd_dns_arguments, finished_watched_task, gateway_cert_command,
+        has_up_tap0_default_route, import_attempt_image, invalidation_report_fields,
+        invalidation_trigger, is_canonical_local_digest, physical_epoch_for_plan,
+        preflight_lifecycle_result, resolve_epoch_nameservers, run_image_metadata_command,
+        wait_for_success,
     };
     #[cfg(target_os = "linux")]
     use super::{EpochMemberSpec, spawn_member, wait_for_child_success};
@@ -2896,6 +3125,34 @@ mod tests {
         }
     }
 
+    /// Names a finished Harness response without an invented exit status.
+    fn observed_harness_response() -> EpochFault {
+        EpochFault::MemberExited(Some(MemberFailure::new(
+            MemberFailureSubject::HarnessResponse,
+            MemberObservation::Finished,
+        )))
+    }
+
+    /// Requires the closed `failed_member` report field and the same journal tokens.
+    fn assert_failed_member(fault: &EpochFault, report_value: &str) {
+        let EpochFault::MemberExited(Some(failure)) = *fault else {
+            panic!("member failure did not record an observation: {fault:?}");
+        };
+        assert_eq!(failure.report_value(), report_value);
+        assert_eq!(failure.journal_tokens().replace(' ', ";"), report_value);
+        assert!(
+            !report_value.contains("code=") || report_value.contains("observation=exit-code"),
+            "only a proved exit code may carry code"
+        );
+        assert_eq!(
+            invalidation_report_fields(fault),
+            vec![
+                ("failed_member", report_value.to_string()),
+                ("fence", "initiated".to_string()),
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn harness_liveness_completed_monitor_is_not_ready() {
         let (bridge, route) = liveness_test_bridge();
@@ -2939,10 +3196,43 @@ mod tests {
         wait_for_liveness_test_bootstrap(&bootstrap).await;
         let observed = tokio::time::timeout(Duration::from_secs(1), members.member_failure()).await;
         drop(members);
+        let fault = observed.expect("completed Harness must wake the existing failure wait");
+        assert_eq!(fault, observed_harness_response());
+        assert_failed_member(&fault, "subject=harness-response;observation=finished");
+    }
+
+    #[tokio::test]
+    async fn harness_liveness_both_finished_tasks_report_the_response_first() {
+        let (bridge, route) = liveness_test_bridge();
+        let (bootstrap, response) = liveness_test_bootstrap(route.clone());
+        let tasks = bootstrap
+            .task_handles()
+            .expect("retained response and route handles");
+        response.abort();
+        route.abort();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !tasks.0.is_finished() || !tasks.1.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both watched tasks finished");
+        assert!(tasks.0.is_finished(), "response handle is finished");
+        assert!(tasks.1.is_finished(), "route handle is finished");
+        let failure = finished_watched_task(&tasks).expect("both finished tasks classify");
         assert_eq!(
-            observed.expect("completed Harness must wake the existing failure wait"),
-            EpochFault::MemberExited
+            failure,
+            MemberFailure::new(
+                MemberFailureSubject::HarnessResponse,
+                MemberObservation::Finished,
+            )
         );
+        assert_eq!(
+            failure.report_value(),
+            "subject=harness-response;observation=finished"
+        );
+        drop(bridge);
+        drop(bootstrap);
     }
 
     #[tokio::test]
@@ -2982,10 +3272,10 @@ mod tests {
             members.member_failure.recv_timeout(Duration::from_secs(1))
         });
         drop(members);
-        assert_eq!(
-            observed.expect("Harness completion must reach the fence during a local effect"),
-            EpochFault::MemberExited,
-        );
+        let fault =
+            observed.expect("Harness completion must reach the fence during a local effect");
+        assert_eq!(fault, observed_harness_response());
+        assert_failed_member(&fault, "subject=harness-response;observation=finished");
     }
 
     #[tokio::test]
@@ -3002,7 +3292,7 @@ mod tests {
         drop(members);
         assert_eq!(
             closed,
-            Err(EpochFault::MemberExited),
+            Err(observed_harness_response()),
             "completion before close cannot settle as explicit close"
         );
         assert!(
@@ -3022,7 +3312,9 @@ mod tests {
         assert_eq!(members.check_liveness(), Ok(()));
         abort.abort();
         wait_for_liveness_test_bootstrap(&bootstrap).await;
-        assert_eq!(members.check_liveness(), Err(EpochFault::MemberExited));
+        let fault = members.check_liveness().expect_err("finished response");
+        assert_eq!(fault, observed_harness_response());
+        assert_failed_member(&fault, "subject=harness-response;observation=finished");
         assert!(
             members.worker.is_none(),
             "publication checkpoint joins fence acknowledgement"
@@ -3046,6 +3338,171 @@ mod tests {
             checkpoint < publication,
             "caller must complete the fence before accepting an effect result"
         );
+    }
+
+    /// Stops every short-lived shell child when the observation test returns.
+    struct ReapTestChildren(Vec<std::process::Child>);
+
+    impl Drop for ReapTestChildren {
+        fn drop(&mut self) {
+            for child in &mut self.0 {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    /// Spawns one shell script with no inherited standard streams.
+    fn shell_child(script: &str) -> std::process::Child {
+        Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("short-lived test child")
+    }
+
+    #[test]
+    fn member_monitor_child_exit_names_the_first_exited_role_and_code() {
+        let (fence, requests) = std::sync::mpsc::sync_channel(1);
+        let tasks = std::sync::Mutex::new(None);
+        let mut children = ReapTestChildren(vec![
+            shell_child("sleep 30"),
+            shell_child("sleep 30"),
+            shell_child("exit 7"),
+            shell_child("sleep 30"),
+        ]);
+        let fault = EpochMemberMonitor::observe_members(&mut children.0, &requests, &tasks)
+            .expect("third child exit");
+        drop(fence);
+        assert!(
+            matches!(children.0[0].try_wait(), Ok(None)),
+            "an earlier child that has not exited is not the failing member"
+        );
+        assert!(
+            matches!(children.0[1].try_wait(), Ok(None)),
+            "an earlier child that has not exited is not the failing member"
+        );
+        assert_eq!(
+            fault,
+            EpochFault::MemberExited(Some(MemberFailure::new(
+                MemberFailureSubject::Dockerd,
+                MemberObservation::ExitCode(7),
+            )))
+        );
+        assert_failed_member(&fault, "subject=dockerd;observation=exit-code;code=7");
+        let record = invalidation_report_fields(&fault);
+        let failed_member = record
+            .iter()
+            .find(|(name, _)| *name == "failed_member")
+            .map(|(_, value)| value.as_str())
+            .unwrap_or("");
+        assert!(!failed_member.contains("containerd"));
+        assert!(!failed_member.contains("slirp4netns"));
+    }
+
+    #[tokio::test]
+    async fn member_monitor_disconnect_records_proof_unavailable_without_a_status() {
+        let mut members = liveness_test_member_monitor();
+        let fence = std::mem::replace(&mut members.fence, std::sync::mpsc::sync_channel(1).0);
+        drop(fence);
+        let observed = tokio::time::timeout(Duration::from_secs(1), members.member_failure()).await;
+        drop(members);
+        let fault = observed.expect("monitor disconnect must wake the failure wait");
+        assert_eq!(
+            fault,
+            EpochFault::MemberExited(Some(MemberFailure::new(
+                MemberFailureSubject::Unknown,
+                MemberObservation::ProofUnavailable(MemberProofKind::MonitorDisconnected),
+            )))
+        );
+        assert_failed_member(
+            &fault,
+            "subject=unknown;observation=proof-unavailable;proof=monitor-disconnected",
+        );
+        let EpochFault::MemberExited(Some(failure)) = fault else {
+            panic!("disconnect observation missing");
+        };
+        let tokens = failure.journal_tokens();
+        assert!(!tokens.contains("code="));
+        assert!(!tokens.contains("signal="));
+    }
+
+    #[test]
+    fn member_failure_proofs_do_not_invent_an_exit_status() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::ExitStatus;
+
+        let tasks = Arc::new(Mutex::new(None));
+        let watched = Arc::clone(&tasks);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = watched.lock().expect("lock before poison");
+            panic!("poison harness lock");
+        }));
+        let (fence, requests) = std::sync::mpsc::sync_channel(1);
+        let locked = EpochMemberMonitor::observe_members(&mut [], &requests, &tasks)
+            .expect("poisoned harness lock");
+        drop(fence);
+        assert_eq!(
+            locked,
+            EpochFault::MemberExited(Some(MemberFailure::new(
+                MemberFailureSubject::Unknown,
+                MemberObservation::ProofUnavailable(MemberProofKind::LockFailure),
+            )))
+        );
+        assert_failed_member(
+            &locked,
+            "subject=unknown;observation=proof-unavailable;proof=lock-failure",
+        );
+
+        let members = liveness_test_member_monitor();
+        let absent = members.begin_bridge_close();
+        drop(members);
+        assert_eq!(
+            absent,
+            Err(EpochFault::MemberExited(Some(MemberFailure::new(
+                MemberFailureSubject::Unknown,
+                MemberObservation::ProofUnavailable(MemberProofKind::TasksAbsent),
+            ))))
+        );
+
+        let wait = MemberFailure::from_child_wait(0, Err(std::io::Error::other("wait")))
+            .expect("wait error");
+        assert_eq!(
+            wait,
+            MemberFailure::new(
+                MemberFailureSubject::Containerd,
+                MemberObservation::ProofUnavailable(MemberProofKind::WaitError),
+            )
+        );
+        assert!(!wait.report_value().contains("code="));
+        assert!(!wait.report_value().contains("signal="));
+        assert_eq!(
+            MemberFailure::from_child_wait(2, Ok(Some(ExitStatus::from_raw(7 << 8))))
+                .expect("exit code"),
+            MemberFailure::new(
+                MemberFailureSubject::Dockerd,
+                MemberObservation::ExitCode(7)
+            )
+        );
+        assert_eq!(
+            MemberFailure::from_child_wait(3, Ok(Some(ExitStatus::from_raw(9)))).expect("signal"),
+            MemberFailure::new(
+                MemberFailureSubject::OpenShellGateway,
+                MemberObservation::Signal(9),
+            )
+        );
+        assert_eq!(
+            MemberFailure::from_child_wait(1, Ok(Some(ExitStatus::from_raw(65))))
+                .expect("out of range signal"),
+            MemberFailure::new(
+                MemberFailureSubject::Slirp4netns,
+                MemberObservation::ProofUnavailable(MemberProofKind::WaitError),
+            )
+        );
+        assert!(MemberFailure::from_child_wait(0, Ok(None)).is_none());
     }
 
     #[cfg(target_os = "linux")]
@@ -3961,7 +4418,7 @@ mod tests {
     fn wp3a_u3a1_fail_stops_every_uncertain_or_partial_epoch() {
         for fault in [
             EpochFault::PartialStart,
-            EpochFault::MemberExited,
+            EpochFault::MemberExited(None),
             EpochFault::IdentityMismatch,
             EpochFault::CreateOutcomeUncertain(CreateUncertainty::new(
                 CreateCertaintyLossPoint::ReadyErrorPhase,

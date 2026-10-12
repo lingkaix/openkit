@@ -35,7 +35,7 @@ use crate::credential_slots::{
     CredentialSelectionContext, CredentialSlot, SelectedCredential, SlotPairPaths,
     select_usable_credential,
 };
-use crate::epoch_coordinator::RuntimeEffectKind;
+use crate::epoch_coordinator::{MemberFailure, RuntimeEffectKind};
 use crate::sandbox_bridge::{
     CONNECTION_RECEIVE_WINDOW_BYTES, INFERENCE_IN_FLIGHT_BYTES, OUTER_MAX_CONCURRENT_STREAMS,
     PER_STREAM_RECEIVE_WINDOW_BYTES, RetainedExportResult, RouteFamily,
@@ -1144,6 +1144,11 @@ pub struct OuterSessionFailure {
     status: Option<u16>,
     reason: &'static str,
     reconnect_after: Option<u64>,
+    /// Monitor observation for `nanohost epoch member failed` only.
+    ///
+    /// Absent for every other reason, and absent when the member fault did not
+    /// carry an observation. The classification line does not read this field.
+    member_failure: Option<MemberFailure>,
 }
 
 impl OuterSessionFailure {
@@ -1210,6 +1215,7 @@ impl OuterSessionFailure {
             status,
             reason,
             reconnect_after,
+            member_failure: None,
         }
     }
 
@@ -1231,6 +1237,17 @@ impl OuterSessionFailure {
     /// Returns the allocated generation that a replacement connection must exceed.
     pub fn reconnect_after(&self) -> Option<u64> {
         self.reconnect_after
+    }
+
+    /// Returns the monitor observation attached to a member-failure cause.
+    pub fn member_failure(&self) -> Option<MemberFailure> {
+        self.member_failure
+    }
+
+    /// Attaches one observed member failure without changing the static reason.
+    pub fn with_member_failure(mut self, member_failure: MemberFailure) -> Self {
+        self.member_failure = Some(member_failure);
+        self
     }
 
     /// Retains the admitted generation for successor validation.

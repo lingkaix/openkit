@@ -1309,6 +1309,7 @@ The report contains only non-secret evidence:
 - The invalidation trigger, using exactly one value from the trigger vocabulary defined above.
 - For an uncertain operation: the operation kind, the sandbox and attempt lineage identifiers, the exact point at which certainty was lost, and the elapsed time — never request or response payloads, never worker content, never prompts.
 - The effect-capable member inventory with process identifiers, resolved binary identities and versions, cgroup membership, and exit status or signal for each member.
+- When the member monitor observed the failure, a member-exit report identifies the first failing member role or watched Harness task and its observed exit code, signal, or task-finished reason. A wait error, lock failure, or monitor-channel disconnect is recorded as proof unavailable. This failure-cause value carries only closed tokens and observed numbers, and it MUST NOT contain an exit status or signal that was not observed, raw output, or exception text. A member-exit fault that the monitor did not observe carries no failure-cause value.
 - The configured container backend identity and version, and the image digests imported into the epoch.
 - The readiness proof results for the epoch, including which proof last succeeded.
 - The current connection generation, the fencing outcome, and the bridge state per active sandbox.

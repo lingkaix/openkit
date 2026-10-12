@@ -630,7 +630,7 @@ impl NanoHostOpenShellClient {
             .connected()?
             .get_sandbox(name)
             .await
-            .map_err(|_| EpochFault::MemberExited)?;
+            .map_err(|_| EpochFault::MemberExited(None))?;
         if sandbox.id.is_empty() || sandbox.name != name {
             return Err(EpochFault::IdentityMismatch);
         }
@@ -650,7 +650,7 @@ impl NanoHostOpenShellClient {
             .connected()?
             .list_sandboxes(options)
             .await
-            .map_err(|_| EpochFault::MemberExited)?;
+            .map_err(|_| EpochFault::MemberExited(None))?;
         if sandboxes
             .iter()
             .any(|sandbox| sandbox.id.is_empty() || sandbox.name.is_empty())
@@ -708,7 +708,7 @@ impl NanoHostOpenShellClient {
                 sandbox_id: sandbox_id.to_string(),
             })
             .await
-            .map_err(|_| EpochFault::MemberExited)?
+            .map_err(|_| EpochFault::MemberExited(None))?
             .into_inner();
         if session.token.is_empty() || session.sandbox_id != sandbox_id {
             return Err(EpochFault::IdentityMismatch);
@@ -745,7 +745,7 @@ impl NanoHostOpenShellClient {
                         token: session.token,
                     })
                     .await;
-                return Err(EpochFault::MemberExited);
+                return Err(EpochFault::MemberExited(None));
             }
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let response = match timeout(remaining, forward).await {
@@ -763,7 +763,7 @@ impl NanoHostOpenShellClient {
                                 token: session.token,
                             })
                             .await;
-                        return Err(EpochFault::MemberExited);
+                        return Err(EpochFault::MemberExited(None));
                     }
                     continue;
                 }
@@ -773,7 +773,7 @@ impl NanoHostOpenShellClient {
                             token: session.token,
                         })
                         .await;
-                    return Err(EpochFault::MemberExited);
+                    return Err(EpochFault::MemberExited(None));
                 }
             };
 
@@ -841,7 +841,7 @@ impl NanoHostOpenShellClient {
                             token: session.token,
                         })
                         .await;
-                    return Err(EpochFault::MemberExited);
+                    return Err(EpochFault::MemberExited(None));
                 }
                 continue;
             }
@@ -850,7 +850,7 @@ impl NanoHostOpenShellClient {
                     token: session.token,
                 })
                 .await;
-            return Err(EpochFault::MemberExited);
+            return Err(EpochFault::MemberExited(None));
         }
     }
 
@@ -866,7 +866,7 @@ impl NanoHostOpenShellClient {
             .raw_grpc()
             .revoke_ssh_session(RevokeSshSessionRequest { token })
             .await
-            .map_err(|_| EpochFault::MemberExited)?;
+            .map_err(|_| EpochFault::MemberExited(None))?;
         Ok(())
     }
 
@@ -931,12 +931,12 @@ impl NanoHostOpenShellClient {
                         sandbox_integration_binding_ref,
                         route_projection,
                     ) => bridge?,
-                    _ = &mut exec_monitor.response => return Err(EpochFault::MemberExited),
+                    _ = &mut exec_monitor.response => return Err(EpochFault::MemberExited(None)),
                 };
                 exec_monitor.bridge_route = Some(route_monitor);
                 let harness_ready = bridge.harness_ready();
                 if !harness_ready || !exec_monitor.is_live() {
-                    return Err(EpochFault::MemberExited);
+                    return Err(EpochFault::MemberExited(None));
                 }
                 Ok(LifecycleEffectResult::BridgeOpened {
                     bridge,
@@ -991,7 +991,7 @@ impl NanoHostOpenShellClient {
             })),
         };
         if input.send(start).await.is_err() {
-            return Err(EpochFault::MemberExited);
+            return Err(EpochFault::MemberExited(None));
         }
         let mut events = self
             .connected()?
@@ -1000,7 +1000,7 @@ impl NanoHostOpenShellClient {
             .await
             .map_err(|_| {
                 eprintln!("stage=file-effect outcome=rpc-admission");
-                EpochFault::MemberExited
+                EpochFault::MemberExited(None)
             })?
             .into_inner();
         for chunk in stdin.chunks(FILE_EFFECT_CHUNK_BYTES) {
@@ -1012,14 +1012,14 @@ impl NanoHostOpenShellClient {
                 .is_err()
             {
                 eprintln!("stage=file-effect outcome=request-stream");
-                return Err(EpochFault::MemberExited);
+                return Err(EpochFault::MemberExited(None));
             }
         }
         let mut stdout = Vec::new();
         let mut exit_status = None;
         while let Some(event) = events.message().await.map_err(|_| {
             eprintln!("stage=file-effect outcome=event-stream");
-            EpochFault::MemberExited
+            EpochFault::MemberExited(None)
         })? {
             match event.payload {
                 Some(exec_sandbox_event::Payload::Stdout(event))
@@ -1033,14 +1033,14 @@ impl NanoHostOpenShellClient {
                     if exit_status.is_none() && event.data.is_empty() => {}
                 Some(exec_sandbox_event::Payload::Stderr(event)) if !event.data.is_empty() => {
                     eprintln!("stage=file-effect outcome=stderr");
-                    return Err(EpochFault::MemberExited);
+                    return Err(EpochFault::MemberExited(None));
                 }
                 Some(exec_sandbox_event::Payload::Exit(event)) if exit_status.is_none() => {
                     exit_status = Some(event.exit_code);
                 }
                 _ => {
                     eprintln!("stage=file-effect outcome=invalid-event");
-                    return Err(EpochFault::MemberExited);
+                    return Err(EpochFault::MemberExited(None));
                 }
             }
         }
@@ -1052,15 +1052,15 @@ impl NanoHostOpenShellClient {
             }),
             Some(124) => {
                 eprintln!("stage=file-effect outcome=timeout");
-                Err(EpochFault::MemberExited)
+                Err(EpochFault::MemberExited(None))
             }
             Some(_) => {
                 eprintln!("stage=file-effect outcome=nonzero-exit");
-                Err(EpochFault::MemberExited)
+                Err(EpochFault::MemberExited(None))
             }
             None => {
                 eprintln!("stage=file-effect outcome=missing-exit");
-                Err(EpochFault::MemberExited)
+                Err(EpochFault::MemberExited(None))
             }
         }
     }
@@ -1097,17 +1097,17 @@ impl NanoHostOpenShellClient {
                 rows: 0,
             })
             .await
-            .map_err(|_| EpochFault::MemberExited)?
+            .map_err(|_| EpochFault::MemberExited(None))?
             .into_inner();
         let (marker_ready, marker_received) = oneshot::channel();
         let mut response = tokio::spawn(monitor_worker_bootstrap(events, marker_ready));
         tokio::select! {
             biased;
-            _ = &mut response => Err(EpochFault::MemberExited),
+            _ = &mut response => Err(EpochFault::MemberExited(None)),
             ready = marker_received => {
-                ready.map_err(|_| EpochFault::MemberExited)?;
+                ready.map_err(|_| EpochFault::MemberExited(None))?;
                 if response.is_finished() {
-                    return Err(EpochFault::MemberExited);
+                    return Err(EpochFault::MemberExited(None));
                 }
                 Ok(WorkerBootstrapMonitor { response, bridge_route: None })
             }
@@ -1116,7 +1116,7 @@ impl NanoHostOpenShellClient {
 
     /// Returns the connected SDK client or a fail-stop member fault.
     fn connected(&self) -> Result<&OpenShellClient, EpochFault> {
-        self.client.as_ref().ok_or(EpochFault::MemberExited)
+        self.client.as_ref().ok_or(EpochFault::MemberExited(None))
     }
 }
 
@@ -1132,7 +1132,7 @@ where
     let mut marker_length = 0;
     let mut exit_status = None;
     while let Some(event) = events.next().await {
-        let event = event.map_err(|_| EpochFault::MemberExited)?;
+        let event = event.map_err(|_| EpochFault::MemberExited(None))?;
         match event.payload {
             Some(exec_sandbox_event::Payload::Stdout(event)) if event.data.is_empty() => {}
             Some(exec_sandbox_event::Payload::Stderr(event)) if event.data.is_empty() => {}
@@ -1143,15 +1143,15 @@ where
                 if event.data.len() > remaining.len()
                     || event.data.as_slice() != &remaining[..event.data.len()]
                 {
-                    return Err(EpochFault::MemberExited);
+                    return Err(EpochFault::MemberExited(None));
                 }
                 marker_length += event.data.len();
                 if marker_length == WORKER_ENTRY_MARKER.len() {
                     marker_ready
                         .take()
-                        .ok_or(EpochFault::MemberExited)?
+                        .ok_or(EpochFault::MemberExited(None))?
                         .send(())
-                        .map_err(|_| EpochFault::MemberExited)?;
+                        .map_err(|_| EpochFault::MemberExited(None))?;
                 }
             }
             Some(exec_sandbox_event::Payload::Exit(event))
@@ -1159,10 +1159,10 @@ where
             {
                 exit_status = Some(event.exit_code);
             }
-            _ => return Err(EpochFault::MemberExited),
+            _ => return Err(EpochFault::MemberExited(None)),
         }
     }
-    let exit_status = exit_status.ok_or(EpochFault::MemberExited)?;
+    let exit_status = exit_status.ok_or(EpochFault::MemberExited(None))?;
     Ok(WorkerBootstrapCompletion {
         monitor_exit: true,
         clean_response: true,
@@ -1291,7 +1291,7 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(crate::epoch_coordinator::EpochFault::MemberExited)
+                Err(crate::epoch_coordinator::EpochFault::MemberExited(None))
             ),
             "worker monitor accepted {label}"
         );
@@ -1744,7 +1744,7 @@ mod tests {
             .rfind(&revoke_rpc)
             .expect("deadline revokes the shared SSH token");
         let final_failure = bridge
-            .rfind("return Err(EpochFault::MemberExited)")
+            .rfind("return Err(EpochFault::MemberExited(None))")
             .expect("deadline fails bridge admission");
         assert!(
             create < fixed_target
@@ -1891,7 +1891,7 @@ mod tests {
             .split_once("_ = &mut exec_monitor.response")
             .expect("value-free bootstrap monitor completion arm")
             .1;
-        assert!(monitor_arm.contains("return Err(EpochFault::MemberExited)"));
+        assert!(monitor_arm.contains("return Err(EpochFault::MemberExited(None))"));
         for forbidden in [
             ".await",
             "sleep(",
@@ -2108,7 +2108,7 @@ mod tests {
         let nonzero_diagnostic = exit_match
             .find("stage=file-effect outcome=nonzero-exit")
             .expect("fixed nonzero classification");
-        let missing_exit = exit_match.find("None").expect("missing exit event");
+        let missing_exit = exit_match.find("None =>").expect("missing exit event");
         let missing_diagnostic = exit_match
             .find("stage=file-effect outcome=missing-exit")
             .expect("fixed missing-exit classification");

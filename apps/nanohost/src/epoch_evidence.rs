@@ -468,6 +468,7 @@ fn accepted_field(name: &str, absent: bool) -> bool {
         "attempt",
         "certainty_loss",
         "members",
+        "failed_member",
         "backend",
         "images",
         "readiness",
@@ -950,6 +951,37 @@ mod tests {
         );
         assert!(!measure_fence_to_ready(Duration::from_secs(1), false).ready);
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn member_exit_report_keeps_the_failed_member_token() {
+        let root = std::env::temp_dir().join(format!(
+            "openkit-failed-member-{}-{}",
+            std::process::id(),
+            NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut writer = EpochEvidenceWriter::new(root.clone()).expect("private evidence root");
+        let report = writer
+            .export_invalidation(
+                EpochInvalidationTrigger::MemberExit,
+                &[
+                    (
+                        "failed_member",
+                        "subject=dockerd;observation=exit-code;code=7",
+                    ),
+                    ("fence", "initiated"),
+                ],
+                Instant::now(),
+            )
+            .expect("member-exit export");
+        let contents = fs::read_to_string(&report.path).expect("report text");
+        assert!(
+            report.complete,
+            "failed_member must stay inside the closed report field set"
+        );
+        assert!(contents.contains("subject=dockerd;observation=exit-code;code=7"));
+        assert!(!contents.contains("code=0"));
         let _ = fs::remove_dir_all(root);
     }
 }
