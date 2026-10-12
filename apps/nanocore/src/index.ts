@@ -106,7 +106,7 @@ import {
   ensureLayout,
   readDataRootLayoutMarker,
 } from './storage/fs-layout.js';
-import { rebuildExistingWorkspaceDerivedIndexes } from './storage/index-rebuild.js';
+import { rebuildInvalidExistingWorkspaceDerivedIndexes } from './storage/index-rebuild.js';
 import { applyMigrations, listAppliedMigrationIds } from './storage/migrate.js';
 import { appendRecoveredTurnObservation } from './storage/work-observation-recovery.js';
 import { cleanupWorkspaceArchiveRequestStaging } from './storage/workspace-archive.js';
@@ -220,7 +220,7 @@ const bootResult = await runBootPhases({
         coreDb = openCoreDbWithIntegrityCheck(dataRoot);
         applyMigrations(coreDb);
         verifyAndMigrateExistingScopedDatabases(dataRoot);
-        const indexRebuildEvents = rebuildExistingWorkspaceDerivedIndexes(dataRoot);
+        const indexRebuildEvents = rebuildInvalidExistingWorkspaceDerivedIndexes(dataRoot);
         recordBootStartAudit({
           coreDb,
           layoutVersion: readDataRootLayoutMarker(dataRoot).layoutVersion,
@@ -230,18 +230,20 @@ const bootResult = await runBootPhases({
           indexRebuildEvents,
         });
 
-        if (indexRebuildEvents.length > 0) {
-          return {
-            status: 'degraded',
-            reason: {
+        if (indexRebuildEvents.length === 0) {
+          return { status: 'ok' };
+        }
+
+        return {
+          status: 'ok',
+          reasons: [
+            {
               code: 'storage.index-rebuilt',
               message: `Rebuilt ${indexRebuildEvents.length} workspace index set(s).`,
               blocks: [],
             },
-          };
-        }
-
-        return { status: 'ok' };
+          ],
+        };
       },
     },
     {

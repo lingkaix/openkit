@@ -8,6 +8,11 @@ type BootReadinessReason = BootReadinessSnapshot['subsystems']['config']['reason
 export interface BootPhaseOkOutcome {
   /** Phase completed without degraded behavior. */
   status: 'ok';
+  /**
+   * Informational observations appended to this phase's subsystem.
+   * They do not change that subsystem's state or overall readiness.
+   */
+  reasons?: BootReadinessReason[];
 }
 
 /** Degraded boot phase outcome. */
@@ -163,7 +168,14 @@ function readinessSubsystemsForOutcomes(
 
   for (const outcome of outcomes) {
     if (outcome.outcome.status === 'ok') {
-      subsystems[outcome.subsystem] ??= { state: 'ready', reasons: [] };
+      const informational = outcome.outcome.reasons ?? [];
+      const existing = subsystems[outcome.subsystem];
+
+      if (!existing) {
+        subsystems[outcome.subsystem] = { state: 'ready', reasons: [...informational] };
+      } else if (informational.length > 0) {
+        existing.reasons = [...existing.reasons, ...informational];
+      }
       continue;
     }
 

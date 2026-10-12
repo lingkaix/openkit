@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -14,10 +15,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION } from '../knowledge/okf.js';
-import { FsStore } from '../lib/store.js';
+import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { LOCAL_USER_ID } from './fs-layout.js';
 import {
   rebuildExistingWorkspaceDerivedIndexes,
+  rebuildInvalidExistingWorkspaceDerivedIndexes,
   rebuildWorkspaceDerivedIndexes,
   resolveWorkspaceKnowledgeRetrievalPages,
   retrieveWorkspaceKnowledge,
@@ -1862,4 +1865,254 @@ describe('workspace derived index rebuild', () => {
 
     expect(rebuildExistingWorkspaceDerivedIndexes(dataRoot)).toEqual([]);
   });
+
+  it('leaves a current derived index set byte-identical during the conditional boot scan', () => {
+    const dataRoot = createDataRoot();
+    createDemoStore({ dataRoot });
+    const keptAt = '2026-07-05T00:00:00.000Z';
+    const demoIndexes = join(dataRoot, 'workspaces', 'ws_demo', 'indexes');
+    const quickChatIndexes = join(
+      dataRoot,
+      'workspaces',
+      quickChatWorkspaceIdForUser(LOCAL_USER_ID),
+      'indexes'
+    );
+    writeCurrentDerivedIndexSet(demoIndexes, 'ws_demo', keptAt);
+    writeCurrentDerivedIndexSet(
+      quickChatIndexes,
+      quickChatWorkspaceIdForUser(LOCAL_USER_ID),
+      keptAt
+    );
+    const demoBytes = readIndexBytes(demoIndexes);
+    const quickChatBytes = readIndexBytes(quickChatIndexes);
+
+    const results = rebuildInvalidExistingWorkspaceDerivedIndexes(dataRoot, {
+      now: () => '2026-07-06T00:00:00.000Z',
+    });
+
+    expect(results).toEqual([]);
+    expect(readIndexBytes(demoIndexes)).toEqual(demoBytes);
+    expect(readIndexBytes(quickChatIndexes)).toEqual(quickChatBytes);
+  });
+
+  it.each(
+    invalidDerivedIndexCases
+  )('rebuilds only an index set with $name and keeps a current sibling byte-identical', ({
+    mutate,
+    throws,
+  }) => {
+    const dataRoot = createDataRoot();
+    createDemoStore({ dataRoot });
+    const keptAt = '2026-07-05T00:00:00.000Z';
+    const siblingId = 'ws_demo';
+    const badId = quickChatWorkspaceIdForUser(LOCAL_USER_ID);
+    const siblingIndexes = join(dataRoot, 'workspaces', siblingId, 'indexes');
+    const badIndexes = join(dataRoot, 'workspaces', badId, 'indexes');
+    writeCurrentDerivedIndexSet(siblingIndexes, siblingId, keptAt);
+    writeCurrentDerivedIndexSet(badIndexes, badId, keptAt);
+    const siblingBytes = readIndexBytes(siblingIndexes);
+    const outside = mutate(badIndexes);
+
+    if (throws) {
+      expect(() =>
+        rebuildInvalidExistingWorkspaceDerivedIndexes(dataRoot, {
+          now: () => '2026-07-06T00:00:00.000Z',
+        })
+      ).toThrow(/symbolic link/);
+      expect(outside ? readFileSync(outside, 'utf8') : null).toBe('outside sentinel\n');
+    } else {
+      expect(
+        rebuildInvalidExistingWorkspaceDerivedIndexes(dataRoot, {
+          now: () => '2026-07-06T00:00:00.000Z',
+        }).map((result) => result.workspaceId)
+      ).toEqual([badId]);
+      expect(JSON.parse(readFileSync(join(badIndexes, 'search.json'), 'utf8'))).toMatchObject({
+        rebuiltAt: '2026-07-06T00:00:00.000Z',
+        schemaVersion: 1,
+        workspaceId: badId,
+      });
+    }
+
+    expect(readIndexBytes(siblingIndexes)).toEqual(siblingBytes);
+  });
+
+  it('rebuilds a stale derived index from canonical pages before retrieval reads it', () => {
+    const dataRoot = createDataRoot();
+    createDemoStore({ dataRoot });
+    const indexesRoot = join(dataRoot, 'workspaces', 'ws_demo', 'indexes');
+    writeCurrentDerivedIndexSet(indexesRoot, 'ws_demo', '1999-01-01T00:00:00.000Z');
+
+    const retrieval = retrieveWorkspaceKnowledge({
+      caller: 'app-api',
+      dataRoot,
+      limit: 5,
+      now: () => '2026-07-05T00:00:00.000Z',
+      query: 'protocol',
+      traceId: 'krt_00000000-0000-4000-8000-000000000099',
+      workspaceId: 'ws_demo',
+    });
+
+    expect(retrieval.selected).toEqual(
+      expect.arrayContaining([expect.objectContaining({ knowledgePageId: 'mem_project' })])
+    );
+    expect(JSON.parse(readFileSync(join(indexesRoot, 'knowledge-fts.json'), 'utf8'))).toMatchObject(
+      {
+        rebuiltAt: '2026-07-05T00:00:00.000Z',
+        schemaVersion: 1,
+      }
+    );
+  });
 });
+
+/** One invalid boot-scan fixture and whether the existing rebuild guard must throw. */
+interface InvalidDerivedIndexCase {
+  /** Case name interpolated into the test title. */
+  name: string;
+  /** Mutates a current index directory. Returns an outside sentinel path when one exists. */
+  mutate: (indexesRoot: string) => string | undefined;
+  /** Whether the scan must throw instead of publishing the bad set. */
+  throws?: boolean;
+}
+
+const invalidDerivedIndexCases: InvalidDerivedIndexCase[] = [
+  {
+    name: 'a missing directory',
+    mutate: (indexesRoot) => {
+      rmSync(indexesRoot, { recursive: true });
+      return undefined;
+    },
+  },
+  {
+    name: 'a missing file',
+    mutate: (indexesRoot) => {
+      rmSync(join(indexesRoot, 'search.json'));
+      return undefined;
+    },
+  },
+  {
+    name: 'an extra file',
+    mutate: (indexesRoot) => {
+      writeFileSync(join(indexesRoot, 'extra.json'), '{}\n');
+      return undefined;
+    },
+  },
+  {
+    name: 'a symlinked child',
+    throws: true,
+    mutate: (indexesRoot) => {
+      const outsideRoot = mkdtempSync(join(tmpdir(), 'openkit-outside-index-file-'));
+      const sentinelPath = join(outsideRoot, 'sentinel.txt');
+      writeFileSync(sentinelPath, 'outside sentinel\n');
+      rmSync(join(indexesRoot, 'search.json'));
+      symlinkSync(sentinelPath, join(indexesRoot, 'search.json'));
+      return sentinelPath;
+    },
+  },
+  {
+    name: 'unparseable JSON',
+    mutate: (indexesRoot) => {
+      writeFileSync(join(indexesRoot, 'search.json'), '{\n');
+      return undefined;
+    },
+  },
+  {
+    name: 'non-object JSON',
+    mutate: (indexesRoot) => {
+      writeFileSync(join(indexesRoot, 'search.json'), '[]\n');
+      return undefined;
+    },
+  },
+  {
+    name: 'a wrong schemaVersion',
+    mutate: (indexesRoot) => {
+      editDerivedIndex(indexesRoot, 'search.json', (record) => {
+        record.schemaVersion = 2;
+      });
+      return undefined;
+    },
+  },
+  {
+    name: 'a wrong workspaceId',
+    mutate: (indexesRoot) => {
+      editDerivedIndex(indexesRoot, 'knowledge-links.json', (record) => {
+        record.workspaceId = 'ws_other';
+      });
+      return undefined;
+    },
+  },
+  {
+    name: 'a wrong tokenizer',
+    mutate: (indexesRoot) => {
+      editDerivedIndex(indexesRoot, 'knowledge-fts.json', (record) => {
+        record.tokenizer = 'other';
+      });
+      return undefined;
+    },
+  },
+  {
+    name: 'a missing collection array',
+    mutate: (indexesRoot) => {
+      editDerivedIndex(indexesRoot, 'knowledge-validation.json', (record) => {
+        delete record.records;
+      });
+      return undefined;
+    },
+  },
+];
+
+/**
+ * Writes the five current derived index files with empty collections.
+ *
+ * @param indexesRoot Index directory to replace.
+ * @param workspaceId Workspace id stored in each file.
+ * @param rebuiltAt Deterministic rebuild timestamp.
+ */
+function writeCurrentDerivedIndexSet(
+  indexesRoot: string,
+  workspaceId: string,
+  rebuiltAt: string
+): void {
+  mkdirSync(indexesRoot, { recursive: true });
+  const header = { schemaVersion: 1, workspaceId, rebuiltAt };
+  const files: Record<string, unknown> = {
+    'search.json': { ...header, items: [] },
+    'knowledge-links.json': { ...header, edges: [] },
+    'knowledge-validation.json': { ...header, records: [] },
+    'knowledge-source-refs.json': { ...header, references: [] },
+    'knowledge-fts.json': { ...header, tokenizer: 'unicode-simple-v1', terms: [] },
+  };
+
+  for (const [name, value] of Object.entries(files)) {
+    writeFileSync(join(indexesRoot, name), `${JSON.stringify(value, null, 2)}\n`);
+  }
+}
+
+/**
+ * Reads direct index-file bytes in file-name order.
+ *
+ * @param indexesRoot Index directory.
+ * @returns File name and exact bytes.
+ */
+function readIndexBytes(indexesRoot: string): Array<[string, Buffer]> {
+  return readdirSync(indexesRoot)
+    .sort()
+    .map((name) => [name, readFileSync(join(indexesRoot, name))] as [string, Buffer]);
+}
+
+/**
+ * Edits one derived index JSON object in place.
+ *
+ * @param indexesRoot Index directory.
+ * @param name File name.
+ * @param edit Mutation applied to the parsed object.
+ */
+function editDerivedIndex(
+  indexesRoot: string,
+  name: string,
+  edit: (record: Record<string, unknown>) => void
+): void {
+  const path = join(indexesRoot, name);
+  const record = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+  edit(record);
+  writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`);
+}

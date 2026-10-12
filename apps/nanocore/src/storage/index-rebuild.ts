@@ -439,11 +439,51 @@ export function rebuildExistingWorkspaceDerivedIndexes(
   dataRoot: string,
   options: RebuildExistingWorkspaceDerivedIndexesOptions = {}
 ): RebuildWorkspaceDerivedIndexesResult[] {
-  const results: RebuildWorkspaceDerivedIndexesResult[] = [];
+  return listCanonicalWorkspaces(dataRoot).map((workspace) =>
+    rebuildWorkspaceDerivedIndexes({
+      dataRoot,
+      workspaceId: workspace.workspaceId,
+      ...(options.now ? { now: options.now } : {}),
+    })
+  );
+}
+
+/**
+ * Current derived index files, the collection each writer emits, and the full-text tokenizer.
+ * A boot scan keeps a set only when every file is a regular file with `schemaVersion` 1,
+ * the Workspace id, an array for `items`, `edges`, `records`, `references`, or `terms`,
+ * and `knowledge-fts.json` tokenizer `unicode-simple-v1`.
+ */
+const DERIVED_INDEX_FILES = [
+  { name: 'search.json', collection: 'items' },
+  { name: 'knowledge-links.json', collection: 'edges' },
+  { name: 'knowledge-validation.json', collection: 'records' },
+  { name: 'knowledge-source-refs.json', collection: 'references' },
+  { name: 'knowledge-fts.json', collection: 'terms' },
+] as const;
+
+/** One Workspace directory that has a canonical projection and no retired projection. */
+interface CanonicalWorkspaceDirectory {
+  /** Workspace id. */
+  workspaceId: string;
+  /** Absolute Workspace root. */
+  workspaceRoot: string;
+}
+
+/**
+ * Lists Workspace directories that boot and migration may rebuild.
+ *
+ * @param dataRoot Data root to scan.
+ * @returns Canonical Workspace directories in stable order.
+ * @throws Error when a directory still has the retired `workspace.json` projection.
+ */
+function listCanonicalWorkspaces(dataRoot: string): CanonicalWorkspaceDirectory[] {
   const workspacesRoot = resolveDataRootPath(dataRoot, 'workspaces');
+  const workspaces: CanonicalWorkspaceDirectory[] = [];
 
   for (const workspaceId of listDirectories(workspacesRoot)) {
     const workspaceRoot = join(workspacesRoot, workspaceId);
+
     if (existsSync(join(workspaceRoot, 'workspace.json'))) {
       throw new Error(`Unsupported Workspace projection: workspaces/${workspaceId}/workspace.json`);
     }
@@ -451,10 +491,112 @@ export function rebuildExistingWorkspaceDerivedIndexes(
       continue;
     }
 
+    workspaces.push({ workspaceId, workspaceRoot });
+  }
+
+  return workspaces;
+}
+
+/**
+ * Reports whether a Workspace index set must be rebuilt before it can be kept.
+ *
+ * @param workspaceRoot Absolute Workspace root.
+ * @param workspaceId Workspace id that must match each index file.
+ * @returns True when the set is missing, unreadable, or structurally incompatible.
+ */
+function derivedIndexSetNeedsRebuild(workspaceRoot: string, workspaceId: string): boolean {
+  const indexesRoot = join(workspaceRoot, 'indexes');
+  const metadata = lstatSync(indexesRoot, { throwIfNoEntry: false });
+
+  if (!metadata?.isDirectory() || metadata.isSymbolicLink()) {
+    return true;
+  }
+
+  assertCanonicalDirectory(indexesRoot);
+  const entries = readdirSync(indexesRoot, { withFileTypes: true });
+
+  if (entries.some((entry) => !entry.isFile())) {
+    return true;
+  }
+
+  const names = entries.map((entry) => entry.name).sort();
+  const expectedNames = DERIVED_INDEX_FILES.map((file) => file.name).sort();
+
+  if (
+    names.length !== expectedNames.length ||
+    names.some((name, index) => name !== expectedNames[index])
+  ) {
+    return true;
+  }
+
+  for (const file of DERIVED_INDEX_FILES) {
+    let parsed: unknown;
+
+    try {
+      parsed = JSON.parse(readCanonicalTextFile(join(indexesRoot, file.name)));
+    } catch {
+      return true;
+    }
+
+    if (!isJsonObject(parsed)) {
+      return true;
+    }
+    if (parsed.schemaVersion !== 1 || parsed.workspaceId !== workspaceId) {
+      return true;
+    }
+    if (file.name === 'knowledge-fts.json' && parsed.tokenizer !== 'unicode-simple-v1') {
+      return true;
+    }
+    if (!Array.isArray(parsed[file.collection])) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Reports whether a parsed JSON value is a non-array object.
+ *
+ * @param value Parsed JSON value.
+ * @returns True when the value is a JSON object.
+ */
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Rebuilds derived indexes at boot only when a Workspace set is missing or invalid.
+ *
+ * A set is kept when `indexes/` contains exactly `search.json`, `knowledge-links.json`,
+ * `knowledge-validation.json`, `knowledge-source-refs.json`, and `knowledge-fts.json`,
+ * each a regular file read without following a link. Each object must have `schemaVersion` 1,
+ * `workspaceId` equal to that Workspace, and an array `items`, `edges`, `records`, `references`,
+ * or `terms` respectively. `knowledge-fts.json` must also use tokenizer `unicode-simple-v1`.
+ * A missing directory, extra or missing child, non-regular child, unreadable or unparseable file,
+ * non-object JSON, or failed metadata check is rebuilt. A symbolic link is not followed; the
+ * existing rebuild guard rejects it. This check does not compare index entries with canonical content.
+ *
+ * @param dataRoot Data root to scan.
+ * @param options Optional rebuild options.
+ * @returns Rebuild results for workspaces whose index sets were rebuilt.
+ * @throws Error when a rebuild hits an unsupported projection, a symbolic link, or another rebuild failure.
+ */
+export function rebuildInvalidExistingWorkspaceDerivedIndexes(
+  dataRoot: string,
+  options: RebuildExistingWorkspaceDerivedIndexesOptions = {}
+): RebuildWorkspaceDerivedIndexesResult[] {
+  const results: RebuildWorkspaceDerivedIndexesResult[] = [];
+
+  for (const workspace of listCanonicalWorkspaces(dataRoot)) {
+    if (!derivedIndexSetNeedsRebuild(workspace.workspaceRoot, workspace.workspaceId)) {
+      continue;
+    }
+
     results.push(
       rebuildWorkspaceDerivedIndexes({
         dataRoot,
-        workspaceId,
+        workspaceId: workspace.workspaceId,
         ...(options.now ? { now: options.now } : {}),
       })
     );

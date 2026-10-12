@@ -730,6 +730,52 @@ describe('workspace storage migration', () => {
     expect(reportText).toMatch(/sha256:[a-f0-9]{64}/);
   });
 
+  it('rebuilds a current derived index set while migrating a Workspace', () => {
+    const fixture = createMigrationFixture();
+    const seededAt = '1999-01-01T00:00:00.000Z';
+    const indexesRoot = join(sourceWorkspaceRoot(fixture), 'indexes');
+    mkdirSync(indexesRoot);
+    const header = {
+      schemaVersion: 1,
+      workspaceId: fixture.workspaceId,
+      rebuiltAt: seededAt,
+    };
+    const seeded = {
+      'search.json': { ...header, items: [] },
+      'knowledge-links.json': { ...header, edges: [] },
+      'knowledge-validation.json': { ...header, records: [] },
+      'knowledge-source-refs.json': { ...header, references: [] },
+      'knowledge-fts.json': { ...header, tokenizer: 'unicode-simple-v1', terms: [] },
+    };
+    for (const [name, value] of Object.entries(seeded)) {
+      writeFileSync(join(indexesRoot, name), `${JSON.stringify(value, null, 2)}\n`);
+    }
+    const backupRoot = join(
+      mkdtempSync(join(tmpdir(), 'openkit-workspace-storage-retention-')),
+      'backup'
+    );
+    fixture.coreDb.sqlite.close();
+
+    migrateWorkspaceStorage({
+      backupRoot,
+      dataRoot: fixture.dataRoot,
+      now: () => timestamp,
+    });
+
+    const published = JSON.parse(
+      readFileSync(
+        join(fixture.dataRoot, 'workspaces', fixture.workspaceId, 'indexes', 'search.json'),
+        'utf8'
+      )
+    ) as { rebuiltAt: string; schemaVersion: number; workspaceId: string };
+    expect(published).toMatchObject({
+      rebuiltAt: timestamp,
+      schemaVersion: 1,
+      workspaceId: fixture.workspaceId,
+    });
+    expect(published.rebuiltAt).not.toBe(seededAt);
+  });
+
   it('fails closed when a published top-level root still has the v1 marker', () => {
     const fixture = createMigrationFixture();
     const sourceRoot = sourceWorkspaceRoot(fixture);

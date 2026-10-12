@@ -151,4 +151,72 @@ describe('boot phase runner', () => {
       subsystems: { scheduler: { state: 'degraded' }, vault: { state: 'ready' } },
     });
   });
+
+  it('keeps storage ready when a later ok outcome carries an informational reason', async () => {
+    const informational = {
+      code: 'storage.index-rebuilt',
+      message: 'Rebuilt 1 workspace index set(s).',
+      blocks: [],
+    };
+    const result = await runBootPhases({
+      bootId: 'boot_index_rebuilt',
+      phases: [
+        {
+          name: 'data-root-layout',
+          subsystem: 'storage',
+          critical: true,
+          run: () => ({ status: 'ok' }),
+        },
+        {
+          name: 'migrations',
+          subsystem: 'storage',
+          critical: true,
+          run: () => ({ status: 'ok', reasons: [informational] }),
+        },
+      ],
+    });
+
+    expect(result.readiness.overall).toBe('ready');
+    expect(result.readiness.acceptingProductWork).toBe(true);
+    expect(result.readiness.subsystems.storage).toEqual({
+      state: 'ready',
+      reasons: [informational],
+    });
+  });
+
+  it('appends an informational ok reason without clearing an earlier degraded state', async () => {
+    const degraded = {
+      code: 'storage.maintenance',
+      message: 'Storage is reduced.',
+      blocks: [],
+    };
+    const informational = {
+      code: 'storage.index-rebuilt',
+      message: 'Rebuilt 1 workspace index set(s).',
+      blocks: [],
+    };
+    const result = await runBootPhases({
+      bootId: 'boot_index_after_degraded',
+      phases: [
+        {
+          name: 'maintenance',
+          subsystem: 'storage',
+          critical: true,
+          run: () => ({ status: 'degraded', reason: degraded }),
+        },
+        {
+          name: 'migrations',
+          subsystem: 'storage',
+          critical: true,
+          run: () => ({ status: 'ok', reasons: [informational] }),
+        },
+      ],
+    });
+
+    expect(result.readiness.overall).toBe('degraded');
+    expect(result.readiness.subsystems.storage).toEqual({
+      state: 'degraded',
+      reasons: [degraded, informational],
+    });
+  });
 });
