@@ -74,6 +74,7 @@ These terms have no classic equivalent that says the same thing. Each is marked 
 | Rebuild test | The documentation criterion that an agent could rebuild a conforming system from the documents after the implementation is deleted; a rebuild probe samples it. | Documentation | docs/specs/20260719-verification_calibration.md |
 | Decision record | One file under docs/decisions/ recording a durable decision and its reason. | Documentation | docs/documentation-model.md |
 | Specification kind | One of concept, boundary, mechanism, topology, or process. | Specifications | docs/documentation-model.md |
+| Perturbation | A story condition the stage manager applies. The user does not cause it. It is never an actor step. | L6 stories | docs/specs/20260529-l6_story_acceptance.md |
 
 ### Overloaded Words
 

@@ -3,7 +3,7 @@ status: Accepted
 implementation: Partial
 kind: process
 date: 2026-08-29
-updated: "2026-10-10"
+updated: "2026-10-12"
 ---
 # Release Management
 
@@ -80,11 +80,11 @@ Private root, app, and workspace package versions are build metadata only; they 
 
 The first formal release path is `v0.1.0-rc.1` and later release candidates followed by `v0.1.0` only after the stable-release blocker below is closed.
 
-Each new release tag MUST point to a commit that has not been used by an earlier release tag because its source-revision image tag is an immutable member of that release identity; a same-tag rerun MUST retain the original commit.
+A tag that builds release artifacts MUST point to a commit that has not been used by an earlier release tag, because its source-revision image tag is an immutable member of that release identity. A same-tag rerun MUST retain the original commit. A stable promotion tag builds nothing. It points at the commit of the prerelease it promotes. It keeps that commit's source attribution.
 
 A prerelease publishes exact-version and source-revision image tags and creates a GitHub prerelease, but MUST NOT create or change either the GHCR `latest` tag or GitHub's Latest release pointer.
 
-A stable release publishes the same immutable identities and updates `latest` only after the candidate digest has passed its release smoke checks.
+A stable release promotes a prerelease that passed every catalog story, publishes that prerelease's immutable identities, and updates `latest` only after those bytes have passed their release smoke checks. The promotion uses that prerelease's published bytes. It does not rebuild those bytes. Stable publication stays an engineer-reserved gate.
 
 ### Release Assets
 
@@ -124,51 +124,39 @@ Changing repository or package visibility is a separate explicitly authorized ex
 
 ### Release Exit Criterion
 
-Release readiness requires consecutive complete acceptance rounds on a fixed scenario set with zero new product defects. The current default is two clean rounds, protecting repeatability after defects stop emerging rather than relying on elapsed time or operator confidence. [Release Acceleration](../decisions/20261010-release_acceleration.md) records the amended reset rule and its reason, while retaining the earlier deployment-path ruling. This criterion applies to the first release, including its release candidates, and does not replace other applicable release blockers or deciding checks.
+Before the tag, the deciding check is the deterministic CI that [Test Strategy](20260529-test_strategy.md#ci-and-release-gates) assigns to the candidate and tag gates. The catalog stories are not a pre-tag gate, and a story run on an unpublished candidate is not release evidence. The pre-tag rounds over the former scenario set are removed. [L6 story reorganization](../decisions/20261012-l6_story_reorganization.md) records the reason. This criterion does not replace any other release blocker, and it does not authorize publication by itself.
 
-#### Scenario Set And Authority
+#### Catalog Stories
 
-The fixed scenario set is the engineer-approved selection of user intents, runtime coverage, expected observable outcomes, and deciding public records for the release. The first-release checklist is a procedural projection in the [Release Cookbook](../cookbooks/release.md#first-release-scenario-set). The release record freezes that checklist's revision and the non-secret scenario inputs before the first counted round. Only the engineer may change the set or the required clean-round count; a change starts a new count. Operators may vary attempt-owned names and equivalent fixtures without changing coverage or outcome criteria.
+After the tag, run every story in the [L6 catalog](20260529-l6_story_acceptance.md#catalog) on the published prerelease. The catalog stories are not a pre-tag gate, and a story run on an unpublished candidate is not release evidence. Story 1 runs on a disposable host. Story 2 runs on the persistent deployment that carries the previous release's real data. Story 2 replaces the exact-source image build and the container replacement over the existing Data Root. That deploy part leaves the release flow. The exact-source procedure remains an operator procedure outside this gate. [App Update Delivery](20260910-app_update_delivery.md) owns the helper's release-only contract. [App update removal](../decisions/20261010-remove_app_update_exact_commit.md) records the reason.
 
-This specification owns the readiness rule. The existing release change record retains the frozen set, candidate identity, ordered round evidence, defect references, classifications, and count. Product records remain authoritative for product results; the release record is evidence, not a new product entity, durable lifecycle, execution service, or automatic repair mechanism. [Persistent Deployment Acceptance](20260909-persistent_deployment_acceptance.md) owns attribution and evidence collection, and [L6 Story Acceptance](20260529-l6_story_acceptance.md) owns adjudication and admission when a selected scenario uses that layer.
+A catalog story passes on a prerelease when a run on that prerelease passes. A run that confirms a product defect, including a known defect, means the prerelease did not pass, and the fix goes into the next prerelease. A run classified as environment failure, tool failure, inconclusive, or accepted external behaviour proves nothing about the product. The operator may run the story again on the same prerelease, and every run is retained. A story that has not met the [L6 run-consistency rule](20260529-l6_story_acceptance.md#run-consistency) supplies no stable-promotion evidence. Runs on the same prerelease count toward that rule. This section does not restate that rule's counts.
 
-#### Round And Classification
+A failing prerelease is fixed in the next prerelease. A stable release promotes a prerelease that passed every catalog story, using that prerelease's published bytes and without a rebuild. Stable publication stays an engineer-reserved gate. Real-provider and real-worker execution stays outside automatic tag CI and keeps its opt-in authorization. Publication authorization still follows Publication Authorization below.
 
-One round executes every scenario against one exact tested source commit T on the authorized persistent deployment. T is deployed in each round by an authorized external operator through the maintained [exact-source deployment procedure](../cookbooks/persistent-live-acceptance.md#update-an-exact-source-build), under [the update-mode removal decision](../decisions/20261010-remove_app_update_exact_commit.md). Both clean rounds MUST use T and the same frozen scenario revision. Record the exact deployed artifact identities for the components exercised in each round; a version label alone is insufficient. Rebuilding T through that maintained procedure between rounds does not reset the count.
+The stage manager never retries, repairs, or approves on the actor's behalf. An approval in a story is the actor's user action through a public surface. The stage manager keeps thin shared support: parameters, the evidence directory, browser preflight, actor provisioning, evidence collection, and cleanup. [Persistent Deployment Acceptance](20260909-persistent_deployment_acceptance.md) owns attribution and evidence collection. [L6 Story Acceptance](20260529-l6_story_acceptance.md) owns adjudication.
 
-Publication MUST select T or a later `main` commit P proved to differ from T only in non-product inputs. Non-product paths are exactly `docs/**`, `tests/**`, `.github/**`, and Markdown files at the repository root. Everything else is product, including `scripts/**`, `skills/**`, `containers/**`, every file under `apps/**` and `packages/**`, lockfiles, root manifests, and unknown paths. Symlinks and gitlinks anywhere are product, including in an otherwise non-product path. This classification governs live-round counting and makes no byte-reproducibility claim. A scenario-set change remains a reset even when its path is non-product. Missing, stale, conflicting, or unproved comparison evidence leaves publication readiness unproved. Retain T, P, the complete classified diff, and the successful product-input comparison result in the release record.
+#### Worker Qualification
 
-Published bytes are rebuilt from P and are not claimed to be byte-identical to the tested deployment; the tag workflow's existing exact-digest smoke and asset verification verify the published bytes.
+The four-runtime A to D matrix is Worker qualification on the deployment that story 2 updated. It is not a story and not a pre-tag round. One runtime does not pass for another. A qualification case passes on a prerelease when a run on that prerelease passes. A run that confirms a product defect, including a known defect, means the prerelease did not pass, and the fix goes into the next prerelease. A run classified as environment failure, tool failure, inconclusive, or accepted external behaviour proves nothing about the product. The operator may run the case again on the same prerelease, and every run is retained. The release record retains this evidence before stable promotion. The [Release Cookbook](../cookbooks/release.md#worker-qualification) carries the matrix. Sequential Worker groups follow the one-active-Worker-Turn boundary, and [issue #204](https://github.com/lingkaix/openkit/issues/204) tracks concurrency.
 
-Each scenario retains its observed outcome and deciding public records under Persistent Deployment Acceptance. Classify adverse observations as follows; classification never rewrites a product result or an L6 verdict.
+This specification owns the readiness rule. Product records remain authoritative for product results. The release record is evidence, not a new product entity, durable lifecycle, execution service, or automatic repair mechanism. Operators may vary attempt-owned names and equivalent fixtures without changing coverage or outcome criteria. Only the engineer may change catalog membership, and [L6 Story Acceptance](20260529-l6_story_acceptance.md#catalog) owns that list.
 
-| Classification | Meaning and round treatment |
-| --- | --- |
-| New product defect | An observed violation of an OpenKit-owned contract that was not already recorded before the round began, including a new regression or distinct failure of a known area. Record the defect and reset the count even if the round is incomplete. |
-| Known and already recorded defect | The same defect is linked to a record that predates the round. Retain the observed failure and its existing blocker or disposition; recording a newly discovered defect during the round does not make it known for that round. |
-| Accepted external behaviour | The difference lies outside OpenKit's system boundary under the [accepted external-behaviour decision](../decisions/20261002-external_provider_behavior_accepted.md). Retain the observed difference and evidence of that boundary; OpenKit service stability, data correctness, and product logic remain fully owned. |
-| Environment or tool failure | An external prerequisite or execution instrument failed independently of the product and prevents judgment of the scenario. Preserve the failure and available evidence; the scenario and round are incomplete. |
-| Inconclusive | Required execution or deciding evidence is missing, conflicting, partial, or cannot establish whether an effect occurred. The scenario and round are incomplete; an unexecuted or skipped scenario is also incomplete. |
+#### Classification
 
-A round is complete only when every scenario executed and its product outcome can be decided from retained evidence. A complete round is clean for this criterion only when it contains zero new product defects. A known defect or accepted external difference is not a successful workflow claim and does not waive another owner's required pass, unresolved release blocker, or reserved engineer decision. Unknown causation cannot be assigned to accepted external behaviour merely to obtain a clean round.
+Classify an adverse observation as a new product defect, a known defect, accepted external behaviour, an environment or tool failure, or inconclusive. A new product defect is a violation of an OpenKit-owned contract not recorded before the run began, including a new regression or a distinct failure of a known area. A known defect is linked to a record that predates the run, and recording a defect during the run does not make it known for that run. An environment or tool failure is an external prerequisite or instrument that failed independently of the product and prevents judgment. Inconclusive means required execution or deciding evidence is missing, conflicting, partial, or cannot establish whether an effect occurred. Classification never rewrites a product result or an L6 verdict. A known defect is not a successful workflow and does not waive another owner's required pass, an unresolved release blocker, or a reserved engineer decision. Unknown causation cannot be called accepted external behaviour in order to pass a story or a qualification case. Accepted external behaviour stays under the [accepted external-behaviour decision](../decisions/20261002-external_provider_behavior_accepted.md). OpenKit service stability, data correctness, and product logic remain fully owned.
 
-#### Count, Retry, And Readiness
+Retain failed and incomplete evidence. A later run does not erase the earlier outcome. Complete retained observations may be re-adjudicated after an evidence-tool correction under Persistent Deployment Acceptance. Missing observations cannot be reconstructed into a pass. Missing, stale, or conflicting evidence leaves the result unproved. Model memory and a producer summary are insufficient. Record the exact deployed artifact identities for the components exercised. A version label alone is insufficient. Relevant configuration changes or operator repairs end the evidence attribution window under Persistent Deployment Acceptance.
 
-Start the count at zero after freezing the set and tested commit T. A complete clean round increments it. Any new product defect, product-input change, or scenario-set change resets it to zero. A change to any part of the cookbook's "First-Release Scenario Set" section is a scenario-set change, even though the path is non-product. A later publishing commit P proved to differ from T only in non-product paths does not reset the live-round count. An incomplete round breaks the consecutive clean sequence and contributes no clean round. Relevant configuration changes or operator repairs end the evidence attribution window under Persistent Deployment Acceptance; begin a fresh sequence rather than carrying a count across that boundary. Deployment of the same exact commit through the maintained exact-source procedure for the next round begins that round's attribution window and does not by itself reset the count.
-
-Retain failed and incomplete round evidence. Retry missing execution as a new round on the current candidate and set, without replacing the earlier outcome. Complete retained observations may be re-adjudicated after an evidence-tool correction under Persistent Deployment Acceptance; missing observations cannot be reconstructed into a clean result. Restarting an acceptance client restores the count only from retained, ordered, exact-candidate evidence. Missing, stale, or conflicting evidence leaves readiness unproved; model memory and a producer summary are insufficient.
-
-The criterion is met when the release record proves the required consecutive complete clean rounds on T for the unchanged set and product inputs, with every observed defect classified and linked. A later product-input or scenario-set change or new product defect invalidates that readiness claim and restarts the count. Publication from P additionally requires the retained non-product comparison proof and exact-P candidate CI evidence below; neither substitutes for the rounds. This is a manually selected release-readiness check; real-provider and real-worker execution retains explicit opt-in authorization and stays outside automatic tag CI. Publication authorization still follows Publication Authorization below; this criterion never authorizes publication by itself.
+The prerelease tag workflow builds the published bytes once. Exact-digest smoke and asset verification still verify those bytes. Those bytes are not claimed to be identical to any earlier unpublished deployment.
 
 ### Compact Release Record
 
-Retain one release-level header with the tag and controlled asset set, publication authorization and its conditions, tested commit T and publishing commit P, classified non-product diff and comparison result, candidate CI proof, visibility posture, frozen checklist identity, and known-defect dispositions. Retain one row per round with exactly these columns:
+Retain one release-level header with the tag, the asset set, publication authorization, the published prerelease identity, candidate CI proof, visibility, and known-defect dispositions. Retain one row per catalog story and one row per Worker-qualification case. Each row names the subject, the published identity, the deployment digests and the time window, the verdict, the classification, and the private evidence alias and digest.
 
-| Round | Tested candidate / frozen set | Deployment identity / window | Per-scenario outcomes | Counts / sequence | New defects / other dispositions | Retained evidence / non-pass checks |
-| --- | --- | --- | --- | --- | --- | --- |
-| Round order | T and frozen checklist identity | Exercised component digests, non-secret configuration identity, UTC start and end | Deploy; each of the four runtimes' A to D rows; Chat; Task; Goal; External | Executed, incomplete, successful, new, known, external, complete, clean, consecutive count, reset reason | New defect references and other dispositions | Neutral private-evidence alias and digest, runner commit/digest and parameter-file digest, independent check reference for each non-pass row or row the kit cannot decide |
+Outcome codes are P (pass), K (known defect), E (accepted external), N (new defect), T (environment or tool failure), and I (inconclusive). The maintained kit generates verdicts from retained product records. An independent check is required for a non-pass row and for a row the collector cannot decide. An L6 judge remains required for a catalog story. Do not add per-pass narrative review. Complete evidence stays private under Persistent Deployment Acceptance, including attribution, deciding records, and diagnostic coverage. The public record contains no host name, private path, Thread identifier, or transcript. The compact projection never replaces that evidence and never creates a product record owner.
 
-Outcome codes are P (pass), K (known defect), E (accepted external), N (new defect), T (environment or tool failure), and I (inconclusive). The outcome code T is distinct from tested commit T. The maintained round kit generates verdicts from retained product records. An independent check is required only for non-pass rows and rows the kit cannot decide; scenario-owned independent proof, including the external Actor's deciding recomputation and any L6 Judge, remains required. Do not add per-pass narrative review. Complete evidence remains retained privately under Persistent Deployment Acceptance, including per-scenario attribution, deciding records and diagnostic coverage; the public record contains no host names, private paths, Thread identifiers, or transcripts. The compact projection never replaces that evidence or creates a product record owner.
+The current kit still writes one row per round for the old scenario set. That shape is current implementation, not the rule above.
 
 ### Candidate CI And Tag Reuse
 
@@ -176,13 +164,13 @@ The candidate gate is a completed successful `workflow_dispatch` run selecting `
 
 In a tag run, each of `L0-L2 static, unit, contract` and `L3 NanoCore e2e` first looks for a completed `workflow_dispatch` run of the same workflow on exactly the tagged commit in which that same job succeeded in its latest attempt. When found, the tag job records the supporting run and skips its tests; otherwise it runs its tests as before. Reuse is decided separately for each job and establishes no other job's result.
 
-Every other tag job still runs: preflight and `main` membership, L5 smoke, portability, the installer gate, NanoHost builds and qualification, packaging, image build, per-platform exact-digest smoke, promotion, anonymous `worker-common` inspection, GitHub Release creation and upload, and published-release download verification.
+On a tag that builds release artifacts, every other tag job still runs: preflight and `main` membership, L5 smoke, portability, the installer gate, NanoHost builds and qualification, packaging, image build, per-platform exact-digest smoke, promotion, anonymous `worker-common` inspection, GitHub Release creation and upload, and published-release download verification. A stable promotion runs promotion of the already-published digests, the release pointers, GitHub Release creation, and published-release verification.
 
 ### Publication-Path Proof
 
 An image publication and promotion job, GitHub Release creation and upload job, or published-release verification job is proved when an earlier real tag run executed it successfully and that job is unchanged since then. Retain the earlier tag/run, successful job evidence, and comparison establishing the unchanged job. Skipped publication jobs or non-publishing probes do not establish this proof.
 
-A changed publication job MUST be rehearsed before the real tag in a scratch repository under a different GitHub owner. The rehearsal executes the real changed publication path while leaving the real package names, tags, and Latest pointers untouched. Creating the scratch target and its packages is a separate external effect requiring the engineer's authorization at that time. Missing or conflicting proof blocks the real tag until qualifying evidence exists; no routine different-owner rehearsal is required for an unchanged proved job. [Release Acceleration](../decisions/20261010-release_acceleration.md) records the decision and exclusions.
+A changed publication job MUST be rehearsed before the real tag in a scratch repository under a different GitHub owner. The rehearsal executes the real changed publication path while leaving the real package names, tags, and Latest pointers untouched. Creating the scratch target and its packages is a separate external effect requiring the engineer's authorization at that time. Missing or conflicting proof blocks the real tag until qualifying evidence exists; no routine different-owner rehearsal is required for an unchanged proved job. [L6 story reorganization](../decisions/20261012-l6_story_reorganization.md) records the decision and exclusions.
 
 ### Publication Authorization
 
@@ -196,21 +184,21 @@ The workflow uses only the job-scoped GitHub permissions required to read source
 
 ### Candidate, Promotion, And Idempotency
 
-Each release image build first pushes only a digest-addressed candidate with no release tag.
+On a tag that builds release artifacts, each release image build first pushes only a digest-addressed candidate with no release tag.
 
-The workflow MUST smoke that exact candidate digest on every platform declared by the image catalog before assigning any release tag to it.
+On a tag that builds release artifacts, the workflow MUST smoke that exact candidate digest on every platform declared by the image catalog before assigning any release tag to it.
 
-Promotion assigns all required release tags to the already-smoked digest without rebuilding it.
+On a tag that builds release artifacts, promotion assigns all required release tags to the already-smoked digest without rebuilding it.
 
 Published OCI metadata MUST be derived from the source commit and release inputs; it MUST NOT contain a workflow-run clock value that changes the image digest on retry.
 
 Release runs are serialized across tags so two stable releases cannot race on `latest`.
 
-For one image and release tag, absence of the exact-version, version-without-`v`, and source-revision tags admits candidate build and promotion.
+On a tag that builds release artifacts, absence of the exact-version, version-without-`v`, and source-revision tags admits candidate build and promotion.
 
-Presence of all three immutable tags at the same digest admits idempotent reuse and MUST NOT rebuild, retag, or mutate the image.
+On a tag that builds release artifacts, presence of all three immutable tags at the same digest admits idempotent reuse and MUST NOT rebuild, retag, or mutate the image.
 
-Presence of only one tag, different digests, or an existing tag whose release identity cannot be proved is a conflict that fails closed.
+On a tag that builds release artifacts, presence of only one tag, different digests, or an existing tag whose release identity cannot be proved is a conflict that fails closed.
 
 The GitHub Release is created only after every image promotion and portable asset completes.
 
@@ -252,13 +240,13 @@ The GitHub Release prerelease state MUST agree with the tag, and its notes MUST 
 
 The operations-only Skill composition, executable preflight, packaging and local verification are implemented. This local change does not demonstrate release publication or live-client acceptance.
 
-The `.github/workflows/ci.yml` workflow implements tag preflight, L0-L3, L5, a catalog-derived image matrix, GHCR publication, anonymous `worker-common` inspection, and GitHub Release creation. The tag-only reuse steps in its `l0-l2` and `nano-core-e2e` jobs use `scripts/release-ci-reuse.mjs` for exact-commit candidate evidence reuse. No tag run has used this reuse yet; its first use is the rc.3 tag run. `scripts/release-product-inputs.mjs` implements the product-input comparison, invoked as `node scripts/release-product-inputs.mjs --tested <T> --publishing <P>`; publication from a later P requires exit 0 and retained output.
+The `.github/workflows/ci.yml` workflow implements tag preflight, L0-L3, L5, a catalog-derived image matrix, GHCR publication, anonymous `worker-common` inspection, and GitHub Release creation. The tag-only reuse steps in its `l0-l2` and `nano-core-e2e` jobs use `scripts/release-ci-reuse.mjs` for exact-commit candidate evidence reuse. Tag run 38093270321 on `v0.1.0-rc.3` completed successfully. That run reused candidate CI for the L0-L2 and L3 jobs. `scripts/release-product-inputs.mjs` still exists. It no longer has a release obligation, and a later tooling package removes it. The tag workflow builds release images on every tag push, so stable promotion without a rebuild is not implemented and must be implemented before any stable release. `tests/support/release-round.mjs` still performs the exact-source image build and the container replacement over the existing Data Root, and it still runs the old scenario rows. A later package removes that deploy path.
 
 The current implementation removes package-version coupling, makes tag parsing lowercase-only, pins every release image base, packages the complete operations Skill including the administrator executable, separates digest candidates from tag promotion, serializes releases, preserves same-tag image identity, applies GitHub prerelease semantics, and performs post-publication verification.
 
 Native amd64 and arm64 NanoHost build jobs, target-selected stock Gateway supply, deterministic packaging, one shared portable checksum, target-aware verification, four-attachment composition, and both downloaded-archive checks are implemented. The isolated fixed-path installer gate exercises both ELF machines. The tag-only hosted qualification matrix consumes exact packaged inputs on `ubuntu-24.04` and `ubuntu-24.04-arm`, records image and prerequisite package versions, requires fresh static requirements and no-write installation disposition, proves unchanged live destinations, and performs contained staging before either publication job. Pull-request and workflow-dispatch gates retain their existing scope. This wiring implements the [release-time qualification ruling](../decisions/20261005-first_release_lifecycle_and_verification_scope.md); no hosted run or publication is claimed by local implementation. Historical arm64 R002 evidence belongs to exact candidate `1a5468bce556c14bb3dfc16550a9dc2f1c7adad5` and does not qualify a changed candidate. R004 remains open until a separately authorized complete tag is published and verified, and stable preflight remains blocked while R001 is open.
 
-The repository is currently private, no product release exists, and no visibility mutation or release publication occurs as part of this implementation change.
+`gh repo view --json visibility` on 2026-10-12 returned `PUBLIC` for `lingkaix/openkit`. GitHub releases `v0.1.0-rc.2` and `v0.1.0-rc.3` are published prereleases. The tag `v0.1.0-rc.1` exists, and `gh release view v0.1.0-rc.1` returned no GitHub release. This documentation change does not publish a release or change visibility.
 
 ## Testing Strategy / Acceptance Criteria
 

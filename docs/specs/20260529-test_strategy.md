@@ -248,7 +248,7 @@ If a smoke test needs more than a minimal boot path, that behavior belongs in Na
 
 L6 is the agent-first, opt-in product-intent layer. `docs/specs/20260529-l6_story_acceptance.md` owns its admission, story, execution, evidence, and failure contracts.
 
-A fixed mechanical proof belongs at L3 when it drives NanoCore or another public process boundary, or at L4 when it drives the browser. A confirmed defect found at L6 receives its deterministic regression at the lowest sufficient layer.
+A fixed mechanical proof belongs at L3 when it drives NanoCore or another public process boundary, or at L4 when it drives the browser. L6 Story Acceptance owns how a confirmed defect leaves L6, including a recorded reason when the defect is not reduced.
 
 ## Test Data And Environment Policy
 
@@ -276,7 +276,7 @@ Pull requests should run only the lightweight repository check by default.
 
 Ordinary branch pushes should not run CI by default.
 
-Lowercase version tags matching `v*.*.*` should run the release gate as separate named jobs: `l0-l2`, `nanocore-e2e`, and `smoke`. Under [Release Management](20260829-release_management.md#candidate-ci-and-tag-reuse), the L0-L2 and NanoCore e2e tag jobs each first seek a completed `workflow_dispatch` run of the same workflow on exactly the tagged commit where that same job succeeded in its latest attempt. Each records the qualifying run and skips its tests when found, or runs its tests as before when absent. The candidate gate selects `release-gate` or `full` on exactly the publishing commit; reuse never crosses commits. L5 and every other tag job still run, including preflight/main membership, portability, installer, NanoHost build/qualification, packaging, image build and per-platform exact-digest smoke, promotion, anonymous worker-common inspection, GitHub Release creation/upload, and download verification.
+A lowercase version tag that builds release artifacts and matches `v*.*.*` should run the release gate as separate named jobs: `l0-l2`, `nanocore-e2e`, and `smoke`. Under [Release Management](20260829-release_management.md#candidate-ci-and-tag-reuse), the L0-L2 and NanoCore e2e tag jobs each first seek a completed `workflow_dispatch` run of the same workflow on exactly the tagged commit where that same job succeeded in its latest attempt. Each records the qualifying run and skips its tests when found, or runs its tests as before when absent. The candidate gate selects `release-gate` or `full` on exactly the publishing commit; reuse never crosses commits. On a tag that builds release artifacts, L5 and every other tag job still run, including preflight and `main` membership, portability, the installer, NanoHost build and qualification, packaging, image build and per-platform exact-digest smoke, promotion, anonymous `worker-common` inspection, GitHub Release creation and upload, and download verification. A stable promotion tag builds nothing. It runs promotion of the already-published digests, the release pointers, GitHub Release creation, and published-release verification.
 
 Manual workflow dispatch should expose `pr-check`, `l0-l2`, `nanocore-e2e`, `web-e2e`, `smoke`, `release-gate`, and `full` selections.
 
@@ -373,7 +373,7 @@ Mitigation: Use temporary data roots, fake providers, deterministic workers, and
 
 Risk: AI story tests become non-reproducible.
 
-Mitigation: Apply the L6 acceptance contract and reduce every confirmed failure into a lower-layer regression test.
+Mitigation: Apply the L6 acceptance contract, including its reduction rule.
 
 Risk: Contract drift appears first in Web e2e.
 
