@@ -183,6 +183,7 @@ class RecordingEffects:
         self.fail_restore_stop = False
         self.diagnostics_payloads: List[dict] = []
         self.tokens_after: Optional[dict] = None
+        self.log_config: Optional[dict] = None
 
     def bind(self, root: Path) -> None:
         self.root = root
@@ -218,7 +219,7 @@ class RecordingEffects:
                 "Healthcheck": {
                     "Test": [
                         "CMD-SHELL",
-                        'curl -fsS -H "Host: ai.simonxu.net" http://127.0.0.1:7080/ | grep -Fq "<div id=\\"root\\"></div>"',
+                        'curl -fsS -H "Host: openkit.example" http://127.0.0.1:7080/ | grep -Fq "<div id=\\"root\\"></div>"',
                     ]
                 },
             },
@@ -226,7 +227,9 @@ class RecordingEffects:
                 "CapAdd": None,
                 "CapDrop": None,
                 "Devices": self.devices,
-                "LogConfig": {"Type": "json-file", "Config": {"max-file": "5", "max-size": "10m"}},
+                "LogConfig": self.log_config
+                if self.log_config is not None
+                else {"Type": "json-file", "Config": {"max-file": "5", "max-size": "10m"}},
                 "NetworkMode": "host",
                 "PidMode": "",
                 "PortBindings": {},
@@ -798,6 +801,7 @@ class PrepareReceiptTests(unittest.TestCase):
             root = Path(tmp)
             config_path = write_config(root)
             effects = RecordingEffects()
+            effects.bind(root)
             code, body = invoke(
                 module,
                 {
@@ -823,7 +827,13 @@ class PrepareReceiptTests(unittest.TestCase):
             self.assertEqual(stored["schemaVersion"], 1)
             self.assertEqual(stored["source"], RELEASE_SOURCE)
             self.assertEqual(stored["expectedCurrentImageId"], DIGEST)
-            self.assertEqual(effects.calls, [])
+            self.assertEqual(
+                effects.calls,
+                [
+                    ["docker", "inspect", "--format", "{{json .}}", CONTAINER],
+                    ["docker", "image", "inspect", "--format", "{{json .}}", DIGEST],
+                ],
+            )
 
 
 class ClosedStdinTests(unittest.TestCase):
@@ -852,6 +862,8 @@ class ClosedStdinTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
             root = Path(tmp)
             config_path = write_config(root)
+            effects = RecordingEffects()
+            effects.bind(root)
             _code, body = invoke(
                 module,
                 {
@@ -860,6 +872,7 @@ class ClosedStdinTests(unittest.TestCase):
                     "source": RELEASE_SOURCE,
                 },
                 config_path,
+                effects=effects,
                 environ={"SSH_ORIGINAL_COMMAND": "rm -rf /; docker restart"},
             )
             self.assertEqual(body["stage"], "prepared")
@@ -926,7 +939,13 @@ class ReceiptLifecycleTests(unittest.TestCase):
                 now=lambda: clock["t"],
             )
             self.assertEqual(body["error"]["code"], "app_update_expired")
-            self.assertEqual(effects.calls, [])
+            self.assertEqual(
+                effects.calls,
+                [
+                    ["docker", "inspect", "--format", "{{json .}}", CONTAINER],
+                    ["docker", "image", "inspect", "--format", "{{json .}}", DIGEST],
+                ],
+            )
             self.assertTrue((root / "receipts" / (prepared["requestId"] + ".json")).is_file())
 
     def test_start_launches_systemd_job_and_repeat_does_not_recreate_it(self) -> None:
@@ -1310,7 +1329,7 @@ class ApplyJobTests(unittest.TestCase):
             self.assertEqual(effects.containers, {CONTAINER, failed})
             self.assertEqual(effects.running, {CONTAINER})
 
-    def test_release_apply_uses_a2_shape_stages_web_before_stop_and_leaves_config(self) -> None:
+    def test_release_apply_uses_deployment_bindings_stages_web_before_stop_and_leaves_config(self) -> None:
         module = load_helper()
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
             root = Path(tmp)
@@ -1394,8 +1413,8 @@ class ApplyJobTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
             root = Path(tmp)
             effects = RecordingEffects()
-            effects.omit_app_update_ssh = True
             config_path, effects, _code, prepared = _prepare(module, root, effects=effects)
+            effects.omit_app_update_ssh = True
             invoke(
                 module,
                 {
@@ -1421,8 +1440,8 @@ class ApplyJobTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
             root = Path(tmp)
             effects = RecordingEffects()
-            effects.ssh_rw = True
             config_path, effects, _code, prepared = _prepare(module, root, effects=effects)
+            effects.ssh_rw = True
             invoke(
                 module,
                 {
@@ -1470,11 +1489,18 @@ class ApplyJobTests(unittest.TestCase):
             repos = root / "workspaces-repos"
             repos.mkdir()
             effects = RecordingEffects()
+            effects.extra_mounts = [
+                {"Destination": "/srv/repos", "RW": True, "Source": str(repos), "Type": "bind"}
+            ]
             _config_path, effects, _prepared, body = _start_apply(
-                module, root, effects=effects, repositoryDirectory=str(repos)
+                module,
+                root,
+                effects=effects,
+                repositoryDirectory=str(repos),
+                after_prepare=lambda bound: bound.__setattr__("extra_mounts", []),
             )
             self.assertEqual(body["stage"], "failed", body)
-            self.assertRegex(body["error"] or "", r"mounts are not the fixed")
+            self.assertRegex(body["error"] or "", r"do not match the configured deployment set")
             self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
 
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
@@ -1485,10 +1511,17 @@ class ApplyJobTests(unittest.TestCase):
             other.mkdir()
             effects = RecordingEffects()
             effects.extra_mounts = [
-                {"Destination": "/srv/repos", "RW": True, "Source": str(other), "Type": "bind"}
+                {"Destination": "/srv/repos", "RW": True, "Source": str(repos), "Type": "bind"}
             ]
             _config_path, effects, _prepared, body = _start_apply(
-                module, root, effects=effects, repositoryDirectory=str(repos)
+                module,
+                root,
+                effects=effects,
+                repositoryDirectory=str(repos),
+                after_prepare=lambda bound: bound.__setattr__(
+                    "extra_mounts",
+                    [{"Destination": "/srv/repos", "RW": True, "Source": str(other), "Type": "bind"}],
+                ),
             )
             self.assertEqual(body["stage"], "failed", body)
             self.assertRegex(body["error"] or "", r"does not match helper config")
@@ -1499,28 +1532,42 @@ class ApplyJobTests(unittest.TestCase):
             repos = root / "workspaces-repos"
             repos.mkdir()
             effects = RecordingEffects()
+            _config_path, effects, _prepared, body = _start_apply(
+                module,
+                root,
+                effects=effects,
+                after_prepare=lambda bound: bound.__setattr__(
+                    "extra_mounts",
+                    [{"Destination": "/srv/repos", "RW": True, "Source": str(repos), "Type": "bind"}],
+                ),
+            )
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertRegex(body["error"] or "", r"do not match the configured deployment set")
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            repos = root / "workspaces-repos"
+            repos.mkdir()
+            effects = RecordingEffects()
             effects.extra_mounts = [
                 {"Destination": "/srv/repos", "RW": True, "Source": str(repos), "Type": "bind"}
             ]
-            _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
-            self.assertEqual(body["stage"], "failed", body)
-            self.assertRegex(body["error"] or "", r"mounts are not the fixed")
-            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
-
-        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
-            root = Path(tmp)
-            repos = root / "workspaces-repos"
-            repos.mkdir()
-            effects = RecordingEffects()
-            effects.extra_mounts = [
-                {"Destination": "/srv/repos", "RW": True, "Source": str(repos), "Type": "bind"},
-                {"Destination": "/opt/extra", "RW": True, "Source": str(repos), "Type": "bind"},
-            ]
             _config_path, effects, _prepared, body = _start_apply(
-                module, root, effects=effects, repositoryDirectory=str(repos)
+                module,
+                root,
+                effects=effects,
+                repositoryDirectory=str(repos),
+                after_prepare=lambda bound: bound.__setattr__(
+                    "extra_mounts",
+                    [
+                        {"Destination": "/srv/repos", "RW": True, "Source": str(repos), "Type": "bind"},
+                        {"Destination": "/opt/extra", "RW": True, "Source": str(repos), "Type": "bind"},
+                    ],
+                ),
             )
             self.assertEqual(body["stage"], "failed", body)
-            self.assertRegex(body["error"] or "", r"mounts are not the fixed")
+            self.assertRegex(body["error"] or "", r"do not match the configured deployment set")
             self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
 
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
@@ -1529,10 +1576,17 @@ class ApplyJobTests(unittest.TestCase):
             repos.mkdir()
             effects = RecordingEffects()
             effects.extra_mounts = [
-                {"Destination": "/srv/repos", "RW": True, "Source": str(repos), "Type": "volume"}
+                {"Destination": "/srv/repos", "RW": True, "Source": str(repos), "Type": "bind"}
             ]
             _config_path, effects, _prepared, body = _start_apply(
-                module, root, effects=effects, repositoryDirectory=str(repos)
+                module,
+                root,
+                effects=effects,
+                repositoryDirectory=str(repos),
+                after_prepare=lambda bound: bound.__setattr__(
+                    "extra_mounts",
+                    [{"Destination": "/srv/repos", "RW": True, "Source": str(repos), "Type": "volume"}],
+                ),
             )
             self.assertEqual(body["stage"], "failed", body)
             self.assertRegex(body["error"] or "", r"must be a bind")
@@ -1544,10 +1598,17 @@ class ApplyJobTests(unittest.TestCase):
             repos.mkdir()
             effects = RecordingEffects()
             effects.extra_mounts = [
-                {"Destination": "/srv/repos", "RW": False, "Source": str(repos), "Type": "bind"}
+                {"Destination": "/srv/repos", "RW": True, "Source": str(repos), "Type": "bind"}
             ]
             _config_path, effects, _prepared, body = _start_apply(
-                module, root, effects=effects, repositoryDirectory=str(repos)
+                module,
+                root,
+                effects=effects,
+                repositoryDirectory=str(repos),
+                after_prepare=lambda bound: bound.__setattr__(
+                    "extra_mounts",
+                    [{"Destination": "/srv/repos", "RW": False, "Source": str(repos), "Type": "bind"}],
+                ),
             )
             self.assertEqual(body["stage"], "failed", body)
             self.assertRegex(body["error"] or "", r"does not match helper config")
@@ -1571,16 +1632,24 @@ class ApplyJobTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
             root = Path(tmp)
-            target = root / "real-repos"
-            target.mkdir()
             link = root / "linked-repos"
-            link.symlink_to(target)
+            link.mkdir()
             effects = RecordingEffects()
             effects.extra_mounts = [
                 {"Destination": "/srv/repos", "RW": True, "Source": str(link), "Type": "bind"}
             ]
+
+            def become_symlink(_bound: RecordingEffects) -> None:
+                moved = root / "real-repos"
+                link.rename(moved)
+                link.symlink_to(moved)
+
             _config_path, effects, _prepared, body = _start_apply(
-                module, root, effects=effects, repositoryDirectory=str(link)
+                module,
+                root,
+                effects=effects,
+                repositoryDirectory=str(link),
+                after_prepare=become_symlink,
             )
             self.assertEqual(body["stage"], "failed", body)
             self.assertRegex(body["error"] or "", r"non-linked directory")
@@ -1589,13 +1658,22 @@ class ApplyJobTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
             root = Path(tmp)
             file_path = root / "not-a-directory"
-            file_path.write_text("nope\n", encoding="utf-8")
+            file_path.mkdir()
             effects = RecordingEffects()
             effects.extra_mounts = [
                 {"Destination": "/srv/repos", "RW": True, "Source": str(file_path), "Type": "bind"}
             ]
+
+            def become_file(_bound: RecordingEffects) -> None:
+                file_path.rmdir()
+                file_path.write_text("nope\n", encoding="utf-8")
+
             _config_path, effects, _prepared, body = _start_apply(
-                module, root, effects=effects, repositoryDirectory=str(file_path)
+                module,
+                root,
+                effects=effects,
+                repositoryDirectory=str(file_path),
+                after_prepare=become_file,
             )
             self.assertEqual(body["stage"], "failed", body)
             self.assertRegex(body["error"] or "", r"non-linked directory")
@@ -1667,8 +1745,8 @@ class ApplyJobTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
             root = Path(tmp)
             effects = RecordingEffects()
-            effects.privileged = True
             config_path, effects, _code, prepared = _prepare(module, root, effects=effects)
+            effects.privileged = True
             invoke(
                 module,
                 {
@@ -1705,8 +1783,8 @@ class ApplyJobTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
             root = Path(tmp)
             effects = RecordingEffects()
-            effects.runtime = "sysbox-runc"
             config_path, effects, _code, prepared = _prepare(module, root, effects=effects)
+            effects.runtime = "sysbox-runc"
             invoke(
                 module,
                 {
@@ -1732,8 +1810,8 @@ class ApplyJobTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
             root = Path(tmp)
             effects = RecordingEffects()
-            effects.runtime = ""
             config_path, effects, _code, prepared = _prepare(module, root, effects=effects)
+            effects.runtime = ""
             invoke(
                 module,
                 {
@@ -1911,8 +1989,10 @@ class ApplyJobTests(unittest.TestCase):
             self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
 
 
-def _start_apply(module, root: Path, source=None, effects=None, **config):
+def _start_apply(module, root: Path, source=None, effects=None, after_prepare=None, **config):
     config_path, effects, _code, prepared = _prepare(module, root, source=source, effects=effects, **config)
+    if after_prepare is not None:
+        after_prepare(effects)
     invoke(
         module,
         {
@@ -2562,6 +2642,76 @@ def _init_annotated_release_repo(repo: Path, tag: str) -> Tuple[str, str]:
         ["git", "rev-parse", tag], cwd=repo, check=True, capture_output=True, text=True, env=env
     ).stdout.strip()
     return peeled, tag_object
+
+
+class PrepareBindingEligibilityTests(unittest.TestCase):
+    def test_prepare_names_missing_log_option_and_writes_no_receipt(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.log_config = {"Type": "json-file", "Config": {"max-file": "5"}}
+            _config_path, effects, _code, body = _prepare(module, root, effects=effects)
+            error = body.get("error") or {}
+            self.assertEqual(error.get("code"), "app_update_invalid_request", body)
+            self.assertIn("max-size", error.get("message") or "")
+            self.assertEqual(list((root / "receipts").glob("*.json")), [])
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+    def test_prepare_names_non_json_file_driver_and_writes_no_receipt(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.log_config = {"Type": "journald", "Config": {}}
+            _config_path, effects, _code, body = _prepare(module, root, effects=effects)
+            error = body.get("error") or {}
+            self.assertEqual(error.get("code"), "app_update_invalid_request", body)
+            self.assertIn("journald", error.get("message") or "")
+            self.assertEqual(list((root / "receipts").glob("*.json")), [])
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+    def test_prepare_refuses_privileged_container_without_a_receipt(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.privileged = True
+            _config_path, effects, _code, body = _prepare(module, root, effects=effects)
+            error = body.get("error") or {}
+            self.assertEqual(error.get("code"), "app_update_invalid_request", body)
+            self.assertIn("Privileged App containers are unsupported.", error.get("message") or "")
+            self.assertEqual(list((root / "receipts").glob("*.json")), [])
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+    def test_apply_names_missing_log_option_before_stop(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            config_path, effects, _code, prepared = _prepare(module, root)
+            self.assertEqual(prepared["stage"], "prepared", prepared)
+            effects.log_config = {"Type": "json-file", "Config": {"max-size": "10m"}}
+            invoke(
+                module,
+                {
+                    "maintenanceConsent": True,
+                    "op": "start",
+                    "requestId": prepared["requestId"],
+                },
+                config_path,
+                effects=effects,
+            )
+            body = invoke(
+                module,
+                {},
+                config_path,
+                effects=effects,
+                extra_argv=["--apply", prepared["requestId"]],
+                stdin_bytes=b"",
+            )[1]
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertIn("max-file", body["error"])
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
 
 
 if __name__ == "__main__":

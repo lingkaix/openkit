@@ -527,6 +527,9 @@ class AppUpdateHelper:
 
     def prepare(self, command: Mapping[str, Any]) -> Dict[str, Any]:
         self._assert_capacity()
+        inspect = self._inspect_container(self.config["containerName"])
+        current_identity = self._image_identity(str(inspect.get("Image") or ""))
+        self._assert_configured_deployment_bindings(inspect, current_identity)
         request_id = str(uuid.uuid4())
         prepared_at = isoformat(self.now())
         receipt = _blank_receipt(
@@ -603,7 +606,7 @@ class AppUpdateHelper:
                         "app_update_invalid_request",
                         "Running App image does not match the prepared current image.",
                     )
-                self._assert_a2_shape(inspect, current_identity)
+                self._assert_configured_deployment_bindings(inspect, current_identity)
                 if not identity_matches(self.config["compatibility"]["currentImageId"], current_identity):
                     raise HelperError(
                         "app_update_invalid_request",
@@ -875,8 +878,25 @@ class AppUpdateHelper:
             raise HelperError("app_update_unavailable", "Current App inspect is not an object.")
         return payload
 
-    def _assert_a2_shape(self, inspect: Mapping[str, Any], image: Mapping[str, Any]) -> None:
-        """Require the configured deployment bindings before any App interruption."""
+    def _assert_json_file_log_retention(self, inspect: Mapping[str, Any]) -> None:
+        """Name a non-json-file driver or each missing retention option."""
+        log = (inspect.get("HostConfig") or {}).get("LogConfig") or {}
+        log_type = log.get("Type") or "json-file"
+        log_cfg = log.get("Config") or {}
+        if log_type != "json-file":
+            raise HelperError(
+                "app_update_invalid_request",
+                "App log driver is %s; json-file is required." % log_type,
+            )
+        missing = [name for name in ("max-size", "max-file") if name not in log_cfg]
+        if missing:
+            raise HelperError(
+                "app_update_invalid_request",
+                "App log option %s is missing." % ", ".join(missing),
+            )
+
+    def _assert_configured_deployment_bindings(self, inspect: Mapping[str, Any], image: Mapping[str, Any]) -> None:
+        """Require the configured deployment bindings before a receipt and again before interruption."""
         name = self.config["containerName"]
         if "nanohost" in name.lower():
             raise HelperError("app_update_invalid_request", "App update must not target NanoHost.")
@@ -898,11 +918,7 @@ class AppUpdateHelper:
         restart = (host.get("RestartPolicy") or {}).get("Name")
         if restart != "unless-stopped":
             raise HelperError("app_update_invalid_request", "App restart policy must be unless-stopped.")
-        log = host.get("LogConfig") or {}
-        log_type = log.get("Type") or "json-file"
-        log_cfg = log.get("Config") or {}
-        if log_type != "json-file" or "max-size" not in log_cfg or "max-file" not in log_cfg:
-            raise HelperError("app_update_invalid_request", "App log retention settings are missing.")
+        self._assert_json_file_log_retention(inspect)
         entrypoint = list(config.get("Entrypoint") or [])
         cmd = list(config.get("Cmd") or [])
         if entrypoint != image["entrypoint"] or cmd != image["cmd"]:
@@ -938,7 +954,7 @@ class AppUpdateHelper:
         if extra or missing:
             raise HelperError(
                 "app_update_invalid_request",
-                "App mounts are not the fixed A2 Data Root, backup, sink, Web, Caddyfile, Vault key, and App-update SSH set.",
+                "App mounts do not match the configured deployment set: Data Root, backup, sink, Web, Caddyfile, Vault key, and App-update SSH.",
             )
         if directory and str((mounts["/srv/repos"] or {}).get("Type") or "") != "bind":
             raise HelperError("app_update_invalid_request", "App mount /srv/repos must be a bind.")
