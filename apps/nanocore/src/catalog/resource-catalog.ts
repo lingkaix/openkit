@@ -37,6 +37,7 @@ import {
 import type { ZodError } from 'zod';
 
 import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
+import { writeFileAtomic } from '../storage/workspace-file-records.js';
 
 /** Compare-and-set failure against the catalog revision. */
 export class CatalogConflictError extends Error {
@@ -152,7 +153,7 @@ export function publishWorkspaceResourceCatalog(input: {
     revision: current.revision + 1,
   });
   mkdirSync(dirname(path), { recursive: true });
-  writeJsonAtomic(path, next);
+  writeFileAtomic(path, `${JSON.stringify(next, null, 2)}\n`);
   return ResourceCatalogDocumentViewSchema.parse(next);
 }
 
@@ -1169,11 +1170,4 @@ function asStringRecord(value: unknown): Record<string, string> {
   return Object.fromEntries(
     Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
   );
-}
-
-/** Atomically writes JSON. */
-function writeJsonAtomic(path: string, value: unknown): void {
-  const staged = `${path}.staging`;
-  writeFileSync(staged, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx' });
-  renameSync(staged, path);
 }

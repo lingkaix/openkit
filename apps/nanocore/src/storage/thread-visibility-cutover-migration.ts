@@ -1,20 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
-import {
-  copyFileSync,
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { ThreadSchema, TurnSchema } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { acquireDataRootLock, type DataRootLock, DataRootLockError } from '../bootstrap/lock.js';
 import { coreDbPath, LOCAL_USER_ID } from './fs-layout.js';
-import { WorkspaceSystemRecordSchema } from './workspace-file-records.js';
+import { WorkspaceSystemRecordSchema, writeFileAtomic } from './workspace-file-records.js';
 
 const THREAD_ENTRY_REQUIRED_FEATURE = 'openkit.thread-entry.v1' as const;
 const THREAD_VISIBILITY_REQUIRED_FEATURE = 'openkit.thread-visibility.v1' as const;
@@ -271,7 +262,10 @@ export function migrateThreadVisibilityCutover(
       const backupPath = join(backupRoot, relativeBackup);
       mkdirSync(dirname(backupPath), { recursive: true });
       copyFileSync(row.path, backupPath);
-      writeJsonAtomic(row.path, projectCanonicalThreadRecord(thread, raw));
+      writeFileAtomic(
+        row.path,
+        `${JSON.stringify(projectCanonicalThreadRecord(thread, raw), null, 2)}\n`
+      );
       writtenCount += 1;
     }
 
@@ -461,12 +455,6 @@ function listDirectoryNames(path: string): string[] {
 
 function readJson(path: string): unknown {
   return JSON.parse(readFileSync(path, 'utf8'));
-}
-
-function writeJsonAtomic(path: string, value: unknown): void {
-  const temporaryPath = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`);
-  renameSync(temporaryPath, path);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
