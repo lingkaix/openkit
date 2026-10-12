@@ -402,7 +402,9 @@ logs/
 indexes/
 ```
 
-`turn.json` is already rewritten on every persist of the Turn directory (`writeJsonAtomic` of `{ ...turn, items: [] }` in `apps/nanocore/src/storage/workspace-file-records.ts:2023`). It carries the admission-time resolved capture pair `{scope, value}` as immutable historical content on that existing file; this adds no new file. `docs/core/protocol.md` owns when that pair is fixed. `docs/specs/20260921-work_data_retention_format.md` owns the meaning and values of the setting and the missing, conflict, and restart rules.
+A Thread, Turn, Artifact, or AgentSession directory is canonical only when its required files are visible together.
+
+`turn.json` is already rewritten on every persist of the Turn directory (`writeTurnDirectory` through `writeOwnedDescriptiveJson` of `{ ...turn, items: [] }`). It carries the admission-time resolved capture pair `{scope, value}` as immutable historical content on that existing file; this adds no new file. `docs/core/protocol.md` owns when that pair is fixed. `docs/specs/20260921-work_data_retention_format.md` owns the meaning and values of the setting and the missing, conflict, and restart rules.
 
 The workspace may keep raw source material or references depending on source type and policy. External systems remain systems of record for their own domain data.
 
@@ -500,10 +502,8 @@ Private project Threads and their Item/Artifact material remain in their existin
 
 `user.sqlite` owns:
 
-- user preferences
-- workspace ordering and recent workspace indexes
-- user-scoped provider or vault metadata when policy allows it
-- user-level notifications and attention state
+- per-user idempotency receipts
+- its migration ledger
 
 User files remain under `users/<userId>/files`. Workspace ownership and visibility do not create any Workspace storage below the user tree; all canonical Workspace data lives under `workspaces/<workspaceId>` and is resolved through Core identity and policy state.
 

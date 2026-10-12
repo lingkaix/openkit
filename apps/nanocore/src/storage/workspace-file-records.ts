@@ -2263,6 +2263,156 @@ function isCanonicalThreadEnvelope(input: unknown): boolean {
 }
 
 /**
+ * Publishes one absent record directory by renaming a same-filesystem staging directory.
+ *
+ * A crash before the rename leaves only `workspaces/.staging`, which the next load deletes.
+ * Callers update an existing destination in place. This function does not delete a destination.
+ *
+ * @param workspaceRoot Resolved workspace root. Staging is created beside that root.
+ * @param destination Absent canonical directory.
+ * @param writeContents Writes the complete directory under the staging path.
+ */
+function publishNewRecordDirectory(
+  workspaceRoot: string,
+  destination: string,
+  writeContents: (directory: string) => void
+): void {
+  const stagingRoot = join(dirname(workspaceRoot), '.staging', `record-${randomUUID()}`);
+  const stagingParent = dirname(stagingRoot);
+
+  mkdirSync(stagingParent, { recursive: true });
+  assertCanonicalDirectory(stagingParent);
+  try {
+    mkdirSync(stagingRoot, { mode: 0o700 });
+    assertCanonicalDirectory(stagingRoot);
+    writeContents(stagingRoot);
+    renameSync(stagingRoot, destination);
+    syncCanonicalDirectory(dirname(destination));
+  } catch (error) {
+    rmSync(stagingRoot, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+/**
+ * Writes one Turn directory's metadata, item log, and optional event log.
+ *
+ * @param turnRoot Existing Turn directory, either canonical or staged.
+ * @param turn Turn record to write.
+ * @param records Workspace records that own the Turn's items and events.
+ */
+function writeTurnDirectory(turnRoot: string, turn: Turn, records: WorkspaceFileRecords): void {
+  const itemsPath = join(turnRoot, 'items.jsonl');
+  const eventsPath = join(turnRoot, 'runtime', 'events.jsonl');
+  const runtimeRoot = dirname(eventsPath);
+
+  ensureCanonicalDirectory(turnRoot);
+  const turnPath = join(turnRoot, 'turn.json');
+  const previousRaw = existsSync(turnPath)
+    ? (readJson(turnPath) as Record<string, unknown>)
+    : undefined;
+  const previousCoverage =
+    previousRaw?.captureCoverage === undefined
+      ? undefined
+      : CaptureCoverageBindingSchema.parse(previousRaw.captureCoverage);
+  const nextCoverage = records.turnCaptureCoverage?.get(turn.id);
+  if (
+    previousCoverage !== undefined &&
+    nextCoverage !== undefined &&
+    !isDeepStrictEqual(previousCoverage, nextCoverage)
+  ) {
+    throw new Error(`Turn ${turn.id} capture coverage binding is recovery_required.`);
+  }
+  const captureCoverage = nextCoverage ?? previousCoverage;
+  writeOwnedDescriptiveJson(
+    turnPath,
+    {
+      ...turn,
+      items: [],
+      ...(captureCoverage ? { captureCoverage } : {}),
+      ...(previousRaw?.requiredFeatures ? { requiredFeatures: previousRaw.requiredFeatures } : {}),
+    },
+    TurnReaderSchema.safeExtend({
+      captureCoverage: CaptureCoverageBindingSchema.optional(),
+      requiredFeatures: z.array(z.literal('openkit.work-observations.v1')).optional(),
+    })
+  );
+  const revisions = records.itemRevisions.filter((item) => item.turnId === turn.id);
+  const itemLogMetadata = lstatSync(itemsPath, { throwIfNoEntry: false });
+  if (!itemLogMetadata) {
+    writeFileAtomic(
+      itemsPath,
+      revisions.map((item) => JSON.stringify(item)).join('\n') + (revisions.length ? '\n' : '')
+    );
+  } else {
+    assertCanonicalRegularFile(itemsPath);
+  }
+  ensureCanonicalDirectory(runtimeRoot);
+  const eventLogMetadata = lstatSync(eventsPath, { throwIfNoEntry: false });
+  if (!eventLogMetadata) {
+    const events = records.streamEvents.find(([turnId]) => turnId === turn.id)?.[1] ?? [];
+    if (events.length > 0) {
+      writeFileAtomic(eventsPath, `${events.map((event) => JSON.stringify(event)).join('\n')}\n`);
+    }
+  } else {
+    assertCanonicalRegularFile(eventsPath);
+  }
+}
+
+/**
+ * Writes one Artifact directory's metadata and body.
+ *
+ * @param artifactRoot Existing Artifact directory, either canonical or staged.
+ * @param artifact Artifact record to write.
+ */
+function writeArtifactDirectory(artifactRoot: string, artifact: Artifact): void {
+  const filesRoot = join(artifactRoot, 'files');
+  const contentFileName = artifactContentFileName(artifact.content.format);
+
+  ensureCanonicalDirectory(artifactRoot);
+  ensureCanonicalDirectory(filesRoot);
+  for (const staleFileName of ['content.md', 'content.txt', 'content.json']) {
+    if (staleFileName !== contentFileName) {
+      rmSync(join(filesRoot, staleFileName), { force: true });
+    }
+  }
+  writeOwnedDescriptiveJson(
+    join(artifactRoot, 'artifact.json'),
+    {
+      ...artifact,
+      content: { format: artifact.content.format },
+    },
+    z.object({
+      ...ArtifactReaderSchema.shape,
+      content: ArtifactSchema.shape.content.omit({ body: true }),
+    })
+  );
+  writeFileAtomic(join(filesRoot, contentFileName), artifact.content.body);
+}
+
+/**
+ * Writes one new Thread directory, including `thread.json`, `turns/`, and every Turn.
+ *
+ * @param threadRoot Existing staging directory that will become the Thread directory.
+ * @param thread Thread record to write.
+ * @param threadTurns Turns that belong to this Thread.
+ * @param records Workspace records that own those Turns.
+ */
+function writeStagedThreadDirectory(
+  threadRoot: string,
+  thread: Thread,
+  threadTurns: readonly Turn[],
+  records: WorkspaceFileRecords
+): void {
+  writeJsonAtomic(join(threadRoot, 'thread.json'), projectCanonicalThreadRecord(thread));
+  const turnsRoot = join(threadRoot, 'turns');
+  ensureCanonicalDirectory(turnsRoot);
+  for (const turn of threadTurns) {
+    writeTurnDirectory(join(turnsRoot, turn.id), turn, records);
+  }
+}
+
+/**
  * Writes thread and turn metadata while preserving append-only item and event logs.
  *
  * @param workspaceRoot Resolved workspace root.
@@ -2281,76 +2431,29 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
     const threadTurns = records.turns.filter((turn) => turn.threadId === thread.id);
     const expectedTurnIds = new Set(threadTurns.map((turn) => turn.id));
 
+    if (!lstatSync(threadRoot, { throwIfNoEntry: false })) {
+      publishNewRecordDirectory(workspaceRoot, threadRoot, (stage) => {
+        writeStagedThreadDirectory(stage, thread, threadTurns, records);
+      });
+      continue;
+    }
     ensureCanonicalDirectory(threadRoot);
     ensureCanonicalDirectory(turnsRoot);
     const threadPath = join(threadRoot, 'thread.json');
     const previous = existsSync(threadPath) ? readJson(threadPath) : undefined;
-    writeJsonAtomic(threadPath, projectCanonicalThreadRecord(thread, previous));
     removeStaleDirectories(turnsRoot, expectedTurnIds);
 
     for (const turn of threadTurns) {
       const turnRoot = join(turnsRoot, turn.id);
-      const itemsPath = join(turnRoot, 'items.jsonl');
-      const eventsPath = join(turnRoot, 'runtime', 'events.jsonl');
-      const runtimeRoot = dirname(eventsPath);
-
-      ensureCanonicalDirectory(turnRoot);
-      const turnPath = join(turnRoot, 'turn.json');
-      const previousRaw = existsSync(turnPath)
-        ? (readJson(turnPath) as Record<string, unknown>)
-        : undefined;
-      const previousCoverage =
-        previousRaw?.captureCoverage === undefined
-          ? undefined
-          : CaptureCoverageBindingSchema.parse(previousRaw.captureCoverage);
-      const nextCoverage = records.turnCaptureCoverage?.get(turn.id);
-      if (
-        previousCoverage !== undefined &&
-        nextCoverage !== undefined &&
-        !isDeepStrictEqual(previousCoverage, nextCoverage)
-      ) {
-        throw new Error(`Turn ${turn.id} capture coverage binding is recovery_required.`);
+      if (lstatSync(turnRoot, { throwIfNoEntry: false })) {
+        writeTurnDirectory(turnRoot, turn, records);
+        continue;
       }
-      const captureCoverage = nextCoverage ?? previousCoverage;
-      writeOwnedDescriptiveJson(
-        turnPath,
-        {
-          ...turn,
-          items: [],
-          ...(captureCoverage ? { captureCoverage } : {}),
-          ...(previousRaw?.requiredFeatures
-            ? { requiredFeatures: previousRaw.requiredFeatures }
-            : {}),
-        },
-        TurnReaderSchema.safeExtend({
-          captureCoverage: CaptureCoverageBindingSchema.optional(),
-          requiredFeatures: z.array(z.literal('openkit.work-observations.v1')).optional(),
-        })
-      );
-      const revisions = records.itemRevisions.filter((item) => item.turnId === turn.id);
-      const itemLogMetadata = lstatSync(itemsPath, { throwIfNoEntry: false });
-      if (!itemLogMetadata) {
-        writeFileAtomic(
-          itemsPath,
-          revisions.map((item) => JSON.stringify(item)).join('\n') + (revisions.length ? '\n' : '')
-        );
-      } else {
-        assertCanonicalRegularFile(itemsPath);
-      }
-      ensureCanonicalDirectory(runtimeRoot);
-      const eventLogMetadata = lstatSync(eventsPath, { throwIfNoEntry: false });
-      if (!eventLogMetadata) {
-        const events = records.streamEvents.find(([turnId]) => turnId === turn.id)?.[1] ?? [];
-        if (events.length > 0) {
-          writeFileAtomic(
-            eventsPath,
-            `${events.map((event) => JSON.stringify(event)).join('\n')}\n`
-          );
-        }
-      } else {
-        assertCanonicalRegularFile(eventsPath);
-      }
+      publishNewRecordDirectory(workspaceRoot, turnRoot, (stage) => {
+        writeTurnDirectory(stage, turn, records);
+      });
     }
+    writeJsonAtomic(threadPath, projectCanonicalThreadRecord(thread, previous));
   }
 }
 
@@ -2635,28 +2738,13 @@ function writeArtifacts(workspaceRoot: string, records: WorkspaceFileRecords): v
 
   for (const artifact of records.artifacts) {
     const artifactRoot = join(artifactsRoot, artifact.id);
-    const filesRoot = join(artifactRoot, 'files');
-    const contentFileName = artifactContentFileName(artifact.content.format);
-
-    ensureCanonicalDirectory(artifactRoot);
-    ensureCanonicalDirectory(filesRoot);
-    for (const staleFileName of ['content.md', 'content.txt', 'content.json']) {
-      if (staleFileName !== contentFileName) {
-        rmSync(join(filesRoot, staleFileName), { force: true });
-      }
+    if (lstatSync(artifactRoot, { throwIfNoEntry: false })) {
+      writeArtifactDirectory(artifactRoot, artifact);
+      continue;
     }
-    writeOwnedDescriptiveJson(
-      join(artifactRoot, 'artifact.json'),
-      {
-        ...artifact,
-        content: { format: artifact.content.format },
-      },
-      z.object({
-        ...ArtifactReaderSchema.shape,
-        content: ArtifactSchema.shape.content.omit({ body: true }),
-      })
-    );
-    writeFileAtomic(join(filesRoot, contentFileName), artifact.content.body);
+    publishNewRecordDirectory(workspaceRoot, artifactRoot, (stage) => {
+      writeArtifactDirectory(stage, artifact);
+    });
   }
 }
 
@@ -2674,9 +2762,19 @@ function writeAgentSessions(workspaceRoot: string, records: WorkspaceFileRecords
   removeStaleDirectories(root, expectedIds);
   for (const session of records.agentSessions) {
     const sessionRoot = join(root, session.id);
-
-    ensureCanonicalDirectory(sessionRoot);
-    writeOwnedDescriptiveJson(join(sessionRoot, 'session.json'), session, AgentSessionRecordSchema);
+    if (lstatSync(sessionRoot, { throwIfNoEntry: false })) {
+      ensureCanonicalDirectory(sessionRoot);
+      writeOwnedDescriptiveJson(
+        join(sessionRoot, 'session.json'),
+        session,
+        AgentSessionRecordSchema
+      );
+      continue;
+    }
+    publishNewRecordDirectory(workspaceRoot, sessionRoot, (stage) => {
+      ensureCanonicalDirectory(stage);
+      writeOwnedDescriptiveJson(join(stage, 'session.json'), session, AgentSessionRecordSchema);
+    });
   }
 }
 
