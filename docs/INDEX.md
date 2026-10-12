@@ -147,6 +147,7 @@ and are not listed here.
 - `docs/specs/20261002-goal.md` — Accepted, Partial — The Goal, its work-intent cards, its immutable Plan versions, the wake marker, the completion disposition, and the Goal operations.
 - `docs/specs/20261002-operation_definition.md` — Accepted, Partial — The declarative definition of each public operation, the exact implementation join, and the derivation of its projections.
 - `docs/specs/20261002-remote_mcp_interface.md` — Accepted, Partial — The remote MCP endpoint on the configured public origin, its Streamable HTTP posture, and static-bearer admission.
+- `docs/specs/20261012-product_integrity_check.md` — Accepted, Not Started — This specification owns one read-only Workspace integrity check.
 
 ## Terminal Specifications
 

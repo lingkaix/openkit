@@ -8,7 +8,7 @@ updated: "2026-10-12"
 
 ## Owns
 
-This specification owns the L6 story-acceptance boundary: L6 admission, the story artifact and its on-disk shape, the current catalog, actor channels, the execution model, execution role separation with per-role falsifiers, predicate channels and their required and optional tiers, adjudication authority, friction and improvement suggestions, integrity-invariant names, the story-run evidence bundle, reduction and the handoff conditions when a proof or a confirmed defect leaves L6 for a lower test layer, multi-run accumulation, execution and failure semantics, evidence proportionality and retention, and story admission stability.
+This specification owns the L6 story-acceptance boundary: L6 admission, the story artifact and its on-disk shape, the current catalog, actor channels, the execution model, execution role separation with per-role falsifiers, predicate channels and their required and optional tiers, adjudication authority, friction and improvement suggestions, how a story names the integrity invariants that it relies on, the story-run evidence bundle, reduction and the handoff conditions when a proof or a confirmed defect leaves L6 for a lower test layer, multi-run accumulation, execution and failure semantics, evidence proportionality and retention, and story admission stability.
 
 ## Does Not Own
 
@@ -18,7 +18,7 @@ It does not own deterministic tests of any kind, including opt-in real-provider 
 
 It does not own material change coordination under `docs/change-execution.md`, including repository-path writer ownership, actual-artifact acceptance, or the choice of independent judgment. This specification's run roles govern one story execution only; Role Composition states the division and does not restate that document's rules.
 
-It does not own the product integrity check operation. A later specification defines that operation. It does not own product telemetry instrumentation.
+It does not own the product integrity check operation. [Product Integrity Check](20261012-product_integrity_check.md) owns that operation. It does not own product telemetry instrumentation.
 
 ## Core References
 
@@ -145,7 +145,7 @@ The body contains only the sections needed to make independent executions materi
 - `Starting World`: the world that exists before the actor starts.
 - `Outcome Predicates`: what must be true when the run ends. Each predicate names its channel and its tier under Predicate Channels and Required And Optional Predicates.
 - `Perturbations`: conditions the stage manager applies. A perturbation is a condition the user does not cause, such as a restart, an update, or a provider failure. An approval is not a perturbation. Write `None.` when the story has none.
-- `Integrity Invariants`: the names of the invariants the story relies on. This specification does not define those invariants.
+- `Integrity Invariants`: the names of the invariants the story relies on. This specification does not define those invariants. A story that relies on no invariant writes `None.`
 - `Failure Triage Notes`: product, environment, tool, or inconclusive classification and the likely lower regression layer.
 
 These sections are allowed when the story needs them:
@@ -319,7 +319,7 @@ A proof that leaves L6 leaves completely. Its story document is deleted rather t
 
 ### Integrity Invariants
 
-Integrity invariants belong in the product as a read-only integrity check operation. A separate specification will define that operation. This specification does not define it. A story names each invariant it relies on. The test side keeps one generic evidence collector over public operations. The judge recomputes deciding facts through public reads.
+Integrity invariants belong in the product as a read-only integrity check operation. [Product Integrity Check](20261012-product_integrity_check.md) owns that operation and its invariant names. This specification does not define it. A story names each invariant it relies on. The test side keeps one generic evidence collector over public operations. The judge recomputes deciding facts through public reads.
 
 ## Lifecycle
 
