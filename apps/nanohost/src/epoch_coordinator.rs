@@ -2128,7 +2128,7 @@ impl EpochCoordinator {
                 self.runtime
                     .block_on(acquisition.acquire(&staging, &self.image_store, acquired_at))
             })
-            .map_err(|_| "image.acquire failed")?
+            .map_err(crate::image_acquisition::AcquisitionError::static_reason)?
         };
         import_attempt_image(&self.image_store, &digest, &mut self.image_backend)
             .map_err(|_| "image.acquire import failed")?;

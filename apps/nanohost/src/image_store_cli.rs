@@ -23,6 +23,8 @@ pub enum ImageStoreCliError {
     Usage,
     /// The shared store operation failed with its closed local error class.
     Store(StoreError),
+    /// A closed acquisition reason that the CLI may print as-is.
+    Reason(&'static str),
 }
 
 impl From<StoreError> for ImageStoreCliError {
@@ -74,13 +76,33 @@ pub fn dispatch(args: &[String]) -> Result<ImageStoreCliOutcome, ImageStoreCliEr
                 .duration_since(UNIX_EPOCH)
                 .map_err(|_| ImageStoreCliError::Store(StoreError::Io))?
                 .as_secs();
-            store.admit_oci_file(
-                digest,
-                archive.expect("validated import command owns archive"),
-                StoreLineage::LocalArchive(digest.to_string()),
-                acquired_at,
-            )?;
-            Ok(ImageStoreCliOutcome::Completed(digest.to_string()))
+            let mut archive_file = archive.expect("validated import command owns archive");
+            let resolved =
+                crate::image_acquisition::resolve_import_archive(&mut archive_file, digest)
+                    .map_err(cli_acquisition_error)?;
+            match resolved {
+                crate::image_acquisition::ResolvedImport::Original => {
+                    store.admit_oci_file(
+                        digest,
+                        archive_file,
+                        StoreLineage::LocalArchive(digest.to_string()),
+                        acquired_at,
+                    )?;
+                    Ok(ImageStoreCliOutcome::Completed(digest.to_string()))
+                }
+                crate::image_acquisition::ResolvedImport::Projected {
+                    digest: admitted,
+                    archive: projected,
+                } => {
+                    store.admit_oci_file(
+                        &admitted,
+                        projected,
+                        StoreLineage::LocalArchive(admitted.clone()),
+                        acquired_at,
+                    )?;
+                    Ok(ImageStoreCliOutcome::Completed(admitted))
+                }
+            }
         }
         Command::Remove(digest) => {
             store.remove(digest)?;
@@ -134,6 +156,20 @@ fn canonical_digest(value: &str) -> bool {
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
     })
+}
+
+/// Maps index selection failures to printable reasons and other failures to store classes.
+fn cli_acquisition_error(error: crate::image_acquisition::AcquisitionError) -> ImageStoreCliError {
+    use crate::image_acquisition::AcquisitionError;
+    match error {
+        AcquisitionError::UnsupportedManifest
+        | AcquisitionError::NoHostPlatform
+        | AcquisitionError::AmbiguousHostPlatform => {
+            ImageStoreCliError::Reason(error.static_reason())
+        }
+        AcquisitionError::Io => ImageStoreCliError::Store(StoreError::Io),
+        _ => ImageStoreCliError::Store(StoreError::DigestMismatch),
+    }
 }
 
 fn parse_capacity(value: &str) -> Result<u64, ImageStoreCliError> {

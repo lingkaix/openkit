@@ -1275,6 +1275,7 @@ fn image_store_cli_error_message(error: image_store_cli::ImageStoreCliError) -> 
         image_store_cli::ImageStoreCliError::Store(image_store::StoreError::Busy) => {
             "nanohost image store busy"
         }
+        image_store_cli::ImageStoreCliError::Reason(reason) => reason,
         image_store_cli::ImageStoreCliError::Usage
         | image_store_cli::ImageStoreCliError::Store(_) => "nanohost image command failed",
     }

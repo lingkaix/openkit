@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 
 use oci_client::client::{ClientConfig, ClientProtocol};
 use oci_client::manifest::{
-    IMAGE_MANIFEST_MEDIA_TYPE, OCI_IMAGE_MEDIA_TYPE, OciImageManifest, OciManifest,
+    IMAGE_MANIFEST_LIST_MEDIA_TYPE, IMAGE_MANIFEST_MEDIA_TYPE, OCI_IMAGE_INDEX_MEDIA_TYPE,
+    OCI_IMAGE_MEDIA_TYPE, OciImageManifest, OciManifest,
 };
 use oci_client::secrets::RegistryAuth;
 use oci_client::{Client, Reference, RegistryOperation};
@@ -99,6 +100,31 @@ pub enum AcquisitionError {
     InvalidOciResult,
     /// A private filesystem operation failed.
     Io,
+    /// The manifest content type is outside the closed image and index set.
+    UnsupportedManifest,
+    /// An image index has no descriptor for the requested host platform.
+    NoHostPlatform,
+    /// An image index has more than one descriptor for the requested host platform.
+    AmbiguousHostPlatform,
+}
+
+impl AcquisitionError {
+    /// Returns the closed journal and CLI reason for this failure.
+    ///
+    /// The text is static. It contains no reference, header, path, body, or credential.
+    pub(crate) fn static_reason(self) -> &'static str {
+        match self {
+            Self::UnauthorizedTrigger
+            | Self::InvalidRegistryReference
+            | Self::InvalidBuildDefinition => "image.acquire rejected",
+            Self::UnsupportedBuildCapability | Self::Backend | Self::Io => "image.acquire failed",
+            Self::DigestMismatch => "image.acquire digest mismatch",
+            Self::InvalidOciResult => "image.acquire invalid OCI result",
+            Self::UnsupportedManifest => "unsupported manifest media type",
+            Self::NoHostPlatform => "image index has no host platform",
+            Self::AmbiguousHostPlatform => "image index host platform is ambiguous",
+        }
+    }
 }
 
 impl From<io::Error> for AcquisitionError {
@@ -335,9 +361,9 @@ impl RegistryAcquisition {
         if staging_root.exists() {
             return Err(AcquisitionError::InvalidRegistryReference);
         }
-        let archive_result = tokio::time::timeout(
+        let staged = tokio::time::timeout(
             REGISTRY_MAX_TIME,
-            self.retrieve_registry_archive(staging_root),
+            self.stage_verified_archive(staging_root, store),
         )
         .await
         .map_err(|_| AcquisitionError::Backend)
@@ -347,34 +373,54 @@ impl RegistryAcquisition {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(_) => Err(AcquisitionError::Io),
         };
-        let archive = archive_result?;
-        store
-            .admit_oci_file(
-                &self.digest,
-                archive,
-                StoreLineage::Registry(self.reference.whole()),
-                acquired_at,
-            )
-            .map_err(|_| AcquisitionError::InvalidOciResult)?;
+        let staged = staged?;
+        let digest = match staged {
+            StagedArchive::Retained(digest) => digest,
+            StagedArchive::Fresh { digest, archive } => {
+                store
+                    .admit_oci_file(
+                        &digest,
+                        archive,
+                        StoreLineage::Registry(self.reference.whole()),
+                        acquired_at,
+                    )
+                    .map_err(|_| AcquisitionError::InvalidOciResult)?;
+                digest
+            }
+        };
         cleanup_result?;
-        Ok(self.digest.clone())
+        Ok(digest)
     }
 
-    /// Retrieves and stages the exact graph without touching the store or backend.
-    async fn retrieve_registry_archive(
+    /// Returns one registry reference for the same repository at `digest`.
+    fn with_digest(&self, digest: &str) -> Result<Self, AcquisitionError> {
+        validate_digest(digest).map_err(|_| AcquisitionError::InvalidOciResult)?;
+        let reference = format!(
+            "{}/{}@{digest}",
+            self.reference.registry(),
+            self.reference.repository()
+        );
+        let parsed = Reference::try_from(reference.as_str())
+            .map_err(|_| AcquisitionError::InvalidOciResult)?;
+        Ok(Self {
+            reference: parsed,
+            digest: digest.to_string(),
+        })
+    }
+
+    /// Fetches the verified manifest, and stages an image manifest or a selected child.
+    async fn stage_verified_archive(
         &self,
         staging_root: &Path,
-    ) -> Result<File, AcquisitionError> {
-        let client = Client::try_from(ClientConfig {
-            protocol: ClientProtocol::Https,
-            accept_invalid_certificates: false,
-            platform_resolver: None,
-            max_concurrent_download: 1,
-            connect_timeout: Some(Duration::from_secs(10)),
-            read_timeout: Some(REGISTRY_MAX_TIME),
-            ..Default::default()
-        })
-        .map_err(|_| AcquisitionError::Backend)?;
+        store: &ImageStore,
+    ) -> Result<StagedArchive, AcquisitionError> {
+        #[cfg(test)]
+        if fixture_active() {
+            return self
+                .stage_authenticated_archive(staging_root, store, None, None)
+                .await;
+        }
+        let client = registry_client()?;
         let bearer_token = client
             .auth(
                 &self.reference,
@@ -383,11 +429,107 @@ impl RegistryAcquisition {
             )
             .await
             .map_err(|_| AcquisitionError::Backend)?;
-        let raw_manifest = pull_manifest_bounded(&self.reference, bearer_token.as_deref()).await?;
+        self.stage_authenticated_archive(
+            staging_root,
+            store,
+            Some(&client),
+            bearer_token.as_deref(),
+        )
+        .await
+    }
+
+    /// Stages from one already authenticated registry client.
+    async fn stage_authenticated_archive(
+        &self,
+        staging_root: &Path,
+        store: &ImageStore,
+        client: Option<&Client>,
+        bearer_token: Option<&str>,
+    ) -> Result<StagedArchive, AcquisitionError> {
+        let raw_manifest = self.fetch_verified_manifest(bearer_token).await?;
+        if pulled_document_kind(&raw_manifest)? == DocumentKind::Image {
+            let archive = self
+                .retrieve_registry_archive(staging_root, &raw_manifest, client)
+                .await?;
+            return Ok(StagedArchive::Fresh {
+                digest: self.digest.clone(),
+                archive,
+            });
+        }
+        let (os, architecture) = host_oci_platform()?;
+        let selected = select_host_platform_manifest(&raw_manifest, os, architecture)?;
+        if selected.digest == self.digest {
+            return Err(AcquisitionError::InvalidOciResult);
+        }
+        match store.read_verified(&selected.digest) {
+            Ok(mut retained) => {
+                let verified = match verify_oci_archive(&mut retained, Some(&selected.digest)) {
+                    Ok(verified) => verified,
+                    Err(AcquisitionError::Io) => return Err(AcquisitionError::Io),
+                    Err(_) => return Err(AcquisitionError::InvalidOciResult),
+                };
+                let manifest_name = format!("blobs/sha256/{}", digest_hex(&selected.digest)?);
+                let retained_size = verified
+                    .members
+                    .get(&manifest_name)
+                    .map(|member| member.size)
+                    .ok_or(AcquisitionError::InvalidOciResult)?;
+                if retained_size != selected.size
+                    || verified.manifest_media_type != selected.media_type
+                {
+                    return Err(AcquisitionError::InvalidOciResult);
+                }
+                return Ok(StagedArchive::Retained(selected.digest));
+            }
+            Err(StoreError::Missing) => {}
+            Err(_) => return Err(AcquisitionError::InvalidOciResult),
+        }
+        let child = self.with_digest(&selected.digest)?;
+        let child_manifest = child.fetch_verified_manifest(bearer_token).await?;
+        manifest_matches_descriptor(&child_manifest, &selected.media_type, selected.size)?;
+        if pulled_document_kind(&child_manifest)? != DocumentKind::Image {
+            return Err(AcquisitionError::InvalidOciResult);
+        }
+        let archive = child
+            .retrieve_registry_archive(staging_root, &child_manifest, client)
+            .await?;
+        Ok(StagedArchive::Fresh {
+            digest: selected.digest,
+            archive,
+        })
+    }
+
+    /// Retrieves one verified manifest document without downloading blobs.
+    async fn fetch_verified_manifest(
+        &self,
+        bearer_token: Option<&str>,
+    ) -> Result<Vec<u8>, AcquisitionError> {
+        #[cfg(test)]
+        if fixture_active() {
+            let digest = self
+                .reference
+                .digest()
+                .ok_or(AcquisitionError::InvalidRegistryReference)?;
+            let raw_manifest = fixture_manifest(digest)?;
+            self.verify_content(&raw_manifest)?;
+            return Ok(raw_manifest);
+        }
+        let raw_manifest = pull_manifest_bounded(&self.reference, bearer_token).await?;
         self.verify_content(&raw_manifest)?;
-        let manifest = parse_image_manifest(&raw_manifest)?;
+        Ok(raw_manifest)
+    }
+
+    /// Retrieves and stages the exact graph without touching the store or backend.
+    async fn retrieve_registry_archive(
+        &self,
+        staging_root: &Path,
+        raw_manifest: &[u8],
+        client: Option<&Client>,
+    ) -> Result<File, AcquisitionError> {
+        self.verify_content(raw_manifest)?;
+        let manifest = parse_image_manifest(raw_manifest)?;
         let descriptor_sizes =
-            prepare_registry_layout(self, &raw_manifest, &manifest, staging_root)?;
+            prepare_registry_layout(self, raw_manifest, &manifest, staging_root)?;
         let mut downloaded = BTreeSet::new();
         for descriptor in std::iter::once(&manifest.config).chain(manifest.layers.iter()) {
             if !downloaded.insert(descriptor.digest.clone()) {
@@ -398,19 +540,37 @@ impl RegistryAcquisition {
             let partial_path = staging_root
                 .join("blobs/sha256")
                 .join(format!(".{stem}.part"));
+            let declared_size = *descriptor_sizes
+                .get(&descriptor.digest)
+                .ok_or(AcquisitionError::InvalidOciResult)?;
             let file = OpenOptions::new()
                 .create_new(true)
                 .write(true)
                 .mode(0o600)
                 .open(&partial_path)?;
-            let declared_size = *descriptor_sizes
-                .get(&descriptor.digest)
-                .ok_or(AcquisitionError::InvalidOciResult)?;
             let mut writer = BoundedBlobWriter::new(tokio::fs::File::from_std(file), declared_size);
-            client
-                .pull_blob(&self.reference, descriptor, &mut writer)
-                .await
-                .map_err(|_| AcquisitionError::Backend)?;
+            #[cfg(test)]
+            {
+                use tokio::io::AsyncWriteExt;
+                if fixture_active() {
+                    let bytes = fixture_blob(&descriptor.digest, declared_size)?;
+                    writer.write_all(&bytes).await?;
+                } else {
+                    client
+                        .ok_or(AcquisitionError::Backend)?
+                        .pull_blob(&self.reference, descriptor, &mut writer)
+                        .await
+                        .map_err(|_| AcquisitionError::Backend)?;
+                }
+            }
+            #[cfg(not(test))]
+            {
+                client
+                    .ok_or(AcquisitionError::Backend)?
+                    .pull_blob(&self.reference, descriptor, &mut writer)
+                    .await
+                    .map_err(|_| AcquisitionError::Backend)?;
+            }
             writer.sync_all().await?;
             if writer.written() != declared_size {
                 return Err(AcquisitionError::InvalidOciResult);
@@ -419,6 +579,20 @@ impl RegistryAcquisition {
         }
         archive_registry_layout(staging_root, &self.digest, &descriptor_sizes)
     }
+}
+
+/// Builds the anonymous HTTPS registry client used for blob transfer.
+fn registry_client() -> Result<Client, AcquisitionError> {
+    Client::try_from(ClientConfig {
+        protocol: ClientProtocol::Https,
+        accept_invalid_certificates: false,
+        platform_resolver: None,
+        max_concurrent_download: 1,
+        connect_timeout: Some(Duration::from_secs(10)),
+        read_timeout: Some(REGISTRY_MAX_TIME),
+        ..Default::default()
+    })
+    .map_err(|_| AcquisitionError::Backend)
 }
 
 /// Retrieves one raw manifest with a pre-allocation and running byte ceiling.
@@ -444,7 +618,9 @@ async fn pull_manifest_bounded(
     );
     let mut request = client.get(url).header(
         reqwest::header::ACCEPT,
-        format!("{OCI_IMAGE_MEDIA_TYPE}, {IMAGE_MANIFEST_MEDIA_TYPE}"),
+        format!(
+            "{OCI_IMAGE_MEDIA_TYPE}, {IMAGE_MANIFEST_MEDIA_TYPE}, {OCI_IMAGE_INDEX_MEDIA_TYPE}, {IMAGE_MANIFEST_LIST_MEDIA_TYPE}"
+        ),
     );
     if let Some(token) = bearer_token {
         request = request.bearer_auth(token);
@@ -465,9 +641,12 @@ async fn pull_manifest_bounded(
         .ok_or(AcquisitionError::InvalidOciResult)?;
     if !matches!(
         content_type,
-        OCI_IMAGE_MEDIA_TYPE | IMAGE_MANIFEST_MEDIA_TYPE
+        OCI_IMAGE_MEDIA_TYPE
+            | IMAGE_MANIFEST_MEDIA_TYPE
+            | OCI_IMAGE_INDEX_MEDIA_TYPE
+            | IMAGE_MANIFEST_LIST_MEDIA_TYPE
     ) {
-        return Err(AcquisitionError::InvalidOciResult);
+        return Err(AcquisitionError::UnsupportedManifest);
     }
     if let Some(length) = response.content_length()
         && length > OCI_DOCUMENT_MAX_BYTES as u64
@@ -587,6 +766,243 @@ fn parse_image_manifest(raw_manifest: &[u8]) -> Result<OciImageManifest, Acquisi
     Ok(manifest)
 }
 
+/// Requires the fetched manifest bytes to match one descriptor's media type and length.
+fn manifest_matches_descriptor(
+    manifest_bytes: &[u8],
+    media_type: &str,
+    declared_size: u64,
+) -> Result<OciImageManifest, AcquisitionError> {
+    let manifest = parse_image_manifest(manifest_bytes)?;
+    if manifest_bytes.len() as u64 != declared_size
+        || manifest.media_type.as_deref() != Some(media_type)
+    {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    Ok(manifest)
+}
+
+/// Returns the index or manifest-list media type declared by one document.
+fn indexed_document_media_type(bytes: &[u8]) -> Result<String, AcquisitionError> {
+    let document: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| AcquisitionError::InvalidOciResult)?;
+    match document
+        .get("mediaType")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some(media_type)
+            if matches!(
+                media_type,
+                OCI_IMAGE_INDEX_MEDIA_TYPE | IMAGE_MANIFEST_LIST_MEDIA_TYPE
+            ) =>
+        {
+            Ok(media_type.to_string())
+        }
+        _ => Err(AcquisitionError::InvalidOciResult),
+    }
+}
+
+/// Closed kind of one fetched registry document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DocumentKind {
+    /// One image manifest.
+    Image,
+    /// One image index or manifest list.
+    Index,
+}
+
+/// Archive produced for store admission, or a digest already retained.
+enum StagedArchive {
+    /// The selected manifest digest is already in the store.
+    Retained(String),
+    /// A new single-manifest archive to admit under `digest`.
+    Fresh { digest: String, archive: File },
+}
+
+/// Import resolution for one local archive.
+pub(crate) enum ResolvedImport {
+    /// The archive's single descriptor is already the expected image manifest.
+    Original,
+    /// A projected single-manifest archive for the selected host platform.
+    Projected { digest: String, archive: File },
+}
+
+/// Returns the host OCI platform for a supported NanoHost target.
+///
+/// # Errors
+///
+/// Returns [`AcquisitionError::NoHostPlatform`] for any other operating system or architecture.
+pub(crate) fn host_oci_platform() -> Result<(&'static str, &'static str), AcquisitionError> {
+    let architecture = match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        _ => return Err(AcquisitionError::NoHostPlatform),
+    };
+    if std::env::consts::OS != "linux" {
+        return Err(AcquisitionError::NoHostPlatform);
+    }
+    Ok(("linux", architecture))
+}
+
+/// Classifies a fetched document from its declared media type.
+fn pulled_document_kind(bytes: &[u8]) -> Result<DocumentKind, AcquisitionError> {
+    if bytes.is_empty() || bytes.len() > OCI_DOCUMENT_MAX_BYTES {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    let document: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| AcquisitionError::InvalidOciResult)?;
+    let media_type = document
+        .get("mediaType")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    if matches!(media_type, OCI_IMAGE_MEDIA_TYPE | IMAGE_MANIFEST_MEDIA_TYPE) {
+        Ok(DocumentKind::Image)
+    } else if matches!(
+        media_type,
+        OCI_IMAGE_INDEX_MEDIA_TYPE | IMAGE_MANIFEST_LIST_MEDIA_TYPE
+    ) {
+        Ok(DocumentKind::Index)
+    } else {
+        Err(AcquisitionError::UnsupportedManifest)
+    }
+}
+
+/// One host-platform image manifest named by an index descriptor.
+#[derive(Debug)]
+pub(crate) struct SelectedPlatformManifest {
+    pub(crate) digest: String,
+    pub(crate) media_type: String,
+    pub(crate) size: u64,
+}
+
+/// Returns the image-manifest descriptor for one host platform inside an index.
+///
+/// # Errors
+///
+/// Returns a named selection error when the platform is missing or repeated, and
+/// [`AcquisitionError::InvalidOciResult`] when the index is malformed. A nested
+/// index is not walked.
+pub(crate) fn select_host_platform_manifest(
+    index_bytes: &[u8],
+    os: &str,
+    architecture: &str,
+) -> Result<SelectedPlatformManifest, AcquisitionError> {
+    if index_bytes.is_empty() || index_bytes.len() > OCI_DOCUMENT_MAX_BYTES {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    let index: serde_json::Value =
+        serde_json::from_slice(index_bytes).map_err(|_| AcquisitionError::InvalidOciResult)?;
+    let index = index
+        .as_object()
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    if index
+        .keys()
+        .any(|key| !matches!(key.as_str(), "schemaVersion" | "mediaType" | "manifests"))
+        || index
+            .get("schemaVersion")
+            .and_then(serde_json::Value::as_u64)
+            != Some(2)
+    {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    if let Some(media_type) = index.get("mediaType") {
+        let media_type = media_type
+            .as_str()
+            .ok_or(AcquisitionError::InvalidOciResult)?;
+        if !matches!(
+            media_type,
+            OCI_IMAGE_INDEX_MEDIA_TYPE | IMAGE_MANIFEST_LIST_MEDIA_TYPE
+        ) {
+            return Err(AcquisitionError::InvalidOciResult);
+        }
+    }
+    let manifests = index
+        .get("manifests")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    let mut selected = Vec::new();
+    for descriptor in manifests {
+        let descriptor = descriptor
+            .as_object()
+            .ok_or(AcquisitionError::InvalidOciResult)?;
+        if descriptor.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "mediaType" | "digest" | "size" | "annotations" | "platform"
+            )
+        }) {
+            return Err(AcquisitionError::InvalidOciResult);
+        }
+        let media_type = descriptor
+            .get("mediaType")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(AcquisitionError::InvalidOciResult)?;
+        let digest = descriptor
+            .get("digest")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(AcquisitionError::InvalidOciResult)?;
+        validate_digest(digest).map_err(|_| AcquisitionError::InvalidOciResult)?;
+        let size = descriptor
+            .get("size")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or(AcquisitionError::InvalidOciResult)?;
+        if size == 0 || size > OCI_DOCUMENT_MAX_BYTES as u64 {
+            return Err(AcquisitionError::InvalidOciResult);
+        }
+        if let Some(annotations) = descriptor.get("annotations") {
+            let annotations = annotations
+                .as_object()
+                .ok_or(AcquisitionError::InvalidOciResult)?;
+            if annotations
+                .iter()
+                .any(|(key, value)| key.is_empty() || !value.is_string())
+            {
+                return Err(AcquisitionError::InvalidOciResult);
+            }
+        }
+        let Some(platform) = descriptor.get("platform") else {
+            continue;
+        };
+        let platform = platform
+            .as_object()
+            .ok_or(AcquisitionError::InvalidOciResult)?;
+        if platform.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "architecture" | "os" | "os.version" | "os.features" | "variant"
+            )
+        }) {
+            return Err(AcquisitionError::InvalidOciResult);
+        }
+        let platform_os = platform
+            .get("os")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(AcquisitionError::InvalidOciResult)?;
+        let platform_architecture = platform
+            .get("architecture")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(AcquisitionError::InvalidOciResult)?;
+        if platform_os.is_empty() || platform_architecture.is_empty() {
+            return Err(AcquisitionError::InvalidOciResult);
+        }
+        if platform_os != os || platform_architecture != architecture {
+            continue;
+        }
+        if !matches!(media_type, OCI_IMAGE_MEDIA_TYPE | IMAGE_MANIFEST_MEDIA_TYPE) {
+            return Err(AcquisitionError::InvalidOciResult);
+        }
+        selected.push(SelectedPlatformManifest {
+            digest: digest.to_string(),
+            media_type: media_type.to_string(),
+            size,
+        });
+    }
+    match selected.len() {
+        1 => Ok(selected.remove(0)),
+        0 => Err(AcquisitionError::NoHostPlatform),
+        _ => Err(AcquisitionError::AmbiguousHostPlatform),
+    }
+}
+
 /// Creates the fixed metadata and raw-manifest portion of one fresh OCI layout.
 fn prepare_registry_layout(
     acquisition: &RegistryAcquisition,
@@ -599,6 +1015,18 @@ fn prepare_registry_layout(
     if descriptor_sizes.contains_key(&acquisition.digest) {
         return Err(AcquisitionError::InvalidOciResult);
     }
+    write_image_layout(staging_root, &acquisition.digest, raw_manifest, manifest)?;
+    Ok(descriptor_sizes)
+}
+
+/// Writes one minimal OCI layout whose single descriptor is `manifest_digest`.
+fn write_image_layout(
+    staging_root: &Path,
+    manifest_digest: &str,
+    raw_manifest: &[u8],
+    manifest: &OciImageManifest,
+) -> Result<(), AcquisitionError> {
+    validate_owned_path(staging_root)?;
     DirBuilder::new().mode(0o700).create(staging_root)?;
     create_private_dir(&staging_root.join("blobs"))?;
     create_private_dir(&staging_root.join("blobs/sha256"))?;
@@ -615,18 +1043,17 @@ fn prepare_registry_layout(
                 .ok_or(AcquisitionError::InvalidOciResult)?
         )
         .map_err(|_| AcquisitionError::InvalidOciResult)?,
-        serde_json::to_string(&acquisition.digest)
-            .map_err(|_| AcquisitionError::InvalidOciResult)?,
+        serde_json::to_string(manifest_digest).map_err(|_| AcquisitionError::InvalidOciResult)?,
         raw_manifest.len()
     );
     write_new_private_file(&staging_root.join("index.json"), index.as_bytes())?;
     write_new_private_file(
         &staging_root
             .join("blobs/sha256")
-            .join(digest_hex(&acquisition.digest)?),
+            .join(digest_hex(manifest_digest)?),
         raw_manifest,
     )?;
-    Ok(descriptor_sizes)
+    Ok(())
 }
 
 /// Validates every unique config and layer descriptor and the whole graph bound.
@@ -1798,106 +2225,16 @@ pub(crate) fn verify_oci_archive<R: Read + Seek>(
     {
         return Err(AcquisitionError::InvalidOciResult);
     }
-    let index_bytes = read_bounded_tar_member(archive, "index.json", OCI_DOCUMENT_MAX_BYTES)?
-        .ok_or(AcquisitionError::InvalidOciResult)?;
-    let index: serde_json::Value =
-        serde_json::from_slice(&index_bytes).map_err(|_| AcquisitionError::InvalidOciResult)?;
-    let index = index
-        .as_object()
-        .ok_or(AcquisitionError::InvalidOciResult)?;
-    if index
-        .keys()
-        .any(|key| !matches!(key.as_str(), "schemaVersion" | "mediaType" | "manifests"))
-        || index
-            .get("schemaVersion")
-            .and_then(serde_json::Value::as_u64)
-            != Some(2)
-        || index.get("mediaType").is_some_and(|media_type| {
-            media_type.as_str() != Some("application/vnd.oci.image.index.v1+json")
-        })
-    {
+    let descriptor = read_layout_descriptor(archive)?;
+    if !matches!(
+        descriptor.media_type.as_str(),
+        OCI_IMAGE_MEDIA_TYPE | IMAGE_MANIFEST_MEDIA_TYPE
+    ) {
         return Err(AcquisitionError::InvalidOciResult);
     }
-    let manifests = index
-        .get("manifests")
-        .and_then(serde_json::Value::as_array)
-        .ok_or(AcquisitionError::InvalidOciResult)?;
-    let [descriptor] = manifests.as_slice() else {
-        return Err(AcquisitionError::InvalidOciResult);
-    };
-    let descriptor = descriptor
-        .as_object()
-        .ok_or(AcquisitionError::InvalidOciResult)?;
-    if descriptor.keys().any(|key| {
-        !matches!(
-            key.as_str(),
-            "mediaType" | "digest" | "size" | "annotations" | "platform"
-        )
-    }) {
-        return Err(AcquisitionError::InvalidOciResult);
-    }
-    let media_type = descriptor
-        .get("mediaType")
-        .and_then(serde_json::Value::as_str)
-        .ok_or(AcquisitionError::InvalidOciResult)?;
-    let digest = descriptor
-        .get("digest")
-        .and_then(serde_json::Value::as_str)
-        .ok_or(AcquisitionError::InvalidOciResult)?
-        .to_string();
-    let declared_size = descriptor
-        .get("size")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or(AcquisitionError::InvalidOciResult)?;
-    if !matches!(media_type, OCI_IMAGE_MEDIA_TYPE | IMAGE_MANIFEST_MEDIA_TYPE) {
-        return Err(AcquisitionError::InvalidOciResult);
-    }
-    if let Some(annotations) = descriptor.get("annotations") {
-        let annotations = annotations
-            .as_object()
-            .ok_or(AcquisitionError::InvalidOciResult)?;
-        if annotations
-            .iter()
-            .any(|(key, value)| key.is_empty() || !value.is_string())
-        {
-            return Err(AcquisitionError::InvalidOciResult);
-        }
-    }
-    if let Some(platform) = descriptor.get("platform") {
-        let platform = platform
-            .as_object()
-            .ok_or(AcquisitionError::InvalidOciResult)?;
-        if platform.keys().any(|key| {
-            !matches!(
-                key.as_str(),
-                "architecture" | "os" | "os.version" | "os.features" | "variant"
-            )
-        }) || platform
-            .get("architecture")
-            .and_then(serde_json::Value::as_str)
-            .is_none_or(|value| value.is_empty())
-            || platform
-                .get("os")
-                .and_then(serde_json::Value::as_str)
-                .is_none_or(|value| value.is_empty())
-            || platform
-                .get("os.version")
-                .is_some_and(|value| value.as_str().is_none_or(|value| value.is_empty()))
-            || platform
-                .get("variant")
-                .is_some_and(|value| value.as_str().is_none_or(|value| value.is_empty()))
-            || platform.get("os.features").is_some_and(|value| {
-                !value.as_array().is_some_and(|features| {
-                    features
-                        .iter()
-                        .all(|feature| feature.as_str().is_some_and(|feature| !feature.is_empty()))
-                })
-            })
-        {
-            return Err(AcquisitionError::InvalidOciResult);
-        }
-    }
-    validate_digest(&digest).map_err(|_| AcquisitionError::InvalidOciResult)?;
+    let media_type = descriptor.media_type;
+    let digest = descriptor.digest;
+    let declared_size = descriptor.size;
     if expected_digest.is_some_and(|expected| expected != digest) {
         return Err(AcquisitionError::DigestMismatch);
     }
@@ -1907,12 +2244,7 @@ pub(crate) fn verify_oci_archive<R: Read + Seek>(
     if format!("sha256:{:x}", Sha256::digest(&manifest_bytes)) != digest {
         return Err(AcquisitionError::InvalidOciResult);
     }
-    let manifest = parse_image_manifest(&manifest_bytes)?;
-    if manifest_bytes.len() as u64 != declared_size
-        || manifest.media_type.as_deref() != Some(media_type)
-    {
-        return Err(AcquisitionError::InvalidOciResult);
-    }
+    let manifest = manifest_matches_descriptor(&manifest_bytes, &media_type, declared_size)?;
     let descriptors = validated_descriptor_sizes(&manifest, manifest_bytes.len() as u64)?;
     verify_descriptor_members(archive, &manifest.config.digest, &descriptors)?;
     let mut members = BTreeMap::from([(
@@ -2311,8 +2643,8 @@ fn write_projected_bytes(
     Ok(())
 }
 
-/// Byte-slice adapter retained only for compact test fixtures.
 #[cfg(test)]
+/// Byte-slice adapter retained only for compact test fixtures.
 pub(crate) fn oci_manifest_digest(content: &[u8]) -> Result<String, AcquisitionError> {
     let mut archive = std::io::Cursor::new(content);
     verify_oci_archive(&mut archive, None).map(|verified| verified.digest)
@@ -2823,6 +3155,363 @@ fn append_test_tar_entry(archive: &mut Vec<u8>, name: &str, contents: &[u8], typ
     archive.resize(archive.len() + ((512 - contents.len() % 512) % 512), 0);
 }
 
+/// Projects an index archive onto the host platform manifest, or keeps a manifest archive.
+///
+/// # Errors
+///
+/// Returns a named selection error when the index has no single host platform, and
+/// the existing digest or OCI errors for a malformed archive.
+pub(crate) fn resolve_import_archive<R: Read + Seek>(
+    archive: &mut R,
+    expected_digest: &str,
+) -> Result<ResolvedImport, AcquisitionError> {
+    let layout_bytes = read_bounded_tar_member(archive, "oci-layout", OCI_DOCUMENT_MAX_BYTES)?
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    let layout: serde_json::Value =
+        serde_json::from_slice(&layout_bytes).map_err(|_| AcquisitionError::InvalidOciResult)?;
+    let layout = layout
+        .as_object()
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    if layout.len() != 1
+        || layout
+            .get("imageLayoutVersion")
+            .and_then(serde_json::Value::as_str)
+            != Some("1.0.0")
+    {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    let descriptor = read_layout_descriptor(archive)?;
+    if descriptor.digest != expected_digest {
+        return Err(AcquisitionError::DigestMismatch);
+    }
+    if matches!(
+        descriptor.media_type.as_str(),
+        OCI_IMAGE_MEDIA_TYPE | IMAGE_MANIFEST_MEDIA_TYPE
+    ) {
+        archive.seek(SeekFrom::Start(0))?;
+        return Ok(ResolvedImport::Original);
+    }
+    if !matches!(
+        descriptor.media_type.as_str(),
+        OCI_IMAGE_INDEX_MEDIA_TYPE | IMAGE_MANIFEST_LIST_MEDIA_TYPE
+    ) {
+        return Err(AcquisitionError::UnsupportedManifest);
+    }
+    let (os, architecture) = host_oci_platform()?;
+    let index_name = format!("blobs/sha256/{}", digest_hex(&descriptor.digest)?);
+    let index_bytes = read_bounded_tar_member(archive, &index_name, OCI_DOCUMENT_MAX_BYTES)?
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    if index_bytes.len() as u64 != descriptor.size
+        || format!("sha256:{:x}", Sha256::digest(&index_bytes)) != descriptor.digest
+    {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    let selected = select_host_platform_manifest(&index_bytes, os, architecture)?;
+    let document_media_type = indexed_document_media_type(&index_bytes)?;
+    if document_media_type != descriptor.media_type {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    let manifest_digest = selected.digest;
+    let manifest_name = format!("blobs/sha256/{}", digest_hex(&manifest_digest)?);
+    let manifest_bytes = read_bounded_tar_member(archive, &manifest_name, OCI_DOCUMENT_MAX_BYTES)?
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    if format!("sha256:{:x}", Sha256::digest(&manifest_bytes)) != manifest_digest {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    let manifest =
+        manifest_matches_descriptor(&manifest_bytes, &selected.media_type, selected.size)?;
+    let descriptor_sizes = validated_descriptor_sizes(&manifest, manifest_bytes.len() as u64)?;
+    if descriptor_sizes.contains_key(&manifest_digest) {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    verify_descriptor_members(archive, &manifest.config.digest, &descriptor_sizes)?;
+    let scratch = std::env::temp_dir().join(format!(
+        "openkit-nanohost-import-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| AcquisitionError::Io)?
+            .as_nanos()
+    ));
+    let projected = (|| {
+        write_image_layout(&scratch, &manifest_digest, &manifest_bytes, &manifest)?;
+        copy_archive_blobs(archive, &scratch.join("blobs/sha256"), &descriptor_sizes)?;
+        archive_registry_layout(&scratch, &manifest_digest, &descriptor_sizes)
+    })();
+    if projected.is_err() {
+        let _ = fs::remove_dir_all(&scratch);
+    }
+    let archive_file = projected?;
+    fs::remove_dir_all(&scratch)?;
+    Ok(ResolvedImport::Projected {
+        digest: manifest_digest,
+        archive: archive_file,
+    })
+}
+
+/// Reads the single OCI layout descriptor.
+fn read_layout_descriptor<R: Read + Seek>(
+    archive: &mut R,
+) -> Result<LayoutDescriptor, AcquisitionError> {
+    let index_bytes = read_bounded_tar_member(archive, "index.json", OCI_DOCUMENT_MAX_BYTES)?
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    let index: serde_json::Value =
+        serde_json::from_slice(&index_bytes).map_err(|_| AcquisitionError::InvalidOciResult)?;
+    let index = index
+        .as_object()
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    if index
+        .keys()
+        .any(|key| !matches!(key.as_str(), "schemaVersion" | "mediaType" | "manifests"))
+        || index
+            .get("schemaVersion")
+            .and_then(serde_json::Value::as_u64)
+            != Some(2)
+        || index
+            .get("mediaType")
+            .is_some_and(|media_type| media_type.as_str() != Some(OCI_IMAGE_INDEX_MEDIA_TYPE))
+    {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    let manifests = index
+        .get("manifests")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    let [descriptor] = manifests.as_slice() else {
+        return Err(AcquisitionError::InvalidOciResult);
+    };
+    let descriptor = descriptor
+        .as_object()
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    if descriptor.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "mediaType" | "digest" | "size" | "annotations" | "platform"
+        )
+    }) {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    let media_type = descriptor
+        .get("mediaType")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(AcquisitionError::InvalidOciResult)?
+        .to_string();
+    let digest = descriptor
+        .get("digest")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(AcquisitionError::InvalidOciResult)?
+        .to_string();
+    let size = descriptor
+        .get("size")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    if let Some(annotations) = descriptor.get("annotations") {
+        let annotations = annotations
+            .as_object()
+            .ok_or(AcquisitionError::InvalidOciResult)?;
+        if annotations
+            .iter()
+            .any(|(key, value)| key.is_empty() || !value.is_string())
+        {
+            return Err(AcquisitionError::InvalidOciResult);
+        }
+    }
+    if let Some(platform) = descriptor.get("platform") {
+        let platform = platform
+            .as_object()
+            .ok_or(AcquisitionError::InvalidOciResult)?;
+        if platform.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "architecture" | "os" | "os.version" | "os.features" | "variant"
+            )
+        }) || platform
+            .get("architecture")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|value| value.is_empty())
+            || platform
+                .get("os")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(|value| value.is_empty())
+            || platform
+                .get("os.version")
+                .is_some_and(|value| value.as_str().is_none_or(|value| value.is_empty()))
+            || platform
+                .get("variant")
+                .is_some_and(|value| value.as_str().is_none_or(|value| value.is_empty()))
+            || platform.get("os.features").is_some_and(|value| {
+                !value.as_array().is_some_and(|features| {
+                    features
+                        .iter()
+                        .all(|feature| feature.as_str().is_some_and(|feature| !feature.is_empty()))
+                })
+            })
+        {
+            return Err(AcquisitionError::InvalidOciResult);
+        }
+    }
+    validate_digest(&digest).map_err(|_| AcquisitionError::InvalidOciResult)?;
+    Ok(LayoutDescriptor {
+        media_type,
+        digest,
+        size,
+    })
+}
+
+/// One descriptor from an OCI layout `index.json`.
+struct LayoutDescriptor {
+    media_type: String,
+    digest: String,
+    size: u64,
+}
+
+/// Streams the selected manifest's config and layers into an OCI layout.
+fn copy_archive_blobs<R: Read + Seek>(
+    archive: &mut R,
+    blob_root: &Path,
+    expected: &BTreeMap<String, u64>,
+) -> Result<(), AcquisitionError> {
+    archive.seek(SeekFrom::Start(0))?;
+    let mut remaining = expected.clone();
+    let mut observed = BTreeSet::new();
+    while let Some(header) = next_tar_header(archive)? {
+        let wanted = header.name.strip_prefix("blobs/sha256/").and_then(|stem| {
+            let digest = format!("sha256:{stem}");
+            expected.contains_key(&digest).then_some(digest)
+        });
+        if let Some(digest) = wanted {
+            if !header.regular
+                || header.size != expected[&digest]
+                || !observed.insert(digest.clone())
+            {
+                return Err(AcquisitionError::InvalidOciResult);
+            }
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .mode(0o600)
+                .open(blob_root.join(digest_hex(&digest)?))?;
+            let mut hasher = Sha256::new();
+            read_member_stream(archive, header.size, |chunk| {
+                hasher.update(chunk);
+                file.write_all(chunk)?;
+                Ok(())
+            })?;
+            file.sync_all()?;
+            if format!("sha256:{:x}", hasher.finalize()) != digest {
+                return Err(AcquisitionError::InvalidOciResult);
+            }
+            remaining.remove(&digest);
+        } else {
+            read_member_stream(archive, header.size, |_| Ok(()))?;
+        }
+        seek_tar_padding(archive, header.size)?;
+    }
+    if remaining.is_empty() {
+        Ok(())
+    } else {
+        Err(AcquisitionError::InvalidOciResult)
+    }
+}
+
+/// In-process registry documents used by acquisition tests.
+#[cfg(test)]
+struct RegistryFixture {
+    manifests: BTreeMap<String, Vec<u8>>,
+    blobs: BTreeMap<String, Vec<u8>>,
+    blob_downloads: u64,
+    manifest_fetches: BTreeMap<String, u64>,
+}
+
+#[cfg(test)]
+static REGISTRY_FIXTURE: std::sync::Mutex<Option<RegistryFixture>> = std::sync::Mutex::new(None);
+
+/// Installs manifest and blob bytes for one acquisition test.
+#[cfg(test)]
+fn install_registry_fixture(
+    manifests: BTreeMap<String, Vec<u8>>,
+    blobs: BTreeMap<String, Vec<u8>>,
+) {
+    *REGISTRY_FIXTURE.lock().expect("registry fixture lock") = Some(RegistryFixture {
+        manifests,
+        blobs,
+        blob_downloads: 0,
+        manifest_fetches: BTreeMap::new(),
+    });
+}
+
+/// Removes the acquisition test registry.
+#[cfg(test)]
+fn clear_registry_fixture() {
+    *REGISTRY_FIXTURE.lock().expect("registry fixture lock") = None;
+}
+
+#[cfg(test)]
+/// Reports how many blob bodies the fixture has served.
+fn registry_fixture_blob_downloads() -> u64 {
+    REGISTRY_FIXTURE
+        .lock()
+        .expect("registry fixture lock")
+        .as_ref()
+        .map(|fixture| fixture.blob_downloads)
+        .unwrap_or(0)
+}
+
+/// Reports how many times one manifest digest was served.
+#[cfg(test)]
+fn registry_fixture_manifest_fetches(digest: &str) -> u64 {
+    REGISTRY_FIXTURE
+        .lock()
+        .expect("registry fixture lock")
+        .as_ref()
+        .and_then(|fixture| fixture.manifest_fetches.get(digest).copied())
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+fn fixture_active() -> bool {
+    REGISTRY_FIXTURE
+        .lock()
+        .expect("registry fixture lock")
+        .is_some()
+}
+
+#[cfg(test)]
+fn fixture_manifest(digest: &str) -> Result<Vec<u8>, AcquisitionError> {
+    let mut fixture_lock = REGISTRY_FIXTURE.lock().expect("registry fixture lock");
+    let fixture = fixture_lock
+        .as_mut()
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    let bytes = fixture
+        .manifests
+        .get(digest)
+        .cloned()
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    *fixture
+        .manifest_fetches
+        .entry(digest.to_string())
+        .or_insert(0) += 1;
+    Ok(bytes)
+}
+
+#[cfg(test)]
+fn fixture_blob(digest: &str, expected_size: u64) -> Result<Vec<u8>, AcquisitionError> {
+    let mut fixture_lock = REGISTRY_FIXTURE.lock().expect("registry fixture lock");
+    let fixture = fixture_lock
+        .as_mut()
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    let bytes = fixture
+        .blobs
+        .get(digest)
+        .cloned()
+        .ok_or(AcquisitionError::InvalidOciResult)?;
+    if bytes.len() as u64 != expected_size {
+        return Err(AcquisitionError::InvalidOciResult);
+    }
+    fixture.blob_downloads += 1;
+    Ok(bytes)
+}
+
 /// Extracts one JSON string field from trusted-size generated OCI JSON.
 fn json_string(input: &str, key: &str) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(input)
@@ -2846,8 +3535,16 @@ mod tests {
     use super::{
         AcquisitionError, AcquisitionTrigger, BUILD_MAX_OUTPUT_BYTES, BUILD_MAX_TIME,
         BuildCapabilities, BuildDefinition, BuildPlan, ImageEffectEvidence, ImageEffectRequest,
-        RegistryAcquisition, archived_layout_digest, stage_registry_layout,
+        RegistryAcquisition, archived_layout_digest, clear_registry_fixture,
+        select_host_platform_manifest, stage_registry_layout,
     };
+    #[cfg(target_os = "linux")]
+    use super::{
+        ResolvedImport, host_oci_platform, install_registry_fixture,
+        registry_fixture_blob_downloads, registry_fixture_manifest_fetches, resolve_import_archive,
+    };
+    #[cfg(target_os = "linux")]
+    use crate::image_store::StoreError;
     use crate::image_store::{ImageStore, StoreLineage};
 
     static NEXT_TEST_ROOT: AtomicU64 = AtomicU64::new(0);
@@ -4270,7 +4967,7 @@ mod tests {
         }
 
         let production = include_str!("image_acquisition.rs")
-            .split("#[cfg(test)]")
+            .split("#[cfg(test)]\n/// Byte-slice adapter retained only for compact test fixtures.\npub(crate) fn oci_manifest_digest")
             .next()
             .expect("image acquisition production section");
         let capability_source = production
@@ -4307,7 +5004,7 @@ mod tests {
     #[test]
     fn wp5_r8_validates_exact_dockerfile_bytes_before_build_plan() {
         let production = include_str!("image_acquisition.rs")
-            .split_once("#[cfg(test)]")
+            .split_once("#[cfg(test)]\n/// Byte-slice adapter retained only for compact test fixtures.\npub(crate) fn oci_manifest_digest")
             .expect("image acquisition production section")
             .0;
         assert!(
@@ -4400,7 +5097,7 @@ mod tests {
         let archive = super::test_oci_archive(&layer);
         assert!(super::oci_manifest_digest(&archive).is_ok());
         let production = include_str!("image_acquisition.rs")
-            .split_once("#[cfg(test)]")
+            .split_once("#[cfg(test)]\n/// Byte-slice adapter retained only for compact test fixtures.\npub(crate) fn oci_manifest_digest")
             .expect("production source")
             .0;
         assert!(production.contains("ARCHIVE_CHUNK_BYTES: usize = 64 * 1024"));
@@ -4450,7 +5147,7 @@ mod tests {
         );
         assert_eq!(manifest.len(), super::OCI_DOCUMENT_MAX_BYTES);
         let production = include_str!("image_acquisition.rs")
-            .split_once("#[cfg(test)]")
+            .split_once("#[cfg(test)]\n/// Byte-slice adapter retained only for compact test fixtures.\npub(crate) fn oci_manifest_digest")
             .expect("production source")
             .0;
         assert!(!production.contains("pull_manifest_raw"));
@@ -4487,5 +5184,398 @@ mod tests {
             offset += 512 + size + (512 - size % 512) % 512;
         }
         panic!("missing tar member {wanted}");
+    }
+
+    /// Shared multi-platform index whose selected child is one host platform manifest.
+    struct HostPlatformBytes {
+        selected_manifest: Vec<u8>,
+        selected_digest: String,
+        selected_config: Vec<u8>,
+        selected_config_digest: String,
+        layer: Vec<u8>,
+        layer_digest: String,
+        index: Vec<u8>,
+        index_digest: String,
+    }
+
+    /// Builds one OCI index that names linux/arm64 and linux/amd64 image manifests.
+    fn host_platform_bytes() -> HostPlatformBytes {
+        host_platform_bytes_for("linux", "arm64")
+    }
+
+    /// Builds one index for `os`/`architecture` plus the other supported architecture.
+    fn host_platform_bytes_for(os: &str, architecture: &str) -> HostPlatformBytes {
+        let other_architecture = if architecture == "amd64" {
+            "arm64"
+        } else {
+            "amd64"
+        };
+        let layer = b"layer-bytes".to_vec();
+        let selected_config = format!(r#"{{"architecture":"{architecture}","os":"{os}"}}"#);
+        let other_config = format!(r#"{{"architecture":"{other_architecture}","os":"linux"}}"#);
+        let layer_digest = digest(&layer);
+        let selected_config_digest = digest(selected_config.as_bytes());
+        let other_config_digest = digest(other_config.as_bytes());
+        let selected_manifest = raw_image_manifest(
+            "application/vnd.oci.image.manifest.v1+json",
+            &selected_config_digest,
+            selected_config.len(),
+            &layer_digest,
+            layer.len(),
+        );
+        let other_manifest = raw_image_manifest(
+            "application/vnd.oci.image.manifest.v1+json",
+            &other_config_digest,
+            other_config.len(),
+            &layer_digest,
+            layer.len(),
+        );
+        let selected_digest = digest(&selected_manifest);
+        let other_digest = digest(&other_manifest);
+        let index = format!(
+            "{{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"{other_digest}\",\"size\":{},\"platform\":{{\"architecture\":\"{other_architecture}\",\"os\":\"linux\"}}}},{{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"{selected_digest}\",\"size\":{},\"platform\":{{\"architecture\":\"{architecture}\",\"os\":\"{os}\"}}}}]}}",
+            other_manifest.len(),
+            selected_manifest.len()
+        );
+        let index = index.into_bytes();
+        let index_digest = digest(&index);
+        HostPlatformBytes {
+            selected_manifest,
+            selected_digest,
+            selected_config: selected_config.into_bytes(),
+            selected_config_digest,
+            layer,
+            layer_digest,
+            index_digest,
+            index,
+        }
+    }
+
+    #[test]
+    fn host_platform_manifest_is_selected_from_a_fixture_index() {
+        let bytes = host_platform_bytes();
+        assert_eq!(
+            select_host_platform_manifest(&bytes.index, "linux", "arm64")
+                .map(|selected| selected.digest),
+            Ok(bytes.selected_digest)
+        );
+    }
+
+    #[test]
+    fn host_platform_index_without_a_match_names_the_reason() {
+        let bytes = host_platform_bytes();
+        let amd_only = format!(
+            "{{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"{digest}\",\"size\":{size},\"platform\":{{\"architecture\":\"amd64\",\"os\":\"linux\"}}}}]}}",
+            digest = bytes.selected_digest,
+            size = bytes.selected_manifest.len()
+        );
+        let error = select_host_platform_manifest(amd_only.as_bytes(), "linux", "arm64")
+            .expect_err("amd64-only index has no arm64 manifest");
+        assert_eq!(error, AcquisitionError::NoHostPlatform);
+        assert_eq!(error.static_reason(), "image index has no host platform");
+    }
+
+    #[test]
+    fn host_platform_index_with_two_matches_names_the_ambiguous_reason() {
+        let bytes = host_platform_bytes();
+        let other = digest(b"second-arm64-manifest");
+        let ambiguous = format!(
+            "{{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"{first}\",\"size\":{size},\"platform\":{{\"architecture\":\"arm64\",\"os\":\"linux\"}}}},{{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"{other}\",\"size\":4,\"platform\":{{\"architecture\":\"arm64\",\"os\":\"linux\"}}}}]}}",
+            first = bytes.selected_digest,
+            size = bytes.selected_manifest.len()
+        );
+        let error = select_host_platform_manifest(ambiguous.as_bytes(), "linux", "arm64")
+            .expect_err("two arm64 descriptors are ambiguous");
+        assert_eq!(error, AcquisitionError::AmbiguousHostPlatform);
+        assert_eq!(
+            error.static_reason(),
+            "image index host platform is ambiguous"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn host_platform_index_acquisition_stores_the_child_and_reuses_it() {
+        let (os, architecture) = host_oci_platform().unwrap_or_else(|error| panic!("{error:?}"));
+        let bytes = host_platform_bytes_for(os, architecture);
+        let root = test_root("host-platform-acquire");
+        let _root_cleanup = remove_test_root(root.clone());
+        let _fixture_cleanup = clear_fixture_on_drop();
+        let mut manifests = BTreeMap::new();
+        manifests.insert(bytes.index_digest.clone(), bytes.index.clone());
+        manifests.insert(
+            bytes.selected_digest.clone(),
+            bytes.selected_manifest.clone(),
+        );
+        let mut blobs = BTreeMap::new();
+        blobs.insert(
+            bytes.selected_config_digest.clone(),
+            bytes.selected_config.clone(),
+        );
+        blobs.insert(bytes.layer_digest.clone(), bytes.layer.clone());
+        install_registry_fixture(manifests, blobs);
+        let reference = format!("ghcr.io/openkit/worker@{}", bytes.index_digest);
+        let declared = BTreeSet::from(["docker.io".to_string(), "ghcr.io".to_string()]);
+        let acquisition = RegistryAcquisition::validate(
+            AcquisitionTrigger::AuthorizedAttempt,
+            &reference,
+            &declared,
+        )
+        .expect("index reference");
+        let store = open_store(&root);
+        let digest = acquisition
+            .acquire(&root.join("staging"), &store, 1)
+            .await
+            .expect("selected host manifest");
+        assert_eq!(digest, bytes.selected_digest);
+        let listed = store.list().expect("list store");
+        assert!(listed.iter().any(|entry| {
+            entry.digest == bytes.selected_digest
+                && entry.lineage == Some(StoreLineage::Registry(reference.clone()))
+        }));
+        assert!(
+            listed
+                .iter()
+                .all(|entry| entry.digest != bytes.index_digest)
+        );
+        let downloads = registry_fixture_blob_downloads();
+        assert!(downloads > 0, "first acquisition downloads blobs");
+        assert_eq!(registry_fixture_manifest_fetches(&bytes.selected_digest), 1);
+        let again = acquisition
+            .acquire(&root.join("staging-again"), &store, 2)
+            .await
+            .expect("retained host manifest");
+        assert_eq!(again, bytes.selected_digest);
+        assert_eq!(registry_fixture_blob_downloads(), downloads);
+        assert_eq!(registry_fixture_manifest_fetches(&bytes.selected_digest), 1);
+        assert_eq!(registry_fixture_manifest_fetches(&bytes.index_digest), 2);
+        store
+            .read_verified(&bytes.selected_digest)
+            .expect("retained child");
+        assert_eq!(
+            store.read_verified(&bytes.index_digest).unwrap_err(),
+            StoreError::Missing
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn host_platform_index_import_stores_the_selected_manifest() {
+        let (os, architecture) = host_oci_platform().unwrap_or_else(|error| panic!("{error:?}"));
+        let bytes = host_platform_bytes_for(os, architecture);
+        let root = test_root("host-platform-import");
+        let _root_cleanup = remove_test_root(root.clone());
+        let archive = host_platform_index_archive(&bytes, &bytes.index, &bytes.index_digest, None);
+        let mut cursor = Cursor::new(archive);
+        let resolved = resolve_import_archive(&mut cursor, &bytes.index_digest)
+            .expect("project the host manifest");
+        let ResolvedImport::Projected {
+            digest,
+            archive: projected,
+        } = resolved
+        else {
+            panic!("index archive must project the host manifest");
+        };
+        assert_eq!(digest, bytes.selected_digest);
+        let store = open_store(&root);
+        store
+            .admit_oci_file(
+                &digest,
+                projected,
+                StoreLineage::LocalArchive(digest.clone()),
+                1,
+            )
+            .expect("admit projected manifest");
+        store
+            .read_verified(&bytes.selected_digest)
+            .expect("stored child");
+        assert_eq!(
+            store.read_verified(&bytes.index_digest).unwrap_err(),
+            StoreError::Missing
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn host_platform_index_import_refuses_a_duplicate_required_blob() {
+        let (os, architecture) = host_oci_platform().unwrap_or_else(|error| panic!("{error:?}"));
+        let bytes = host_platform_bytes_for(os, architecture);
+        let archive = host_platform_index_archive(
+            &bytes,
+            &bytes.index,
+            &bytes.index_digest,
+            Some(b"conflicting-layer"),
+        );
+        let mut cursor = Cursor::new(archive);
+        match resolve_import_archive(&mut cursor, &bytes.index_digest) {
+            Err(error) => assert_eq!(error, AcquisitionError::InvalidOciResult),
+            Ok(_) => panic!("duplicate required blob was admitted"),
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn host_platform_index_import_refuses_a_child_size_mismatch() {
+        let (os, architecture) = host_oci_platform().unwrap_or_else(|error| panic!("{error:?}"));
+        let bytes = host_platform_bytes_for(os, architecture);
+        let index = String::from_utf8(bytes.index.clone())
+            .expect("index utf-8")
+            .replace(
+                &format!(
+                    "\"digest\":\"{}\",\"size\":{}",
+                    bytes.selected_digest,
+                    bytes.selected_manifest.len()
+                ),
+                &format!("\"digest\":\"{}\",\"size\":1", bytes.selected_digest),
+            );
+        let index = index.into_bytes();
+        let index_digest = digest(&index);
+        let archive = host_platform_index_archive(&bytes, &index, &index_digest, None);
+        let mut cursor = Cursor::new(archive);
+        match resolve_import_archive(&mut cursor, &index_digest) {
+            Err(error) => assert_eq!(error, AcquisitionError::InvalidOciResult),
+            Ok(_) => panic!("child size mismatch was admitted"),
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn host_platform_index_import_refuses_a_child_media_type_mismatch() {
+        let (os, architecture) = host_oci_platform().unwrap_or_else(|error| panic!("{error:?}"));
+        let bytes = host_platform_bytes_for(os, architecture);
+        let index = String::from_utf8(bytes.index.clone())
+            .expect("index utf-8")
+            .replace(
+                &format!(
+                    "\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"{}\"",
+                    bytes.selected_digest
+                ),
+                &format!(
+                    "\"mediaType\":\"application/vnd.docker.distribution.manifest.v2+json\",\"digest\":\"{}\"",
+                    bytes.selected_digest
+                ),
+            );
+        let index = index.into_bytes();
+        let index_digest = digest(&index);
+        let archive = host_platform_index_archive(&bytes, &index, &index_digest, None);
+        let mut cursor = Cursor::new(archive);
+        match resolve_import_archive(&mut cursor, &index_digest) {
+            Err(error) => assert_eq!(error, AcquisitionError::InvalidOciResult),
+            Ok(_) => panic!("child media type mismatch was admitted"),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "acquires the public v0.1.0-rc.3 worker-runtimes index from ghcr.io"]
+    #[cfg(target_os = "linux")]
+    async fn published_rc3_worker_index_acquires_the_host_child() {
+        const REFERENCE: &str = "ghcr.io/lingkaix/openkit-worker-runtimes@sha256:fd77ca67b963a6c172cc97602c7ebc71b0356cc933a0a0b381374354ef85aeed";
+        let declared = BTreeSet::from(["ghcr.io".to_string()]);
+        let acquisition = RegistryAcquisition::validate(
+            AcquisitionTrigger::AuthorizedAttempt,
+            REFERENCE,
+            &declared,
+        )
+        .expect("published index reference");
+        let root = test_root("published-rc3-worker");
+        let _root_cleanup = remove_test_root(root.clone());
+        let store = open_store(&root);
+        let digest = acquisition
+            .acquire(&root.join("staging"), &store, 1)
+            .await
+            .expect("acquire published index");
+        assert_ne!(digest, REFERENCE.rsplit_once('@').expect("digest").1);
+        store.read_verified(&digest).expect("stored host child");
+        eprintln!("selected child digest {digest}");
+    }
+
+    /// Builds one index archive, optionally repeating the selected layer with conflicting bytes.
+    #[cfg(target_os = "linux")]
+    fn host_platform_index_archive(
+        bytes: &HostPlatformBytes,
+        index: &[u8],
+        index_digest: &str,
+        duplicate_layer: Option<&[u8]>,
+    ) -> Vec<u8> {
+        let layout = format!(
+            "{{\"schemaVersion\":2,\"manifests\":[{{\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"digest\":\"{index_digest}\",\"size\":{}}}]}}",
+            index.len()
+        );
+        let mut archive = Vec::new();
+        super::append_test_tar_member(
+            &mut archive,
+            "oci-layout",
+            b"{\"imageLayoutVersion\":\"1.0.0\"}\n",
+        );
+        super::append_test_tar_member(&mut archive, "index.json", layout.as_bytes());
+        super::append_test_tar_member(
+            &mut archive,
+            &format!(
+                "blobs/sha256/{}",
+                index_digest.strip_prefix("sha256:").unwrap()
+            ),
+            index,
+        );
+        super::append_test_tar_member(
+            &mut archive,
+            &format!(
+                "blobs/sha256/{}",
+                bytes.selected_digest.strip_prefix("sha256:").unwrap()
+            ),
+            &bytes.selected_manifest,
+        );
+        super::append_test_tar_member(
+            &mut archive,
+            &format!(
+                "blobs/sha256/{}",
+                bytes
+                    .selected_config_digest
+                    .strip_prefix("sha256:")
+                    .unwrap()
+            ),
+            &bytes.selected_config,
+        );
+        super::append_test_tar_member(
+            &mut archive,
+            &format!(
+                "blobs/sha256/{}",
+                bytes.layer_digest.strip_prefix("sha256:").unwrap()
+            ),
+            &bytes.layer,
+        );
+        if let Some(duplicate) = duplicate_layer {
+            super::append_test_tar_member(
+                &mut archive,
+                &format!(
+                    "blobs/sha256/{}",
+                    bytes.layer_digest.strip_prefix("sha256:").unwrap()
+                ),
+                duplicate,
+            );
+        }
+        archive.extend_from_slice(&[0_u8; 1024]);
+        archive
+    }
+
+    /// Removes one temporary root when the test ends.
+    fn remove_test_root(root: PathBuf) -> impl Drop {
+        struct Guard(PathBuf);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        Guard(root)
+    }
+
+    /// Clears the in-process registry when the acquisition test ends.
+    fn clear_fixture_on_drop() -> impl Drop {
+        struct Guard;
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                clear_registry_fixture();
+            }
+        }
+        Guard
     }
 }
