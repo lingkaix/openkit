@@ -8,6 +8,7 @@ import { BootConfigError } from '../config/mode.js';
  * The identity is a file, not an image ENV. The App-update helper replays every
  * old container Config.Env entry as --env, so an ENV identity from the previous
  * image would override the new image after every update.
+ * https://github.com/lingkaix/openkit/issues/239 records that replay.
  */
 export const RELEASE_IDENTITY_PATH = '/usr/local/lib/openkit/release-identity.json';
 
