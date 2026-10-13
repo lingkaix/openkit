@@ -18,11 +18,11 @@ Ask: Update this deployment to the published prerelease and keep my existing wor
 
 ## Starting World
 
-One persistent deployment is running the previous release. It carries that release's real data. The published prerelease is the update target. This story does not use an exact-source update.
+One persistent deployment is running an earlier published release. It carries that release's real data. The published prerelease is the update target. This story does not use an exact-source update.
 
 ## Setup
 
-The stage manager confirms that the previous release's data is already present. The stage manager does not replace that data with test data.
+The stage manager confirms that the real data of the earlier published release is already present. The stage manager does not replace that data with test data.
 
 ## Outcome Predicates
 
@@ -56,7 +56,7 @@ The stage manager removes attempt-owned evidence state only. The stage manager d
 ## Failure Triage Notes
 
 - A product failure means the receipt claims success without the published digest, a Workspace read is lost, the diagnostics blocking set is not empty, or the runtime target is not ready.
-- An environment failure means the previous-release deployment is missing, the published digest is missing, or the host refuses the update for capacity before a product result exists.
+- An environment failure means the deployment of the earlier published release is missing, the published digest is missing, or the host refuses the update for capacity before a product result exists.
 - A tool failure means the administrator client or the evidence collector fails on its own.
 - An inconclusive result means a required receipt or readiness read was never witnessed.
 - The likely lower layer is the app-update host-domain test and the selected-host update proof in `docs/specs/20260910-app_update_delivery.md`.

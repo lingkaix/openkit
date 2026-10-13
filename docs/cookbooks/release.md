@@ -124,7 +124,7 @@ The independent check and final summary of a finished qualification hold no Work
 
 ## Post-Tag Catalog Stories
 
-After the tag, follow the release cycle in [Catalog Stories](../specs/20260829-release_management.md#catalog-stories). The catalog stories are not a pre-tag gate, and a story run on an unpublished candidate is not release evidence. Story 1 runs on a disposable host. Story 2 runs on the persistent deployment that carries the previous release's real data. The [Release Exit Criterion](../specs/20260829-release_management.md#release-exit-criterion) owns pass, defect, rerun, and the release cycle. This cookbook does not copy the catalog.
+After the tag, follow the release cycle in [Catalog Stories](../specs/20260829-release_management.md#catalog-stories). The catalog stories are not a pre-tag gate, and a story run on an unpublished candidate is not release evidence. Story 1 runs on a disposable host. Story 2 runs on the persistent deployment that carries an earlier published release's real data. The [Release Exit Criterion](../specs/20260829-release_management.md#release-exit-criterion) owns pass, defect, rerun, and the release cycle. This cookbook does not copy the catalog.
 
 Declare a read-only GitHub issue with an independently checkable title and state, a separate small issue authorized for an acceptance branch and pull request, and attempt-owned Workspace, Thread, filename, and marker inputs. Vary only equivalent fixtures or attempt-owned names. Do not reuse unrelated user work or broaden credentials to repair a prerequisite. Story selection authorizes no live deployment, Provider consumption, GitHub write, or approval. Obtain the existing effect-specific authority before execution.
 
