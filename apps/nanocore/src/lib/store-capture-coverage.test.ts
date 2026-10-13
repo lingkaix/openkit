@@ -10,15 +10,86 @@ import { appendWorkObservation, readWorkObservations } from '../storage/work-obs
 import { createDemoStore } from '../test-support/demo-store.js';
 import { DEFAULT_CAPTURE_COVERAGE_BINDING, FsStore } from './store.js';
 
-// Fault only the selected Turn manifest's actual file or parent-directory synchronization.
+// Fault the armed Turn manifest's durable synchronization.
+// A new Turn is written under workspaces/.staging/record-* and published by one rename,
+// so the file fault is that temporary turn.json fsync. The directory fault is only the
+// directory explicitly armed for the case: the canonical turns/ parent after the rename
+// for admission, once turn.json is visible. An existing Turn is rewritten in place, so
+// the observation cases arm that Turn directory and no parent or child can satisfy it.
 const syncFailure = vi.hoisted(() => ({
   target: null as string | null,
+  /** Exact directory whose synchronization is armed by this case. */
+  directoryTarget: null as string | null,
   stage: 'file' as 'file' | 'directory',
   failures: 0,
   descriptors: new Map<number, string>(),
 }));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
+
+  /** Returns the workspaces directory that contains one canonical turn.json path. */
+  const workspacesRoot = (turnJsonPath: string): string | null => {
+    const turnDirectory = dirname(turnJsonPath);
+    const turnsDirectory = dirname(turnDirectory);
+    const threadDirectory = dirname(turnsDirectory);
+    const threadsDirectory = dirname(threadDirectory);
+    const workspaceDirectory = dirname(threadsDirectory);
+    const workspacesDirectory = dirname(workspaceDirectory);
+    if (
+      basename(turnJsonPath) !== 'turn.json' ||
+      basename(turnsDirectory) !== 'turns' ||
+      basename(threadsDirectory) !== 'threads' ||
+      basename(workspacesDirectory) !== 'workspaces'
+    ) {
+      return null;
+    }
+    return workspacesDirectory;
+  };
+
+  /** Returns whether a staged temporary turn.json body is the armed Turn. */
+  const stagedBodyIsTurn = (path: string, turnId: string): boolean => {
+    try {
+      const parsed: unknown = JSON.parse(actual.readFileSync(path, 'utf8'));
+      return (
+        typeof parsed === 'object' &&
+        parsed !== null &&
+        'id' in parsed &&
+        (parsed as { id?: unknown }).id === turnId
+      );
+    } catch {
+      return false;
+    }
+  };
+
+  /**
+   * Selects the temporary turn.json fsync for the armed Turn.
+   *
+   * @param path Opened temporary file.
+   * @param target Canonical turn.json path armed by the test.
+   */
+  const isArmedTurnManifestTemp = (path: string, target: string): boolean => {
+    if (!basename(path).startsWith('.turn.json.')) return false;
+    if (dirname(path) === dirname(target)) return true;
+    const recordDirectory = dirname(path);
+    const stagingDirectory = dirname(recordDirectory);
+    return (
+      basename(stagingDirectory) === '.staging' &&
+      basename(recordDirectory).startsWith('record-') &&
+      dirname(stagingDirectory) === workspacesRoot(target) &&
+      stagedBodyIsTurn(path, basename(dirname(target)))
+    );
+  };
+
+  /**
+   * Selects only the directory explicitly armed for this case.
+   *
+   * @param path Opened directory.
+   * @param target Canonical turn.json path armed by the test.
+   */
+  const isArmedTurnDirectorySync = (path: string, target: string): boolean => {
+    return path === syncFailure.directoryTarget && actual.existsSync(target);
+  };
+
   const openSync: typeof actual.openSync = (path, flags, mode) => {
     const descriptor = actual.openSync(path, flags, mode);
     syncFailure.descriptors.set(descriptor, String(path));
@@ -35,8 +106,8 @@ vi.mock('node:fs', async (importOriginal) => {
       target &&
       path &&
       (syncFailure.stage === 'file'
-        ? dirname(path) === dirname(target) && basename(path).startsWith('.turn.json.')
-        : path === dirname(target) && actual.existsSync(target))
+        ? isArmedTurnManifestTemp(path, target)
+        : isArmedTurnDirectorySync(path, target))
     ) {
       syncFailure.failures += 1;
       throw new Error(`injected Turn manifest ${syncFailure.stage} sync failure`);
@@ -49,6 +120,7 @@ vi.mock('node:fs', async (importOriginal) => {
 const syncFailureRoots: string[] = [];
 afterEach(() => {
   syncFailure.target = null;
+  syncFailure.directoryTarget = null;
   syncFailure.failures = 0;
   for (const root of syncFailureRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -77,6 +149,7 @@ describe('Turn capture coverage binding', () => {
       'turn.json'
     );
     syncFailure.target = turnPath;
+    syncFailure.directoryTarget = dirname(dirname(turnPath));
     syncFailure.stage = stage;
     const collect = vi.fn(async () => undefined);
 
@@ -119,6 +192,7 @@ describe('Turn capture coverage binding', () => {
     try {
       applyScopedMigrations(db);
       syncFailure.target = join(turnRoot, 'turn.json');
+      syncFailure.directoryTarget = turnRoot;
       syncFailure.stage = stage;
       expect(() =>
         appendWorkObservation(db, {
