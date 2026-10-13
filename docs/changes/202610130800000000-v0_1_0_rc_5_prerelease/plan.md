@@ -2,7 +2,7 @@
 type: change-plan
 status: in-progress
 date: "2026-10-13"
-branch: rc5-release
+branch: main
 ---
 # v0.1.0-rc.5 Pre-Release
 
@@ -25,7 +25,7 @@ This checkpoint is rewritable and is not authority.
 | Intended tag | `v0.1.0-rc.5`, a non-draft prerelease that never becomes GitHub Latest and never creates or changes a GHCR `latest` tag |
 | Controlled asset set | The rc.4 set, with the tag replaced by `v0.1.0-rc.5`, as detailed below |
 | Publication authorization | The engineer selected publication of exactly `v0.1.0-rc.5` and the controlled asset set, after candidate CI passes on the publishing commit. The conditions are under Publication Authorization |
-| Tested commit T and publishing commit P | Pending. The rc.5 fix commits are on `rc5-fix` and are not yet the publishing commit |
+| Tested commit T and publishing commit P | Pending. The publishing commit P will be the commit on `main` that last changes this record before the tag. Candidate CI on that commit remains pending |
 | Classified comparison of T and P | Pending, because T and P are not yet the tagged commit |
 | Candidate CI proof | Pending. Candidate CI must pass on the exact publishing commit |
 | Visibility | This record adds no new visibility observation. [Release Management](../../specs/20260829-release_management.md) records that the repository was public on 2026-10-12 |
@@ -42,17 +42,22 @@ The published rc.4 release is the base. It is a non-draft prerelease with exactl
 
 ## Work Packages Since rc.4
 
-Commits after the rc.4 tag `33ef34436fbedb2e8249f2826ddc5c6cad5f91d2` are the packages below. `34b86854` and `a908f57f` are on `main`. `499fbd6e` and `9d86c244` are on `rc5-fix` and are not yet the publishing commit.
+Commits after the rc.4 tag `33ef34436fbedb2e8249f2826ddc5c6cad5f91d2` are the packages below. `34b86854` and `a908f57f` are on `main`. `499fbd6e`, `9d86c244`, `471531a3` and `5d44fa72` are ancestors of this record and are not yet on `main`. The publishing commit is the later commit on `main` that last changes this record before the tag.
 
 ### Product Changes
 
 - `499fbd6e` reports the running release tag and source commit in authenticated App Diagnostics. The App image carries that identity as a file set by the release build. It refers to [#232](https://github.com/lingkaix/openkit/issues/232).
+- `471531a3` keeps the build projection's producer typed and structurally closed, and its reader tolerant, with regressions.
 
 ### Release Process And Documentation
 
 - `34b86854` removes audited historical change records. The coordinator records this as the engineer's archive cleanup, done with the coordinator's work on `main`.
 - `a908f57f` retires the exact-source update procedure. [Retire The Exact-Source Update Procedure](../../decisions/20261013-retire_exact_source_update.md) records the ruling. A persistent deployment updates only to a published release.
-- `9d86c244` corrects the operations Skill description of App-update preparation and adds a content-free active-work check from existing reads. [#233](https://github.com/lingkaix/openkit/issues/233) stays open for a product preflight. That commit records the App image release identity decision. This branch does not contain that decision yet, so this record does not link it.
+- `9d86c244` gives administrators a public path to the expected current image and corrects the operations Skill description of App-update preparation. [App Image Release Identity](../../decisions/20261013-app_image_release_identity.md) records the decision. [#233](https://github.com/lingkaix/openkit/issues/233) stays open for a running-work read and a product preflight.
+- `5d44fa72` qualifies the expected-image advice so it keeps the general matching rule, and the admission observation states its limit.
+- This update aligns `release-notes/v0.1.0-rc.5.md` and this record with that accepted fix.
+
+Three independent reviews, each by the reviewer role using Codex `gpt-6.1-sol`, cover the fix. The review of `499fbd6e` is accept with corrections and names three P2 findings. The review of `9d86c244` and `471531a3` is accept with corrections and names two P2 findings and one P3 finding. The review of `5d44fa72` is accept.
 
 ## Engineer Rulings Applied In RC5
 
@@ -76,7 +81,7 @@ The scratch rehearsal is a separate selection. It writes only in `notrucked/open
 
 ## Publication-Path Proof
 
-Pending. `499fbd6e` changes the `publish-container-images` job. A new App-only step, "Pass App release identity build arguments", passes the tag and the commit as build arguments. [Release Management](../../specs/20260829-release_management.md) requires a scratch rehearsal before the real tag when a publication job changes. That rehearsal has not run. The real tag stays blocked until the rehearsal proof exists.
+Pending. `499fbd6e` changes the `publish-container-images` job. A new App-only step, "Pass App release identity build arguments", passes the tag and the commit as build arguments. [Release Management](../../specs/20260829-release_management.md) requires a scratch rehearsal before the real tag when a publication job changes. The rehearsal runs `v0.0.0-scratch.2` in `notrucked/openkit` on a merge of `9d86c244` into the scratch `main`, whose publication job bytes equal those of `5d44fa72`. That rehearsal has not run. The real tag stays blocked until the rehearsal proof exists.
 
 ## Manual-Gate Disposition And Known Issues
 
