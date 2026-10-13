@@ -34,7 +34,7 @@ This checkpoint is rewritable and is not authority.
 | Frozen checklist identity | Not applicable. [Catalog Stories](../../specs/20260829-release_management.md#catalog-stories) governs post-tag story selection |
 | Manual-gate disposition | Recorded under Manual-Gate Disposition And Known Issues. Story 2, the story 1 fallback, and Worker qualification remain pending after publication |
 | Known limitations | Recorded in the notes input. R001 remains open under [#120](https://github.com/lingkaix/openkit/issues/120), so supported Worker execution and stable promotion are not claimed |
-| Scratch rehearsal | Pending. The engineer selected an rc.5 rehearsal in `notrucked/openkit` with no write to `lingkaix/openkit` |
+| Scratch rehearsal | The rehearsal started. Its proof is pending. It is in `notrucked/openkit` and makes no write to `lingkaix/openkit` |
 
 ### Controlled Asset Set
 
@@ -56,6 +56,7 @@ Commits after the rc.4 tag `33ef34436fbedb2e8249f2826ddc5c6cad5f91d2` are the pa
 - `9d86c244` gives administrators a public path to the expected current image and corrects the operations Skill description of App-update preparation. [App Image Release Identity](../../decisions/20261013-app_image_release_identity.md) records the decision. [#233](https://github.com/lingkaix/openkit/issues/233) stays open for a running-work read and a product preflight.
 - `5d44fa72` qualifies the expected-image advice so it keeps the general matching rule, and the admission observation states its limit.
 - This update aligns `release-notes/v0.1.0-rc.5.md` and this record with that accepted fix.
+- This correction fills the rc.4 story 2 evidence cells and dates the started rc.5 scratch rehearsal. Qualifying rehearsal proof remains pending.
 
 Three independent reviews, each by the reviewer role using Codex `gpt-6.1-sol`, cover the fix. The review of `499fbd6e` is accept with corrections and names three P2 findings. The review of `9d86c244` and `471531a3` is accept with corrections and names two P2 findings and one P3 finding. The review of `5d44fa72` is accept.
 
@@ -81,7 +82,7 @@ The scratch rehearsal is a separate selection. It writes only in `notrucked/open
 
 ## Publication-Path Proof
 
-Pending. `499fbd6e` changes the `publish-container-images` job. A new App-only step, "Pass App release identity build arguments", passes the tag and the commit as build arguments. [Release Management](../../specs/20260829-release_management.md) requires a scratch rehearsal before the real tag when a publication job changes. The rehearsal runs `v0.0.0-scratch.2` in `notrucked/openkit` on a merge of `9d86c244` into the scratch `main`, whose publication job bytes equal those of `5d44fa72`. That rehearsal has not run. The real tag stays blocked until the rehearsal proof exists.
+Pending. `499fbd6e` changes the `publish-container-images` job. A new App-only step, "Pass App release identity build arguments", passes the tag and the commit as build arguments. [Release Management](../../specs/20260829-release_management.md) requires a scratch rehearsal before the real tag when a publication job changes. The rehearsal runs `v0.0.0-scratch.2` in `notrucked/openkit` on a merge of `9d86c244` into the scratch `main`, whose publication job bytes equal those of `5d44fa72`. Rehearsal run [38366163953](https://github.com/notrucked/openkit/actions/runs/38366163953) for `v0.0.0-scratch.2` started at 2026-10-13T07:58:47Z and was `in_progress`, with no conclusion, at 2026-10-13T09:33:22Z. Qualifying rehearsal proof remains pending. The real tag stays blocked until the rehearsal proof exists.
 
 ## Manual-Gate Disposition And Known Issues
 
