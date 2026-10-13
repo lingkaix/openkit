@@ -3,13 +3,13 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { summarize } from './release-round/evidence.mjs';
-import { decide, prepare, round } from './release-round/live.mjs';
+import { prepare, round } from './release-round/live.mjs';
 
-/** Parse four declared commands; only offline summary accepts the coordinator's sequence input. */
+/** Parse the three declared commands. */
 export async function main(args = process.argv.slice(2)) {
   if (args.includes('--help') || !args.length) {
     process.stdout.write(
-      'Usage: node tests/support/release-round.mjs prepare --params FILE --evidence-dir NEW_DIR\n       round --evidence-dir DIR\n       decide --evidence-dir DIR --request ID --decision grant|deny\n       summarize --evidence-dir DIR [--legacy-prefix PREFIX] [--adjudications FILE] [--sequence FILE]\n'
+      'Usage: node tests/support/release-round.mjs prepare --params FILE --evidence-dir NEW_DIR\n       round --evidence-dir DIR\n       summarize --evidence-dir DIR [--adjudications FILE]\n'
     );
     return;
   }
@@ -17,8 +17,7 @@ export async function main(args = process.argv.slice(2)) {
     allowed = {
       prepare: ['params', 'evidence-dir'],
       round: ['evidence-dir'],
-      decide: ['evidence-dir', 'request', 'decision'],
-      summarize: ['evidence-dir', 'legacy-prefix', 'adjudications', 'sequence'],
+      summarize: ['evidence-dir', 'adjudications'],
     }[command];
   if (!allowed) throw Error('Unknown subcommand');
   const options = {};
@@ -42,16 +41,8 @@ export async function main(args = process.argv.slice(2)) {
     result = await prepare(path.resolve(options.params), dir);
   }
   if (command === 'round') result = await round(dir);
-  if (command === 'decide') {
-    if (!options.request || !options.decision) throw Error('--request and --decision required');
-    result = await decide(dir, options.request, options.decision);
-  }
   if (command === 'summarize')
-    result = await summarize(dir, {
-      legacyPrefix: options['legacy-prefix'],
-      adjudicationsFile: options.adjudications,
-      sequenceFile: options.sequence,
-    });
+    result = await summarize(dir, { adjudicationsFile: options.adjudications });
   process.stdout.write(
     `${JSON.stringify({ command, status: result?.classified === false ? 'unclassified' : 'recorded', counts: result?.counts, complete: result?.complete, clean: result?.clean })}\n`
   );

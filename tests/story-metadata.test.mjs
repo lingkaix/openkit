@@ -29,25 +29,25 @@ contracts: docs/specs/20260628-web_product_surface_projection.md, docs/core/vaul
 
 # Complete A Local Worker Turn From The Web UI
 
-## Purpose
+## Intent
 
-Verify the deterministic self-check flow.
+One persona asks for one outcome.
 
-## Preconditions
+## Starting World
 
-- NanoCore can boot with a disposable data root.
+The workspace exists.
 
-## User-visible Steps
+## Outcome Predicates
 
-1. Open the Web UI root route.
+The workspace is visible.
 
-## Expected Outcomes
+## Perturbations
 
-- The workspace is visible.
+None.
 
-## Deterministic Assertions
+## Integrity Invariants
 
-- The workspace button is visible.
+Retained records stay readable.
 
 ## Failure Triage Notes
 
@@ -69,7 +69,7 @@ describe('story metadata parser', () => {
       requires_real_codex: false,
       contracts: 'docs/specs/20260628-web_product_surface_projection.md, docs/core/vault.md',
     });
-    assert.match(story.body, /Verify the deterministic self-check flow\./);
+    assert.match(story.body, /One persona asks for one outcome\./);
   });
 
   it('validates the required story metadata fields', () => {
@@ -129,13 +129,13 @@ describe('story metadata parser', () => {
 
   it('rejects a body missing a required section', () => {
     const story = parseStoryDocument(
-      validStory.replace(/## Expected Outcomes\n\n- The workspace is visible\.\n\n/, ''),
+      validStory.replace(/## Outcome Predicates\n\nThe workspace is visible\.\n\n/, ''),
       'missing-section.story.md'
     );
 
     assert.throws(
       () => validateStoryBodySections(story.body, 'missing-section.story.md'),
-      /missing required section: Expected Outcomes/
+      /missing required section: Outcome Predicates/
     );
   });
 
@@ -154,18 +154,43 @@ describe('story metadata parser', () => {
     );
   });
 
+  it('accepts each optional section once and rejects a duplicate', () => {
+    for (const section of [
+      'Setup',
+      'Required Opt-in Environment Variables',
+      'Evidence To Collect',
+      'Cleanup',
+    ]) {
+      const once = validStory.replace(
+        '## Failure Triage Notes',
+        `## ${section}\n\nExample.\n\n## Failure Triage Notes`
+      );
+      const accepted = parseStoryDocument(once, 'optional-once.story.md');
+      assert.doesNotThrow(() => validateStoryBodySections(accepted.body, 'optional-once.story.md'));
+      const twice = once.replace(
+        '## Failure Triage Notes',
+        `## ${section}\n\nAgain.\n\n## Failure Triage Notes`
+      );
+      const rejected = parseStoryDocument(twice, 'optional-twice.story.md');
+      assert.throws(
+        () => validateStoryBodySections(rejected.body, 'optional-twice.story.md'),
+        new RegExp(`has duplicate section: ${section}$`)
+      );
+    }
+  });
+
   it('rejects a body with a duplicate section', () => {
     const story = parseStoryDocument(
       validStory.replace(
         '## Failure Triage Notes',
-        '## Preconditions\n\n- Again.\n\n## Failure Triage Notes'
+        '## Starting World\n\n- Again.\n\n## Failure Triage Notes'
       ),
       'duplicate-section.story.md'
     );
 
     assert.throws(
       () => validateStoryBodySections(story.body, 'duplicate-section.story.md'),
-      /duplicate section: Preconditions/
+      /duplicate section: Starting World/
     );
   });
 

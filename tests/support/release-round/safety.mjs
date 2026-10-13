@@ -7,15 +7,8 @@ import path from 'node:path';
 
 /** Fixed sequential runtime order from the frozen first-release checklist. */
 export const RUNTIMES = ['codex', 'pi', 'opencode', 'deepseek'];
-/** The exact denominator; every row is traversed even when its observation is absent. */
-export const SCENARIOS = [
-  'Deploy',
-  ...RUNTIMES.flatMap((r) => ['A', 'B', 'C', 'D'].map((s) => `${r}.${s}`)),
-  'Chat',
-  'Task',
-  'Goal',
-  'External',
-];
+/** The exact denominator; every qualification row is traversed even when its observation is absent. */
+export const SCENARIOS = RUNTIMES.flatMap((r) => ['A', 'B', 'C', 'D'].map((s) => `${r}.${s}`));
 /** Hex SHA-256 identity for retained bytes and manifests. */
 export const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 /** Public content-digest representation used by Artifact and exact-intent owners. */
@@ -96,7 +89,7 @@ function absolute(value, name) {
     throw Error(`${name}: absolute path required`);
 }
 
-/** Declare deployment inputs independently of final sequence; refuse commands, verdicts and secrets. */
+/** Declare qualification inputs; refuse commands, verdicts and secrets. */
 export function validateParams(p) {
   object(
     p,
@@ -112,9 +105,6 @@ export function validateParams(p) {
       'deployment',
       'runtimes',
       'issue',
-      'task',
-      'goal',
-      'external',
       'bounds',
       'authority',
       'knownReferences',
@@ -150,57 +140,33 @@ export function validateParams(p) {
     [
       'sshAlias',
       'machineId',
-      'root',
-      'archiveDirectory',
-      'buildDirectory',
-      'webDirectory',
       'container',
       'imageRepository',
-      'environmentFile',
-      'expectedContainer',
-      'expectedImage',
       'configurationDigest',
-      'bindingRevision',
-      'bindingDigest',
       'nanoHostDigest',
       'workerDigest',
-      'workerAgents',
+      'appImage',
+      'webIdentity',
       'componentCommits',
       'componentPaths',
-      'protectedMetadataPaths',
-      'payloadDigests',
       'diagnosticUnit',
-      'minimumFreeBytes',
     ],
     'deployment'
   );
   const d = p.deployment;
   text(d.sshAlias, 'sshAlias', /^[a-z][a-z0-9-]{0,62}$/);
   text(d.machineId, 'machineId', /^[a-f0-9]{32}$/);
-  for (const k of ['root', 'archiveDirectory', 'buildDirectory', 'webDirectory', 'environmentFile'])
-    absolute(d[k], k);
-  // Unquoted SFTP destinations require literal, normalized paths with no expansion syntax.
-  if (
-    !/^\/[A-Za-z0-9._/-]*$/.test(d.archiveDirectory) ||
-    path.posix.normalize(d.archiveDirectory) !== d.archiveDirectory ||
-    d.archiveDirectory.split('/').includes('..')
-  )
-    throw Error(
-      'archiveDirectory: normalized absolute path with only A-Z a-z 0-9 . _ / - required'
-    );
   for (const k of ['container', 'imageRepository', 'diagnosticUnit'])
     text(d[k], k, /^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/);
+  // Copy appImage and webIdentity unchanged; do not turn an OCI manifest digest into a local image id or the reverse.
   for (const k of [
-    'expectedContainer',
-    'expectedImage',
     'configurationDigest',
-    'bindingDigest',
     'nanoHostDigest',
     'workerDigest',
+    'appImage',
+    'webIdentity',
   ])
     text(d[k], k);
-  for (const k of ['bindingRevision', 'minimumFreeBytes'])
-    if (!Number.isSafeInteger(d[k]) || d[k] < 1) throw Error(`${k}: positive integer required`);
   object(d.componentCommits, ['nanoHost', 'worker'], 'componentCommits');
   object(d.componentPaths, ['nanoHost', 'worker'], 'componentPaths');
   for (const k of ['nanoHost', 'worker']) {
@@ -211,17 +177,6 @@ export function validateParams(p) {
       d.componentPaths[k].some((v) => v.startsWith('/') || v.split('/').includes('..'))
     )
       throw Error('Component input paths required');
-  }
-  strings(d.workerAgents, 'workerAgents');
-  if (!d.workerAgents.length || new Set(d.workerAgents).size !== d.workerAgents.length)
-    throw Error('Unique Worker Agents required');
-  strings(d.protectedMetadataPaths, 'protectedMetadataPaths');
-  for (const v of d.protectedMetadataPaths) absolute(v, 'protected path');
-  if (!d.payloadDigests || Array.isArray(d.payloadDigests) || typeof d.payloadDigests !== 'object')
-    throw Error('payloadDigests required');
-  for (const [f, h] of Object.entries(d.payloadDigests)) {
-    absolute(f, 'payload path');
-    text(h, 'payload digest', /^[a-f0-9]{64}$/);
   }
   object(p.runtimes, RUNTIMES, 'runtimes');
   for (const r of RUNTIMES) {
@@ -236,64 +191,16 @@ export function validateParams(p) {
     if (!Number.isInteger(v.configurationVersion) || v.configurationVersion < 1)
       throw Error('configurationVersion required');
   }
-  if (
-    [...RUNTIMES.map((r) => p.runtimes[r].agentId), p.task?.agentId].some(
-      (id) => !d.workerAgents.includes(id)
-    )
-  )
-    throw Error('workerAgents must include every runtime and Task Agent; also declare Goal Agents');
   object(p.issue, ['repository', 'number', 'title', 'state'], 'issue');
-  object(
-    p.task,
-    [
-      'repository',
-      'issue',
-      'base',
-      'branch',
-      'agentId',
-      'allowedFiles',
-      'expectedPatch',
-      'decidingActorId',
-    ],
-    'task'
-  );
-  for (const v of [p.issue.repository, p.task.repository])
-    text(v, 'repository', /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/);
-  for (const n of [p.issue.number, p.task.issue])
-    if (!Number.isInteger(n) || n < 1) throw Error('Issue number required');
+  text(p.issue.repository, 'repository', /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/);
+  if (!Number.isInteger(p.issue.number) || p.issue.number < 1) throw Error('Issue number required');
   for (const k of ['title', 'state']) text(p.issue[k], k);
-  for (const k of ['base', 'branch', 'agentId', 'expectedPatch', 'decidingActorId'])
-    text(p.task[k], k);
-  if (p.task.branch === p.task.base) throw Error('Task branch must differ from base');
-  strings(p.task.allowedFiles, 'allowedFiles');
-  object(p.goal, ['intent', 'filename', 'decidingActorId', 'requiredContent'], 'goal');
-  for (const k of ['intent', 'filename', 'decidingActorId']) text(p.goal[k], k);
-  if (!p.goal.intent.includes(p.goal.filename))
-    throw Error('goal.intent must contain goal.filename exactly');
-  strings(p.goal.requiredContent, 'requiredContent');
-  object(p.external, ['executable', 'modelId', 'persona', 'goal', 'judgeFile'], 'external');
-  absolute(p.external.executable, 'external executable');
-  absolute(p.external.judgeFile, 'judgeFile');
-  for (const k of ['modelId', 'persona', 'goal']) text(p.external[k], k);
-  object(
-    p.bounds,
-    ['readAttempts', 'pollMs', 'observationMs', 'decisionMs', 'processMs'],
-    'bounds'
-  );
+  object(p.bounds, ['readAttempts', 'pollMs', 'observationMs', 'processMs'], 'bounds');
   for (const [k, v] of Object.entries(p.bounds))
     if (!Number.isInteger(v) || v < 1 || v > 3600000)
       throw Error(`${k}: bounded positive integer required`);
   if (p.bounds.readAttempts > 10) throw Error('readAttempts exceeds ten');
   return p;
-}
-/** Admit only the coordinator's accepted prior count and nullable reset reason for final summary. */
-export function validateSequence(sequence) {
-  object(sequence, ['priorCount', 'resetReason'], 'sequence');
-  noSecrets(sequence);
-  if (!Number.isInteger(sequence.priorCount) || sequence.priorCount < 0)
-    throw Error('priorCount required');
-  if (sequence.resetReason !== null) text(sequence.resetReason, 'resetReason');
-  return sequence;
 }
 /** Decode retained JSON without transport, interpretation or recovery. */
 export async function readJson(file) {
@@ -395,88 +302,4 @@ export async function files(dir) {
     else throw Error('Non-regular evidence refused');
   }
   return result.sort();
-}
-
-/** Validate the owner's payload-bound preview without changing its retained confirmation bytes. */
-export function workerPreparedMatches(v, target, configuration, imageDigest) {
-  const ref = (r) =>
-    r &&
-    typeof r.artifactId === 'string' &&
-    r.artifactId.length > 0 &&
-    r.artifactVersion === 1 &&
-    /^sha256:[a-f0-9]{64}$/.test(r.contentDigest);
-  const layout = v?.image?.storageLayout,
-    platform = v?.image?.platform,
-    defaults = v?.image?.environmentDefaults;
-  if (
-    !layout ||
-    !platform ||
-    typeof platform.os !== 'string' ||
-    !platform.os ||
-    typeof platform.architecture !== 'string' ||
-    !platform.architecture ||
-    ![layout.uid, layout.gid].every((n) => Number.isSafeInteger(n) && n >= 0) ||
-    ![layout.family, layout.version].every(
-      (value) => value === null || (typeof value === 'string' && value.length > 0)
-    ) ||
-    typeof layout.workingDirectory !== 'string' ||
-    !layout.workingDirectory.startsWith('/') ||
-    !Array.isArray(layout.targets) ||
-    !layout.targets.length ||
-    layout.targets.some((t) => typeof t.target !== 'string' || !t.target.startsWith('/')) ||
-    (defaults &&
-      (defaults.classification !== 'unadmitted' ||
-        !/^sha256:[a-f0-9]{64}$/.test(defaults.defaultsDigest) ||
-        !Array.isArray(defaults.names))) ||
-    !/^sha256:[a-f0-9]{64}$/.test(configuration?.expectedRevision) ||
-    !/^agents\/[A-Za-z0-9._-]+\.agent\.jsonc$/.test(configuration?.fileId) ||
-    !Number.isFinite(Date.parse(v?.preparedAt))
-  )
-    return false;
-  if (
-    !v ||
-    !ref(v.authoredCandidate) ||
-    !ref(v.resolvedCandidate) ||
-    canonical(v.target) !== canonical(target) ||
-    canonical(v.configuration) !== canonical(configuration) ||
-    v.image?.digest !== imageDigest ||
-    v.replaceNow !== null ||
-    !Array.isArray(v.affectedStorage) ||
-    v.affectedStorage.length !== 0 ||
-    typeof v.activationConfirmation !== 'string'
-  )
-    return false;
-  let bound;
-  try {
-    const prefix = 'activate-worker-environment:';
-    if (!v.activationConfirmation.startsWith(prefix)) return false;
-    bound = JSON.parse(v.activationConfirmation.slice(prefix.length));
-  } catch {
-    return false;
-  }
-  return (
-    canonical(bound) ===
-    canonical({
-      affectedStorage: [],
-      imageDigest,
-      defaultsDigest: v.image.environmentDefaults?.defaultsDigest ?? null,
-      configuration,
-      replaceNow: null,
-      resolvedCandidate: v.resolvedCandidate,
-      target,
-    })
-  );
-}
-
-/** Copy the exact prepared activation subject; the confirmation preview itself is never approval. */
-export function workerActivationInput(v, requestId) {
-  return {
-    requestId,
-    target: v.target,
-    configuration: v.configuration,
-    resolvedCandidate: v.resolvedCandidate,
-    affectedStorage: v.affectedStorage,
-    replaceNow: v.replaceNow,
-    confirmation: v.activationConfirmation,
-  };
 }

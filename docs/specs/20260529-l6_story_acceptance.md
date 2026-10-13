@@ -387,7 +387,7 @@ Story artifacts live under `tests/stories/`. The committed stories declare their
 
 The five former mechanical story proofs now run from the L3 and L4 entrypoints and gates owned by `docs/specs/20260529-test_strategy.md`. Their obsolete story documents and shared runner location have been removed.
 
-The remaining admitted stories have no per-story executable or prescribed actor path. The schema check still requires the previous section list, including `User-visible Steps`, until a later package changes the validator and the story files. `tests/support/release-round.mjs` still contains the exact-source image build and the container replacement over the existing Data Root. Stage-manager, actor, and judge separation remains accepted execution design. Friction scalars and retention sampling are not yet implemented. The story-run Collector is not yet implemented.
+The remaining admitted stories have no per-story executable or prescribed actor path. The schema check requires Intent, Starting World, Outcome Predicates, Perturbations, Integrity Invariants, and Failure Triage Notes. Setup, Required Opt-in Environment Variables, Evidence To Collect, and Cleanup may each appear once. The runner does not build an image or replace a container. Stage-manager, actor, and judge separation remains accepted execution design. Friction scalars and retention sampling are not yet implemented. The story-run Collector is not yet implemented.
 
 No new cancellation, compression, credential-override, restart, recovery, or backend-specific L6 harness is accepted by this specification. A confirmed real integration failure is fixed in product code and leaves L6 under Reduction Handoff.
 

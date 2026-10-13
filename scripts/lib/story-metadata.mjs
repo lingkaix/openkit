@@ -14,11 +14,11 @@ const allowedMetadataFields = new Set([
  * Required story body sections owned by `docs/specs/20260529-l6_story_acceptance.md`.
  */
 export const REQUIRED_STORY_SECTIONS = Object.freeze([
-  'Purpose',
-  'Preconditions',
-  'User-visible Steps',
-  'Expected Outcomes',
-  'Deterministic Assertions',
+  'Intent',
+  'Starting World',
+  'Outcome Predicates',
+  'Perturbations',
+  'Integrity Invariants',
   'Failure Triage Notes',
 ]);
 

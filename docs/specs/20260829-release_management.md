@@ -166,7 +166,7 @@ Retain one release-level header with the tag, the asset set, publication authori
 
 Outcome codes are P (pass), K (known defect), E (accepted external), N (new defect), T (environment or tool failure), and I (inconclusive). The maintained kit generates verdicts from retained product records. An independent check is required for a non-pass row and for a row the collector cannot decide. An L6 judge remains required for a catalog story. Do not add per-pass narrative review. Complete evidence stays private under Persistent Deployment Acceptance, including attribution, deciding records, and diagnostic coverage. The public record contains no host name, private path, Thread identifier, or transcript. The compact projection never replaces that evidence and never creates a product record owner.
 
-The current kit still writes one row per round for the old scenario set. That shape is current implementation, not the rule above.
+The current kit writes one aggregate row for the sixteen Worker-qualification cases. That shape is current implementation, not the rule above.
 
 ### Candidate CI And Tag Reuse
 
@@ -250,7 +250,7 @@ The GitHub Release prerelease state MUST agree with the tag, and its notes MUST 
 
 The operations-only Skill composition, executable preflight, packaging and local verification are implemented. This local change does not demonstrate release publication or live-client acceptance.
 
-The `.github/workflows/ci.yml` workflow implements tag preflight, L0-L3, L5, a catalog-derived image matrix, GHCR publication, anonymous `worker-common` inspection, and GitHub Release creation. The tag-only reuse steps in its `l0-l2` and `nano-core-e2e` jobs use `scripts/release-ci-reuse.mjs` for exact-commit candidate evidence reuse. Tag run 38093270321 on `v0.1.0-rc.3` completed successfully. That run reused candidate CI for the L0-L2 and L3 jobs. `scripts/release-product-inputs.mjs` still exists. It no longer has a release obligation, and a later tooling package removes it. The tag workflow builds release images on every tag push, so stable promotion without a rebuild is not implemented and must be implemented before any stable release. `tests/support/release-round.mjs` still performs the exact-source image build and the container replacement over the existing Data Root, and it still runs the old scenario rows. A later package removes that deploy path.
+The `.github/workflows/ci.yml` workflow implements tag preflight, L0-L3, L5, a catalog-derived image matrix, GHCR publication, anonymous `worker-common` inspection, and GitHub Release creation. The tag-only reuse steps in its `l0-l2` and `nano-core-e2e` jobs use `scripts/release-ci-reuse.mjs` for exact-commit candidate evidence reuse. Tag run 38093270321 on `v0.1.0-rc.3` completed successfully. That run reused candidate CI for the L0-L2 and L3 jobs. The tag workflow builds release images on every tag push, so stable promotion without a rebuild is not implemented and must be implemented before any stable release. The runner does not build an image or replace a container. The runner runs the Worker qualification groups.
 
 The current implementation removes package-version coupling, makes tag parsing lowercase-only, pins every release image base, packages the complete operations Skill including the administrator executable, separates digest candidates from tag promotion, serializes releases, preserves same-tag image identity, applies GitHub prerelease semantics, and performs post-publication verification.
 

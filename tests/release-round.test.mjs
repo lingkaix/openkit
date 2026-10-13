@@ -3,33 +3,15 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { bundle, parameters } from './fixtures/release-round/synthetic.mjs';
+import { classify, evaluate, summarize } from './support/release-round/evidence.mjs';
 import {
-  bundle,
-  end,
-  ok,
-  parameters,
-  preparedWorker,
-  start,
-  taskIntent,
-  workerBuild,
-} from './fixtures/release-round/synthetic.mjs';
-import {
-  allowedTaskIntent,
-  classify,
-  evaluate,
-  summarize,
-} from './support/release-round/evidence.mjs';
-import {
-  DeploymentRefused,
-  decide,
   defaults,
   InspectionRequired,
   prepare,
   RoundClient,
   round,
   runtimeGroup,
-  updateWorker,
 } from './support/release-round/live.mjs';
 import {
   canonical,
@@ -137,7 +119,7 @@ for (const [name, mutate] of [
   [
     'secret-shaped value',
     (p) => {
-      p.external.goal = 'Bearer exampleCredentialValue';
+      p.issue.title = 'Bearer exampleCredentialValue';
     },
   ],
   [
@@ -158,20 +140,6 @@ for (const [name, mutate] of [
     mutate(p);
     assert.throws(() => validateParams(p));
   });
-test('parameter validation requires the exact Goal filename in its intent', () => {
-  const p = parameters();
-  p.goal.filename = 'rc3-r1f-issue-116-acceptance.md';
-  p.goal.intent = 'Write rc3-r1-issue-116-acceptance.md as the acceptance-note Artifact.';
-  assert.throws(() => validateParams(p), {
-    message: 'goal.intent must contain goal.filename exactly',
-  });
-  p.goal.intent = 'Write RC3-R1F-ISSUE-116-ACCEPTANCE.MD as the acceptance-note Artifact.';
-  assert.throws(() => validateParams(p), {
-    message: 'goal.intent must contain goal.filename exactly',
-  });
-  p.goal.intent = `Write ${p.goal.filename} as the acceptance-note Artifact.`;
-  assert.equal(validateParams(p), p);
-});
 test('parameter validation refuses sequence in round parameters', () => {
   const p = { ...parameters(), sequence: { priorCount: 0, resetReason: null } };
   assert.throws(() => validateParams(p), /params: unknown key sequence/);
@@ -181,7 +149,110 @@ test('parameter validation admits round parameters without sequence', () => {
   delete p.sequence;
   assert.equal(validateParams(p), p);
 });
-for (const failed of ['open', 'wait', 'snapshot'])
+test('prepare refuses a parameter file without appImage or without webIdentity', async (t) => {
+  const parent = await temp(t);
+  const exec = async () => ({ exitCode: 0, stdout: parameters().checklistBlob, stderr: '' });
+  for (const key of ['appImage', 'webIdentity']) {
+    const p = parameters();
+    delete p.deployment[key];
+    const input = path.join(parent, `${key}.json`);
+    const dir = path.join(parent, key);
+    await save(input, p);
+    await assert.rejects(
+      prepare(input, dir, { exec, credential: 'synthetic-private-value' }),
+      new RegExp(`deployment: missing ${key}`)
+    );
+  }
+});
+test('prepare launches about:blank before any archive transfer or remote command', async (t) => {
+  const parent = await temp(t),
+    p = parameters(),
+    input = path.join(parent, 'params.json'),
+    dir = path.join(parent, 'round'),
+    calls = [];
+  await save(input, p);
+  await assert.rejects(
+    prepare(input, dir, {
+      credential: 'synthetic-private-value',
+      exec: async (exe, args) => {
+        calls.push([exe, args[0]]);
+        if (exe === 'agent-browser')
+          return { exitCode: 1, stdout: 'launch-stdout', stderr: 'launch-stderr' };
+        if (exe === 'git' && args[0] === 'archive')
+          await fs.writeFile(args[2].slice('--output='.length), 'synthetic exact source');
+        return {
+          exitCode: 0,
+          stdout:
+            args[0] === 'show'
+              ? '## First-Release Scenario Set\nsynthetic'
+              : args[0] === 'diff'
+                ? ''
+                : p.checklistBlob,
+          stderr: '',
+        };
+      },
+      ssh: async (_exe, args, options) => {
+        calls.push(['ssh', 'remote']);
+        const source = 'synthetic exact source';
+        return {
+          exitCode: 0,
+          stdout:
+            args.at(-1) === 'cat /etc/machine-id'
+              ? p.deployment.machineId
+              : JSON.stringify(JSON.parse(options.input).remotePath ? { sha256: sha(source) } : {}),
+          stderr: '',
+        };
+      },
+    })
+  );
+  assert.equal(
+    calls.some(([exe, arg]) => exe === 'git' && arg === 'archive'),
+    false
+  );
+  assert.equal(
+    calls.some(([exe]) => exe === 'scp' || exe === 'ssh'),
+    false
+  );
+  const retained = await readJson(path.join(dir, 'browser-preflight.json'));
+  assert.deepEqual(retained.commands[0].arguments, ['open', 'about:blank']);
+  assert.equal(retained.commands[0].exitCode, 1);
+  assert.equal(retained.commands[0].stdout, 'launch-stdout');
+  assert.equal(retained.commands[0].stderr, 'launch-stderr');
+});
+
+test('observe retains a non-inspection failure instead of marking only a timeout', async (t) => {
+  const p = parameters(),
+    client = new RoundClient(
+      p,
+      await temp(t),
+      {
+        ...defaults,
+        ssh: async () => ({ exitCode: 0, stdout: p.deployment.machineId, stderr: '' }),
+        cli: async (_exe, args) => {
+          const op = args[2];
+          const data =
+            op === 'thread.items'
+              ? { items: [], nextCursor: null }
+              : {
+                  thread: { id: 'thread-example' },
+                  turns: [],
+                  pendingRequests: [{ state: 'pending', requestId: 'request-example' }],
+                  artifacts: [],
+                  workStatus: { activeTurnStatus: 'idle' },
+                };
+          return { exitCode: 0, stdout: JSON.stringify({ ok: true, data }), stderr: '' };
+        },
+      },
+      ['synthetic-private-value']
+    );
+  client.phase = 'runtime';
+  client.owned.add('thread-example');
+  const result = await client.observe('thread-example');
+  assert.equal(result.timedOut, false);
+  assert.match(result.stop.error, /Unexpected runtime Pending Request/);
+});
+
+for (const failed of ['open'])
   test(`prepare refuses browser ${failed} failure and retains commands before closing`, async (t) => {
     const parent = await temp(t),
       p = parameters(),
@@ -196,22 +267,8 @@ for (const failed of ['open', 'wait', 'snapshot'])
         exec: async (exe, args, options) => {
           if (exe === 'agent-browser') {
             commands.push({ args, options });
-            return { exitCode: args[2] === failed ? 1 : 0, stdout: 'Sign in', stderr: '' };
+            return { exitCode: args[2] === failed ? 1 : 0, stdout: 'launch-stdout', stderr: '' };
           }
-          if (exe === p.external.executable) {
-            if (args[0] === 'exec')
-              await save(path.join(dir, 'preflight', 'mcp', '000001.json'), {
-                method: 'tools/list',
-                httpStatus: 200,
-                response: {
-                  result: {
-                    tools: ['guide', 'search', 'describe', 'call'].map((name) => ({ name })),
-                  },
-                },
-              });
-            return { exitCode: 0, stdout: 'guide search describe call', stderr: '' };
-          }
-          if (exe === 'scp') return { exitCode: 0, stdout: '', stderr: '' };
           assert.equal(exe, 'git');
           if (args[0] === 'archive') await fs.writeFile(args[2].slice('--output='.length), source);
           return {
@@ -234,13 +291,9 @@ for (const failed of ['open', 'wait', 'snapshot'])
           stderr: '',
         }),
       }),
-      /Rendered Web entry unavailable/
+      /Browser launch preflight failed/
     );
-    const expected = [
-      ['open', new URL('/settings', p.cli.origin).href],
-      ['wait', '--text', 'Sign in'],
-      ['snapshot'],
-    ].slice(0, ['open', 'wait', 'snapshot'].indexOf(failed) + 1);
+    const expected = [['open', 'about:blank']].slice(0, ['open'].indexOf(failed) + 1);
     expected.push(['close']);
     assert.deepEqual(
       commands.map((v) => v.args),
@@ -263,202 +316,6 @@ for (const failed of ['open', 'wait', 'snapshot'])
     await assert.rejects(fs.access(path.join(dir, 'prepare-complete.json')), /ENOENT/);
     await assert.rejects(fs.access(path.join(dir, 'round-start.json')), /ENOENT/);
   });
-test('prepare passes the exact unquoted SFTP scp destination', async (t) => {
-  const parent = await temp(t),
-    p = parameters(),
-    input = path.join(parent, 'params.json'),
-    dir = path.join(parent, 'round');
-  await save(input, p);
-  let archive, transferArgs;
-  const exec = async (exe, args) => {
-    if (exe === 'scp') {
-      transferArgs = args;
-      return { exitCode: 1, stdout: '', stderr: 'synthetic transfer stop' };
-    }
-    assert.equal(exe, 'git');
-    if (args[0] === 'archive') {
-      archive = args[2].slice('--output='.length);
-      await fs.writeFile(archive, 'synthetic exact source');
-    }
-    return {
-      exitCode: 0,
-      stdout:
-        args[0] === 'show'
-          ? '## First-Release Scenario Set\nsynthetic'
-          : args[0] === 'diff'
-            ? ''
-            : p.checklistBlob,
-      stderr: '',
-    };
-  };
-  await assert.rejects(
-    prepare(input, dir, {
-      exec,
-      credential: 'synthetic-private-value',
-      // Capacity inspection uses the SSH seam; no real host is contacted.
-      ssh: async (_exe, args) => ({
-        exitCode: 0,
-        stdout: args.at(-1) === 'cat /etc/machine-id' ? p.deployment.machineId : '{}',
-        stderr: '',
-      }),
-    }),
-    /Archive transfer failed/
-  );
-  assert.equal(typeof archive, 'string');
-  assert.deepEqual(transferArgs, [
-    '-o',
-    'BatchMode=yes',
-    archive,
-    `${p.deployment.sshAlias}:${p.deployment.archiveDirectory}/${p.roundId}-${p.candidateCommit}.tar`,
-  ]);
-});
-test('prepare forwards only the bridge evidence directory and phase through Codex MCP filtering', async (t) => {
-  const parent = await temp(t),
-    p = parameters(),
-    input = path.join(parent, 'params.json'),
-    dir = path.join(parent, 'round'),
-    fake = path.join(parent, 'codex.mjs'),
-    bridge = fileURLToPath(new URL('./support/release-round/live.mjs', import.meta.url));
-  p.external.executable = fake;
-  p.bounds.processMs = 5000;
-  await save(input, p);
-  // Model Codex's observed stdio inheritance rule before synthesizing tool visibility.
-  await fs.writeFile(
-    fake,
-    `#!${process.execPath}
-import assert from 'node:assert/strict';
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
-if (process.argv.includes('--version')) {
-  console.log('synthetic Codex environment-filter stand-in');
-} else {
-  const args = process.argv.slice(2), config = {};
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] !== '-c') continue;
-    const entry = args[++i], split = entry.indexOf('=');
-    config[entry.slice(0, split)] = JSON.parse(entry.slice(split + 1));
-  }
-  const prefix = 'mcp_servers.openkit.',
-    allowlist = ['HOME', 'LANG', 'LOGNAME', 'PATH', 'SHELL', 'TERM', 'TMPDIR', 'USER', '__CF_USER_TEXT_ENCODING'],
-    env = {};
-  for (const name of [...allowlist, ...(config[prefix + 'env_vars'] ?? [])])
-    if (process.env[name] !== undefined) env[name] = process.env[name];
-  Object.assign(env, config[prefix + 'env'] ?? {});
-  assert.equal(env.RELEASE_ROUND_BRIDGE, ${JSON.stringify(dir)}, 'MCP bridge start condition requires the evidence directory');
-  assert.equal(env.RELEASE_ROUND_BRIDGE_PHASE, 'preflight');
-  assert.equal(config[prefix + 'command'], ${JSON.stringify(process.execPath)});
-  assert.deepEqual(config[prefix + 'args'], [${JSON.stringify(bridge)}]);
-  assert.deepEqual(config[prefix + 'env_vars'], ['RELEASE_ROUND_BRIDGE', 'RELEASE_ROUND_BRIDGE_PHASE']);
-  assert.deepEqual(config[prefix + 'env'] ?? {}, {});
-  assert.equal(env.RELEASE_ROUND_UNRELATED, undefined);
-  const tools = ['guide', 'search', 'describe', 'call'];
-  const records = path.join(env.RELEASE_ROUND_BRIDGE, env.RELEASE_ROUND_BRIDGE_PHASE, 'mcp');
-  await fs.mkdir(records, { recursive: true });
-  await fs.writeFile(path.join(records, '000001.json'), JSON.stringify({
-    method: 'tools/list', httpStatus: 200, response: { result: { tools: tools.map(name => ({ name })) } }
-  }));
-  console.log(tools.join(' '));
-}
-`,
-    { mode: 0o700 }
-  );
-  const source = 'synthetic exact source';
-  let launches = 0;
-  const browserCommands = [];
-  await prepare(input, dir, {
-    credential: 'synthetic-private-value',
-    exec: async (exe, args, options) => {
-      if (exe === fake) {
-        const result = await defaults.exec(exe, args, {
-          ...options,
-          ...(args[0] === 'exec'
-            ? { env: { ...options.env, RELEASE_ROUND_UNRELATED: 'synthetic-unrelated' } }
-            : {}),
-        });
-        assert.equal(result.exitCode, 0, result.stderr);
-        if (args[0] === 'exec') launches++;
-        return result;
-      }
-      if (exe === 'scp') return { exitCode: 0, stdout: '', stderr: '' };
-      if (exe === 'agent-browser') {
-        browserCommands.push(args);
-        return { exitCode: 0, stdout: 'Sign in', stderr: '' };
-      }
-      assert.equal(exe, 'git');
-      if (args[0] === 'archive') await fs.writeFile(args[2].slice('--output='.length), source);
-      return {
-        exitCode: 0,
-        stdout:
-          args[0] === 'show'
-            ? '## First-Release Scenario Set\nsynthetic'
-            : args[0] === 'diff'
-              ? ''
-              : p.checklistBlob,
-        stderr: '',
-      };
-    },
-    // Reach preflight through prepare without a real archive transfer or host.
-    ssh: async (_exe, args, options) => ({
-      exitCode: 0,
-      stdout:
-        args.at(-1) === 'cat /etc/machine-id'
-          ? p.deployment.machineId
-          : JSON.stringify(JSON.parse(options.input).remotePath ? { sha256: sha(source) } : {}),
-      stderr: '',
-    }),
-  });
-  assert.equal(launches, 1);
-  assert.deepEqual(browserCommands, [
-    ['--session', `preflight-${p.roundId}`, 'open', new URL('/settings', p.cli.origin).href],
-    ['--session', `preflight-${p.roundId}`, 'wait', '--text', 'Sign in'],
-    ['--session', `preflight-${p.roundId}`, 'snapshot'],
-    ['--session', `preflight-${p.roundId}`, 'close'],
-  ]);
-  assert.deepEqual(
-    (await readJson(path.join(dir, 'browser-preflight.json'))).commands.map((v) => v.exitCode),
-    [0, 0, 0, 0]
-  );
-  assert.equal((await readJson(path.join(dir, 'preflight-receipt.json'))).passed, true);
-  assert.equal(
-    typeof (await readJson(path.join(dir, 'prepare-complete.json'))).runnerSha256,
-    'string'
-  );
-});
-test('parameter validation refuses unsafe or non-normalized archive directories', () => {
-  for (const archiveDirectory of [
-    'relative/archive',
-    '/srv/../archive',
-    '/srv/..',
-    '/srv/./archive',
-    '/srv//archive',
-    '//srv/archive',
-    '/srv/archive dir',
-    '/srv/archive\tdata',
-    '/srv/archive\ndata',
-    "/srv/archive'dir",
-    '/srv/archive"dir',
-    '/srv/archive*',
-    '/srv/archive?',
-    '/srv/archive[1]',
-    '/srv/archive;command',
-    '/srv/archive$(command)',
-    '/srv/archive`command`',
-    '/srv/archive&command',
-    '/srv/archive|command',
-    '/srv/archive>file',
-    '/srv/archive\\dir',
-    '/srv/archivé',
-  ]) {
-    const p = parameters();
-    p.deployment.archiveDirectory = archiveDirectory;
-    assert.throws(() => validateParams(p), /archiveDirectory/, archiveDirectory);
-  }
-  for (const archiveDirectory of ['/', '/srv/Release_1.2/archive-dir', '/srv/.archive..dir']) {
-    const p = parameters();
-    p.deployment.archiveDirectory = archiveDirectory;
-    assert.equal(validateParams(p), p);
-  }
-});
 test('prepare refuses an existing directory before any effect', async (t) => {
   const dir = await temp(t),
     f = path.join(dir, 'input.json');
@@ -531,58 +388,9 @@ test('read retries preserve every failure within the bound', async (t) => {
     },
     ['synthetic-private-value']
   );
-  assert.equal((await client.call('workspace.read', { workspaceId: p.workspaceId })).ok, true);
+  assert.equal((await client.call('catalog.mcp-list', { workspaceId: p.workspaceId })).ok, true);
   assert.equal(n, 2);
   assert((await fs.readdir(path.join(dir, 'calls'))).some((v) => v.includes('failure-0')));
-});
-test('exact Task Pending Request grant refuses changed branch and digest', () => {
-  const p = parameters(),
-    q = taskIntent(p, 'create_branch', {
-      owner: 'example',
-      repo: 'project',
-      branch: 'wrong-example',
-      from_branch: 'main',
-    });
-  assert.equal(allowedTaskIntent(q, p), false);
-  q.approvalEffect.detail.arguments.branch = p.task.branch;
-  assert.equal(allowedTaskIntent(q, p), false);
-});
-test('pending decision timeout performs no grant', async (t) => {
-  const dir = await temp(t),
-    p = parameters();
-  let grants = 0,
-    time = 0;
-  const client = new RoundClient(
-    p,
-    dir,
-    {
-      ...defaults,
-      now: () => new Date(time).toISOString(),
-      sleep: async (ms) => {
-        time += ms;
-      },
-      cli: async () => {
-        grants++;
-        throw Error('unexpected CLI');
-      },
-    },
-    []
-  );
-  client.phase = 'task';
-  await assert.rejects(
-    client.waitDecisions('thread-example-task', {
-      pendingRequests: [
-        taskIntent(p, 'create_branch', {
-          owner: 'example',
-          repo: 'project',
-          branch: p.task.branch,
-          from_branch: p.task.base,
-        }),
-      ],
-    }),
-    /timeout/
-  );
-  assert.equal(grants, 0);
 });
 test('missing adjudication leaves the round unclassified; known linkage is exact', () => {
   const b = bundle();
@@ -590,8 +398,6 @@ test('missing adjudication leaves the round unclassified; known linkage is exact
   const r = evaluate(b, parameters()),
     s = classify(r, parameters());
   assert.equal(s.classified, false);
-  assert.equal(s.consecutive, null);
-  assert.equal(classify(r, parameters(), [], { priorCount: 2, resetReason: null }).consecutive, 0);
   assert.throws(
     () =>
       classify(r, parameters(), [
@@ -604,7 +410,12 @@ test('adjudication for a P row is refused', () => {
   assert.throws(
     () =>
       classify(evaluate(bundle(), parameters()), parameters(), [
-        { scenario: 'Chat', code: 'E', reference: 'example-boundary', checker: 'example-checker' },
+        {
+          scenario: 'codex.A',
+          code: 'E',
+          reference: 'example-boundary',
+          checker: 'example-checker',
+        },
       ]),
     /P or unknown/
   );
@@ -622,10 +433,9 @@ test('observed failure, missing evidence and timeout remain distinguishable', ()
     evaluate(b, parameters()).rows.find((r) => r.scenario === 'pi.C').mechanicalCode,
     'I'
   );
-  b.external.receipt.timedOut = true;
-  b.external.receipt.exitCode = null;
+  b.runtimes.opencode.steps[0].turn.status = 'timeout';
   assert.equal(
-    evaluate(b, parameters()).rows.find((r) => r.scenario === 'External').actualStatus,
+    evaluate(b, parameters()).rows.find((r) => r.scenario === 'opencode.A').actualStatus,
     'timeout'
   );
 });
@@ -634,7 +444,7 @@ test('offline summarize produces all seven compact columns and deterministic man
     p = parameters();
   await summaryFixture(dir, p);
   const s = await summarize(dir);
-  assert.equal(s.counts.successful, 21);
+  assert.equal(s.counts.successful, 16);
   const row = await fs.readFile(path.join(dir, 'row.md'), 'utf8');
   assert.equal(row.split('\n')[2].split(' | ').length, 7);
   const again = await summarize(dir);
@@ -653,145 +463,15 @@ async function summaryFixture(dir, p, b = bundle(p)) {
     runnerSha256: b.attribution.runnerSha256,
     instrumentFiles: entries,
     checklistBlob: p.checklistBlob,
-    checklistSectionSha256: sha('example'),
   });
-  await save(path.join(dir, 'checklist-section.json'), { text: 'example' });
   await save(path.join(dir, 'round.json'), b);
 }
-
-test('summarize without sequence states no consecutive count', async (t) => {
-  const dir = await temp(t),
-    p = parameters();
-  await summaryFixture(dir, p);
-  const result = await summarize(dir);
-  assert.equal(result.counts.successful, 21);
-  assert.equal(result.complete, true);
-  assert.equal(result.clean, true);
-  assert.equal(result.consecutive, null);
-  assert.equal(result.sequence, null);
-  assert.equal((await readJson(path.join(dir, 'summary.json'))).consecutive, null);
-  assert.match(await fs.readFile(path.join(dir, 'row.md'), 'utf8'), /consecutive=not supplied/);
-});
-for (const [name, sequence, nonClean, expected] of [
-  ['clean', { priorCount: 4, resetReason: null }, false, 5],
-  ['non-clean', { priorCount: 4, resetReason: null }, true, 0],
-  ['reset', { priorCount: 4, resetReason: '/example/private/reset' }, false, 1],
-])
-  test(`summarize with sequence applies the ${name} formula and pins its input`, async (t) => {
-    const parent = await temp(t),
-      dir = path.join(parent, 'round'),
-      p = parameters(),
-      b = bundle(p),
-      sequenceFile = path.join(parent, 'sequence.json'),
-      adjudicationsFile = path.join(parent, 'checks.json');
-    await fs.mkdir(dir);
-    if (nonClean) b.runtimes.pi.steps[0].itemCoverage.items[0].text = 'Refused';
-    await summaryFixture(dir, p, b);
-    await save(sequenceFile, sequence);
-    await save(
-      adjudicationsFile,
-      nonClean
-        ? [{ scenario: 'pi.A', code: 'N', reference: 'example-defect', checker: 'example-checker' }]
-        : []
-    );
-    const result = await summarize(dir, { sequenceFile, adjudicationsFile });
-    assert.equal(result.consecutive, expected);
-    assert.equal(result.clean, !nonClean);
-    assert.deepEqual(result.sequence, sequence);
-    assert.deepEqual((await readJson(path.join(dir, 'summary.json'))).sequence, sequence);
-    assert.deepEqual(
-      await fs.readFile(path.join(dir, 'sequence.json')),
-      await fs.readFile(sequenceFile)
-    );
-    const manifest = await readJson(path.join(dir, 'manifest.json'));
-    assert.equal(
-      manifest.entries.find((v) => v.file === 'sequence.json').sha256,
-      sha(await fs.readFile(sequenceFile))
-    );
-    const row = await fs.readFile(path.join(dir, 'row.md'), 'utf8');
-    assert.match(row, new RegExp(`consecutive=${expected};`));
-    if (sequence.resetReason) {
-      assert.match(row, /reset=declared; details=summary/);
-      assert.equal(row.includes('/example/private/reset'), false);
-    }
-  });
-
-test('summarize changes the sequence on retained evidence without rerunning the round', async (t) => {
-  const parent = await temp(t),
-    dir = path.join(parent, 'round'),
-    p = parameters(),
-    sequenceFile = path.join(parent, 'sequence.json');
-  await fs.mkdir(dir);
-  await summaryFixture(dir, p);
-  const original = await fs.readFile(path.join(dir, 'round.json'));
-  await save(sequenceFile, { priorCount: 1, resetReason: null });
-  assert.equal((await summarize(dir, { sequenceFile })).consecutive, 2);
-  const first = await readJson(path.join(dir, 'manifest.json'));
-  await save(sequenceFile, { priorCount: 0, resetReason: null }, [], false);
-  assert.equal((await summarize(dir, { sequenceFile })).consecutive, 1);
-  const second = await readJson(path.join(dir, 'manifest.json'));
-  assert.notEqual(first.sha256, second.sha256);
-  assert.equal(second.entries.filter((v) => v.file === 'sequence.json').length, 1);
-  assert.equal(
-    second.entries.find((v) => v.file === 'sequence.json').sha256,
-    sha(await fs.readFile(sequenceFile))
-  );
-  assert.equal((await summarize(dir)).consecutive, null);
-  assert.match(await fs.readFile(path.join(dir, 'row.md'), 'utf8'), /consecutive=not supplied/);
-  assert.deepEqual(await fs.readFile(path.join(dir, 'round.json')), original);
-});
-
-test('summarize refuses invalid private sequence inputs before derived evidence', async (t) => {
-  const parent = await temp(t),
-    dir = path.join(parent, 'round'),
-    p = parameters(),
-    sequenceFile = path.join(parent, 'sequence.json');
-  await fs.mkdir(dir);
-  await summaryFixture(dir, p);
-  for (const sequence of [
-    null,
-    [],
-    {},
-    { priorCount: 0 },
-    { resetReason: null },
-    { priorCount: 0, resetReason: null, extra: true },
-    ...[-1, 0.5, '0'].map((priorCount) => ({ priorCount, resetReason: null })),
-    ...['', 1, 'line\nbreak', 'Bearer exampleCredentialValue'].map((resetReason) => ({
-      priorCount: 0,
-      resetReason,
-    })),
-  ]) {
-    await fs.writeFile(sequenceFile, JSON.stringify(sequence), { mode: 0o600 });
-    await assert.rejects(summarize(dir, { sequenceFile }));
-    await assert.rejects(fs.access(path.join(dir, 'summary.json')), /ENOENT/);
-    await assert.rejects(fs.access(path.join(dir, 'sequence.json')), /ENOENT/);
-  }
-});
 
 test('summarize refuses retained parameters containing the earlier runner sequence', async (t) => {
   const dir = await temp(t),
     p = { ...parameters(), sequence: { priorCount: 0, resetReason: null } };
   await summaryFixture(dir, p);
   await assert.rejects(summarize(dir), /params: unknown key sequence/);
-});
-
-test('summarize CLI admits only the final sequence input', async (t) => {
-  const dir = await temp(t),
-    p = parameters(),
-    sequenceFile = path.join(dir, 'sequence.json');
-  await summaryFixture(dir, p);
-  await save(sequenceFile, { priorCount: 1, resetReason: null });
-  const result = await defaults.exec(process.execPath, [
-    fileURLToPath(new URL('./support/release-round.mjs', import.meta.url)),
-    'summarize',
-    '--evidence-dir',
-    dir,
-    '--sequence',
-    sequenceFile,
-  ]);
-  assert.equal(result.exitCode, 0, result.stderr);
-  assert.equal(JSON.parse(result.stdout).clean, true);
-  assert.equal((await readJson(path.join(dir, 'summary.json'))).consecutive, 2);
 });
 
 async function pinnedFixture(dir, p) {
@@ -814,311 +494,6 @@ async function pinnedFixture(dir, p) {
     runnerSha256: sha(canonical(entries)),
   });
 }
-/** Model the distinct Goal and dashboard projections observed in rc3-r1f. */
-function goalPlanProjections(p) {
-  const goalId = 'goal-example',
-    planVersionId = 'plan-example',
-    requestId = 'request-example-plan',
-    commitment = {
-      intentBasis: { revision: 0, intent: p.goal.intent },
-      cards: [{ cardId: 'card-example', revision: 0, description: 'Example note', priority: 0 }],
-      permittedAdjustments: 'Wording only',
-      completionEvidence: ['One readable note Artifact'],
-      boundaries: 'No GitHub writes',
-    },
-    bytes = JSON.stringify(commitment),
-    exactIntent = {
-      operation: 'goal.plan.approve',
-      goalId,
-      planVersionId,
-      digest: digest(bytes),
-      bytes,
-    },
-    request = {
-      requestId,
-      operation: 'goal.plan.approve',
-      state: 'pending',
-      resolution: null,
-      reason: null,
-      decidingActorId: null,
-      claim: 'unclaimed',
-      disposition: null,
-      exactIntent,
-    },
-    early = {
-      goal: { goalId, intentRevision: 0, proposedPlanVersionId: null, activePlanVersionId: null },
-      cards: commitment.cards,
-      versions: [],
-      tasks: [],
-      requests: [],
-    };
-  return {
-    early,
-    proposed: {
-      ...early,
-      goal: { ...early.goal, proposedPlanVersionId: planVersionId },
-      versions: [
-        {
-          planVersionId,
-          goalId,
-          sequence: 1,
-          bytes,
-          digest: digest(bytes),
-          commitment,
-          pendingRequestId: requestId,
-        },
-      ],
-      requests: [request],
-    },
-    dashboard: {
-      pendingRequests: [
-        {
-          requestId,
-          approvalEffect: {
-            status: 'available',
-            summary: 'Approve Goal Plan',
-            detail: JSON.stringify(exactIntent),
-          },
-          canRespond: true,
-          state: 'pending',
-          resolution: null,
-          ending: null,
-          disposition: null,
-        },
-      ],
-    },
-  };
-}
-test('Goal capture refreshes a read that preceded the dashboard Plan approval before deciding', async (t) => {
-  const dir = await temp(t),
-    p = parameters(),
-    { early, proposed, dashboard } = goalPlanProjections(p),
-    request = proposed.requests[0],
-    tid = 'thread-example-goal',
-    operations = [],
-    sleeps = [];
-  await pinnedFixture(dir, p);
-  let time = Date.parse('2026-01-01T00:00:00Z'),
-    goalReads = 0,
-    captured,
-    result,
-    decisionError = null;
-  const seams = {
-    credential: 'synthetic-private-value',
-    now: () => new Date(time).toISOString(),
-    ssh: async () => ({ exitCode: 0, stdout: p.deployment.machineId }),
-    cli: async (_exe, args, options) => {
-      const op = args[2],
-        input = JSON.parse(options.input);
-      operations.push(op);
-      assert.equal(input.threadId, tid);
-      let data;
-      if (op === 'goal.read') {
-        assert.equal(input.goalId, early.goal.goalId);
-        goalReads++;
-        data = captured || goalReads > 2 ? proposed : early;
-      } else if (op === 'thread.dashboard') data = dashboard;
-      else {
-        assert.equal(op, 'goal.plan.approve');
-        assert.equal(input.pendingRequestId, request.requestId);
-        assert.equal(input.decision, 'granted');
-        data = { ...request, state: 'resolved', resolution: 'granted' };
-      }
-      return { exitCode: 0, stdout: JSON.stringify(ok(data)), stderr: '' };
-    },
-    sleep: async (ms) => {
-      sleeps.push(ms);
-      time += ms;
-      try {
-        captured = await readJson(path.join(dir, 'pending', `${sha(request.requestId)}.json`));
-      } catch (e) {
-        if (e.code === 'ENOENT') return;
-        throw e;
-      }
-      result = await decide(dir, request.requestId, 'grant', seams);
-    },
-  };
-  const client = new RoundClient(p, dir, { ...defaults, ...seams }, []);
-  client.phase = 'goal';
-  await client.own(tid);
-  const goal = await client.call('goal.read', {
-      workspaceId: p.workspaceId,
-      threadId: tid,
-      goalId: early.goal.goalId,
-    }),
-    board = await client.call('thread.dashboard', { workspaceId: p.workspaceId, threadId: tid });
-  await client.waitDecisions(tid, board.data, goal).catch((e) => {
-    decisionError = e.message;
-  });
-  assert.deepEqual(
-    { hasExactIntent: !!captured?.request.exactIntent, decisionError },
-    { hasExactIntent: true, decisionError: null }
-  );
-  assert.deepEqual(captured.request, request);
-  assert.deepEqual(captured.goal, proposed);
-  assert.equal(result.ok, true);
-  assert.deepEqual(operations, [
-    'goal.read',
-    'thread.dashboard',
-    'goal.read',
-    'goal.read',
-    'goal.read',
-    'goal.plan.approve',
-  ]);
-  assert.deepEqual(sleeps, [p.bounds.pollMs, p.bounds.pollMs]);
-  assert.equal(
-    captured.expiresAt,
-    new Date(time - p.bounds.pollMs + p.bounds.decisionMs).toISOString()
-  );
-  await assert.rejects(decide(dir, request.requestId, 'grant', seams), /EEXIST/);
-  assert.equal(operations.filter((op) => op === 'goal.plan.approve').length, 1);
-});
-for (const mode of ['missing', 'refused', 'different request', 'missing exact intent'])
-  test(`Goal capture fails closed for ${mode} without a dashboard fallback`, async (t) => {
-    const dir = await temp(t),
-      p = parameters(),
-      { early, proposed, dashboard } = goalPlanProjections(p),
-      sleeps = [];
-    let reads = 0;
-    const client = new RoundClient(
-      p,
-      dir,
-      {
-        ...defaults,
-        ssh: async () => ({ exitCode: 0, stdout: p.deployment.machineId }),
-        sleep: async (ms) => {
-          sleeps.push(ms);
-        },
-        cli: async (_exe, args) => {
-          assert.equal(args[2], 'goal.read', 'capture performs reads only');
-          reads++;
-          const data = structuredClone(mode === 'missing' ? early : proposed);
-          if (mode === 'different request') data.requests[0].requestId = 'another-example-request';
-          if (mode === 'missing exact intent') delete data.requests[0].exactIntent;
-          const response =
-            mode === 'refused' ? { ok: false, error: { code: 'conflict' } } : ok(data);
-          return { exitCode: 0, stdout: JSON.stringify(response), stderr: '' };
-        },
-      },
-      []
-    );
-    client.phase = 'goal';
-    await client.own('thread-example-goal');
-    await assert.rejects(
-      client.waitDecisions('thread-example-goal', dashboard, ok(early)),
-      /Goal Pending Request exact intent unavailable within bounded Goal reads; no grant submitted/
-    );
-    const expectedReads = mode === 'missing exact intent' ? 1 : p.bounds.readAttempts;
-    assert.equal(reads, expectedReads);
-    assert.deepEqual(sleeps, Array(expectedReads - 1).fill(p.bounds.pollMs));
-    await assert.rejects(fs.access(path.join(dir, 'pending')), { code: 'ENOENT' });
-    await assert.rejects(fs.access(path.join(dir, 'decisions')), { code: 'ENOENT' });
-  });
-test('Goal capture reuses the complete Goal read already in hand', async (t) => {
-  const dir = await temp(t),
-    p = parameters(),
-    { proposed, dashboard } = goalPlanProjections(p),
-    key = sha(proposed.requests[0].requestId),
-    client = new RoundClient(
-      p,
-      dir,
-      {
-        ...defaults,
-        cli: async () => {
-          throw Error('Unexpected extra read');
-        },
-        sleep: async () => {
-          throw Error('Unexpected wait');
-        },
-      },
-      []
-    );
-  client.phase = 'goal';
-  await save(path.join(dir, 'decisions', `${key}-result.json`), { ok: true });
-  await client.waitDecisions('thread-example-goal', dashboard, ok(proposed));
-  const captured = await readJson(path.join(dir, 'pending', `${key}.json`));
-  assert.deepEqual(captured.request, proposed.requests[0]);
-  assert.deepEqual(captured.goal, proposed);
-});
-for (const [mode, message] of [
-  ['resolved', 'Pending Request no longer pending'],
-  ['changed', 'Pending exact intent changed'],
-])
-  test(`Goal decide distinguishes ${mode} requests without a mutation`, async (t) => {
-    const dir = await temp(t),
-      p = parameters(),
-      { proposed } = goalPlanProjections(p),
-      request = proposed.requests[0],
-      current = structuredClone(proposed),
-      tid = 'thread-example-goal';
-    if (mode === 'resolved') current.requests[0].state = 'resolved';
-    else current.requests[0].exactIntent.bytes = 'changed';
-    await pinnedFixture(dir, p);
-    await save(path.join(dir, 'owned', 'example.json'), { threadId: tid });
-    await save(path.join(dir, 'pending', `${sha(request.requestId)}.json`), {
-      request,
-      goal: proposed,
-      phase: 'goal',
-      threadId: tid,
-      expiresAt: '2026-01-01T01:00:00Z',
-    });
-    let reads = 0;
-    await assert.rejects(
-      decide(dir, request.requestId, 'grant', {
-        credential: 'synthetic-private-value',
-        now: () => '2026-01-01T00:00:00Z',
-        ssh: async () => ({ exitCode: 0, stdout: p.deployment.machineId }),
-        cli: async (_exe, args) => {
-          assert.equal(args[2], 'goal.read', 'refused decision performs reads only');
-          reads++;
-          return { exitCode: 0, stdout: JSON.stringify(ok(current)), stderr: '' };
-        },
-      }),
-      { message }
-    );
-    assert.equal(reads, 1);
-    await assert.rejects(fs.access(path.join(dir, 'decisions')), { code: 'ENOENT' });
-  });
-test('decide refuses the actual wrong-intent request without a mutation', async (t) => {
-  const dir = await temp(t),
-    p = parameters(),
-    q = taskIntent(p, 'create_branch', {
-      owner: 'example',
-      repo: 'project',
-      branch: 'wrong-example',
-      from_branch: p.task.base,
-    }),
-    tid = 'thread-example-task';
-  await pinnedFixture(dir, p);
-  await save(path.join(dir, 'owned', 'example.json'), { threadId: tid });
-  await save(path.join(dir, 'pending', `${sha(q.requestId)}.json`), {
-    request: q,
-    phase: 'task',
-    threadId: tid,
-    expiresAt: '2026-01-01T01:00:00Z',
-  });
-  let submissions = 0;
-  await assert.rejects(
-    decide(dir, q.requestId, 'grant', {
-      credential: 'synthetic-private-value',
-      now: () => '2026-01-01T00:00:00Z',
-      ssh: async () => ({ exitCode: 0, stdout: p.deployment.machineId }),
-      cli: async (_exe, args) => {
-        if (args[2] !== 'thread.dashboard') {
-          submissions++;
-          throw Error('Unexpected mutation');
-        }
-        return {
-          exitCode: 0,
-          stdout: JSON.stringify({ ok: true, data: { pendingRequests: [q] } }),
-          stderr: '',
-        };
-      },
-    }),
-    /Grant intent differs/
-  );
-  assert.equal(submissions, 0);
-});
 test('Item completeness uses the actual operation shape and refuses a partial log', async (t) => {
   const dir = await temp(t),
     p = parameters();
@@ -1140,7 +515,7 @@ test('Item completeness uses the actual operation shape and refuses a partial lo
     },
     []
   );
-  client.phase = 'task';
+  client.phase = 'runtime';
   await client.own('thread-example');
   await assert.rejects(
     client.page('thread.items', { workspaceId: p.workspaceId, threadId: 'thread-example' }),
@@ -1164,14 +539,8 @@ test('round seals a lost submission and refuses replay before another effect', a
   await pinnedFixture(dir, p);
   const receipt = JSON.parse(await fs.readFile(path.join(dir, 'prepare.json'), 'utf8'));
   await save(path.join(dir, 'prepare-complete.json'), { runnerSha256: receipt.runnerSha256 });
-  await save(path.join(dir, 'preflight-receipt.json'), { passed: true });
-  await save(path.join(dir, 'archive.json'), {
-    candidateCommit: p.candidateCommit,
-    sha256: b.attribution.archiveSha256,
-  });
-  await save(path.join(dir, 'component-attribution.json'), b.deployment.components);
-  let submissions = 0,
-    targets = 0;
+  await save(path.join(dir, 'component-attribution.json'), b.components);
+  let submissions = 0;
   const envelope = (data) => ({
     exitCode: 0,
     stdout: JSON.stringify({ ok: true, data }),
@@ -1180,35 +549,18 @@ test('round seals a lost submission and refuses replay before another effect', a
   const seams = {
     credential: 'synthetic-private-value',
     now: () => '2026-01-01T00:00:00Z',
-    fetch: async () => new Response('{"status":"ok"}'),
-    ssh: async (_exe, args) => {
-      if (args.at(-1) === 'cat /etc/machine-id')
-        return { exitCode: 0, stdout: p.deployment.machineId, stderr: '' };
-      const code = args.at(-1);
-      const data = code.includes("'buildExitCode'") ? b.deployment.build : b.deployment.replace;
-      return { exitCode: 0, stdout: JSON.stringify(data), stderr: '' };
-    },
-    exec: async (exe) => ({
+    ssh: async () => ({ exitCode: 0, stdout: p.deployment.machineId, stderr: '' }),
+    exec: async () => ({
       exitCode: 0,
-      stdout: exe === 'gh' ? `HTTP/2 200\n\n${JSON.stringify(p.issue)}` : 'Sign in',
+      stdout: `HTTP/2 200\n\n${JSON.stringify(p.issue)}`,
       stderr: '',
     }),
     cli: async (_exe, args) => {
       switch (args[2]) {
-        case 'worker.list':
-        case 'scheduler.list':
-          return envelope({ items: [] });
         case 'catalog.mcp-list':
-          return envelope(b.deployment.public.binding.data);
+          return envelope(b.binding.data);
         case 'nanohost.runtime-target':
-          return envelope({
-            ...b.deployment.public['target-1'].data,
-            connectionGeneration: ++targets === 1 ? 1 : 2,
-          });
-        case 'diagnostics.app':
-          return envelope(b.deployment.public.diagnostics.data);
-        case 'workspace.read':
-          return envelope({ id: p.workspaceId });
+          return envelope({ ready: true });
         case 'thread.create':
           return envelope({ id: 'thread-example-live' });
         case 'thread.dashboard':
@@ -1217,7 +569,7 @@ test('round seals a lost submission and refuses replay before another effect', a
           submissions++;
           return { exitCode: 0, stdout: '', stderr: '' };
         default:
-          throw Error('Unexpected operation');
+          throw Error(`Unexpected operation ${args[2]}`);
       }
     },
   };
@@ -1229,25 +581,6 @@ test('round seals a lost submission and refuses replay before another effect', a
   );
   await assert.rejects(round(dir, seams), /EEXIST/);
   assert.equal(submissions, 1);
-});
-
-test('partial deciding collections stay I rather than a guessed product failure', () => {
-  for (const scenario of ['Chat', 'Task', 'Goal', 'External']) {
-    const b = bundle();
-    const items =
-      scenario === 'Chat'
-        ? b.chat.evidence.items
-        : scenario === 'Task'
-          ? b.task.last.items
-          : scenario === 'Goal'
-            ? b.goal.evidence.items
-            : b.external.independent.items;
-    items.data.nextCursor = 'example-partial';
-    assert.equal(
-      evaluate(b, parameters()).rows.find((r) => r.scenario === scenario).mechanicalCode,
-      'I'
-    );
-  }
 });
 
 test('an ok envelope without mutation identity is ambiguous and never retried', async (t) => {
@@ -1279,81 +612,18 @@ test('an ok envelope without mutation identity is ambiguous and never retried', 
   assert.equal(n, 1);
 });
 
-test('operator can grant three exact string-shaped intents but cannot grant a second PR', async (t) => {
-  const dir = await temp(t),
-    p = parameters(),
-    tid = 'thread-example-task';
-  await pinnedFixture(dir, p);
-  await save(path.join(dir, 'owned', 'example.json'), { threadId: tid });
-  const base = { owner: 'example', repo: 'project' },
-    requests = [
-      taskIntent(p, 'create_branch', { ...base, branch: p.task.branch, from_branch: p.task.base }),
-      taskIntent(p, 'push_files', {
-        ...base,
-        branch: p.task.branch,
-        files: [{ path: 'example.md', content: 'Example fix' }],
-        message: 'Example fix',
-      }),
-      taskIntent(p, 'create_pull_request', {
-        ...base,
-        head: p.task.branch,
-        base: p.task.base,
-        title: 'Example fix',
-        draft: false,
-      }),
-    ];
-  let current,
-    submissions = 0;
-  const seams = {
-    credential: 'synthetic-private-value',
-    now: () => '2026-01-01T00:00:00Z',
-    ssh: async () => ({ exitCode: 0, stdout: p.deployment.machineId }),
-    cli: async (_exe, args) => {
-      const data =
-        args[2] === 'thread.dashboard'
-          ? { pendingRequests: [current] }
-          : (() => {
-              submissions++;
-              return { ...current, state: 'resolved', resolution: 'granted' };
-            })();
-      return { exitCode: 0, stdout: JSON.stringify({ ok: true, data }), stderr: '' };
-    },
-  };
-  for (const q of requests) {
-    q.approvalEffect.detail = JSON.stringify(q.approvalEffect.detail);
-    current = q;
-    await save(path.join(dir, 'pending', `${sha(q.requestId)}.json`), {
-      request: q,
-      phase: 'task',
-      threadId: tid,
-      expiresAt: '2026-01-01T01:00:00Z',
-    });
-    assert.equal((await decide(dir, q.requestId, 'grant', seams)).ok, true);
-  }
-  current = { ...requests[2], requestId: 'request-example-second-pr' };
-  await save(path.join(dir, 'pending', `${sha(current.requestId)}.json`), {
-    request: current,
-    phase: 'task',
-    threadId: tid,
-    expiresAt: '2026-01-01T01:00:00Z',
-  });
-  await assert.rejects(decide(dir, current.requestId, 'grant', seams), /already decided/);
-  assert.equal(submissions, 3);
-});
-
 test('public row hashes private revision text and uses neutral reset and unavailable identities', async (t) => {
   const dir = await temp(t),
     p = parameters();
   p.scenarioRevision = '/example/private/scenario';
   p.deployment.workerDigest = '/example/private/worker';
   await summaryFixture(dir, p);
-  const sequenceFile = path.join(dir, 'sequence.json');
-  await save(sequenceFile, { priorCount: 0, resetReason: '/example/private/reset' });
-  await summarize(dir, { sequenceFile });
+  await summarize(dir);
   const row = await fs.readFile(path.join(dir, 'row.md'), 'utf8');
   assert.equal(row.includes('/example/private'), false);
   assert(row.includes('Worker=unavailable'));
-  assert(row.includes('reset=declared'));
+  assert(row.includes(`App=${p.deployment.appImage}; Web=${p.deployment.webIdentity}; NanoHost=`));
+  assert.equal(row.includes('consecutive='), false);
 });
 
 test('a mutation receipt refuses the same request even after an observed success', async (t) => {
@@ -1384,345 +654,6 @@ test('a mutation receipt refuses the same request even after an observed success
   assert.equal(n, 1);
 });
 
-async function workerHarness(t, { mode = 'happy', integrated = false } = {}) {
-  const dir = await temp(t),
-    p = parameters(),
-    b = bundle(p);
-  b.deployment.build.buildDirectory = '/example/builds/exact-source';
-  const built = workerBuild(p, b.deployment.build),
-    revision = digest('example-agent-before'),
-    nextRevision = digest('example-agent-after'),
-    events = [],
-    active = new Set();
-  b.deployment.components.worker = {
-    unchanged: false,
-    changedInputs: ['packages/example/README.md', 'packages/example/test.mjs'],
-    sourceCommit: 'c'.repeat(40),
-    digest: p.deployment.workerDigest,
-  };
-  await pinnedFixture(dir, p);
-  const pin = await readJson(path.join(dir, 'prepare.json'));
-  await save(
-    path.join(dir, 'prepare.json'),
-    { ...pin, candidateCommit: p.candidateCommit, checklistBlob: p.checklistBlob },
-    [],
-    false
-  );
-  await save(path.join(dir, 'prepare-complete.json'), { runnerSha256: pin.runnerSha256 });
-  await save(path.join(dir, 'preflight-receipt.json'), { passed: true });
-  await save(path.join(dir, 'archive.json'), {
-    candidateCommit: p.candidateCommit,
-    sha256: b.attribution.archiveSha256,
-  });
-  await save(path.join(dir, 'component-attribution.json'), b.deployment.components);
-  let elapsed = 0,
-    targets = 0;
-  const envelope = (data, ok = true) => ({
-    exitCode: 0,
-    stdout: JSON.stringify(ok ? { ok, data } : { ok, error: data }),
-    stderr: `RELEASE_HTTP ${JSON.stringify({ startedAt: new Date(Date.parse('2026-01-01T00:00:00Z') + elapsed).toISOString(), status: 200, connectionReset: false })}`,
-  });
-  const view = (agentId) => ({
-    agentId,
-    fileId: `agents/${agentId}.agent.jsonc`,
-    persistedRevision: active.has(agentId) ? nextRevision : revision,
-    desired: { imageDigest: active.has(agentId) ? built.digest : p.deployment.workerDigest },
-    reload: { matchesDesired: true },
-  });
-  const seams = {
-    credential: 'synthetic-private-value',
-    now: () => new Date(Date.parse('2026-01-01T00:00:00Z') + elapsed).toISOString(),
-    fetch: async () => new Response('{"status":"ok"}'),
-    exec: async (exe) => ({
-      exitCode: 0,
-      stdout: exe === 'gh' ? `HTTP/2 200\n\n${JSON.stringify(p.issue)}` : 'Sign in',
-      stderr: '',
-    }),
-    ssh: async (_exe, args) => {
-      if (args.at(-1) === 'cat /etc/machine-id')
-        return { exitCode: 0, stdout: p.deployment.machineId, stderr: '' };
-      const code = args.at(-1);
-      let data;
-      if (code.includes('# Build only the host')) {
-        events.push('worker-build');
-        data =
-          mode === 'build-refused'
-            ? { ok: false, stage: 'build', exitCode: 1, stderr: 'Synthetic build refusal' }
-            : built;
-      } else if (code.includes('# NanoHost validates')) {
-        events.push('worker-import');
-        data = {
-          ok: mode !== 'import-refused',
-          exitCode: mode === 'import-refused' ? 1 : 0,
-          digest: mode === 'import-mismatch' ? digest('wrong-import') : built.digest,
-          expectedDigest: built.digest,
-          archiveDigest: built.archiveDigest,
-        };
-      } else if (code.includes("'buildExitCode'")) {
-        events.push('app-build');
-        data = b.deployment.build;
-      } else if (code.includes("'settingsBefore'")) {
-        events.push('app-replace');
-        data = b.deployment.replace;
-      } else {
-        events.push('cleanup');
-        data = { running: true };
-      }
-      return { exitCode: 0, stdout: JSON.stringify(data), stderr: '' };
-    },
-    cli: async (_exe, args, options) => {
-      const op = args[2],
-        input = JSON.parse(options.input);
-      events.push(op);
-      switch (op) {
-        case 'worker.list':
-        case 'scheduler.list':
-          return envelope({ items: [] });
-        case 'catalog.mcp-list':
-          return envelope(b.deployment.public.binding.data);
-        case 'nanohost.runtime-target':
-          return envelope({
-            ...b.deployment.public['target-1'].data,
-            connectionGeneration: ++targets === 1 ? 1 : 2,
-          });
-        case 'diagnostics.app':
-          return envelope(b.deployment.public.diagnostics.data);
-        case 'workspace.read':
-          return envelope({ id: p.workspaceId });
-        case 'administration.conversation-submit':
-          return envelope({
-            outcome: 'answered',
-            targetRef: 'internal-role:administration',
-            receivingThreadId: 'thread-example-administration',
-            receivingWorkspaceId: 'workspace-example-private-home',
-            turn: {
-              id: 'turn-example-administration',
-              threadId: 'thread-example-administration',
-              workspaceId: 'workspace-example-private-home',
-              status: 'completed',
-              items: [{ type: 'assistant-message', text: 'READY', status: 'completed' }],
-            },
-          });
-        case 'thread.create':
-          return envelope({ id: `thread-example-${events.length}` });
-        case 'runtime.file-list':
-          return envelope({
-            files: p.deployment.workerAgents.map((agentId) => ({
-              id: `agents/${agentId}.agent.jsonc`,
-              kind: 'agent',
-              exists: true,
-            })),
-          });
-        case 'runtime.agent-environment-read':
-          return envelope(view(input.fileId.slice(7, -12)));
-        case 'worker-environment.prepare':
-          return mode === 'prepare-refused'
-            ? envelope({ code: 'preparation_refused' }, false)
-            : envelope(preparedWorker(input));
-        case 'worker-environment.activate':
-          if (mode === 'activate-refused') return envelope({ code: 'activation_refused' }, false);
-          if (mode === 'activate-lost') return { exitCode: 0, stdout: '', stderr: '' };
-          active.add(input.target.agentId);
-          return envelope({
-            requestId: input.requestId,
-            target: input.target,
-            resolvedCandidate: input.resolvedCandidate,
-            replaceNow: null,
-            affected: [],
-            configuration: { fileId: input.configuration.fileId, revision: nextRevision },
-          });
-        case 'thread.dashboard':
-          return envelope({ workStatus: { activeTurnStatus: 'idle' }, pendingRequests: [] });
-        case 'turn.start':
-          return { exitCode: 0, stdout: '', stderr: '' };
-        default:
-          throw Error(`Unexpected synthetic operation ${op}`);
-      }
-    },
-    sleep: async () => {
-      elapsed++;
-      for (const f of await fs.readdir(path.join(dir, 'pending'))) {
-        const pending = await readJson(path.join(dir, 'pending', f));
-        const decisionPath = path.join(dir, 'decisions', `${sha(pending.requestId)}-record.json`);
-        try {
-          await fs.access(decisionPath);
-          continue;
-        } catch {}
-        if (mode === 'decision-inflight') {
-          await save(path.join(dir, 'decisions', `${sha(pending.requestId)}-intent.json`), {
-            submitted: true,
-          });
-          elapsed += p.bounds.decisionMs;
-        } else if (mode.startsWith('decision-mismatch')) {
-          const changed = structuredClone(pending);
-          if (mode.endsWith('candidate'))
-            changed.prepared.data.resolvedCandidate.artifactId = 'wrong-example-candidate';
-          else if (mode.endsWith('target'))
-            changed.prepared.data.target.agentId = 'wrong-example-agent';
-          else if (mode.endsWith('digest'))
-            changed.prepared.data.image.digest = digest('wrong-image');
-          else changed.prepared.data.configuration.expectedRevision = digest('wrong-revision');
-          await save(path.join(dir, 'pending', f), changed, [], false);
-          await assert.rejects(
-            decide(dir, pending.requestId, 'grant', seams),
-            /differs from retained/
-          );
-          await save(path.join(dir, 'pending', f), pending, [], false);
-          elapsed += p.bounds.decisionMs;
-        } else {
-          await decide(dir, pending.requestId, mode === 'denied' ? 'deny' : 'grant', seams).catch(
-            (e) => {
-              if (mode !== 'activate-lost' || !(e instanceof InspectionRequired)) throw e;
-            }
-          );
-        }
-      }
-    },
-  };
-  const client = new RoundClient(p, dir, { ...defaults, ...seams }, ['synthetic-private-value']);
-  return { dir, p, b, built, events, seams, client, integrated };
-}
-
-test('unchanged Worker causes no build, import or administrator mutation', async (t) => {
-  const dir = await temp(t),
-    p = parameters(),
-    b = bundle(p);
-  const client = new RoundClient(
-    p,
-    dir,
-    {
-      ...defaults,
-      cli: async () => {
-        throw Error('Unexpected CLI effect');
-      },
-      ssh: async () => {
-        throw Error('Unexpected host effect');
-      },
-    },
-    []
-  );
-  await updateWorker(client, b.deployment.build, b.deployment);
-  assert.equal(b.deployment.workerUpdate, undefined);
-});
-
-test('changed Worker happy path preserves digest and reviews each Agent once', async (t) => {
-  const h = await workerHarness(t);
-  await updateWorker(h.client, h.b.deployment.build, h.b.deployment);
-  const update = h.b.deployment.workerUpdate;
-  assert.equal(update.agents.length, h.p.deployment.workerAgents.length);
-  assert.equal(h.client.spans.length, h.events.filter((v) => v.includes('.')).length);
-  assert.equal(h.events.filter((v) => v === 'worker-build').length, 1);
-  assert.equal(h.events.filter((v) => v === 'worker-import').length, 1);
-  assert.equal(h.events.filter((v) => v === 'worker-environment.activate').length, 4);
-  assert.equal(h.b.deployment.components.worker.sourceCommit, h.p.candidateCommit);
-  assert.equal(h.b.deployment.components.worker.digest, h.built.digest);
-  for (const v of update.agents) {
-    assert.equal(v.decision.input.confirmation, v.prepared.data.activationConfirmation);
-    assert.equal(Object.hasOwn(v.input, 'replaceNow'), false);
-    assert.equal(v.status.data.desired.imageDigest, h.built.digest);
-  }
-  h.b.deployment.public.closedAt = update.readyAt;
-  const row = evaluate(h.b, h.p).rows[0];
-  assert.equal(row.mechanicalCode, 'P', JSON.stringify(row.failures));
-  for (const field of ['import', 'prepared', 'activated', 'status']) {
-    const altered = structuredClone(h.b);
-    if (field === 'import') delete altered.deployment.workerUpdate.import;
-    else delete altered.deployment.workerUpdate.agents[0][field];
-    assert.equal(evaluate(altered, h.p).rows[0].mechanicalCode, 'I', field);
-  }
-  const wrong = structuredClone(h.b);
-  wrong.deployment.workerUpdate.agents[0].status.data.desired.imageDigest = digest('wrong-image');
-  assert.equal(evaluate(wrong, h.p).rows[0].mechanicalCode, 'N');
-  const raw = await fs.readFile(path.join(h.dir, 'params.json')),
-    entries = [{ file: 'synthetic-instrument', sha256: sha('example') }];
-  h.b.attribution.runnerSha256 = sha(canonical(entries));
-  h.b.attribution.parameterSha256 = sha(raw);
-  await save(
-    path.join(h.dir, 'prepare.json'),
-    {
-      parameterSha256: sha(raw),
-      runnerSha256: h.b.attribution.runnerSha256,
-      instrumentFiles: entries,
-      checklistBlob: h.p.checklistBlob,
-      checklistSectionSha256: sha('example'),
-    },
-    [],
-    false
-  );
-  await save(path.join(h.dir, 'checklist-section.json'), { text: 'example' });
-  await save(path.join(h.dir, 'round.json'), h.b);
-  await summarize(h.dir);
-  const publicRow = await fs.readFile(path.join(h.dir, 'row.md'), 'utf8');
-  assert(publicRow.includes(`Worker=${h.built.digest}`));
-  assert.equal(publicRow.includes(`Worker=${h.p.deployment.workerDigest}`), false);
-  // Restore the actual pinned instrument before checking that receipts refuse a replay.
-  await fs.unlink(path.join(h.dir, 'prepare.json'));
-  await pinnedFixture(h.dir, h.p);
-  await assert.rejects(
-    updateWorker(h.client, h.b.deployment.build, h.b.deployment),
-    InspectionRequired
-  );
-  assert.equal(h.events.filter((v) => v === 'worker-build').length, 1);
-});
-
-for (const [mode, expected] of [
-  ['build-refused', 'build'],
-  ['import-refused', 'import'],
-  ['activate-refused', 'activation'],
-  ['import-mismatch', 'import digest'],
-  ['prepare-refused', 'preparation'],
-  ['decision-mismatch-candidate', 'decision timeout'],
-  ['decision-mismatch-target', 'decision timeout'],
-  ['decision-mismatch-revision', 'decision timeout'],
-  ['decision-mismatch-digest', 'decision timeout'],
-  ['denied', 'activation decision'],
-])
-  test(`changed Worker ${mode} fails Deployment and leaves dependent rows incomplete`, async (t) => {
-    const h = await workerHarness(t, { mode });
-    await assert.rejects(round(h.dir, h.seams), DeploymentRefused);
-    const result = await readJson(path.join(h.dir, 'round.json'));
-    assert.equal(result.deployment.workerUpdate.failure.stage, expected);
-    assert.equal(result.stop.status, 'failed-deployment');
-    assert.equal(h.events.includes('turn.start'), false);
-    assert.equal(h.events.includes('task.start'), false);
-    assert.equal(h.events.includes('goal.create'), false);
-    const rows = evaluate(result, h.p).rows;
-    assert.equal(rows[0].actualStatus, 'failed');
-    assert.equal(rows[0].mechanicalCode, 'N', JSON.stringify(rows[0]));
-    assert.equal(
-      rows.slice(1).every((v) => v.mechanicalCode === 'I'),
-      true
-    );
-    assert.equal(
-      h.events.filter((v) => v === 'worker-environment.prepare').length,
-      ['build-refused', 'import-refused', 'import-mismatch'].includes(mode) ? 0 : 1
-    );
-    assert.equal(h.events.includes('worker-environment.activate'), mode === 'activate-refused');
-  });
-
-test('lost Worker activation submits once, seals the round and refuses replay', async (t) => {
-  const h = await workerHarness(t, { mode: 'activate-lost' });
-  await assert.rejects(round(h.dir, h.seams), InspectionRequired);
-  assert.equal(h.events.filter((v) => v === 'worker-environment.activate').length, 1);
-  assert.equal(h.events.includes('turn.start'), false);
-  assert.equal((await readJson(path.join(h.dir, 'round-stop.json'))).status, 'inspection-required');
-  await assert.rejects(round(h.dir, h.seams), /EEXIST/);
-  const pending = await readJson(
-    path.join(h.dir, 'pending', (await fs.readdir(path.join(h.dir, 'pending')))[0])
-  );
-  await assert.rejects(decide(h.dir, pending.requestId, 'grant', h.seams), /Round sealed/);
-  assert.equal(h.events.filter((v) => v === 'worker-environment.activate').length, 1);
-});
-
-test('round updates Worker after App readiness and resolves all Agents before Worker rows', async (t) => {
-  const h = await workerHarness(t);
-  await assert.rejects(round(h.dir, h.seams), InspectionRequired); // Stop at the deliberately lost first scenario Turn.
-  assert(h.events.indexOf('worker-build') > h.events.indexOf('workspace.read'));
-  assert(h.events.indexOf('workspace.read') > h.events.indexOf('app-replace'));
-  assert(h.events.indexOf('turn.start') > h.events.lastIndexOf('runtime.agent-environment-read'));
-  assert.equal(h.events.filter((v) => v === 'worker-environment.activate').length, 4);
-});
-
 test('prepare records exact changed Worker inputs but still refuses changed NanoHost inputs', async (t) => {
   for (const component of ['worker', 'nanoHost']) {
     const parent = await temp(t),
@@ -1744,15 +675,11 @@ test('prepare records exact changed Worker inputs but still refuses changed Nano
     });
     if (component === 'nanoHost') {
       await assert.rejects(
-        prepare(input, dir, { exec }),
+        prepare(input, dir, { exec, credential: 'synthetic-private-value' }),
         /maintained NanoHost build\/install and Initial NanoHost Provisioning/
       );
     } else {
-      // Stop before any host contact; attribution must already have admitted the changed inputs.
-      await assert.rejects(
-        prepare(input, dir, { exec, credential: 'synthetic-private-value' }),
-        /ENOENT/
-      );
+      await prepare(input, dir, { exec, credential: 'synthetic-private-value' });
       const attribution = await readJson(path.join(dir, 'component-attribution.json'));
       assert.equal(attribution.worker.unchanged, false);
       assert.deepEqual(attribution.worker.changedInputs, [
@@ -1764,106 +691,13 @@ test('prepare records exact changed Worker inputs but still refuses changed Nano
   }
 });
 
-test('an in-flight activation decision at the deadline is inspection, not a fabricated refusal', async (t) => {
-  const h = await workerHarness(t, { mode: 'decision-inflight' });
-  await assert.rejects(round(h.dir, h.seams), InspectionRequired);
-  const result = await readJson(path.join(h.dir, 'round.json'));
-  assert.equal(result.stop.status, 'inspection-required');
-  assert.equal(result.deployment.workerUpdate.failure, undefined);
-  assert.equal(h.events.includes('turn.start'), false);
-});
-
 for (const [name, scenario, expected, mutate] of [
-  [
-    '1 missing Worker start',
-    'Deploy',
-    'I',
-    (b) => {
-      delete b.runtimes.codex.steps[0].turn.startedAt;
-    },
-  ],
-  [
-    '1 linked Worker before ready',
-    'Deploy',
-    'N',
-    (b) => {
-      b.goal.linkedTask.turnReads[0].data.startedAt = start;
-    },
-  ],
-  [
-    '1 Chat Worker with missing start',
-    'Deploy',
-    'I',
-    (b) => {
-      b.chat.evidence.turnReads[0].data.agentId = 'agent-example-codex';
-      b.chat.evidence.turnReads[0].data.startedAt = null;
-    },
-  ],
-  ...['Task Mode handoff', 'Goal Mode handoff'].map((title) => [
-    `2 ${title} conflict`,
-    'Chat',
-    'I',
-    (b) => {
-      b.chat.evidence.items.data.items.push({ type: 'status', title });
-    },
-  ]),
-  [
-    '3 wrong fresh read routes',
-    'Task',
-    'I',
-    (b) => {
-      b.task.github.reads.forEach((r) => {
-        r.route = 'rate_limit';
-      });
-    },
-  ],
-  [
-    '3 detached deciding branch',
-    'Task',
-    'I',
-    (b) => {
-      b.task.github.branch.headSha = 'e'.repeat(40);
-      b.task.github.pullRequests[0].head.sha = 'e'.repeat(40);
-    },
-  ],
-  [
-    '3 detached deciding PR',
-    'Task',
-    'I',
-    (b) => {
-      b.task.github.pullRequests[0].pullRequest.title = 'Detached title';
-    },
-  ],
-  [
-    '3 detached changed-file body',
-    'Task',
-    'I',
-    (b) => {
-      b.task.github.pullRequests[0].changedFiles[0].patch += '\n+Detached bytes';
-    },
-  ],
-  [
-    '3 missing parsed read body',
-    'Task',
-    'I',
-    (b) => {
-      delete b.task.github.reads[0].body;
-    },
-  ],
-  [
-    '3 wrong parsed body digest',
-    'Task',
-    'I',
-    (b) => {
-      b.task.github.reads[0].bodyDigest = digest('wrong body digest');
-    },
-  ],
   [
     '4 binding-declared GitHub write',
     'codex.B',
     'N',
     (b) => {
-      b.deployment.public.binding.data.items[0].approvalRequiredTools = ['example_write'];
+      b.binding.data.items[0].approvalRequiredTools = ['example_write'];
       b.runtimes.codex.steps[1].itemCoverage.items.push({
         type: 'tool-call',
         status: 'completed',
@@ -1873,21 +707,6 @@ for (const [name, scenario, expected, mutate] of [
       });
     },
   ],
-  ...[
-    ['intent', 'Another intent'],
-    ['planVersionId', 'another-example-plan'],
-    ['unresolvedWork', ['unfinished']],
-  ].map(([field, value]) => [
-    `5 wrong completion ${field}`,
-    'Goal',
-    'N',
-    (b) => {
-      const c = b.goal.lastGoal.data.goal.disposition.candidate;
-      c[field] = value;
-      b.goal.completionDecision.request.exactIntent.bytes = canonical(c);
-      b.goal.completionDecision.request.exactIntent.digest = digest(canonical(c));
-    },
-  ]),
   [
     '8 marker body with wrong stored digest isolates C',
     'codex.C',
@@ -1914,128 +733,11 @@ for (const [name, scenario, expected, mutate] of [
 test('Fix 2 6 environment failure is incomplete', () => {
   const p = parameters(),
     b = bundle();
-  b.chat.evidence.turnReads[0].data.status = 'failed';
+  b.runtimes.pi.steps[0].turn.status = 'failed';
+  b.runtimes.pi.steps[0].turn.error = { code: 'example-tool-failure' };
   const result = classify(evaluate(b, p), p, [
-    { scenario: 'Chat', code: 'T', reference: 'example-tool-failure', checker: 'example-checker' },
+    { scenario: 'pi.A', code: 'T', reference: 'example-tool-failure', checker: 'example-checker' },
   ]);
   assert.equal(result.counts.incomplete, 1);
   assert.equal(result.complete, false);
 });
-for (const phase of ['task', 'goal'])
-  test(`Fix 2 7 sealed ${phase} decisions make no product call`, async (t) => {
-    const dir = await temp(t),
-      p = parameters(),
-      b = bundle();
-    const q =
-      phase === 'task'
-        ? b.task.decisions[0].pendingRequest
-        : b.goal.planDecision.exactPendingRequest;
-    await pinnedFixture(dir, p);
-    await save(path.join(dir, 'owned', 'example.json'), { threadId: b[phase].threadId });
-    await save(path.join(dir, 'pending', `${sha(q.requestId)}.json`), {
-      request: q,
-      phase,
-      threadId: b[phase].threadId,
-      goal: b.goal.planDecision.before.data,
-      expiresAt: end,
-    });
-    await save(path.join(dir, 'round-stop.json'), { inspectionRequired: true });
-    let calls = 0;
-    await assert.rejects(
-      decide(dir, q.requestId, 'grant', {
-        credential: 'synthetic-private-value',
-        now: () => start,
-        ssh: async () => ({ exitCode: 0, stdout: p.deployment.machineId }),
-        cli: async () => {
-          calls++;
-          return {
-            exitCode: 0,
-            stdout: JSON.stringify(ok({ pendingRequests: [q], requests: [q] })),
-            stderr: '',
-          };
-        },
-      }),
-      /Round sealed/
-    );
-    assert.equal(calls, 0);
-  });
-
-test('Fix 2 7 decide scans its evidence before exiting', async (t) => {
-  const dir = await temp(t),
-    p = parameters(),
-    b = bundle(),
-    q = b.task.decisions[0].pendingRequest;
-  const secret = 'synthetic-private-value';
-  await pinnedFixture(dir, p);
-  await save(path.join(dir, 'owned', 'example.json'), { threadId: b.task.threadId });
-  await save(path.join(dir, 'pending', `${sha(q.requestId)}.json`), {
-    request: q,
-    phase: 'task',
-    threadId: b.task.threadId,
-    expiresAt: end,
-  });
-  await assert.rejects(
-    decide(dir, q.requestId, 'deny', {
-      credential: secret,
-      now: () => start,
-      ssh: async () => ({ exitCode: 0, stdout: p.deployment.machineId }),
-      cli: async (_exe, args) => {
-        // Inject a failed retention/redaction boundary; the exit scan must detect the leaked bytes.
-        await fs.writeFile(path.join(dir, 'injected-output.txt'), secret);
-        return {
-          exitCode: 0,
-          stdout: JSON.stringify(
-            ok(args[2] === 'thread.dashboard' ? { pendingRequests: [q] } : {})
-          ),
-          stderr: '',
-        };
-      },
-    }),
-    /Credential|credential|secret|redact/
-  );
-});
-
-for (const count of [0, 2])
-  test(`Fix 3 ${count} observed pull requests are a Task failure`, () => {
-    const p = parameters(),
-      b = bundle(),
-      g = b.task.github;
-    if (count === 0) {
-      g.pullRequests = [];
-      g.reads = g.reads.slice(0, 2);
-      g.reads[1].body = [];
-    } else {
-      const pr = structuredClone(g.pullRequests[0]);
-      pr.pullRequest.number = 4;
-      g.pullRequests.push(pr);
-      g.reads[1].body.push({ pullRequest: pr.pullRequest, head: pr.head, base: pr.base });
-      g.reads.push({
-        ...structuredClone(g.reads[2]),
-        route: `repos/${p.task.repository}/pulls/4/files?per_page=100`,
-      });
-    }
-    g.reads[1].bodyDigest = digest(canonical(g.reads[1].body));
-    const result = evaluate(b, p),
-      row = result.rows.find((r) => r.scenario === 'Task');
-    assert.equal(row.mechanicalCode, 'N', JSON.stringify(row.failures));
-    assert.equal(
-      row.failures.every((f) => f.kind === 'observed'),
-      true
-    );
-    const classified = classify(result, p, [
-      { scenario: 'Task', code: 'N', reference: 'example-task-defect', checker: 'example-checker' },
-    ]);
-    assert.equal(classified.counts.new, 1);
-    for (const mutation of ['missing', 'extra', 'unbound']) {
-      const incomplete = structuredClone(b),
-        reads = incomplete.task.github.reads;
-      if (mutation === 'missing') reads.shift();
-      else if (mutation === 'extra') reads.push(structuredClone(reads[0]));
-      else reads[0].route = 'rate_limit';
-      assert.equal(
-        evaluate(incomplete, p).rows.find((r) => r.scenario === 'Task').mechanicalCode,
-        'I',
-        mutation
-      );
-    }
-  });
