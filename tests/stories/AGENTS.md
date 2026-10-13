@@ -11,7 +11,7 @@ Before changing stories, read `docs/specs/20260529-l6_story_acceptance.md` and t
 - Include the required metadata fields: `id`, `title`, `persona`, `entrypoint`, `default_tool`, `timeout_seconds`, `requires_real_provider`, `requires_real_codex`, and `contracts`.
 - Keep the body inside the normative section list owned by `docs/specs/20260529-l6_story_acceptance.md`.
 - Keep story bodies human-readable and agent-readable.
-- Describe user-visible workflow steps instead of implementation shortcuts.
+- State the outcome. Do not describe actor steps or implementation shortcuts.
 - Put setup, cleanup, and evidence requirements in explicit sections.
 - Do not include real credentials, raw secrets, private account data, or host-specific state.
 - Do not add a committed runner, adapter, or per-story command. A mechanical proof belongs at L3 or L4 with the owning app.
