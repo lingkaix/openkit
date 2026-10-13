@@ -1,7 +1,8 @@
 ---
 type: change-plan
-status: in-progress
+status: verified
 date: "2026-10-13"
+completed: "2026-10-13"
 branch: main
 ---
 # v0.1.0-rc.4 Pre-Release
@@ -27,14 +28,14 @@ This checkpoint is rewritable and is not authority.
 | Intended tag | `v0.1.0-rc.4`, a prerelease that never becomes GitHub Latest and never creates or changes a GHCR `latest` tag |
 | Controlled asset set | The rc.3 set, with the tag replaced by `v0.1.0-rc.4`, as detailed below |
 | Publication authorization | The engineer granted publication on 2026-10-13 for exactly `v0.1.0-rc.4` and the controlled asset set. The conditions are under Publication Authorization |
-| Tested commit T and publishing commit P | T equals P. P is the commit on `main` that last changes this record before the tag. That commit carries this record and `release-notes/v0.1.0-rc.4.md`. Candidate CI on exactly P is pending. P moved past `177553e8` because candidate CI on `177553e8` failed, and the test fix, the item 33 clarification, and this update landed before the tag |
+| Tested commit T and publishing commit P | T equals P. P is `33ef34436fbedb2e8249f2826ddc5c6cad5f91d2`, the commit the tag names. That commit carries this record and `release-notes/v0.1.0-rc.4.md`. P moved past `177553e8` because candidate CI on `177553e8` failed, and the test fix, the item 33 clarification, and the publication update landed before the tag |
 | Classified comparison of T and P | The planned comparison is empty because T equals P. The former product-input comparison for pre-tag round reuse no longer applies under [L6 Story Reorganization](../../decisions/20261012-l6_story_reorganization.md). [Release Management](../../specs/20260829-release_management.md#candidate-ci-and-tag-reuse) requires candidate CI on exact P |
-| Candidate CI proof | The first run failed, as recorded below. The run on the final P is pending |
+| Candidate CI proof | The first run failed, as recorded below. [Run 38347889829](https://github.com/lingkaix/openkit/actions/runs/38347889829) is a `workflow_dispatch` on exact P. It was created at 2026-10-13T04:44:16Z and completed `success` at 2026-10-13T05:49:09Z, attempt 1 |
 | Visibility | This record adds no new visibility observation. [Release Management](../../specs/20260829-release_management.md) records that the repository was public on 2026-10-12. Preparation does not change visibility |
-| Published identity | Pending. This record does not create the tag or the GitHub Release |
+| Published identity | Non-draft prerelease `v0.1.0-rc.4` on P, published at 2026-10-13T06:24:09Z. The asset names, sizes, and digests are under Tag Workflow Run |
 | Known-defect disposition | User-facing issues belong in the notes input and are tracked in [#177](https://github.com/lingkaix/openkit/issues/177). The R001 gate [#120](https://github.com/lingkaix/openkit/issues/120) stays open. Other follow-ups are named below |
 | Frozen checklist identity | Not applicable to rc.4's former pre-tag scenario set. [L6 Story Reorganization](../../decisions/20261012-l6_story_reorganization.md) removed those rounds. The current [Catalog Stories](../../specs/20260829-release_management.md#catalog-stories) owner governs post-tag story selection |
-| Manual-gate disposition | Recorded under Manual-Gate Disposition And Known Issues and Post-Tag Plan. Story 2 and Worker qualification remain pending after publication |
+| Manual-gate disposition | Recorded under Manual-Gate Disposition And Known Issues and Post-Tag Plan. Story 2 on rc.4 was inconclusive. Worker qualification was not run. Both continue on rc.5 |
 | Known limitations | Recorded under Manual-Gate Disposition And Known Issues and in the notes input. R001 remains open under [#120](https://github.com/lingkaix/openkit/issues/120), so supported Worker execution and stable promotion are not claimed |
 
 Run [38338436668](https://github.com/lingkaix/openkit/actions/runs/38338436668) was a `workflow_dispatch` with gate `release-gate`. Its head was `177553e83d01709b9aff879d70bc89e4f213efef`. It was created at 2026-10-13T02:45:46Z. Job `L0-L2 static, unit, contract` concluded `failure`.
@@ -45,7 +46,7 @@ Two tests in `apps/nanocore/src/lib/store-capture-coverage.test.ts` failed. One 
 
 The fix is test-only. `2dc0f087` arms the staged manifest file and the exact directory each case requires. An independent reviewer accepted it after two rounds. Three product mutations each failed its case: remove the manifest fsync, remove the post-rename parent sync, and sync the child directory instead of the parent. That run is not proof for P.
 
-Candidate CI on the final P: pending
+Candidate CI on the final P: [run 38347889829](https://github.com/lingkaix/openkit/actions/runs/38347889829) completed `success` on attempt 1. Its head is P. This closeout does not restate every job. The tag run below reused the L0-L2 and L3 jobs from that exact commit.
 
 ### Controlled Asset Set
 
@@ -86,6 +87,7 @@ The packages through `7af42388` are `git log --reverse v0.1.0-rc.3..7af42388`. C
 - `2dc0f087` is the test-only capture-coverage fix recorded above.
 - `40f9d400` records the item 33 ruling in Release Management, the release cookbook, the L6 catalog entry for story 2, story 2, and [Story 2 From Any Earlier Release](../../decisions/20261013-story_2_from_any_earlier_release.md).
 - This update records the publication grant, the first candidate CI result, and the scratch rehearsal result so far.
+- This closeout records the tag run, the published identity, the completed rehearsal, the independent verification, story 2, and the item 29 and item 31 rulings.
 
 ## Engineer Rulings Applied In RC4
 
@@ -111,17 +113,17 @@ Item 28 sets the catalog-story cadence. The engineer proposed, verbatim: 「我�
 
 The engineer wrote on 2026-10-13T03:56Z. Faithful English translation: "[The scratch worker-common package page] is not published; I have no way to change its settings. You can first publish a placeholder package, and then I will change the setting. I authorize item thirty-two. Items thirty-one and twenty-nine: clean them up after you complete the publication. On item thirty-three: our update rule is not limited to the previous version. That is, if the server is on an older version, the test updates it from that older version to the latest version awaiting release. You may need to clarify this in the relevant documents."
 
-Item 29. On 2026-10-13 the engineer ruled, in that message, to clean item 29 up after publication. The coordinator reads that ruling as retiring the exact-source procedure. That procedure is [Update An Exact Source Build](../../cookbooks/persistent-live-acceptance.md#update-an-exact-source-build), together with the owners that link it as the supported procedure outside the release gate. A writer and an independent review do that retirement after publication. rc.4 ships with the procedure still documented.
+Item 29. On 2026-10-13 the engineer ruled, in that message, to clean item 29 up after publication. The coordinator reads that ruling as retiring the exact-source procedure. The procedure is retired. [Retire The Exact-Source Update Procedure](../../decisions/20261013-retire_exact_source_update.md) records the ruling. `a908f57f` lands that retirement. A persistent deployment updates only to a published release.
 
 Item 30 is the scratch worker-common package. The coordinator observed that the package already existed with three versions and was private. The coordinator pushed no placeholder. The engineer changed the package to public. The observation at 2026-10-13T04:04:18Z was `public`. The engineer reported item 30 done at 2026-10-13T04:04Z.
 
-Item 31 waits until after publication. After publication, the coordinator deletes the scratch repository and its packages. Item 21 already authorized that deletion. The 2026-10-13T03:56Z message repeats that cleanup.
+Item 31. On 2026-10-13 the engineer ruled to keep the scratch repository and its packages for later use. Faithful English translation: "About item thirty-one, I have decided to keep that repository in this organization; you also do not need to clean it up; we will use it again later." The scratch owner is `notrucked/openkit`. This closeout deletes nothing there.
 
 Item 32 is the publication grant in that same message. Publication Authorization records the grant.
 
 Item 33 is the ordinary story 2 start in that same message. Story 2 runs from any earlier published release to the latest published prerelease. [Story 2 From Any Earlier Release](../../decisions/20261013-story_2_from_any_earlier_release.md) records the ruling, and `40f9d400` lands it. Stable-promotion starting releases stay unchanged.
 
-Two further questions stay open and do not affect rc.4: whether a stable-promotion story 2 may also start from any earlier release, and whether a verbatim engineer quotation is an exception to the English-only rule (LANG-001).
+Items 34 and 35 stay open questions and do not affect rc.4: whether a stable-promotion story 2 may also start from any earlier release, and whether a verbatim engineer quotation is an exception to the English-only rule (LANG-001).
 
 ## Publication Authorization
 
@@ -171,7 +173,7 @@ Attempt 1 completed with conclusion `failure`. Its L0-L2 job `114697901596` fail
 
 Attempt 2 of scratch run 38214862577 failed only at "Verify public worker base anonymous pull" because the new organization package was private, as predicted. The engineer made `notrucked/openkit-worker-common` public, observed at 2026-10-13T04:04:18Z. That change is the one-time visibility change described in [First worker-common Publication](../../cookbooks/release.md#first-worker-common-publication). Attempt 3, the failed-job rerun of scratch run [38214862577](https://github.com/notrucked/openkit/actions/runs/38214862577) started at 2026-10-13T04:06:22Z and completed `success` at 04:09:08Z. `Publish worker-common image`, `Publish GitHub Release`, and `Verify published release` all concluded `success`. The scratch release `v0.0.0-scratch.1` is a non-draft prerelease published at 2026-10-13T04:07:24Z. `releases/latest` of the scratch repository answered 404.
 
-Rehearsal result: the same-tag rerun of all jobs and the after-baseline of `lingkaix/openkit` are pending and are recorded at closeout.
+Rehearsal result. The failed-job rerun is attempt 3 of scratch run [38214862577](https://github.com/notrucked/openkit/actions/runs/38214862577). It started at 2026-10-13T04:06:22Z and completed `success` at 04:09:08Z. `Publish worker-common image`, `Publish GitHub Release`, and `Verify published release` concluded `success`. The scratch release `v0.0.0-scratch.1` stayed a non-draft prerelease published at 2026-10-13T04:07:24Z. The same-tag rerun of all jobs is attempt 4. It started at 2026-10-13T04:10:07Z on the same tag and the same commit `58f7b22597e3284509cd7f8d6441f4879807dcee`, and it completed `success`. It reused the images. It did not edit the release body or assets. No scratch package version was created after 2026-10-13T02:30:00Z, and no version carries `latest`. `openkit-app`, `openkit-worker-common`, and `openkit-worker-runtimes` each still have three versions. The tagged versions are app `sha256:98e5aed0e9b51c78e457c58f0fe78edb3a1209e2fceb978a89d5b523b31778ed`, worker-common `sha256:091e54fecc6bfa8525d15f62e6a56521e5179ccef2aebe4420a163d199036556`, and worker-runtimes `sha256:43c696dca51846283fbd0268eebff99c5580a40243a00e87d2dbab7514c07881`. Each tagged version carries `sha-58f7b22597e3`, `0.0.0-scratch.1`, and `v0.0.0-scratch.1`. The after-baseline of `lingkaix/openkit`, read at 2026-10-13T05:19:01Z through 05:19:51Z, equals the before-baseline for the rc.2 and rc.3 release fields it recorded, the tag list, and the rc.2 and rc.3 image digests. `latest` stayed absent. The coordinator accepted that result at 2026-10-13T05:21Z.
 
 ## Manual-Gate Disposition And Known Issues
 
@@ -183,25 +185,52 @@ A later follow-up, [#230](https://github.com/lingkaix/openkit/issues/230), recor
 
 ## Post-Tag Plan
 
-After publication, catalog story 2 (`persistent-deployment-prerelease-update`) runs on the persistent test deployment. That deployment runs rc.3 with its real data. The story updates it through the built-in update tools. Worker qualification A to D then runs on the deployment that story 2 produced, one runtime group after another. Under [Catalog Story Cadence](../../decisions/20261012-catalog_story_cadence.md), no other catalog story is scheduled for this prerelease. Story 2 starts from rc.3, the previous release, which satisfies the item 33 rule. After publication, the coordinator deletes the scratch repository and its packages and retires the exact-source procedure.
+Catalog story 2 (`persistent-deployment-prerelease-update`) ran on the persistent test deployment. That deployment was running `v0.1.0-rc.3`. The actor was Pi, `gpt-6-astra`, as the coordinator's dispatch identifies. The actor stopped before `app-update.prepare` and made no deployment change. Two independent judges, Grok 4.7 and Codex `gpt-6.1-sol`, each returned `inconclusive` because the required update receipt was never witnessed. The cause is [#232](https://github.com/lingkaix/openkit/issues/232). Friction and suggestions went to [#233](https://github.com/lingkaix/openkit/issues/233) through [#239](https://github.com/lingkaix/openkit/issues/239) and the existing [#158](https://github.com/lingkaix/openkit/issues/158), [#230](https://github.com/lingkaix/openkit/issues/230), and [#197](https://github.com/lingkaix/openkit/issues/197). Worker qualification was not run on rc.4. The deployment stays on rc.3. The engineer directed rc.5 instead. The release cycle's catalog stories and Worker qualification continue on rc.5. Item 29 is retired in `a908f57f`. Item 31 keeps the scratch repository and its packages.
 
 ## Results
 
-The [compact release record](../../specs/20260829-release_management.md#compact-release-record) names these row headings. No row is filled yet.
+The [compact release record](../../specs/20260829-release_management.md#compact-release-record) names these row headings. Story 2 is the only catalog story this prerelease ran. Worker qualification did not run. No other catalog story was scheduled.
 
 | Subject | Published identity | Deployment digests and time window | Verdict | Classification | Private evidence alias and digest |
 | --- | --- | --- | --- | --- | --- |
-
-Rows: pending
+| Catalog story 2, `persistent-deployment-prerelease-update` | `v0.1.0-rc.4` on `33ef34436fbedb2e8249f2826ddc5c6cad5f91d2` | The persistent test deployment was running `v0.1.0-rc.3`. The run made no deployment change. Running digests and the time window are not in this public record | `inconclusive` | The required update receipt was never witnessed. The cause is [#232](https://github.com/lingkaix/openkit/issues/232) | Not named in this public record |
+| Worker qualification A to D | `v0.1.0-rc.4` on `33ef34436fbedb2e8249f2826ddc5c6cad5f91d2` | Not run. The deployment stays on rc.3 | Not run | The engineer directed rc.5 instead. Qualification continues on rc.5 | Not applicable |
 
 ## Tag Workflow Run
 
-Pending
+[Tag run 38353473628](https://github.com/lingkaix/openkit/actions/runs/38353473628) is event `push` on head `33ef34436fbedb2e8249f2826ddc5c6cad5f91d2`. `gh run view` returned conclusion `success`. It was created at 2026-10-13T05:50:30Z and updated at 2026-10-13T06:25:53Z. These jobs were skipped: `PR lightweight repo check`, `L4 Web e2e`, `L5 app-image stopped-server recovery`, and `Smoke ${{ matrix.id }} (${{ matrix.platform }})`. Every other job in that run concluded `success`.
+
+The [GitHub Release](https://github.com/lingkaix/openkit/releases/tag/v0.1.0-rc.4) is tag `v0.1.0-rc.4`, `isDraft` false, and `isPrerelease` true. It was published at 2026-10-13T06:24:09Z. It has these assets.
+
+| Asset | Bytes | SHA-256 |
+| --- | --- | --- |
+| `openkit-nanohost-v0.1.0-rc.4-linux-amd64.tar.gz` | 35,111,425 | `6f7b507240a76fe116e5489843f68637b2ac21f6b41c32bae0554a8ec35f5be8` |
+| `openkit-nanohost-v0.1.0-rc.4-linux-arm64.tar.gz` | 33,080,102 | `d1c6dcf66916a89893f9fef68c62e0213da8a00ad1241bd0be49264cd30205a7` |
+| `openkit-ops-skill-v0.1.0-rc.4.tar.gz` | 202,203 | `dd0ce2c359ddfe6b6a48a49588e44a23caa040e9ad903120f2944a8c48340817` |
+| `SHA256SUMS` | 331 | `07d46ce550985c28aa3b69b28975679bb82daa575689ec262a92fdc879f5b85c` |
+
+The release body records these image index digests and platform digests.
+
+| Image | Index digest | `linux/amd64` | `linux/arm64` |
+| --- | --- | --- | --- |
+| `ghcr.io/lingkaix/openkit-app` | `sha256:e322434a5d04baa17daee9d586c89590a288a932c0760da6783bd78fc5f11552` | `sha256:2a8741d1490e304c3296bca4b7b5952d39d2114b27a1d6e10ab80d4ef40e9abc` | `sha256:43dd9fae69421e7f1a7c5895796463491056229b0504460654641bfa3a154104` |
+| `ghcr.io/lingkaix/openkit-worker-common` | `sha256:838f9bc023eea222b0190a405b569d64263fe0160916f51d9fd5b00d3a872e1d` | `sha256:f684763f295d1ca8dc30762149c74ac52bf65a31836c510d4a8d5917059c8eeb` | `sha256:0b94eb8c52fed75f8b941c7bb14016f2b12c57156eca3fcdd4c0a5612bb5d934` |
+| `ghcr.io/lingkaix/openkit-worker-runtimes` | `sha256:c0ef412f40b852f47fba40d0c35e7add21fc35155f1e5a0d27d443225b152216` | `sha256:4786a3af8fe83665a6d8e9acbffa28ab0f3479aab7ae4a4c4793d821da6c62a5` | `sha256:de149b55e971987cd49daa1b9a6a38dcf96e7bc02be959cc35c558c763bab4b8` |
 
 ## Independent Post-Publication Verification
 
-Pending
+The verifier role is reviewer, under [the reviewer contract](../../roles/reviewer.md). The coordinator's dispatch identifies the model family as Codex `gpt-6.1-sol`. The verifier did not produce the release.
+
+Round 1 checked the published rc.4 artifacts. Check 1, tag and commit, passed. Check 2, the tag workflow, passed. Check 3, the GitHub Release and body, passed. Check 4, the attachments, passed. Check 5, the images, platforms, anonymous access, and `latest`, passed. Check 6, earlier releases untouched, was partial. Check 7, the registry HTTP fallback, was not needed. Check 8, visibility, passed. The round 1 verdict was `not verified` because of one P2 evidence gap: the rehearsal baseline records rc.2 and rc.3 tag name, prerelease flag, publication time, and body digest, and it records neither draft state nor the asset set.
+
+Round 2 closed that gap through provenance-checked committed records and fresh downloaded bytes. Its verdict is `VERDICT: verified`. The lesson is that a rehearsal baseline records each earlier release's draft state and full asset metadata.
+
+## Verification Evidence
+
+The tag run, the GitHub Release read, the rehearsal reports, and the two independent verification rounds supply the evidence above. This writer did not rerun publication or the catalog story. On the tree that contains this closeout, `release-notes/v0.1.0-rc.5.md`, and the rc.5 record, these checks passed: `node scripts/validate-spec-lifecycle.mjs` printed `Validated spec lifecycle metadata.` and exited 0; `node scripts/validate-story-schema.mjs` printed `Validated story schema (10 stories).` and exited 0; `node scripts/validate-doc-model.mjs` printed `Validated documentation model (471 documents).` and exited 0; `node scripts/generate-doc-index.mjs --check` printed `Documentation index is current.` and exited 0; `node scripts/validate-test-governance.mjs` printed no output and exited 0; `node scripts/release-notes.mjs --check --repo-root . --tag v0.1.0-rc.5` printed `Release notes input passed for v0.1.0-rc.5.` and exited 0; `node --test tests/release-notes.test.mjs` reported 7 pass, 0 fail, and exited 0. Before the commit, `git diff -U0 | rg "^\+" | rg "[\x{4e00}-\x{9fff}]"` printed no output.
 
 ## Closeout
 
-Pending
+`v0.1.0-rc.4` is published from `33ef34436fbedb2e8249f2826ddc5c6cad5f91d2` and independently verified for the assigned publication checks. Story 2 did not pass. Worker qualification did not run. Both continue on rc.5. Item 29 is done in `a908f57f`. Item 31 keeps `notrucked/openkit` and its packages. Items 34 and 35 stay open. The lifecycle is `verified`. This records the independent publication verdict. It does not accept this writer's documentation diff, and it does not close the R001 runtime gate or a stable release.
+
+Raw complexity for `v0.1.0-rc.3` through P: `git diff --shortstat v0.1.0-rc.3 33ef34436fbedb2e8249f2826ddc5c6cad5f91d2` reported 88 files changed, 6,865 insertions, and 6,809 deletions. Eleven specification documents changed, and no Core document changed. Six decision records changed. No new product durable registry is claimed from that name inventory. These figures exclude this closeout.
