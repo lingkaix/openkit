@@ -20,6 +20,7 @@ import { settingsKeys } from './data';
 import { projectSafeValue } from './secret-safe';
 
 type Gateway = AppDiagnosticsResponse['gateway'];
+type ClientAppDiagnostics = Awaited<ReturnType<CoreClient['operations']['diagnostics.app']>>;
 type FileRead = Awaited<ReturnType<CoreClient['operations']['runtime.file-read']>>;
 
 /** Computes disclosure from active ordered routes, without changing their eligibility or order. */
@@ -747,7 +748,7 @@ export function GatewayConfiguration({
 }: {
   client: CoreClient;
   disconnected: boolean;
-  diagnostics: AppDiagnosticsResponse;
+  diagnostics: ClientAppDiagnostics;
   onChanged: () => void;
 }) {
   const [editing, setEditing] = useState<Parameters<typeof GatewayEditor>[0]['target'] | null>(
