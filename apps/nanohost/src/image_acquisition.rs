@@ -1019,15 +1019,16 @@ fn prepare_registry_layout(
     Ok(descriptor_sizes)
 }
 
-/// Writes one minimal OCI layout whose single descriptor is `manifest_digest`.
+/// Writes one minimal OCI layout in fresh private staging, creating missing parents.
+///
+/// Refuses an existing staging leaf or a symlinked or non-directory parent.
 fn write_image_layout(
     staging_root: &Path,
     manifest_digest: &str,
     raw_manifest: &[u8],
     manifest: &OciImageManifest,
 ) -> Result<(), AcquisitionError> {
-    validate_owned_path(staging_root)?;
-    DirBuilder::new().mode(0o700).create(staging_root)?;
+    create_private_dir(staging_root)?;
     create_private_dir(&staging_root.join("blobs"))?;
     create_private_dir(&staging_root.join("blobs/sha256"))?;
     write_new_private_file(
@@ -2010,7 +2011,7 @@ fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
-/// Creates a private build directory.
+/// Creates a new private directory and missing parents, refusing an unsafe parent.
 fn create_private_dir(path: &Path) -> Result<(), AcquisitionError> {
     validate_owned_path(path)?;
     let parent = path
@@ -3526,6 +3527,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs::{self, File};
     use std::io::{self, Cursor, Read, Seek, SeekFrom};
+    use std::os::unix::fs::{PermissionsExt, symlink};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
@@ -3536,18 +3538,20 @@ mod tests {
         AcquisitionError, AcquisitionTrigger, BUILD_MAX_OUTPUT_BYTES, BUILD_MAX_TIME,
         BuildCapabilities, BuildDefinition, BuildPlan, ImageEffectEvidence, ImageEffectRequest,
         RegistryAcquisition, archived_layout_digest, clear_registry_fixture,
-        select_host_platform_manifest, stage_registry_layout,
+        install_registry_fixture, select_host_platform_manifest, stage_registry_layout,
     };
     #[cfg(target_os = "linux")]
     use super::{
-        ResolvedImport, host_oci_platform, install_registry_fixture,
-        registry_fixture_blob_downloads, registry_fixture_manifest_fetches, resolve_import_archive,
+        ResolvedImport, host_oci_platform, registry_fixture_blob_downloads,
+        registry_fixture_manifest_fetches, resolve_import_archive,
     };
     #[cfg(target_os = "linux")]
     use crate::image_store::StoreError;
     use crate::image_store::{ImageStore, StoreLineage};
 
     static NEXT_TEST_ROOT: AtomicU64 = AtomicU64::new(0);
+    // Fixture installation and cleanup must not overlap between acquisition tests.
+    static REGISTRY_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     const EMPTY_CONTEXT_REF: &str = "build-context://empty/v1";
     const EMPTY_CONTEXT_DIGEST: &str =
         "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -5293,9 +5297,119 @@ mod tests {
         );
     }
 
+    /// Exercises fresh-epoch staging and preserves create-new and parent refusals.
+    #[tokio::test]
+    async fn registry_manifest_acquisition_creates_private_staging_parent() {
+        let _registry_guard = REGISTRY_TEST_LOCK.lock().await;
+        let bytes = host_platform_bytes();
+        let root = test_root("fresh-epoch-acquire");
+        let _root_cleanup = remove_test_root(root.clone());
+        let _fixture_cleanup = clear_fixture_on_drop();
+        install_registry_fixture(
+            BTreeMap::from([(
+                bytes.selected_digest.clone(),
+                bytes.selected_manifest.clone(),
+            )]),
+            BTreeMap::from([
+                (
+                    bytes.selected_config_digest.clone(),
+                    bytes.selected_config.clone(),
+                ),
+                (bytes.layer_digest.clone(), bytes.layer.clone()),
+            ]),
+        );
+        let acquisition = RegistryAcquisition::validate(
+            AcquisitionTrigger::AuthorizedAttempt,
+            &format!("ghcr.io/openkit/worker@{}", bytes.selected_digest),
+            &BTreeSet::from(["ghcr.io".to_string()]),
+        )
+        .expect("manifest reference");
+        let store = open_store(&root);
+        let existing = root.join("existing-staging");
+        fs::create_dir(&existing).unwrap();
+        fs::write(existing.join("canary"), b"owned existing bytes").unwrap();
+        assert_eq!(
+            acquisition.acquire(&existing, &store, 1).await,
+            Err(AcquisitionError::InvalidRegistryReference),
+        );
+        assert_eq!(
+            fs::read(existing.join("canary")).unwrap(),
+            b"owned existing bytes"
+        );
+        let parent = root.join("run/acquisitions");
+        let staging = parent.join("request-hash");
+        assert!(!parent.exists(), "fresh epoch has no acquisitions parent");
+        assert_eq!(
+            acquisition.acquire(&staging, &store, 1).await,
+            Ok(bytes.selected_digest.clone()),
+        );
+        assert_eq!(
+            fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert!(!staging.exists(), "admission removes request staging");
+        store
+            .read_verified(&bytes.selected_digest)
+            .expect("admitted manifest");
+    }
+
+    /// Checks layout ownership before any content can be admitted to the store.
+    #[test]
+    fn registry_layout_preserves_private_modes_and_refuses_unsafe_paths() {
+        let bytes = host_platform_bytes();
+        let manifest = super::parse_image_manifest(&bytes.selected_manifest).unwrap();
+        let root = test_root("registry-layout-ownership");
+        let _root_cleanup = remove_test_root(root.clone());
+        fs::create_dir(&root).unwrap();
+        let staging = root.join("layout");
+        super::write_image_layout(
+            &staging,
+            &bytes.selected_digest,
+            &bytes.selected_manifest,
+            &manifest,
+        )
+        .expect("fresh layout");
+        assert_eq!(
+            fs::metadata(&staging).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        fs::write(staging.join("canary"), b"owned existing bytes").unwrap();
+        assert_eq!(
+            super::write_image_layout(
+                &staging,
+                &bytes.selected_digest,
+                &bytes.selected_manifest,
+                &manifest
+            ),
+            Err(AcquisitionError::Io),
+        );
+        assert_eq!(
+            fs::read(staging.join("canary")).unwrap(),
+            b"owned existing bytes"
+        );
+        for parent in [root.join("symlink-parent"), root.join("file-parent")] {
+            if parent.ends_with("symlink-parent") {
+                symlink(&root, &parent).unwrap();
+            } else {
+                fs::write(&parent, b"parent canary").unwrap();
+            }
+            assert_eq!(
+                super::write_image_layout(
+                    &parent.join("refused"),
+                    &bytes.selected_digest,
+                    &bytes.selected_manifest,
+                    &manifest
+                ),
+                Err(AcquisitionError::InvalidBuildDefinition),
+            );
+            assert!(!root.join("refused").exists());
+        }
+    }
+
     #[tokio::test]
     #[cfg(target_os = "linux")]
     async fn host_platform_index_acquisition_stores_the_child_and_reuses_it() {
+        let _registry_guard = REGISTRY_TEST_LOCK.lock().await;
         let (os, architecture) = host_oci_platform().unwrap_or_else(|error| panic!("{error:?}"));
         let bytes = host_platform_bytes_for(os, architecture);
         let root = test_root("host-platform-acquire");
@@ -5323,11 +5437,19 @@ mod tests {
         )
         .expect("index reference");
         let store = open_store(&root);
+        let parent = root.join("run/acquisitions");
+        let staging = parent.join("request-hash");
+        assert!(!parent.exists(), "fresh epoch has no acquisitions parent");
         let digest = acquisition
-            .acquire(&root.join("staging"), &store, 1)
+            .acquire(&staging, &store, 1)
             .await
             .expect("selected host manifest");
         assert_eq!(digest, bytes.selected_digest);
+        assert_eq!(
+            fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert!(!staging.exists(), "admission removes request staging");
         let listed = store.list().expect("list store");
         assert!(listed.iter().any(|entry| {
             entry.digest == bytes.selected_digest
