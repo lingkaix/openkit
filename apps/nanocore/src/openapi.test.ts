@@ -2047,8 +2047,14 @@ describe('app api openapi projection', () => {
     const telemetry = jsonObject(processProperties?.telemetry);
 
     expect(diagnostics?.required).toEqual(
-      expect.arrayContaining(['service', 'boot', 'process', 'gateway'])
+      expect.arrayContaining(['service', 'boot', 'process', 'build', 'gateway'])
     );
+    const build = jsonObject(jsonObject(diagnostics?.properties)?.build);
+    expect(build).toMatchObject({
+      type: 'object',
+      required: ['releaseTag', 'sourceCommit'],
+      additionalProperties: false,
+    });
     expect(process).toMatchObject({
       type: 'object',
       required: ['observedAt', 'nodeVersion', 'uptimeSeconds', 'memory', 'telemetry'],

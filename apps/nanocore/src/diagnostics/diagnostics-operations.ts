@@ -2,6 +2,7 @@ import type {
   AppDiagnosticsResponse,
   BootReadinessSnapshot,
   DIAGNOSTICS_OPERATION_DEFINITIONS,
+  ReleaseBuildIdentity,
 } from '@openkit/app-api-schemas';
 import type { CoreMode } from '../config/mode.js';
 import type { RuntimeConfigManager, RuntimeConfigSnapshot } from '../config/runtime-config.js';
@@ -29,6 +30,7 @@ export function createDiagnosticsOperationImplementations(
         readonly providerCredentialConfigured: ProviderCredentialConfigured;
         readonly dataRoot: string | null;
         readonly mode: CoreMode;
+        readonly releaseIdentity: ReleaseBuildIdentity;
       }
     | undefined
 ) {
@@ -42,11 +44,13 @@ export function createDiagnosticsOperationImplementations(
         turnExecutor,
         providerSubscriptionAccountManager,
         providerCredentialConfigured,
+        releaseIdentity,
       } = services!;
       return {
         service: 'nanocore',
         boot: getBootReadiness(),
         process: createProcessDiagnosticsSample(),
+        build: releaseIdentity,
         gateway: {
           status: 'ok',
           endpoints: ['/health', '/v1/models', '/v1/chat/completions', '/v1/responses'],

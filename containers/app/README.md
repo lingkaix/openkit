@@ -4,6 +4,8 @@ This image packages NanoCore, Web UI assets, Caddy, migrations, and data templat
 
 Both build stages use the exact digest-pinned Node base declared for `app` in `containers/images.json`.
 
+A release build passes `OPENKIT_RELEASE_TAG` and `OPENKIT_SOURCE_COMMIT` and the runtime stage writes `/usr/local/lib/openkit/release-identity.json`. A build without those arguments, including local and non-release CI builds, omits the file. The identity is not an image `ENV`: the App-update helper replays the previous container's `Config.Env`, which would otherwise keep the old identity after an update. NanoCore reads the file at startup. See [Container Image Packaging](../../docs/specs/20260708-container_image_packaging.md).
+
 The local `scripts/docker/run-app.sh` seed helper authors an explicit 8,000-token compaction threshold for its default logical model. This is a context-management policy, not model capacity metadata; normal provider model/context admission still applies, and existing configuration files are preserved.
 
 After readiness and Caddy startup, the entrypoint waits for either NanoCore or Caddy to exit, then exits nonzero and stops the surviving process through its EXIT trap. Tini therefore exits and the container restart policy can restart the App. Deployment health requires both the Web page and NanoCore `/api/health` through Caddy, using the image's curl and grep.

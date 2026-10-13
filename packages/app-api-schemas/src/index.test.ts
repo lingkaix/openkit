@@ -12,6 +12,7 @@ import { z } from 'zod';
 
 import * as appApiSchemas from './index.js';
 import {
+  AppDiagnosticsClientResponseSchema,
   AppDiagnosticsResponseSchema,
   AppSearchResponseSchema,
   ArchivedGitPushRecordSchema,
@@ -778,6 +779,7 @@ function appDiagnosticsPayload(): Record<string, unknown> {
     service: 'nanocore',
     boot: bootReadiness(),
     process: processDiagnosticsSample(),
+    build: { releaseTag: null, sourceCommit: null },
     gateway: {
       status: 'ok',
       endpoints: ['/health'],
@@ -2322,6 +2324,36 @@ describe('app api schemas', () => {
         },
       }).success
     ).toBe(false);
+  });
+
+  it('requires a closed release identity and lets an older client omit it', () => {
+    const payload = appDiagnosticsPayload();
+    const { build: _build, ...withoutBuild } = payload;
+    const release = {
+      releaseTag: 'v0.1.0-rc.5',
+      sourceCommit: '0123456789abcdef0123456789abcdef01234567',
+    };
+
+    expect(AppDiagnosticsResponseSchema.parse({ ...payload, build: release }).build).toEqual(
+      release
+    );
+    expect(AppDiagnosticsResponseSchema.safeParse(withoutBuild).success).toBe(false);
+    expect(
+      AppDiagnosticsResponseSchema.safeParse({
+        ...payload,
+        build: { releaseTag: release.releaseTag, sourceCommit: null },
+      }).success
+    ).toBe(false);
+    expect(
+      AppDiagnosticsResponseSchema.safeParse({
+        ...payload,
+        build: { ...release, imageId: 'sha256:ignored' },
+      }).success
+    ).toBe(false);
+    expect(AppDiagnosticsClientResponseSchema.parse(withoutBuild)).toEqual(withoutBuild);
+    expect(AppDiagnosticsClientResponseSchema.parse({ ...payload, build: release }).build).toEqual(
+      release
+    );
   });
 
   it('keeps generic internal-agent runtime state outside App Diagnostics', () => {

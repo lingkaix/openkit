@@ -7,6 +7,7 @@ This directory owns redacted NanoCore diagnostics projections; canonical public 
 - `snapshot.ts` projects runtime mode, authentication state, migrations, providers, and agent readiness.
 - `setup.ts` projects configuration and agent-setup readiness from current runtime inputs.
 - `process-sample.ts` samples authorized process observations and local telemetry configuration without persistence or host-health claims.
+- `release-identity.ts` reads the App image release identity file at boot. A missing file is a non-release build. A present malformed file fails boot with `invalid_release_identity`. The file is not an image ENV, because the App-update helper replays `Config.Env`.
 - Do not duplicate public response DTOs, expose host paths or secret material, or read deployment-owned state before deployment-admin authorization.
 - Diagnostics are projections only; configuration, OAuth, provider, storage, and readiness owners remain in their respective modules.
 

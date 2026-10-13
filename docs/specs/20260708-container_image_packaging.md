@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: topology
-updated: 2026-10-05
+updated: 2026-10-13
 ---
 # Container Image Packaging And Release Publishing
 
@@ -229,6 +229,9 @@ The app image must:
 - use a persistent `/data/openkit` data root by default,
 - run in `server` mode for formal release images unless a release explicitly ships a local-only developer preview,
 - provide a smoke command that verifies Node, NanoCore boot, `/api/health`, static Web UI routing, and data-root writability.
+- carry its release identity in `/usr/local/lib/openkit/release-identity.json` when, and only when, a release build supplies `OPENKIT_RELEASE_TAG` and `OPENKIT_SOURCE_COMMIT`. A non-release build, including a local build, a pull request build, and candidate CI, passes neither argument and includes no identity file. The file's closed core is `releaseTag` (a v-prefixed SemVer tag) and `sourceCommit` (40 lowercase hex). Unknown additive keys are ignored. A missing file means a non-release build. A present file that is invalid JSON, has an unknown core shape, or carries a value outside that closed core fails NanoCore boot configuration with `invalid_release_identity` and MUST NOT be reported as a release identity.
+
+The identity MUST be that file and MUST NOT be an image `ENV`. The App-update helper replays every entry of the previous container's `Config.Env` as `--env`, so an `ENV` identity from the old image would override the new image after every update. Only the release workflow passes the tag and source commit, and it passes them to the App image build only. Worker images, image tags, OCI labels, and the same-tag reuse rule do not carry this file.
 
 The app image may include Caddy as the current HTTP frontend.
 
@@ -772,6 +775,7 @@ Dockerfile static tests:
 
 - App image Dockerfile builds NanoCore and Web dependencies in dependency order.
 - App image Dockerfile copies required migrations, data templates, app entrypoint, and app smoke script.
+- App image Dockerfile writes `/usr/local/lib/openkit/release-identity.json` from `OPENKIT_RELEASE_TAG` and `OPENKIT_SOURCE_COMMIT` and does not publish those values as `ENV`. The release workflow passes those arguments to the App image build only.
 - The shared worker Dockerfile uses digest-pinned direct image inputs, builds `@openkit/worker-protocol` and `@openkit/worker-shim` once, and exposes `worker-common` plus the one deployment target `worker-runtimes`.
 - Every final worker target installs exactly its catalog-declared runtime set and verified binary paths.
 - The shared worker stage creates `/openkit/sessions`, `/openkit/session`, and `/openkit/artifacts` and declares the sandbox user expected by OpenShell.

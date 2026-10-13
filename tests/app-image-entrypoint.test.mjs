@@ -71,6 +71,16 @@ test('proxies the exact remote MCP path to the App before the Web catch-all', as
   assert.doesNotMatch(source, /handle \/mcp\//u);
 });
 
+test('writes App release identity from build arguments and does not publish it as ENV', async () => {
+  const source = await readFile(dockerfile, 'utf8');
+  assert.match(source, /ARG OPENKIT_RELEASE_TAG\nARG OPENKIT_SOURCE_COMMIT\n/u);
+  assert.match(source, /\/usr\/local\/lib\/openkit\/release-identity\.json/u);
+  assert.match(source, /Config\.Env/u);
+  assert.match(source, /releaseTag===""&&sourceCommit===""/u);
+  assert.doesNotMatch(source, /ENV OPENKIT_RELEASE_TAG/u);
+  assert.doesNotMatch(source, /ENV OPENKIT_SOURCE_COMMIT/u);
+});
+
 test('routes container signals through the supervising entrypoint exactly once', async () => {
   const source = await readFile(dockerfile, 'utf8');
   assert.match(source, /ENTRYPOINT \["tini", "--", "\/usr\/local\/bin\/openkit-app-entrypoint"\]/u);

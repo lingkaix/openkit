@@ -1,6 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { type BootReadinessSnapshot, OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import {
+  type BootReadinessSnapshot,
+  OPERATION_DEFINITIONS,
+  type ReleaseBuildIdentity,
+} from '@openkit/app-api-schemas';
 import {
   type GatewayConfig,
   type InternalRoleProfilesConfig,
@@ -416,6 +420,13 @@ export interface CreateAppOptions {
   nanoHostSessionDispatch?: NanoHostSessionDispatch;
   /** Shared worker lifecycle runtime that owns Harness continuations and Turn credentials. */
   workerLifecycleRuntime?: ConfiguredWorkerLifecycleRuntime;
+  /**
+   * Release identity read at boot.
+   *
+   * Omitted callers, including in-process tests, report a non-release build.
+   * Production startup passes the file admitted by readReleaseIdentity.
+   */
+  releaseIdentity?: ReleaseBuildIdentity;
 }
 
 /**
@@ -1374,6 +1385,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     );
   });
 
+  const releaseIdentity = options.releaseIdentity ?? {
+    releaseTag: null,
+    sourceCommit: null,
+  };
   const diagnosticsServices = {
     runtimeConfig,
     runtimeConfigManager,
@@ -1384,6 +1399,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     providerCredentialConfigured,
     dataRoot,
     mode,
+    releaseIdentity,
   };
 
   const appUpdateTransport =

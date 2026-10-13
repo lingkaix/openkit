@@ -1100,6 +1100,17 @@ jobs:
             --sha-tag "${SHA_TAG}" \
             --latest-tag "${LATEST_TAG}" >> "${GITHUB_OUTPUT}"
 
+      - name: Pass App release identity build arguments
+        id: release-identity
+        if: matrix.id == 'app'
+        run: |
+          {
+            echo 'args<<EOF'
+            echo "OPENKIT_RELEASE_TAG=${GITHUB_REF_NAME}"
+            echo "OPENKIT_SOURCE_COMMIT=${GITHUB_SHA}"
+            echo 'EOF'
+          } >> "${GITHUB_OUTPUT}"
+
       - name: Build digest-only release candidate
         id: candidate
         if: steps.existing.outputs.present == 'false'
@@ -1109,6 +1120,7 @@ jobs:
           file: ${{ matrix.dockerfile }}
           target: ${{ matrix.target }}
           platforms: ${{ matrix.platforms }}
+          build-args: ${{ steps.release-identity.outputs.args }}
           labels: ${{ steps.image.outputs.labels }}
           provenance: false
           cache-from: type=gha

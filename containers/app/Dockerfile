@@ -78,6 +78,11 @@ RUN chmod +x /app/nanocore/dist/openkit-operator.js \
   && ln -s /app/nanocore/dist/openkit-restore.js /usr/local/bin/openkit-restore \
   && mkdir -p /data/openkit /srv/web
 
+# Release identity is a file, not an image ENV. The App-update helper replays every old container Config.Env entry as --env, so an ENV identity from the previous image would override the new image after every update.
+ARG OPENKIT_RELEASE_TAG
+ARG OPENKIT_SOURCE_COMMIT
+RUN node -e 'const fs=require("node:fs"); const releaseTag=process.env.OPENKIT_RELEASE_TAG??""; const sourceCommit=process.env.OPENKIT_SOURCE_COMMIT??""; if(releaseTag===""&&sourceCommit==="") process.exit(0); fs.mkdirSync("/usr/local/lib/openkit",{recursive:true}); fs.writeFileSync("/usr/local/lib/openkit/release-identity.json", JSON.stringify({releaseTag,sourceCommit})+"\n");'
+
 EXPOSE 8080
 
 ENTRYPOINT ["tini", "--", "/usr/local/bin/openkit-app-entrypoint"]

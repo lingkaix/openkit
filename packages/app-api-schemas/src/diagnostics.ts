@@ -297,46 +297,113 @@ export const ProcessDiagnosticsSampleSchema = z
   })
   .strict();
 
-/** App-facing diagnostics response schema for diagnostics.app. */
-export const AppDiagnosticsResponseSchema = z
+/**
+ * v-prefixed SemVer release tag, including a lowercase prerelease such as v0.1.0-rc.5.
+ * The pattern matches the release-preflight tag parser.
+ */
+const RELEASE_TAG_PATTERN =
+  /^v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9a-z-]*[a-z-][0-9a-z-]*)(?:\.(?:0|[1-9]\d*|[0-9a-z-]*[a-z-][0-9a-z-]*))*)?)$/;
+
+/** Full 40-character lowercase hex source commit. */
+const SOURCE_COMMIT_PATTERN = /^[a-f0-9]{40}$/;
+
+const ReleaseTagSchema = z.string().regex(RELEASE_TAG_PATTERN);
+const SourceCommitSchema = z.string().regex(SOURCE_COMMIT_PATTERN);
+
+/**
+ * Closed core of a present release-identity file.
+ *
+ * Unknown additive keys are ignored at admission and are not part of this core.
+ * A present file must carry both values; nulls are only the missing-file projection.
+ */
+export const PresentReleaseIdentitySchema = z.object({
+  releaseTag: ReleaseTagSchema,
+  sourceCommit: SourceCommitSchema,
+});
+
+/**
+ * Running release identity reported by authorized App Diagnostics.
+ *
+ * Both fields are null for a non-release build. A release build sets both.
+ * A mixed pair is an unknown core value and is rejected.
+ */
+export const ReleaseBuildIdentitySchema = z
   .object({
-    service: z.string().min(1),
-    boot: BootReadinessSnapshotSchema,
-    process: ProcessDiagnosticsSampleSchema,
-    gateway: z.object({
-      status: z.string().min(1),
-      endpoints: z.array(z.string().min(1)),
-      defaultModelId: z.string().nullable(),
-      models: z.array(
-        z
-          .object({
-            id: z.string().min(1),
-            displayName: z.string().min(1),
-            capabilities: z.array(z.string().min(1)),
-            autoFailover: z.boolean().optional(),
-            routes: z.array(LogicalModelRouteDiagnosticSchema).optional(),
-            contract: LogicalModelContractDiagnosticSchema.optional(),
-            reasoningEffortLevels: z.array(ReasoningEffortSchema).optional(),
-            contextManagement: z
-              .object({
-                type: z.literal('compaction'),
-                compactThreshold: z.number().int().positive(),
-              })
-              .strict()
-              .optional(),
-          })
-          .strict()
-      ),
-      usage: GatewayUsageSnapshotSchema.optional(),
-    }),
-    providers: ProvidersDiagnosticsSchema,
-    capabilities: MetaResponseSchema.shape.capabilities,
-    runtimeConfig: RuntimeConfigStatusSchema,
+    releaseTag: ReleaseTagSchema.nullable(),
+    sourceCommit: SourceCommitSchema.nullable(),
   })
   .strict()
   .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
+    if ((value.releaseTag === null) !== (value.sourceCommit === null)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Release tag and source commit must both identify a release or both be null.',
+      });
+    }
   });
+
+/**
+ * Builds the strict diagnostics.app response schema.
+ *
+ * @param build Release-identity field. The server requires it; an older client tolerates its absence.
+ * @returns Strict App Diagnostics response schema.
+ */
+function appDiagnosticsResponseSchema(build: z.ZodType) {
+  return z
+    .object({
+      service: z.string().min(1),
+      boot: BootReadinessSnapshotSchema,
+      process: ProcessDiagnosticsSampleSchema,
+      build,
+      gateway: z.object({
+        status: z.string().min(1),
+        endpoints: z.array(z.string().min(1)),
+        defaultModelId: z.string().nullable(),
+        models: z.array(
+          z
+            .object({
+              id: z.string().min(1),
+              displayName: z.string().min(1),
+              capabilities: z.array(z.string().min(1)),
+              autoFailover: z.boolean().optional(),
+              routes: z.array(LogicalModelRouteDiagnosticSchema).optional(),
+              contract: LogicalModelContractDiagnosticSchema.optional(),
+              reasoningEffortLevels: z.array(ReasoningEffortSchema).optional(),
+              contextManagement: z
+                .object({
+                  type: z.literal('compaction'),
+                  compactThreshold: z.number().int().positive(),
+                })
+                .strict()
+                .optional(),
+            })
+            .strict()
+        ),
+        usage: GatewayUsageSnapshotSchema.optional(),
+      }),
+      providers: ProvidersDiagnosticsSchema,
+      capabilities: MetaResponseSchema.shape.capabilities,
+      runtimeConfig: RuntimeConfigStatusSchema,
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      addRawSecretIssues(value, ctx, []);
+    });
+}
+
+/** App-facing diagnostics response schema for diagnostics.app. The server always emits build. */
+export const AppDiagnosticsResponseSchema = appDiagnosticsResponseSchema(
+  ReleaseBuildIdentitySchema
+);
+
+/**
+ * Client parse of diagnostics.app.
+ *
+ * An older server omits build. The server schema stays required; this reader only tolerates that absence.
+ */
+export const AppDiagnosticsClientResponseSchema = appDiagnosticsResponseSchema(
+  ReleaseBuildIdentitySchema.optional()
+);
 
 /** Provider diagnostic row returned by App Diagnostics. */
 export type ProviderDiagnostic = z.infer<typeof ProviderDiagnosticSchema>;
@@ -354,6 +421,10 @@ export type ProcessMemorySample = z.infer<typeof ProcessMemorySampleSchema>;
 export type ProcessTelemetryConfiguration = z.infer<typeof ProcessTelemetryConfigurationSchema>;
 /** Strict process sample returned by authorized App Diagnostics. */
 export type ProcessDiagnosticsSample = z.infer<typeof ProcessDiagnosticsSampleSchema>;
+/** Closed core admitted from a present release-identity file. */
+export type PresentReleaseIdentity = z.infer<typeof PresentReleaseIdentitySchema>;
+/** Running release identity reported by authorized App Diagnostics. */
+export type ReleaseBuildIdentity = z.infer<typeof ReleaseBuildIdentitySchema>;
 /** App-facing diagnostics response. */
 export type AppDiagnosticsResponse = z.infer<typeof AppDiagnosticsResponseSchema>;
 

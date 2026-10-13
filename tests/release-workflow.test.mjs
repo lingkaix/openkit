@@ -38,6 +38,23 @@ test('release workflow serializes tag releases and pins third-party actions', ()
   }
 });
 
+test('release workflow passes release identity build args to the App image only', () => {
+  const job = workflow.jobs['publish-container-images'];
+  const identity = step(job, 'Pass App release identity build arguments');
+  const candidate = step(job, 'Build digest-only release candidate');
+  const workerBuild = step(workflow.jobs['smoke-worker-images'], 'Build worker image');
+
+  assert.equal(identity.if, "matrix.id == 'app'");
+  assert.match(identity.run, /OPENKIT_RELEASE_TAG=\$\{GITHUB_REF_NAME\}/u);
+  assert.match(identity.run, /OPENKIT_SOURCE_COMMIT=\$\{GITHUB_SHA\}/u);
+  assert.equal(
+    candidate.with['build-args'],
+    actionExpression('steps.release-identity.outputs.args')
+  );
+  assert.equal(workerBuild.with['build-args'], undefined);
+  assert.ok(job.steps.indexOf(identity) < job.steps.indexOf(candidate));
+});
+
 test('release workflow smokes one digest on every platform before tag promotion', () => {
   const job = workflow.jobs['publish-container-images'];
   const existing = step(job, 'Inspect existing immutable identity');
@@ -519,6 +536,7 @@ test('release notes are checked before publication and verified against the gene
 // Recorded from main at a6f40272f7566244d55aa1dc5d4e4a59d335ac9a, before CI reuse edits.
 // release-preflight, publish-container-images, github-release, and verify-release were re-recorded for the release-notes generator.
 // verify-release was re-recorded again when the published-body comparison moved into scripts/release-notes.mjs.
+// publish-container-images was re-recorded when the App release build gained identity build arguments.
 const unchangedJobBaseline = {
   'test-image': 'b0504dcc37a38fb459ba4ba8fc8400d50128765479cf6a3473a8717d068dfe38',
   'pr-check': '21bf4f4ac3b3d36600ca9d88daf93ac86c613397e545f1560b37a3fa63fd2885',
@@ -537,7 +555,7 @@ const unchangedJobBaseline = {
   'qualify-nanohost': '9c42422c9716a0ad27688e745ac4ca1716671c9709349dfdca2fd01abe619474',
   'container-image-matrix': '9c7bb0793a5b45481b14a25502b41d5aea5ec7118d086fdef68867808dcca36d',
   'smoke-worker-images': 'be01e798f959e57e037827b605e89cb36da82d9c986ff3b3742df12e26c67606',
-  'publish-container-images': '544c64650e8964bd5730c68d8bee11bc3a3fed37ab9217b56b0eb7ab62b0c9d8',
+  'publish-container-images': 'd354fc4bdb01687274e33f475445833d56a1970f18fc3e8c585c4b4b8086c38a',
   'github-release': '342e687fc7bcb4773a791cc7d8925fb4bab7306f4cabade9513ac69238407cfd',
   'verify-release': '20c614ff0f1300b403789cfb9145f5ca26fdfa2f5482d7a3089f0682681b5c9f',
 };

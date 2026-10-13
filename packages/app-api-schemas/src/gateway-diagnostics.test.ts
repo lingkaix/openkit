@@ -72,6 +72,7 @@ function diagnosticsWithInputModalities(inputModalities: string[] | null) {
       memory: { rssBytes: 1, heapUsedBytes: 1, heapTotalBytes: 1 },
       telemetry: { enabled: false, exportConfigured: false },
     },
+    build: { releaseTag: null, sourceCommit: null },
     gateway: {
       status: 'ok',
       endpoints: ['/v1/responses'],

@@ -398,6 +398,7 @@ function appDiagnostics() {
         exportConfigured: false,
       },
     },
+    build: { releaseTag: null, sourceCommit: null },
     gateway: {
       status: 'ok',
       endpoints: ['/v1/chat/completions'],
@@ -4540,6 +4541,15 @@ describe('createCoreClient', () => {
         client.operations['usage.read']({ workspaceId: 'ws_demo' })
       ).rejects.toBeInstanceOf(ProtocolValidationError);
     }
+  });
+
+  it('accepts App Diagnostics when an older server omits release identity', async () => {
+    const { build: _build, ...withoutBuild } = appDiagnostics();
+    const { client } = createFakeClient({
+      'POST /api/app/operations/diagnostics.app': { body: withoutBuild },
+    });
+
+    await expect(client.operations['diagnostics.app']({})).resolves.toEqual(withoutBuild);
   });
 
   it('uses the strict diagnostics schema without unsupported response shapes', async () => {

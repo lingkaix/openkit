@@ -1,4 +1,5 @@
 import {
+  AppDiagnosticsClientResponseSchema,
   type JsonOperationId,
   OPERATION_DEFINITIONS,
   type OperationOutput,
@@ -41,7 +42,7 @@ export function createOperationClient(transport: ClientTransport): OperationClie
           return transport.postJson(
             operationHttpPath(id),
             definition.mutating ? body : parsed,
-            definition.outputSchema,
+            id === 'diagnostics.app' ? AppDiagnosticsClientResponseSchema : definition.outputSchema,
             definition.mutating && requestId ? { 'x-openkit-request-id': requestId } : undefined,
             'successStatus' in definition && definition.successStatus === 204
           );

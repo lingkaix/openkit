@@ -37,13 +37,14 @@ import { closeWithDeadline } from './bootstrap/shutdown.js';
 import { checkBootVaultBackend } from './bootstrap/vault.js';
 import { resolveBindHost, resolveBindPort } from './config/bind-host.js';
 import { resolveDataRoot } from './config/data-root.js';
-import { resolveMode } from './config/mode.js';
+import { BootConfigError, resolveMode } from './config/mode.js';
 import {
   createRuntimeConfigManager,
   loadRuntimeConfig,
   type RuntimeConfigSnapshot,
   unknownModelContextFailure,
 } from './config/runtime-config.js';
+import { readReleaseIdentity } from './diagnostics/release-identity.js';
 import { NANOCORE_HTTP_SERVER_OPTIONS } from './http-server-options.js';
 import { FsStore } from './lib/store.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
@@ -127,6 +128,7 @@ let dataRootLock: DataRootLock | null = null;
 let openshellRefreshStatusPolling: OpenShellRefreshStatusPollingService | null = null;
 let schedulerDispatchRetry: SchedulerDispatchRetryService | null = null;
 let schedulerAttemptMaintenance: SchedulerAttemptMaintenanceService | null = null;
+let releaseIdentity: ReturnType<typeof readReleaseIdentity> | undefined;
 let runtimeConfigSnapshot: RuntimeConfigSnapshot | undefined;
 let mode: ReturnType<typeof resolveMode> | undefined;
 let bindHost: string | undefined;
@@ -160,6 +162,19 @@ const bootResult = await runBootPhases({
       subsystem: 'config',
       critical: true,
       run: () => {
+        try {
+          releaseIdentity = readReleaseIdentity();
+        } catch (error) {
+          if (!(error instanceof BootConfigError)) throw error;
+          return {
+            status: 'failed' as const,
+            reason: {
+              code: error.code,
+              message: error.message,
+              blocks: ['product_work'],
+            },
+          };
+        }
         runtimeConfigSnapshot = loadRuntimeConfig(dataRoot, { version: 1 });
         mode = resolveMode(process.env, runtimeConfigSnapshot.openKitConfig);
         bindPort = resolveBindPort(process.env, runtimeConfigSnapshot.openKitConfig);
@@ -544,6 +559,7 @@ const app = createApp({
   workerControlGateway,
   workerMcpGateway,
   workerPlacement,
+  releaseIdentity: requireBootValue(releaseIdentity, 'Release identity was not read.'),
   workspaceMutationAdmission,
 });
 const hostname = requireBootValue(bindHost, 'HTTP bind host was not resolved.');
