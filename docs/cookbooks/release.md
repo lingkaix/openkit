@@ -84,7 +84,7 @@ done
 
 The tag workflow remains authoritative for both declared platforms because it smokes the exact pushed digest for `linux/amd64` and `linux/arm64` before promotion.
 
-8. Run L4 Web e2e when the release decision requires that additional confidence. Before the tag, run deterministic CI only. After the tag, run every catalog story on the published prerelease. Follow [Post-Tag Catalog Stories](#post-tag-catalog-stories). Worker qualification is separate.
+8. Run L4 Web e2e when the release decision requires that additional confidence. Before the tag, run deterministic CI only. After the tag, run story 1 or story 2 on the published prerelease. Run any other catalog story that the release cycle still needs. [Catalog Stories](../specs/20260829-release_management.md#catalog-stories) owns that rule. Follow [Post-Tag Catalog Stories](#post-tag-catalog-stories). Worker qualification is separate.
 
 ```bash
 pnpm test:e2e:web
@@ -124,7 +124,7 @@ The independent check and final summary of a finished qualification hold no Work
 
 ## Post-Tag Catalog Stories
 
-After the tag, run every story in the [L6 catalog](../specs/20260529-l6_story_acceptance.md#catalog) on the published prerelease. The catalog stories are not a pre-tag gate, and a story run on an unpublished candidate is not release evidence. Story 1 runs on a disposable host. Story 2 runs on the persistent deployment that carries the previous release's real data. The [Release Exit Criterion](../specs/20260829-release_management.md#release-exit-criterion) owns pass, defect, and rerun. This cookbook does not copy the catalog.
+After the tag, follow the release cycle in [Catalog Stories](../specs/20260829-release_management.md#catalog-stories). The catalog stories are not a pre-tag gate, and a story run on an unpublished candidate is not release evidence. Story 1 runs on a disposable host. Story 2 runs on the persistent deployment that carries the previous release's real data. The [Release Exit Criterion](../specs/20260829-release_management.md#release-exit-criterion) owns pass, defect, rerun, and the release cycle. This cookbook does not copy the catalog.
 
 Declare a read-only GitHub issue with an independently checkable title and state, a separate small issue authorized for an acceptance branch and pull request, and attempt-owned Workspace, Thread, filename, and marker inputs. Vary only equivalent fixtures or attempt-owned names. Do not reuse unrelated user work or broaden credentials to repair a prerequisite. Story selection authorizes no live deployment, Provider consumption, GitHub write, or approval. Obtain the existing effect-specific authority before execution.
 
@@ -132,7 +132,7 @@ Use public reads for the deciding product results and retain the returned ids an
 
 ## Worker Qualification
 
-Run the matrix below on the deployment that catalog story 2 updated. It is not a story and not a pre-tag round. Record the published prerelease identity and, for each case, the App, Web, NanoHost, and Worker artifact identities, retained component attribution, protected configuration identities without secret values, and the approved deployment target. The [Release Exit Criterion](../specs/20260829-release_management.md#release-exit-criterion) owns pass, defect, and rerun. The release record retains this evidence before stable promotion.
+Run the matrix below on the deployment that catalog story 1 or story 2 produced for that prerelease. It is not a story and not a pre-tag round. Record the published prerelease identity and, for each case, the App, Web, NanoHost, and Worker artifact identities, retained component attribution, protected configuration identities without secret values, and the approved deployment target. The [Release Exit Criterion](../specs/20260829-release_management.md#release-exit-criterion) owns pass, defect, and rerun. The release record retains this evidence before stable promotion.
 
 ### Codex, Pi, OpenCode V2 And DeepSeek
 
@@ -151,7 +151,7 @@ Worker-produced public file evidence uses synchronous `work_submit_artifact` on 
 
 Use the [release owner's compact record](../specs/20260829-release_management.md#compact-release-record): one release-level header, one row per catalog story, and one row per Worker-qualification case.
 
-Codes: P pass, K known defect, E accepted external, N new defect, T environment or tool failure, I inconclusive. The kit regenerates verdicts from retained product records. Independently check each non-pass row and each row it cannot decide. A pass row needs no additional narrative review. Preserve story-owned independent proof, including the actor's deciding recomputation and any L6 judge. Stop only when every catalog story and every qualification case has the evidence the release owner requires, together with every other release obligation.
+Codes: P pass, K known defect, E accepted external, N new defect, T environment or tool failure, I inconclusive. The kit regenerates verdicts from retained product records. Independently check each non-pass row and each row it cannot decide. A pass row needs no additional narrative review. Preserve story-owned independent proof, including the actor's deciding recomputation and any L6 judge. Stop a prerelease when the stories run on it and its qualification cases have the evidence the release owner requires, together with every other release obligation. Before a stable promotion, every catalog story has its pass for the release cycle under the release owner, together with every other release obligation.
 
 Keep complete evidence privately, including every story's declared input, runtime and model, Workspace, Thread, and Turn ids, expected and observed outcomes, public records, full required read coverage, classification, and defect linkage, plus the deployment receipt and attribution. The public record uses neutral evidence aliases and digests. It never contains a host name, a private path, a Thread id, or a transcript. Use the public `tests/support/release-round.mjs` runner through its one entry point and subcommands, documented with its parameter fields in the [tests guide](../../tests/README.md). The runner does not build an image or replace a container. The runner keeps parameters, the evidence directory, browser preflight, actor provisioning, evidence collection, summarize, cleanup, and the Worker qualification groups. Supply a private parameter file containing every deployment-specific value and no secret value, kept outside the repository or under ignored `temp/`. Use only synthetic placeholders in examples. Create one new private evidence directory per run and never reuse it. Pin the runner's commit and digest and the parameter-file digest. Its summarize mode regenerates verdicts and the compact row from retained evidence without a product effect. Do not copy or literally edit per-run scripts. The stage manager never retries, repairs, or approves on the actor's behalf. An approval in a story is the actor's user action through a public surface. Retain failed and incomplete runs and previous outcomes. A later run does not erase them.
 
