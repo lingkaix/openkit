@@ -4,25 +4,13 @@ Use this recipe for ordinary L6 and Agent task/benchmark work against an explici
 
 ## Prepare Once, Observe Each Attempt
 
-Choose the deployment through operator-supplied connection information. Use its normal installation/update procedure and current protected Provider configuration; do not invoke a fixture bring-up or teardown against it. For a source deployment use the existing toolchain and build commands; for the app image follow [Docker App Image](docker-app.md). Record the actual checked-out commit plus dirty state or deployed image digest, not only a version label. Coordinate an upgrade with ongoing work and hold the selected build fixed during the attempt.
+Choose the deployment through operator-supplied connection information. Use its normal installation procedure and current protected Provider configuration; do not invoke a fixture bring-up or teardown against it. For an initial source installation, use the existing toolchain and build commands; for an initial App-image installation, follow [Docker App Image](docker-app.md). Update a persistent deployment only to a published release. Record the actual checked-out commit plus dirty state or deployed image digest, not only a version label. Coordinate an upgrade with ongoing work and hold the selected build fixed during the attempt.
 
 Use HTTPS or an explicitly authorized SSH loopback tunnel when remote access otherwise lacks a protected transport. The SSH alias comes from local operator configuration; keep ordinary host-key verification. A typical tunnel shape is `ssh -N -L <local-port>:127.0.0.1:<service-port> <alias>`; resolve the actual service port from the deployment rather than copying a fixture port. The tunnel is an operator tool, not a Skill capability or new service.
 
 Connect the external Actor's MCP client to the deployment's configured HTTPS origin plus `/mcp` with its protected per-user static bearer header. Use [MCP connection guidance](../../skills/openkit-ops/references/nanocore-deployment-modes.en.md#administrator-cli-and-remote-mcp-access). An authorized administrator provisions the scenario credential through the existing Web or secret-safe operator procedure; never put it in prompts, argv, reports or committed files. Browser OAuth and refresh tokens are unavailable; clients without static-header support cannot run this release's external-agent path.
 
 Read guide and discover the relevant contracts through search and describe. With appropriate authority, read diagnostics, NanoHost runtime-target and the required Workspace/Worker records. A reachable API, configured Provider or ready target is a precondition observation, not completed Worker evidence. Do not create a fresh Provider subscription merely to run another attempt. Administrator diagnosis and secret/archive delivery use the complete operations package and its CLI; they are separate from the ordinary user's MCP flow.
-
-### Update An Exact Source Build
-
-Use this procedure only outside the release gate. The release gate uses catalog story 2 and the built-in update tools.
-
-`git archive --format=tar --output=<archive> <commit>` exports tracked bytes; transfer that archive over the authorized SSH connection and extract into a new commit-named build directory. Retain the full commit and archive digest. Uncommitted fixes are not included.
-
-On the target host, build the App with `docker build --file <tree>/containers/app/Dockerfile --tag <image>:<commit> <tree>` and run `docker run --rm <image>:<commit> openkit-app-smoke`. Record the resulting image ID. Build Worker images and the NanoHost binary only when their source or declared dependency inputs changed; otherwise retain their verified digests and record that component attribution separately. Host Docker inventory does not prove that the private NanoHost Image Store contains an image.
-
-Before replacement, inspect the current deployment's non-secret service configuration and active work. Preserve its Data Root, protected environment file, Vault key mount, transport credential directory, network/port bindings, restart policy and log rotation. Recreate only the owned App container with the new image and those same settings; do not replay bootstrap, access recovery or data initialization when current credentials and data remain valid. If the deployment mounts Web assets outside the image, extract the new image's assets into its commit-named Web directory and switch the existing asset link during the same maintenance window. Keep an old container stopped; never run two App instances against the same writable Data Root.
-
-Finish any App replacement before starting a newly provisioned NanoHost readiness interval. Then observe public health, authenticated diagnostics, the new image/container identity and boot ID, the retained Workspace records, and actual NanoHost readiness before admitting new work. An update ends the earlier attempt's attribution window; keep its evidence and begin a fresh attempt on the new build.
 
 ### Initial NanoHost Provisioning
 

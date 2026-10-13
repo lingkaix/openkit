@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: boundary
 date: "2026-09-10"
+updated: "2026-10-13"
 ---
 # App Update Delivery
 
@@ -44,7 +45,7 @@ Prepare inspects the running App before it writes a receipt. Prepare applies the
 
 The host helper independently validates a closed JSON request from stdin, capped at 16 KiB with a 10-second read deadline, rejecting unknown fields, paths, shell fragments and arbitrary verbs. It does not evaluate `SSH_ORIGINAL_COMMAND` as shell code. The App-key entry admits prepare/start/status only. NanoCore validates the same public inputs before transport.
 
-Host-owned configuration fixes the source repository used for release-tag attribution and the image repository used for the published digest. No request can supply a new remote, image repository or command. Deploying an exact source commit is a separately authorized external operator procedure under the cookbook's "Update An Exact Source Build", not a product-helper update mode. Selecting an older release is an explicit update request subject to the same data-compatibility checks, never implicit rollback permission.
+Host-owned configuration fixes the source repository used for release-tag attribution and the image repository used for the published digest. No request can supply a new remote, image repository or command. A persistent deployment updates only to a published release. No supported exact-source update procedure exists. [Retire The Exact-Source Update Procedure](../decisions/20261013-retire_exact_source_update.md) records the reason. Selecting an older release is an explicit update request subject to the same data-compatibility checks, never implicit rollback permission.
 
 ## Host Lifecycle And Records
 

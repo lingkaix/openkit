@@ -3,7 +3,7 @@ status: Accepted
 implementation: Implemented
 kind: process
 date: "2026-09-09"
-updated: "2026-10-12"
+updated: "2026-10-13"
 ---
 # Persistent Deployment Acceptance
 
@@ -104,4 +104,4 @@ Existing public operations, Task/Goal execution and evidence producers remain th
 
 On that same deployment, a later exact-commit App/Web update completes through the public packaged Skill, and an actual Web-directed Worker Task completes with a meaningful CONTRIBUTING-only diff Artifact. Independent exact-base patch/whitespace verification passes; the existing Web action resolves its durable Workspace Sync Review as rejected without applying the test change. The independent external verification report is imported through the existing Artifact interface and visible in the Task. Retained runtime evidence reconciles all seven Gateway calls in that Worker Turn. This proves the bounded composition, not a new internal judge service, a benchmark comparison, release publication, merge, destructive recovery or every Provider's Worker path. Other roadmap plans retain their individual acceptance obligations.
 
-The exact-commit update above is historical evidence for the formerly supported product update mode. It does not establish acceptance of the current release-only update helper. The exact-source procedure remains an operator procedure outside the release gate. The release gate uses catalog story 2 and the built-in update tools. Current exact-source App and Web updates outside that gate use the maintained [external-operator procedure](../cookbooks/persistent-live-acceptance.md#update-an-exact-source-build) referenced by the packaged operations Skill. [The update-mode removal decision](../decisions/20261010-remove_app_update_exact_commit.md) records why the helper is release-only.
+The exact-commit update above is historical evidence for the formerly supported product update mode. It does not establish acceptance of the current release-only update helper. The release gate uses catalog story 2 and the built-in update tools. A persistent deployment updates only to a published release. No supported exact-source update procedure exists. [The update-mode removal decision](../decisions/20261010-remove_app_update_exact_commit.md) records why the helper is release-only. [Retire The Exact-Source Update Procedure](../decisions/20261013-retire_exact_source_update.md) records this retirement.
