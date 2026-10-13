@@ -4552,6 +4552,21 @@ describe('createCoreClient', () => {
     await expect(client.operations['diagnostics.app']({})).resolves.toEqual(withoutBuild);
   });
 
+  it('drops an additive release-identity annotation instead of returning it', async () => {
+    const { client } = createFakeClient({
+      'POST /api/app/operations/diagnostics.app': {
+        body: {
+          ...appDiagnostics(),
+          build: { releaseTag: null, sourceCommit: null, note: 'inert future metadata' },
+        },
+      },
+    });
+
+    const result = await client.operations['diagnostics.app']({});
+    expect(result.build).toEqual({ releaseTag: null, sourceCommit: null });
+    expect(result.build).not.toHaveProperty('note');
+  });
+
   it('uses the strict diagnostics schema without unsupported response shapes', async () => {
     const { client } = createFakeClient({
       'POST /api/app/operations/diagnostics.app': {

@@ -14,6 +14,11 @@ type OperationArguments<K extends JsonOperationId> = z.input<
   (typeof OPERATION_DEFINITIONS)[K]['inputSchema']
 >;
 
+/** diagnostics.app is read through the tolerant client schema; every other result stays the server output. */
+type OperationClientResult<K extends JsonOperationId> = K extends 'diagnostics.app'
+  ? z.output<typeof AppDiagnosticsClientResponseSchema>
+  : OperationOutput<K>;
+
 /** Typed operation methods derived solely from the shared definition table. */
 export type OperationClient = {
   readonly [K in JsonOperationId]: (
@@ -22,7 +27,7 @@ export type OperationClient = {
         ? Omit<OperationArguments<K>, 'requestId'> & { requestId?: string }
         : OperationArguments<K>
       : OperationArguments<K>
-  ) => Promise<OperationOutput<K>>;
+  ) => Promise<OperationClientResult<K>>;
 };
 
 /** Projects definition-driven JSON methods onto the existing shared client transport. */

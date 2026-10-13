@@ -2354,6 +2354,36 @@ describe('app api schemas', () => {
     expect(AppDiagnosticsClientResponseSchema.parse({ ...payload, build: release }).build).toEqual(
       release
     );
+    expect(
+      AppDiagnosticsClientResponseSchema.parse({
+        ...payload,
+        build: { ...release, note: 'inert future metadata' },
+      }).build
+    ).toEqual(release);
+    expect(
+      AppDiagnosticsClientResponseSchema.safeParse({
+        ...payload,
+        build: { releaseTag: release.releaseTag, sourceCommit: null },
+      }).success
+    ).toBe(false);
+    expect(
+      AppDiagnosticsClientResponseSchema.safeParse({
+        ...payload,
+        build: { releaseTag: null, sourceCommit: release.sourceCommit },
+      }).success
+    ).toBe(false);
+    expect(
+      AppDiagnosticsClientResponseSchema.safeParse({
+        ...payload,
+        build: { releaseTag: 'V0.1.0', sourceCommit: release.sourceCommit },
+      }).success
+    ).toBe(false);
+    expect(
+      AppDiagnosticsClientResponseSchema.safeParse({
+        ...payload,
+        build: { releaseTag: release.releaseTag, sourceCommit: 'abc' },
+      }).success
+    ).toBe(false);
   });
 
   it('keeps generic internal-agent runtime state outside App Diagnostics', () => {

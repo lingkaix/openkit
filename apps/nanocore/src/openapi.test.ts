@@ -2050,11 +2050,21 @@ describe('app api openapi projection', () => {
       expect.arrayContaining(['service', 'boot', 'process', 'build', 'gateway'])
     );
     const build = jsonObject(jsonObject(diagnostics?.properties)?.build);
-    expect(build).toMatchObject({
-      type: 'object',
-      required: ['releaseTag', 'sourceCommit'],
-      additionalProperties: false,
-    });
+    const alternatives = Array.isArray(build?.anyOf) ? build.anyOf : build?.oneOf;
+    expect(Array.isArray(alternatives) ? alternatives : []).toHaveLength(2);
+    for (const alternative of Array.isArray(alternatives) ? alternatives : []) {
+      expect(alternative).toMatchObject({
+        type: 'object',
+        required: ['releaseTag', 'sourceCommit'],
+        additionalProperties: false,
+      });
+    }
+    const validateBuild = new Ajv2020({ strict: false, validateFormats: false }).compile(build);
+    const sourceCommit = '0123456789abcdef0123456789abcdef01234567';
+    expect(validateBuild({ releaseTag: null, sourceCommit: null })).toBe(true);
+    expect(validateBuild({ releaseTag: 'v0.1.0-rc.5', sourceCommit })).toBe(true);
+    expect(validateBuild({ releaseTag: 'v0.1.0-rc.5', sourceCommit: null })).toBe(false);
+    expect(validateBuild({ releaseTag: null, sourceCommit })).toBe(false);
     expect(process).toMatchObject({
       type: 'object',
       required: ['observedAt', 'nodeVersion', 'uptimeSeconds', 'memory', 'telemetry'],

@@ -82147,36 +82147,42 @@
             "additionalProperties": false
           },
           "build": {
-            "type": "object",
-            "properties": {
-              "releaseTag": {
-                "anyOf": [
-                  {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "releaseTag": {
+                    "type": "null"
+                  },
+                  "sourceCommit": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "releaseTag",
+                  "sourceCommit"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "releaseTag": {
                     "type": "string",
                     "pattern": "^v((?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|[0-9a-z-]*[a-z-][0-9a-z-]*)(?:\\.(?:0|[1-9]\\d*|[0-9a-z-]*[a-z-][0-9a-z-]*))*)?)$"
                   },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "sourceCommit": {
-                "anyOf": [
-                  {
+                  "sourceCommit": {
                     "type": "string",
                     "pattern": "^[a-f0-9]{40}$"
-                  },
-                  {
-                    "type": "null"
                   }
-                ]
+                },
+                "required": [
+                  "releaseTag",
+                  "sourceCommit"
+                ],
+                "additionalProperties": false
               }
-            },
-            "required": [
-              "releaseTag",
-              "sourceCommit"
-            ],
-            "additionalProperties": false
+            ]
           },
           "gateway": {
             "type": "object",
@@ -91092,5 +91098,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:8079e0301d0d55c330a34cf791ce78310500b0f3835feb4ef21439a9973f5966"
+  "x-openkit-source-digest": "sha256:690b2c7533fcc22828ab0f569f63c2b36aadb694556a365144961c6f93a58842"
 }

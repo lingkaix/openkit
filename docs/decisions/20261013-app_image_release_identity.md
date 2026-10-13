@@ -11,7 +11,7 @@ On 2026-10-13 the engineer accepted that the App image carries its release ident
 
 ## Reason
 
-[issue #232](https://github.com/lingkaix/openkit/issues/232) is the defect: there was no public read of the running release or image for `app-update.prepare`. The engineer's words are not quoted.
+[issue #232](https://github.com/lingkaix/openkit/issues/232) is the defect: there was no public read of the running release or image for `app-update.prepare`.
 
 ## Rejected Alternatives
 

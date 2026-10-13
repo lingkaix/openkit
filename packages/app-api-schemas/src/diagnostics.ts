@@ -324,31 +324,47 @@ export const PresentReleaseIdentitySchema = z.object({
 /**
  * Running release identity reported by authorized App Diagnostics.
  *
- * Both fields are null for a non-release build. A release build sets both.
- * A mixed pair is an unknown core value and is rejected.
+ * The closed alternatives are both null or both validated strings.
+ * A mixed pair matches neither alternative and is rejected.
+ * Unknown keys are rejected on this producer schema.
  */
-export const ReleaseBuildIdentitySchema = z
-  .object({
-    releaseTag: ReleaseTagSchema.nullable(),
-    sourceCommit: SourceCommitSchema.nullable(),
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    if ((value.releaseTag === null) !== (value.sourceCommit === null)) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Release tag and source commit must both identify a release or both be null.',
-      });
-    }
-  });
+export const ReleaseBuildIdentitySchema = z.union([
+  z
+    .object({
+      releaseTag: z.null(),
+      sourceCommit: z.null(),
+    })
+    .strict(),
+  z
+    .object({
+      releaseTag: ReleaseTagSchema,
+      sourceCommit: SourceCommitSchema,
+    })
+    .strict(),
+]);
+
+/**
+ * Known-field reader for a build projection.
+ *
+ * Unknown additive keys are dropped. A malformed tag, a malformed commit, and a mixed pair still fail.
+ */
+const ReleaseBuildIdentityReaderSchema = z.union([
+  z.object({
+    releaseTag: z.null(),
+    sourceCommit: z.null(),
+  }),
+  PresentReleaseIdentitySchema,
+]);
 
 /**
  * Builds the strict diagnostics.app response schema.
  *
+ * The generic parameter keeps the concrete build schema, so callers can read its fields.
+ *
  * @param build Release-identity field. The server requires it; an older client tolerates its absence.
  * @returns Strict App Diagnostics response schema.
  */
-function appDiagnosticsResponseSchema(build: z.ZodType) {
+function appDiagnosticsResponseSchema<T extends z.ZodType>(build: T) {
   return z
     .object({
       service: z.string().min(1),
@@ -402,7 +418,7 @@ export const AppDiagnosticsResponseSchema = appDiagnosticsResponseSchema(
  * An older server omits build. The server schema stays required; this reader only tolerates that absence.
  */
 export const AppDiagnosticsClientResponseSchema = appDiagnosticsResponseSchema(
-  ReleaseBuildIdentitySchema.optional()
+  ReleaseBuildIdentityReaderSchema.optional()
 );
 
 /** Provider diagnostic row returned by App Diagnostics. */
