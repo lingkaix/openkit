@@ -745,3 +745,63 @@ test('runTestSuite attributes Turbo tap-flat skip lines by hierarchy component',
     rmSync(reporter, { force: true, recursive: true });
   }
 });
+
+test('root skip guard keeps release admission falsifiers private', () => {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const result = spawnSync(
+    process.execPath,
+    [
+      governanceScript,
+      '--run',
+      '--',
+      process.execPath,
+      '--test',
+      join(repoRoot, 'tests/release-tests.test.mjs'),
+    ],
+    { cwd: repoRoot, encoding: 'utf8', env }
+  );
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(
+    result.stdout,
+    /actual single coverage execution refuses a deliberate undeclared Vitest skip/
+  );
+  assert.match(result.stdout, /skipped 0/);
+});
+
+for (const reporter of ['default', 'spec', 'tap']) {
+  test(`root skip guard rejects a real undeclared Node skip with the ${reporter} reporter`, () => {
+    const root = writeFixtureRepo({
+      'subject.test.mjs': `import test from 'node:test';
+test.skip('real-undeclared', () => {});
+`,
+    });
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT;
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [
+          governanceScript,
+          '--run',
+          '--',
+          process.execPath,
+          '--test',
+          ...(reporter === 'default' ? [] : [`--test-reporter=${reporter}`]),
+          join(root, 'subject.test.mjs'),
+        ],
+        { cwd: root, encoding: 'utf8', env }
+      );
+      assert.equal(result.status, 1, result.stdout + result.stderr);
+      assert.match(result.stdout, /(?:ℹ|#) skipped 1/);
+      assert.match(
+        result.stderr,
+        reporter === 'tap'
+          ? /Test suite reported undeclared skip: real-undeclared/
+          : /reported 1 skipped test\(s\) that cannot be attributed/
+      );
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+}

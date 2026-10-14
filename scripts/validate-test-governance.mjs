@@ -53,7 +53,8 @@ const HOST_PLACEMENT_PREFIX = /^bash\s+scripts\/test-env\.sh\s+host\b/u;
 const OPENKIT_ENV_NAME = /^OPENKIT_[A-Z0-9_]+$/u;
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]+=[^\s;|&<>]*$/u;
 const SHELL_CALLEES = new Set(['exec', 'execSync']);
-const VITEST_SKIP_SUMMARY = /^\s*(?:Test Files|Tests)\s+(\d+)\s+skipped\b/gimu;
+const UNATTRIBUTED_SKIP_SUMMARY =
+  /^\s*(?:(?:Test Files|Tests)\s+(\d+)\s+skipped\b|ℹ\s+skipped\s+(\d+)\b)/gimu;
 const PRE_RUN_BINARY_OPERATORS = new Set([
   ts.SyntaxKind.AmpersandAmpersandToken,
   ts.SyntaxKind.BarBarToken,
@@ -138,10 +139,10 @@ function executeTestSuite(options) {
       errors.push(`Test suite reported undeclared skip: ${name}`);
     }
   }
-  const vitestSkipped = vitestSkippedCount(output);
-  if (vitestSkipped > 0) {
+  const unattributedSkipped = unattributedSkippedCount(output);
+  if (unattributedSkipped > 0) {
     errors.push(
-      `Test suite reported ${vitestSkipped} skipped test(s) that cannot be attributed to a declared pre-run opt-in`
+      `Test suite reported ${unattributedSkipped} skipped test(s) that cannot be attributed to a declared pre-run opt-in`
     );
   }
   return { errors, stderr, stdout };
@@ -330,11 +331,11 @@ function containerSubjectPragmaHolds(text, hostMappedPaths, root, path) {
   return hostMappedPaths.has(relativePath);
 }
 
-/** Counts skipped tests reported by a Vitest default-reporter summary that does not name them. */
-function vitestSkippedCount(output) {
+/** Counts unnamed Vitest or Node spec skips, which cannot prove file-bound authorization. */
+function unattributedSkippedCount(output) {
   let skipped = 0;
-  for (const match of output.matchAll(VITEST_SKIP_SUMMARY)) {
-    skipped = Math.max(skipped, Number(match[1] ?? 0));
+  for (const match of output.matchAll(UNATTRIBUTED_SKIP_SUMMARY)) {
+    skipped = Math.max(skipped, Number(match[1] ?? match[2] ?? 0));
   }
   return skipped;
 }

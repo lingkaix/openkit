@@ -1,19 +1,36 @@
 // openkit-test-platform: posix
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import {
-  compareInventory,
-  coveredSuite,
-  packageSuite,
-  releaseTests,
-  testOwners,
-} from '../scripts/release-tests.mjs';
+import { compareInventory, coveredSuite, testOwners } from '../scripts/release-tests.mjs';
 import { runTestSuite } from '../scripts/validate-test-governance.mjs';
 
 const inventory = [{ name: 'case', file: '/example/case.test.ts' }];
+
+/**
+ * Captures the real admission path so deliberate fixture failures cannot become outer test results.
+ *
+ * @param {string} call Invocation of a production admission function.
+ * @returns {import('node:child_process').SpawnSyncReturns<string>} Private process result.
+ */
+function runAdmissionFixture(call) {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const moduleUrl = new URL('../scripts/release-tests.mjs', import.meta.url).href;
+  return spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '--eval',
+      `import { coveredSuite, packageSuite, releaseTests } from ${JSON.stringify(moduleUrl)};\n${call}`,
+    ],
+    { encoding: 'utf8', env }
+  );
+}
+
 test('inventory equality preserves duplicate counts and refuses lost cases', () => {
   assert.equal(compareInventory(inventory, inventory), 1);
   assert.throws(() => compareInventory([...inventory, ...inventory], inventory), /different/);
@@ -104,9 +121,17 @@ for (const [name, subject, passes] of [
       JSON.stringify({ name: '@fixture/native', scripts: { test: 'node subject.mjs' } })
     );
     writeFileSync(path.join(pkg, 'subject.mjs'), subject);
-    const run = () => packageSuite({ name: '@fixture/native' }, { root });
-    if (passes) assert.doesNotThrow(run);
-    else assert.throws(run, /Guarded test execution failed/);
+    const result = runAdmissionFixture(
+      `packageSuite({ name: '@fixture/native' }, ${JSON.stringify({ root })});`
+    );
+    assert.equal(result.status, passes ? 0 : 1, result.stdout + result.stderr);
+    if (!passes) assert.match(result.stderr, /Guarded test execution failed/);
+    if (name === 'undeclared skip') {
+      assert.match(result.stdout, /fixture.native > skipped # SKIP/);
+      assert.match(result.stderr, /Test suite reported undeclared skip: fixture.native > skipped/);
+    }
+    // pnpm maps the subject's nonzero exit to the package command's status 1.
+    if (name === 'failure') assert.match(result.stderr, /Test command exited with status 1/);
   });
 test('routine test:ci refuses a non-Vitest skip before later build or root checks', (t) => {
   const root = mkdtempSync(path.join(tmpdir(), 'release-routine-admission-'));
@@ -130,7 +155,10 @@ test('routine test:ci refuses a non-Vitest skip before later build or root check
     path.join(root, 'packages/native/subject.mjs'),
     'console.log("ok 1 - fixture.native > injected # SKIP");'
   );
-  assert.throws(() => releaseTests({ root }), /@fixture\/native: Guarded test execution failed/);
+  const result = runAdmissionFixture(`releaseTests(${JSON.stringify({ root })});`);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /fixture.native > injected # SKIP/);
+  assert.match(result.stderr, /@fixture\/native: Guarded test execution failed/);
 });
 
 /** The real coverage invocation sees a stable local success/failure/skip subject. */
@@ -156,26 +184,27 @@ function vitestFixture(t, body) {
   return { name: 'offline-admission', cwd };
 }
 test('actual single coverage execution passes the deliberate success subject', (t) => {
-  assert.equal(
-    coveredSuite(vitestFixture(t, 'test("success",()=>expect(value).toBe(1));')).execution,
-    'coverage passed'
+  const fixture = vitestFixture(t, 'test("success",()=>expect(value).toBe(1));');
+  const result = runAdmissionFixture(
+    `console.log(JSON.stringify(coveredSuite(${JSON.stringify(fixture)})));`
   );
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(JSON.parse(result.stdout.trim().split('\n').at(-1)).execution, 'coverage passed');
 });
 test('actual single coverage execution propagates a deliberate Vitest assertion failure', (t) => {
-  assert.throws(
-    () => coveredSuite(vitestFixture(t, 'test("failure",()=>expect(value).toBe(2));')),
-    /Guarded test execution failed/
-  );
+  const fixture = vitestFixture(t, 'test("failure",()=>expect(value).toBe(2));');
+  const result = runAdmissionFixture(`coveredSuite(${JSON.stringify(fixture)});`);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /not ok 1 - subject.test.js > failure/);
+  assert.match(result.stderr, /Guarded test execution failed/);
 });
 test('actual single coverage execution refuses a deliberate undeclared Vitest skip', (t) => {
-  assert.throws(
-    () =>
-      coveredSuite(
-        vitestFixture(
-          t,
-          'test("success",()=>expect(value).toBe(1)); test.skip("undeclared",()=>{});'
-        )
-      ),
-    /Guarded test execution failed/
+  const fixture = vitestFixture(
+    t,
+    'test("success",()=>expect(value).toBe(1)); test.skip("undeclared",()=>{});'
   );
+  const result = runAdmissionFixture(`coveredSuite(${JSON.stringify(fixture)});`);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /subject.test.js > undeclared # SKIP/);
+  assert.match(result.stderr, /Test suite reported undeclared skip: subject.test.js > undeclared/);
 });
