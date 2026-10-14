@@ -7,6 +7,7 @@ The current workflow policy is intentionally resource-light:
 - Pull requests run the lightweight repository check and the isolated NanoHost installer host gate.
 - Ordinary branch pushes do not run CI.
 - Lowercase version tags matching `v*.*.*` run the release gate through L0-L3 and L5, then publish the controlled release bundle.
+- The L0-L2 job directly runs `python3 -I -B scripts/docker/app-update-helper.test.py` on release-tag pushes and the `l0-l2`, `release-gate`, and `full` workflow-dispatch gates, unless an exact-commit successful candidate job is reused. Pull requests do not run that suite.
 - L4 Web e2e is a manual workflow-dispatch gate. Agent-first L6 story acceptance has no GitHub Actions job.
 - Release tags run `scripts/release-preflight.mjs` before publication to validate lowercase tag shape, current prerelease admission, main-branch ancestry, portable Skill and NanoHost inputs, the promoted host manifest, the supported OpenShell release and Cargo SDK consistency, the image manifest, and every release image base digest.
 - The tag workflow reads `release-notes/<tag>.md` through `scripts/release-notes.mjs` and fails before image promotion when that file is missing or malformed.

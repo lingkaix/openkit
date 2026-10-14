@@ -1014,12 +1014,13 @@ import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
 const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
 const job = Object.values(workflow.jobs).find(job => job.name === 'L0-L2 static, unit, contract');
-console.log(JSON.stringify({ on: Object.keys(workflow.on), steps: job.steps }));
+console.log(JSON.stringify({ push: workflow.on.push, condition: job.if, steps: job.steps, prSteps: workflow.jobs['pr-check'].steps }));
 """
         result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=REPO_ROOT, check=True, capture_output=True, text=True)
         workflow = json.loads(result.stdout)
-        self.assertIn("push", workflow["on"])
-        self.assertIn("pull_request", workflow["on"])
+        self.assertEqual(workflow["push"]["tags"], ["v*.*.*"])
+        self.assertEqual(workflow["condition"], "github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('[\"l0-l2\",\"release-gate\",\"full\"]'), inputs.gate))")
+        self.assertFalse(any("app-update-helper.test.py" in step.get("run", "") for step in workflow["prSteps"]))
         matching = [step for step in workflow["steps"] if step.get("run") == "python3 -I -B scripts/docker/app-update-helper.test.py"]
         self.assertEqual(len(matching), 1)
         self.assertNotIn("continue-on-error", matching[0])
