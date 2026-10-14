@@ -2560,7 +2560,9 @@ describe('thread lifecycle and attribution (S7)', () => {
     ['interrupt', 'before'],
     ['interrupt', 'after'],
   ] as const)('keeps concurrent %s failures and retries owner-bound when B settles %s A retry', async (command, workspaceBSettlement) => {
-    const user = userEvent.setup();
+    // Null delay skips the per-keystroke timer. A loaded runner otherwise spends the 10s test
+    // budget on those waits before the owner-bound retry is reached.
+    const user = userEvent.setup({ delay: null });
     const workspaceARequest = createDeferred<unknown>();
     const workspaceBRequest = createDeferred<unknown>();
     const workspaceBThread = {
