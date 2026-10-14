@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AppUpdateHostErrorSchema,
   AppUpdateHostOutputSchema,
+  AppUpdatePreflightResponseSchema,
   AppUpdateStatusResponseReaderSchema,
   AppUpdateStatusResponseSchema,
   PrepareAppUpdateRequestSchema,
@@ -43,6 +44,32 @@ const succeededPredicates = {
 };
 
 describe('app update schemas', () => {
+  it('rejects a false idle state and content in the preflight shape', () => {
+    const observation = {
+      observedAt: TIMESTAMP,
+      workspaceCount: 1,
+      state: 'idle',
+      counts: {
+        runningTurns: 1,
+        pendingTurns: 0,
+        queuedAdmissions: 0,
+        openAttempts: 0,
+        closingAttempts: 0,
+        inFlightCommands: 0,
+      },
+    };
+    expect(AppUpdatePreflightResponseSchema.safeParse(observation).success).toBe(false);
+    expect(
+      AppUpdatePreflightResponseSchema.safeParse({ ...observation, state: 'busy' }).success
+    ).toBe(true);
+    expect(
+      AppUpdatePreflightResponseSchema.safeParse({
+        ...observation,
+        state: 'busy',
+        title: 'private',
+      }).success
+    ).toBe(false);
+  });
   it('pins a published release source by tag, commit, and digest', () => {
     expect(
       PrepareAppUpdateRequestSchema.parse({
@@ -75,6 +102,31 @@ describe('app update schemas', () => {
         requestId: REQUEST_ID,
         source: releaseSource,
         stage: 'prepared',
+        helperSha256: 'c'.repeat(64),
+        preparedHelperSha256: 'c'.repeat(64),
+        approvalSummary: {
+          targetRelease: releaseSource,
+          expectedCurrentImageId: DIGEST,
+          observedCurrentImageId: DIGEST,
+          interruptionScope: 'NanoCore and Web interruption.',
+          safetyEvidence: {
+            deploymentBindings: true,
+            preflight: {
+              observedAt: TIMESTAMP,
+              workspaceCount: 1,
+              state: 'idle',
+              counts: {
+                runningTurns: 0,
+                pendingTurns: 0,
+                queuedAdmissions: 0,
+                openAttempts: 0,
+                closingAttempts: 0,
+                inFlightCommands: 0,
+              },
+            },
+          },
+          recoveryLimitations: ['No rollback across migrations.'],
+        },
       }).stage
     ).toBe('prepared');
   });

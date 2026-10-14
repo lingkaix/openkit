@@ -8,11 +8,13 @@ import type { CoreMode } from '../config/mode.js';
 import type { RuntimeConfigManager, RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { GatewayUsageTracker } from '../llm/gateway-usage.js';
 import { resolveLogicalModelCatalog } from '../llm/logical-models.js';
+import type { OperationInvocationDependencies } from '../operation-composition.js';
 import type { FamilyImplementations } from '../operation-contract.js';
 import type { ProviderCredentialConfigured } from '../providers/registry.js';
 import type { TurnExecutor } from '../runtime/types.js';
 import { mapRuntimeCapabilitiesToFlags } from '../service-routes.js';
 import { createProcessDiagnosticsSample } from './process-sample.js';
+import { observeOperationalReadiness } from './readiness.js';
 import { createSetupDiagnostics } from './setup.js';
 
 /** Samples existing diagnostics owners only after common deployment-administrator admission. */
@@ -32,7 +34,8 @@ export function createDiagnosticsOperationImplementations(
         readonly mode: CoreMode;
         readonly releaseIdentity: ReleaseBuildIdentity;
       }
-    | undefined
+    | undefined,
+  dependencies: OperationInvocationDependencies
 ) {
   return {
     'diagnostics.app': () => {
@@ -46,9 +49,11 @@ export function createDiagnosticsOperationImplementations(
         providerCredentialConfigured,
         releaseIdentity,
       } = services!;
+      const boot = getBootReadiness();
       return {
         service: 'nanocore',
-        boot: getBootReadiness(),
+        boot,
+        readiness: observeOperationalReadiness(dependencies, boot),
         process: createProcessDiagnosticsSample(),
         build: releaseIdentity,
         gateway: {

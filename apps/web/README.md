@@ -420,3 +420,5 @@ Access-token inventory, creation, rotation, revocation and personal administrato
 Gateway settings samples product diagnostics through `client.operations['diagnostics.app']({})`; account and chat discovery continue to avoid setup probes. Web Portability retains binary archive uploads and downloads through the existing stream bindings.
 
 Gateway account rows clear cached quota while pending or logged out, including late quota responses. The shared account and quota projections are covered by `src/screens/settings/provider-subscription-quota.test.ts`; logged-in observations retain their supplied values and timestamps.
+
+App update administration displays separate operational readiness observations and the prepared approval summary before maintenance consent. Missing retained summary evidence requires new preparation; a status read cannot fabricate approval evidence. Execution-host readiness displays observation age and its stored-observation limitation.

@@ -281,6 +281,10 @@ jobs:
           chown -R node:node "${GITHUB_WORKSPACE}" "${HOME}" "/pnpm/store" "/usr/local/cargo" "/usr/local/rustup"
           runuser -u node -- env HOME="${HOME}" pnpm -w verify:l0-l2
 
+      - name: Run App-update helper regressions
+        if: steps.reuse.outputs.reused != 'true'
+        run: python3 -I -B scripts/docker/app-update-helper.test.py
+
   nano-core-e2e:
     name: L3 NanoCore e2e
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["nano-core-e2e","release-gate","full"]'), inputs.gate))

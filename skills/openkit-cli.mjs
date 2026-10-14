@@ -151,13 +151,31 @@ async function doctor(env, state) {
       expected: PROTOCOL_VERSION,
     });
   }
+  const [diagnostics, preflight] = await Promise.allSettled([
+    client.operations['diagnostics.app']({}),
+    client.operations['app-update.preflight']({}),
+  ]);
+  const readiness = diagnostics.status === 'fulfilled' ? diagnostics.value.readiness : undefined;
   return {
     interfaceVersion: INTERFACE_VERSION,
     nodeVersion: process.versions.node,
     endpoint,
     authentication: credential?.source ?? 'unauthenticated-local',
     nanocore: {
-      ready: true,
+      serviceAvailability: 'available',
+      productWorkReadiness: readiness?.productWork ?? 'unknown',
+      updateReadiness: readiness?.update ?? { state: 'unknown', qualification: 'prepare-required' },
+      maintenanceSafety:
+        preflight.status === 'fulfilled'
+          ? { state: preflight.value.state, observation: preflight.value }
+          : { state: 'unknown', observation: null },
+      executionHost: readiness?.executionHost ?? {
+        state: 'unknown',
+        observedAt: null,
+        observationAgeMs: null,
+        liveProbe: false,
+        freshEmpty: null,
+      },
       protocolVersion: meta.protocolVersion,
       capabilities: meta.capabilities,
     },

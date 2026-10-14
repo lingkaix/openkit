@@ -125,6 +125,7 @@ def wait_fixture_auth_tokens(authorized_get, timeout: float = HTTP_READY_SECONDS
 ENTRYPOINT_PY = r"""#!/usr/bin/env python3
 import json, os, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from datetime import datetime, timezone
 from pathlib import Path
 if "openkit-app-smoke" in sys.argv:
     raise SystemExit(0)
@@ -152,6 +153,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"items": [fixture["token"]]})
         elif self.path == "/api/app/operations/diagnostics.app":
             self._send(200, {"boot": fixture["boot"]})
+        elif self.path == "/api/app/operations/app-update.preflight":
+            self._send(200, {
+                "observedAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                "workspaceCount": 0, "state": "idle",
+                "counts": {key: 0 for key in (
+                    "runningTurns", "pendingTurns", "queuedAdmissions",
+                    "openAttempts", "closingAttempts", "inFlightCommands",
+                )},
+            })
         elif self.path == "/api/app/operations/app-update.status":
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
             self._send(200, {"requestId": body["requestId"]})

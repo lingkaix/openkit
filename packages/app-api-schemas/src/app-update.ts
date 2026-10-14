@@ -97,6 +97,58 @@ export const AppUpdatePredicatesSchema = z
   })
   .strict();
 
+/** Content-free overlapping counts of currently owned deployment work. */
+export const AppUpdateWorkCountsSchema = z
+  .object({
+    runningTurns: z.number().int().nonnegative(),
+    pendingTurns: z.number().int().nonnegative(),
+    queuedAdmissions: z.number().int().nonnegative(),
+    openAttempts: z.number().int().nonnegative(),
+    closingAttempts: z.number().int().nonnegative(),
+    inFlightCommands: z.number().int().nonnegative(),
+  })
+  .strict();
+
+/** Instantaneous maintenance observation; it establishes no product admission barrier. */
+export const AppUpdatePreflightResponseSchema = z
+  .object({
+    observedAt: TimestampSchema,
+    workspaceCount: z.number().int().nonnegative(),
+    counts: AppUpdateWorkCountsSchema,
+    state: z.enum(['idle', 'busy']),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if ((value.state === 'idle') !== Object.values(value.counts).every((count) => count === 0))
+      ctx.addIssue({
+        code: 'custom',
+        path: ['state'],
+        message: 'Maintenance state must agree with every work count.',
+      });
+  });
+
+/** Complete review of the prepared target and bounded host observations. */
+export const AppUpdateApprovalSummarySchema = z
+  .object({
+    targetRelease: AppUpdateSourceSchema,
+    expectedCurrentImageId: AppUpdateImageDigestSchema,
+    observedCurrentImageId: AppUpdateImageDigestSchema,
+    interruptionScope: z.string().min(1).max(512),
+    safetyEvidence: z
+      .object({
+        deploymentBindings: z.literal(true),
+        preflight: AppUpdatePreflightResponseSchema,
+      })
+      .strict(),
+    recoveryLimitations: z.array(z.string().min(1).max(512)).min(1).max(16),
+  })
+  .strict();
+
+/** Deployment-wide maintenance observation without product content. */
+export type AppUpdatePreflightResponse = z.infer<typeof AppUpdatePreflightResponseSchema>;
+/** Review summary retained by a new host receipt. */
+export type AppUpdateApprovalSummary = z.infer<typeof AppUpdateApprovalSummarySchema>;
+
 /** Administrator prepare request for one closed App-update source. */
 export const PrepareAppUpdateRequestSchema = z
   .object({
@@ -108,6 +160,9 @@ export const PrepareAppUpdateRequestSchema = z
 /** Concrete review object returned by prepare. */
 export const PrepareAppUpdateResponseSchema = z
   .object({
+    approvalSummary: AppUpdateApprovalSummarySchema,
+    helperSha256: z.string().regex(/^[a-f0-9]{64}$/),
+    preparedHelperSha256: z.string().regex(/^[a-f0-9]{64}$/),
     expectedCurrentImageId: AppUpdateImageDigestSchema,
     preparedAt: TimestampSchema,
     requestId: AppUpdateRequestIdSchema,
@@ -117,6 +172,7 @@ export const PrepareAppUpdateResponseSchema = z
   .strict()
   .superRefine((value, ctx) => {
     addRawSecretIssues(value, ctx, []);
+    addApprovalBindingIssues(value, ctx);
   });
 
 /** Administrator start request for one prepared App-update receipt. */
@@ -130,6 +186,8 @@ export const StartAppUpdateRequestSchema = z
 /** Coded helper failure written to stdout instead of a receipt projection. */
 export const AppUpdateHostErrorCodeSchema = z.enum([
   'app_update_busy',
+  'app_update_work_active',
+  'app_update_preflight_unsupported',
   'app_update_capacity',
   'app_update_expired',
   'app_update_invalid_request',
@@ -142,6 +200,10 @@ export const AppUpdateHostErrorCodeSchema = z.enum([
 /** Helper stdout failure envelope. Mutually exclusive with AppUpdateStatusResponse. */
 export const AppUpdateHostErrorSchema = z
   .object({
+    helperSha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
     error: z
       .object({
         code: AppUpdateHostErrorCodeSchema,
@@ -157,10 +219,21 @@ export const AppUpdateHostErrorSchema = z
 /** Host receipt projection returned by start and status. */
 export const AppUpdateStatusResponseSchema = z
   .object({
+    approvalSummary: AppUpdateApprovalSummarySchema.nullable().optional(),
+    helperSha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+    preparedHelperSha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .nullable()
+      .optional(),
     candidateBoot: AppUpdateBootObservationSchema.nullable(),
     candidateImageId: AppUpdateImageDigestSchema.nullable(),
     completedAt: TimestampSchema.nullable(),
     error: z.string().min(1).max(512).nullable(),
+    errorCode: AppUpdateHostErrorCodeSchema.nullable().optional(),
     expectedCurrentImageId: AppUpdateImageDigestSchema,
     jobId: z.string().min(1).max(128).nullable(),
     outcome: AppUpdateOutcomeSchema,
@@ -177,6 +250,7 @@ export const AppUpdateStatusResponseSchema = z
   .strict()
   .superRefine((value, ctx) => {
     addRawSecretIssues(value, ctx, []);
+    addApprovalBindingIssues(value, ctx);
     const expectedOutcome = IN_PROGRESS_STAGES.has(value.stage) ? 'running' : value.stage;
     if (value.outcome !== expectedOutcome) {
       ctx.addIssue({
@@ -229,6 +303,30 @@ export const AppUpdateStatusResponseSchema = z
     }
   });
 
+/** Rejects a review that does not describe the receipt's immutable source and current-image selector. */
+function addApprovalBindingIssues(
+  value: {
+    approvalSummary?: AppUpdateApprovalSummary | null | undefined;
+    source: AppUpdateSource;
+    expectedCurrentImageId: string;
+  },
+  ctx: z.RefinementCtx
+): void {
+  const summary = value.approvalSummary;
+  if (!summary) return;
+  if (
+    summary.expectedCurrentImageId !== value.expectedCurrentImageId ||
+    summary.targetRelease.tag !== value.source.tag ||
+    summary.targetRelease.sourceCommit !== value.source.sourceCommit ||
+    summary.targetRelease.appDigest !== value.source.appDigest
+  )
+    ctx.addIssue({
+      code: 'custom',
+      path: ['approvalSummary'],
+      message: 'Approval summary must match the prepared source and current-image binding.',
+    });
+}
+
 /** Host-issued opaque App-update receipt id. */
 export type AppUpdateRequestId = z.infer<typeof AppUpdateRequestIdSchema>;
 /** Closed App-update source selected by prepare. */
@@ -256,8 +354,22 @@ export type AppUpdateHostOutput = z.infer<typeof AppUpdateHostOutputSchema>;
 /** Descriptive source observation; source-selection commands keep exact source schemas. */
 const AppUpdateObservedSourceSchema = AppUpdateSourceSchema.strip();
 
+/** Descriptive maintenance reader; unknown core count semantics still fail closed. */
+export const AppUpdatePreflightResponseReaderSchema = AppUpdatePreflightResponseSchema.strip();
+
+/** Retained review projection discarding annotations without accepting unknown work-count semantics. */
+const AppUpdateApprovalSummaryReaderSchema = AppUpdateApprovalSummarySchema.extend({
+  targetRelease: AppUpdateObservedSourceSchema,
+  safetyEvidence: AppUpdateApprovalSummarySchema.shape.safetyEvidence
+    .extend({
+      preflight: AppUpdatePreflightResponseReaderSchema,
+    })
+    .strip(),
+}).strip();
+
 /** Release review reader discarding descriptive additions, including retained source annotations. */
 export const PrepareAppUpdateResponseReaderSchema = PrepareAppUpdateResponseSchema.safeExtend({
+  approvalSummary: AppUpdateApprovalSummaryReaderSchema,
   source: AppUpdateObservedSourceSchema,
 }).strip();
 
@@ -268,6 +380,7 @@ export const AppUpdateHostErrorReaderSchema = AppUpdateHostErrorSchema.safeExten
 
 /** Helper receipt reader preserving all outcome refinements while discarding descriptive additions. */
 export const AppUpdateStatusResponseReaderSchema = AppUpdateStatusResponseSchema.safeExtend({
+  approvalSummary: AppUpdateApprovalSummaryReaderSchema.nullable().optional(),
   candidateBoot: AppUpdateBootObservationSchema.strip().nullable(),
   previousBoot: AppUpdateBootObservationSchema.strip().nullable(),
   predicates: AppUpdatePredicatesSchema.strip().nullable(),

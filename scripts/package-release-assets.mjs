@@ -61,6 +61,7 @@ export function packageReleaseAssets(input) {
   const ops = gitArchiveSkill(repoRoot, ref, outputDir, `openkit-ops-skill-${input.tag}`, [
     'LICENSE',
     'skills/openkit-ops',
+    'scripts/docker/app-update-helper.py',
   ]);
 
   const checksums = [[ops.archiveName, sha256File(ops.archivePath)]];

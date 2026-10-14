@@ -11078,6 +11078,55 @@
         }
       }
     },
+    "/api/app/operations/app-update.preflight": {
+      "post": {
+        "operationId": "app-update.preflight",
+        "tags": [
+          "app-update"
+        ],
+        "summary": "Observe content-free active-work counts across this deployment; no admission barrier.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/app-update.preflight.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Observe content-free active-work counts across this deployment; no admission barrier.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/app-update.preflight.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/app-update.prepare": {
       "post": {
         "operationId": "app-update.prepare",
@@ -80936,6 +80985,85 @@
         ],
         "additionalProperties": false
       },
+      "app-update.preflight.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "app-update.preflight.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "observedAt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workspaceCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "counts": {
+            "type": "object",
+            "properties": {
+              "runningTurns": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "pendingTurns": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "queuedAdmissions": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "openAttempts": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "closingAttempts": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "inFlightCommands": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "runningTurns",
+              "pendingTurns",
+              "queuedAdmissions",
+              "openAttempts",
+              "closingAttempts",
+              "inFlightCommands"
+            ],
+            "additionalProperties": false
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "busy"
+            ]
+          }
+        },
+        "required": [
+          "observedAt",
+          "workspaceCount",
+          "counts",
+          "state"
+        ],
+        "additionalProperties": false
+      },
       "app-update.prepare.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -80978,6 +81106,160 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "approvalSummary": {
+            "type": "object",
+            "properties": {
+              "targetRelease": {
+                "type": "object",
+                "properties": {
+                  "appDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "sourceCommit": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{40}$"
+                  },
+                  "tag": {
+                    "type": "string",
+                    "pattern": "^v(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?$"
+                  }
+                },
+                "required": [
+                  "appDigest",
+                  "sourceCommit",
+                  "tag"
+                ],
+                "additionalProperties": false
+              },
+              "expectedCurrentImageId": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "observedCurrentImageId": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "interruptionScope": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "safetyEvidence": {
+                "type": "object",
+                "properties": {
+                  "deploymentBindings": {
+                    "type": "boolean",
+                    "const": true
+                  },
+                  "preflight": {
+                    "type": "object",
+                    "properties": {
+                      "observedAt": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "workspaceCount": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "counts": {
+                        "type": "object",
+                        "properties": {
+                          "runningTurns": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "pendingTurns": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "queuedAdmissions": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "openAttempts": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "closingAttempts": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "inFlightCommands": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "runningTurns",
+                          "pendingTurns",
+                          "queuedAdmissions",
+                          "openAttempts",
+                          "closingAttempts",
+                          "inFlightCommands"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "idle",
+                          "busy"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "observedAt",
+                      "workspaceCount",
+                      "counts",
+                      "state"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "deploymentBindings",
+                  "preflight"
+                ],
+                "additionalProperties": false
+              },
+              "recoveryLimitations": {
+                "minItems": 1,
+                "maxItems": 16,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                }
+              }
+            },
+            "required": [
+              "targetRelease",
+              "expectedCurrentImageId",
+              "observedCurrentImageId",
+              "interruptionScope",
+              "safetyEvidence",
+              "recoveryLimitations"
+            ],
+            "additionalProperties": false
+          },
+          "helperSha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "preparedHelperSha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
           "expectedCurrentImageId": {
             "type": "string",
             "pattern": "^sha256:[a-f0-9]{64}$"
@@ -81020,6 +81302,9 @@
           }
         },
         "required": [
+          "approvalSummary",
+          "helperSha256",
+          "preparedHelperSha256",
           "expectedCurrentImageId",
           "preparedAt",
           "requestId",
@@ -81046,6 +81331,174 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "approvalSummary": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "targetRelease": {
+                    "type": "object",
+                    "properties": {
+                      "appDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      },
+                      "sourceCommit": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{40}$"
+                      },
+                      "tag": {
+                        "type": "string",
+                        "pattern": "^v(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?$"
+                      }
+                    },
+                    "required": [
+                      "appDigest",
+                      "sourceCommit",
+                      "tag"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "expectedCurrentImageId": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "observedCurrentImageId": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "interruptionScope": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  "safetyEvidence": {
+                    "type": "object",
+                    "properties": {
+                      "deploymentBindings": {
+                        "type": "boolean",
+                        "const": true
+                      },
+                      "preflight": {
+                        "type": "object",
+                        "properties": {
+                          "observedAt": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "workspaceCount": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "counts": {
+                            "type": "object",
+                            "properties": {
+                              "runningTurns": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "pendingTurns": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "queuedAdmissions": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "openAttempts": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "closingAttempts": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "inFlightCommands": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "runningTurns",
+                              "pendingTurns",
+                              "queuedAdmissions",
+                              "openAttempts",
+                              "closingAttempts",
+                              "inFlightCommands"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "idle",
+                              "busy"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "observedAt",
+                          "workspaceCount",
+                          "counts",
+                          "state"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [
+                      "deploymentBindings",
+                      "preflight"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "recoveryLimitations": {
+                    "minItems": 1,
+                    "maxItems": 16,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    }
+                  }
+                },
+                "required": [
+                  "targetRelease",
+                  "expectedCurrentImageId",
+                  "observedCurrentImageId",
+                  "interruptionScope",
+                  "safetyEvidence",
+                  "recoveryLimitations"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "helperSha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "preparedHelperSha256": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "candidateBoot": {
             "anyOf": [
               {
@@ -81125,6 +81578,28 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "errorCode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "app_update_busy",
+                  "app_update_work_active",
+                  "app_update_preflight_unsupported",
+                  "app_update_capacity",
+                  "app_update_expired",
+                  "app_update_invalid_request",
+                  "app_update_not_found",
+                  "app_update_recovery_required",
+                  "app_update_unconfigured",
+                  "app_update_unavailable"
+                ]
               },
               {
                 "type": "null"
@@ -81379,6 +81854,174 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "approvalSummary": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "targetRelease": {
+                    "type": "object",
+                    "properties": {
+                      "appDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      },
+                      "sourceCommit": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{40}$"
+                      },
+                      "tag": {
+                        "type": "string",
+                        "pattern": "^v(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?$"
+                      }
+                    },
+                    "required": [
+                      "appDigest",
+                      "sourceCommit",
+                      "tag"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "expectedCurrentImageId": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "observedCurrentImageId": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "interruptionScope": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  "safetyEvidence": {
+                    "type": "object",
+                    "properties": {
+                      "deploymentBindings": {
+                        "type": "boolean",
+                        "const": true
+                      },
+                      "preflight": {
+                        "type": "object",
+                        "properties": {
+                          "observedAt": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "workspaceCount": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "counts": {
+                            "type": "object",
+                            "properties": {
+                              "runningTurns": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "pendingTurns": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "queuedAdmissions": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "openAttempts": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "closingAttempts": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "inFlightCommands": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "runningTurns",
+                              "pendingTurns",
+                              "queuedAdmissions",
+                              "openAttempts",
+                              "closingAttempts",
+                              "inFlightCommands"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "idle",
+                              "busy"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "observedAt",
+                          "workspaceCount",
+                          "counts",
+                          "state"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [
+                      "deploymentBindings",
+                      "preflight"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "recoveryLimitations": {
+                    "minItems": 1,
+                    "maxItems": 16,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    }
+                  }
+                },
+                "required": [
+                  "targetRelease",
+                  "expectedCurrentImageId",
+                  "observedCurrentImageId",
+                  "interruptionScope",
+                  "safetyEvidence",
+                  "recoveryLimitations"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "helperSha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "preparedHelperSha256": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "candidateBoot": {
             "anyOf": [
               {
@@ -81458,6 +82101,28 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "errorCode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "app_update_busy",
+                  "app_update_work_active",
+                  "app_update_preflight_unsupported",
+                  "app_update_capacity",
+                  "app_update_expired",
+                  "app_update_invalid_request",
+                  "app_update_not_found",
+                  "app_update_recovery_required",
+                  "app_update_unconfigured",
+                  "app_update_unavailable"
+                ]
               },
               {
                 "type": "null"
@@ -82075,6 +82740,203 @@
               "acceptingProductWork",
               "overall",
               "subsystems"
+            ],
+            "additionalProperties": false
+          },
+          "readiness": {
+            "type": "object",
+            "properties": {
+              "serviceAvailability": {
+                "type": "string",
+                "const": "available"
+              },
+              "productWork": {
+                "type": "string",
+                "enum": [
+                  "ready",
+                  "blocked"
+                ]
+              },
+              "update": {
+                "type": "object",
+                "properties": {
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "configured",
+                      "unconfigured"
+                    ]
+                  },
+                  "qualification": {
+                    "type": "string",
+                    "const": "prepare-required"
+                  }
+                },
+                "required": [
+                  "state",
+                  "qualification"
+                ],
+                "additionalProperties": false
+              },
+              "maintenanceSafety": {
+                "type": "object",
+                "properties": {
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "idle",
+                      "busy",
+                      "unknown"
+                    ]
+                  },
+                  "observation": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "observedAt": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "workspaceCount": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "counts": {
+                            "type": "object",
+                            "properties": {
+                              "runningTurns": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "pendingTurns": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "queuedAdmissions": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "openAttempts": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "closingAttempts": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "inFlightCommands": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "runningTurns",
+                              "pendingTurns",
+                              "queuedAdmissions",
+                              "openAttempts",
+                              "closingAttempts",
+                              "inFlightCommands"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "idle",
+                              "busy"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "observedAt",
+                          "workspaceCount",
+                          "counts",
+                          "state"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "state",
+                  "observation"
+                ],
+                "additionalProperties": false
+              },
+              "executionHost": {
+                "type": "object",
+                "properties": {
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "ready",
+                      "not-ready",
+                      "unconfigured",
+                      "unknown"
+                    ]
+                  },
+                  "observedAt": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "observationAgeMs": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "liveProbe": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "freshEmpty": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "state",
+                  "observedAt",
+                  "observationAgeMs",
+                  "liveProbe",
+                  "freshEmpty"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "serviceAvailability",
+              "productWork",
+              "update",
+              "maintenanceSafety",
+              "executionHost"
             ],
             "additionalProperties": false
           },
@@ -89699,6 +90561,174 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "approvalSummary": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "targetRelease": {
+                    "type": "object",
+                    "properties": {
+                      "appDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      },
+                      "sourceCommit": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{40}$"
+                      },
+                      "tag": {
+                        "type": "string",
+                        "pattern": "^v(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?$"
+                      }
+                    },
+                    "required": [
+                      "appDigest",
+                      "sourceCommit",
+                      "tag"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "expectedCurrentImageId": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "observedCurrentImageId": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "interruptionScope": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  "safetyEvidence": {
+                    "type": "object",
+                    "properties": {
+                      "deploymentBindings": {
+                        "type": "boolean",
+                        "const": true
+                      },
+                      "preflight": {
+                        "type": "object",
+                        "properties": {
+                          "observedAt": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "workspaceCount": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "counts": {
+                            "type": "object",
+                            "properties": {
+                              "runningTurns": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "pendingTurns": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "queuedAdmissions": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "openAttempts": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "closingAttempts": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "inFlightCommands": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "runningTurns",
+                              "pendingTurns",
+                              "queuedAdmissions",
+                              "openAttempts",
+                              "closingAttempts",
+                              "inFlightCommands"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "idle",
+                              "busy"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "observedAt",
+                          "workspaceCount",
+                          "counts",
+                          "state"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [
+                      "deploymentBindings",
+                      "preflight"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "recoveryLimitations": {
+                    "minItems": 1,
+                    "maxItems": 16,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    }
+                  }
+                },
+                "required": [
+                  "targetRelease",
+                  "expectedCurrentImageId",
+                  "observedCurrentImageId",
+                  "interruptionScope",
+                  "safetyEvidence",
+                  "recoveryLimitations"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "helperSha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "preparedHelperSha256": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "candidateBoot": {
             "anyOf": [
               {
@@ -89778,6 +90808,28 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "errorCode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "app_update_busy",
+                  "app_update_work_active",
+                  "app_update_preflight_unsupported",
+                  "app_update_capacity",
+                  "app_update_expired",
+                  "app_update_invalid_request",
+                  "app_update_not_found",
+                  "app_update_recovery_required",
+                  "app_update_unconfigured",
+                  "app_update_unavailable"
+                ]
               },
               {
                 "type": "null"
@@ -91098,5 +92150,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:690b2c7533fcc22828ab0f569f63c2b36aadb694556a365144961c6f93a58842"
+  "x-openkit-source-digest": "sha256:2b8c7fe6c60896dd746d8d8c4720ee2a7f2e04effbc78997648233f6302716a0"
 }

@@ -20,6 +20,12 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
+# Capture identity for this invocation before any separately authorized replacement of the installed file.
+with open(__file__, "rb") as helper_file:
+    HELPER_SHA256 = hashlib.sha256(helper_file.read()).hexdigest()
+
+WORK_COUNT_KEYS = ("runningTurns", "pendingTurns", "queuedAdmissions", "openAttempts", "closingAttempts", "inFlightCommands")
+
 PRODUCTION_CONFIG_PATH = "/etc/openkit/app-update/helper.json"
 STDIN_LIMIT_BYTES = 16 * 1024
 STDIN_DEADLINE_SECONDS = 10
@@ -38,6 +44,8 @@ ALLOWED_OPS = frozenset({"prepare", "start", "status"})
 ERROR_CODES = frozenset(
     {
         "app_update_busy",
+        "app_update_work_active",
+        "app_update_preflight_unsupported",
         "app_update_capacity",
         "app_update_expired",
         "app_update_invalid_request",
@@ -155,10 +163,13 @@ PREDICATE_KEYS = (
     "webAssets",
 )
 PUBLIC_STATUS_KEYS = (
+    "approvalSummary",
+    "preparedHelperSha256",
     "candidateBoot",
     "candidateImageId",
     "completedAt",
     "error",
+    "errorCode",
     "expectedCurrentImageId",
     "jobId",
     "outcome",
@@ -538,6 +549,22 @@ class AppUpdateHelper:
             expected_current_image_id=command["expectedCurrentImageId"],
             prepared_at=prepared_at,
         )
+        preflight = self._idle_preflight()
+        receipt["preparedHelperSha256"] = HELPER_SHA256
+        receipt["approvalSummary"] = {
+            "targetRelease": dict(command["source"]),
+            "expectedCurrentImageId": command["expectedCurrentImageId"],
+            "observedCurrentImageId": current_identity["id"],
+            "interruptionScope": "NanoCore, Web and active client connections on this deployment are interrupted. NanoHost is not restarted.",
+            "safetyEvidence": {"deploymentBindings": True, "preflight": preflight},
+            "recoveryLimitations": [
+                "Restoration requires the configured migration-free assessment; apply rechecks it before stopping.",
+                "No automatic rollback across data migrations.",
+                "No automatic resume or replay of interrupted product work.",
+                "The final preflight is not an admission barrier; work may arrive before shutdown closes admission.",
+                "Candidate acquisition, smoke, retained-auth and NanoHost verification remain apply-time checks.",
+            ],
+        }
         self._write_receipt(receipt, exclusive=True)
         return project_status(receipt)
 
@@ -651,6 +678,7 @@ class AppUpdateHelper:
                 self._write_receipt(receipt)
                 self._assert_exclusive_dataroot_users({self.config["containerName"]})
                 self._aside_existing_previous(retained, request_id)
+                self._idle_preflight()
                 self._run_required(
                     ["docker", "stop", "--time", "60", self.config["containerName"]],
                     "Failed to stop the running App.",
@@ -711,6 +739,7 @@ class AppUpdateHelper:
         receipt["previousAppRestored"] = restored
         receipt["completedAt"] = isoformat(self.now())
         receipt["error"] = message
+        receipt["errorCode"] = error.code if isinstance(error, HelperError) else "app_update_unavailable"
         try:
             self._write_receipt(receipt)
         except Exception:
@@ -718,9 +747,25 @@ class AppUpdateHelper:
             if isinstance(error, HelperError):
                 raise error
             raise HelperError("app_update_unavailable", message) from error
-        if isinstance(error, HelperError) and error.code == "app_update_capacity":
+        if isinstance(error, HelperError) and error.code in {"app_update_capacity", "app_update_work_active", "app_update_preflight_unsupported"}:
             raise error
         return project_status(receipt)
+
+    def _idle_preflight(self) -> Dict[str, Any]:
+        """Require a content-free current observation; unsupported older Apps refuse without fallback."""
+        status, body = self._authorized_json("/api/app/operations/app-update.preflight", method="POST", body={})
+        if status == 404:
+            raise HelperError(
+                "app_update_preflight_unsupported",
+                "Running App predates the content-free App-update preflight; this update procedure cannot establish maintenance safety.",
+            )
+        if status != 200 or not isinstance(body, dict):
+            raise HelperError("app_update_unavailable", "Deployment work preflight is unavailable.")
+        body = parse_work_preflight(body)
+        idle = body["state"] == "idle"
+        if not idle:
+            raise HelperError("app_update_work_active", "Deployment work is active; running, pending, queued or in-flight work prevents the App update.")
+        return body
 
     def _acquire_candidate(self, source: Mapping[str, Any]) -> Dict[str, Any]:
         """Pull the verified published digest only after checking host capacity."""
@@ -857,6 +902,7 @@ class AppUpdateHelper:
             raise HelperError("app_update_unavailable", "Image identity is not a sha256 digest.")
         config = payload.get("Config") or {}
         return {
+            "env": list(config.get("Env") or []),
             "cmd": list(config.get("Cmd") or []),
             "entrypoint": list(config.get("Entrypoint") or []),
             "id": digest,
@@ -1059,8 +1105,12 @@ class AppUpdateHelper:
         test = health.get("Test") or []
         if test and test[0] == "CMD-SHELL" and len(test) >= 2:
             argv.extend(["--health-cmd", test[1]])
+        # Docker merges image defaults into container Config.Env. Replay only differences.
+        previous_image = self._image_identity(str(inspect.get("Image") or ""))
+        defaults = set(previous_image["env"])
         for env in config.get("Env") or []:
-            argv.extend(["--env", str(env)])
+            if env not in defaults:
+                argv.extend(["--env", str(env)])
         argv.append(image_ref)
         return argv
 
@@ -1774,6 +1824,14 @@ class AppUpdateHelper:
             or not COMMIT_RE.match(str(candidate_boot.get("sourceCommit") or ""))
         ):
             raise HelperError("app_update_recovery_required", "Succeeded receipt is missing the candidate boot.")
+        if parsed.get("errorCode") is not None and (not isinstance(parsed["errorCode"], str) or parsed["errorCode"] not in ERROR_CODES):
+            raise HelperError("app_update_recovery_required", "Retained App-update error code is unsupported.")
+        if parsed.get("preparedHelperSha256") is not None and not re.fullmatch(r"[a-f0-9]{64}", str(parsed["preparedHelperSha256"])):
+            raise HelperError("app_update_recovery_required", "Retained helper identity is malformed.")
+        if parsed.get("approvalSummary") is not None:
+            summary = project_approval_summary(parsed["approvalSummary"])
+            if summary["targetRelease"] != source or summary["expectedCurrentImageId"] != expected:
+                raise HelperError("app_update_recovery_required", "Retained approval summary contradicts the prepared binding.")
         parsed["source"] = source
         parsed["expectedCurrentImageId"] = expected
         parsed["outcome"] = expected_outcome
@@ -1804,7 +1862,7 @@ def host_error(code: str, message: str) -> Dict[str, Any]:
     if code not in ERROR_CODES:
         code = "app_update_unavailable"
     text = _redact(message)[:512] or "App-update helper failed."
-    return {"error": {"code": code, "message": text}}
+    return {"helperSha256": HELPER_SHA256, "error": {"code": code, "message": text}}
 
 
 def collapse_outcome(stage: str) -> str:
@@ -1816,9 +1874,68 @@ def set_stage(receipt: Dict[str, Any], stage: str) -> None:
     receipt["outcome"] = collapse_outcome(stage)
 
 
+def parse_work_preflight(body: Any) -> Dict[str, Any]:
+    """Read the closed work-count core and discard unrelated descriptive additions."""
+    if not isinstance(body, dict):
+        raise HelperError("app_update_unavailable", "Deployment work preflight is malformed.")
+    counts = body.get("counts")
+    if (
+        not isinstance(counts, dict) or set(counts) != set(WORK_COUNT_KEYS)
+        or any(type(value) is not int or value < 0 for value in counts.values())
+        or type(body.get("workspaceCount")) is not int or body["workspaceCount"] < 0
+        or not isinstance(body.get("observedAt"), str)
+        or re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z", body["observedAt"]) is None
+        or body.get("state") not in {"idle", "busy"}
+    ):
+        raise HelperError("app_update_unavailable", "Deployment work preflight is malformed.")
+    try:
+        _parse_iso(body["observedAt"])
+    except (ValueError, TypeError, OverflowError):
+        raise HelperError("app_update_unavailable", "Deployment work preflight observation time is malformed.")
+    idle = all(value == 0 for value in counts.values())
+    if (body["state"] == "idle") != idle:
+        raise HelperError("app_update_unavailable", "Deployment work preflight state contradicts its counts.")
+    return {key: body[key] for key in ("observedAt", "workspaceCount", "counts", "state")}
+
+
+def project_approval_summary(summary: Any) -> Dict[str, Any]:
+    """Validate retained preparation evidence and emit only the current review core."""
+    try:
+        source = _require_source(summary["targetRelease"], observed=True)
+        expected = _require_digest(summary["expectedCurrentImageId"])
+        observed = _require_digest(summary["observedCurrentImageId"])
+        scope = summary["interruptionScope"]
+        limitations = summary["recoveryLimitations"]
+        if not isinstance(scope, str) or not 1 <= len(scope) <= 512:
+            raise ValueError()
+        if not isinstance(limitations, list) or not 1 <= len(limitations) <= 16 or any(
+            not isinstance(item, str) or not 1 <= len(item) <= 512 for item in limitations
+        ):
+            raise ValueError()
+        if _redact(scope) != scope or any(_redact(item) != item for item in limitations):
+            raise ValueError()
+        evidence = summary["safetyEvidence"]
+        if evidence["deploymentBindings"] is not True:
+            raise ValueError()
+        preflight = parse_work_preflight(evidence["preflight"])
+        if preflight["state"] != "idle":
+            raise ValueError()
+        return {
+            "targetRelease": source, "expectedCurrentImageId": expected, "observedCurrentImageId": observed,
+            "interruptionScope": scope,
+            "safetyEvidence": {"deploymentBindings": True, "preflight": preflight},
+            "recoveryLimitations": limitations,
+        }
+    except (KeyError, TypeError, ValueError, HelperError) as error:
+        raise HelperError("app_update_recovery_required", "Retained App-update approval summary is malformed.") from error
+
+
 def project_status(receipt: Mapping[str, Any]) -> Dict[str, Any]:
     stage = str(receipt.get("stage") or "")
     status = {key: receipt.get(key, None) for key in PUBLIC_STATUS_KEYS}
+    status["helperSha256"] = HELPER_SHA256
+    if receipt.get("approvalSummary") is not None:
+        status["approvalSummary"] = project_approval_summary(receipt["approvalSummary"])
     status["stage"] = stage
     status["outcome"] = collapse_outcome(stage)
     for key in ("candidateBoot", "previousBoot"):

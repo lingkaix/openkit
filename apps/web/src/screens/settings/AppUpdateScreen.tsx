@@ -1,4 +1,5 @@
 import type {
+  AppUpdateApprovalSummary,
   AppUpdateSource,
   AppUpdateStatusResponse,
   PrepareAppUpdateResponse,
@@ -36,6 +37,12 @@ export function AppUpdateScreen() {
   const adminAccess = useQuery({
     queryKey: ['settings', 'app-update', 'admin-access'],
     queryFn: () => client.operations['token.list']({}),
+    retry: false,
+  });
+  const diagnostics = useQuery({
+    queryKey: ['settings', 'app-update', 'diagnostics'],
+    queryFn: () => client.operations['diagnostics.app']({}),
+    enabled: adminAccess.isSuccess,
     retry: false,
   });
   const prepare = useMutation({
@@ -87,7 +94,7 @@ export function AppUpdateScreen() {
       <PageHeader
         eyebrow="Administration"
         title="App update"
-        subtitle="Prepare one App update, then start replacement after explicit maintenance consent. The host applies and restores the running App."
+        subtitle="Prepare one App update, then start replacement after explicit maintenance consent. The host applies the update and reports whether restoration was possible."
       />
       {adminAccess.isLoading ? (
         <Skeleton lines={6} />
@@ -122,6 +129,42 @@ export function AppUpdateScreen() {
       ) : (
         <>
           {error ? <ErrorBanner message={errorMessage(error)} /> : null}
+          <Card className="flex flex-col gap-2">
+            <h2 className="text-sm font-bold text-fg-strong">Operational diagnostics</h2>
+            {diagnostics.isLoading ? (
+              <Skeleton lines={4} />
+            ) : diagnostics.isError ? (
+              <ErrorBanner
+                message="Operational diagnostics unavailable."
+                onRetry={() => void diagnostics.refetch()}
+              />
+            ) : (
+              <div className="text-xs text-fg-muted">
+                <p>
+                  Service availability:{' '}
+                  {diagnostics.data?.readiness?.serviceAvailability ?? 'unknown'}
+                </p>
+                <p>
+                  Product-work readiness: {diagnostics.data?.readiness?.productWork ?? 'unknown'}
+                </p>
+                <p>
+                  Update readiness: {diagnostics.data?.readiness?.update.state ?? 'unknown'} —
+                  prepare required
+                </p>
+                <p>
+                  Maintenance safety:{' '}
+                  {diagnostics.data?.readiness?.maintenanceSafety.state ?? 'unknown'}
+                </p>
+                <p>
+                  Execution-host readiness:{' '}
+                  {diagnostics.data?.readiness?.executionHost.state ?? 'unknown'}; observation age{' '}
+                  {diagnostics.data?.readiness?.executionHost.observationAgeMs ?? 'unknown'} ms; not
+                  a live probe
+                </p>
+                <p>freshEmpty does not establish deployment-wide idleness.</p>
+              </div>
+            )}
+          </Card>
           <Card className="flex flex-col gap-4">
             <TextField label="Release tag" value={tag} onChange={setTag} />
             <TextField label="Published App digest" value={appDigest} onChange={setAppDigest} />
@@ -176,11 +219,42 @@ export function AppUpdateScreen() {
                 expectedCurrentImageId={binding.expectedCurrentImageId}
                 source={binding.source}
               />
+              {binding.approvalSummary ? (
+                <div className="flex flex-col gap-1 text-xs text-fg-muted">
+                  <p>{binding.approvalSummary.interruptionScope}</p>
+                  <p>Observed current image {binding.approvalSummary.observedCurrentImageId}</p>
+                  <p>
+                    Maintenance safety: {binding.approvalSummary.safetyEvidence.preflight.state}
+                  </p>
+                  <p>Observed at {binding.approvalSummary.safetyEvidence.preflight.observedAt}</p>
+                  <p>
+                    Deployment bindings checked:{' '}
+                    {String(binding.approvalSummary.safetyEvidence.deploymentBindings)}
+                  </p>
+                  {Object.entries(binding.approvalSummary.safetyEvidence.preflight.counts).map(
+                    ([key, count]) => (
+                      <p key={key}>
+                        {key}: {count}
+                      </p>
+                    )
+                  )}
+                  {binding.approvalSummary.recoveryLimitations.map((limitation) => (
+                    <p key={limitation}>{limitation}</p>
+                  ))}
+                  <p>Helper SHA-256 {binding.helperSha256 ?? 'unknown'}</p>
+                </div>
+              ) : (
+                <p className="text-xs text-fg-muted">
+                  Approval summary unavailable; prepare a new update.
+                </p>
+              )}
               <Switch isSelected={maintenanceConsent} onChange={setMaintenanceConsent}>
                 I consent to the maintenance interruption for this prepared source
               </Switch>
               <Button
-                isDisabled={!maintenanceConsent || start.isPending || !requestId}
+                isDisabled={
+                  !binding.approvalSummary || !maintenanceConsent || start.isPending || !requestId
+                }
                 onPress={() => {
                   start.mutate(requestId);
                 }}
@@ -204,9 +278,13 @@ function reviewBinding(
   expectedCurrentImageId: string;
   requestId: string;
   source: AppUpdateSource;
+  approvalSummary: AppUpdateApprovalSummary | null;
+  helperSha256: string | null;
 } | null {
   if (review && review.requestId === requestId) {
     return {
+      approvalSummary: review.approvalSummary,
+      helperSha256: review.helperSha256,
       expectedCurrentImageId: review.expectedCurrentImageId,
       requestId: review.requestId,
       source: review.source,
@@ -214,6 +292,8 @@ function reviewBinding(
   }
   if (status && status.requestId === requestId) {
     return {
+      approvalSummary: status.approvalSummary ?? null,
+      helperSha256: status.helperSha256 ?? null,
       expectedCurrentImageId: status.expectedCurrentImageId,
       requestId: status.requestId,
       source: status.source,

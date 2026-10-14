@@ -178,7 +178,7 @@ The [pinned official Codex source](https://github.com/openai/codex/blob/2dae757b
 1. Confirm that the host can load this operations Skill, execute its bundled script, provide Node.js 24, and protect local credentials and environment state.
 2. Resolve `scripts/openkit` relative to the installed Skill directory.
 3. Set `OPENKIT_NANOCORE_URL` only when the process must use an explicit local or remote NanoCore endpoint.
-4. Run `scripts/openkit doctor` before invoking product operations.
+4. Run `scripts/openkit doctor` before invoking product operations. Read service availability, product-work readiness, update readiness and maintenance safety separately. Inspect execution-host observation age; this stored readiness is not a live probe, and `freshEmpty` does not prove deployment-wide idleness.
 5. Report endpoint reachability, authentication availability, NanoCore readiness, and contract compatibility without exposing sensitive values.
 
 Use the same public interface for local and remote NanoCore endpoints. Do not assume that a local endpoint authorizes unauthenticated access; follow the result returned by `doctor`.

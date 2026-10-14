@@ -1,5 +1,6 @@
-import { MetaResponseSchema, ReasoningEffortSchema } from '@openkit/protocol';
+import { MetaResponseSchema, ReasoningEffortSchema, TimestampSchema } from '@openkit/protocol';
 import { z } from 'zod';
+import { AppUpdatePreflightResponseSchema } from './app-update.js';
 import { addRawSecretIssues } from './raw-secrets.js';
 import { RuntimeConfigStatusSchema } from './runtime-config.js';
 
@@ -356,6 +357,38 @@ const ReleaseBuildIdentityReaderSchema = z.union([
   PresentReleaseIdentitySchema,
 ]);
 
+/** Separate observations for service, product admission, helper qualification and maintenance safety. */
+export const OperationalReadinessSchema = z
+  .object({
+    serviceAvailability: z.literal('available'),
+    productWork: z.enum(['ready', 'blocked']),
+    update: z
+      .object({
+        state: z.enum(['configured', 'unconfigured']),
+        qualification: z.literal('prepare-required'),
+      })
+      .strict(),
+    maintenanceSafety: z
+      .object({
+        state: z.enum(['idle', 'busy', 'unknown']),
+        observation: AppUpdatePreflightResponseSchema.nullable(),
+      })
+      .strict(),
+    executionHost: z
+      .object({
+        state: z.enum(['ready', 'not-ready', 'unconfigured', 'unknown']),
+        observedAt: TimestampSchema.nullable(),
+        observationAgeMs: z.number().int().nonnegative().nullable(),
+        liveProbe: z.literal(false),
+        freshEmpty: z.boolean().nullable(),
+      })
+      .strict(),
+  })
+  .strict();
+
+/** Public operational readiness dimensions; stored host observations never imply deployment idleness. */
+export type OperationalReadiness = z.infer<typeof OperationalReadinessSchema>;
+
 /**
  * Builds the strict diagnostics.app response schema.
  *
@@ -369,6 +402,7 @@ function appDiagnosticsResponseSchema<T extends z.ZodType>(build: T) {
     .object({
       service: z.string().min(1),
       boot: BootReadinessSnapshotSchema,
+      readiness: OperationalReadinessSchema.optional(),
       process: ProcessDiagnosticsSampleSchema,
       build,
       gateway: z.object({

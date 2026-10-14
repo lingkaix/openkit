@@ -12,6 +12,31 @@ const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
 const TIMESTAMP = '2026-09-10T00:00:00.000Z';
 
 const PREPARED = {
+  helperSha256: 'c'.repeat(64),
+  preparedHelperSha256: 'c'.repeat(64),
+  approvalSummary: {
+    targetRelease: { appDigest: DIGEST, sourceCommit: COMMIT, tag: 'v0.1.0' },
+    expectedCurrentImageId: DIGEST,
+    observedCurrentImageId: DIGEST,
+    interruptionScope: 'NanoCore, Web and active client connections are interrupted.',
+    safetyEvidence: {
+      deploymentBindings: true as const,
+      preflight: {
+        state: 'idle' as const,
+        observedAt: TIMESTAMP,
+        workspaceCount: 2,
+        counts: {
+          runningTurns: 0,
+          pendingTurns: 0,
+          queuedAdmissions: 0,
+          openAttempts: 0,
+          closingAttempts: 0,
+          inFlightCommands: 0,
+        },
+      },
+    },
+    recoveryLimitations: ['No automatic rollback across data migrations.'],
+  },
   expectedCurrentImageId: DIGEST,
   preparedAt: TIMESTAMP,
   requestId: REQUEST_ID,
@@ -118,6 +143,9 @@ describe('App update administration', () => {
       source: PREPARED.source,
     });
 
+    expect(screen.getByText(PREPARED.approvalSummary.interruptionScope)).toBeInTheDocument();
+    expect(screen.getByText('No automatic rollback across data migrations.')).toBeInTheDocument();
+    expect(screen.getByText('Maintenance safety: idle')).toBeInTheDocument();
     const start = screen.getByRole('button', { name: 'Start update' });
     expect(start).toBeDisabled();
     await user.click(

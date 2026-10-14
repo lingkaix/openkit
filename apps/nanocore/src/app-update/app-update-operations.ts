@@ -1,14 +1,18 @@
 import type { APP_UPDATE_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 
 import { recordServerAuditEvent } from '../audit-events.js';
+import type { OperationInvocationDependencies } from '../operation-composition.js';
 import { type FamilyImplementations, publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import type { CoreDb } from '../storage/db.js';
 import type { AppUpdateHostCommand } from './host-request.js';
 import type { AppUpdateHostResult, AppUpdateHostTransport } from './host-transport.js';
+import { observeAppUpdatePreflight } from './preflight.js';
 
 const HOST_ERROR_STATUS: Record<string, number> = {
   app_update_busy: 409,
+  app_update_work_active: 409,
+  app_update_preflight_unsupported: 409,
   app_update_capacity: 409,
   app_update_expired: 409,
   app_update_invalid_request: 400,
@@ -22,6 +26,10 @@ const HOST_ERROR_STATUS: Record<string, number> = {
 export function createAppUpdateOperationImplementations(input: {
   readonly coreDb?: CoreDb;
   readonly transport: AppUpdateHostTransport | null;
+  readonly observation?: Pick<
+    OperationInvocationDependencies,
+    'coreDb' | 'store' | 'inflightCommands'
+  >;
 }) {
   const { coreDb, transport } = input;
   /**
@@ -59,6 +67,8 @@ export function createAppUpdateOperationImplementations(input: {
   }
 
   return {
+    'app-update.preflight': () =>
+      observeAppUpdatePreflight(input.observation ?? { coreDb: undefined }),
     'app-update.prepare': async (input, context) => {
       requireHuman(context);
       const result = await invoke({
@@ -67,7 +77,16 @@ export function createAppUpdateOperationImplementations(input: {
         source: input.source,
       });
       const receipt = status(result);
+      if (!receipt.approvalSummary || !receipt.helperSha256 || !receipt.preparedHelperSha256)
+        throw new OperationError(
+          'app_update_recovery_required',
+          'Installed helper does not supply the complete prepared approval summary.',
+          409
+        );
       return {
+        approvalSummary: receipt.approvalSummary,
+        helperSha256: receipt.helperSha256,
+        preparedHelperSha256: receipt.preparedHelperSha256,
         expectedCurrentImageId: receipt.expectedCurrentImageId,
         preparedAt: receipt.preparedAt,
         requestId: receipt.requestId,

@@ -75,6 +75,44 @@ test('App update CLI admits only exact release requests and strips retained stat
   );
 });
 
+test('App update preflight maps one strict empty-input administrator read', async () => {
+  const { operationCatalog } = await operations();
+  const preflight = operationCatalog.find((entry) => entry.id === 'app-update.preflight');
+  assert.equal(preflight.mutating, false);
+  assert.deepEqual(preflight.inputSchema.parse({}), {});
+  assert.equal(preflight.inputSchema.safeParse({ workspaceId: 'ws_private' }).success, false);
+  assert.equal(preflight.inputSchema.safeParse({ requestId: 'not-an-input' }).success, false);
+  let captured;
+  const observation = {
+    observedAt: '2026-10-14T00:00:00.000Z',
+    workspaceCount: 2,
+    state: 'idle',
+    counts: {
+      runningTurns: 0,
+      pendingTurns: 0,
+      queuedAdmissions: 0,
+      openAttempts: 0,
+      closingAttempts: 0,
+      inFlightCommands: 0,
+    },
+  };
+  const result = await preflight.handler(
+    {
+      client: {
+        operations: {
+          'app-update.preflight': async (input) => {
+            captured = input;
+            return observation;
+          },
+        },
+      },
+    },
+    {}
+  );
+  assert.deepEqual(captured, {});
+  assert.deepEqual(result, observation);
+});
+
 test('pending request commands forward exact path identities and bodies', async () => {
   const { operationCatalog } = await operations();
   const answer = operationCatalog.find((entry) => entry.id === 'question.answer');
@@ -833,6 +871,7 @@ test('one catalog covers the checked App API and public Core projection', async 
   assert.deepEqual(
     idsWithAccess('deployment admin: implicit local actor or server-admin bearer token'),
     [
+      'app-update.preflight',
       'app-update.prepare',
       'app-update.start',
       'app-update.status',

@@ -41,6 +41,31 @@ function createMemoryTransport(now: () => number = Date.now): AppUpdateHostTrans
       if (command.op === 'prepare') {
         const requestId = randomUUID();
         const status: AppUpdateStatusResponse = {
+          helperSha256: 'c'.repeat(64),
+          preparedHelperSha256: 'c'.repeat(64),
+          approvalSummary: {
+            targetRelease: command.source,
+            expectedCurrentImageId: command.expectedCurrentImageId,
+            observedCurrentImageId: command.expectedCurrentImageId,
+            interruptionScope: 'NanoCore and Web interruption.',
+            safetyEvidence: {
+              deploymentBindings: true,
+              preflight: {
+                observedAt: new Date(now()).toISOString(),
+                workspaceCount: 1,
+                state: 'idle',
+                counts: {
+                  runningTurns: 0,
+                  pendingTurns: 0,
+                  queuedAdmissions: 0,
+                  openAttempts: 0,
+                  closingAttempts: 0,
+                  inFlightCommands: 0,
+                },
+              },
+            },
+            recoveryLimitations: ['No rollback across migrations.'],
+          },
           candidateBoot: null,
           candidateImageId: null,
           completedAt: null,
@@ -214,7 +239,12 @@ describe('app-update routes', () => {
   });
 
   it('keeps App-update operations off Worker and AEP catalogs', () => {
-    for (const operationId of ['app-update.prepare', 'app-update.start', 'app-update.status']) {
+    for (const operationId of [
+      'app-update.preflight',
+      'app-update.prepare',
+      'app-update.start',
+      'app-update.status',
+    ]) {
       expect(PUBLIC_OPERATION_ACCESS[operationId]).toMatchObject({
         authentication: 'deployment-admin',
         scope: 'server',
@@ -256,6 +286,24 @@ describe('app-update routes', () => {
     });
 
     try {
+      const sessionPreflight = await sessionApp.request(
+        '/api/app/operations/app-update.preflight',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
+        }
+      );
+      const tokenPreflight = await tokenApp.request('/api/app/operations/app-update.preflight', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${workspaceToken.secret}`,
+        },
+        body: '{}',
+      });
+      expect(sessionPreflight.status).toBe(403);
+      expect(tokenPreflight.status).toBe(403);
       const sessionDenied = await Promise.all([
         sessionApp.request(
           ...operationRequest(

@@ -38,8 +38,10 @@ test('release packager archives the complete Skill and writes its SHA-256', () =
   git(repoRoot, ['init', '-q']);
   git(repoRoot, ['config', 'user.email', 'release-test@openkit.local']);
   git(repoRoot, ['config', 'user.name', 'OpenKit Release Test']);
-  git(repoRoot, ['add', 'LICENSE', 'skills/openkit-ops']);
+  git(repoRoot, ['add', 'LICENSE', 'skills/openkit-ops', 'scripts/docker/app-update-helper.py']);
   git(repoRoot, ['commit', '-qm', 'fixture']);
+  // Packaging must use reviewed Git bytes even if the fixture working tree later changes.
+  writeFileSync(join(repoRoot, 'scripts', 'docker', 'app-update-helper.py'), 'unreviewed bytes');
 
   const outputDir = join(repoRoot, 'dist', 'release');
   const result = packageReleaseAssets({
@@ -62,6 +64,9 @@ test('release packager archives the complete Skill and writes its SHA-256', () =
   assert.deepEqual(listed.stdout.trim().split('\n').sort(), [
     'openkit-ops-skill-v0.1.0-rc.1/',
     'openkit-ops-skill-v0.1.0-rc.1/LICENSE',
+    'openkit-ops-skill-v0.1.0-rc.1/scripts/',
+    'openkit-ops-skill-v0.1.0-rc.1/scripts/docker/',
+    'openkit-ops-skill-v0.1.0-rc.1/scripts/docker/app-update-helper.py',
     'openkit-ops-skill-v0.1.0-rc.1/skills/',
     'openkit-ops-skill-v0.1.0-rc.1/skills/openkit-ops/',
     'openkit-ops-skill-v0.1.0-rc.1/skills/openkit-ops/SKILL.md',
@@ -84,6 +89,12 @@ test('release packager archives the complete Skill and writes its SHA-256', () =
     encoding: 'utf8',
   });
   assert.equal(extracted.status, 0, extracted.stderr);
+  assert.deepEqual(
+    readFileSync(
+      join(extractDir, 'openkit-ops-skill-v0.1.0-rc.1', 'scripts', 'docker', 'app-update-helper.py')
+    ),
+    readFileSync(join(process.cwd(), 'scripts', 'docker', 'app-update-helper.py'))
+  );
   assert.notEqual(
     statSync(
       join(
@@ -114,7 +125,7 @@ test('packaged administrator CLI describes current App-update operations', () =>
     git(repoRoot, ['init', '-q']);
     git(repoRoot, ['config', 'user.email', 'release-test@openkit.local']);
     git(repoRoot, ['config', 'user.name', 'OpenKit Release Test']);
-    git(repoRoot, ['add', 'LICENSE', 'skills/openkit-ops']);
+    git(repoRoot, ['add', 'LICENSE', 'skills/openkit-ops', 'scripts/docker/app-update-helper.py']);
     git(repoRoot, ['commit', '-qm', 'fixture']);
 
     const tag = 'v0.0.0-app-update-cli';
@@ -138,7 +149,12 @@ test('packaged administrator CLI describes current App-update operations', () =>
       'scripts',
       'openkit'
     );
-    for (const operationId of ['app-update.prepare', 'app-update.start', 'app-update.status']) {
+    for (const operationId of [
+      'app-update.preflight',
+      'app-update.prepare',
+      'app-update.start',
+      'app-update.status',
+    ]) {
       const described = spawnSync(process.execPath, [packagedCli, 'ops', 'describe', operationId], {
         encoding: 'utf8',
       });
@@ -168,7 +184,7 @@ test('release packager archives the operations Skill with LICENSE and SHA-256', 
   git(repoRoot, ['init', '-q']);
   git(repoRoot, ['config', 'user.email', 'release-test@openkit.local']);
   git(repoRoot, ['config', 'user.name', 'OpenKit Release Test']);
-  git(repoRoot, ['add', 'LICENSE', 'skills/openkit-ops']);
+  git(repoRoot, ['add', 'LICENSE', 'skills/openkit-ops', 'scripts/docker/app-update-helper.py']);
   git(repoRoot, ['commit', '-qm', 'fixture']);
 
   const outputDir = join(repoRoot, 'dist', 'release');
@@ -183,6 +199,9 @@ test('release packager archives the operations Skill with LICENSE and SHA-256', 
   assert.deepEqual(listed.stdout.trim().split('\n').sort(), [
     'openkit-ops-skill-v0.1.0-rc.1/',
     'openkit-ops-skill-v0.1.0-rc.1/LICENSE',
+    'openkit-ops-skill-v0.1.0-rc.1/scripts/',
+    'openkit-ops-skill-v0.1.0-rc.1/scripts/docker/',
+    'openkit-ops-skill-v0.1.0-rc.1/scripts/docker/app-update-helper.py',
     'openkit-ops-skill-v0.1.0-rc.1/skills/',
     'openkit-ops-skill-v0.1.0-rc.1/skills/openkit-ops/',
     'openkit-ops-skill-v0.1.0-rc.1/skills/openkit-ops/SKILL.md',
@@ -213,6 +232,7 @@ test('release packager archives the operations Skill with LICENSE and SHA-256', 
 
 test('operations Skill verifier rejects a packaged reference that does not resolve', () => {
   const repoRoot = mkdtempSync(join(tmpdir(), 'openkit-ops-missing-ref-'));
+  writeAppUpdateHelperFixture(repoRoot);
   writeFileSync(join(repoRoot, 'LICENSE'), 'fixture license\n');
   mkdirSync(join(repoRoot, 'skills', 'openkit-ops', 'scripts'), { recursive: true });
   writeFileSync(join(repoRoot, 'skills', 'openkit-ops', 'SKILL.md'), '# Fixture Skill\n');
@@ -233,7 +253,7 @@ test('operations Skill verifier rejects a packaged reference that does not resol
   git(repoRoot, ['init', '-q']);
   git(repoRoot, ['config', 'user.email', 'release-test@openkit.local']);
   git(repoRoot, ['config', 'user.name', 'OpenKit Release Test']);
-  git(repoRoot, ['add', 'LICENSE', 'skills/openkit-ops']);
+  git(repoRoot, ['add', 'LICENSE', 'skills/openkit-ops', 'scripts/docker/app-update-helper.py']);
   git(repoRoot, ['commit', '-qm', 'fixture']);
   const result = packageReleaseAssets({
     outputDir: join(repoRoot, 'dist', 'release'),
@@ -1189,8 +1209,18 @@ function git(cwd, args) {
   return result.stdout.trim();
 }
 
+/** Adds the checkout's reviewed helper bytes to a selected-release fixture. */
+function writeAppUpdateHelperFixture(repoRoot) {
+  mkdirSync(join(repoRoot, 'scripts', 'docker'), { recursive: true });
+  copyFileSync(
+    join(process.cwd(), 'scripts', 'docker', 'app-update-helper.py'),
+    join(repoRoot, 'scripts', 'docker', 'app-update-helper.py')
+  );
+}
+
 /** Writes one operations Skill tree with sibling reference links. */
 function writeOpsSkillFixture(repoRoot) {
+  writeAppUpdateHelperFixture(repoRoot);
   mkdirSync(join(repoRoot, 'skills', 'openkit-ops', 'scripts'), { recursive: true });
   const cliPath = join(repoRoot, 'skills', 'openkit-ops', 'scripts', 'openkit');
   copyFileSync(join(process.cwd(), 'skills', 'openkit-ops', 'scripts', 'openkit'), cliPath);
@@ -1213,6 +1243,7 @@ function writeOpsSkillFixture(repoRoot) {
 /** Captures the complete candidate operations package in an isolated selected-ref fixture. */
 function candidateOperationsRepository() {
   const root = mkdtempSync(join(tmpdir(), 'openkit-ops-candidate-'));
+  writeAppUpdateHelperFixture(root);
   copyFileSync(join(process.cwd(), 'LICENSE'), join(root, 'LICENSE'));
   cpSync(join(process.cwd(), 'skills', 'openkit-ops'), join(root, 'skills', 'openkit-ops'), {
     recursive: true,
@@ -1220,7 +1251,7 @@ function candidateOperationsRepository() {
   git(root, ['init', '-q']);
   git(root, ['config', 'user.email', 'release-test@openkit.local']);
   git(root, ['config', 'user.name', 'OpenKit Release Test']);
-  git(root, ['add', 'LICENSE', 'skills/openkit-ops']);
+  git(root, ['add', 'LICENSE', 'skills/openkit-ops', 'scripts/docker/app-update-helper.py']);
   git(root, ['commit', '-qm', 'candidate']);
   return root;
 }

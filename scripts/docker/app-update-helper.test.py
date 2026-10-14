@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import errno
 import fcntl
+import hashlib
 import importlib.util
 import io
 import json
 import os
 import subprocess
+import shutil
+import tarfile
 import tempfile
 import threading
 import unittest
@@ -395,6 +398,10 @@ class RecordingEffects:
 
     def http_json(self, url: str, headers: Optional[dict] = None, timeout: Optional[float] = None, method: str = "GET", body=None):
         self.http_calls.append(url)
+        if url.endswith("/api/app/operations/app-update.preflight"):
+            if method != "POST" or body != {}:
+                raise AssertionError("Preflight must use its canonical empty-input binding.")
+            return getattr(self, "preflight_http", (200, getattr(self, "preflight", idle_preflight())))
         if url.endswith("/api/app/operations/diagnostics.app"):
             if self.diagnostics_status != 200:
                 return self.diagnostics_status, None
@@ -596,7 +603,7 @@ def assert_closed_host_output(module, body: dict) -> None:
             "host output failed AppUpdateHostOutputSchema: %s body=%s"
             % (completed.stderr.strip() or completed.stdout.strip(), body)
         )
-    if isinstance(body.get("error"), dict) and set(body) == {"error"}:
+    if isinstance(body.get("error"), dict) and set(body).issubset({"error", "helperSha256"}):
         return
     expected = "running" if body["stage"] in module.IN_PROGRESS_STAGES else body["stage"]
     if body["outcome"] != expected:
@@ -792,6 +799,330 @@ class ReleaseOnlyRegressionTests(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text()), stored)
             helper = module.AppUpdateHelper(module.load_config(str(config_path)), effects, lambda: 1_000_000.0)
             self.assertEqual(len(helper._receipt_files()), 2)
+
+
+def idle_preflight() -> dict:
+    """Content-free instantaneous deployment observation."""
+    return {
+        "observedAt": "2026-10-14T00:00:00.000Z",
+        "workspaceCount": 2,
+        "state": "idle",
+        "counts": {key: 0 for key in (
+            "runningTurns", "pendingTurns", "queuedAdmissions",
+            "openAttempts", "closingAttempts", "inFlightCommands",
+        )},
+    }
+
+
+class RC6RegressionTests(unittest.TestCase):
+    """Accepted update safety, environment and review regressions."""
+
+    def test_prepare_refuses_active_work_without_receipt_or_interruption(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.preflight = idle_preflight()
+            effects.preflight["counts"]["runningTurns"] = 1
+            effects.preflight["state"] = "busy"
+            _path, effects, code, body = _prepare(module, root, effects=effects)
+            self.assertEqual(code, 0)
+            self.assertIsInstance(body["error"], dict)
+            self.assertEqual(body["error"]["code"], "app_update_work_active")
+            self.assertEqual(list((root / "receipts").glob("*.json")), [])
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+    def test_missing_preflight_names_older_running_app(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            effects = RecordingEffects()
+            effects.preflight_http = (404, None)
+            _path, effects, code, body = _prepare(module, Path(tmp), effects=effects)
+            self.assertEqual(code, 0)
+            self.assertIsInstance(body["error"], dict)
+            self.assertEqual(body["error"]["code"], "app_update_preflight_unsupported")
+            self.assertIn("predates", body["error"]["message"])
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+    def test_apply_rechecks_work_under_lock_immediately_before_stop(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path, effects, _code, prepared = _prepare(module, root)
+            original = effects.run
+            def run(argv, timeout=None):
+                result = original(argv, timeout)
+                if argv[:2] == ["docker", "cp"]:
+                    effects.preflight = idle_preflight()
+                    effects.preflight["counts"]["inFlightCommands"] = 1
+                    effects.preflight["state"] = "busy"
+                return result
+            effects.run = run
+            original_http = effects.http_json
+            def http_json(url, **kwargs):
+                if url.endswith("/api/app/operations/app-update.preflight"):
+                    lock_path = json.loads(path.read_text())["lockPath"]
+                    with open(lock_path, "a+") as probe:
+                        with self.assertRaises(BlockingIOError):
+                            fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return original_http(url, **kwargs)
+            effects.http_json = http_json
+            code, body = invoke(module, {}, path, effects=effects, extra_argv=["--apply", prepared["requestId"]])
+            self.assertEqual(code, 0)
+            self.assertIsInstance(body["error"], dict)
+            self.assertEqual(body["error"]["code"], "app_update_work_active")
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+            receipt = json.loads((root / "receipts" / (prepared["requestId"] + ".json")).read_text())
+            self.assertEqual(receipt["stage"], "failed")
+            self.assertFalse(receipt["appStopped"])
+
+    def test_prepare_summary_and_status_identify_exact_helper_bytes(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            path, effects, code, prepared = _prepare(module, Path(tmp))
+            self.assertEqual(code, 0)
+            expected = hashlib.sha256(HELPER_PATH.read_bytes()).hexdigest()
+            self.assertIn("helperSha256", prepared)
+            self.assertEqual(prepared["helperSha256"], expected)
+            self.assertEqual(prepared["preparedHelperSha256"], expected)
+            summary = prepared["approvalSummary"]
+            self.assertEqual(summary["targetRelease"], RELEASE_SOURCE)
+            self.assertEqual(summary["expectedCurrentImageId"], DIGEST)
+            self.assertEqual(summary["observedCurrentImageId"], DIGEST)
+            self.assertEqual(summary["safetyEvidence"]["preflight"], idle_preflight())
+            self.assertTrue(summary["safetyEvidence"]["deploymentBindings"])
+            self.assertIn("No automatic rollback across data migrations.", summary["recoveryLimitations"])
+            _code, status = invoke(module, {"op": "status", "requestId": prepared["requestId"]}, path, effects=effects)
+            self.assertEqual(status["approvalSummary"], summary)
+            self.assertEqual(status["helperSha256"], expected)
+
+    def test_retained_receipt_without_new_preparation_fields_remains_readable(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path, effects, _code, prepared = _prepare(module, root)
+            receipt_path = root / "receipts" / (prepared["requestId"] + ".json")
+            receipt = json.loads(receipt_path.read_text())
+            receipt.pop("approvalSummary")
+            receipt.pop("preparedHelperSha256")
+            receipt_path.write_text(json.dumps(receipt))
+            _code, status = invoke(module, {"op": "status", "requestId": prepared["requestId"]}, path, effects=effects)
+            self.assertEqual(status["stage"], "prepared")
+            self.assertIsNone(status["approvalSummary"])
+            self.assertIsNone(status["preparedHelperSha256"])
+            self.assertEqual(status["helperSha256"], hashlib.sha256(HELPER_PATH.read_bytes()).hexdigest())
+
+    def test_retained_summary_discards_annotations_but_refuses_a_changed_binding(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path, effects, _code, prepared = _prepare(module, root)
+            receipt_path = root / "receipts" / (prepared["requestId"] + ".json")
+            receipt = json.loads(receipt_path.read_text())
+            summary = receipt["approvalSummary"]
+            summary["annotation"] = "private canary must not be forwarded"
+            summary["safetyEvidence"]["annotation"] = "private canary"
+            summary["safetyEvidence"]["preflight"]["annotation"] = "private canary"
+            receipt_path.write_text(json.dumps(receipt))
+            _code, status = invoke(module, {"op": "status", "requestId": prepared["requestId"]}, path, effects=effects)
+            self.assertEqual(status["approvalSummary"], prepared["approvalSummary"])
+            self.assertNotIn("private canary", json.dumps(status))
+            summary["targetRelease"]["appDigest"] = "sha256:" + "f" * 64
+            receipt_path.write_text(json.dumps(receipt))
+            _code, body = invoke(module, {"op": "status", "requestId": prepared["requestId"]}, path, effects=effects)
+            self.assertEqual(body["error"]["code"], "app_update_recovery_required")
+
+    def test_known_summary_content_cannot_leak_retained_credentials(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path, effects, _code, prepared = _prepare(module, root)
+            receipt_path = root / "receipts" / (prepared["requestId"] + ".json")
+            receipt = json.loads(receipt_path.read_text())
+            receipt["approvalSummary"]["recoveryLimitations"].append("Corrupt record contains okt_must_not_leak")
+            receipt_path.write_text(json.dumps(receipt))
+            _code, body = invoke(module, {"op": "status", "requestId": prepared["requestId"]}, path, effects=effects)
+            self.assertEqual(body["error"]["code"], "app_update_recovery_required")
+            self.assertNotIn("okt_must_not_leak", json.dumps(body))
+
+    def test_malformed_or_contradictory_preflight_does_not_create_a_receipt(self) -> None:
+        module = load_helper()
+        for change in ("negative", "false-idle", "missing-count", "invalid-time"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                effects = RecordingEffects()
+                effects.preflight = idle_preflight()
+                if change == "negative":
+                    effects.preflight["counts"]["runningTurns"] = -1
+                elif change == "false-idle":
+                    effects.preflight["counts"]["openAttempts"] = 1
+                elif change == "invalid-time":
+                    effects.preflight["observedAt"] = "2026-10-14"
+                else:
+                    effects.preflight["counts"].pop("closingAttempts")
+                _path, _effects, _code, body = _prepare(module, root, effects=effects)
+                self.assertEqual(body["error"]["code"], "app_update_unavailable")
+                self.assertEqual(list((root / "receipts").glob("*.json")), [])
+
+    def test_status_without_a_receipt_still_identifies_installed_helper(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = write_config(root)
+            _code, body = invoke(module, {"op": "status", "requestId": str(uuid.uuid4())}, path)
+            self.assertEqual(body["error"]["code"], "app_update_unavailable")
+            self.assertEqual(body["helperSha256"], hashlib.sha256(HELPER_PATH.read_bytes()).hexdigest())
+
+    def test_operations_archive_contains_reviewed_helper_covered_by_outer_checksum(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            shutil.copytree(REPO_ROOT / "skills/openkit-ops", repo / "skills/openkit-ops")
+            (repo / "scripts/docker").mkdir(parents=True)
+            helper = repo / "scripts/docker/app-update-helper.py"
+            reviewed = HELPER_PATH.read_bytes()
+            helper.write_bytes(reviewed)
+            shutil.copyfile(REPO_ROOT / "LICENSE", repo / "LICENSE")
+            for argv in (
+                ["git", "init", "--quiet"],
+                ["git", "add", "."],
+                ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "fixture"],
+            ):
+                subprocess.run(argv, cwd=repo, check=True, capture_output=True)
+            helper.write_text("unreviewed working-tree bytes")
+            script = """
+import { packageReleaseAssets } from './scripts/package-release-assets.mjs';
+const result = packageReleaseAssets({ repoRoot: process.argv[1], outputDir: process.argv[2], tag: 'v0.1.0-rc.6' });
+console.log(JSON.stringify(result));
+"""
+            packaged = subprocess.run(
+                ["node", "--input-type=module", "-e", script, str(repo), str(root / "out")],
+                cwd=REPO_ROOT, check=True, capture_output=True, text=True,
+            )
+            result = json.loads(packaged.stdout)
+            archive = Path(result["opsArchivePath"])
+            checksum = Path(result["checksumPath"]).read_text().strip()
+            self.assertEqual(checksum, hashlib.sha256(archive.read_bytes()).hexdigest() + "  " + archive.name)
+            with tarfile.open(archive) as bundle:
+                member = bundle.extractfile("openkit-ops-skill-v0.1.0-rc.6/scripts/docker/app-update-helper.py")
+                self.assertEqual(member.read(), reviewed)
+
+    def test_ci_runs_the_helper_suite_directly_in_the_l0_l2_job(self) -> None:
+        script = """
+import { readFileSync } from 'node:fs';
+import { parse } from 'yaml';
+const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
+const job = Object.values(workflow.jobs).find(job => job.name === 'L0-L2 static, unit, contract');
+console.log(JSON.stringify({ on: Object.keys(workflow.on), steps: job.steps }));
+"""
+        result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=REPO_ROOT, check=True, capture_output=True, text=True)
+        workflow = json.loads(result.stdout)
+        self.assertIn("push", workflow["on"])
+        self.assertIn("pull_request", workflow["on"])
+        matching = [step for step in workflow["steps"] if step.get("run") == "python3 -I -B scripts/docker/app-update-helper.test.py"]
+        self.assertEqual(len(matching), 1)
+        self.assertNotIn("continue-on-error", matching[0])
+        self.assertEqual(matching[0].get("if"), "steps.reuse.outputs.reused != 'true'")
+
+    def test_replacement_replays_overrides_but_not_old_image_defaults(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path, effects, _code, _prepared = _prepare(module, root)
+            payload = effects._container_payload()
+            payload["Config"]["Env"].extend(["PATH=/old/image/bin", "RELEASE_DEFAULT=old", "OVERRIDE=operator", "NEW_SETTING=authored"])
+            original = effects._image_payload
+            def image_payload():
+                image = original()
+                image["Config"]["Env"] = ["PATH=/old/image/bin", "RELEASE_DEFAULT=old", "OVERRIDE=image"]
+                return image
+            effects._image_payload = image_payload
+            helper = module.AppUpdateHelper(module.load_config(str(path)), effects, lambda: 1_000_000.0)
+            argv = helper._replacement_argv(payload, "candidate", COMMIT)
+            env = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--env"]
+            self.assertNotIn("PATH=/old/image/bin", env)
+            self.assertNotIn("RELEASE_DEFAULT=old", env)
+            self.assertIn("OVERRIDE=operator", env)
+            self.assertIn("NEW_SETTING=authored", env)
+
+
+class DoctorReadinessTests(unittest.TestCase):
+    """Packaged administrator diagnostics retain unknown evidence and independent state dimensions."""
+
+    def test_doctor_distinguishes_availability_readiness_and_maintenance(self) -> None:
+        observation = idle_preflight()
+        observation["state"] = "busy"
+        observation["counts"]["runningTurns"] = 1
+        readiness = {
+            "serviceAvailability": "available", "productWork": "blocked",
+            "update": {"state": "configured", "qualification": "prepare-required"},
+            "maintenanceSafety": {"state": "busy", "observation": observation},
+            "executionHost": {"state": "ready", "observedAt": "2026-10-11T00:00:00.000Z", "observationAgeMs": 259200000, "freshEmpty": True, "liveProbe": False},
+        }
+        diagnostics = {
+            "service": "nanocore", "boot": {"bootId": PREVIOUS_BOOT_ID, "overall": "failed", "acceptingProductWork": False, "subsystems": ready_boot_subsystems(storage={"state": "failed", "reasons": [{"code": "storage.unavailable", "message": "Storage unavailable.", "blocks": ["product_work"]}]})},
+            "process": {"observedAt": "2026-10-14T00:00:00.000Z", "uptimeSeconds": 1, "nodeVersion": "v24.18.0", "memory": {"rssBytes": 1, "heapUsedBytes": 1, "heapTotalBytes": 1}, "telemetry": {"enabled": False, "exportConfigured": False}},
+            "build": {"releaseTag": None, "sourceCommit": None},
+            "gateway": {"status": "ok", "endpoints": ["/health"], "defaultModelId": None, "models": []},
+            "providers": {"diagnostics": [], "registry": []}, "capabilities": [],
+            "runtimeConfig": {"currentVersion": 1, "loadedAt": "2026-10-14T00:00:00.000Z", "lastReload": None, "lastFailedReload": None, "pendingRestart": []},
+            "readiness": readiness,
+        }
+        class Handler(BaseHTTPRequestHandler):
+            reject_reads = False
+            def log_message(self, *_args):
+                pass
+            def respond(self, body):
+                encoded = json.dumps(body).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+            def do_GET(self):
+                self.respond({"protocolVersion": "0.5.0", "capabilities": [], "eventFamilies": []})
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                if self.reject_reads:
+                    encoded = json.dumps({"protocolVersion": "0.5.0", "code": "deployment_admin_required", "message": "Administrator authority required."}).encode()
+                    self.send_response(403)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(encoded)))
+                    self.end_headers()
+                    self.wfile.write(encoded)
+                else:
+                    self.respond(observation if self.path.endswith("app-update.preflight") else diagnostics)
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            env = dict(os.environ, OPENKIT_NANOCORE_URL="http://127.0.0.1:%s" % server.server_port, OPENKIT_NANOCORE_TOKEN="okt_fixture_doctor")
+            result = subprocess.run(["node", str(REPO_ROOT / "skills/openkit-ops/scripts/openkit"), "doctor"], env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            body = json.loads(result.stdout)
+            self.assertTrue(body["ok"])
+            state = body["data"]["nanocore"]
+            self.assertEqual(state["serviceAvailability"], "available")
+            self.assertEqual(state["productWorkReadiness"], "blocked")
+            self.assertEqual(state["maintenanceSafety"]["state"], "busy")
+            self.assertEqual(state["executionHost"]["observationAgeMs"], 259200000)
+            self.assertFalse(state["executionHost"]["liveProbe"])
+            self.assertNotIn("ready", state)
+            self.assertNotIn("okt_fixture_doctor", result.stdout + result.stderr)
+            Handler.reject_reads = True
+            denied = subprocess.run(["node", str(REPO_ROOT / "skills/openkit-ops/scripts/openkit"), "doctor"], env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(denied.returncode, 0)
+            unknown = json.loads(denied.stdout)["data"]["nanocore"]
+            self.assertEqual(unknown["serviceAvailability"], "available")
+            self.assertEqual(unknown["productWorkReadiness"], "unknown")
+            self.assertEqual(unknown["maintenanceSafety"], {"state": "unknown", "observation": None})
+            self.assertEqual(unknown["executionHost"]["state"], "unknown")
+            self.assertNotIn("okt_fixture_doctor", denied.stdout + denied.stderr)
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+            server.server_close()
 
 
 class PrepareReceiptTests(unittest.TestCase):

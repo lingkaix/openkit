@@ -1,4 +1,6 @@
+import { z } from 'zod';
 import {
+  AppUpdatePreflightResponseReaderSchema,
   AppUpdateStatusResponseReaderSchema,
   PrepareAppUpdateRequestSchema,
   PrepareAppUpdateResponseReaderSchema,
@@ -8,6 +10,20 @@ import type { OperationDefinition } from './operation-contract.js';
 
 /** Release-authored family facts; authority, replay and effects remain with their native owners. */
 export const APP_UPDATE_OPERATION_DEFINITIONS = {
+  'app-update.preflight': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description:
+      'Observe content-free active-work counts across this deployment; no admission barrier.',
+    inputSchema: z.object({}).strict(),
+    outputSchema: AppUpdatePreflightResponseReaderSchema,
+    credentials: ['local-user', 'user-session', 'deployment-administrator'],
+    scope: { kind: 'server' },
+    target: { kind: 'deployment' },
+    policyOperation: 'api.call',
+    mutating: false,
+  },
   'app-update.prepare': {
     binding: 'json',
     returnsOneTimeSecret: false,
