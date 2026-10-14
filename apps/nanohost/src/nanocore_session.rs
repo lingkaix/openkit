@@ -4143,6 +4143,8 @@ mod tests {
     enum TestReadinessResponse {
         Status(StatusCode),
         PhysicalClose,
+        /// The hard bound already elapsed, so the client must not send readiness.
+        NotRequested,
     }
 
     const TEST_PHYSICAL_EPOCH: &str =
@@ -4163,6 +4165,20 @@ mod tests {
                 "/api/nanohost/transport/session/admit",
                 "/api/nanohost/transport/session/readiness",
             ] {
+                if expected_path == "/api/nanohost/transport/session/readiness"
+                    && matches!(readiness_response, TestReadinessResponse::NotRequested)
+                {
+                    let accepted = connection
+                        .accept()
+                        .await
+                        .transpose()
+                        .expect("readiness connection");
+                    assert!(
+                        accepted.is_none(),
+                        "readiness request arrived after the deadline"
+                    );
+                    return;
+                }
                 let (request, mut respond) = connection
                     .accept()
                     .await
@@ -4442,88 +4458,126 @@ mod tests {
         assert!(dispatch_called.load(Ordering::Relaxed));
     }
 
+    #[derive(Clone, Copy)]
+    enum MarkerDeadline {
+        /// Gate returns `now + budget` after admission.
+        Within(std::time::Duration),
+        /// Gate returns an instant that paused time has already passed.
+        AlreadyElapsed(tokio::time::Instant),
+    }
+
+    /// Drives one readiness acknowledgement and checks whether dispatch consumed the marker.
+    ///
+    /// Paused-time cases call this only after `tokio::time::pause`. Real elapsed time must not
+    /// decide the hard bound: the client compares `tokio::time::Instant`.
+    async fn exercise_rebuild_marker(
+        readiness: TestReadinessResponse,
+        readiness_delay: Option<std::time::Duration>,
+        deadline: MarkerDeadline,
+        consumed: bool,
+    ) {
+        static NEXT_MARKER: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "openkit-readiness-marker-{}-{}",
+            std::process::id(),
+            NEXT_MARKER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).expect("readiness marker root");
+        let marker = root.join("fence-started");
+        std::fs::write(&marker, b"first").expect("first-fence marker");
+        let dispatch_marker = marker.clone();
+        let gate_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let gate_observation = Arc::clone(&gate_called);
+        let (client_io, server) = scripted_outer_server(1, readiness, readiness_delay, vec![]);
+        let (context, presentation) = test_outer_credentials();
+
+        let failure = run_outer_session(
+            client_io,
+            "http://nanocore.test",
+            &context,
+            &presentation,
+            None,
+            (TEST_PHYSICAL_EPOCH, move || {
+                gate_observation.store(true, Ordering::Relaxed);
+                let deadline = match deadline {
+                    MarkerDeadline::Within(budget) => tokio::time::Instant::now() + budget,
+                    MarkerDeadline::AlreadyElapsed(expired) => expired,
+                };
+                Ok(Some(deadline))
+            }),
+            move |_, _| async move {
+                std::fs::remove_file(dispatch_marker).expect("consume first-fence marker");
+                Err(OuterSessionFailure::terminal(
+                    OuterSessionStage::Readiness,
+                    OuterSessionOperation::None,
+                    None,
+                    "test readiness settled",
+                ))
+            },
+        )
+        .await
+        .expect_err("scripted readiness boundary must terminate");
+        server.await.expect("readiness server task");
+
+        assert!(gate_called.load(Ordering::Relaxed));
+        assert_eq!(marker.exists(), !consumed);
+        if !consumed {
+            assert_eq!(failure.stage, OuterSessionStage::Readiness);
+            if readiness_delay.is_some() || matches!(deadline, MarkerDeadline::AlreadyElapsed(_)) {
+                assert_eq!(failure.reason(), "epoch rebuild hard bound exceeded");
+            } else {
+                assert_eq!(
+                    failure.status,
+                    Some(StatusCode::SERVICE_UNAVAILABLE.as_u16())
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[tokio::test]
     async fn consumes_rebuild_marker_only_after_exact_readiness_acknowledgement() {
-        static NEXT_MARKER: AtomicU64 = AtomicU64::new(0);
-
-        for (readiness_status, readiness_timeout, readiness_delay, consumed) in [
+        for (readiness_status, readiness_timeout, consumed) in [
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 std::time::Duration::from_secs(1),
-                None,
                 false,
             ),
             (
                 StatusCode::NO_CONTENT,
                 std::time::Duration::from_secs(1),
-                None,
                 true,
             ),
-            (
-                StatusCode::NO_CONTENT,
-                std::time::Duration::from_millis(1),
-                Some(std::time::Duration::from_millis(20)),
-                false,
-            ),
         ] {
-            let root = std::env::temp_dir().join(format!(
-                "openkit-readiness-marker-{}-{}",
-                std::process::id(),
-                NEXT_MARKER.fetch_add(1, Ordering::Relaxed)
-            ));
-            std::fs::create_dir(&root).expect("readiness marker root");
-            let marker = root.join("fence-started");
-            std::fs::write(&marker, b"first").expect("first-fence marker");
-            let dispatch_marker = marker.clone();
-            let gate_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let gate_observation = Arc::clone(&gate_called);
-            let (client_io, server) = scripted_outer_server(
-                1,
+            exercise_rebuild_marker(
                 TestReadinessResponse::Status(readiness_status),
-                readiness_delay,
-                vec![],
-            );
-            let (context, presentation) = test_outer_credentials();
-
-            let failure = run_outer_session(
-                client_io,
-                "http://nanocore.test",
-                &context,
-                &presentation,
                 None,
-                (TEST_PHYSICAL_EPOCH, move || {
-                    gate_observation.store(true, Ordering::Relaxed);
-                    Ok(Some(tokio::time::Instant::now() + readiness_timeout))
-                }),
-                move |_, _| async move {
-                    std::fs::remove_file(dispatch_marker).expect("consume first-fence marker");
-                    Err(OuterSessionFailure::terminal(
-                        OuterSessionStage::Readiness,
-                        OuterSessionOperation::None,
-                        None,
-                        "test readiness settled",
-                    ))
-                },
+                MarkerDeadline::Within(readiness_timeout),
+                consumed,
             )
-            .await
-            .expect_err("scripted readiness boundary must terminate");
-            server.await.expect("readiness server task");
-
-            assert!(gate_called.load(Ordering::Relaxed));
-            assert_eq!(marker.exists(), !consumed);
-            if !consumed {
-                assert_eq!(failure.stage, OuterSessionStage::Readiness);
-                if readiness_delay.is_some() {
-                    assert_eq!(failure.reason(), "epoch rebuild hard bound exceeded");
-                } else {
-                    assert_eq!(
-                        failure.status,
-                        Some(StatusCode::SERVICE_UNAVAILABLE.as_u16())
-                    );
-                }
-            }
-            let _ = std::fs::remove_dir_all(root);
+            .await;
         }
+
+        // Freeze Tokio time so a loaded runner cannot spend the hard bound between the gate and
+        // the pre-send check, and so the two orders below do not depend on which side is scheduled.
+        tokio::time::pause();
+        let expired = tokio::time::Instant::now();
+        tokio::time::advance(std::time::Duration::from_millis(1)).await;
+        exercise_rebuild_marker(
+            TestReadinessResponse::NotRequested,
+            None,
+            MarkerDeadline::AlreadyElapsed(expired),
+            false,
+        )
+        .await;
+        exercise_rebuild_marker(
+            TestReadinessResponse::Status(StatusCode::NO_CONTENT),
+            Some(std::time::Duration::from_millis(20)),
+            MarkerDeadline::Within(std::time::Duration::from_millis(1)),
+            false,
+        )
+        .await;
+        tokio::time::resume();
     }
 
     async fn first_poll_physical_close_after_readiness(
