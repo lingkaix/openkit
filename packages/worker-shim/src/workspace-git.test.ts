@@ -8,7 +8,8 @@ import {
   readdirSync,
   readFileSync,
   symlinkSync,
-  watch,
+  unwatchFile,
+  watchFile,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -486,7 +487,8 @@ describe('workspace Git materialization', () => {
     const fetchStarted = new Promise<void>((resolve) => {
       observeFetch = resolve;
     });
-    const watcher = watch(logPath, () => {
+    // This Git handshake needs file-state observation, independent of the host's inotify quota.
+    watchFile(logPath, { interval: 10 }, () => {
       const invocations = readFileSync(logPath, 'utf8');
       if (invocations.includes('"fixture.fetch-hanging"')) {
         observeFetch();
@@ -519,7 +521,7 @@ describe('workspace Git materialization', () => {
       await vi.advanceTimersByTimeAsync(200);
       await timeoutResult;
     } finally {
-      watcher.close();
+      unwatchFile(logPath);
       vi.useRealTimers();
       if (previousTimeout === undefined) {
         delete process.env.OPENKIT_WORKER_GIT_TIMEOUT_MS;

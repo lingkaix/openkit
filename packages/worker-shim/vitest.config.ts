@@ -2,8 +2,13 @@ import { defineConfig } from 'vitest/config';
 
 // The Integration and Pi Harness files share the fixed 17892 listener and run sequentially.
 const fixedListeners = ['src/integration-client.test.ts', 'src/adapters/pi-harness*.test.ts'];
-// Real DeepSeek processes must not compete with the parallel native fixtures (#200).
-const deepseekNative = ['src/adapters/deepseek.test.ts'];
+// Real DeepSeek startup must not compete with other native fixtures for its RPC deadline (#200).
+const deepseekNative = [
+  'src/adapters/deepseek.test.ts',
+  'src/adapters/deepseek-native.test.ts',
+  'src/adapters/deepseek-fault.test.ts',
+  'src/adapters/concurrent-sessions.test.ts',
+];
 export default defineConfig({
   test: {
     projects: [
