@@ -84,16 +84,25 @@ async function assertRejected(runFileEffect, slotRoots, rejection) {
 }
 
 test('session export admits only a Thread/runtime/Turn capture, never native state', async () => {
-  const { CANONICAL_SLOT_ROOTS: actualRoots, runFileEffect } = await import(pathToFileURL(helperPath).href);
+  const { CANONICAL_SLOT_ROOTS: actualRoots, runFileEffect } = await import(
+    pathToFileURL(helperPath).href
+  );
   assert.equal(actualRoots.session, '/openkit/threads');
   const root = await mkdtemp(join(tmpdir(), 'openkit-turn-capture-'));
   try {
     const path = 'thread_one/codex/capture/turn_one/events.jsonl';
     await mkdir(dirname(join(root, path)), { recursive: true });
     await writeFile(join(root, path), 'exact Turn capture\n');
-    const invoke = relativePath => invokeFileEffect(runFileEffect, { session: root }, [
-      'file.export', '--slot', 'session', '--path', relativePath, '--max-length', String(MAX_FILE_BYTES),
-    ]);
+    const invoke = (relativePath) =>
+      invokeFileEffect(runFileEffect, { session: root }, [
+        'file.export',
+        '--slot',
+        'session',
+        '--path',
+        relativePath,
+        '--max-length',
+        String(MAX_FILE_BYTES),
+      ]);
     const captured = await invoke(path);
     assert.equal(captured.exitCode, 0);
     assert.equal(captured.stdout.toString(), 'exact Turn capture\n');
@@ -102,18 +111,25 @@ test('session export admits only a Thread/runtime/Turn capture, never native sta
     await writeFile(join(root, hashQualified), 'hash-qualified Core capture\n');
     assert.equal((await invoke(hashQualified)).exitCode, 0);
     for (const rejected of [
-      'events.jsonl', 'thread_one/codex/native/state_5.sqlite',
+      'events.jsonl',
+      'thread_one/codex/native/state_5.sqlite',
       'thread_one/pi/agent-session-references/as_one',
       'thread_one/codex/capture/turn_one/../../native/state_5.sqlite',
       'thread_one/unknown/capture/turn_one/events.jsonl',
       'thread_one/codex/capture/turn_one',
-    ]) assert.equal((await invoke(rejected)).exitCode, 1, rejected);
+    ])
+      assert.equal((await invoke(rejected)).exitCode, 1, rejected);
     await rm(join(root, 'thread_one', 'codex', 'capture', 'turn_one'), { recursive: true });
     await mkdir(join(root, 'elsewhere'));
     await writeFile(join(root, 'elsewhere', 'events.jsonl'), 'foreign bytes');
-    await symlink(join(root, 'elsewhere'), join(root, 'thread_one', 'codex', 'capture', 'turn_one'));
+    await symlink(
+      join(root, 'elsewhere'),
+      join(root, 'thread_one', 'codex', 'capture', 'turn_one')
+    );
     assert.equal((await invoke(path)).exitCode, 1);
-  } finally { await rm(root, { recursive: true, force: true }); }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('generated output capture uses only a private AgentSession output namespace', async () => {

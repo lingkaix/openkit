@@ -19,6 +19,7 @@ import { dirname, join } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import type { ReasoningEffort } from '@openkit/protocol';
+import { workerTurnCapturePaths } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
 import type { RuntimeObservation } from '../runtime-capture.js';
@@ -360,9 +361,15 @@ function turnInput(
       },
       maxStreamCount: 1,
       maxTotalBytes: 1_000,
-      nativeOriginIndexPath: '/openkit/session/runtime/native-origin-index.jsonl',
-      rawStreamsRoot: '/openkit/session/runtime/raw',
-      streamManifestPath: '/openkit/session/runtime/raw-streams.json',
+      nativeOriginIndexPath: workerTurnCapturePaths(
+        'thread-one',
+        'pi',
+        overrides.turnId ?? 'turn-1'
+      ).nativeOriginIndexPath,
+      rawStreamsRoot: workerTurnCapturePaths('thread-one', 'pi', overrides.turnId ?? 'turn-1')
+        .rawStreamsRoot,
+      streamManifestPath: workerTurnCapturePaths('thread-one', 'pi', overrides.turnId ?? 'turn-1')
+        .streamManifestPath,
     },
     skillTargetPaths: [{ id: 'greeting', targetPath: join(dirs.workingDirectory, 'skills') }],
     turnDirectory: dirs.turnDirectory,

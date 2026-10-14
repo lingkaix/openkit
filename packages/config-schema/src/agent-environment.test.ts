@@ -152,9 +152,9 @@ function openshellPackageFixture(): unknown {
         },
       },
       transcript: {
-        root: '/openkit/session',
-        eventsPath: '/openkit/session/events.jsonl',
-        itemsPath: '/openkit/session/items.jsonl',
+        root: '/openkit/threads/th_demo/codex/capture/turn_demo',
+        eventsPath: '/openkit/threads/th_demo/codex/capture/turn_demo/events.jsonl',
+        itemsPath: '/openkit/threads/th_demo/codex/capture/turn_demo/items.jsonl',
         flush: 'line',
         import: 'turn-end',
         required: true,
@@ -962,7 +962,9 @@ describe('agent environment package schema', () => {
     expect(parsed.control).not.toHaveProperty('commands');
     expect(parsed.control).not.toHaveProperty('endpoint');
     expect(parsed.control).not.toHaveProperty('auth');
-    expect(parsed.control.transcript?.itemsPath).toBe('/openkit/session/items.jsonl');
+    expect(parsed.control.transcript?.itemsPath).toBe(
+      '/openkit/threads/th_demo/codex/capture/turn_demo/items.jsonl'
+    );
     expect(parsed.supply.skills[0]).toMatchObject({
       id: 'repo-guidelines',
       reviewStatus: 'approved',
@@ -993,7 +995,9 @@ describe('agent environment package schema', () => {
     const parsed = AgentEnvironmentPackageSchema.parse(fixture);
 
     expect(parsed.control.transcript).not.toHaveProperty('artifactsPath');
-    expect(parsed.control.transcript.itemsPath).toBe('/openkit/session/items.jsonl');
+    expect(parsed.control.transcript.itemsPath).toBe(
+      '/openkit/threads/th_demo/codex/capture/turn_demo/items.jsonl'
+    );
   });
 
   it('rejects an unknown value in a known transcript core field', () => {

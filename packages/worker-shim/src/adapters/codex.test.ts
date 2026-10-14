@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import type { ReasoningEffort } from '@openkit/protocol';
-import { WorkerErrorEnvelopeSchema } from '@openkit/worker-protocol';
+import { WorkerErrorEnvelopeSchema, workerTurnCapturePaths } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { OpenAICompatibleResponsesRequest } from '../../../../apps/nanocore/src/llm/openai-compatible-client.js';
 import {
@@ -835,9 +835,21 @@ describe('Codex App Server adapter', () => {
             ? {
                 transcript: {
                   runtimeProvenance: {
-                    rawStreamsRoot: '/openkit/session/runtime/raw',
-                    streamManifestPath: '/openkit/session/runtime/raw-streams.json',
-                    nativeOriginIndexPath: '/openkit/session/runtime/native-origin-index.jsonl',
+                    rawStreamsRoot: workerTurnCapturePaths(
+                      lineage.threadId,
+                      'codex',
+                      lineage.turnId
+                    ).rawStreamsRoot,
+                    streamManifestPath: workerTurnCapturePaths(
+                      lineage.threadId,
+                      'codex',
+                      lineage.turnId
+                    ).streamManifestPath,
+                    nativeOriginIndexPath: workerTurnCapturePaths(
+                      lineage.threadId,
+                      'codex',
+                      lineage.turnId
+                    ).nativeOriginIndexPath,
                     maxStreamCount: 64,
                     maxTotalBytes: 256 * 1024 * 1024,
                   },

@@ -9386,12 +9386,12 @@ function createTurnRuntimeProvenanceCapture(
               {
                 code: `worker_runtime_provenance_${failure}`,
                 message: `Runtime provenance collection is ${failure}.`,
-                path: '/openkit/session/runtime/raw-streams.json',
+                path: streamManifestPath,
               },
             ]
           : [],
       manifestPath: streamManifestPath,
-      missingPaths: failure === 'missing' ? ['/openkit/session/runtime/raw-streams.json'] : [],
+      missingPaths: failure === 'missing' ? [streamManifestPath] : [],
       nativeOriginIndexPath,
       rawStreamPaths:
         failure === 'unmapped'

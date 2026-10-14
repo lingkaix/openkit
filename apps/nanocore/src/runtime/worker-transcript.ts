@@ -32,9 +32,9 @@ import {
 export interface WorkerTranscriptPayload {
   /** Complete backend-private original-materialization evidence, outside worker JSONL. */
   credentialCheckValues?: WorkerCredentialCheckValues | null;
-  /** Serialized `/openkit/session/events.jsonl` content. */
+  /** Serialized events.jsonl content from the exact admitted Thread/runtime/Turn capture. */
   eventsJsonl?: string;
-  /** Serialized `/openkit/session/items.jsonl` content. */
+  /** Serialized items.jsonl content from the exact admitted Thread/runtime/Turn capture. */
   itemsJsonl?: string;
   /** Backend-local restricted runtime provenance files, when the AEP requested collection. */
   runtimeProvenance?: WorkerRuntimeProvenanceCollection;

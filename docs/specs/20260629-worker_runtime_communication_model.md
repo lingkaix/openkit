@@ -175,8 +175,8 @@ Every real Worker Agent sees the same contract inside its container:
 
 ```text
 /openkit/sessions/<agent-session-id>/config/package.json
-/openkit/session/events.jsonl
-/openkit/session/items.jsonl
+/openkit/threads/<threadId>/<harness>/capture/<turnId>/events.jsonl
+/openkit/threads/<threadId>/<harness>/capture/<turnId>/items.jsonl
 <AEP-resolved sandbox-local /worker-control/* Integration binding>
 <AEP-resolved sandbox-local /inference/* Integration binding>
 <AEP-resolved sandbox-local /capabilities/* Integration binding when enabled>
@@ -323,7 +323,7 @@ Sandbox Integration should:
 - capture at most 16 MiB of ordinary native stdout for resident observation and fail closed on overflow; the optional S33 Codex provenance sink streams separately under S33's own declared aggregate bound and is not double-buffered here
 - retain at most a 16 KiB diagnostic prefix from each ordinary stdout and stderr stream
 - convert adapter-normalized results into schema-conformant candidate OpenKit transcript and event records
-- write `/openkit/session/events.jsonl` and `/openkit/session/items.jsonl`; Artifact submission uses the existing work MCP supply rather than a transcript declaration writer
+- write `events.jsonl` and `items.jsonl` below the exact admitted `/openkit/threads/<threadId>/<harness>/capture/<turnId>/`; `<harness>` is the stable runtime adapter id, not a Harness Instance id; Artifact submission uses the existing work MCP supply rather than a transcript declaration writer
 - emit heartbeat and artifact notices through the route-bound `/worker-control/*` family exposed by Sandbox Integration
 - append schema-conformant candidate events through the route-bound `/worker-control/*` family exposed by Sandbox Integration
 - leave workspace-change capture to the outside read-only scan. Sandbox Integration does not publish workspace changes at native exit. The next Turn is dispatched after Turn-end collection completes. A change set whose `base` differs from the previous `head` is `recovery_required` at ingestion. The change-set schema and the first link's base are owned by [Workspace Synchronization](20260703-workspace_synchronization.md). A work volume's chain starts from Core's accepted base for that work slot, and collection returns `recovery_required` when that base is unknown

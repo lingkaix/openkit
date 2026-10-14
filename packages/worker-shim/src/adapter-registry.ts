@@ -55,12 +55,12 @@ export interface WorkerAdapterRuntimeProvenance {
   readonly maxStreamCount: number;
   /** Maximum aggregate native bytes retained by the capture. */
   readonly maxTotalBytes: number;
-  /** Fixed native-origin index output path. */
-  readonly nativeOriginIndexPath: '/openkit/session/runtime/native-origin-index.jsonl';
-  /** Fixed raw-stream output root. */
-  readonly rawStreamsRoot: '/openkit/session/runtime/raw';
-  /** Fixed raw-stream manifest output path. */
-  readonly streamManifestPath: '/openkit/session/runtime/raw-streams.json';
+  /** Native-origin index path derived from the exact admitted Thread, adapter, and Turn. */
+  readonly nativeOriginIndexPath: string;
+  /** Raw-stream root derived from the exact admitted Thread, adapter, and Turn. */
+  readonly rawStreamsRoot: string;
+  /** Raw-stream manifest path derived from the exact admitted Thread, adapter, and Turn. */
+  readonly streamManifestPath: string;
 }
 
 /** Independent adapter observations; omitted means unreported, false means unproved, and true means proved. No proof implies another. */

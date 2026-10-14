@@ -80,7 +80,6 @@ import {
   queueNanoHostHarnessOperation,
   readNanoHostThreadAgentSessionBinding,
   removeNanoHostSandboxRuntimeByBinding,
-  removeNanoHostSandboxRuntimeForHarness,
 } from './nanohost-harness-records.js';
 import {
   NanoHostCleanupFencePendingError,

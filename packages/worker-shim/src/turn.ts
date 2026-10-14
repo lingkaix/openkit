@@ -11,9 +11,11 @@ import {
   type WorkerLineage,
   type WorkerStartupFailure,
   workerSessionInputPaths,
+  workerTurnCapturePaths,
 } from '@openkit/worker-protocol';
 import type {
   WorkerAdapterLlmRoute,
+  WorkerAdapterRuntimeProvenance,
   WorkerNativeEvidence,
   WorkerResidentSession,
   WorkerResidentTurn,
@@ -204,7 +206,9 @@ async function runResidentTurnImplementation(
     throw new Error('Session-static public native environment requires an environment-aware AEP.');
   }
   const provenanceDeclaration = parseRuntimeProvenanceDeclaration(
-    packageManifest.control?.transcript?.runtimeProvenance
+    packageManifest.control?.transcript?.runtimeProvenance,
+    options.lineage,
+    options.adapterId
   );
   const lineage: WorkerLineage = {
     ...options.lineage,
@@ -688,19 +692,8 @@ interface WorkerShimPackageManifest {
   };
 }
 
-/** Fixed runtime provenance output declaration projected into an AEP. */
-interface RuntimeProvenanceDeclaration {
-  /** Maximum native streams retained. */
-  maxStreamCount: number;
-  /** Maximum aggregate native bytes retained. */
-  maxTotalBytes: number;
-  /** Fixed native-origin index path. */
-  nativeOriginIndexPath: '/openkit/session/runtime/native-origin-index.jsonl';
-  /** Fixed raw-stream output root. */
-  rawStreamsRoot: '/openkit/session/runtime/raw';
-  /** Fixed raw-stream manifest path. */
-  streamManifestPath: '/openkit/session/runtime/raw-streams.json';
-}
+/** Turn-derived runtime provenance output declaration projected into an AEP. */
+type RuntimeProvenanceDeclaration = Omit<WorkerAdapterRuntimeProvenance, 'lineage'>;
 
 /** Worker-local materialization metadata for static Skill supply. */
 interface RuntimeSupplyMaterialization {
@@ -1029,18 +1022,25 @@ function resolveWorkerMcpServerIds(packageManifest: WorkerShimPackageManifest): 
  * Validates the fixed runtime provenance declaration before process launch or file creation.
  *
  * @param value Untrusted package manifest value.
+ * @param lineage Exact Core-admitted Thread and Turn identities.
+ * @param adapterId Stable adapter selected by the owning Harness.
  * @returns Valid declaration, or null when runtime provenance is not requested.
  * @throws When a present declaration differs from the canonical AEP projection.
  */
-function parseRuntimeProvenanceDeclaration(value: unknown): RuntimeProvenanceDeclaration | null {
+function parseRuntimeProvenanceDeclaration(
+  value: unknown,
+  lineage: Pick<WorkerLineage, 'threadId' | 'turnId'>,
+  adapterId: string
+): RuntimeProvenanceDeclaration | null {
   if (value === undefined) {
     return null;
   }
+  const paths = workerTurnCapturePaths(lineage.threadId, adapterId, lineage.turnId);
   if (
     !isRecord(value) ||
-    value.rawStreamsRoot !== '/openkit/session/runtime/raw' ||
-    value.streamManifestPath !== '/openkit/session/runtime/raw-streams.json' ||
-    value.nativeOriginIndexPath !== '/openkit/session/runtime/native-origin-index.jsonl' ||
+    value.rawStreamsRoot !== paths.rawStreamsRoot ||
+    value.streamManifestPath !== paths.streamManifestPath ||
+    value.nativeOriginIndexPath !== paths.nativeOriginIndexPath ||
     !Number.isSafeInteger(value.maxTotalBytes) ||
     Number(value.maxTotalBytes) <= 0 ||
     !Number.isSafeInteger(value.maxStreamCount) ||
