@@ -14,7 +14,16 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { observeOperationalReadiness } from './readiness.js';
 
 describe('operational readiness dimensions', () => {
-  it('shows the age of stored host readiness without treating freshEmpty as maintenance safety', () => {
+  it.each([
+    { sampledAt: '2026-10-14T00:00:00.000Z', state: 'ready', age: 259200000, freshEmpty: true },
+    { sampledAt: '2026-10-11T00:00:00.000Z', state: 'ready', age: 0, freshEmpty: true },
+    { sampledAt: '2026-10-10T00:00:00.000Z', state: 'unknown', age: null, freshEmpty: null },
+  ])('shows host observation age at $sampledAt without promoting future evidence', ({
+    sampledAt,
+    state,
+    age,
+    freshEmpty,
+  }) => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-host-age-'));
     const coreDb = openCoreDb(root);
     applyMigrations(coreDb);
@@ -39,13 +48,13 @@ describe('operational readiness dimensions', () => {
       const result = observeOperationalReadiness(
         { coreDb, mode: 'server', nanoHostConfig },
         computeBootReadinessSnapshot({ bootId: 'boot_stored_observation' }),
-        () => Date.parse('2026-10-14T00:00:00.000Z')
+        () => Date.parse(sampledAt)
       );
       expect(result.executionHost).toEqual({
-        state: 'ready',
+        state,
         observedAt,
-        observationAgeMs: 259200000,
-        freshEmpty: true,
+        observationAgeMs: age,
+        freshEmpty,
         liveProbe: false,
       });
       expect(result.maintenanceSafety).toEqual({ state: 'unknown', observation: null });

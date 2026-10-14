@@ -33,12 +33,14 @@ export function observeOperationalReadiness(
       nanoHostConfig: dependencies.nanoHostConfig,
     });
     if (result.ok) {
+      const age = now() - Date.parse(result.status.observedAt);
+      const knownAge = Number.isFinite(age) && age >= 0;
       executionHost = {
-        state: result.status.ready ? 'ready' : 'not-ready',
+        state: knownAge ? (result.status.ready ? 'ready' : 'not-ready') : 'unknown',
         observedAt: result.status.observedAt,
-        observationAgeMs: Math.max(0, Math.trunc(now() - Date.parse(result.status.observedAt))),
+        observationAgeMs: knownAge ? Math.trunc(age) : null,
         liveProbe: false,
-        freshEmpty: result.status.freshEmpty,
+        freshEmpty: knownAge ? result.status.freshEmpty : null,
       };
     }
   }
