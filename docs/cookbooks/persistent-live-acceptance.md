@@ -42,6 +42,8 @@ Run four runtime groups concurrently within admitted capacity, with A to D seque
 
 ## Release Update Projection
 
+`a1` is the staging server. `a2` was the earlier persistent test deployment and is now stable production, excluded from automation. Story 1 installs from the public repository and published assets on the dedicated development machine, without a source checkout in use or a disposable VM. Retain that installation as the machine's OpenKit deployment.
+
 Use the release owner's [bounded deployment procedure](../specs/20260829-release_management.md#bounded-test-deployment-update). Supply one explicit authorized SSH alias or URL target; automation excludes production. Retain App, NanoHost, Worker, and qualification results independently. Verify exact identities and selected existing Workspace content with public reads. A failed, missing, or unknown component observation stops its dependent stage. Do not treat a warm image as fresh-epoch Worker acquisition evidence.
 
 Stories 1 and 2 retain cycle/change cadence; stable promotion still needs story 2 on its exact prerelease. Mechanical update and Worker qualification do not supply an L6 verdict. Worker-only preparation has no browser prerequisite; browser stories retain theirs.

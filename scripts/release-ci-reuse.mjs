@@ -70,10 +70,12 @@ function validateRun(run) {
 
 /** Tests exact commit/event/completion identity; a successful job does not require unrelated jobs to succeed. */
 function qualifies(run, sha) {
-  return run?.event === 'workflow_dispatch' && run.head_sha === sha && run.status === 'completed';
+  const admittedEvent =
+    run?.event === 'workflow_dispatch' || (run?.event === 'push' && run.head_branch === 'main');
+  return admittedEvent && run.head_sha === sha && run.status === 'completed';
 }
 
-/** Finds one exact-named successful job in a completed exact-SHA workflow dispatch's latest attempt, using an injectable HTTP reader. */
+/** Finds one exact-named successful job in an admitted exact-SHA candidate run's latest attempt, using an injectable HTTP reader. */
 export async function findReusableJob({ repository, workflow, sha, jobName }, request) {
   if (
     !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository) ||
@@ -86,7 +88,7 @@ export async function findReusableJob({ repository, workflow, sha, jobName }, re
   }
   const base = `${apiOrigin}/repos/${repository}/actions`;
   const runs = await readPages(
-    `${base}/workflows/${workflow}/runs?event=workflow_dispatch&head_sha=${sha}&per_page=100&page=1`,
+    `${base}/workflows/${workflow}/runs?head_sha=${sha}&per_page=100&page=1`,
     'workflow_runs',
     request
   );
@@ -99,7 +101,7 @@ export async function findReusableJob({ repository, workflow, sha, jobName }, re
     if (run.id !== listed.id) {
       throw new Error('GitHub API invalid run identity');
     }
-    if (!qualifies(run, sha)) continue;
+    if (!qualifies(run, sha) || run.event !== listed.event) continue;
     const jobs = await readPages(
       `${runUrl}/attempts/${run.run_attempt}/jobs?per_page=100&page=1`,
       'jobs',
@@ -134,6 +136,7 @@ export async function findReusableJob({ repository, workflow, sha, jobName }, re
     if (
       current.id === run.id &&
       current.run_attempt === run.run_attempt &&
+      current.event === run.event &&
       qualifies(current, sha)
     ) {
       return { runId: run.id, attempt: run.run_attempt, jobId: job.id };
@@ -177,7 +180,7 @@ async function main(args) {
     );
     if (!proof) {
       console.log(
-        'Reuse unavailable: no completed exact-SHA dispatch has this successful job in its latest attempt'
+        'Reuse unavailable: no completed exact-SHA dispatch or main-push run has this successful job in its latest attempt'
       );
       return 1;
     }

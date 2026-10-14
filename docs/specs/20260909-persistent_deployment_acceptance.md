@@ -58,6 +58,8 @@ Cold or destructive proofs explicitly select their own isolated fixture. Reusing
 
 ## Release Update And Qualification Projection
 
+The current staging and persistent test server is `a1`. `a2` was the earlier persistent test deployment and is now stable production, excluded from automation. Story 1 installs on the dedicated development machine from public repository and release assets without a source checkout in use or a disposable VM. That installation remains as the machine's OpenKit deployment. [Release Management](20260829-release_management.md#catalog-stories) owns this release scope.
+
 [Release Management](20260829-release_management.md#bounded-test-deployment-update) owns the separate standing deployment and Provider-workload grant. Supply one explicit authorized target with no default. Preserve separate App, NanoHost, Worker, and qualification results and exact component identities. Public reads of selected retained Workspace records establish content continuity separately from authentication metadata. Unknown effects require inspection without replay. Each update ends prior attribution windows; each qualification starts a fresh pinned window.
 
 The maintained kit runs sixteen Worker cases after each deployment update, with concurrent runtime groups and sequential A to D within each Thread. A Worker-only preparation has no browser prerequisite. Non-pass and undecidable rows require independent checks. This mechanical qualification supplies no L6 actor or judge verdict.

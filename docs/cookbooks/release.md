@@ -125,7 +125,7 @@ WP4's rc.5 measurements project six to eight minutes with four admitted concurre
 
 ## Post-Tag Catalog Stories
 
-After the tag, follow the release cycle in [Catalog Stories](../specs/20260829-release_management.md#catalog-stories). The catalog stories are not a pre-tag gate, and a story run on an unpublished candidate is not release evidence. Story 1 runs on a disposable host. Story 2 runs on the persistent deployment that carries an earlier published release's real data. The [Release Exit Criterion](../specs/20260829-release_management.md#release-exit-criterion) owns pass, defect, rerun, and the release cycle. This cookbook does not copy the catalog.
+After the tag, follow the release cycle in [Catalog Stories](../specs/20260829-release_management.md#catalog-stories). The catalog stories are not a pre-tag gate, and a story run on an unpublished candidate is not release evidence. Run story 1 on the dedicated development machine from the public repository and published release assets. Keep any development checkout out of the Actor's installation flow. Use no disposable VM, and retain the installation as this machine's OpenKit deployment. Story 2 runs on the persistent deployment that carries an earlier published release's real data. The [Release Exit Criterion](../specs/20260829-release_management.md#release-exit-criterion) owns pass, defect, rerun, and the release cycle. This cookbook does not copy the catalog.
 
 Declare a read-only GitHub issue with an independently checkable title and state, a separate small issue authorized for an acceptance branch and pull request, and attempt-owned Workspace, Thread, filename, and marker inputs. Vary only equivalent fixtures or attempt-owned names. Do not reuse unrelated user work or broaden credentials to repair a prerequisite. Story selection authorizes no live deployment, Provider consumption, GitHub write, or approval. Obtain the existing effect-specific authority before execution.
 
@@ -277,7 +277,7 @@ For a private closeout projection, supply `--header /example/private/header.json
 
 ## Automatic Deployment Boundary
 
-Apply [Bounded Test Deployment Update](../specs/20260829-release_management.md#bounded-test-deployment-update). Supply the target explicitly, retain separate component results, and prove selected existing Workspace content through public reads. App receipt authentication predicates alone do not establish that content continuity. The App procedure uses prepare, idle preflight, start once, and status of the known request ID. Unknown handoff results require inspection of that ID, never a new start.
+Apply [Bounded Test Deployment Update](../specs/20260829-release_management.md#bounded-test-deployment-update). `a1` is staging; `a2`, the earlier persistent test deployment, is now stable production and excluded from automation. Supply the target explicitly, retain separate component results, and prove selected existing Workspace content through public reads. App receipt authentication predicates alone do not establish that content continuity. The App procedure uses prepare, idle preflight, start once, and status of the known request ID. Unknown handoff results require inspection of that ID, never a new start.
 
 `release-update-app.mjs` currently admits its App procedure through offline injected operation adapters only. Its CLI refuses live execution pending Phase 2 owner alignment and an exact live platform-identity adapter. The NanoHost installer refuses differing installed bytes; it is not an unattended replacement operation. Do not bypass its fencing, inhibition, compatibility, or retention contract. Worker activation retains its exact administrator-decision boundary. The coordinator must supply the admitted replacement and activation paths before calling the complete automatic sequence ready.
 
@@ -294,3 +294,5 @@ Before the first workflow substitution, run `node scripts/release-tests.mjs --in
 | Total | About 90 to 115 minutes, rounded | Conditional projection, not a guarantee or timeout. Admission-proof overhead and remaining deployment blockers can defeat it. |
 
 [The ruling](../decisions/20261014-release_cadence.md#reason) links the measured CI runs. Retain actual stage timestamps on the first eligible release. Concurrency preserves sixteen submitted Turns per release and changes no Provider-consumption budget.
+
+Issue #193 is closed as superseded by the post-tag policy. Issues #240 and #225 are required before the first stable release. Follow the release owner's [corrected priorities](../specs/20260829-release_management.md#deferred--future-work); this builder performs no GitHub issue mutation.

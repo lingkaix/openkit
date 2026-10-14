@@ -10,7 +10,7 @@ const options = {
   jobName: 'L3 NanoCore e2e',
 };
 const base = 'https://api.github.com/repos/example/openkit/actions';
-const runsUrl = `${base}/workflows/ci.yml/runs?event=workflow_dispatch&head_sha=${sha}&per_page=100&page=1`;
+const runsUrl = `${base}/workflows/ci.yml/runs?head_sha=${sha}&per_page=100&page=1`;
 const jobsUrl = `${base}/runs/10/attempts/2/jobs?per_page=100&page=1`;
 const runUrl = `${base}/runs/10`;
 const run = {
@@ -52,6 +52,59 @@ function fixture(runOverride = {}, jobOverride = {}) {
 
 test('exact successful job in a completed dispatch latest attempt is reusable', async () => {
   assert.deepEqual(await findReusableJob(options, fixture()), { runId: 10, attempt: 2, jobId: 20 });
+});
+
+test('exact successful job in a completed main push is reusable', async () => {
+  assert.deepEqual(
+    await findReusableJob(options, fixture({ event: 'push', head_branch: 'main' })),
+    { runId: 10, attempt: 2, jobId: 20 }
+  );
+});
+for (const head_branch of ['feature/release', 'v0.1.0-rc.6', undefined]) {
+  test(`push with branch ${head_branch} cannot supply main-push evidence`, async () => {
+    assert.equal(await findReusableJob(options, fixture({ event: 'push', head_branch })), null);
+  });
+}
+test('main-push proof remains per job when another job fails', async () => {
+  assert.deepEqual(
+    await findReusableJob(
+      options,
+      fixture({ event: 'push', head_branch: 'main', conclusion: 'failure' })
+    ),
+    { runId: 10, attempt: 2, jobId: 20 }
+  );
+});
+test('main push on a different commit cannot supply tag evidence', async () => {
+  assert.equal(
+    await findReusableJob(
+      options,
+      fixture({ event: 'push', head_branch: 'main', head_sha: 'b'.repeat(40) })
+    ),
+    null
+  );
+});
+test('main-push branch changing during job inspection invalidates evidence', async () => {
+  let reads = 0;
+  const request = fixture({ event: 'push', head_branch: 'main' });
+  assert.equal(
+    await findReusableJob(options, async (url) => {
+      if (url === runUrl && ++reads === 2)
+        return new Response(JSON.stringify({ ...run, event: 'push', head_branch: 'feature' }));
+      return request(url);
+    }),
+    null
+  );
+});
+test('an admitted event kind changing during job inspection invalidates evidence', async () => {
+  let reads = 0;
+  const request = fixture({ event: 'push', head_branch: 'main' });
+  assert.equal(
+    await findReusableJob(options, async (url) => {
+      if (url === runUrl && ++reads === 2) return new Response(JSON.stringify(run));
+      return request(url);
+    }),
+    null
+  );
 });
 
 for (const [name, value] of [
