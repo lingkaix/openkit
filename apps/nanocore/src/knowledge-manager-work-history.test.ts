@@ -24,7 +24,7 @@ vi.mock('./context/worker-context-package.js', async (importOriginal) => {
   };
 });
 
-import { verifyKnowledgeProposalWorkHistory } from './knowledge-manager.js';
+import { verifyKnowledgeProposalWorkHistory } from './knowledge-source-authority.js';
 
 /** Builds the minimum existing owners required before S39 branch classification. */
 function importedHistoryFixture() {

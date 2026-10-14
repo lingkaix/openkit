@@ -1,16 +1,23 @@
 import type { APP_SEARCH_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { listOutputArtifacts } from './artifact-catalog.js';
-import { isCurrentDeploymentAdministrator } from './auth/operation-authorizer.js';
+import {
+  isCurrentDeploymentAdministrator,
+  isWorkspaceOperationAuthorized,
+} from './auth/operation-authorizer.js';
 import { isThreadVisible } from './auth/thread-visibility.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import { type FamilyImplementations, publicOperationActor } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
+import {
+  resolveWorkspaceKnowledgeRetrievalPages,
+  retrieveWorkspaceKnowledge,
+} from './storage/index-rebuild.js';
 /** Searches only the admitted Workspace candidates and visible Thread-derived content. */
 export function createAppSearchOperationImplementations(
   dependencies: Pick<OperationInvocationDependencies, 'coreDb' | 'store'>
 ) {
   return {
-    'app.search': (input, context) => {
+    'app.search': async (input, context) => {
       const query = input.query.trim().toLowerCase();
 
       if (!query) {
@@ -42,15 +49,54 @@ export function createAppSearchOperationImplementations(
           items.push({ kind: 'workspace', id: workspace.id, title: workspace.name });
         }
 
-        for (const knowledge of store.listKnowledge(workspace.id)) {
-          if (matches(knowledge.title) || matches(knowledge.content)) {
+        const knowledgeReadable = dependencies.coreDb
+          ? isWorkspaceOperationAuthorized(dependencies.coreDb, actor, workspace.id, {
+              mutating: false,
+              policyOperation: 'knowledge.read',
+            })
+          : actor.kind === 'local';
+        if (knowledgeReadable) {
+          const dataRoot = store.getDataRoot();
+          if (!dataRoot)
+            throw new OperationError(
+              'data_root_required',
+              'Knowledge retrieval requires durable storage.',
+              409
+            );
+          const access = {
+            store,
+            coreDb: dependencies.coreDb,
+            actor: context.actorRef,
+            requestActor: actor,
+          };
+          const trace = await retrieveWorkspaceKnowledge({
+            dataRoot,
+            workspaceId: workspace.id,
+            access,
+            caller: 'app-api',
+            query: input.query,
+            limit: 20,
+          });
+          const pages = resolveWorkspaceKnowledgeRetrievalPages({
+            dataRoot,
+            workspaceId: workspace.id,
+            access,
+            caller: 'app-api',
+            retrievalTraceId: trace.traceId,
+          });
+          if (!pages)
+            throw new OperationError(
+              'knowledge_retrieval_failed',
+              'Knowledge source is unavailable.',
+              503
+            );
+          for (const page of pages)
             items.push({
               kind: 'knowledge',
-              id: knowledge.id,
-              title: knowledge.title,
+              id: page.knowledgePageId,
+              title: page.title,
               workspaceId: workspace.id,
             });
-          }
         }
 
         for (const artifact of listOutputArtifacts(

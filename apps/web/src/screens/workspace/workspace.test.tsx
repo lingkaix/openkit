@@ -427,7 +427,6 @@ function knowledgeIndexesFor(
   workspaceId: string,
   options: {
     rebuiltAt?: string;
-    term?: string;
     edges?: Array<{ fromId: string; target: string; toId: string; resolved: boolean }>;
     records?: Array<{
       conceptId: string;
@@ -468,20 +467,6 @@ function knowledgeIndexesFor(
       rebuiltAt,
       references: options.references ?? [],
     },
-    fullText: {
-      schemaVersion: 1,
-      workspaceId,
-      rebuiltAt,
-      tokenizer: 'unicode-simple-v1',
-      terms: options.term
-        ? [
-            {
-              term: options.term,
-              postings: [{ conceptId: 'mem1', fields: ['body'], occurrences: 1 }],
-            },
-          ]
-        : [],
-    },
   });
 }
 
@@ -489,7 +474,6 @@ const EMPTY_KNOWLEDGE_INDEXES = knowledgeIndexesFor(WORKSPACE_A.id);
 
 const KNOWLEDGE_INDEXES = knowledgeIndexesFor(WORKSPACE_A.id, {
   rebuiltAt: TIMESTAMP_NEW,
-  term: 'weekly',
   edges: [{ fromId: 'weekly-updates', target: '/mem1.md', toId: 'mem1', resolved: true }],
   records: [
     {
@@ -519,7 +503,7 @@ const KNOWLEDGE_RETRIEVAL = {
   workspaceId: 'ws1',
   caller: 'app-api',
   requestDigest: RETRIEVAL_REQUEST_DIGEST,
-  retrievalParameters: { limit: 5, pinnedConceptIds: [] },
+  retrievalParameters: { limit: 5, pinnedConceptIds: [], states: ['active'] },
   createdAt: TIMESTAMP_NEW,
   selected: [
     {
@@ -897,10 +881,14 @@ function requestIdFromCall(call: unknown[] | undefined): string | undefined {
   return undefined;
 }
 
-/** Proves a scoped panel alert cleared and an operation-specific authoritative value is visible. */
-async function proveScopedRetrySettled(region: HTMLElement, result: string, echo?: string) {
+/** Proves a scoped panel alert cleared and, when projected, its authoritative value is visible. */
+async function proveScopedRetrySettled(region: HTMLElement, result: string | null, echo?: string) {
   await waitFor(() => expect(within(region).queryByRole('alert')).not.toBeInTheDocument());
-  expect(await within(region).findByText(result, { selector: ':not(option)' })).toBeInTheDocument();
+  if (result !== null) {
+    expect(
+      await within(region).findByText(result, { selector: ':not(option)' })
+    ).toBeInTheDocument();
+  }
   if (echo) expect(screen.queryByText(echo)).not.toBeInTheDocument();
 }
 
@@ -1001,14 +989,12 @@ function knowledgeAuthorityCatalog(
           observation: 'Observation after remount',
           claim: 'Claim after remount',
           conflict: 'Conflict after remount',
-          index: 'index-after-remount',
         }
       : {
           source: 'Source A reread',
           observation: 'Observation A reread',
           claim: 'Claim A reread',
           conflict: 'Conflict A reread',
-          index: 'index-a-reread',
         };
   const current =
     workspaceId === WORKSPACE_B.id
@@ -1017,7 +1003,6 @@ function knowledgeAuthorityCatalog(
           observation: 'Observation B',
           claim: 'Claim B',
           conflict: 'Conflict B',
-          index: 'index-b',
         }
       : generation === 0
         ? {
@@ -1025,7 +1010,6 @@ function knowledgeAuthorityCatalog(
             observation: KNOWLEDGE_OBSERVATION.summary,
             claim: KNOWLEDGE_CLAIM.statement,
             conflict: KNOWLEDGE_CONFLICT.summary,
-            index: 'weekly',
           }
         : later;
   return {
@@ -1070,7 +1054,7 @@ function knowledgeAuthorityCatalog(
         },
       ],
     },
-    indexes: knowledgeIndexesFor(workspaceId, { term: current.index }),
+    indexes: knowledgeIndexesFor(workspaceId),
   };
 }
 
@@ -4332,12 +4316,19 @@ describe('Knowledge (board 14)', () => {
 
   it('reads indexes then retrieves and prepares context from the Retrieval panel', async () => {
     const user = userEvent.setup();
+    const cjkEntry = {
+      ...KNOWLEDGE_ENTRY,
+      title: '发布节奏',
+      content: '发布评审每周进行。',
+    };
+    const cjkQuery = '发布 评审';
     const readKnowledgeIndexes = vi.fn().mockResolvedValue(KNOWLEDGE_INDEXES);
     const retrieveKnowledge = vi.fn().mockResolvedValue(KNOWLEDGE_RETRIEVAL);
     const prepareKnowledgeContext = vi.fn().mockResolvedValue(KNOWLEDGE_CONTEXT);
     renderApp(
       '/knowledge',
       makeClient({
+        core: { 'knowledge.list': vi.fn().mockResolvedValue({ items: [cjkEntry] }) },
         app: {
           'knowledge.context.prepare': prepareKnowledgeContext,
           'knowledge.indexes': readKnowledgeIndexes,
@@ -4349,19 +4340,21 @@ describe('Knowledge (board 14)', () => {
     expect(await screen.findByRole('heading', { level: 1, name: 'Knowledge' })).toBeInTheDocument();
     const retrieval = knowledgePanel('Retrieval');
     await waitFor(() => expect(readKnowledgeIndexes).toHaveBeenCalledWith({ workspaceId: 'ws1' }));
-    expect(await within(retrieval).findByText('weekly')).toBeInTheDocument();
     expect(document.body).not.toHaveTextContent('knowledge/pages/mem1.md');
+    expect(knowledgeScreenSource).not.toMatch(/\.fullText\b|indexTerms/);
 
-    await fillKnowledgeFields(user, retrieval, [['Query', RETRIEVAL_QUERY]]);
+    await fillKnowledgeFields(user, retrieval, [['Query', cjkQuery]]);
     await user.click(within(retrieval).getByRole('button', { name: 'Retrieve' }));
     await waitFor(() =>
       expect(retrieveKnowledge).toHaveBeenCalledWith({
         workspaceId: 'ws1',
-        ...{ query: RETRIEVAL_QUERY },
+        ...{ query: cjkQuery },
       })
     );
     expect(await within(retrieval).findByText(RETRIEVAL_TRACE_ID)).toBeInTheDocument();
     expect(within(retrieval).getByText(KNOWLEDGE_ENTRY.id)).toBeInTheDocument();
+    expect(within(retrieval).getByText(cjkEntry.title)).toBeInTheDocument();
+    expect(within(retrieval).getByText(cjkEntry.content)).toBeInTheDocument();
     expect(within(retrieval).getByText('Sensitive content')).toBeInTheDocument();
     expect(screen.queryByText('sensitive_content')).not.toBeInTheDocument();
 
@@ -4369,7 +4362,7 @@ describe('Knowledge (board 14)', () => {
     await waitFor(() =>
       expect(prepareKnowledgeContext).toHaveBeenCalledWith({
         workspaceId: 'ws1',
-        ...{ query: RETRIEVAL_QUERY },
+        ...{ query: cjkQuery },
       })
     );
     expect(await within(retrieval).findByText('prepared')).toBeInTheDocument();
@@ -4927,7 +4920,7 @@ describe('Knowledge (board 14)', () => {
       error: accessDenied('Index read denied.'),
       message: /couldn't load|access denied/i,
       success: KNOWLEDGE_INDEXES,
-      result: 'weekly',
+      result: null,
       expected: [[{ workspaceId: 'ws1' }]],
     },
     {
@@ -4938,7 +4931,7 @@ describe('Knowledge (board 14)', () => {
       error: operationFailed('Index read failed.'),
       message: /couldn't load/i,
       success: KNOWLEDGE_INDEXES,
-      result: 'weekly',
+      result: null,
       expected: [[{ workspaceId: 'ws1' }]],
     },
     {
@@ -5575,7 +5568,6 @@ describe('Knowledge (board 14)', () => {
     expect(screen.getByText(first.observation)).toBeInTheDocument();
     expect(screen.getByText(first.claim)).toBeInTheDocument();
     expect(screen.getByText(first.conflict, { selector: ':not(option)' })).toBeInTheDocument();
-    expect(screen.getByText(first.index)).toBeInTheDocument();
     expect(callsOn(listKnowledgeSources, WORKSPACE_A.id)).toHaveLength(1);
     expect(callsOn(listKnowledgeObservations, WORKSPACE_A.id)).toHaveLength(1);
     expect(callsOn(listKnowledgeClaims, WORKSPACE_A.id)).toHaveLength(1);
@@ -5592,7 +5584,6 @@ describe('Knowledge (board 14)', () => {
       expect(
         screen.getByText(workspaceB.conflict, { selector: ':not(option)' })
       ).toBeInTheDocument();
-      expect(screen.getByText(workspaceB.index)).toBeInTheDocument();
       act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_A.id }));
     } else {
       await user.click(screen.getByRole('button', { name: 'Agents' }));
@@ -5612,7 +5603,6 @@ describe('Knowledge (board 14)', () => {
     expect(screen.getByText(second.observation)).toBeInTheDocument();
     expect(screen.getByText(second.claim)).toBeInTheDocument();
     expect(screen.getByText(second.conflict, { selector: ':not(option)' })).toBeInTheDocument();
-    expect(screen.getByText(second.index)).toBeInTheDocument();
   });
 
   it.each([

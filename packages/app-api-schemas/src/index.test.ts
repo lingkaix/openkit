@@ -1089,6 +1089,7 @@ describe('app api schemas', () => {
       retrievalParameters: {
         limit: 3,
         pinnedConceptIds: ['release-plan'],
+        states: ['active'],
       },
       selected: [selected],
       excluded: [excluded],
@@ -1105,8 +1106,14 @@ describe('app api schemas', () => {
       query: 'release cadence',
       limit: 3,
       pinnedConceptIds: ['release-plan'],
+      states: ['active'],
     });
     expect(KnowledgeRetrievalResponseSchema.parse(response)).toEqual(response);
+    expect(() => RetrieveKnowledgeRequestSchema.parse({ query: 'release', states: [] })).toThrow();
+    for (const score of [Number.NaN, Number.POSITIVE_INFINITY, -1])
+      expect(() =>
+        KnowledgeRetrievalResponseSchema.parse({ ...response, selected: [{ ...selected, score }] })
+      ).toThrow();
     expect(KnowledgeRetrievalResponseSchema.parse({ ...response, caller: 'task-mode' })).toEqual({
       ...response,
       caller: 'task-mode',
@@ -1218,24 +1225,6 @@ describe('app api schemas', () => {
             },
           ],
         },
-        fullText: {
-          schemaVersion: 1,
-          workspaceId: 'ws_demo',
-          rebuiltAt: timestamp,
-          tokenizer: 'unicode-simple-v1',
-          terms: [
-            {
-              term: 'alpha',
-              postings: [
-                {
-                  conceptId: 'alpha',
-                  fields: ['title', 'body'],
-                  occurrences: 2,
-                },
-              ],
-            },
-          ],
-        },
       })
     ).toMatchObject({
       linkGraph: { edges: [{ fromId: 'alpha', resolved: true }] },
@@ -1248,10 +1237,6 @@ describe('app api schemas', () => {
         references: expect.arrayContaining([
           expect.objectContaining({ reference: 'source:ks_demo', resolved: true }),
         ]),
-      },
-      fullText: {
-        tokenizer: 'unicode-simple-v1',
-        terms: [{ term: 'alpha', postings: [{ conceptId: 'alpha' }] }],
       },
     });
   });

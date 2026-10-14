@@ -1,6 +1,6 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -18,11 +18,16 @@ import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './worksp
 const stamp = '2026-10-15T00:00:00.000Z';
 const actor = { userId: 'user_local', kind: 'local' as const };
 const hash = (text: string) => `sha256:${createHash('sha256').update(text).digest('hex')}`;
-afterEach(closeRetrievalServices);
+const testRoots: string[] = [];
+afterEach(async () => {
+  await closeRetrievalServices();
+  for (const root of testRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 describe('canonical product retrieval adapters', () => {
   it('searches past Item, exact Artifact and Material text through real kernel generations without sidecars', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'retrieval-product-'));
+    testRoots.push(dataRoot);
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Retrieval');
     const thread = store.createThread(workspace.id, 'Past conversation');
@@ -115,6 +120,7 @@ describe('canonical product retrieval adapters', () => {
 
   it('excludes another private Thread before inventory and source access, and refuses private-to-shared context', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'retrieval-audience-'));
+    testRoots.push(dataRoot);
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Audiences');
     const own = store.createThread(workspace.id, 'Own');
@@ -160,6 +166,7 @@ describe('canonical product retrieval adapters', () => {
 
   it('uses the stored verified binary digest for one identity-only sidecar and opens no binary body', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'retrieval-sidecar-'));
+    testRoots.push(dataRoot);
     const identity = {
       key: { namespace: 'artifact', id: 'ar_binary' },
       revision: 'version-1',

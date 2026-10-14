@@ -67,6 +67,7 @@ import type {
   LLMGatewayProviderDispatcher,
 } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { closeRetrievalServices } from '../retrieval-service.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { LOCAL_USER_ID, workspaceDbPath } from '../storage/fs-layout.js';
@@ -428,7 +429,7 @@ function expectedTaskModeTurnId(
   return `turn_${requestId}_${suffix}`;
 }
 /** Creates ordinary Task checkpoint, Material and governed Knowledge state for S39 checks. */
-function createWorkerContextExecutorFixture(
+async function createWorkerContextExecutorFixture(
   name: string,
   options: {
     readonly materialContent?: string;
@@ -493,7 +494,13 @@ function createWorkerContextExecutorFixture(
     turnInput: workerRequest,
   });
   const retrievalTraceId = 'krt_0190f4c8-0000-7000-8000-000000000397';
-  retrieveWorkspaceKnowledge({
+  await retrieveWorkspaceKnowledge({
+    access: {
+      actor: turn.triggerActor,
+      coreDb,
+      outputThreadId: turn.threadId,
+      store,
+    },
     caller: 'task-mode',
     dataRoot,
     limit: 5,
@@ -583,8 +590,8 @@ function createWorkerContextExecutorFixture(
  * @param turnId Exact Turn identity presented to S39.
  * @returns Prepared Context Package state when S39 accepts the identity.
  */
-function prepareNullKnowledgeTaskContext(name: string, turnId: string) {
-  const fixture = createWorkerContextExecutorFixture(name, { turnId });
+async function prepareNullKnowledgeTaskContext(name: string, turnId: string) {
+  const fixture = await createWorkerContextExecutorFixture(name, { turnId });
   const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
   const checkpoint = getWorkerCheckpoint(
     workspaceDb,
@@ -1144,7 +1151,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('refuses the r35 host-dir source during AEP preparation with zero backend dispatch', async () => {
-    const fixture = createWorkerContextExecutorFixture('r35-host-dir');
+    const fixture = await createWorkerContextExecutorFixture('r35-host-dir');
     const backend = new FakeWorkerGovernanceBackend();
     Object.assign(backend, { prepareAgentSessionContinuity: async () => 'absent' as const });
     const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb: fixture.coreDb });
@@ -1228,7 +1235,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     [true, false],
     [false, true],
   ])('releases definite image refusal after failed publication only with successful cleanup (unknown=%s, release interrupted=%s)', async (cleanupFails, releaseInterrupted) => {
-    const f = createWorkerContextExecutorFixture(
+    const f = await createWorkerContextExecutorFixture(
       `image-refusal-${cleanupFails}-${releaseInterrupted}`
     );
     const backend = new FakeWorkerGovernanceBackend();
@@ -1647,7 +1654,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('closes a real preparation failure before snapshot publication without backend submission or missing-snapshot maintenance (#108)', async () => {
-    const fixture = createWorkerContextExecutorFixture('pre-snapshot-108');
+    const fixture = await createWorkerContextExecutorFixture('pre-snapshot-108');
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
@@ -1845,7 +1852,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('records possible preparation acceptance before effect-capable materialization', async () => {
-    const f = createWorkerContextExecutorFixture('materialization-operation');
+    const f = await createWorkerContextExecutorFixture('materialization-operation');
     f.coreDb.sqlite
       .prepare(
         "UPDATE scheduler_execution_attempts SET startup_deadline='2999-01-01T00:00:00.000Z'"
@@ -2959,7 +2966,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('submits one live Artifact proposal through the accepted Context Package trace', async () => {
-    const fixture = createWorkerContextExecutorFixture('artifact-review');
+    const fixture = await createWorkerContextExecutorFixture('artifact-review');
     const {
       agentSessionId,
       coreDb,
@@ -7496,7 +7503,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       decisionRequestId: '00000000-0000-4000-8000-000000000270',
       workerRequestId: '00000000-0000-4000-8000-000000000270',
     });
-    const fixture = createWorkerContextExecutorFixture('artifact-follow-up', { workerRequest });
+    const fixture = await createWorkerContextExecutorFixture('artifact-follow-up', {
+      workerRequest,
+    });
     const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
     workspaceDb.sqlite.transaction(() => {})();
     workspaceDb.sqlite.close();
@@ -7534,7 +7543,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     'carried',
   ] as const)('preserves checkpoint-free %s delivery before native launch', async (cause) => {
     const triggerInput = 'Receive pending request outcomes.';
-    const fixture = createWorkerContextExecutorFixture(`pending-${cause}`, {
+    const fixture = await createWorkerContextExecutorFixture(`pending-${cause}`, {
       workerRequest: triggerInput,
     });
     const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
@@ -7677,7 +7686,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('excludes an automatic binding that exceeds the remaining Context Package budget', async () => {
-    const fixture = createWorkerContextExecutorFixture('binding-budget', {
+    const fixture = await createWorkerContextExecutorFixture('binding-budget', {
       materialContent: 'B'.repeat(5_000),
       maxContextTokens: 1_000,
     });
@@ -7738,7 +7747,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('delivers direct-Task Knowledge through S39 and proves exact completed-work proposal lineage', async () => {
-    const fixture = createWorkerContextExecutorFixture('task-knowledge');
+    const fixture = await createWorkerContextExecutorFixture('task-knowledge');
     const knowledge = fixture.store.createKnowledgeEntry('ws_demo', {
       content: 'Zygomorphic worker guidance belongs in the existing Context Package.',
       kind: 'project-context',
@@ -7750,7 +7759,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
       title: 'Oversized zygomorphic worker guidance',
     });
     const retrievalTraceId = 'krt_0190f4c8-0000-7000-8000-000000000398';
-    const retrieval = retrieveWorkspaceKnowledge({
+    const retrieval = await retrieveWorkspaceKnowledge({
+      access: {
+        actor: fixture.turn.triggerActor,
+        coreDb: fixture.coreDb,
+        outputThreadId: fixture.turn.threadId,
+        store: fixture.store,
+      },
       caller: 'task-mode',
       dataRoot: fixture.coreDb.dataRoot,
       limit: 5,
@@ -8094,7 +8109,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('fails closed when a direct Task checkpoint lacks its governed Knowledge selection', async () => {
-    const fixture = createWorkerContextExecutorFixture('task-knowledge-missing');
+    const fixture = await createWorkerContextExecutorFixture('task-knowledge-missing');
     const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
     const checkpoint = getWorkerCheckpoint(
       workspaceDb,
@@ -8199,14 +8214,14 @@ describe('WorkerGovernanceTurnExecutor', () => {
         '00000000-0000-4000-8000-000000000271'
       ),
     },
-  ])('rejects null Knowledge for $name identity', ({ name, turnId }) => {
-    expect(() => prepareNullKnowledgeTaskContext(`chat-identity-${name}`, turnId)).toThrow(
+  ])('rejects null Knowledge for $name identity', async ({ name, turnId }) => {
+    await expect(prepareNullKnowledgeTaskContext(`chat-identity-${name}`, turnId)).rejects.toThrow(
       'Worker Context Package Task Knowledge selection authority is contradictory.'
     );
   });
 
-  it('permits null Knowledge only for the exact Chat-subordinate Task identity', () => {
-    const prepared = prepareNullKnowledgeTaskContext(
+  it('permits null Knowledge only for the exact Chat-subordinate Task identity', async () => {
+    const prepared = await prepareNullKnowledgeTaskContext(
       'chat-identity-exact',
       expectedTaskModeTurnId(
         'conversation.submit.task',
@@ -9826,7 +9841,7 @@ vi.mock('../runtime/agent-environment.js', async (importOriginal) => {
 describe('retained-record failure publication', () => {
   it('terminalizes forced snapshot preparation failure with fixed text before backend effects', async () => {
     const marker = 'ROW_SECRET_X9';
-    const fixture = createWorkerContextExecutorFixture('snapshot-preparation-failure');
+    const fixture = await createWorkerContextExecutorFixture('snapshot-preparation-failure');
     fixture.coreDb.sqlite
       .prepare(
         "UPDATE scheduler_execution_attempts SET startup_deadline = '2099-01-01T00:00:00.000Z'"
@@ -9901,7 +9916,9 @@ describe('retained-record failure publication', () => {
     ['unknown-core', true],
   ] as const)('publishes %s start with cleanup failure %s safely', async (variant, cleanupFails) => {
     const marker = 'ROW_SECRET_X9';
-    const fixture = createWorkerContextExecutorFixture(`published-${variant}-${cleanupFails}`);
+    const fixture = await createWorkerContextExecutorFixture(
+      `published-${variant}-${cleanupFails}`
+    );
     fixture.coreDb.sqlite
       .prepare(
         "UPDATE scheduler_execution_attempts SET startup_deadline = '2099-01-01T00:00:00.000Z'"
@@ -10054,7 +10071,7 @@ describe('retained-record failure publication', () => {
   });
 
   it('persists the authored missing-repository recovery sentence unchanged', async () => {
-    const fixture = createWorkerContextExecutorFixture('published-authored');
+    const fixture = await createWorkerContextExecutorFixture('published-authored');
     fixture.coreDb.sqlite
       .prepare(
         "UPDATE scheduler_execution_attempts SET startup_deadline = '2099-01-01T00:00:00.000Z'"
@@ -10113,7 +10130,8 @@ function completeOwnedTerminalAttempt(db: CoreDb, input: { id: string }) {
 }
 
 const commitFixtureDbs: CoreDb[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await closeRetrievalServices();
   for (const db of commitFixtureDbs.splice(0)) db.sqlite.close();
 });
 
@@ -10163,7 +10181,7 @@ type NativePreSubmissionFault =
  * NanoHost responses are modeled. Each fault mutates the exact retained fact its consumer reads.
  */
 async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): Promise<void> {
-  const fixture = createWorkerContextExecutorFixture(`native-${fault}`);
+  const fixture = await createWorkerContextExecutorFixture(`native-${fault}`);
   const { coreDb, store, turn, agentSessionId } = fixture;
   const attemptId = `lease_${turn.id}`;
   coreDb.sqlite

@@ -13,9 +13,10 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION } from '../knowledge/okf.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
+import { closeRetrievalServices } from '../retrieval-service.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { LOCAL_USER_ID } from './fs-layout.js';
 import {
@@ -26,6 +27,8 @@ import {
   retrieveWorkspaceKnowledge,
 } from './index-rebuild.js';
 
+afterEach(closeRetrievalServices);
+
 /**
  * Creates a temporary NanoCore data root for index rebuild tests.
  *
@@ -33,6 +36,15 @@ import {
  */
 function createDataRoot(): string {
   return mkdtempSync(join(tmpdir(), 'openkit-index-rebuild-'));
+}
+
+/** Builds trusted local-user access against the exact temporary data root under test. */
+function localRetrievalAccess(dataRoot: string, store = new FsStore({ dataRoot })) {
+  return {
+    store,
+    actor: { kind: 'user' as const, id: 'user_local' },
+    requestActor: { kind: 'local' as const, userId: 'user_local' },
+  };
 }
 
 /**
@@ -310,257 +322,7 @@ describe('workspace derived index rebuild', () => {
       expect.arrayContaining(['knowledge/pages/nested/index.md', 'knowledge/pages/nested/log.md'])
     );
   });
-  it('rebuilds the search index from file-backed workspace records', () => {
-    const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
-    const thread = store.createThread('ws_demo', 'Needle thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Find needle', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    store.createItem({
-      id: 'it_search_needle',
-      workspaceId: 'ws_demo',
-      threadId: thread.id,
-      turnId: turn.id,
-      type: 'assistant-message',
-      status: 'completed',
-      text: 'Needle answer',
-      createdAt: turn.startedAt ?? new Date().toISOString(),
-      completedAt: turn.startedAt ?? new Date().toISOString(),
-    });
-    store.createArtifact({
-      id: 'ar_search_needle',
-      workspaceId: 'ws_demo',
-      threadId: thread.id,
-      turnId: turn.id,
-      kind: 'summary',
-      title: 'Needle artifact',
-      status: 'ready',
-      summary: 'Needle artifact summary',
-      version: 1,
-      content: { format: 'markdown', body: 'Needle artifact body' },
-      contentDigest: sha256Digest('Needle artifact body'),
-      lastMutationRequestId: 'req_ar_search_needle_create',
-      origin: {
-        kind: 'turn-output',
-        threadId: thread.id,
-        turnId: turn.id,
-        requestId: 'req_ar_search_needle_create',
-      },
-      createdAt: turn.startedAt ?? new Date().toISOString(),
-      updatedAt: turn.startedAt ?? new Date().toISOString(),
-    });
-    store.createArtifact({
-      id: 'ar_without_summary',
-      workspaceId: 'ws_demo',
-      threadId: null,
-      turnId: null,
-      kind: 'file',
-      title: 'Summary-less artifact',
-      status: 'ready',
-      summary: null,
-      version: 1,
-      content: { format: 'markdown', body: 'Artifact without summary.' },
-      contentDigest: sha256Digest('Artifact without summary.'),
-      lastMutationRequestId: 'req_ar_without_summary_import',
-      origin: {
-        kind: 'imported',
-        sourceKind: 'direct-import',
-        sourceId: 'req_ar_without_summary_import',
-        sourceDigest: sha256Digest('Artifact without summary.'),
-        actor: { kind: 'user', id: 'user_local' },
-        requestId: 'req_ar_without_summary_import',
-        recordedAt: turn.startedAt ?? new Date().toISOString(),
-      },
-      createdAt: turn.startedAt ?? new Date().toISOString(),
-      updatedAt: turn.startedAt ?? new Date().toISOString(),
-    });
-    const indexesRoot = join(dataRoot, 'workspaces', 'ws_demo', 'indexes');
-    mkdirSync(indexesRoot, { recursive: true });
-    writeFileSync(join(indexesRoot, 'stale.json'), '{}');
-
-    const result = rebuildWorkspaceDerivedIndexes({
-      dataRoot,
-      workspaceId: 'ws_demo',
-    });
-
-    expect(result).toEqual({
-      workspaceId: 'ws_demo',
-      indexPath: 'workspaces/ws_demo/indexes/search.json',
-      itemCount: 9,
-      removedEntries: ['stale.json'],
-    });
-    expect(existsSync(join(indexesRoot, 'stale.json'))).toBe(false);
-    expect(JSON.parse(readFileSync(join(indexesRoot, 'search.json'), 'utf8'))).toMatchObject({
-      schemaVersion: 1,
-      workspaceId: 'ws_demo',
-      items: expect.arrayContaining([
-        expect.objectContaining({ kind: 'workspace', id: 'ws_demo', title: 'Demo Workspace' }),
-        expect.objectContaining({ kind: 'thread', id: thread.id, title: 'Needle thread' }),
-        expect.objectContaining({ kind: 'item', id: 'it_search_needle', title: 'Needle answer' }),
-        expect.objectContaining({
-          kind: 'item',
-          title: 'Needle artifact',
-        }),
-        expect.objectContaining({
-          kind: 'artifact',
-          id: 'ar_search_needle',
-          title: 'Needle artifact',
-        }),
-        expect.objectContaining({
-          kind: 'artifact',
-          id: 'ar_without_summary',
-          title: 'Summary-less artifact',
-        }),
-      ]),
-    });
-  });
-
-  it('indexes only the latest revision of each append-only item record', () => {
-    const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
-    const thread = store.createThread('ws_demo', 'Revision thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Revise the answer', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const timestamp = turn.startedAt ?? new Date().toISOString();
-    const firstRevision = store.createItem({
-      id: 'it_revised_answer',
-      workspaceId: 'ws_demo',
-      threadId: thread.id,
-      turnId: turn.id,
-      type: 'assistant-message',
-      status: 'in_progress',
-      text: 'Obsolete answer text',
-      createdAt: timestamp,
-      completedAt: null,
-    });
-    const latestRevision = {
-      ...firstRevision,
-      status: 'completed' as const,
-      text: 'Current answer text',
-      completedAt: timestamp,
-    };
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
-
-    writeFileSync(
-      join(workspaceRoot, 'threads', thread.id, 'turns', turn.id, 'items.jsonl'),
-      `${JSON.stringify(firstRevision)}\n${JSON.stringify(latestRevision)}\n`
-    );
-
-    rebuildWorkspaceDerivedIndexes({
-      dataRoot,
-      workspaceId: 'ws_demo',
-    });
-
-    const index = JSON.parse(
-      readFileSync(join(workspaceRoot, 'indexes', 'search.json'), 'utf8')
-    ) as {
-      items: Array<{ kind: string; id: string; title: string; searchText: string }>;
-    };
-    const indexedRevisions = index.items.filter(
-      (item) => item.kind === 'item' && item.id === firstRevision.id
-    );
-
-    expect(indexedRevisions).toHaveLength(1);
-    expect(indexedRevisions[0]).toMatchObject({
-      title: latestRevision.text,
-      searchText: latestRevision.text,
-    });
-    expect(indexedRevisions[0]?.searchText).not.toContain(firstRevision.text);
-  });
-
-  it('repairs an incomplete final item fragment before rebuilding the index', () => {
-    const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
-    const thread = store.createThread('ws_demo', 'Interrupted revision thread');
-    const turn = store.createTurn('ws_demo', thread.id, 'Keep the complete revision', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const timestamp = turn.startedAt ?? new Date().toISOString();
-    const item = store.createItem({
-      id: 'it_interrupted_index_rebuild',
-      workspaceId: 'ws_demo',
-      threadId: thread.id,
-      turnId: turn.id,
-      type: 'assistant-message',
-      status: 'completed',
-      text: 'Complete revision remains searchable.',
-      createdAt: timestamp,
-      completedAt: timestamp,
-    });
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
-    const itemsPath = join(workspaceRoot, 'threads', thread.id, 'turns', turn.id, 'items.jsonl');
-    const completeLog = readFileSync(itemsPath, 'utf8');
-
-    appendFileSync(itemsPath, '{"id":"interrupted');
-    rebuildWorkspaceDerivedIndexes({
-      dataRoot,
-      workspaceId: 'ws_demo',
-    });
-
-    const index = JSON.parse(
-      readFileSync(join(workspaceRoot, 'indexes', 'search.json'), 'utf8')
-    ) as { items: Array<{ kind: string; id: string; searchText: string }> };
-
-    expect(readFileSync(itemsPath, 'utf8')).toBe(completeLog);
-    expect(index.items).toContainEqual(
-      expect.objectContaining({ kind: 'item', id: item.id, searchText: item.text })
-    );
-  });
-
-  it('indexes only the artifact content file selected by metadata format', () => {
-    const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
-    const artifact = store.createArtifact({
-      id: 'ar_exact_content_file',
-      workspaceId: 'ws_demo',
-      threadId: null,
-      turnId: null,
-      kind: 'file',
-      title: 'Exact content file artifact',
-      status: 'ready',
-      summary: null,
-      version: 1,
-      content: { format: 'text', body: 'Canonical text content.' },
-      contentDigest: sha256Digest('Canonical text content.'),
-      lastMutationRequestId: 'req_ar_exact_content_file_import',
-      origin: {
-        kind: 'imported',
-        sourceKind: 'direct-import',
-        sourceId: 'req_ar_exact_content_file_import',
-        sourceDigest: sha256Digest('Canonical text content.'),
-        actor: { kind: 'user', id: 'user_local' },
-        requestId: 'req_ar_exact_content_file_import',
-        recordedAt: '2026-07-07T00:00:00.000Z',
-      },
-      createdAt: '2026-07-07T00:00:00.000Z',
-      updatedAt: '2026-07-07T00:00:00.000Z',
-    });
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
-    const artifactRoot = join(workspaceRoot, 'artifacts', artifact.id);
-
-    writeFileSync(join(artifactRoot, 'files', 'content.md'), 'Stale Markdown content.');
-    rebuildWorkspaceDerivedIndexes({
-      dataRoot,
-      workspaceId: 'ws_demo',
-    });
-
-    const index = JSON.parse(
-      readFileSync(join(workspaceRoot, 'indexes', 'search.json'), 'utf8')
-    ) as { items: Array<{ kind: string; id: string; searchText: string }> };
-    const indexed = index.items.find(
-      (entry) => entry.kind === 'artifact' && entry.id === artifact.id
-    );
-
-    expect(indexed?.searchText).toContain(artifact.content.body);
-    expect(indexed?.searchText).not.toContain('Stale Markdown content.');
-  });
-
-  it('persists the exact governed retrieval row and omits unaddressed pages', () => {
+  it('persists the exact governed retrieval row and omits unaddressed pages', async () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
@@ -568,20 +330,23 @@ describe('workspace derived index rebuild', () => {
     const sourceId = 'ks_00000000-0000-4000-8000-000000000001';
     const sourceReference = `source:${sourceId}`;
 
-    store.createKnowledgeSource({
-      id: sourceId,
-      workspaceId: 'ws_demo',
-      kind: 'document',
-      title: 'Governed retrieval source',
-      uri: null,
-      contentDigest: sha256Digest('Governed retrieval source.'),
-      originatingThreadId: null,
-      originatingTurnId: null,
-      originatingFileId: null,
-      capturedAt: createdAt,
-      createdAt,
-      updatedAt: createdAt,
-    });
+    store.createKnowledgeSource(
+      {
+        id: sourceId,
+        workspaceId: 'ws_demo',
+        kind: 'document',
+        title: 'Governed retrieval source',
+        uri: null,
+        contentDigest: sha256Digest('Governed retrieval source.'),
+        originatingThreadId: null,
+        originatingTurnId: null,
+        originatingFileId: null,
+        capturedAt: createdAt,
+        createdAt,
+        updatedAt: createdAt,
+      },
+      'Governed retrieval source.'
+    );
     const selected = store.createKnowledgeEntry('ws_demo', {
       kind: 'project-context',
       title: 'Selected page',
@@ -600,6 +365,7 @@ describe('workspace derived index rebuild', () => {
     });
     const traceId = 'krt_00000000-0000-4000-8000-000000000003';
     const input = {
+      access: localRetrievalAccess(dataRoot, store),
       dataRoot,
       workspaceId: 'ws_demo',
       caller: 'task-mode' as const,
@@ -610,7 +376,7 @@ describe('workspace derived index rebuild', () => {
       now: () => createdAt,
     };
 
-    retrieveWorkspaceKnowledge(input);
+    const trace = await retrieveWorkspaceKnowledge(input);
     const selectedPageBytes = readFileSync(
       join(workspaceRoot, 'knowledge', 'pages', `${selected.id}.md`),
       'utf8'
@@ -620,6 +386,7 @@ describe('workspace derived index rebuild', () => {
       resolveWorkspaceKnowledgeRetrievalPages({
         caller: 'task-mode',
         dataRoot,
+        access: localRetrievalAccess(dataRoot, store),
         workspaceId: 'ws_demo',
         retrievalTraceId: traceId,
       })
@@ -643,17 +410,18 @@ describe('workspace derived index rebuild', () => {
       workspaceId: 'ws_demo',
       caller: 'task-mode',
       requestDigest: sha256Digest(
-        '{"caller":"task-mode","request":{"limit":1,"pinnedConceptIds":["mem_2","mem_3"],"query":"retrievalneedle"},"workspaceId":"ws_demo"}'
+        '{"caller":"task-mode","request":{"limit":1,"pinnedConceptIds":["mem_2","mem_3"],"query":"retrievalneedle","states":["active"]},"workspaceId":"ws_demo"}'
       ),
       retrievalParameters: {
         limit: 1,
         pinnedConceptIds: [selected.id, overflow.id],
+        states: ['active'],
       },
       selected: [
         {
           knowledgePageId: selected.id,
           contentDigest: sha256Digest(selectedPageBytes),
-          score: 1,
+          score: expect.any(Number),
           sourceReferences: [sourceReference],
         },
       ],
@@ -668,19 +436,25 @@ describe('workspace derived index rebuild', () => {
       ],
       createdAt,
     });
+    expect(trace.selected[0]?.score).toBeGreaterThan(0);
     expect(JSON.stringify(row)).not.toContain(zeroScore.id);
   });
 
-  it('does not let a persisted retrieval trace authorize accepted page references', () => {
+  it('does not let a persisted retrieval trace authorize an accepted page', async () => {
     const dataRoot = createDataRoot();
-    createDemoStore({ dataRoot });
+    const store = createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
     const knowledgePageId = 'reviewed-task-proof';
-    const sourceReferences = [
-      'context-package:turn_source@ctxpkg_sha256_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      'item:item_source',
-      'turn:turn_source',
-    ];
+    const evidence = store.createKnowledgeEntry('ws_demo', {
+      kind: 'project-context',
+      title: 'Reviewed evidence source',
+      content: 'The current page supplies exact proposal evidence.',
+    });
+    const evidenceBytes = readFileSync(
+      join(workspaceRoot, 'knowledge', 'pages', `${evidence.id}.md`),
+      'utf8'
+    );
+    const sourceReferences = [`knowledge:${evidence.id}@${sha256Digest(evidenceBytes)}`];
     const content = [
       '---',
       'type: "KnowledgePage"',
@@ -702,52 +476,55 @@ describe('workspace derived index rebuild', () => {
       '',
     ].join('\n');
     const contentDigest = sha256Digest(content);
-    const proof = {
-      contentDigest,
+    const proposal = store.createKnowledgeProposal({
+      workspaceId: 'ws_demo',
       knowledgePageId,
-      resolvedReferences: new Set(sourceReferences),
+      canonicalPageBytes: content,
+      contentDigest,
       sourceReferences,
-    };
-    writeFileSync(join(workspaceRoot, 'knowledge', 'pages', `${knowledgePageId}.md`), content);
-    const retrieval = retrieveWorkspaceKnowledge({
+      requestId: '00000000-0000-4000-8000-000000000702',
+      rationale: 'Retain the reviewed page for retrieval.',
+      confidence: 1,
+      producer: { kind: 'user', id: 'user_local' },
+      verifiedExternalReferences: [],
+      createdAt: '2026-07-12T00:00:00.000Z',
+    });
+    store.recordKnowledgeProposalReviewDecision({
+      workspaceId: 'ws_demo',
+      proposalId: proposal.id,
+      decision: 'accepted',
+      requestId: '00000000-0000-4000-8000-000000000703',
+      actor: { kind: 'user', id: 'user_local' },
+      verifiedExternalReferences: [],
+      decidedAt: '2026-07-12T00:00:00.000Z',
+    });
+    const retrieval = await retrieveWorkspaceKnowledge({
+      access: localRetrievalAccess(dataRoot, store),
       caller: 'task-mode',
       dataRoot,
       query: 'Reviewed task proof',
-      referenceProofs: new Map([[knowledgePageId, proof]]),
       traceId: 'krt_00000000-0000-4000-8000-000000000702',
       workspaceId: 'ws_demo',
       now: () => '2026-07-12T00:00:00.000Z',
     });
 
-    expect(retrieval.selected).toHaveLength(1);
-    const validationIndex = JSON.parse(
-      readFileSync(join(workspaceRoot, 'indexes', 'knowledge-validation.json'), 'utf8')
-    ) as { records: Array<{ conceptId: string; indexed: boolean }> };
-    const sourceReferenceIndex = JSON.parse(
-      readFileSync(join(workspaceRoot, 'indexes', 'knowledge-source-refs.json'), 'utf8')
-    ) as { references: Array<{ conceptId: string; resolved: boolean }> };
-    expect(validationIndex.records.find((record) => record.conceptId === knowledgePageId)).toEqual(
-      expect.objectContaining({ indexed: false })
-    );
-    expect(
-      sourceReferenceIndex.references
-        .filter((reference) => reference.conceptId === knowledgePageId)
-        .map((reference) => reference.resolved)
-    ).toEqual([false, false, false]);
+    expect(retrieval.selected).toContainEqual(expect.objectContaining({ knowledgePageId }));
+    rmSync(join(workspaceRoot, 'knowledge', 'reviews', `${proposal.id}.json`));
+    const afterStore = new FsStore({ dataRoot });
     expect(() =>
       resolveWorkspaceKnowledgeRetrievalPages({
+        access: localRetrievalAccess(dataRoot, afterStore),
         caller: 'task-mode',
         dataRoot,
-        referenceProofs: new Map(),
         retrievalTraceId: retrieval.traceId,
         workspaceId: 'ws_demo',
       })
     ).toThrow('Knowledge retrieval trace no longer matches authoritative pages.');
   });
 
-  it('requires exact page-bound proof for every accepted page', () => {
+  it('requires exact page-bound proof for every accepted page', async () => {
     const dataRoot = createDataRoot();
-    createDemoStore({ dataRoot });
+    const store = createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
     const knowledgePageId = 'accepted-without-proof';
     const content = [
@@ -772,7 +549,8 @@ describe('workspace derived index rebuild', () => {
     ].join('\n');
     writeFileSync(join(workspaceRoot, 'knowledge', 'pages', `${knowledgePageId}.md`), content);
 
-    const retrieval = retrieveWorkspaceKnowledge({
+    const retrieval = await retrieveWorkspaceKnowledge({
+      access: localRetrievalAccess(dataRoot, store),
       caller: 'task-mode',
       dataRoot,
       pinnedConceptIds: [knowledgePageId],
@@ -796,9 +574,10 @@ describe('workspace derived index rebuild', () => {
     );
   });
 
-  it('repairs an incomplete retrieval-trace tail before appending', () => {
+  it('repairs an incomplete retrieval-trace tail before appending', async () => {
     const dataRoot = createDataRoot();
-    const workspace = new FsStore({ dataRoot }).createWorkspace('Retrieval trace recovery');
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Retrieval trace recovery');
     const tracePath = join(
       dataRoot,
       'workspaces',
@@ -808,6 +587,7 @@ describe('workspace derived index rebuild', () => {
       '202607.jsonl'
     );
     const input = {
+      access: localRetrievalAccess(dataRoot, store),
       dataRoot,
       workspaceId: workspace.id,
       caller: 'app-api' as const,
@@ -817,9 +597,9 @@ describe('workspace derived index rebuild', () => {
 
     const firstTraceId = 'krt_00000000-0000-4000-8000-000000000001';
 
-    retrieveWorkspaceKnowledge({ ...input, traceId: firstTraceId });
+    await retrieveWorkspaceKnowledge({ ...input, traceId: firstTraceId });
     appendFileSync(tracePath, '{"traceId":"interrupted');
-    retrieveWorkspaceKnowledge({
+    await retrieveWorkspaceKnowledge({
       ...input,
       traceId: 'krt_00000000-0000-4000-8000-000000000002',
     });
@@ -827,14 +607,15 @@ describe('workspace derived index rebuild', () => {
     const rows = readFileSync(tracePath, 'utf8').trim().split('\n');
     expect(rows).toHaveLength(2);
     expect(rows.map((row) => JSON.parse(row))).toHaveLength(2);
-    expect(() => retrieveWorkspaceKnowledge({ ...input, traceId: firstTraceId })).toThrow(
+    await expect(retrieveWorkspaceKnowledge({ ...input, traceId: firstTraceId })).rejects.toThrow(
       /duplicate/i
     );
   });
 
-  it('rejects a symlinked retrieval-trace ledger without writing outside', () => {
+  it('rejects a symlinked retrieval-trace ledger without writing outside', async () => {
     const dataRoot = createDataRoot();
-    const workspace = new FsStore({ dataRoot }).createWorkspace('Retrieval trace symlink');
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Retrieval trace symlink');
     const tracePath = join(
       dataRoot,
       'workspaces',
@@ -846,6 +627,7 @@ describe('workspace derived index rebuild', () => {
     const outsideRoot = mkdtempSync(join(tmpdir(), 'openkit-index-trace-outside-'));
     const outsidePath = join(outsideRoot, 'sentinel.jsonl');
     const input = {
+      access: localRetrievalAccess(dataRoot, store),
       dataRoot,
       workspaceId: workspace.id,
       caller: 'app-api' as const,
@@ -853,7 +635,7 @@ describe('workspace derived index rebuild', () => {
       now: () => '2026-07-12T00:00:00.000Z',
     };
 
-    retrieveWorkspaceKnowledge({
+    await retrieveWorkspaceKnowledge({
       ...input,
       traceId: 'krt_00000000-0000-4000-8000-000000000004',
     });
@@ -861,62 +643,13 @@ describe('workspace derived index rebuild', () => {
     writeFileSync(outsidePath, 'untouched\n');
     symlinkSync(outsidePath, tracePath);
 
-    expect(() =>
+    await expect(
       retrieveWorkspaceKnowledge({
         ...input,
         traceId: 'krt_00000000-0000-4000-8000-000000000005',
       })
-    ).toThrow();
+    ).rejects.toThrow();
     expect(readFileSync(outsidePath, 'utf8')).toBe('untouched\n');
-  });
-
-  it.each([
-    'embedded body',
-    'invalid format',
-  ] as const)('rejects artifact metadata with an %s', (violation) => {
-    const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
-    const artifact = store.createArtifact({
-      id: `ar_invalid_metadata_${violation.replace(' ', '_')}`,
-      workspaceId: 'ws_demo',
-      threadId: null,
-      turnId: null,
-      kind: 'file',
-      title: 'Invalid artifact metadata',
-      status: 'ready',
-      summary: null,
-      version: 1,
-      content: { format: 'text', body: 'Canonical artifact content.' },
-      contentDigest: sha256Digest('Canonical artifact content.'),
-      lastMutationRequestId: `req_ar_invalid_metadata_${violation.replace(' ', '_')}_import`,
-      origin: {
-        kind: 'imported',
-        sourceKind: 'direct-import',
-        sourceId: `req_ar_invalid_metadata_${violation.replace(' ', '_')}_import`,
-        sourceDigest: sha256Digest('Canonical artifact content.'),
-        actor: { kind: 'user', id: 'user_local' },
-        requestId: `req_ar_invalid_metadata_${violation.replace(' ', '_')}_import`,
-        recordedAt: '2026-07-07T00:00:00.000Z',
-      },
-      createdAt: '2026-07-07T00:00:00.000Z',
-      updatedAt: '2026-07-07T00:00:00.000Z',
-    });
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
-    const metadataPath = join(workspaceRoot, 'artifacts', artifact.id, 'artifact.json');
-    const metadata = JSON.parse(readFileSync(metadataPath, 'utf8')) as Record<string, unknown>;
-
-    metadata.content =
-      violation === 'embedded body'
-        ? { format: 'text', body: 'Duplicate embedded body.' }
-        : { format: 'binary' };
-    writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`);
-
-    expect(() =>
-      rebuildWorkspaceDerivedIndexes({
-        dataRoot,
-        workspaceId: 'ws_demo',
-      })
-    ).toThrow(/artifact|content/i);
   });
 
   it('fails closed when the workspace projection is missing', () => {
@@ -970,181 +703,6 @@ describe('workspace derived index rebuild', () => {
       rejected: failure instanceof Error,
       sentinel: existsSync(sentinelPath) ? readFileSync(sentinelPath, 'utf8') : null,
     }).toEqual({ rejected: true, sentinel: 'outside sentinel\n' });
-  });
-
-  it('rebuilds knowledge search entries from file-backed pages', () => {
-    const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
-    const knowledge = store.createKnowledgeEntry('ws_demo', {
-      kind: 'project-context',
-      title: 'File-backed knowledge',
-      content: 'Searchable knowledge page body.',
-    });
-
-    rebuildWorkspaceDerivedIndexes({
-      dataRoot,
-      workspaceId: 'ws_demo',
-    });
-
-    expect(
-      JSON.parse(
-        readFileSync(join(dataRoot, 'workspaces', 'ws_demo', 'indexes', 'search.json'), 'utf8')
-      )
-    ).toMatchObject({
-      items: expect.arrayContaining([
-        expect.objectContaining({
-          kind: 'knowledge',
-          id: knowledge.id,
-          title: 'File-backed knowledge',
-          searchText: expect.stringContaining('Searchable knowledge page body.'),
-        }),
-      ]),
-    });
-  });
-
-  it('rebuilds a knowledge full-text term index from active file-backed pages', () => {
-    const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
-    const timestamp = '2026-07-07T00:00:00.000Z';
-
-    store.createKnowledgeEntry('ws_demo', {
-      kind: 'project-context',
-      title: 'Seed knowledge',
-      content: 'Seed body.',
-    });
-    writeFileSync(
-      join(workspaceRoot, 'knowledge', 'pages', 'release.md'),
-      [
-        '---',
-        'type: "KnowledgePage"',
-        'title: "Release Cadence"',
-        'schema_version: "openkit-workspace-knowledge-schema-v2"',
-        'openkit_status: "active"',
-        'status: "stable"',
-        'scope: "workspace"',
-        'source_refs: []',
-        'review_state: "user-authored"',
-        'sensitivity: "normal"',
-        'freshness: "current"',
-        `created_at: "${timestamp}"`,
-        `updated_at: "${timestamp}"`,
-        '---',
-        'Weekly release cadence keeps Friday review predictable.',
-        '',
-      ].join('\n')
-    );
-    writeFileSync(
-      join(workspaceRoot, 'knowledge', 'pages', 'blocked.md'),
-      [
-        '---',
-        'type: "KnowledgePage"',
-        'title: "Blocked Cadence"',
-        'schema_version: "openkit-workspace-knowledge-schema-v2"',
-        'openkit_status: "active"',
-        'status: "stable"',
-        'scope: "workspace"',
-        'source_refs: ["source:ks_missing"]',
-        'review_state: "user-authored"',
-        'sensitivity: "normal"',
-        'freshness: "current"',
-        `created_at: "${timestamp}"`,
-        `updated_at: "${timestamp}"`,
-        '---',
-        'This blocked cadence text must not enter the FTS index.',
-        '',
-      ].join('\n')
-    );
-
-    rebuildWorkspaceDerivedIndexes({
-      dataRoot,
-      workspaceId: 'ws_demo',
-    });
-
-    const fullText = JSON.parse(
-      readFileSync(join(workspaceRoot, 'indexes', 'knowledge-fts.json'), 'utf8')
-    ) as {
-      schemaVersion: number;
-      workspaceId: string;
-      tokenizer: string;
-      terms: Array<{
-        term: string;
-        postings: Array<{ conceptId: string; fields: string[]; occurrences: number }>;
-      }>;
-    };
-
-    expect(fullText).toMatchObject({
-      schemaVersion: 1,
-      workspaceId: 'ws_demo',
-      tokenizer: 'unicode-simple-v1',
-      terms: expect.arrayContaining([
-        {
-          term: 'cadence',
-          postings: [
-            {
-              conceptId: 'release',
-              fields: ['body', 'title'],
-              occurrences: 2,
-            },
-          ],
-        },
-        {
-          term: 'weekly',
-          postings: [
-            {
-              conceptId: 'release',
-              fields: ['body'],
-              occurrences: 1,
-            },
-          ],
-        },
-      ]),
-    });
-    expect(JSON.stringify(fullText)).not.toContain('blocked');
-  });
-
-  it('does not rebuild invalid active knowledge pages into search entries', () => {
-    const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
-    store.createKnowledgeEntry('ws_demo', {
-      kind: 'project-context',
-      title: 'Valid knowledge',
-      content: 'Searchable valid body.',
-    });
-    writeFileSync(
-      join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'pages', 'invalid.md'),
-      [
-        '---',
-        'type: "KnowledgePage"',
-        'title: "Invalid knowledge"',
-        'schema_version: "openkit-knowledge-entry-v1"',
-        'openkit_status: "active"',
-        'status: "stable"',
-        'scope: "workspace"',
-        'source_refs: []',
-        'review_state: "user-authored"',
-        'sensitivity: "normal"',
-        'freshness: "current"',
-        '---',
-        'This invalid active body should not be indexed.',
-        '',
-      ].join('\n')
-    );
-
-    rebuildWorkspaceDerivedIndexes({
-      dataRoot,
-      workspaceId: 'ws_demo',
-    });
-
-    const index = JSON.parse(
-      readFileSync(join(dataRoot, 'workspaces', 'ws_demo', 'indexes', 'search.json'), 'utf8')
-    ) as { items: Array<{ title: string; searchText: string }> };
-
-    expect(index.items.map((item) => item.title)).toContain('Valid knowledge');
-    expect(index.items.map((item) => item.title)).not.toContain('Invalid knowledge');
-    expect(index.items.map((item) => item.searchText).join('\n')).not.toContain(
-      'This invalid active body should not be indexed.'
-    );
   });
 
   it('rebuilds validation reports for file-backed knowledge pages', () => {
@@ -1308,13 +866,12 @@ describe('workspace derived index rebuild', () => {
       workspaceId: 'ws_demo',
     });
 
-    const index = JSON.parse(
-      readFileSync(join(workspaceRoot, 'indexes', 'search.json'), 'utf8')
-    ) as { items: Array<{ title: string; searchText: string }> };
+    const validation = JSON.parse(
+      readFileSync(join(workspaceRoot, 'indexes', 'knowledge-validation.json'), 'utf8')
+    ) as { records: Array<{ conceptId: string; indexed: boolean; title?: string }> };
 
-    expect(index.items.map((item) => item.title)).toContain('Repo convention');
-    expect(index.items.map((item) => item.searchText).join('\n')).toContain(
-      'Extension schema body.'
+    expect(validation.records).toContainEqual(
+      expect.objectContaining({ conceptId: 'repo', indexed: true, title: 'Repo convention' })
     );
   });
 
@@ -1337,14 +894,12 @@ describe('workspace derived index rebuild', () => {
       workspaceId: 'ws_demo',
     });
 
-    const index = JSON.parse(
-      readFileSync(join(workspaceRoot, 'indexes', 'search.json'), 'utf8')
-    ) as { items: Array<{ title: string; searchText: string }> };
+    const validation = JSON.parse(
+      readFileSync(join(workspaceRoot, 'indexes', 'knowledge-validation.json'), 'utf8')
+    ) as { records: Array<{ indexed: boolean; errors: unknown[] }> };
 
-    expect(index.items.map((item) => item.title)).not.toContain('Schema blocked knowledge');
-    expect(index.items.map((item) => item.searchText).join('\n')).not.toContain(
-      'This body should not be indexed.'
-    );
+    expect(validation.records.every((record) => !record.indexed)).toBe(true);
+    expect(validation.records.some((record) => record.errors.length > 0)).toBe(true);
   });
 
   it('requires active knowledge page source references to resolve to registered records', () => {
@@ -1504,29 +1059,21 @@ describe('workspace derived index rebuild', () => {
       workspaceId: 'ws_demo',
     });
 
-    const index = JSON.parse(
-      readFileSync(join(workspaceRoot, 'indexes', 'search.json'), 'utf8')
-    ) as { items: Array<{ title: string; searchText: string }> };
-
-    expect(index.items.map((item) => item.title)).toContain('Source-backed knowledge');
-    expect(index.items.map((item) => item.title)).toContain('Knowledge-backed knowledge');
-    expect(index.items.map((item) => item.title)).toContain('External URL knowledge');
-    expect(index.items.map((item) => item.title)).not.toContain('Missing source knowledge');
-    expect(index.items.map((item) => item.title)).not.toContain('Missing knowledge source');
-    expect(index.items.map((item) => item.title)).not.toContain('Invalid external source');
-    expect(index.items.map((item) => item.searchText).join('\n')).not.toContain(
-      'This missing-source body should not be indexed.'
+    const validation = JSON.parse(
+      readFileSync(join(workspaceRoot, 'indexes', 'knowledge-validation.json'), 'utf8')
+    ) as { records: Array<{ conceptId: string; indexed: boolean; errors: unknown[] }> };
+    const indexedById = new Map(
+      validation.records.map((record) => [record.conceptId, record.indexed] as const)
     );
-    expect(index.items.map((item) => item.searchText).join('\n')).not.toContain(
-      'This missing-knowledge body should not be indexed.'
-    );
-    expect(index.items.map((item) => item.searchText).join('\n')).not.toContain(
-      'This invalid-external body should not be indexed.'
-    );
-
-    expect(
-      JSON.parse(readFileSync(join(workspaceRoot, 'indexes', 'knowledge-validation.json'), 'utf8'))
-    ).toMatchObject({
+    expect(Object.fromEntries(indexedById)).toMatchObject({
+      'source-backed': true,
+      'knowledge-backed': true,
+      'external-url': true,
+      'missing-source': false,
+      'missing-knowledge': false,
+      'invalid-external': false,
+    });
+    expect(validation).toMatchObject({
       records: expect.arrayContaining([
         expect.objectContaining({
           conceptId: 'invalid-external',
@@ -1778,62 +1325,15 @@ describe('workspace derived index rebuild', () => {
     expect(graph.edges).toHaveLength(2);
   });
 
-  it('rebuilds artifact search entries from file-backed content', () => {
-    const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
-    const artifact = store.createArtifact({
-      id: 'ar_file_backed',
-      workspaceId: 'ws_demo',
-      threadId: null,
-      turnId: null,
-      kind: 'file',
-      title: 'File-backed artifact',
-      status: 'ready',
-      summary: null,
-      version: 1,
-      content: { format: 'markdown', body: 'Artifact body from file.' },
-      contentDigest: sha256Digest('Artifact body from file.'),
-      lastMutationRequestId: 'req_ar_file_backed_import',
-      origin: {
-        kind: 'imported',
-        sourceKind: 'direct-import',
-        sourceId: 'req_ar_file_backed_import',
-        sourceDigest: sha256Digest('Artifact body from file.'),
-        actor: { kind: 'user', id: 'user_local' },
-        requestId: 'req_ar_file_backed_import',
-        recordedAt: '2026-07-05T00:00:00.000Z',
-      },
-      createdAt: '2026-07-05T00:00:00.000Z',
-      updatedAt: '2026-07-05T00:00:00.000Z',
-    });
-
-    rebuildWorkspaceDerivedIndexes({
-      dataRoot,
-      workspaceId: 'ws_demo',
-    });
-
-    expect(
-      JSON.parse(
-        readFileSync(join(dataRoot, 'workspaces', 'ws_demo', 'indexes', 'search.json'), 'utf8')
-      )
-    ).toMatchObject({
-      items: expect.arrayContaining([
-        expect.objectContaining({
-          kind: 'artifact',
-          id: artifact.id,
-          title: 'File-backed artifact',
-          searchText: expect.stringContaining('Artifact body from file.'),
-        }),
-      ]),
-    });
-  });
-
   it('rebuilds existing workspace indexes during boot scan', () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
     store.createThread('ws_demo', 'Boot rebuild thread');
     const indexesRoot = join(dataRoot, 'workspaces', 'ws_demo', 'indexes');
+    const retrievalSentinel = join(indexesRoot, 'retrieval', 'CURRENT');
     mkdirSync(indexesRoot, { recursive: true });
+    mkdirSync(join(indexesRoot, 'retrieval'));
+    writeFileSync(retrievalSentinel, 'kernel-generation\n');
     writeFileSync(join(indexesRoot, 'stale.json'), '{}');
 
     const results = rebuildExistingWorkspaceDerivedIndexes(dataRoot, {
@@ -1844,17 +1344,30 @@ describe('workspace derived index rebuild', () => {
       expect.arrayContaining([
         {
           workspaceId: 'ws_demo',
-          indexPath: 'workspaces/ws_demo/indexes/search.json',
-          itemCount: 4,
+          indexPath: 'workspaces/ws_demo/indexes/knowledge-validation.json',
+          itemCount: expect.any(Number),
           removedEntries: ['stale.json'],
         },
       ])
     );
     expect(existsSync(join(indexesRoot, 'stale.json'))).toBe(false);
-    expect(JSON.parse(readFileSync(join(indexesRoot, 'search.json'), 'utf8'))).toMatchObject({
+    expect(readFileSync(retrievalSentinel, 'utf8')).toBe('kernel-generation\n');
+    const validation = JSON.parse(
+      readFileSync(join(indexesRoot, 'knowledge-validation.json'), 'utf8')
+    ) as { rebuiltAt: string; workspaceId: string; records: unknown[] };
+    expect(validation).toMatchObject({
       rebuiltAt: '2026-07-05T00:00:00.000Z',
       workspaceId: 'ws_demo',
     });
+    expect(results.find((result) => result.workspaceId === 'ws_demo')?.itemCount).toBe(
+      validation.records.length
+    );
+    expect(readdirSync(indexesRoot).sort()).toEqual([
+      'knowledge-links.json',
+      'knowledge-source-refs.json',
+      'knowledge-validation.json',
+      'retrieval',
+    ]);
   });
 
   it('skips workspace directories without a canonical projection during boot scan', () => {
@@ -1926,7 +1439,9 @@ describe('workspace derived index rebuild', () => {
           now: () => '2026-07-06T00:00:00.000Z',
         }).map((result) => result.workspaceId)
       ).toEqual([badId]);
-      expect(JSON.parse(readFileSync(join(badIndexes, 'search.json'), 'utf8'))).toMatchObject({
+      expect(
+        JSON.parse(readFileSync(join(badIndexes, 'knowledge-validation.json'), 'utf8'))
+      ).toMatchObject({
         rebuiltAt: '2026-07-06T00:00:00.000Z',
         schemaVersion: 1,
         workspaceId: badId,
@@ -1936,13 +1451,19 @@ describe('workspace derived index rebuild', () => {
     expect(readIndexBytes(siblingIndexes)).toEqual(siblingBytes);
   });
 
-  it('rebuilds a stale derived index from canonical pages before retrieval reads it', () => {
+  it('rebuilds stale nonlexical indexes before kernel retrieval reads canonical pages', async () => {
     const dataRoot = createDataRoot();
-    createDemoStore({ dataRoot });
+    const store = createDemoStore({ dataRoot });
     const indexesRoot = join(dataRoot, 'workspaces', 'ws_demo', 'indexes');
     writeCurrentDerivedIndexSet(indexesRoot, 'ws_demo', '1999-01-01T00:00:00.000Z');
+    rebuildWorkspaceDerivedIndexes({
+      dataRoot,
+      workspaceId: 'ws_demo',
+      now: () => '2026-07-05T00:00:00.000Z',
+    });
 
-    const retrieval = retrieveWorkspaceKnowledge({
+    const retrieval = await retrieveWorkspaceKnowledge({
+      access: localRetrievalAccess(dataRoot, store),
       caller: 'app-api',
       dataRoot,
       limit: 5,
@@ -1955,12 +1476,12 @@ describe('workspace derived index rebuild', () => {
     expect(retrieval.selected).toEqual(
       expect.arrayContaining([expect.objectContaining({ knowledgePageId: 'mem_project' })])
     );
-    expect(JSON.parse(readFileSync(join(indexesRoot, 'knowledge-fts.json'), 'utf8'))).toMatchObject(
-      {
-        rebuiltAt: '2026-07-05T00:00:00.000Z',
-        schemaVersion: 1,
-      }
-    );
+    expect(
+      JSON.parse(readFileSync(join(indexesRoot, 'knowledge-validation.json'), 'utf8'))
+    ).toMatchObject({
+      rebuiltAt: '2026-07-05T00:00:00.000Z',
+      schemaVersion: 1,
+    });
   });
 });
 
@@ -1985,7 +1506,7 @@ const invalidDerivedIndexCases: InvalidDerivedIndexCase[] = [
   {
     name: 'a missing file',
     mutate: (indexesRoot) => {
-      rmSync(join(indexesRoot, 'search.json'));
+      rmSync(join(indexesRoot, 'knowledge-links.json'));
       return undefined;
     },
   },
@@ -2003,29 +1524,29 @@ const invalidDerivedIndexCases: InvalidDerivedIndexCase[] = [
       const outsideRoot = mkdtempSync(join(tmpdir(), 'openkit-outside-index-file-'));
       const sentinelPath = join(outsideRoot, 'sentinel.txt');
       writeFileSync(sentinelPath, 'outside sentinel\n');
-      rmSync(join(indexesRoot, 'search.json'));
-      symlinkSync(sentinelPath, join(indexesRoot, 'search.json'));
+      rmSync(join(indexesRoot, 'knowledge-links.json'));
+      symlinkSync(sentinelPath, join(indexesRoot, 'knowledge-links.json'));
       return sentinelPath;
     },
   },
   {
     name: 'unparseable JSON',
     mutate: (indexesRoot) => {
-      writeFileSync(join(indexesRoot, 'search.json'), '{\n');
+      writeFileSync(join(indexesRoot, 'knowledge-links.json'), '{\n');
       return undefined;
     },
   },
   {
     name: 'non-object JSON',
     mutate: (indexesRoot) => {
-      writeFileSync(join(indexesRoot, 'search.json'), '[]\n');
+      writeFileSync(join(indexesRoot, 'knowledge-links.json'), '[]\n');
       return undefined;
     },
   },
   {
     name: 'a wrong schemaVersion',
     mutate: (indexesRoot) => {
-      editDerivedIndex(indexesRoot, 'search.json', (record) => {
+      editDerivedIndex(indexesRoot, 'knowledge-validation.json', (record) => {
         record.schemaVersion = 2;
       });
       return undefined;
@@ -2036,15 +1557,6 @@ const invalidDerivedIndexCases: InvalidDerivedIndexCase[] = [
     mutate: (indexesRoot) => {
       editDerivedIndex(indexesRoot, 'knowledge-links.json', (record) => {
         record.workspaceId = 'ws_other';
-      });
-      return undefined;
-    },
-  },
-  {
-    name: 'a wrong tokenizer',
-    mutate: (indexesRoot) => {
-      editDerivedIndex(indexesRoot, 'knowledge-fts.json', (record) => {
-        record.tokenizer = 'other';
       });
       return undefined;
     },
@@ -2061,7 +1573,7 @@ const invalidDerivedIndexCases: InvalidDerivedIndexCase[] = [
 ];
 
 /**
- * Writes the five current derived index files with empty collections.
+ * Writes the three current nonlexical derived index files with empty collections.
  *
  * @param indexesRoot Index directory to replace.
  * @param workspaceId Workspace id stored in each file.
@@ -2075,11 +1587,9 @@ function writeCurrentDerivedIndexSet(
   mkdirSync(indexesRoot, { recursive: true });
   const header = { schemaVersion: 1, workspaceId, rebuiltAt };
   const files: Record<string, unknown> = {
-    'search.json': { ...header, items: [] },
     'knowledge-links.json': { ...header, edges: [] },
     'knowledge-validation.json': { ...header, records: [] },
     'knowledge-source-refs.json': { ...header, references: [] },
-    'knowledge-fts.json': { ...header, tokenizer: 'unicode-simple-v1', terms: [] },
   };
 
   for (const [name, value] of Object.entries(files)) {

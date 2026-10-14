@@ -9,16 +9,13 @@ import type {
 } from '@openkit/app-api-schemas';
 import type { KnowledgeEntrySchema } from '@openkit/protocol';
 import type { z } from 'zod';
-import { createWorkerContextPackageAuthorityReader } from './context/worker-context-authorities.js';
-import { readPortableWorkerContextPackageTrace } from './context/worker-context-package.js';
-import { type KnowledgePageReferenceProof, KnowledgePageValidationError } from './knowledge/okf.js';
-import type { FsStore, KnowledgeProposalRecord } from './lib/store.js';
-import type { CoreDb, WorkspaceDb } from './storage/db.js';
-import { resolveDataRootPath } from './storage/fs-layout.js';
+import type { KnowledgeProposalRecord } from './lib/store.js';
+import { analyzeKnowledgePage } from './retrieval-knowledge-adapter.js';
+import type { RetrievalAnalysis } from './retrieval-service.js';
 import {
+  type KnowledgeRetrievalAccess,
   resolveWorkspaceKnowledgeRetrievalPages,
   retrieveWorkspaceKnowledge,
-  tokenizeKnowledgeText,
 } from './storage/index-rebuild.js';
 
 /** Workspace Knowledge Page projection consumed by request-scoped Knowledge operations. */
@@ -34,12 +31,12 @@ export interface AnswerKnowledgeManagerInput {
   workspaceId: string;
   /** Caller that requested the answer. */
   caller: 'assistant' | 'app-api';
+  /** Current trusted actor, source, and output-audience authority. */
+  access: KnowledgeRetrievalAccess;
   /** User or coordinator query. */
   query: string;
   /** Maximum number of selected Knowledge Pages. */
   limit?: number | undefined;
-  /** Exact Page-bound source-authority proofs for this request. */
-  referenceProofs?: ReadonlyMap<string, KnowledgePageReferenceProof> | undefined;
 }
 
 /** Input for one deterministic Knowledge Manager context-material operation. */
@@ -52,12 +49,12 @@ export interface PrepareKnowledgeContextInput {
   workspaceId: string;
   /** Caller that requested context material. */
   caller: 'app-api';
+  /** Current trusted actor, source, and output-audience authority. */
+  access: KnowledgeRetrievalAccess;
   /** Coordinator query used to select material. */
   query: string;
   /** Maximum number of source entries to include. */
   limit?: number | undefined;
-  /** Exact Page-bound source-authority proofs for this request. */
-  referenceProofs?: ReadonlyMap<string, KnowledgePageReferenceProof> | undefined;
 }
 
 /** Input for the direct Task Mode Knowledge preparation boundary. */
@@ -68,10 +65,10 @@ export interface PrepareTaskKnowledgeContextInput {
   readonly workspaceId: string;
   /** Exact immutable Task input used as the governed retrieval query. */
   readonly query: string;
+  /** Current trusted actor, source, and output-audience authority. */
+  readonly access: KnowledgeRetrievalAccess;
   /** Deterministic Task-owned retrieval trace id. */
   readonly traceId: string;
-  /** Exact Page-bound source-authority proofs for this request. */
-  readonly referenceProofs?: ReadonlyMap<string, KnowledgePageReferenceProof> | undefined;
 }
 
 /** Exact S17 result consumed by the direct Task owner. */
@@ -92,190 +89,6 @@ export interface DraftKnowledgeProposalInput {
   proposal: KnowledgeProposalRecord;
   /** Whether exact current owners prove the completed-work reference trio. */
   generatedFromCompletedWorkHistory: boolean;
-}
-
-/** Exact completed-work evidence accepted from one proposal request. */
-export interface KnowledgeProposalWorkHistoryVerification {
-  /** Exact non-Knowledge references already verified by their owning domains. */
-  readonly verifiedExternalReferences: readonly string[];
-}
-
-/**
- * Verifies the sole completed-work reference shape against current Turn, Item, and S39 owners.
- *
- * @param input Proposal references and existing owner handles.
- * @returns Exact references safe to pass through the Knowledge Store boundary.
- * @throws KnowledgePageValidationError when any claimed completed-work owner is absent or changed.
- */
-export function verifyKnowledgeProposalWorkHistory(input: {
-  /** Allows imported-history proof only while reading an already accepted imported Page. */
-  readonly allowImportedHistory?: boolean | undefined;
-  /** Core scheduler and worker-session authority when available. */
-  readonly coreDb: CoreDb | undefined;
-  /** Closed normalized references carried by the Proposal. */
-  readonly sourceReferences: readonly string[];
-  /** Product Turn and Item owner. */
-  readonly store: FsStore;
-  /** Workspace S39 authority when available. */
-  readonly workspaceDb: WorkspaceDb | undefined;
-  /** Workspace that must own every completed-work record. */
-  readonly workspaceId: string;
-}): KnowledgeProposalWorkHistoryVerification {
-  const workReferences = input.sourceReferences.filter((reference) =>
-    /^(?:turn|item|context-package):/.test(reference)
-  );
-  if (workReferences.length === 0) {
-    return {
-      verifiedExternalReferences: [],
-    };
-  }
-
-  const turnReferences = workReferences.filter((reference) => reference.startsWith('turn:'));
-  const itemReferences = workReferences.filter((reference) => reference.startsWith('item:'));
-  const contextReferences = workReferences.filter((reference) =>
-    reference.startsWith('context-package:')
-  );
-  if (
-    workReferences.length !== 3 ||
-    turnReferences.length !== 1 ||
-    itemReferences.length !== 1 ||
-    contextReferences.length !== 1 ||
-    !input.coreDb ||
-    !input.workspaceDb
-  ) {
-    throw new KnowledgePageValidationError();
-  }
-
-  const turnId = turnReferences[0]!.slice('turn:'.length);
-  const itemId = itemReferences[0]!.slice('item:'.length);
-  const contextMatch = /^context-package:([^@]+)@(ctxpkg_sha256_[a-f0-9]{64})$/.exec(
-    contextReferences[0]!
-  );
-  try {
-    if (!contextMatch || contextMatch[1] !== turnId) {
-      throw new Error('Completed-work reference lineage does not match.');
-    }
-    const turn = input.store.getTurnById(turnId);
-    if (turn.workspaceId !== input.workspaceId || turn.status !== 'completed') {
-      throw new Error('Completed-work Turn is not eligible.');
-    }
-
-    const finalAssistantItem = input.store
-      .listThreadItems(input.workspaceId, turn.threadId)
-      .filter(
-        (item) =>
-          item.turnId === turn.id &&
-          item.type === 'assistant-message' &&
-          item.status === 'completed'
-      )
-      .at(-1);
-    if (!finalAssistantItem || finalAssistantItem.id !== itemId) {
-      throw new Error('Completed-work Item is not the final assistant result.');
-    }
-
-    const { trace, verification } = readPortableWorkerContextPackageTrace({
-      authorities: createWorkerContextPackageAuthorityReader({
-        coreDb: input.coreDb,
-        store: input.store,
-        workspaceDb: input.workspaceDb,
-      }),
-      workspaceId: input.workspaceId,
-      threadId: turn.threadId,
-      turnId,
-      workspaceRoot: resolveDataRootPath(
-        input.workspaceDb.dataRoot,
-        'workspaces',
-        input.workspaceId
-      ),
-    });
-    if (
-      (verification !== 'strict' && !input.allowImportedHistory) ||
-      trace.goalId !== null ||
-      trace.taskId !== null ||
-      trace.knowledgeSelectionInput === null ||
-      trace.contextPackageDigest !== contextMatch[2]
-    ) {
-      throw new Error('Completed-work Context Package is not an exact direct-Task trace.');
-    }
-  } catch {
-    throw new KnowledgePageValidationError();
-  }
-
-  return {
-    verifiedExternalReferences: workReferences,
-  };
-}
-
-/**
- * Resolves current Page-bound source proof for accepted local and portable Pages.
- *
- * @param input Existing Proposal, Review, Page, Turn, Item, and S39 authorities.
- * @returns Exact Page and digest keyed proofs whose current owner tuples remain coherent.
- */
-export function resolveWorkspaceKnowledgeReferenceProofs(input: {
-  /** Core scheduler and worker-session authority when available. */
-  readonly coreDb: CoreDb | undefined;
-  /** Product Proposal, Review, Page, Turn, and Item owner. */
-  readonly store: FsStore;
-  /** Workspace S39 authority when available. */
-  readonly workspaceDb: WorkspaceDb | undefined;
-  /** Workspace that must own every referenced record. */
-  readonly workspaceId: string;
-}): ReadonlyMap<string, KnowledgePageReferenceProof> {
-  const referenceProofs = new Map<string, KnowledgePageReferenceProof>();
-
-  for (const proposal of input.store.listKnowledgeProposals(input.workspaceId)) {
-    const review = input.store.getKnowledgeProposalReviewDecision(proposal.id);
-    if (!review || review.decision !== 'accepted') {
-      continue;
-    }
-
-    try {
-      const verification = verifyKnowledgeProposalWorkHistory({
-        coreDb: input.coreDb,
-        sourceReferences: proposal.sourceReferences,
-        store: input.store,
-        workspaceDb: input.workspaceDb,
-        workspaceId: input.workspaceId,
-      });
-      const proof = input.store.projectKnowledgeProposalReferenceProof(
-        input.workspaceId,
-        review.reviewId,
-        verification.verifiedExternalReferences
-      );
-      referenceProofs.set(proof.knowledgePageId, proof);
-    } catch {
-      // An incoherent owner tuple remains excluded by normal Knowledge validation.
-    }
-  }
-
-  if (input.store.getWorkspace(input.workspaceId).importedFrom) {
-    for (const entry of input.store.getWorkspaceResources(input.workspaceId).knowledge) {
-      if (referenceProofs.has(entry.id)) {
-        continue;
-      }
-      try {
-        const verification = verifyKnowledgeProposalWorkHistory({
-          allowImportedHistory: true,
-          coreDb: input.coreDb,
-          sourceReferences: entry.sourceReferences ?? [],
-          store: input.store,
-          workspaceDb: input.workspaceDb,
-          workspaceId: input.workspaceId,
-        });
-        const proof = input.store.projectImportedKnowledgePageReferenceProof(
-          input.workspaceId,
-          entry.id,
-          verification.verifiedExternalReferences
-        );
-        referenceProofs.set(proof.knowledgePageId, proof);
-      } catch {
-        // Imported Pages remain excluded when their reminted current owners do not verify.
-      }
-    }
-  }
-
-  return referenceProofs;
 }
 
 /** Input for one deterministic Knowledge Manager repair suggestion operation. */
@@ -312,38 +125,69 @@ export interface CheckKnowledgeHealthInput {
  * @param input Answer operation input.
  * @returns Source-traceable answer or an insufficient-evidence response.
  */
-export function answerKnowledgeManager(
+export async function answerKnowledgeManager(
   input: AnswerKnowledgeManagerInput
-): KnowledgeManagerAnswerResponse {
-  const retrieval = retrieveWorkspaceKnowledge({
+): Promise<KnowledgeManagerAnswerResponse> {
+  const retrieval = await retrieveWorkspaceKnowledge({
+    access: input.access,
     dataRoot: input.dataRoot,
     workspaceId: input.workspaceId,
     caller: input.caller,
     query: input.query,
     limit: input.limit ?? 5,
     pinnedConceptIds: [],
-    referenceProofs: input.referenceProofs,
     traceId: `krt_${randomUUID()}`,
   });
   const pages = resolveWorkspaceKnowledgeRetrievalPages({
+    access: input.access,
     caller: input.caller,
     dataRoot: input.dataRoot,
-    referenceProofs: input.referenceProofs,
     retrievalTraceId: retrieval.traceId,
     workspaceId: input.workspaceId,
   });
   if (!pages) {
     throw new Error('Knowledge retrieval selected an unavailable page.');
   }
-  const matches = pages
-    .map((page) => ({
+  const analyzedPages = await Promise.all(
+    pages.map(async (page) => ({
       id: page.knowledgePageId,
       content: page.body,
       kind: page.kind,
       sourceReferences: page.sourceRefs,
       title: page.title,
+      analysis: await analyzeKnowledgePage({
+        body: page.body,
+        content: page.content,
+        dataRoot: input.dataRoot,
+        query: input.query,
+        title: page.title,
+        workspaceId: input.workspaceId,
+      }),
     }))
-    .filter((page) => knowledgeAnswerCoversQueryTerms(input.query, page.title, page.content));
+  );
+  const pagesAfterAnalysis = resolveWorkspaceKnowledgeRetrievalPages({
+    access: input.access,
+    caller: input.caller,
+    dataRoot: input.dataRoot,
+    retrievalTraceId: retrieval.traceId,
+    workspaceId: input.workspaceId,
+  });
+  if (
+    !pagesAfterAnalysis ||
+    pagesAfterAnalysis.length !== analyzedPages.length ||
+    pagesAfterAnalysis.some((page, index) => {
+      const analyzed = analyzedPages[index];
+      return (
+        !analyzed ||
+        analyzed.id !== page.knowledgePageId ||
+        analyzed.content !== page.body ||
+        analyzed.title !== page.title
+      );
+    })
+  ) {
+    throw new Error('Knowledge retrieval authority changed during answer analysis.');
+  }
+  const matches = analyzedPages.filter((page) => knowledgeAnswerCoversAnalysis(page.analysis));
 
   if (matches.length === 0) {
     return {
@@ -392,17 +236,17 @@ export function answerKnowledgeManager(
  * @param input Context material operation input.
  * @returns Bounded material references or an insufficient-evidence response.
  */
-export function prepareKnowledgeContext(
+export async function prepareKnowledgeContext(
   input: PrepareKnowledgeContextInput
-): KnowledgeManagerPrepareContextResponse {
-  const retrieval = retrieveWorkspaceKnowledge({
+): Promise<KnowledgeManagerPrepareContextResponse> {
+  const retrieval = await retrieveWorkspaceKnowledge({
+    access: input.access,
     dataRoot: input.dataRoot,
     workspaceId: input.workspaceId,
     caller: 'app-api',
     query: input.query,
     limit: input.limit ?? 5,
     pinnedConceptIds: [],
-    referenceProofs: input.referenceProofs,
     traceId: `krt_${randomUUID()}`,
   });
 
@@ -425,17 +269,17 @@ export function prepareKnowledgeContext(
  * @returns The existing S61 retrieval trace reference and no second selection projection.
  * @throws Error when S61 cannot create the exact deterministic retrieval trace.
  */
-export function prepareTaskKnowledgeContext(
+export async function prepareTaskKnowledgeContext(
   input: PrepareTaskKnowledgeContextInput
-): PreparedTaskKnowledgeContext {
-  const retrieval = retrieveWorkspaceKnowledge({
+): Promise<PreparedTaskKnowledgeContext> {
+  const retrieval = await retrieveWorkspaceKnowledge({
+    access: input.access,
     dataRoot: input.dataRoot,
     workspaceId: input.workspaceId,
     caller: 'task-mode',
     query: input.query,
     limit: 5,
     pinnedConceptIds: [],
-    referenceProofs: input.referenceProofs,
     traceId: input.traceId,
   });
 
@@ -553,23 +397,21 @@ export function checkKnowledgeHealth(
 }
 
 /**
- * Returns whether a selected page covers enough distinct query terms to answer.
+ * Returns whether kernel term evidence is sufficient for one selected page to answer.
  *
- * @param query Caller query text.
- * @param title Selected page title.
- * @param body Selected page body.
+ * @param analysis Terms produced by the kernel's selected analyzer for the query, title, and body.
  * @returns True when two distinct query terms appear on the page, or a one-term query matches its title.
  */
-function knowledgeAnswerCoversQueryTerms(query: string, title: string, body: string): boolean {
-  const queryTerms = new Set(tokenizeKnowledgeText(query));
+function knowledgeAnswerCoversAnalysis(analysis: RetrievalAnalysis): boolean {
+  const queryTerms = new Set(analysis.query_terms);
   if (queryTerms.size === 0) {
     return false;
   }
-  const titleTerms = new Set(tokenizeKnowledgeText(title));
+  const titleTerms = new Set(analysis.title_terms);
   if (queryTerms.size === 1) {
     return [...queryTerms].every((term) => titleTerms.has(term));
   }
-  const pageTerms = new Set([...titleTerms, ...tokenizeKnowledgeText(body)]);
+  const pageTerms = new Set([...titleTerms, ...analysis.body_terms]);
   let covered = 0;
   for (const term of queryTerms) {
     if (pageTerms.has(term)) {

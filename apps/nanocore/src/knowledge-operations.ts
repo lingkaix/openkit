@@ -43,10 +43,9 @@ import {
   draftKnowledgeProposal,
   prepareKnowledgeContext,
   prepareTaskKnowledgeContext,
-  resolveWorkspaceKnowledgeReferenceProofs,
   suggestKnowledgeRepairs,
-  verifyKnowledgeProposalWorkHistory,
 } from './knowledge-manager.js';
+import { verifyKnowledgeProposalWorkHistory } from './knowledge-source-authority.js';
 import {
   type FsStore,
   KnowledgeProposalAuthorityError,
@@ -55,7 +54,7 @@ import {
   StoreRecordNotFoundError,
 } from './lib/store.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
-import type { OperationImplementations } from './operation-contract.js';
+import { type OperationImplementations, publicOperationActor } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import { admitOperation } from './operation-resolvers.js';
 import { IdempotencyKeyConflictError, runIdempotentCommand } from './runtime/idempotent-command.js';
@@ -305,14 +304,19 @@ export function createKnowledgeOperationImplementations(
           throw new Error('Knowledge Manager answer requires a file-backed data root.');
         }
 
-        const response = answerKnowledgeManager({
+        const response = await answerKnowledgeManager({
           dataRoot,
           operationId: `km_answer_${randomUUID()}`,
           workspaceId,
           caller: 'app-api',
           query: commandInput.query,
           limit: commandInput.limit,
-          referenceProofs: knowledgeReferenceProofs(dependencies, workspaceId),
+          access: {
+            store,
+            coreDb,
+            actor: context.actorRef,
+            requestActor: publicOperationActor(context),
+          },
         });
         recordKnowledgeGatewayUsage({
           authorityActor: actor,
@@ -704,14 +708,20 @@ export function createKnowledgeOperationImplementations(
         }
 
         const response = KnowledgeRetrievalResponseSchema.parse(
-          retrieveWorkspaceKnowledge({
+          await retrieveWorkspaceKnowledge({
             dataRoot,
             workspaceId,
             caller: 'app-api',
             query: commandInput.query,
             limit: commandInput.limit,
             pinnedConceptIds: commandInput.pinnedConceptIds,
-            referenceProofs: knowledgeReferenceProofs(dependencies, workspaceId),
+            states: commandInput.states,
+            access: {
+              store,
+              coreDb,
+              actor: context.actorRef,
+              requestActor: publicOperationActor(context),
+            },
             traceId: `krt_${randomUUID()}`,
           })
         );
@@ -743,14 +753,19 @@ export function createKnowledgeOperationImplementations(
           throw new Error('Knowledge Manager context requires a file-backed data root.');
         }
 
-        const response = prepareKnowledgeContext({
+        const response = await prepareKnowledgeContext({
           dataRoot,
           operationId: `km_context_${randomUUID()}`,
           workspaceId,
           caller: 'app-api',
           query: commandInput.query,
           limit: commandInput.limit,
-          referenceProofs: knowledgeReferenceProofs(dependencies, workspaceId),
+          access: {
+            store,
+            coreDb,
+            actor: context.actorRef,
+            requestActor: publicOperationActor(context),
+          },
         });
         recordKnowledgeGatewayUsage({
           authorityActor: actor,
@@ -1355,41 +1370,6 @@ export function createKnowledgeOperationImplementations(
   } satisfies KnowledgeImplementations;
 }
 
-/**
- * Resolves current Page-bound source authority for one retrieval request.
- *
- * @param store Product Knowledge and work-history owner.
- * @param workspaceId Workspace that owns the retrieval.
- * @returns Exact Page and digest keyed proofs whose owners remain coherent.
- */
-function knowledgeReferenceProofs(
-  dependencies: Pick<OperationInvocationDependencies, 'store' | 'coreDb' | 'repositoryWorkspaceDb'>,
-  workspaceId: string
-): ReturnType<typeof resolveWorkspaceKnowledgeReferenceProofs> {
-  const { store: selectedStore, coreDb, repositoryWorkspaceDb } = dependencies;
-  const store = selectedStore!;
-  if (!coreDb) {
-    return resolveWorkspaceKnowledgeReferenceProofs({
-      coreDb: undefined,
-      store,
-      workspaceDb: undefined,
-      workspaceId,
-    });
-  }
-
-  const workspaceDb = repositoryWorkspaceDb!(workspaceId);
-  try {
-    return resolveWorkspaceKnowledgeReferenceProofs({
-      coreDb,
-      store,
-      workspaceDb,
-      workspaceId,
-    });
-  } finally {
-    workspaceDb.sqlite.close();
-  }
-}
-
 /** Knowledge-owned private Task entry shares public preparation's parsing, knowledge.read admission and retrieval owner. */
 export function createTaskKnowledgePreparation(
   dependencies: Pick<
@@ -1415,14 +1395,25 @@ export function createTaskKnowledgePreparation(
           'Task Knowledge retrieval requires file-backed storage.',
           503
         );
+      if (admitted.context.kind === 'bootstrap')
+        throw new OperationError(
+          'workspace_access_denied',
+          'Knowledge retrieval access denied.',
+          403
+        );
       const input =
         admitted.input as import('@openkit/app-api-schemas').OperationInput<'knowledge.context.prepare'>;
-      const output = prepareTaskKnowledgeContext({
+      const output = await prepareTaskKnowledgeContext({
         dataRoot,
         workspaceId: input.workspaceId,
         query: input.query,
         traceId: context.traceId,
-        referenceProofs: knowledgeReferenceProofs(dependencies, input.workspaceId),
+        access: {
+          store: dependencies.store!,
+          coreDb: dependencies.coreDb,
+          actor: admitted.context.actorRef,
+          requestActor: context.actor,
+        },
       });
       const validated = KNOWLEDGE_OPERATION_DEFINITIONS['knowledge.context.prepare'].outputSchema
         .pick({ retrievalTraceId: true })

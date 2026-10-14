@@ -1,11 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
-
-import { WorkspaceConfigSchema } from '@openkit/config-schema';
-import { ArtifactSchema } from '@openkit/protocol';
-
-import { parseJsoncObject } from '../config/jsonc.js';
+import { RetrieveKnowledgeRequestSchema } from '@openkit/app-api-schemas';
 import {
   DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA,
   isActiveOpenKitKnowledgePage,
@@ -22,54 +18,29 @@ import {
   validateKnowledgePageCandidate,
   type WorkspaceKnowledgeSchema,
 } from '../knowledge/okf.js';
+import { OperationError } from '../operation-error.js';
+import {
+  admitKnowledgeRetrieval,
+  collectKnowledgeInventory,
+  currentKnowledgeReferenceProofs,
+  type KnowledgeRetrievalAccess,
+  knowledgePageConflicted,
+  knowledgePageReadable,
+} from '../retrieval-knowledge-adapter.js';
+import { getRetrievalService } from '../retrieval-service.js';
 import { resolveDataRootPath } from './fs-layout.js';
 import {
-  artifactContentFileName,
   assertCanonicalDirectory,
   listKnowledgePageIds,
-  readCanonicalJsonLines,
   readCanonicalTextFile,
   readWorkspaceKnowledgePage,
-  WorkspaceSystemRecordSchema,
 } from './workspace-file-records.js';
 import {
   appendWorkspaceKnowledgeRetrievalTrace,
   readWorkspaceKnowledgeRetrievalTrace,
 } from './workspace-portable-file-state.js';
 
-type SearchIndexKind = 'workspace' | 'thread' | 'knowledge' | 'artifact' | 'item';
-
-/**
- * One derived search-index entry rebuilt from source records.
- */
-export interface WorkspaceSearchIndexEntry {
-  /** Indexed record kind. */
-  kind: SearchIndexKind;
-  /** Source record id. */
-  id: string;
-  /** Display title used by search results. */
-  title: string;
-  /** Workspace that owns the record. */
-  workspaceId?: string;
-  /** Thread lineage when present. */
-  threadId?: string;
-  /** Lower-level text searched by consumers. */
-  searchText: string;
-}
-
-/**
- * Derived workspace search index file.
- */
-export interface WorkspaceSearchIndex {
-  /** Index schema version. */
-  schemaVersion: 1;
-  /** Workspace that owns the derived index. */
-  workspaceId: string;
-  /** Rebuild timestamp. */
-  rebuiltAt: string;
-  /** Derived search entries. */
-  items: WorkspaceSearchIndexEntry[];
-}
+export type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
 
 /** Directed Markdown link edge between knowledge concepts. */
 export interface WorkspaceKnowledgeLinkEdge {
@@ -161,41 +132,6 @@ export interface WorkspaceKnowledgeSourceReferenceIndex {
   references: WorkspaceKnowledgeSourceReference[];
 }
 
-/** Field that contributed a term to the full-text index. */
-export type WorkspaceKnowledgeFullTextField = 'title' | 'body';
-
-/** One full-text posting for a knowledge concept. */
-export interface WorkspaceKnowledgeFullTextPosting {
-  /** Bundle-relative concept id. */
-  conceptId: string;
-  /** Fields where the term appears. */
-  fields: WorkspaceKnowledgeFullTextField[];
-  /** Total occurrences across indexed fields. */
-  occurrences: number;
-}
-
-/** One indexed full-text term and its knowledge-page postings. */
-export interface WorkspaceKnowledgeFullTextTerm {
-  /** Normalized indexed term. */
-  term: string;
-  /** Knowledge pages containing the term. */
-  postings: WorkspaceKnowledgeFullTextPosting[];
-}
-
-/** Derived workspace knowledge full-text index file. */
-export interface WorkspaceKnowledgeFullTextIndex {
-  /** Full-text index schema version. */
-  schemaVersion: 1;
-  /** Workspace that owns the derived index. */
-  workspaceId: string;
-  /** Rebuild timestamp. */
-  rebuiltAt: string;
-  /** Tokenizer contract for this first-slice index. */
-  tokenizer: 'unicode-simple-v1';
-  /** Indexed terms and postings. */
-  terms: WorkspaceKnowledgeFullTextTerm[];
-}
-
 /**
  * Input for rebuilding one workspace's derived indexes.
  */
@@ -242,12 +178,14 @@ export interface WorkspaceKnowledgeDerivedIndexes {
   validation: WorkspaceKnowledgeValidationIndex;
   /** Derived per-page source-reference index. */
   sourceReferences: WorkspaceKnowledgeSourceReferenceIndex;
-  /** Derived full-text term index. */
-  fullText: WorkspaceKnowledgeFullTextIndex;
 }
 
 /** Input for deterministic Knowledge Store retrieval. */
 export interface RetrieveWorkspaceKnowledgeInput extends ReadWorkspaceKnowledgeDerivedIndexesInput {
+  /** Trusted current actor and source owners, never model input. */
+  access: KnowledgeRetrievalAccess;
+  /** Explicit state inspection; automatic callers remain active-only. */
+  states?: readonly ('active' | 'draft' | 'archived' | 'superseded')[] | undefined;
   /** Server-owned product surface requesting retrieval. */
   caller: 'assistant' | 'task-mode' | 'app-api';
   /** User query used to rank active Knowledge Store pages. */
@@ -256,8 +194,6 @@ export interface RetrieveWorkspaceKnowledgeInput extends ReadWorkspaceKnowledgeD
   limit?: number | undefined;
   /** Concepts that should be included when present and active. */
   pinnedConceptIds?: readonly string[] | undefined;
-  /** Current Page-bound source-authority proofs for accepted candidates. */
-  referenceProofs?: ReadonlyMap<string, KnowledgePageReferenceProof> | undefined;
   /** Optional trace id for deterministic tests and route ownership. */
   traceId?: string | undefined;
   /** Optional timestamp source for deterministic tests. */
@@ -308,6 +244,8 @@ export interface WorkspaceKnowledgeRetrievalTrace {
     limit: number;
     /** Bytewise-sorted duplicate-free pinned page ids. */
     pinnedConceptIds: string[];
+    /** Explicitly admitted page states. */
+    states: ('active' | 'draft' | 'archived' | 'superseded')[];
   };
   /** Selected candidates in deterministic ranking order. */
   selected: WorkspaceKnowledgeRetrievalCandidate[];
@@ -367,14 +305,8 @@ export function rebuildWorkspaceDerivedIndexes(
   }
 
   const indexesRoot = join(workspaceRoot, 'indexes');
-  const indexPath = join(indexesRoot, 'search.json');
+  const indexPath = join(indexesRoot, 'knowledge-validation.json');
   const rebuiltAt = input.now?.() ?? new Date().toISOString();
-  const index: WorkspaceSearchIndex = {
-    schemaVersion: 1,
-    workspaceId: input.workspaceId,
-    rebuiltAt,
-    items: buildSearchEntries(workspaceRoot, input.workspaceId),
-  };
   const linkGraph: WorkspaceKnowledgeLinkGraph = {
     schemaVersion: 1,
     workspaceId: input.workspaceId,
@@ -393,16 +325,8 @@ export function rebuildWorkspaceDerivedIndexes(
     rebuiltAt,
     references: buildKnowledgeSourceReferences(workspaceRoot, input.workspaceId),
   };
-  const fullTextIndex: WorkspaceKnowledgeFullTextIndex = {
-    schemaVersion: 1,
-    workspaceId: input.workspaceId,
-    rebuiltAt,
-    tokenizer: 'unicode-simple-v1',
-    terms: buildKnowledgeFullTextTerms(workspaceRoot, input.workspaceId),
-  };
   const removedEntries = clearIndexDirectory(indexesRoot);
 
-  writeFileSync(indexPath, `${JSON.stringify(index, null, 2)}\n`);
   writeFileSync(
     join(indexesRoot, 'knowledge-links.json'),
     `${JSON.stringify(linkGraph, null, 2)}\n`
@@ -415,15 +339,11 @@ export function rebuildWorkspaceDerivedIndexes(
     join(indexesRoot, 'knowledge-source-refs.json'),
     `${JSON.stringify(sourceReferenceIndex, null, 2)}\n`
   );
-  writeFileSync(
-    join(indexesRoot, 'knowledge-fts.json'),
-    `${JSON.stringify(fullTextIndex, null, 2)}\n`
-  );
 
   return {
     workspaceId: input.workspaceId,
     indexPath: toReportPath(input.dataRoot, indexPath),
-    itemCount: index.items.length,
+    itemCount: validationIndex.records.length,
     removedEntries,
   };
 }
@@ -448,18 +368,11 @@ export function rebuildExistingWorkspaceDerivedIndexes(
   );
 }
 
-/**
- * Current derived index files, the collection each writer emits, and the full-text tokenizer.
- * A boot scan keeps a set only when every file is a regular file with `schemaVersion` 1,
- * the Workspace id, an array for `items`, `edges`, `records`, `references`, or `terms`,
- * and `knowledge-fts.json` tokenizer `unicode-simple-v1`.
- */
+/** The three rebuildable non-lexical projections; the kernel owns all lexical state. */
 const DERIVED_INDEX_FILES = [
-  { name: 'search.json', collection: 'items' },
   { name: 'knowledge-links.json', collection: 'edges' },
   { name: 'knowledge-validation.json', collection: 'records' },
   { name: 'knowledge-source-refs.json', collection: 'references' },
-  { name: 'knowledge-fts.json', collection: 'terms' },
 ] as const;
 
 /** One Workspace directory that has a canonical projection and no retired projection. */
@@ -513,7 +426,14 @@ function derivedIndexSetNeedsRebuild(workspaceRoot: string, workspaceId: string)
   }
 
   assertCanonicalDirectory(indexesRoot);
-  const entries = readdirSync(indexesRoot, { withFileTypes: true });
+  const allEntries = readdirSync(indexesRoot, { withFileTypes: true });
+  if (
+    allEntries.some(
+      (entry) => entry.name === 'retrieval' && (!entry.isDirectory() || entry.isSymbolicLink())
+    )
+  )
+    return true;
+  const entries = allEntries.filter((entry) => entry.name !== 'retrieval');
 
   if (entries.some((entry) => !entry.isFile())) {
     return true;
@@ -544,9 +464,6 @@ function derivedIndexSetNeedsRebuild(workspaceRoot: string, workspaceId: string)
     if (parsed.schemaVersion !== 1 || parsed.workspaceId !== workspaceId) {
       return true;
     }
-    if (file.name === 'knowledge-fts.json' && parsed.tokenizer !== 'unicode-simple-v1') {
-      return true;
-    }
     if (!Array.isArray(parsed[file.collection])) {
       return true;
     }
@@ -568,14 +485,9 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
 /**
  * Rebuilds derived indexes at boot only when a Workspace set is missing or invalid.
  *
- * A set is kept when `indexes/` contains exactly `search.json`, `knowledge-links.json`,
- * `knowledge-validation.json`, `knowledge-source-refs.json`, and `knowledge-fts.json`,
- * each a regular file read without following a link. Each object must have `schemaVersion` 1,
- * `workspaceId` equal to that Workspace, and an array `items`, `edges`, `records`, `references`,
- * or `terms` respectively. `knowledge-fts.json` must also use tokenizer `unicode-simple-v1`.
- * A missing directory, extra or missing child, non-regular child, unreadable or unparseable file,
- * non-object JSON, or failed metadata check is rebuilt. A symbolic link is not followed; the
- * existing rebuild guard rejects it. This check does not compare index entries with canonical content.
+ * Keeps the three regular non-lexical JSON projections with matching schema and Workspace ids.
+ * The separately owned `retrieval/` directory is preserved. Other children cause a rebuild.
+ * This structural check does not compare metadata rows with canonical content.
  *
  * @param dataRoot Data root to scan.
  * @param options Optional rebuild options.
@@ -633,9 +545,6 @@ export function readWorkspaceKnowledgeDerivedIndexes(
     sourceReferences: readJsonRecord(
       join(indexesRoot, 'knowledge-source-refs.json')
     ) as WorkspaceKnowledgeSourceReferenceIndex,
-    fullText: readJsonRecord(
-      join(indexesRoot, 'knowledge-fts.json')
-    ) as WorkspaceKnowledgeFullTextIndex,
   };
 }
 
@@ -643,25 +552,40 @@ export function readWorkspaceKnowledgeDerivedIndexes(
  * Retrieves ranked Knowledge Store candidates and persists the selection trace.
  *
  * @param input Retrieval target and query.
- * @returns Persisted retrieval trace with selected and excluded candidates.
+ * @returns Persisted selection of current verified bytes, without a notebook-history claim.
  * @throws Error when the canonical workspace projection is missing.
  */
-export function retrieveWorkspaceKnowledge(
+export async function retrieveWorkspaceKnowledge(
   input: RetrieveWorkspaceKnowledgeInput
-): WorkspaceKnowledgeRetrievalTrace {
-  const indexes = readWorkspaceKnowledgeDerivedIndexes(input);
-  const queryTerms = [...new Set(tokenizeKnowledgeText(input.query))].sort(compareBytewise);
+): Promise<WorkspaceKnowledgeRetrievalTrace> {
+  admitKnowledgeRetrieval(input);
+  const normalized = RetrieveKnowledgeRequestSchema.parse({
+    query: input.query,
+    limit: input.limit,
+    pinnedConceptIds: input.pinnedConceptIds,
+    states: input.states,
+  });
+  const states = [...new Set(normalized.states)].sort(compareBytewise);
+  if (input.caller !== 'app-api' && states.some((state) => state !== 'active'))
+    throw new OperationError(
+      'invalid_request',
+      'Automatic Knowledge retrieval requires active state.',
+      400
+    );
   const normalizedPinnedConceptIds = [...new Set(input.pinnedConceptIds ?? [])].sort(
     compareBytewise
   );
   const pinnedConceptIds = new Set(normalizedPinnedConceptIds);
-  const limit = input.limit ?? 5;
+  const limit = normalized.limit;
   const createdAt = input.now?.() ?? new Date().toISOString();
   const traceId = input.traceId ?? `krt_${randomUUID()}`;
   const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
   const workspaceSchemaText = readWorkspaceKnowledgeSchemaText(workspaceRoot);
   const registeredSources = readRegisteredSources(workspaceRoot, input.workspaceId);
   const knowledgeIds = readKnowledgePageIds(join(workspaceRoot, 'knowledge', 'pages'));
+  const service = getRetrievalService(input.dataRoot, workspaceRoot);
+  await service.search({ mode: 'lexical', query: input.query, scopes: [], limit: 1 });
+  const indexes = readWorkspaceKnowledgeDerivedIndexes(input);
   const sourceReferencesByConcept = new Map<string, string[]>();
   const scores = new Map<string, number>();
   const addressedIds = new Set(normalizedPinnedConceptIds);
@@ -673,28 +597,45 @@ export function retrieveWorkspaceKnowledge(
     sourceReferencesByConcept.set(reference.conceptId, references);
   }
 
-  for (const term of indexes.fullText.terms) {
-    if (!queryTerms.includes(term.term)) {
-      continue;
-    }
-
-    for (const posting of term.postings) {
-      addressedIds.add(posting.conceptId);
-      const fieldScore = posting.fields.includes('title') ? 2 : 0;
-      scores.set(
-        posting.conceptId,
-        (scores.get(posting.conceptId) ?? 0) + posting.occurrences + fieldScore
-      );
-    }
-  }
-  addProofBackedKnowledgeCandidates({
-    addressedIds,
-    pinnedConceptIds,
-    proofs: input.referenceProofs,
-    queryTerms,
-    scores,
-    workspaceRoot,
+  const before = collectKnowledgeInventory(input);
+  await service.publish(before.view, await service.inspect(before.view.scope));
+  const matches = await service.search({
+    mode: 'lexical',
+    query: input.query,
+    scopes: [before.view],
+    limit: 1000,
   });
+  if (!matches.complete || !matches.coverage.enumeration_complete)
+    throw new OperationError(
+      'knowledge_retrieval_failed',
+      'Knowledge retrieval is incomplete.',
+      503
+    );
+  const after = collectKnowledgeInventory(input);
+  if (canonicalJson(before.view) !== canonicalJson(after.view))
+    throw new OperationError(
+      'knowledge_retrieval_failed',
+      'Knowledge eligibility changed during retrieval.',
+      409
+    );
+  const referenceProofs = after.referenceProofs;
+  for (const hit of matches.hits) {
+    const admitted = before.view.documents.find((document) => document.key.id === hit.key.id);
+    if (
+      !admitted ||
+      hit.key.namespace !== 'knowledge' ||
+      hit.revision !== admitted.revision ||
+      hit.digest !== admitted.digest ||
+      canonicalJson(hit.provenance) !== canonicalJson(admitted.metadata)
+    )
+      throw new OperationError(
+        'recovery_required',
+        'Knowledge projection disagrees with canonical records.',
+        409
+      );
+    addressedIds.add(hit.key.id);
+    scores.set(hit.key.id, Math.max(scores.get(hit.key.id) ?? 0, hit.score ?? 0));
+  }
 
   const validationByConcept = new Map(
     indexes.validation.records.map((record) => [record.conceptId, record] as const)
@@ -724,7 +665,11 @@ export function retrieveWorkspaceKnowledge(
     const expectedPath = `knowledge/pages/${candidate.knowledgePageId}.md`;
 
     if (record.path !== expectedPath) {
-      throw new Error('Knowledge retrieval requires an index rebuild.');
+      throw new OperationError(
+        'recovery_required',
+        'Knowledge projection requires a rebuild.',
+        409
+      );
     }
 
     const content = readWorkspaceKnowledgePage(workspaceRoot, candidate.knowledgePageId);
@@ -753,7 +698,7 @@ export function retrieveWorkspaceKnowledge(
         )
       : [];
     const referenceProof = matchingKnowledgeReferenceProof(
-      input.referenceProofs,
+      referenceProofs,
       candidate.knowledgePageId,
       contentDigest,
       sourceReferences
@@ -789,7 +734,11 @@ export function retrieveWorkspaceKnowledge(
           !sameStrings(sourceReferences, projectedSourceReferences))) ||
       (!document && projectedSourceReferences.length > 0)
     ) {
-      throw new Error('Knowledge retrieval requires an index rebuild.');
+      throw new OperationError(
+        'recovery_required',
+        'Knowledge projection requires a rebuild.',
+        409
+      );
     }
 
     const sensitivity = document ? stringFrontmatterField(document, 'sensitivity') : null;
@@ -803,34 +752,44 @@ export function retrieveWorkspaceKnowledge(
       continue;
     }
 
-    if (!parsed.ok || !document || validation.conformance !== 'Workspace-schema-valid' || !active) {
+    if (!parsed.ok || !document || validation.conformance !== 'Workspace-schema-valid') {
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
-        contentDigest,
+        contentDigest: knowledgePageReadable(input, candidate.knowledgePageId, content)
+          ? contentDigest
+          : null,
         reason: 'lower_conformance',
       });
       continue;
     }
 
+    if (!knowledgePageReadable(input, candidate.knowledgePageId, content)) {
+      excluded.push({
+        knowledgePageId: candidate.knowledgePageId,
+        contentDigest: null,
+        reason: 'policy_excluded',
+      });
+      continue;
+    }
     const reviewState = stringFrontmatterField(document, 'review_state');
 
     if (
       validation.errors.length > 0 ||
+      !states.includes(
+        stringFrontmatterField(document, 'openkit_status') as (typeof states)[number]
+      ) ||
+      knowledgePageConflicted(workspaceRoot, candidate.knowledgePageId) ||
       (reviewState !== 'accepted' && reviewState !== 'user-authored') ||
       (reviewState === 'accepted' && !referenceProof)
     ) {
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
-        contentDigest,
+        contentDigest: knowledgePageReadable(input, candidate.knowledgePageId, content)
+          ? contentDigest
+          : null,
         reason: 'lower_conformance',
       });
       continue;
-    }
-
-    const exactScore = knowledgeTermScore(document, queryTerms);
-
-    if (exactScore !== candidate.score) {
-      throw new Error('Knowledge retrieval requires an index rebuild.');
     }
 
     const freshness = stringFrontmatterField(document, 'freshness');
@@ -865,6 +824,7 @@ export function retrieveWorkspaceKnowledge(
     query: input.query,
     limit,
     pinnedConceptIds: normalizedPinnedConceptIds,
+    states,
   };
   const trace: WorkspaceKnowledgeRetrievalTrace = {
     traceId,
@@ -876,12 +836,20 @@ export function retrieveWorkspaceKnowledge(
     retrievalParameters: {
       limit,
       pinnedConceptIds: normalizedPinnedConceptIds,
+      states,
     },
     selected,
     excluded,
     createdAt,
   };
 
+  admitKnowledgeRetrieval(input);
+  if (canonicalJson(before.view) !== canonicalJson(collectKnowledgeInventory(input).view))
+    throw new OperationError(
+      'knowledge_retrieval_failed',
+      'Knowledge eligibility changed during retrieval.',
+      409
+    );
   appendWorkspaceKnowledgeRetrievalTrace(workspaceRoot, trace);
 
   return trace;
@@ -903,10 +871,12 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
   retrievalTraceId: string;
   /** Server-owned caller expected on the retrieval trace. */
   caller: RetrieveWorkspaceKnowledgeInput['caller'];
-  /** Fresh Page-bound source-authority proofs for accepted selections. */
-  referenceProofs?: ReadonlyMap<string, KnowledgePageReferenceProof> | undefined;
+  /** Fresh source and destination authorization for exact-byte disclosure. */
+  access: KnowledgeRetrievalAccess;
 }): ResolvedWorkspaceKnowledgeRetrievalPage[] | null {
   const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
+  admitKnowledgeRetrieval(input);
+  const referenceProofs = currentKnowledgeReferenceProofs(input);
   const trace = readWorkspaceKnowledgeRetrievalTrace(workspaceRoot, input.retrievalTraceId);
 
   if (!trace) {
@@ -928,6 +898,12 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
       return null;
     }
 
+    if (!knowledgePageReadable(input, selected.knowledgePageId, content))
+      throw new OperationError(
+        'workspace_access_denied',
+        'Knowledge source disclosure denied.',
+        403
+      );
     const parsed = parseOkfDocument({ path, content });
     const document = parsed.document;
     const sourceRefs = document
@@ -937,7 +913,7 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
       : [];
     const contentDigest = sha256Digest(content);
     const referenceProof = matchingKnowledgeReferenceProof(
-      input.referenceProofs,
+      referenceProofs,
       selected.knowledgePageId,
       contentDigest,
       sourceRefs
@@ -1024,57 +1000,6 @@ function matchingKnowledgeReferenceProof(
 }
 
 /**
- * Adds exact proof-backed Pages to the existing retrieval candidate and score maps.
- *
- * Persisted indexes remain proof-neutral; this bounded pass considers only current proofs and uses
- * the same tokenizer and scorer as ordinary postings.
- *
- * @param input Existing candidate maps, current proofs, query terms, and Workspace root.
- */
-function addProofBackedKnowledgeCandidates(input: {
-  readonly addressedIds: Set<string>;
-  readonly pinnedConceptIds: ReadonlySet<string>;
-  readonly proofs: ReadonlyMap<string, KnowledgePageReferenceProof> | undefined;
-  readonly queryTerms: readonly string[];
-  readonly scores: Map<string, number>;
-  readonly workspaceRoot: string;
-}): void {
-  for (const [knowledgePageId] of input.proofs ?? []) {
-    const content = readWorkspaceKnowledgePage(input.workspaceRoot, knowledgePageId);
-    if (content === null) {
-      continue;
-    }
-    const path = `knowledge/pages/${knowledgePageId}.md`;
-    const parsed = parseOkfDocument({ path, content });
-    const document = parsed.document;
-    const sourceReferences = document
-      ? [...new Set(stringListFrontmatterField(document, 'source_refs') ?? [])].sort(
-          compareBytewise
-        )
-      : [];
-    if (
-      !parsed.ok ||
-      !document ||
-      stringFrontmatterField(document, 'review_state') !== 'accepted' ||
-      !matchingKnowledgeReferenceProof(
-        input.proofs,
-        knowledgePageId,
-        sha256Digest(content),
-        sourceReferences
-      )
-    ) {
-      continue;
-    }
-    const score = knowledgeTermScore(document, input.queryTerms);
-    if (score === 0 && !input.pinnedConceptIds.has(knowledgePageId)) {
-      continue;
-    }
-    input.addressedIds.add(knowledgePageId);
-    input.scores.set(knowledgePageId, score);
-  }
-}
-
-/**
  * Orders retrieval candidates by score and stable identity fields.
  *
  * @param left Left candidate.
@@ -1090,18 +1015,6 @@ function compareKnowledgeRetrievalCandidates(
     right.score - left.score ||
     compareBytewise(left.knowledgePageId, right.knowledgePageId)
   );
-}
-
-/** Computes the governed query score again from exact authoritative page bytes. */
-function knowledgeTermScore(document: OkfDocument, queryTerms: readonly string[]): number {
-  const titleTerms = tokenizeKnowledgeText(stringFrontmatterField(document, 'title') ?? '');
-  const bodyTerms = tokenizeKnowledgeText(document.body);
-
-  return queryTerms.reduce((score, term) => {
-    const titleOccurrences = titleTerms.filter((candidate) => candidate === term).length;
-    const bodyOccurrences = bodyTerms.filter((candidate) => candidate === term).length;
-    return score + titleOccurrences + bodyOccurrences + (titleOccurrences > 0 ? 2 : 0);
-  }, 0);
 }
 
 /** Serializes JSON with recursively bytewise-sorted object keys. */
@@ -1137,141 +1050,6 @@ function compareBytewise(left: string, right: string): number {
 /** Returns whether two already-normalized string arrays are identical. */
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((entry, index) => entry === right[index]);
-}
-
-/**
- * Builds search entries from workspace projections and the temporary store snapshot.
- *
- * @param workspaceRoot Workspace root path.
- * @param workspaceId Workspace id.
- * @returns Search index entries.
- */
-function buildSearchEntries(
-  workspaceRoot: string,
-  workspaceId: string
-): WorkspaceSearchIndexEntry[] {
-  const entries: WorkspaceSearchIndexEntry[] = [];
-  const workspace = WorkspaceSystemRecordSchema.parse(
-    readJsonRecord(join(workspaceRoot, 'workspace-record.json'))
-  );
-  const configPath = join(workspaceRoot, 'config', 'workspace.jsonc');
-  const config = WorkspaceConfigSchema.parse(
-    parseJsoncObject(readCanonicalTextFile(configPath), configPath)
-  );
-
-  entries.push({
-    kind: 'workspace',
-    id: workspace.id,
-    title: config.workspace.name,
-    searchText: config.workspace.name,
-  });
-  entries.push(...readKnowledgePageEntries(workspaceRoot, workspaceId));
-  entries.push(...readArtifactEntries(workspaceRoot, workspaceId));
-  entries.push(...readThreadEntries(workspaceRoot, workspaceId));
-
-  return entries;
-}
-
-/**
- * Reads file-backed artifacts into search entries.
- *
- * @param workspaceRoot Workspace root path.
- * @param workspaceId Workspace id.
- * @returns Search entries for artifacts.
- */
-function readArtifactEntries(
-  workspaceRoot: string,
-  workspaceId: string
-): WorkspaceSearchIndexEntry[] {
-  const artifactsRoot = join(workspaceRoot, 'artifacts');
-  const entries: WorkspaceSearchIndexEntry[] = [];
-
-  for (const artifactId of listDirectories(artifactsRoot)) {
-    const artifactRoot = join(artifactsRoot, artifactId);
-    const metadata = readJsonRecord(join(artifactRoot, 'artifact.json')) as Record<string, unknown>;
-    const metadataContent = metadata.content;
-
-    if (!metadataContent || typeof metadataContent !== 'object' || Array.isArray(metadataContent)) {
-      throw new Error(`Artifact ${artifactId} has invalid content metadata.`);
-    }
-    if (Object.hasOwn(metadataContent, 'body')) {
-      throw new Error(`Artifact ${artifactId} metadata must not embed its content body.`);
-    }
-    const format = (metadataContent as Record<string, unknown>).format;
-    if (format !== 'markdown' && format !== 'text' && format !== 'json') {
-      throw new Error(`Artifact ${artifactId} has an invalid content format.`);
-    }
-    const body = readCanonicalTextFile(
-      join(artifactRoot, 'files', artifactContentFileName(format))
-    );
-    const artifact = ArtifactSchema.parse({ ...metadata, content: { format, body } });
-
-    if (artifact.id !== artifactId || artifact.workspaceId !== workspaceId) {
-      throw new Error(`Artifact ${artifactId} has invalid workspace or directory lineage.`);
-    }
-
-    entries.push({
-      kind: 'artifact',
-      id: artifact.id,
-      title: artifact.title,
-      workspaceId,
-      ...(artifact.threadId ? { threadId: artifact.threadId } : {}),
-      searchText: `${artifact.title}\n${artifact.summary ?? ''}\n${body}`,
-    });
-  }
-
-  return entries;
-}
-
-/**
- * Reads file-backed knowledge pages into search entries.
- *
- * @param workspaceRoot Workspace root path.
- * @param workspaceId Workspace id.
- * @returns Search entries for knowledge pages.
- */
-function readKnowledgePageEntries(
-  workspaceRoot: string,
-  workspaceId: string
-): WorkspaceSearchIndexEntry[] {
-  const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
-  const schema = readWorkspaceKnowledgeSchema(workspaceRoot);
-  const registeredSources = readRegisteredSources(workspaceRoot, workspaceId);
-  const knowledgeIds = readKnowledgePageIds(pagesRoot);
-  const entries: WorkspaceSearchIndexEntry[] = [];
-
-  if (!schema) {
-    return entries;
-  }
-
-  for (const knowledgePageId of indexKnowledgePageIds(pagesRoot)) {
-    const path = join(pagesRoot, `${knowledgePageId}.md`);
-    const content = readCanonicalTextFile(path);
-    const parsed = parseOkfDocument({ path, content });
-
-    if (
-      !parsed.ok ||
-      !isStaticKnowledgeIndexPage(parsed.document, schema, registeredSources, knowledgeIds)
-    ) {
-      continue;
-    }
-
-    const id =
-      stringFrontmatterField(parsed.document, 'openkit_entry_id') ??
-      parsed.document.conceptId ??
-      knowledgePageId;
-    const title = stringFrontmatterField(parsed.document, 'title') ?? id;
-
-    entries.push({
-      kind: 'knowledge',
-      id,
-      title,
-      workspaceId,
-      searchText: `${title}\n${parsed.document.body}`,
-    });
-  }
-
-  return entries;
 }
 
 /**
@@ -1562,111 +1340,6 @@ function classifyKnowledgeSourceReference(input: {
 }
 
 /**
- * Builds a deterministic full-text term index for active file-backed knowledge pages.
- *
- * @param workspaceRoot Workspace root path.
- * @param workspaceId Workspace id.
- * @returns Indexed terms and postings.
- */
-function buildKnowledgeFullTextTerms(
-  workspaceRoot: string,
-  workspaceId: string
-): WorkspaceKnowledgeFullTextTerm[] {
-  const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
-  const schema = readWorkspaceKnowledgeSchema(workspaceRoot);
-  const registeredSources = readRegisteredSources(workspaceRoot, workspaceId);
-  const knowledgeIds = readKnowledgePageIds(pagesRoot);
-  const terms = new Map<
-    string,
-    Map<
-      string,
-      {
-        fields: Set<WorkspaceKnowledgeFullTextField>;
-        occurrences: number;
-      }
-    >
-  >();
-
-  if (!schema) {
-    return [];
-  }
-
-  for (const knowledgePageId of indexKnowledgePageIds(pagesRoot)) {
-    const path = join(pagesRoot, `${knowledgePageId}.md`);
-    const parsed = parseOkfDocument({ path, content: readCanonicalTextFile(path) });
-
-    if (
-      !parsed.ok ||
-      !isStaticKnowledgeIndexPage(parsed.document, schema, registeredSources, knowledgeIds)
-    ) {
-      continue;
-    }
-
-    const conceptId = parsed.document.conceptId ?? knowledgePageId;
-    const title = stringFrontmatterField(parsed.document, 'title') ?? conceptId;
-
-    addKnowledgeFullTextTerms(terms, conceptId, 'title', title);
-    addKnowledgeFullTextTerms(terms, conceptId, 'body', parsed.document.body);
-  }
-
-  return [...terms.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([term, postings]) => ({
-      term,
-      postings: [...postings.entries()]
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([conceptId, posting]) => ({
-          conceptId,
-          fields: [...posting.fields].sort(),
-          occurrences: posting.occurrences,
-        })),
-    }));
-}
-
-/**
- * Adds one text field's tokens to a full-text term map.
- *
- * @param terms Mutable term map.
- * @param conceptId Concept id that owns the text.
- * @param field Field that supplied the text.
- * @param text Text to tokenize.
- */
-function addKnowledgeFullTextTerms(
-  terms: Map<
-    string,
-    Map<string, { fields: Set<WorkspaceKnowledgeFullTextField>; occurrences: number }>
-  >,
-  conceptId: string,
-  field: WorkspaceKnowledgeFullTextField,
-  text: string
-): void {
-  for (const term of tokenizeKnowledgeText(text)) {
-    let postings = terms.get(term);
-
-    if (!postings) {
-      postings = new Map();
-      terms.set(term, postings);
-    }
-
-    const posting = postings.get(conceptId) ?? { fields: new Set(), occurrences: 0 };
-
-    posting.fields.add(field);
-    posting.occurrences += 1;
-    postings.set(conceptId, posting);
-  }
-}
-
-/**
- * Tokenizes text for the first-slice deterministic full-text index.
- *
- * @param text Text to tokenize.
- * @returns Lowercase Unicode word tokens.
- */
-export function tokenizeKnowledgeText(text: string): string[] {
-  return [...text.toLowerCase().matchAll(/[\p{L}\p{N}]+/gu)].map((match) => match[0]);
-}
-
-/**
  * Builds directed knowledge-page link edges from active Markdown bodies.
  *
  * @param workspaceRoot Workspace root path.
@@ -1823,81 +1496,6 @@ function readWorkspaceKnowledgeSchemaText(workspaceRoot: string): string | undef
 }
 
 /**
- * Reads thread, turn, and item projections into search entries.
- *
- * @param workspaceRoot Workspace root path.
- * @param workspaceId Workspace id.
- * @returns Search entries.
- */
-function readThreadEntries(
-  workspaceRoot: string,
-  workspaceId: string
-): WorkspaceSearchIndexEntry[] {
-  const threadsRoot = join(workspaceRoot, 'threads');
-  const entries: WorkspaceSearchIndexEntry[] = [];
-
-  for (const threadId of listDirectories(threadsRoot)) {
-    const thread = readJsonRecord(join(threadsRoot, threadId, 'thread.json')) as {
-      id: string;
-      name?: string;
-      preview?: string;
-    };
-    const title = thread.name ?? thread.id;
-
-    entries.push({
-      kind: 'thread',
-      id: thread.id,
-      title,
-      workspaceId,
-      threadId: thread.id,
-      searchText: `${title}\n${thread.preview ?? ''}`,
-    });
-
-    for (const turnId of listDirectories(join(threadsRoot, threadId, 'turns'))) {
-      const turnRoot = join(threadsRoot, threadId, 'turns', turnId);
-      const turn = readJsonRecord(join(turnRoot, 'turn.json')) as { id: string; input?: string };
-
-      entries.push({
-        kind: 'item',
-        id: turn.id,
-        title: turn.input ?? turn.id,
-        workspaceId,
-        threadId: thread.id,
-        searchText: turn.input ?? turn.id,
-      });
-
-      const latestItemsById = new Map<string, Record<string, unknown>>();
-      for (const item of readCanonicalJsonLines(join(turnRoot, 'items.jsonl'), true) as Array<
-        Record<string, unknown>
-      >) {
-        latestItemsById.set(stringField(item, 'id'), item);
-      }
-
-      for (const [id, item] of latestItemsById) {
-        const title = nullableStringField(item, 'text') ?? nullableStringField(item, 'title') ?? id;
-
-        entries.push({
-          kind: 'item',
-          id,
-          title,
-          workspaceId,
-          threadId: thread.id,
-          searchText: [
-            nullableStringField(item, 'text'),
-            nullableStringField(item, 'title'),
-            nullableStringField(item, 'description'),
-          ]
-            .filter(Boolean)
-            .join('\n'),
-        });
-      }
-    }
-  }
-
-  return entries;
-}
-
-/**
  * Removes existing derived-index files before rebuild.
  *
  * @param indexesRoot Derived index directory.
@@ -1918,7 +1516,10 @@ function clearIndexDirectory(indexesRoot: string): string[] {
     );
   }
 
-  const removedEntries = entries.map((entry) => entry.name).sort();
+  const removedEntries = entries
+    .filter((entry) => entry.name !== 'retrieval')
+    .map((entry) => entry.name)
+    .sort();
 
   for (const entry of removedEntries) {
     rmSync(join(indexesRoot, entry), { recursive: true, force: true });
@@ -2007,19 +1608,6 @@ function stringField(record: Record<string, unknown>, field: string): string {
   }
 
   return value;
-}
-
-/**
- * Reads an optional string field from a record.
- *
- * @param record Source record.
- * @param field Field name.
- * @returns String field value, or null when absent.
- */
-function nullableStringField(record: Record<string, unknown>, field: string): string | null {
-  const value = record[field];
-
-  return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
 /**

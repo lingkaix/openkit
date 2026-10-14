@@ -4,12 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AppSearchResponseSchema } from '@openkit/app-api-schemas';
 import { Hono } from 'hono';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAppSearchOperationImplementations } from './app-search-operation-implementations.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { FsStore } from './lib/store.js';
+import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
@@ -17,9 +18,11 @@ import { createDemoStore } from './test-support/demo-store.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
+afterEach(closeRetrievalServices);
+
 describe('search app API', () => {
   it('opens only authorized workspaces and never scans global items', async () => {
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: mkdtempSync(join(tmpdir(), 'openkit-search-')) });
     const allowedThread = store.createThread('ws_demo', 'Authorized needle thread');
     const allowedTurn = store.createTurn('ws_demo', allowedThread.id, 'Authorized needle turn', {
       kind: 'user',
@@ -66,7 +69,7 @@ describe('search app API', () => {
     });
     app.post('/api/app/operations/app.search', async (c) =>
       c.json(
-        createAppSearchOperationImplementations({ store, coreDb: undefined })['app.search'](
+        await createAppSearchOperationImplementations({ store, coreDb: undefined })['app.search'](
           { query: 'needle' },
           {
             kind: 'public',
@@ -91,7 +94,7 @@ describe('search app API', () => {
   });
 
   it('searches workspaces, threads, knowledge, artifacts, and items', async () => {
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot: mkdtempSync(join(tmpdir(), 'openkit-search-')) });
     const thread = store.createThread('ws_demo', 'Needle thread');
     const turn = store.createTurn('ws_demo', thread.id, 'Find needle', {
       kind: 'user',
@@ -118,6 +121,27 @@ describe('search app API', () => {
         expect.objectContaining({ kind: 'thread', id: thread.id, title: 'Needle thread' }),
         expect.objectContaining({ kind: 'item', id: 'it_search_needle', title: 'Needle answer' }),
       ]),
+    });
+  });
+
+  it('delegates Knowledge search to the same segmented governed owner', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-search-cjk-'));
+    const store = createDemoStore({ dataRoot });
+    const page = store.createKnowledgeEntry('ws_demo', {
+      kind: 'project-context',
+      title: 'Unrelated',
+      content: '我们完成了测试，并修复了缺陷。',
+    });
+    const app = createApp({ store });
+    const response = await app.request(
+      ...operationRequest('app.search', { query: '测试 修复' }, {})
+    );
+    expect(response.status).toBe(200);
+    expect(AppSearchResponseSchema.parse(await response.json()).items).toContainEqual({
+      kind: 'knowledge',
+      id: page.id,
+      title: 'Unrelated',
+      workspaceId: 'ws_demo',
     });
   });
 

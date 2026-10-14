@@ -46028,92 +46028,12 @@
               "references"
             ],
             "additionalProperties": false
-          },
-          "fullText": {
-            "type": "object",
-            "properties": {
-              "schemaVersion": {
-                "type": "number",
-                "const": 1
-              },
-              "workspaceId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "rebuiltAt": {
-                "type": "string",
-                "minLength": 1
-              },
-              "tokenizer": {
-                "type": "string",
-                "const": "unicode-simple-v1"
-              },
-              "terms": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "term": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "postings": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "conceptId": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "fields": {
-                            "type": "array",
-                            "items": {
-                              "type": "string",
-                              "enum": [
-                                "title",
-                                "body"
-                              ]
-                            }
-                          },
-                          "occurrences": {
-                            "type": "integer",
-                            "exclusiveMinimum": 0,
-                            "maximum": 9007199254740991
-                          }
-                        },
-                        "required": [
-                          "conceptId",
-                          "fields",
-                          "occurrences"
-                        ],
-                        "additionalProperties": false
-                      }
-                    }
-                  },
-                  "required": [
-                    "term",
-                    "postings"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "required": [
-              "schemaVersion",
-              "workspaceId",
-              "rebuiltAt",
-              "tokenizer",
-              "terms"
-            ],
-            "additionalProperties": false
           }
         },
         "required": [
           "linkGraph",
           "validation",
-          "sourceReferences",
-          "fullText"
+          "sourceReferences"
         ],
         "additionalProperties": false
       },
@@ -46139,6 +46059,22 @@
               "minLength": 1
             }
           },
+          "states": {
+            "default": [
+              "active"
+            ],
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "active",
+                "draft",
+                "archived",
+                "superseded"
+              ]
+            }
+          },
           "workspaceId": {
             "type": "string",
             "minLength": 1
@@ -46148,6 +46084,7 @@
           "query",
           "limit",
           "pinnedConceptIds",
+          "states",
           "workspaceId"
         ],
         "additionalProperties": false
@@ -46190,11 +46127,25 @@
                   "type": "string",
                   "minLength": 1
                 }
+              },
+              "states": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "draft",
+                    "archived",
+                    "superseded"
+                  ]
+                }
               }
             },
             "required": [
               "limit",
-              "pinnedConceptIds"
+              "pinnedConceptIds",
+              "states"
             ],
             "additionalProperties": false
           },
@@ -46212,9 +46163,8 @@
                   "pattern": "^sha256:[a-f0-9]{64}$"
                 },
                 "score": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
+                  "type": "number",
+                  "minimum": 0
                 },
                 "sourceReferences": {
                   "type": "array",
@@ -46363,9 +46313,8 @@
                   "pattern": "^sha256:[a-f0-9]{64}$"
                 },
                 "score": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
+                  "type": "number",
+                  "minimum": 0
                 },
                 "sourceReferences": {
                   "type": "array",
@@ -92150,5 +92099,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:2b8c7fe6c60896dd746d8d8c4720ee2a7f2e04effbc78997648233f6302716a0"
+  "x-openkit-source-digest": "sha256:467f3b53d6b0c7f44d6ebfc802ec6fe5d8e7d89e50271a597854e6d07e5e6b17"
 }

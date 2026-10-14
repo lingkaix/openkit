@@ -804,7 +804,9 @@ describe('Knowledge Manager answer operation', () => {
     );
     expect(res.status).toBe(200);
 
-    const body = KnowledgeDerivedIndexesResponseSchema.parse(await res.json());
+    const rawBody = await res.json();
+    expect(rawBody).not.toHaveProperty('fullText');
+    const body = KnowledgeDerivedIndexesResponseSchema.parse(rawBody);
     expect(body.validation.records).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -843,22 +845,8 @@ describe('Knowledge Manager answer operation', () => {
         }),
       ])
     );
-    expect(body.fullText.terms).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          term: 'alpha',
-          postings: expect.arrayContaining([
-            expect.objectContaining({ conceptId: 'alpha', fields: ['title'] }),
-          ]),
-        }),
-        expect.objectContaining({
-          term: 'beta',
-          postings: expect.arrayContaining([
-            expect.objectContaining({ conceptId: 'alpha', fields: ['body'] }),
-          ]),
-        }),
-      ])
-    );
+    expect(existsSync(join(workspaceRoot, 'indexes', 'knowledge-fts.json'))).toBe(false);
+    expect(existsSync(join(workspaceRoot, 'indexes', 'search.json'))).toBe(false);
   });
 
   it('retrieves ranked Knowledge Store candidates and persists the trace', async () => {
@@ -871,6 +859,8 @@ describe('Knowledge Manager answer operation', () => {
     const timestamp = '2026-07-07T00:00:00.000Z';
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
     const sourceId = 'ks_123e4567-e89b-42d3-a456-426614174000';
+    const sourceMaterial = 'Canonical release planning source material.';
+    const sourceDigest = `sha256:${createHash('sha256').update(sourceMaterial).digest('hex')}`;
     const releasePage = [
       '---',
       'type: "KnowledgePage"',
@@ -908,20 +898,23 @@ describe('Knowledge Manager answer operation', () => {
       '',
     ].join('\n');
 
-    store.createKnowledgeSource({
-      id: sourceId,
-      workspaceId: 'ws_demo',
-      kind: 'document',
-      title: 'Release source',
-      uri: null,
-      contentDigest: 'sha256:release',
-      originatingThreadId: null,
-      originatingTurnId: null,
-      originatingFileId: null,
-      capturedAt: timestamp,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    });
+    store.createKnowledgeSource(
+      {
+        id: sourceId,
+        workspaceId: 'ws_demo',
+        kind: 'document',
+        title: 'Release source',
+        uri: null,
+        contentDigest: sourceDigest,
+        originatingThreadId: null,
+        originatingTurnId: null,
+        originatingFileId: null,
+        capturedAt: timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      sourceMaterial
+    );
     writeFileSync(join(workspaceRoot, 'knowledge', 'pages', 'release-plan.md'), releasePage);
     writeFileSync(join(workspaceRoot, 'knowledge', 'pages', 'old-plan.md'), oldPage);
 
@@ -949,18 +942,20 @@ describe('Knowledge Manager answer operation', () => {
       retrievalParameters: {
         limit: 1,
         pinnedConceptIds: [],
+        states: ['active'],
       },
       selected: [
         {
           knowledgePageId: 'release-plan',
           contentDigest: `sha256:${createHash('sha256').update(releasePage).digest('hex')}`,
-          score: 5,
+          score: expect.any(Number),
           sourceReferences: [`source:${sourceId}`],
         },
       ],
       excluded: [],
       createdAt: expect.any(String),
     });
+    expect(body.selected[0]!.score).toBeGreaterThan(0);
 
     const month = body.createdAt.slice(0, 7).replace('-', '');
     const tracePath = join(workspaceRoot, 'knowledge', 'traces', `${month}.jsonl`);

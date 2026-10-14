@@ -14,6 +14,8 @@ export interface RetrievalDocument {
   name: string;
   title?: string;
   media_type: string;
+  /** Optional searchable byte units within the verified full canonical source. */
+  text_ranges?: { start: number; end: number }[];
   language?: 'zh' | 'ja' | 'unicode';
   metadata?: Record<string, string>;
   locator?: string;

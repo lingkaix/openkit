@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -6,7 +6,11 @@ import { answerKnowledgeManager } from './knowledge-manager.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 
-afterEach(closeRetrievalServices);
+const testRoots: string[] = [];
+afterEach(async () => {
+  await closeRetrievalServices();
+  for (const root of testRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 describe('Knowledge retrieval and answer segmentation', () => {
   it.each([
@@ -23,6 +27,7 @@ describe('Knowledge retrieval and answer segmentation', () => {
     two,
   }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'retrieval-knowledge-cjk-'));
+    testRoots.push(dataRoot);
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Knowledge segmentation');
     const page = store.createKnowledgeEntry(workspace.id, {
@@ -37,6 +42,11 @@ describe('Knowledge retrieval and answer segmentation', () => {
         operationId: `answer-${query}`,
         caller: 'app-api',
         query,
+        access: {
+          store,
+          actor: { kind: 'user', id: 'user_local' },
+          requestActor: { kind: 'local', userId: 'user_local' },
+        },
       });
     expect(await answer(one)).toMatchObject({ outcome: 'insufficient-evidence', citations: [] });
     expect(await answer(two)).toMatchObject({

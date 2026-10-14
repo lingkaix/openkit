@@ -1574,8 +1574,6 @@ function KnowledgeRetrievalPanel({
     prepare.isSuccess && matchesWorkspace(workspaceId, prepare.variables?.workspaceId)
       ? prepare.data
       : null;
-  const indexTerms = indexes.data?.fullText.terms ?? [];
-
   return (
     <section aria-label="Retrieval" className="flex flex-col gap-2">
       <Eyebrow>Retrieval</Eyebrow>
@@ -1586,9 +1584,6 @@ function KnowledgeRetrievalPanel({
             onRetry={() => void indexes.refetch()}
           />
         </fieldset>
-      ) : null}
-      {indexTerms.length > 0 ? (
-        <p className="text-sm text-fg">{indexTerms.map((entry) => entry.term).join(' ')}</p>
       ) : null}
       <Card className="flex flex-col gap-3">
         <TextField

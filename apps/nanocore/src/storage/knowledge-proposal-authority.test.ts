@@ -9,7 +9,6 @@ import {
   DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION,
   KnowledgePageValidationError,
 } from '../knowledge/okf.js';
-import { resolveWorkspaceKnowledgeReferenceProofs } from '../knowledge-manager.js';
 import { FsStore } from '../lib/store.js';
 import {
   resolveWorkspaceKnowledgeRetrievalPages,
@@ -368,15 +367,9 @@ describe('knowledge proposal authority', () => {
     expect(fixture.canonicalPageBytes).not.toContain('\nstatus:');
   });
 
-  it('retrieves one hierarchical accepted page only through its exact proposal proof', () => {
+  it('retrieves one hierarchical accepted page only through its exact proposal proof', async () => {
     const fixture = createFixture('proposal-retrieval-proof');
     decide(fixture, 'accepted', 'review-retrieval-proof');
-    const referenceProofs = resolveWorkspaceKnowledgeReferenceProofs({
-      coreDb: undefined,
-      store: fixture.store,
-      workspaceDb: undefined,
-      workspaceId: fixture.workspaceId,
-    });
     const copiedPageId = 'review/copied-authority-lesson';
     const copiedPageBytes = candidatePage(copiedPageId, fixture.sourceReference);
     writeFileSync(
@@ -391,13 +384,17 @@ describe('knowledge proposal authority', () => {
       copiedPageBytes
     );
 
-    const retrieval = retrieveWorkspaceKnowledge({
+    const retrieval = await retrieveWorkspaceKnowledge({
       caller: 'task-mode',
       dataRoot: fixture.dataRoot,
       limit: 1,
       pinnedConceptIds: [copiedPageId],
       query: 'Review authority lesson',
-      referenceProofs,
+      access: {
+        store: fixture.store,
+        actor: { kind: 'user', id: 'user_local' },
+        requestActor: { kind: 'local', userId: 'user_local' },
+      },
       traceId: 'krt_00000000-0000-4000-8000-000000000701',
       workspaceId: fixture.workspaceId,
       now: () => DECIDED_AT,
@@ -419,7 +416,11 @@ describe('knowledge proposal authority', () => {
       resolveWorkspaceKnowledgeRetrievalPages({
         caller: 'task-mode',
         dataRoot: fixture.dataRoot,
-        referenceProofs,
+        access: {
+          store: fixture.store,
+          actor: { kind: 'user', id: 'user_local' },
+          requestActor: { kind: 'local', userId: 'user_local' },
+        },
         retrievalTraceId: retrieval.traceId,
         workspaceId: fixture.workspaceId,
       })

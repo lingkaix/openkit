@@ -8,12 +8,13 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   type RetrievalDocument,
@@ -29,6 +30,13 @@ const LARGE_SOURCE_BYTES = 32 * 1024 * 1024;
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = resolve(TEST_DIR, '../../..');
 const KERNEL_EXECUTABLE = resolveKernelExecutable();
+
+const testRoots: string[] = [];
+const services: RetrievalService[] = [];
+afterEach(async () => {
+  await Promise.all(services.splice(0).map((service) => service.close()));
+  for (const root of testRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 describe.skipIf(process.platform !== 'linux')('NanoCore retrieval service supervision', () => {
   it(
@@ -152,16 +160,19 @@ function createService(
   fixture: { sourcesRoot: string; storeRoot: string },
   timeoutMs: number
 ): RetrievalService {
-  return new RetrievalService({
+  const service = new RetrievalService({
     executable: KERNEL_EXECUTABLE,
     sourcesRoot: fixture.sourcesRoot,
     storeRoot: fixture.storeRoot,
     timeoutMs,
   });
+  services.push(service);
+  return service;
 }
 
 function createFixture(): { sourcesRoot: string; storeRoot: string } {
   const root = mkdtempSync(join(tmpdir(), 'openkit-retrieval-supervision-'));
+  testRoots.push(root);
   const fixture = {
     sourcesRoot: join(root, 'sources'),
     storeRoot: join(root, 'store'),

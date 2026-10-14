@@ -353,34 +353,11 @@ export const KnowledgeSourceReferenceIndexSchema = z.object({
   references: z.array(KnowledgeSourceReferenceSchema),
 });
 
-/** Full-text posting for one Knowledge Store concept. */
-export const KnowledgeFullTextPostingSchema = z.object({
-  conceptId: z.string().min(1),
-  fields: z.array(z.enum(['title', 'body'])),
-  occurrences: z.number().int().positive(),
-});
-
-/** Full-text term and postings for Knowledge Store retrieval. */
-export const KnowledgeFullTextTermSchema = z.object({
-  term: z.string().min(1),
-  postings: z.array(KnowledgeFullTextPostingSchema),
-});
-
-/** Derived Knowledge Store full-text index. */
-export const KnowledgeFullTextIndexSchema = z.object({
-  schemaVersion: z.literal(1),
-  workspaceId: z.string().min(1),
-  rebuiltAt: z.string().min(1),
-  tokenizer: z.literal('unicode-simple-v1'),
-  terms: z.array(KnowledgeFullTextTermSchema),
-});
-
 /** Response returned when reading Knowledge Store derived indexes. */
 export const KnowledgeDerivedIndexesResponseSchema = z.object({
   linkGraph: KnowledgeLinkGraphSchema,
   validation: KnowledgeValidationIndexSchema,
   sourceReferences: KnowledgeSourceReferenceIndexSchema,
-  fullText: KnowledgeFullTextIndexSchema,
 });
 
 /** Request body for deterministic Knowledge Store retrieval with trace persistence. */
@@ -388,6 +365,10 @@ export const RetrieveKnowledgeRequestSchema = z.object({
   query: z.string().min(1),
   limit: z.number().int().positive().max(20).default(5),
   pinnedConceptIds: z.array(z.string().min(1)).default([]),
+  states: z
+    .array(z.enum(['active', 'draft', 'archived', 'superseded']))
+    .min(1)
+    .default(['active']),
 });
 
 /** Canonical server-generated identity of one governed Knowledge retrieval trace. */
@@ -400,7 +381,7 @@ export const KnowledgeRetrievalCandidateSchema = z
   .object({
     knowledgePageId: z.string().min(1),
     contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-    score: z.number().int().nonnegative(),
+    score: z.number().finite().nonnegative(),
     sourceReferences: z.array(z.string().min(1)),
   })
   .strict();
@@ -435,6 +416,7 @@ export const KnowledgeRetrievalResponseSchema = z
       .object({
         limit: z.number().int().positive().max(20),
         pinnedConceptIds: z.array(z.string().min(1)),
+        states: z.array(z.enum(['active', 'draft', 'archived', 'superseded'])).min(1),
       })
       .strict(),
     selected: z.array(KnowledgeRetrievalCandidateSchema),
@@ -755,12 +737,6 @@ export type KnowledgeSourceReferenceKind = z.infer<typeof KnowledgeSourceReferen
 export type KnowledgeSourceReference = z.infer<typeof KnowledgeSourceReferenceSchema>;
 /** Derived Knowledge Store source-reference index. */
 export type KnowledgeSourceReferenceIndex = z.infer<typeof KnowledgeSourceReferenceIndexSchema>;
-/** Full-text posting for one Knowledge Store concept. */
-export type KnowledgeFullTextPosting = z.infer<typeof KnowledgeFullTextPostingSchema>;
-/** Full-text term and postings for Knowledge Store retrieval. */
-export type KnowledgeFullTextTerm = z.infer<typeof KnowledgeFullTextTermSchema>;
-/** Derived Knowledge Store full-text index. */
-export type KnowledgeFullTextIndex = z.infer<typeof KnowledgeFullTextIndexSchema>;
 /** Response returned when reading Knowledge Store derived indexes. */
 export type KnowledgeDerivedIndexesResponse = z.infer<typeof KnowledgeDerivedIndexesResponseSchema>;
 /** Request body accepted for deterministic Knowledge Store retrieval with trace persistence. */

@@ -39,7 +39,6 @@ import {
   writeWorkerContextPackageFiles,
   writeWorkerContextPackageTrace,
 } from '../context/worker-context-package.js';
-import { resolveWorkspaceKnowledgeReferenceProofs } from '../knowledge-manager.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
   ArtifactAuthorityError,
@@ -387,16 +386,15 @@ export function prepareWorkerTurnContextPackage(
   if (knowledgeSelectionInput) {
     let pages: ReturnType<typeof resolveWorkspaceKnowledgeRetrievalPages>;
     try {
-      const referenceProofs = resolveWorkspaceKnowledgeReferenceProofs({
-        coreDb: coreDb ?? undefined,
-        store,
-        workspaceDb,
-        workspaceId: input.workspaceId,
-      });
       pages = resolveWorkspaceKnowledgeRetrievalPages({
         caller: 'task-mode',
         dataRoot: workspaceDb.dataRoot,
-        referenceProofs,
+        access: {
+          store,
+          coreDb: coreDb ?? undefined,
+          actor: store.getTurnById(input.turnId).triggerActor,
+          outputThreadId: input.threadId,
+        },
         retrievalTraceId: knowledgeSelectionInput.retrievalTraceId,
         workspaceId: input.workspaceId,
       });

@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
+import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
@@ -136,7 +137,7 @@ describe('dashboard and search Thread audiences', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = new FsStore();
+    const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Team');
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -171,14 +172,7 @@ describe('dashboard and search Thread audiences', () => {
           visibility: 'private',
           privateOwnerUserId: label.startsWith('local') ? 'user_local' : 'user_other',
         });
-      else if (label === 'missing') {
-        delete raw.visibility;
-        delete raw.privateOwnerUserId;
-      } else
-        Object.assign(raw, {
-          visibility: 'workspace',
-          ...(label === 'contradictory' ? { privateOwnerUserId: 'user_other' } : {}),
-        });
+      else Object.assign(raw, { visibility: 'workspace' });
       const turn = store.createTurn(workspace.id, thread.id, `${label} needle`, {
         kind: 'user',
         id: 'user_local',
@@ -236,6 +230,23 @@ describe('dashboard and search Thread audiences', () => {
         createdAt: stamp,
         completedAt: stamp,
       });
+    // Simulate unavailable audience projections at the read owner. Durable fixture writes stay valid.
+    let exposeUnavailableAudience = true;
+    const unavailableAudience = (thread: ReturnType<FsStore['getThread']>) => {
+      if (!exposeUnavailableAudience) return thread;
+      const copy = { ...thread } as unknown as Record<string, unknown>;
+      if (thread.id === threads[4]!.id) delete copy.visibility;
+      if (thread.id === threads[5]!.id) copy.privateOwnerUserId = 'user_other';
+      return copy as unknown as typeof thread;
+    };
+    const getThread = store.getThread.bind(store);
+    const listThreads = store.listThreads.bind(store);
+    vi.spyOn(store, 'getThread').mockImplementation((workspaceId, threadId) =>
+      unavailableAudience(getThread(workspaceId, threadId))
+    );
+    vi.spyOn(store, 'listThreads').mockImplementation((workspaceId) =>
+      listThreads(workspaceId).map(unavailableAudience)
+    );
     const app = createApp({
       auth: {
         api: { getSession: async () => null },
@@ -336,6 +347,7 @@ describe('dashboard and search Thread audiences', () => {
         );
         expect(hiddenReview.status).toBe(scope === 'server-admin' ? 200 : 404);
         if (scope === 'server-admin') {
+          exposeUnavailableAudience = false;
           const receiving = store.createThread(workspace.id, 'Attachment audience');
           const attached = await app.request(
             ...operationRequest(
@@ -393,10 +405,11 @@ describe('dashboard and search Thread audiences', () => {
           expect(introduced.status).toBe(409);
           expect(await introduced.json()).toMatchObject({ code: 'thread_busy' });
         }
+        exposeUnavailableAudience = true;
         const search = await app.request(
           ...operationRequest('app.search', { query: 'needle' }, { headers })
         );
-        expect(search.status).toBe(200);
+        expect(search.status, await search.clone().text()).toBe(200);
         const hits = await search.json();
         expect(
           hits.items
@@ -444,6 +457,8 @@ describe('dashboard and search Thread audiences', () => {
         readItems.mockRestore();
       }
     } finally {
+      await closeRetrievalServices();
+      vi.restoreAllMocks();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
