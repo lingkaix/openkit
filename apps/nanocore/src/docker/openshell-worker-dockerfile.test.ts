@@ -275,6 +275,12 @@ describe('governed worker image contracts', () => {
     const fixture = JSON.parse(
       readFileSync(join(repoRoot, 'containers/worker-runtimes/smoke-package.json'), 'utf8')
     );
+    const captureRoot = `/openkit/threads/${fixture.scope.threadId}/${fixture.agent.runtimeKind}/capture/${fixture.scope.turnId}`;
+    expect(fixture.control.transcript).toMatchObject({
+      root: captureRoot,
+      eventsPath: `${captureRoot}/events.jsonl`,
+      itemsPath: `${captureRoot}/items.jsonl`,
+    });
     for (const { runtime, nativeVersion, nativeBinary } of workerImageContracts) {
       const aep = structuredClone(fixture);
       aep.agent.runtimeKind = runtime;

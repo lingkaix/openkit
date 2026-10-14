@@ -86,9 +86,9 @@
       }
     },
     "transcript": {
-      "root": "/openkit/session",
-      "eventsPath": "/openkit/session/events.jsonl",
-      "itemsPath": "/openkit/session/items.jsonl",
+      "root": "/openkit/threads/thread-codex/codex/capture/image-smoke-turn",
+      "eventsPath": "/openkit/threads/thread-codex/codex/capture/image-smoke-turn/events.jsonl",
+      "itemsPath": "/openkit/threads/thread-codex/codex/capture/image-smoke-turn/items.jsonl",
       "flush": "line",
       "import": "turn-end",
       "required": true

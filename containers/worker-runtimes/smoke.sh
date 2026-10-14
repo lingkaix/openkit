@@ -22,7 +22,7 @@ node --input-type=module <<'JS'
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync, realpathSync } from 'node:fs';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -74,7 +74,9 @@ console.log('Pinned runtime identities and patched Pi SDK/search closure OK');
 for (const runtime of ['codex', 'pi', 'opencode', 'deepseek']) {
   const agentSessionId = `image-smoke-${runtime}`;
   const root = `/openkit/sessions/${agentSessionId}`;
-  const nativeRoot = `/sandbox/image-smoke-${runtime}`;
+  const threadId = `thread-${runtime}`;
+  const runtimeRoot = `/openkit/threads/${threadId}/${runtime}`;
+  const captureRoot = `${runtimeRoot}/capture/${packageFixture.scope.turnId}`;
   const workSlot = `/workspace/worktrees/${agentSessionId}-${randomBytes(16).toString('hex')}`;
   const selector = { agentSessionId, agentSessionRuntimeBindingId: `binding-${runtime}` };
   const loopbacks = new Map();
@@ -89,7 +91,6 @@ for (const runtime of ['codex', 'pi', 'opencode', 'deepseek']) {
   const harness = new WorkerHarness({
     integration,
     rootDirectory: join(root, 'harness'),
-    nativeDataRootDirectory: nativeRoot,
     environment: { PATH: process.env.PATH, HOME: process.env.HOME },
   });
   let sequence = 0;
@@ -104,7 +105,10 @@ for (const runtime of ['codex', 'pi', 'opencode', 'deepseek']) {
     await mkdir(dirname(packagePath), { recursive: true });
     const aep = structuredClone(packageFixture);
     aep.scope.agentSessionId = agentSessionId;
-    aep.scope.threadId = `thread-${runtime}`;
+    aep.scope.threadId = threadId;
+    aep.control.transcript.root = captureRoot;
+    aep.control.transcript.eventsPath = join(captureRoot, 'events.jsonl');
+    aep.control.transcript.itemsPath = join(captureRoot, 'items.jsonl');
     aep.agent.runtimeKind = runtime;
     aep.agent.runtimeVersion = manifest[runtime].version;
     aep.control.adapter.targetRuntime = runtime;
@@ -117,26 +121,29 @@ for (const runtime of ['codex', 'pi', 'opencode', 'deepseek']) {
       capabilityLoopbackCredential: randomBytes(32).toString('base64url'),
       inferenceLoopbackCredential: randomBytes(32).toString('base64url'),
       effectiveSetupGeneration: 1, resume: null,
-      threadId: `thread-${runtime}`, workspaceId: 'image-smoke',
+      threadId, workspaceId: 'image-smoke',
     });
     assert.equal(opened.disposition, 'succeeded', `${runtime} shim dry run open: ${JSON.stringify(opened)}`);
     const inspected = await send('session.inspect', selector);
     assert.equal(inspected.disposition, 'succeeded', `${runtime} shim dry run inspect`);
     console.log(`${runtime} shim dry run open/inspect OK`);
+    assert.equal((await lstat(join(runtimeRoot, 'native'))).isDirectory(), true, `${runtime} retained native directory`);
+    await mkdir(captureRoot, { recursive: true });
+    const output = join(captureRoot, 'image-smoke.jsonl');
+    await writeFile(output, '{"imageSmoke":true}\n');
+    assert.equal(await readFile(output, 'utf8'), '{"imageSmoke":true}\n');
+    await rm(output);
+    console.log(`${runtime} retained capture read/write OK`);
   } finally {
     const closed = await send('session.close', selector);
     assert.equal(closed.disposition, 'succeeded', `${runtime} shim dry run close: ${JSON.stringify(closed)}`);
     assert.equal(loopbacks.size, 0);
     console.log(`${runtime} shim dry run close OK`);
     await rm(root, { recursive: true, force: true });
-    await rm(nativeRoot, { recursive: true, force: true });
+    await rm(runtimeRoot, { recursive: true, force: true });
     await rm(workSlot, { recursive: true, force: true });
   }
 }
-const output = '/openkit/session/image-smoke.jsonl';
-await writeFile(output, '{"imageSmoke":true}\n');
-assert.equal(await readFile(output, 'utf8'), '{"imageSmoke":true}\n');
-await rm(output);
 JS
 
 echo "OpenKit worker-runtimes image smoke OK"
