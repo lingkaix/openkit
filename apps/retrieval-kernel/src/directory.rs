@@ -32,12 +32,21 @@ impl Directory {
     /// Enumerate dotfiles and regular files without Git-ignore rules or symlink traversal.
     pub fn inventory(&self) -> Result<ScopeView> {
         let mut documents = Vec::new();
+        let mut unavailable_objects = 0;
         let root = File::open(&self.root).map_err(io_error)?;
-        self.visit(&root, Path::new(""), &mut documents, 0, &Budget::new())?;
+        self.visit(
+            &root,
+            Path::new(""),
+            &mut documents,
+            &mut unavailable_objects,
+            0,
+            &Budget::new(),
+        )?;
         documents.sort_by(|a, b| a.key.cmp(&b.key));
         Ok(ScopeView {
             scope: self.scope.clone(),
             documents,
+            unavailable_objects,
         })
     }
     /// Query one startup-bound scope and withhold files that changed during the operation.
@@ -104,6 +113,7 @@ impl Directory {
         directory: &File,
         relative_dir: &Path,
         documents: &mut Vec<Document>,
+        unavailable_objects: &mut usize,
         depth: usize,
         budget: &Budget,
     ) -> Result<()> {
@@ -114,12 +124,28 @@ impl Directory {
                 "directory depth budget exhausted",
             ));
         }
-        for name in names(directory)? {
+        let entries = match names(directory) {
+            Ok(entries) => entries,
+            Err(e) if e.code == "unavailable" || e.code == "io" => {
+                *unavailable_objects += 1;
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+        for name in entries {
             budget.check()?;
             let relative = relative_dir.join(&name);
             if self.root.join(&relative) == self.store {
                 continue;
             }
+            if documents.len() + *unavailable_objects >= DOCUMENT_LIMIT {
+                return Err(error(
+                    "resource-limited",
+                    "directory object budget exhausted",
+                ));
+            }
+            #[cfg(test)]
+            crate::tests::directory_boundary("stat", &self.root.join(&relative));
             let name_c = std::ffi::CString::new(name.as_bytes()).map_err(io_error)?;
             // SAFETY: fstatat receives a live parent descriptor, initialized storage, and a C name.
             let mut stat: libc::stat = unsafe { std::mem::zeroed() };
@@ -132,12 +158,15 @@ impl Directory {
                 )
             } < 0
             {
-                return Err(error("unavailable", "directory changed during enumeration"));
+                *unavailable_objects += 1;
+                continue;
             }
             let kind = stat.st_mode & libc::S_IFMT;
             if kind != libc::S_IFREG && kind != libc::S_IFDIR {
                 continue;
             }
+            #[cfg(test)]
+            crate::tests::directory_boundary("open", &self.root.join(&relative));
             // SAFETY: openat receives a held parent and a single component; symlinks are refused.
             let fd = unsafe {
                 libc::openat(
@@ -159,27 +188,21 @@ impl Directory {
                 crate::tests::access("directory-open", &relative.to_string_lossy());
             }
             if fd < 0 {
-                return Err(error(
-                    "unavailable",
-                    "directory inventory incomplete: source identity unavailable",
-                ));
-            }
-            let mut opened = if fd >= 0 {
-                Some(unsafe { File::from_raw_fd(fd) })
-            } else {
-                None
-            };
-            if kind == libc::S_IFDIR {
-                let directory = opened
-                    .ok_or_else(|| error("unavailable", "directory inventory unavailable"))?;
-                self.visit(&directory, &relative, documents, depth + 1, budget)?;
+                *unavailable_objects += 1;
                 continue;
             }
-            if documents.len() == DOCUMENT_LIMIT {
-                return Err(error(
-                    "resource-limited",
-                    "directory object budget exhausted",
-                ));
+            // SAFETY: this successful open transfers ownership of the descriptor to File.
+            let mut file = unsafe { File::from_raw_fd(fd) };
+            if kind == libc::S_IFDIR {
+                self.visit(
+                    &file,
+                    &relative,
+                    documents,
+                    unavailable_objects,
+                    depth + 1,
+                    budget,
+                )?;
+                continue;
             }
             let relative = relative
                 .to_str()
@@ -189,69 +212,66 @@ impl Directory {
                 .to_str()
                 .ok_or_else(|| error("invalid-request", "directory filename is not UTF-8"))?
                 .to_string();
-            let mut content = Content::Unavailable;
-            let mut hash = digest(b"");
-            let mut size = stat.st_size.max(0) as u64;
-            let mut revision_metadata = String::new();
-            if let Some(file) = &mut opened {
+            // No Document exists until canonical bytes and metadata have been verified.
+            let identity = (|| -> Result<_> {
                 let before = file.metadata().map_err(io_error)?;
                 if !before.is_file() {
-                    return Err(error(
-                        "unavailable",
-                        "directory changed before source identity verification",
-                    ));
+                    return Err(error("unavailable", "source type changed"));
                 }
-                if before.is_file() {
-                    let (value, length) = digest_reader(file, budget)?;
-                    hash = value;
-                    size = length;
-                    file.seek(SeekFrom::Start(0)).map_err(io_error)?;
-                    let mut binary = false;
-                    let mut chunks = Chunks::new(&mut *file);
-                    loop {
-                        match chunks.next(budget) {
-                            Ok(Some((_, text))) => {
-                                binary |= text.as_bytes().contains(&0);
-                            }
-                            Ok(None) => break,
-                            Err(e) if e.code == "failed" => {
-                                binary = true;
-                                break;
-                            }
-                            Err(e) => return Err(e),
+                let (hash, size) = digest_reader(&mut file, budget)?;
+                file.seek(SeekFrom::Start(0)).map_err(io_error)?;
+                let mut binary = false;
+                let mut chunks = Chunks::new(&mut file);
+                loop {
+                    match chunks.next(budget) {
+                        Ok(Some((_, text))) => binary |= text.as_bytes().contains(&0),
+                        Ok(None) => break,
+                        Err(e) if e.code == "failed" => {
+                            binary = true;
+                            break;
                         }
-                    }
-                    content = if binary {
-                        Content::Unreadable
-                    } else {
-                        Content::Text {
-                            path: relative.clone(),
-                            range: None,
-                        }
-                    };
-                    let after = file.metadata().map_err(io_error)?;
-                    revision_metadata = format!(
-                        "{}:{}:{}:{}:{}:{}:{}",
-                        before.dev(),
-                        before.ino(),
-                        before.len(),
-                        before.mtime(),
-                        before.mtime_nsec(),
-                        before.ctime(),
-                        before.ctime_nsec()
-                    );
-                    if before.ino() != after.ino()
-                        || before.dev() != after.dev()
-                        || before.len() != after.len()
-                        || before.mtime() != after.mtime()
-                        || before.mtime_nsec() != after.mtime_nsec()
-                        || before.ctime() != after.ctime()
-                        || before.ctime_nsec() != after.ctime_nsec()
-                    {
-                        content = Content::Unavailable;
+                        Err(e) => return Err(e),
                     }
                 }
-            }
+                let after = file.metadata().map_err(io_error)?;
+                if before.ino() != after.ino()
+                    || before.dev() != after.dev()
+                    || before.len() != after.len()
+                    || before.mtime() != after.mtime()
+                    || before.mtime_nsec() != after.mtime_nsec()
+                    || before.ctime() != after.ctime()
+                    || before.ctime_nsec() != after.ctime_nsec()
+                {
+                    return Err(error("unavailable", "source changed during verification"));
+                }
+                let revision_metadata = format!(
+                    "{}:{}:{}:{}:{}:{}:{}",
+                    before.dev(),
+                    before.ino(),
+                    before.len(),
+                    before.mtime(),
+                    before.mtime_nsec(),
+                    before.ctime(),
+                    before.ctime_nsec()
+                );
+                let content = if binary {
+                    Content::Unreadable
+                } else {
+                    Content::Text {
+                        path: relative.clone(),
+                        range: None,
+                    }
+                };
+                Ok((hash, size, revision_metadata, content))
+            })();
+            let (hash, size, revision_metadata, content) = match identity {
+                Ok(identity) => identity,
+                Err(e) if e.code == "io" || e.code == "unavailable" => {
+                    *unavailable_objects += 1;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
             let media_type = if matches!(content, Content::Text { .. }) {
                 "text/plain; charset=utf-8"
             } else {

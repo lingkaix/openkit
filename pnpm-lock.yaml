@@ -169,6 +169,8 @@ importers:
 
   apps/nanohost: {}
 
+  apps/retrieval-kernel: {}
+
   apps/web:
     dependencies:
       '@a2ui/react':

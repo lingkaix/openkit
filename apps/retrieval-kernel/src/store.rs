@@ -12,7 +12,7 @@ use tantivy::{Index, TantivyDocument};
 
 /// Output-changing machinery is part of every derived generation identity.
 pub(crate) fn machinery() -> String {
-    digest(format!("schema=2;word-filter=any-alnum;token-bytes=49152;sidecar=identity-markdown-v1;chunks={CHUNK_BYTES};score=max-bm25-title2-gram0.1;normalization=lowercase;grams=1-3;dictionary={DICTIONARY_SHA256};lock={}", digest(include_bytes!("../../../Cargo.lock"))).as_bytes())
+    digest(format!("schema=3;word-filter=any-alnum;token-bytes=49152;sidecar=identity-markdown-v1;chunks={CHUNK_BYTES};score=max-bm25-title2-gram0.1;normalization=lowercase;grams=1-3;dictionary={DICTIONARY_SHA256};lock={}", digest(include_bytes!("../../../Cargo.lock"))).as_bytes())
 }
 /// Identity-only phase-1 processor; changes require fresh representations.
 pub(crate) const PROCESSOR: &str = "identity-markdown-v1";
@@ -24,6 +24,7 @@ pub(crate) struct Manifest {
     pub nonce: u128,
     pub scope: String,
     pub documents: Vec<Record>,
+    pub unavailable_objects: usize,
 }
 /// Derived state for one canonical source revision.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -48,7 +49,7 @@ pub(crate) struct Pin {
     pub id: String,
     pub path: PathBuf,
     pub manifest: Manifest,
-    _lock: File,
+    _lock: LockFile,
 }
 
 /// Shared kernel owner. Source and derived storage roots are fixed at process startup.
@@ -85,12 +86,12 @@ impl Kernel {
             ));
         }
         let lock = lock_file(&path.join("LOCK"))?;
-        FileExt::lock_shared(&lock).map_err(io_error)?;
+        FileExt::lock_shared(&lock.0).map_err(io_error)?;
         let id = current(&path)?
             .ok_or_else(|| error("unavailable", "named scope has no committed generation"))?;
         let generation = path.join(&id);
         let reader = lock_file(&generation.join("READERS"))?;
-        FileExt::lock_shared(&reader).map_err(io_error)?;
+        FileExt::lock_shared(&reader.0).map_err(io_error)?;
         let manifest_bytes = bounded_read(&generation.join("manifest.json"), FRAME_BYTES)?;
         if digest(&manifest_bytes) != id {
             return Err(error(
@@ -109,6 +110,7 @@ impl Kernel {
         validate_view(
             &ScopeView {
                 scope: manifest.scope.clone(),
+                unavailable_objects: manifest.unavailable_objects,
                 documents: manifest
                     .documents
                     .iter()
@@ -180,7 +182,7 @@ impl Kernel {
         let scope_path = self.scope_path(&view.scope);
         private_dir(&scope_path)?;
         let writer_lock = lock_file(&scope_path.join("LOCK"))?;
-        FileExt::try_lock_exclusive(&writer_lock)
+        FileExt::try_lock_exclusive(&writer_lock.0)
             .map_err(|_| error("conflict", "scope writer already active"))?;
         let previous = current(&scope_path)?;
         if previous != expected {
@@ -211,11 +213,12 @@ impl Kernel {
             }
         }
         if let (Some(old), Some(id)) = (&old, &previous) {
-            let same = old
-                .documents
-                .iter()
-                .map(|r| r.document.clone())
-                .eq(view.documents.iter().map(Document::identity));
+            let same = old.unavailable_objects == view.unavailable_objects
+                && old
+                    .documents
+                    .iter()
+                    .map(|r| r.document.clone())
+                    .eq(view.documents.iter().map(Document::identity));
             let healthy = old.documents.iter().all(|r| {
                 matches!(
                     r.status,
@@ -236,7 +239,7 @@ impl Kernel {
                 })
             {
                 collect(&scope_path, id)?;
-                FileExt::unlock(&writer_lock).map_err(io_error)?;
+                FileExt::unlock(&writer_lock.0).map_err(io_error)?;
                 return Ok(id.clone());
             }
         }
@@ -478,6 +481,7 @@ impl Kernel {
                 .as_nanos(),
             scope: view.scope,
             documents: records,
+            unavailable_objects: view.unavailable_objects,
         };
         let bytes = serde_json::to_vec(&manifest).map_err(io_error)?;
         if bytes.len() > FRAME_BYTES {
@@ -522,7 +526,7 @@ impl Kernel {
         drop(stage);
         collect(&scope_path, &generation)?;
         // Release the completed writer explicitly; CLOEXEC descriptors can briefly survive another thread's fork.
-        FileExt::unlock(&writer_lock).map_err(io_error)?;
+        FileExt::unlock(&writer_lock.0).map_err(io_error)?;
         Ok(generation)
     }
     /// Remove unreferenced derived generations after readers release their pins.
@@ -530,7 +534,7 @@ impl Kernel {
         validate_scope(scope)?;
         let path = self.scope_path(scope);
         let lock = lock_file(&path.join("LOCK"))?;
-        if FileExt::try_lock_exclusive(&lock).is_ok()
+        if FileExt::try_lock_exclusive(&lock.0).is_ok()
             && let Some(id) = current(&path)?
         {
             collect(&path, &id)?;
@@ -640,7 +644,8 @@ pub(crate) fn validate_scope(scope: &str) -> Result<()> {
 /// Validate the admission boundary before any canonical access or index mutation.
 pub(crate) fn validate_view(view: &ScopeView, require_text: bool) -> Result<()> {
     validate_scope(&view.scope)?;
-    if view.documents.len() > DOCUMENT_LIMIT
+    if view.unavailable_objects > DOCUMENT_LIMIT
+        || view.documents.len() > DOCUMENT_LIMIT.saturating_sub(view.unavailable_objects)
         || serde_json::to_vec(view).map_err(io_error)?.len() > FRAME_BYTES
     {
         return Err(error("invalid-request", "scope inventory exceeds budget"));
@@ -795,7 +800,7 @@ fn private_dir(path: &Path) -> Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(io_error)
 }
 /// Lock files use kernel-managed names inside the derived root.
-fn lock_file(path: &Path) -> Result<File> {
+fn lock_file(path: &Path) -> Result<LockFile> {
     use std::os::unix::fs::OpenOptionsExt;
     OpenOptions::new()
         .read(true)
@@ -805,7 +810,16 @@ fn lock_file(path: &Path) -> Result<File> {
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)
+        .map(LockFile)
         .map_err(io_error)
+}
+/// Release locks before close, including on errors. Another thread's child may
+/// retain a copied descriptor until exec; close alone would keep the flock held.
+struct LockFile(File);
+impl Drop for LockFile {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.0);
+    }
 }
 /// Read the single atomically replaced durable pointer.
 fn current(path: &Path) -> Result<Option<String>> {
@@ -932,7 +946,7 @@ fn collect(path: &Path, current: &str) -> Result<()> {
             continue;
         }
         let lock = lock_file(&entry.path().join("READERS"))?;
-        if FileExt::try_lock_exclusive(&lock).is_ok() {
+        if FileExt::try_lock_exclusive(&lock.0).is_ok() {
             fs::remove_dir_all(entry.path()).map_err(io_error)?;
         }
     }

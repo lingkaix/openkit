@@ -6,7 +6,7 @@ use grep_matcher::Matcher;
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkMatch};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use tantivy::collector::TopDocs;
 use tantivy::query::{BooleanQuery, BoostQuery, Occur, Query as TantivyQuery, TermQuery};
 use tantivy::schema::{IndexRecordOption, Value};
@@ -47,7 +47,21 @@ impl Kernel {
             result
                 .generations
                 .insert(view.scope.clone(), pin.id.clone());
-            result.coverage.admitted_objects += pin.manifest.documents.len();
+            result.coverage.admitted_objects += (pin.manifest.documents.len()
+                + pin.manifest.unavailable_objects)
+                .max(view.documents.len() + view.unavailable_objects);
+            let unavailable = view
+                .unavailable_objects
+                .max(pin.manifest.unavailable_objects);
+            if unavailable > 0 {
+                result.coverage.inventory_complete = false;
+                result.coverage.stopped_work += unavailable;
+                *result
+                    .coverage
+                    .reasons
+                    .entry("source-unavailable".into())
+                    .or_default() += unavailable;
+            }
             let live: BTreeMap<_, _> = view.documents.iter().map(|d| (&d.key, d)).collect();
             let indexed: BTreeSet<_> = pin
                 .manifest
@@ -117,10 +131,11 @@ impl Kernel {
             } else {
                 for number in usable {
                     let record = &pin.manifest.documents[number];
-                    let mut file = self.representation(&pin, record, live[&record.document.key])?;
                     let mut local = vec![];
                     let mut occurrences = 0;
                     let scan = (|| -> Result<()> {
+                        let mut file =
+                            self.representation(&pin, record, live[&record.document.key])?;
                         for (unit_id, unit) in record.units.iter().enumerate() {
                             budget.check()?;
                             file.seek(SeekFrom::Start(unit.start)).map_err(io_error)?;
@@ -146,42 +161,43 @@ impl Kernel {
                                     budget,
                                     &mut emit,
                                 )?,
-                                Mode::Regex => {
-                                    let matcher = regex.as_ref().unwrap();
-                                    let mut sink = RegexSink {
-                                        matcher,
-                                        base: unit.start,
-                                        emit: &mut emit,
-                                        budget,
-                                    };
-                                    SearcherBuilder::new()
-                                        .bom_sniffing(false)
-                                        .heap_limit(Some(LINE_BYTES))
-                                        .build()
-                                        .search_reader(
-                                            matcher,
-                                            (&mut file).take(unit.end - unit.start),
-                                            &mut sink,
-                                        )
-                                        .map_err(|_| {
-                                            error(
-                                                "resource-limited",
-                                                "regex line or scan budget exhausted",
-                                            )
-                                        })?;
-                                }
+                                Mode::Regex => regex_lines(
+                                    (&mut file).take(unit.end - unit.start),
+                                    regex.as_ref().unwrap(),
+                                    unit.start,
+                                    budget,
+                                    &mut emit,
+                                )?,
                                 Mode::Lexical => unreachable!(),
                             }
                         }
-                        self.verify(&pin, record, live[&record.document.key], budget)
+                        Ok(())
                     })();
-                    match scan {
-                        Ok(()) => {
-                            scan_occurrences += occurrences;
-                            result.hits.extend(local);
-                            result.hits.sort_by(scan_order);
-                            result.hits.truncate(query.limit);
+                    // A scan stop does not invalidate evidence verified before the scan.
+                    // Repeat identity verification while the request budget permits; a detected
+                    // revision change or malformed current text discards hits. Other failures stay incomplete.
+                    let verification = match budget.check() {
+                        Ok(()) => self.verify(&pin, record, live[&record.document.key], budget),
+                        Err(e) => Err(e),
+                    };
+                    if !verification
+                        .as_ref()
+                        .is_err_and(|e| e.code == "stale" || e.code == "failed")
+                    {
+                        if occurrences > 0 {
+                            result.coverage.matching_documents += 1;
                         }
+                        scan_occurrences += occurrences;
+                        result.hits.extend(local);
+                        result.hits.sort_by(scan_order);
+                        result.hits.truncate(query.limit);
+                    }
+                    let outcome = match verification {
+                        Err(e) if e.code != "partial" && e.code != "resource-limited" => Err(e),
+                        verification => scan.and(verification),
+                    };
+                    match outcome {
+                        Ok(()) => {}
                         Err(e) => {
                             result.coverage.representations_complete = false;
                             result.coverage.stopped_work += 1;
@@ -220,7 +236,9 @@ impl Kernel {
         } else {
             result.hits.sort_by(scan_order);
             result.coverage.omitted_matches = scan_occurrences - result.hits.len();
-            result.coverage.matches_complete = result.coverage.omitted_matches == 0;
+            result.coverage.matches_complete = result.coverage.omitted_matches == 0
+                && result.coverage.inventory_complete
+                && result.coverage.representations_complete;
         }
         // Keep transport output bounded before serialization can allocate an oversized response.
         let mut output_bytes = 0;
@@ -674,7 +692,54 @@ fn literal(
     }
     Ok(())
 }
-/// The grep searcher owns bounded LF line acquisition; the matcher enumerates each occurrence.
+/// Feed one bounded line at a time so grep read-ahead cannot discard earlier lines
+/// when a later line exceeds its heap limit. LF is retained for grep's line semantics.
+fn regex_lines(
+    reader: impl Read,
+    matcher: &RegexMatcher,
+    mut base: u64,
+    budget: &Budget,
+    emit: &mut impl FnMut(u64, u64, &str),
+) -> Result<()> {
+    let mut reader = BufReader::with_capacity(CHUNK_BYTES, reader);
+    let mut line = Vec::with_capacity(LINE_BYTES + 1);
+    let mut searcher = SearcherBuilder::new()
+        .bom_sniffing(false)
+        .heap_limit(Some(LINE_BYTES))
+        .build();
+    loop {
+        budget.check()?;
+        let bytes = reader.fill_buf().map_err(io_error)?;
+        let ended = bytes.iter().position(|&b| b == b'\n');
+        let take = ended.map_or(bytes.len(), |n| n + 1);
+        let content_bytes = take - usize::from(ended.is_some());
+        if line.len() + content_bytes > LINE_BYTES {
+            return Err(error("resource-limited", "regex line budget exhausted"));
+        }
+        line.extend_from_slice(&bytes[..take]);
+        let eof = bytes.is_empty();
+        reader.consume(take);
+        if ended.is_some() || eof {
+            if !line.is_empty() {
+                let mut sink = RegexSink {
+                    matcher,
+                    base,
+                    emit,
+                    budget,
+                };
+                searcher
+                    .search_slice(matcher, &line, &mut sink)
+                    .map_err(|_| error("resource-limited", "regex scan budget exhausted"))?;
+                base += line.len() as u64;
+                line.clear();
+            }
+            if eof {
+                return Ok(());
+            }
+        }
+    }
+}
+/// The grep searcher reports matching lines; the matcher enumerates each occurrence.
 struct RegexSink<'a, F> {
     matcher: &'a RegexMatcher,
     base: u64,

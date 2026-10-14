@@ -60,6 +60,7 @@ impl Fixture {
         ScopeView {
             scope: scope.into(),
             documents,
+            unavailable_objects: 0,
         }
     }
     /// Query a fixed current inventory through the public kernel boundary.
@@ -156,7 +157,7 @@ fn title_preference_and_deterministic_ties() {
     assert_eq!(result, f.search(Mode::Lexical, "testing", vec![view], 20));
 }
 
-/// Poisoned unrequested generations and source paths must never be opened in any query mode.
+/// Healthy and poisoned unrequested scopes cannot affect public scores, coverage, or access.
 #[test]
 fn scope_isolation_before_open_and_scope_score_equality() {
     let f = Fixture::new();
@@ -170,7 +171,22 @@ fn scope_isolation_before_open_and_scope_score_equality() {
         "private",
         vec![f.text("private", "same term SECRET_PRIVATE")],
     );
-    let private_id = f.kernel.publish(private, None).unwrap();
+    let private_id = f.kernel.publish(private.clone(), None).unwrap();
+    let owner = f.search(Mode::Lexical, "term", vec![private], 20);
+    assert!(owner.complete && owner.hits.len() == 1);
+    for (mode, expected) in [Mode::Lexical, Mode::Exact, Mode::Regex]
+        .into_iter()
+        .zip(&before)
+    {
+        take_access();
+        let result = f.search(mode, "term", vec![public.clone()], 20);
+        assert_eq!(&result, expected);
+        assert!(
+            take_access()
+                .iter()
+                .all(|(_, identity)| identity == "public")
+        );
+    }
     fs::remove_dir_all(
         f.kernel
             .scope_path("private")
@@ -224,6 +240,138 @@ fn scope_isolation_before_open_and_scope_score_equality() {
         assert!(empty.complete && empty.hits.is_empty() && empty.generations.is_empty());
         assert!(take_access().is_empty());
     }
+}
+
+/// A file without a verified identity is coverage only; readable neighbors remain searchable.
+#[test]
+fn directory_unavailable_file_preserves_search_and_hides_identity() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    f.text("public", "needle");
+    f.text("SECRET_PRIVATE", "needle");
+    let directory = crate::directory::Directory::new(f.root.path(), f.store.path()).unwrap();
+    f.kernel
+        .publish(directory.inventory().unwrap(), None)
+        .unwrap();
+    fs::set_permissions(
+        f.root.path().join("SECRET_PRIVATE"),
+        fs::Permissions::from_mode(0o0),
+    )
+    .unwrap();
+    for mode in [Mode::Lexical, Mode::Exact, Mode::Regex] {
+        let result = directory
+            .search(&f.kernel, mode, "needle".into(), 20)
+            .unwrap();
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].key.id, "public");
+        assert_eq!(result.coverage.admitted_objects, 2);
+        assert!(!result.complete && !result.coverage.inventory_complete);
+        assert_eq!(result.coverage.reasons.get("source-unavailable"), Some(&1));
+        assert!(
+            !serde_json::to_string(&result)
+                .unwrap()
+                .contains("SECRET_PRIVATE")
+        );
+    }
+    let view = directory.inventory().unwrap();
+    assert_eq!(view.documents.len(), 1);
+    assert_eq!(view.unavailable_objects, 1);
+    assert!(
+        !serde_json::to_string(&view)
+            .unwrap()
+            .contains("SECRET_PRIVATE")
+    );
+    let prior = f.kernel.generation(directory.scope()).unwrap();
+    let id = f.kernel.publish(view.clone(), prior).unwrap();
+    let pin = f.kernel.pin(directory.scope()).unwrap();
+    assert_eq!(pin.manifest.unavailable_objects, 1);
+    assert_eq!(pin.manifest.documents.len(), 1);
+    drop(pin);
+    assert_eq!(f.kernel.publish(view, Some(id.clone())).unwrap(), id);
+    for mode in [Mode::Lexical, Mode::Exact, Mode::Regex] {
+        let result = directory
+            .search(&f.kernel, mode, "needle".into(), 20)
+            .unwrap();
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.coverage.admitted_objects, 2);
+        assert_eq!(result.coverage.reasons.get("source-unavailable"), Some(&1));
+        assert!(!result.complete && !result.coverage.inventory_complete);
+        assert!(
+            !serde_json::to_string(&result)
+                .unwrap()
+                .contains("SECRET_PRIVATE")
+        );
+    }
+    fs::set_permissions(
+        f.root.path().join("SECRET_PRIVATE"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let restored = directory.inventory().unwrap();
+    assert_eq!(restored.unavailable_objects, 0);
+    let restored_id = f.kernel.publish(restored, Some(id.clone())).unwrap();
+    assert_ne!(id, restored_id);
+    let result = directory
+        .search(&f.kernel, Mode::Exact, "needle".into(), 20)
+        .unwrap();
+    assert!(result.complete && result.hits.len() == 2);
+}
+
+/// Lexical matching admits either query term, including a source that has only one term.
+#[test]
+fn lexical_any_term_matching() {
+    let f = Fixture::new();
+    let view = f.view(
+        "scope",
+        vec![
+            f.text("first", "alpha"),
+            f.text("second", "beta"),
+            f.text("neither", "gamma"),
+        ],
+    );
+    f.kernel.publish(view.clone(), None).unwrap();
+    let result = f.search(Mode::Lexical, "alpha beta", vec![view], 20);
+    assert!(result.complete && result.coverage.enumeration_complete);
+    assert_eq!(result.coverage.matching_documents, 2);
+    assert_eq!(
+        result
+            .hits
+            .iter()
+            .map(|h| h.key.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["first", "second"]
+    );
+}
+
+/// A bounded line failure retains earlier canonical matches with explicit incomplete coverage.
+#[test]
+fn regex_scan_stop_preserves_prior_document_hits() {
+    let f = Fixture::new();
+    let view = f.view(
+        "scope",
+        vec![f.text(
+            "source",
+            &format!("needle\n{}\n", "x".repeat(LINE_BYTES + 1)),
+        )],
+    );
+    f.kernel.publish(view.clone(), None).unwrap();
+    let result = f.search(Mode::Regex, "needle", vec![view], 20);
+    assert_eq!(result.hits.len(), 1);
+    assert!(matches!(
+        result.hits[0].locator,
+        Locator::Text {
+            start: 0,
+            end: 6,
+            ..
+        }
+    ));
+    assert_eq!(result.coverage.matching_documents, 1);
+    assert_eq!(result.coverage.reasons.get("resource-limited"), Some(&1));
+    assert!(
+        !result.complete
+            && !result.coverage.representations_complete
+            && !result.coverage.matches_complete
+    );
 }
 
 /// Replacement publication and clean rebuild have identical live BM25 statistics and provenance.
@@ -1392,4 +1540,103 @@ fn engine_commit_payload_binds_the_scope_generation() {
             .unwrap()
             .contains("PRIVATE_MARKER")
     );
+}
+
+// A named filesystem race runs on this test's thread, immediately before the real syscall.
+thread_local! {
+    static DIRECTORY_FAULT: std::cell::RefCell<Option<(&'static str, std::path::PathBuf)>> = const { std::cell::RefCell::new(None) };
+}
+/// Remove one enumerated entry at the boundary; no mocked return value is used.
+pub(crate) fn directory_boundary(stage: &str, path: &Path) {
+    DIRECTORY_FAULT.with(|fault| {
+        let mut fault = fault.borrow_mut();
+        if fault
+            .as_ref()
+            .is_some_and(|(selected, target)| *selected == stage && target == path)
+        {
+            fs::remove_file(path).unwrap();
+            *fault = None;
+        }
+    });
+}
+/// Disappearance before stat or open is counted once without stopping the readable inventory.
+#[test]
+fn directory_stat_and_open_races_are_coverage_only() {
+    for stage in ["stat", "open"] {
+        let f = Fixture::new();
+        f.text("public", "needle");
+        f.text("SECRET_PRIVATE", "needle");
+        DIRECTORY_FAULT.with(|fault| {
+            *fault.borrow_mut() = Some((stage, f.root.path().join("SECRET_PRIVATE")))
+        });
+        let directory = crate::directory::Directory::new(f.root.path(), f.store.path()).unwrap();
+        let view = directory.inventory().unwrap();
+        assert_eq!(view.documents.len(), 1);
+        assert_eq!(view.documents[0].key.id, "public");
+        assert_eq!(view.unavailable_objects, 1);
+        assert!(
+            !serde_json::to_string(&view)
+                .unwrap()
+                .contains("SECRET_PRIVATE")
+        );
+        f.kernel.publish(view.clone(), None).unwrap();
+        let result = f.search(Mode::Exact, "needle", vec![view], 20);
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.coverage.admitted_objects, 2);
+        assert!(!result.complete);
+        assert_eq!(result.coverage.reasons.get("source-unavailable"), Some(&1));
+        assert!(
+            !serde_json::to_string(&result)
+                .unwrap()
+                .contains("SECRET_PRIVATE")
+        );
+    }
+}
+
+/// A failed publication releases its lock even while an unrelated child holds inherited descriptors.
+#[test]
+fn failed_publication_releases_inherited_writer_lock() {
+    let f = Fixture::new();
+    let view = f.view("scope", vec![f.text("source", "term")]);
+    let mut pipe = [0; 2];
+    // SAFETY: initialized descriptor storage; the child below uses only async-signal-safe calls.
+    assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
+    for fd in pipe {
+        assert_eq!(
+            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) },
+            0
+        );
+    }
+    let mut child = -1;
+    let failure =
+        f.kernel
+            .publish_inner(view.clone(), None, &Budget::new(), INDEX_BYTES, |stage| {
+                if stage == "prepare" {
+                    // The child keeps the inherited writer descriptor open until the parent retries.
+                    child = unsafe { libc::fork() };
+                    assert!(child >= 0);
+                    if child == 0 {
+                        unsafe {
+                            libc::close(pipe[1]);
+                            let mut byte = 0u8;
+                            libc::read(pipe[0], (&mut byte as *mut u8).cast(), 1);
+                            libc::_exit(0);
+                        }
+                    }
+                    return Err(error("io", "simulated publication stop"));
+                }
+                Ok(())
+            });
+    let retry = f.kernel.publish(view, None);
+    let mut status = 0;
+    unsafe {
+        let byte = 1u8;
+        libc::write(pipe[1], (&byte as *const u8).cast(), 1);
+        libc::close(pipe[0]);
+        libc::close(pipe[1]);
+        assert_eq!(libc::waitpid(child, &mut status, 0), child);
+    }
+    assert_eq!(status, 0);
+    assert_eq!(failure.unwrap_err().code, "io");
+    assert!(retry.is_ok(), "retry after failed publication: {retry:?}");
 }

@@ -219,6 +219,7 @@ fn filesystem_growth_failure_preserves_last_commit() {
     let store = TempDir::new().unwrap();
     let kernel = retrieval_kernel::Kernel::new(root.path(), store.path()).unwrap();
     let empty = retrieval_kernel::ScopeView {
+        unavailable_objects: 0,
         scope: "scope".into(),
         documents: vec![],
     };

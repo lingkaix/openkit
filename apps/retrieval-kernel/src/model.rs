@@ -75,13 +75,16 @@ pub struct ByteRange {
     pub end: u64,
 }
 
-/// One named scope with its current, complete caller-admitted inventory.
+/// One named scope with current caller-admitted identities and aggregate coverage gaps.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ScopeView {
     /// Opaque eligibility partition, never an authorization grant.
     pub scope: String,
     /// Current canonical revisions, including non-searchable objects.
     pub documents: Vec<Document>,
+    /// Observed unavailable entries with no verified digest; never searchable identities.
+    #[serde(default)]
+    pub unavailable_objects: usize,
 }
 
 /// Supported modes are a closed vocabulary.
