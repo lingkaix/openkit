@@ -125,7 +125,7 @@ async function main() {
         gid: 1000,
         uid: 1000,
         version: '1',
-        targets: [{ target: '/workspace' }],
+        targets: [{ target: '/workspace' }, { target: '/openkit/threads' }],
         workingDirectory: '/workspace',
       },
     });
@@ -223,7 +223,7 @@ async function main() {
           assert.equal(environmentPackage.scope.threadId, opened.body.threadId);
           harnessOperations.push(opened.operation);
           await settleHarness(h2, integrationBindingRef, opened, {
-            maxActiveTurns: 1,
+            maxActiveTurns: opened.body.maxActiveTurns,
             nativeHandleDigest: null,
             nativeHandleState: 'pending',
             state: 'open',
@@ -442,9 +442,10 @@ async function main() {
       'session.inspect',
       'session.close',
     ]);
+    const captureRelativeRoot = `${environmentPackage.scope.threadId}/codex/capture/${environmentPackage.scope.turnId}/`;
     assert.deepEqual(exports, [
-      { presence: 'required', relativePath: 'events.jsonl' },
-      { presence: 'required', relativePath: 'items.jsonl' },
+      { presence: 'required', relativePath: `${captureRelativeRoot}events.jsonl` },
+      { presence: 'required', relativePath: `${captureRelativeRoot}items.jsonl` },
     ]);
 
     const taskResponse = await taskPromise;
@@ -498,7 +499,11 @@ async function main() {
       distinctTokenCount,
       durable: await readDurableOutcome(dataRoot, task.turn.id),
       environmentPackagePresent: environmentPackage !== null,
-      exports,
+      // Exact admitted capture paths were checked above; adjudicate recorder-relative file names.
+      exports: exports.map((entry) => ({
+        ...entry,
+        relativePath: entry.relativePath.slice(captureRelativeRoot.length),
+      })),
       harnessOperations,
       imageReference: image.command.imageReference,
       importObserved: importCount >= 1,
