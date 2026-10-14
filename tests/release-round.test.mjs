@@ -3,7 +3,10 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { bundle, parameters } from './fixtures/release-round/synthetic.mjs';
+import {
+  bundle as originalBundle,
+  parameters as originalParameters,
+} from './fixtures/release-round/synthetic.mjs';
 import { classify, evaluate, summarize } from './support/release-round/evidence.mjs';
 import {
   defaults,
@@ -16,13 +19,34 @@ import {
 import {
   canonical,
   digest,
+  execute,
+  RUNTIMES,
   readJson,
+  replySentence,
   SCENARIOS,
   save,
   sha,
   validateParams,
 } from './support/release-round/safety.mjs';
 
+/** Prospective attempt inputs; the earlier fixture remains unchanged historical test data. */
+function parameters() {
+  return { ...originalParameters(), releaseTag: 'v0.1.0-rc.6' };
+}
+/** Rebind every retained A Item copy so D still observes byte-identical earlier history. */
+function bundle(p = parameters()) {
+  const b = originalBundle(p);
+  for (const runtime of RUNTIMES) {
+    const steps = b.runtimes[runtime].steps,
+      turnId = steps[0].turnId;
+    for (const step of steps)
+      for (const item of [...step.items, ...step.itemCoverage.items]) {
+        if (item.turnId === turnId && item.type === 'assistant-message')
+          item.text = replySentence(p, runtime);
+      }
+  }
+  return b;
+}
 async function temp(t) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'release-round-test-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
@@ -149,6 +173,11 @@ test('parameter validation admits round parameters without sequence', () => {
   delete p.sequence;
   assert.equal(validateParams(p), p);
 });
+test('historical parameters remain readable but cannot prove a missing published identity', () => {
+  const p = originalParameters();
+  assert.equal(validateParams(p), p);
+  assert(evaluate(originalBundle(p), p).rows.every((row) => row.mechanicalCode === 'I'));
+});
 test('prepare refuses a parameter file without appImage or without webIdentity', async (t) => {
   const parent = await temp(t);
   const exec = async () => ({ exitCode: 0, stdout: parameters().checklistBlob, stderr: '' });
@@ -164,60 +193,24 @@ test('prepare refuses a parameter file without appImage or without webIdentity',
     );
   }
 });
-test('prepare launches about:blank before any archive transfer or remote command', async (t) => {
+test('Worker-only prepare makes no browser or remote call', async (t) => {
   const parent = await temp(t),
     p = parameters(),
     input = path.join(parent, 'params.json'),
-    dir = path.join(parent, 'round'),
-    calls = [];
+    dir = path.join(parent, 'round');
   await save(input, p);
-  await assert.rejects(
-    prepare(input, dir, {
-      credential: 'synthetic-private-value',
-      exec: async (exe, args) => {
-        calls.push([exe, args[0]]);
-        if (exe === 'agent-browser')
-          return { exitCode: 1, stdout: 'launch-stdout', stderr: 'launch-stderr' };
-        if (exe === 'git' && args[0] === 'archive')
-          await fs.writeFile(args[2].slice('--output='.length), 'synthetic exact source');
-        return {
-          exitCode: 0,
-          stdout:
-            args[0] === 'show'
-              ? '## First-Release Scenario Set\nsynthetic'
-              : args[0] === 'diff'
-                ? ''
-                : p.checklistBlob,
-          stderr: '',
-        };
-      },
-      ssh: async (_exe, args, options) => {
-        calls.push(['ssh', 'remote']);
-        const source = 'synthetic exact source';
-        return {
-          exitCode: 0,
-          stdout:
-            args.at(-1) === 'cat /etc/machine-id'
-              ? p.deployment.machineId
-              : JSON.stringify(JSON.parse(options.input).remotePath ? { sha256: sha(source) } : {}),
-          stderr: '',
-        };
-      },
-    })
-  );
-  assert.equal(
-    calls.some(([exe, arg]) => exe === 'git' && arg === 'archive'),
-    false
-  );
-  assert.equal(
-    calls.some(([exe]) => exe === 'scp' || exe === 'ssh'),
-    false
-  );
-  const retained = await readJson(path.join(dir, 'browser-preflight.json'));
-  assert.deepEqual(retained.commands[0].arguments, ['open', 'about:blank']);
-  assert.equal(retained.commands[0].exitCode, 1);
-  assert.equal(retained.commands[0].stdout, 'launch-stdout');
-  assert.equal(retained.commands[0].stderr, 'launch-stderr');
+  await prepare(input, dir, {
+    credential: 'synthetic-private-value',
+    exec: async (exe, args) => {
+      assert.equal(exe, 'git');
+      return { exitCode: 0, stdout: args[0] === 'diff' ? '' : p.checklistBlob, stderr: '' };
+    },
+    ssh: async () => {
+      throw Error('No remote preparation expected');
+    },
+  });
+  await assert.rejects(fs.access(path.join(dir, 'browser-preflight.json')), /ENOENT/);
+  assert((await readJson(path.join(dir, 'prepare-complete.json'))).runnerSha256);
 });
 
 test('observe retains a non-inspection failure instead of marking only a timeout', async (t) => {
@@ -252,70 +245,6 @@ test('observe retains a non-inspection failure instead of marking only a timeout
   assert.match(result.stop.error, /Unexpected runtime Pending Request/);
 });
 
-for (const failed of ['open'])
-  test(`prepare refuses browser ${failed} failure and retains commands before closing`, async (t) => {
-    const parent = await temp(t),
-      p = parameters(),
-      input = path.join(parent, 'params.json'),
-      dir = path.join(parent, 'round'),
-      source = 'synthetic exact source',
-      commands = [];
-    await save(input, p);
-    await assert.rejects(
-      prepare(input, dir, {
-        credential: 'synthetic-private-value',
-        exec: async (exe, args, options) => {
-          if (exe === 'agent-browser') {
-            commands.push({ args, options });
-            return { exitCode: args[2] === failed ? 1 : 0, stdout: 'launch-stdout', stderr: '' };
-          }
-          assert.equal(exe, 'git');
-          if (args[0] === 'archive') await fs.writeFile(args[2].slice('--output='.length), source);
-          return {
-            exitCode: 0,
-            stdout:
-              args[0] === 'show'
-                ? '## First-Release Scenario Set\nsynthetic'
-                : args[0] === 'diff'
-                  ? ''
-                  : p.checklistBlob,
-            stderr: '',
-          };
-        },
-        ssh: async (_exe, args, options) => ({
-          exitCode: 0,
-          stdout:
-            args.at(-1) === 'cat /etc/machine-id'
-              ? p.deployment.machineId
-              : JSON.stringify(JSON.parse(options.input).remotePath ? { sha256: sha(source) } : {}),
-          stderr: '',
-        }),
-      }),
-      /Browser launch preflight failed/
-    );
-    const expected = [['open', 'about:blank']].slice(0, ['open'].indexOf(failed) + 1);
-    expected.push(['close']);
-    assert.deepEqual(
-      commands.map((v) => v.args),
-      expected.map((args) => ['--session', `preflight-${p.roundId}`, ...args])
-    );
-    const retained = await readJson(path.join(dir, 'browser-preflight.json'));
-    assert.deepEqual(
-      retained.commands.map((v) => v.arguments),
-      expected
-    );
-    assert.equal(retained.commands.at(-2).exitCode, 1);
-    assert.equal(retained.commands.at(-1).exitCode, 0);
-    for (const { args, options } of commands) {
-      assert.equal(options.timeout, args[2] === 'close' ? 20000 : p.bounds.processMs);
-      assert.equal(options.env.NODE_OPTIONS, undefined);
-      assert.equal(options.env.OPENKIT_NANOCORE_TOKEN, undefined);
-      assert.equal(options.env.RELEASE_ROUND_BRIDGE, undefined);
-      assert.equal(options.env.RELEASE_ROUND_TRANSPORT, undefined);
-    }
-    await assert.rejects(fs.access(path.join(dir, 'prepare-complete.json')), /ENOENT/);
-    await assert.rejects(fs.access(path.join(dir, 'round-start.json')), /ENOENT/);
-  });
 test('prepare refuses an existing directory before any effect', async (t) => {
   const dir = await temp(t),
     f = path.join(dir, 'input.json');
@@ -492,6 +421,9 @@ async function pinnedFixture(dir, p) {
   await save(path.join(dir, 'prepare.json'), {
     parameterSha256: sha(raw),
     runnerSha256: sha(canonical(entries)),
+    candidateCommit: p.candidateCommit,
+    checklistBlob: p.checklistBlob,
+    instrumentFiles: entries,
   });
 }
 test('Item completeness uses the actual operation shape and refuses a partial log', async (t) => {
@@ -574,13 +506,14 @@ test('round seals a lost submission and refuses replay before another effect', a
     },
   };
   await assert.rejects(round(dir, seams), InspectionRequired);
-  assert.equal(submissions, 1);
+  assert(submissions >= 1 && submissions <= 4);
+  const admitted = submissions;
   assert.equal(
     JSON.parse(await fs.readFile(path.join(dir, 'round-stop.json'), 'utf8')).status,
     'inspection-required'
   );
   await assert.rejects(round(dir, seams), /EEXIST/);
-  assert.equal(submissions, 1);
+  assert.equal(submissions, admitted);
 });
 
 test('an ok envelope without mutation identity is ambiguous and never retried', async (t) => {
@@ -740,4 +673,141 @@ test('Fix 2 6 environment failure is incomplete', () => {
   ]);
   assert.equal(result.counts.incomplete, 1);
   assert.equal(result.complete, false);
+});
+
+for (const [name, reply] of [
+  ['wrong', 'incorrect'],
+  ['stale', 'OpenKit connectivity check previous pi'],
+  ['empty', ''],
+  ['refusal', 'I cannot comply with that request.'],
+])
+  test(`A rejects ${name} completed reply`, () => {
+    const p = parameters(),
+      b = bundle(p),
+      step = b.runtimes.pi.steps[0];
+    step.itemCoverage.items[0].text = reply;
+    assert.equal(evaluate(b, p).rows.find((r) => r.scenario === 'pi.A').mechanicalCode, 'N');
+  });
+test('summarize generates sixteen public per-case rows with exact identities', async (t) => {
+  const dir = await temp(t);
+  await summaryFixture(dir, parameters());
+  const s = await summarize(dir);
+  assert.equal(s.publicRows.length, 16);
+  assert(s.publicRows.every((r) => r.publishedIdentity === 'v0.1.0-rc.6' && r.verdict === 'P'));
+  const text = await fs.readFile(path.join(dir, 'cases.md'), 'utf8');
+  assert.equal(text.trim().split('\n').length, 18);
+  assert(!text.includes('thread-example'));
+});
+
+test('four runtime groups overlap while A to D remain sequential in each Thread', async (t) => {
+  const dir = await temp(t),
+    p = parameters(),
+    b = bundle(p);
+  await pinnedFixture(dir, p);
+  const prep = await readJson(path.join(dir, 'prepare.json'));
+  await save(path.join(dir, 'prepare-complete.json'), { runnerSha256: prep.runnerSha256 });
+  await save(path.join(dir, 'component-attribution.json'), b.components);
+  const positions = new Map(),
+    order = new Map(),
+    first = new Set();
+  let admitFour;
+  const gate = new Promise((resolve) => {
+    admitFour = resolve;
+  });
+  const envelope = (data) => ({
+    exitCode: 0,
+    stdout: JSON.stringify({ ok: true, data }),
+    stderr: '',
+  });
+  const runtimeFor = (tid) => RUNTIMES.find((r) => b.runtimes[r].threadId === tid);
+  const seams = {
+    credential: 'synthetic-private-value',
+    now: () => '2026-01-01T00:30:00Z',
+    ssh: async (_exe, args) => ({
+      exitCode: 0,
+      stdout:
+        args.at(-1) === 'cat /etc/machine-id'
+          ? p.deployment.machineId
+          : JSON.stringify({
+              proxy: { exitCode: 0, stdout: '', stderr: '' },
+              app: { exitCode: 0, stdout: '', stderr: '' },
+              running: true,
+            }),
+      stderr: '',
+    }),
+    exec: async () => ({
+      exitCode: 0,
+      stdout: `HTTP/2 200\n\n${JSON.stringify(p.issue)}`,
+      stderr: '',
+    }),
+    cli: async (_exe, args, options) => {
+      const op = args[2],
+        input = JSON.parse(options.input);
+      if (op === 'catalog.mcp-list') return envelope(b.binding.data);
+      if (op === 'nanohost.runtime-target') return envelope({ ready: true });
+      if (op === 'thread.create') {
+        const r = RUNTIMES.find((r) => input.name.endsWith(`runtime ${r}`));
+        positions.set(r, -1);
+        order.set(r, []);
+        return envelope({ id: b.runtimes[r].threadId });
+      }
+      const r = runtimeFor(input.threadId),
+        index = positions.get(r),
+        group = b.runtimes[r],
+        step = group?.steps[index];
+      if (op === 'turn.start') {
+        const next = index + 1;
+        positions.set(r, next);
+        order.get(r).push(['A', 'B', 'C', 'D'][next]);
+        if (next === 0) {
+          first.add(r);
+          if (first.size === 4) admitFour();
+          await gate;
+        }
+        return envelope({ id: group.steps[next].turnId });
+      }
+      if (op === 'thread.dashboard')
+        return envelope({
+          turns: step ? [step.turn] : [],
+          artifacts: step?.dashboard.artifacts ?? [],
+          pendingRequests: [],
+          workStatus: { activeTurnStatus: 'idle' },
+        });
+      if (op === 'turn.read') return envelope(step.turn);
+      if (op === 'thread.items') return envelope(step.itemCoverage);
+      if (op === 'artifact.read') {
+        const art = RUNTIMES.flatMap((r) => b.runtimes[r].steps[3].artifactReads).find(
+          (v) => v.data.id === input.artifactId
+        );
+        return envelope(art.data);
+      }
+      throw Error(`Unexpected ${op}`);
+    },
+  };
+  await round(dir, seams);
+  assert.equal(first.size, 4);
+  for (const runtime of RUNTIMES) assert.deepEqual(order.get(runtime), ['A', 'B', 'C', 'D']);
+  const recorded = await readJson(path.join(dir, 'round.json'));
+  const evaluated = evaluate(recorded, p);
+  assert.equal(
+    evaluated.rows.filter((r) => r.mechanicalCode === 'P').length,
+    16,
+    JSON.stringify(evaluated)
+  );
+});
+
+test('qualification CLI returns nonzero for a completed wrong reply', async (t) => {
+  const dir = await temp(t),
+    p = parameters(),
+    b = bundle(p);
+  b.runtimes.pi.steps[0].itemCoverage.items[0].text = 'wrong reply';
+  await summaryFixture(dir, p, b);
+  const r = await execute(process.execPath, [
+    path.resolve('tests/support/release-round.mjs'),
+    'summarize',
+    '--evidence-dir',
+    dir,
+  ]);
+  assert.equal(r.exitCode, 1);
+  assert.equal(JSON.parse(r.stdout).status, 'unclassified');
 });

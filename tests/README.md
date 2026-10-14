@@ -55,20 +55,20 @@ Use one private JSON parameter file and a new private evidence directory; author
 
 ```bash
 node tests/support/release-round.mjs --help
-node tests/support/release-round.mjs prepare --params /example/private/params.json --evidence-dir /example/private/round
-node tests/support/release-round.mjs round --evidence-dir /example/private/round
+node tests/support/release-round.mjs prepare --target example-host --params /example/private/params.json --evidence-dir /example/private/round
+node tests/support/release-round.mjs round --target example-host --evidence-dir /example/private/round
 node tests/support/release-round.mjs summarize --evidence-dir /example/private/round --adjudications /example/private/checks.json
 ```
 
-`prepare` refuses an existing evidence directory. It pins the instrument, the parameters, and the candidate checklist blob. It opens `about:blank` and closes that session before any remote command. A failed launch refuses preparation. `browser-preflight.json` retains each command's arguments, exit code, stdout, and stderr, including a spawn error. It then records changed Worker input paths and unchanged NanoHost attribution.
+`prepare` refuses an existing evidence directory. It pins the instrument, the parameters, and the candidate checklist blob. Worker-only preparation launches no browser because no qualification case uses a deciding browser observation. It records changed Worker input paths and unchanged NanoHost attribution. Live preparation requires the published `releaseTag`; offline historical summaries may report its absence as unavailable.
 
-`round` requires completed preparation and admits one writer. The runner does not build an image or replace a container. It runs each runtime's A–D rows and the four runtime groups one after another, then telemetry and cleanup.
+`round` requires completed preparation and admits one writer. On completion it automatically generates the offline summary and per-case rows. `round` and `summarize` return nonzero unless all sixteen rows pass. The runner does not build an image or replace a container. It runs each runtime's A–D rows and the four runtime groups concurrently within admitted capacity, then telemetry and cleanup.
 
-`round` runs for tens of minutes and must be launched as a process that survives the operator's shell call, in its own session, for example with Python `subprocess.Popen(..., start_new_session=True)` or `setsid`. Supply standard input from the null device, append output to a private process log such as `/example/private/round-process.log`, use the same environment used for the browser preflight, and record the round process's exit status in that log.
+`round` can outlive the operator's shell call and must be launched as a process that survives the operator's shell call, in its own session, for example with Python `subprocess.Popen(..., start_new_session=True)` or `setsid`. Supply standard input from the null device, append output to a private process log such as `/example/private/round-process.log`, use the declared protected operator environment, and record the round process's exit status in that log.
 
 A failed or refused independent scenario does not authorize a retry or stop unrelated scenarios; an unknown mutation outcome seals the entire round for inspection, and the start receipt refuses a second invocation.
 
-All parameter keys below are required, objects are closed, and unknown keys, secret-shaped content, arbitrary commands and alternate endpoint paths are refused; the synthetic fixture in `fixtures/release-round/synthetic.mjs` shows the complete shape using `staging.example.invalid` and invented values.
+All original parameter keys below are required; the additive `releaseTag` is required for new live preparations. Objects are closed, and unknown keys, secret-shaped content, arbitrary commands and alternate endpoint paths are refused; the synthetic fixture in `fixtures/release-round/synthetic.mjs` shows the complete shape using `staging.example.invalid` and invented values.
 
 | Group | Required fields |
 | --- | --- |
@@ -106,9 +106,9 @@ An independent checker supplies a JSON array of `{ "scenario": "pi.A", "code": "
 
 An adjudication for a mechanical `P`, a duplicate adjudication, or promotion of missing evidence to an observed failure is refused. A missing adjudication leaves the round unclassified. Final `I` and `T` rows leave the round incomplete.
 
-`summary.json` retains complete private classifications, evidence references, transport coverage and Worker failures by distinct failed Turn; `row.md` contains exactly seven columns with neutral receipt/check aliases and the SHA-256 of `manifest.json`.
+`summary.json` retains complete private classifications, evidence references, transport coverage and Worker failures by distinct failed Turn; `cases.md` contains sixteen per-case public rows; `summary.json.publicRows` supplies the bounded notes projection. `row.md` retains the aggregate seven-column diagnostic projection with neutral receipt/check aliases and the SHA-256 of `manifest.json`.
 
-The manifest hashes every retained source evidence file and the checker inputs, excluding the derived `summary.json`, `row.md` and `manifest.json` to avoid recursive hashes; preserve the private bundle in the existing access-controlled custody before temporary files expire.
+The manifest hashes every retained source evidence file and the checker inputs, excluding the derived `summary.json`, `row.md`, `cases.md`, and `manifest.json` to avoid recursive hashes; preserve the private bundle in the existing access-controlled custody before temporary files expire.
 
 Client, proxy, App, external MCP and sampled health observations remain separate; missing diagnostic coverage is `unavailable`, not a covered zero, and sshd diagnostic lines do not count as product resets.
 
@@ -122,3 +122,19 @@ node scripts/validate-test-governance.mjs
 The root `lint` task runs workspace package lint tasks and does not cover this root test directory; run scoped `biome check` over the entry point, three helpers, fixture and test file using the repository's pinned Biome version.
 
 These stand-ins prove instrument behavior and record mapping. An independent reviewer must inspect the actual driver, effect boundaries, and outputs before its admitted commit and digest decide a counted live round.
+
+## Release Cadence Checks
+
+`pnpm test:ci` executes overlapping Vitest suites once with coverage and TAP skip enforcement, retains native/catalog suites, and runs root tests and the existing generated-Skill check. Before substitution, `node scripts/release-tests.mjs --inventory-only` compares actual collected file/case inventories with and without coverage. Collection failure or missing cases fails closed. Offline regressions inject command failure and undeclared skips into the same guard. This command builds required dependencies and performs no release effects.
+
+`release-publication-check.mjs` consumes a private current observation snapshot, not a producer verdict. Its grant and baseline bind the exact asset-set and publication-input SHA-256 values. It checks exact-P review/main membership, successful run/jobs, reconciled blocker triage, unused or admitted immutable-retry identities, a bounded validity window, and prerelease/Latest flags. It never tags or publishes.
+
+`release-notes.mjs --manifest-output` uses existing image records and portable checksums. The `assertions` JSON contains exact `sourceCommit`, `appDigest`, `previousAppImageId`, true `migrationFree`, `configurationCompatible`, and `retainedDataCompatible`, `recovery: "previous-image-compatible"`, and nonempty reviewed `provenance`. Unknown authority-bearing assertions refuse. `previousAppImageId` is the actual Docker image ID, while `appDigest` is the published OCI index digest; they are not interchangeable. Use `--compare-manifest FILE` with the same generation inputs to verify downloaded bytes against the publication facts. The manifest does not replace host assessment. `--draft-input` generates the existing two-section reviewed input from nonempty `changes` and `knownIssues` arrays. `--header` and `--qualification-summary` extend notes with existing compact evidence; post-publication closeout stays in the private release record.
+
+`release-update-app.mjs` exposes the App procedure for offline composition tests. Its CLI requires explicit target, private params, and new evidence directory, then refuses until the pending Phase 2 live identity adapter and owner alignment are supplied. Tests prove idle refusal, pinned receipt identity, single submission, honest unknown results, exact component identity, and selected retained Workspace reads. It neither implements NanoHost replacement nor grants Worker activation approval.
+
+Run the focused offline checks:
+
+```bash
+node --test tests/release-publication-check.test.mjs tests/release-manifest.test.mjs tests/release-tests.test.mjs tests/release-update-app.test.mjs tests/release-round.test.mjs tests/release-notes.test.mjs
+```

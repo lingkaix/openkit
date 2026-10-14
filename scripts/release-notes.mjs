@@ -3,9 +3,213 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+const SHA256 = /^sha256:[a-f0-9]{64}$/u;
+/** Generate the narrow release asset from existing image JSON, checksums and reviewed assessments. */
+export function createReleaseManifest({ repository, tag, sha, images, checksums, assertions }) {
+  const fail = (message) => {
+    throw Error(`Release Management: manifest refused: ${message}`);
+  };
+  if (
+    !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/u.test(repository ?? '') ||
+    !/^v\d+\.\d+\.\d+-[a-z0-9.]+$/u.test(tag ?? '') ||
+    !/^[a-f0-9]{40}$/u.test(sha ?? '')
+  )
+    fail('source identity');
+  if (!Array.isArray(images) || images.length === 0) fail('image records');
+  const ids = new Set();
+  const projected = images
+    .map((record) => {
+      if (
+        !record ||
+        !/^[a-z0-9-]+$/u.test(record.id ?? '') ||
+        ids.has(record.id) ||
+        !/^ghcr\.io\/[a-z0-9._/-]+$/u.test(record.image ?? '') ||
+        !SHA256.test(record.digest ?? '') ||
+        record.prerelease !== true ||
+        !Array.isArray(record.tags) ||
+        ![tag, tag.slice(1), `sha-${sha.slice(0, 12)}`].every((t) =>
+          record.tags.some((v) => v === t || v === `${record.image}:${t}`)
+        )
+      )
+        fail('image/source binding');
+      ids.add(record.id);
+      if (
+        !Array.isArray(record.platforms) ||
+        record.platforms.length !== 2 ||
+        !['linux/amd64', 'linux/arm64'].every(
+          (p) =>
+            record.platforms.filter((v) => v.platform === p && SHA256.test(v.digest ?? ''))
+              .length === 1
+        )
+      )
+        fail('platform identity');
+      return {
+        id: record.id,
+        image: record.image,
+        digest: record.digest,
+        platforms: record.platforms
+          .map(({ platform, digest }) => ({ platform, digest }))
+          .sort((a, b) => a.platform.localeCompare(b.platform)),
+      };
+    })
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const releasedIds = JSON.parse(
+    readFileSync(new URL('../containers/images.json', import.meta.url), 'utf8')
+  )
+    .images.filter((i) => i.release)
+    .map((i) => i.id);
+  if (ids.size !== releasedIds.length || !releasedIds.every((id) => ids.has(id)))
+    fail('complete catalog image set');
+  const expected = [
+    `openkit-ops-skill-${tag}.tar.gz`,
+    ...['amd64', 'arm64'].map((a) => `openkit-nanohost-${tag}-linux-${a}.tar.gz`),
+  ];
+  if (typeof checksums !== 'string') fail('portable checksums');
+  const assets = checksums
+    .trim()
+    .split('\n')
+    .map((line) => {
+      const match = /^([a-f0-9]{64}) {2}([a-zA-Z0-9._-]+)$/u.exec(line);
+      if (!match || !expected.includes(match[2])) fail('portable checksum entry');
+      return { name: match[2], sha256: match[1] };
+    });
+  if (
+    assets.length !== expected.length ||
+    !expected.every((n) => assets.filter((a) => a.name === n).length === 1)
+  )
+    fail('complete unique portable asset set');
+  const app = projected.find((i) => i.id === 'app');
+  if (
+    !assertions ||
+    assertions.sourceCommit !== sha ||
+    assertions.appDigest !== app.digest ||
+    !SHA256.test(assertions.previousAppImageId ?? '') ||
+    assertions.migrationFree !== true ||
+    assertions.configurationCompatible !== true ||
+    assertions.retainedDataCompatible !== true ||
+    assertions.recovery !== 'previous-image-compatible' ||
+    typeof assertions.provenance !== 'string' ||
+    !assertions.provenance.trim()
+  )
+    fail('explicit bound compatibility/recovery assertions');
+  if (
+    Object.keys(assertions).some(
+      (k) =>
+        ![
+          'sourceCommit',
+          'appDigest',
+          'previousAppImageId',
+          'migrationFree',
+          'configurationCompatible',
+          'retainedDataCompatible',
+          'recovery',
+          'provenance',
+        ].includes(k)
+    )
+  )
+    fail('unknown authority-bearing assertion');
+  return {
+    schemaVersion: 1,
+    repository,
+    tag,
+    sourceCommit: sha,
+    images: projected,
+    assets: assets.sort((a, b) => a.name.localeCompare(b.name)),
+    assertions,
+  };
+}
+
 const CHANGES_HEADING = 'Changes since the previous candidate';
 const KNOWN_ISSUES_HEADING = 'Known issues';
 const REQUIRED_HEADINGS = [CHANGES_HEADING, KNOWN_ISSUES_HEADING];
+
+/** Produce the reviewable two-section draft from accepted changes and carried-forward issues. */
+export function draftReleaseNotes({ changes, knownIssues }) {
+  const section = (entries, name) => {
+    if (
+      !Array.isArray(entries) ||
+      !entries.length ||
+      entries.some((v) => typeof v !== 'string' || !v.trim() || /[\r\n]/u.test(v))
+    )
+      throw Error(`Release notes draft requires ${name}`);
+    return entries.map((v) => `- ${v}`).join('\n');
+  };
+  return `## ${CHANGES_HEADING}\n\n${section(changes, 'accepted changes')}\n\n## ${KNOWN_ISSUES_HEADING}\n\n${section(knownIssues, 'known-issue dispositions')}\n`;
+}
+
+/** Project only bounded public header fields and kit-generated rows into the existing release notes. */
+export function compactReleaseRecord({ tag, sha, header, qualification }) {
+  if (
+    !header ||
+    !/^[a-z0-9-]+$/u.test(header.authorizationReference ?? '') ||
+    header.sourceCommit !== sha ||
+    header.tag !== tag ||
+    !Number.isSafeInteger(header.candidateRunId) ||
+    header.candidateRunId < 1 ||
+    !['public', 'private'].includes(header.visibility) ||
+    !Array.isArray(header.stages)
+  )
+    throw Error('Release Management: incomplete compact release header');
+  const lines = [
+    '## Compact Release Record',
+    '',
+    `- Publication authority: \`${header.authorizationReference}\``,
+    `- Exact-P candidate run: \`${header.candidateRunId}\``,
+    `- Publication visibility: \`${header.visibility}\``,
+    '',
+    '| Stage | Result | UTC window |',
+    '| --- | --- | --- |',
+  ];
+  for (const stage of header.stages) {
+    if (
+      !['candidate', 'publication', 'app', 'nanohost', 'worker', 'qualification'].includes(
+        stage.name
+      ) ||
+      !['passed', 'failed', 'unknown', 'not-run'].includes(stage.result) ||
+      !Number.isFinite(Date.parse(stage.start)) ||
+      !Number.isFinite(Date.parse(stage.end)) ||
+      Date.parse(stage.end) < Date.parse(stage.start)
+    )
+      throw Error('Release Management: invalid release stage observation');
+    lines.push(
+      `| ${stage.name} | ${stage.result} | ${new Date(stage.start).toISOString()}/${new Date(stage.end).toISOString()} |`
+    );
+  }
+  if (qualification) {
+    if (
+      !Array.isArray(qualification.publicRows) ||
+      qualification.publicRows.length !== 16 ||
+      new Set(qualification.publicRows.map((r) => r.subject)).size !== 16
+    )
+      throw Error('Release Management: incomplete qualification projection');
+    lines.push(
+      '',
+      '| Case | Published identity | Result / classification | Exact component identities | UTC window | Evidence |',
+      '| --- | --- | --- | --- | --- | --- |'
+    );
+    for (const row of qualification.publicRows) {
+      if (
+        !/^(codex|pi|opencode|deepseek)\.[A-D]$/u.test(row.subject) ||
+        row.publishedIdentity !== tag ||
+        row.sourceCommit !== sha ||
+        !['P', 'K', 'E', 'N', 'T', 'I', 'unclassified'].includes(row.verdict) ||
+        !Number.isFinite(Date.parse(row.start)) ||
+        !Number.isFinite(Date.parse(row.end)) ||
+        Date.parse(row.end) < Date.parse(row.start) ||
+        !/^[a-z0-9-]+$/u.test(row.evidenceAlias) ||
+        !SHA256.test(row.evidenceDigest ?? '') ||
+        !['app', 'web', 'nanoHost', 'worker', 'configuration'].every((k) =>
+          SHA256.test(row.identities?.[k] ?? '')
+        )
+      )
+        throw Error('Release Management: invalid public qualification row');
+      lines.push(
+        `| ${row.subject} | ${tag}; ${sha} | ${row.verdict}; ${{ P: 'pass', K: 'known defect', E: 'accepted external', N: 'new defect', T: 'environment or tool failure', I: 'inconclusive', unclassified: 'undecidable' }[row.verdict]} | ${['app', 'web', 'nanoHost', 'worker', 'configuration'].map((k) => `${k}=${row.identities[k]}`).join('; ')} | ${new Date(row.start).toISOString()}/${new Date(row.end).toISOString()} | ${row.evidenceAlias}; ${row.evidenceDigest} |`
+      );
+    }
+  }
+  return lines.join('\n');
+}
 
 /**
  * Resolves the committed notes input for one tag.
@@ -236,6 +440,17 @@ export function createReleaseNotes(input) {
     '- The linux/amd64 and linux/arm64 NanoHost archives are installable, but supported Worker Agent execution is not yet release-ready.',
     '',
     sections,
+    ...(input.header
+      ? [
+          '',
+          compactReleaseRecord({
+            tag: input.tag,
+            sha: input.sha,
+            header: input.header,
+            qualification: input.qualification,
+          }),
+        ]
+      : []),
     '',
   ].join('\n')}`;
 }
@@ -281,6 +496,33 @@ function main() {
     console.log(`Release notes input passed for ${tag}.`);
     return;
   }
+  if (args['draft-input']) {
+    if (!args.output) throw Error('Release notes output path is required.');
+    writeFileSync(
+      String(args.output),
+      draftReleaseNotes(JSON.parse(readFileSync(String(args['draft-input']), 'utf8')))
+    );
+    return;
+  }
+  if (args['manifest-output'] || args['compare-manifest']) {
+    const images = readdirSync(String(args.records))
+      .filter((n) => n.endsWith('.json'))
+      .map((n) => JSON.parse(readFileSync(join(String(args.records), n), 'utf8')));
+    const manifest = createReleaseManifest({
+      repository: String(args.repository ?? ''),
+      tag,
+      sha: String(args.sha ?? ''),
+      images,
+      checksums: readFileSync(String(args['checksum-file']), 'utf8'),
+      assertions: JSON.parse(readFileSync(String(args.assertions), 'utf8')),
+    });
+    const bytes = `${JSON.stringify(manifest, null, 2)}\n`;
+    if (args['compare-manifest']) {
+      if (readFileSync(String(args['compare-manifest']), 'utf8') !== bytes)
+        throw Error('Downloaded release manifest differs from the generated publication facts.');
+    } else writeFileSync(String(args['manifest-output']), bytes);
+    return;
+  }
   const notes = createReleaseNotes({
     checksum: String(args.checksum ?? ''),
     recordsDir: String(args.records ?? ''),
@@ -289,6 +531,10 @@ function main() {
     sha: String(args.sha ?? ''),
     tag,
     visibility: String(args.visibility ?? ''),
+    header: args.header ? JSON.parse(readFileSync(String(args.header), 'utf8')) : undefined,
+    qualification: args['qualification-summary']
+      ? JSON.parse(readFileSync(String(args['qualification-summary']), 'utf8'))
+      : undefined,
   });
   const compareBody = args['compare-body'];
   if (typeof compareBody === 'string') {

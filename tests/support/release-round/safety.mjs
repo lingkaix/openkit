@@ -5,9 +5,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
 
-/** Fixed sequential runtime order from the frozen first-release checklist. */
+/** Fixed runtime matrix membership from the frozen first-release checklist. */
 export const RUNTIMES = ['codex', 'pi', 'opencode', 'deepseek'];
 /** The exact denominator; every qualification row is traversed even when its observation is absent. */
+/** Benign public sentence binds case A to this attempt and runtime without changing file fixtures. */
+export const replySentence = (p, runtime) => `OpenKit connectivity check ${p.roundId} ${runtime}`;
+/** The exact qualification denominator. */
 export const SCENARIOS = RUNTIMES.flatMap((r) => ['A', 'B', 'C', 'D'].map((s) => `${r}.${s}`));
 /** Hex SHA-256 identity for retained bytes and manifests. */
 export const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -92,7 +95,7 @@ function absolute(value, name) {
 /** Declare qualification inputs; refuse commands, verdicts and secrets. */
 export function validateParams(p) {
   object(
-    p,
+    Object.fromEntries(Object.entries(p).filter(([key]) => key !== 'releaseTag')),
     [
       'roundId',
       'candidateCommit',
@@ -111,6 +114,7 @@ export function validateParams(p) {
     ],
     'params'
   );
+  if (p.releaseTag !== undefined) text(p.releaseTag, 'releaseTag', /^v0\.1\.0-rc\.[1-9][0-9]*$/);
   noSecrets(p);
   text(p.roundId, 'roundId', /^[a-z0-9][a-z0-9-]{0,62}$/);
   text(p.candidateCommit, 'candidateCommit', /^[a-f0-9]{40}$/);
@@ -155,6 +159,7 @@ export function validateParams(p) {
   );
   const d = p.deployment;
   text(d.sshAlias, 'sshAlias', /^[a-z][a-z0-9-]{0,62}$/);
+  if (d.sshAlias === 'a2') throw Error('Production a2 is excluded from release automation');
   text(d.machineId, 'machineId', /^[a-f0-9]{32}$/);
   for (const k of ['container', 'imageRepository', 'diagnosticUnit'])
     text(d[k], k, /^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/);

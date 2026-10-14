@@ -7,6 +7,7 @@ import {
   files,
   RUNTIMES,
   readJson,
+  replySentence,
   SCENARIOS,
   save,
   sha,
@@ -79,7 +80,11 @@ export function runtimeRows(r, issue, p, runtime, refs, binding) {
     );
     const replies = assistant(items).map((i) => i.text);
     if (letter === 'A')
-      c.test('exact declared marker reply', coverage, replies.includes(cfg.marker));
+      c.test(
+        'exact attempt-specific synthetic sentence reply',
+        coverage,
+        replies.length === 1 && replies[0] === replySentence(p, runtime)
+      );
     if (letter === 'B') {
       c.test(
         'independent issue identity',
@@ -212,6 +217,7 @@ function validArtifact(a, title, body, tid, turnId) {
 /** Every fixed scenario traverses its predicates; attribution failures cannot become passes. */
 export function evaluate(bundle, p) {
   const global = [];
+  if (!p.releaseTag) global.push('published prerelease identity unavailable');
   const a = bundle.attribution;
   if (
     !a ||
@@ -337,7 +343,7 @@ export async function summarize(dir, { adjudicationsFile } = {}) {
   const p = validateParams(await readJson(path.join(dir, 'params.json'))),
     bundle = await readJson(path.join(dir, 'round.json')),
     refs = (await files(dir)).filter(
-      (f) => !['summary.json', 'row.md', 'manifest.json'].includes(f)
+      (f) => !['summary.json', 'row.md', 'cases.md', 'manifest.json'].includes(f)
     ),
     prep = await readJson(path.join(dir, 'prepare.json'));
   if (prep.parameterSha256 !== sha(await fs.readFile(path.join(dir, 'params.json'))))
@@ -388,7 +394,6 @@ export async function summarize(dir, { adjudicationsFile } = {}) {
     manifestSha256,
     evidenceAlias: p.evidenceAlias,
   };
-  await save(path.join(dir, 'summary.json'), result, [], false);
   const counts = summary.counts,
     dispositions = summary.rows
       .filter((r) => r.adjudication)
@@ -405,6 +410,61 @@ export async function summarize(dir, { adjudicationsFile } = {}) {
     dispositions.join('; ') || 'none',
     `${p.evidenceAlias}; manifest=sha256:${manifestSha256}; instrument=${bundle.attribution?.runnerSha256}; non-pass checks=${summary.classified ? 'complete' : 'pending'}; telemetry/cleanup=summary`,
   ];
+  result.publicRows = summary.rows.map((r) => {
+    const [runtime, letter] = r.scenario.split('.');
+    const step = bundle.runtimes?.[runtime]?.steps?.find((s) => s.scenario === letter);
+    return {
+      subject: r.scenario,
+      publishedIdentity: p.releaseTag ?? 'unavailable',
+      sourceCommit: p.candidateCommit,
+      identities: {
+        app: identity(p.deployment.appImage),
+        web: identity(p.deployment.webIdentity),
+        nanoHost: identity(p.deployment.nanoHostDigest),
+        worker: identity(bundle.components?.worker?.digest ?? p.deployment.workerDigest),
+        configuration: identity(p.deployment.configurationDigest),
+      },
+      start: utc(step?.windowStart ?? step?.turn?.startedAt ?? bundle.attribution?.start),
+      end: utc(step?.windowEnd ?? step?.turn?.completedAt ?? bundle.attribution?.end),
+      verdict: r.code ?? 'unclassified',
+      classification:
+        {
+          P: 'pass',
+          K: 'known defect',
+          E: 'accepted external',
+          N: 'new defect',
+          T: 'environment or tool failure',
+          I: 'inconclusive',
+        }[r.code] ?? 'undecidable',
+      evidenceAlias: p.evidenceAlias,
+      evidenceDigest: `sha256:${manifestSha256}`,
+      independentCheck:
+        r.mechanicalCode === 'P' ? 'not required' : r.adjudication ? 'complete' : 'pending',
+    };
+  });
+  await save(path.join(dir, 'summary.json'), result, [], false);
+  await fs.writeFile(
+    path.join(dir, 'cases.md'),
+    `| Case | Published identity / source | Deployment identities | UTC window | Verdict / classification | Evidence | Independent check |\n| --- | --- | --- | --- | --- | --- | --- |\n${result.publicRows
+      .map(
+        (r) =>
+          `| ${[
+            r.subject,
+            `${r.publishedIdentity}; ${r.sourceCommit}`,
+            Object.entries(r.identities)
+              .map(([k, v]) => `${k}=${v}`)
+              .join('; '),
+            `${r.start}/${r.end}`,
+            `${r.verdict}; ${r.classification}`,
+            `${r.evidenceAlias}; ${r.evidenceDigest}`,
+            r.independentCheck,
+          ]
+            .map(cell)
+            .join(' | ')} |`
+      )
+      .join('\n')}\n`,
+    { mode: 0o600 }
+  );
   await fs.writeFile(
     path.join(dir, 'row.md'),
     `| Round | Tested candidate / frozen set | Deployment identity / window | Per-scenario outcomes | Counts | New defects / other dispositions | Retained evidence / non-pass checks |\n| --- | --- | --- | --- | --- | --- | --- |\n| ${columns.map(cell).join(' | ')} |\n`,

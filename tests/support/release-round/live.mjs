@@ -14,6 +14,7 @@ import {
   RUNTIMES,
   readJson,
   redact,
+  replySentence,
   save,
   scan,
   sha,
@@ -148,11 +149,12 @@ def run(a):
 def inspect(name):return json.loads(run(['docker','inspect',name]))[0]
 `;
 
-/** Pin source and instrument identities, then prove the browser can launch. */
+/** Pin exact published source and instrument identities for Worker-only qualification. */
 export async function prepare(paramsFile, dir, seams = {}) {
   const io = { ...defaults, ...seams },
     raw = await fs.readFile(paramsFile),
     p = validateParams(JSON.parse(raw));
+  if (!p.releaseTag) throw Error('Published releaseTag required for live qualification');
   for (const key of ['configurationDigest', 'nanoHostDigest', 'workerDigest'])
     if (!/^sha256:[a-f0-9]{64}$/.test(p.deployment[key]))
       throw Error(`Exact ${key} required for live preparation`);
@@ -175,16 +177,6 @@ export async function prepare(paramsFile, dir, seams = {}) {
   };
   await save(path.join(dir, 'prepare.json'), receipt);
   const secret = seams.credential ?? (await credential(p.cli.credentialFile));
-  const rendered = { commands: [] };
-  let launchError;
-  try {
-    await browserLaunch(p, io, rendered.commands, `preflight-${p.roundId}`);
-  } catch (error) {
-    launchError = error;
-  } finally {
-    await save(path.join(dir, 'browser-preflight.json'), rendered, [secret]);
-  }
-  if (launchError) throw launchError;
   const components = {};
   for (const component of ['nanoHost', 'worker']) {
     const changed = await git(io, [
@@ -245,6 +237,8 @@ export class RoundClient {
   }
   /** Retain each bounded read failure; an uncertain mutation stops all dependent execution. */
   async call(op, input, mutation = false) {
+    if (this.halted)
+      throw new InspectionRequired('Round sealed; inspect uncertain mutation before further calls');
     noSecrets(input);
     if (input.workspaceId && input.workspaceId !== this.p.workspaceId)
       throw Error('Only the declared Workspace addressable');
@@ -257,7 +251,12 @@ export class RoundClient {
     const name = `${op.replaceAll('.', '-')}-${mutation ? sha(input.requestId ?? canonical(input)) : randomUUID()}`,
       directory = path.join(this.dir, 'calls');
     const invoke = async () => {
+      if (this.halted) throw new InspectionRequired('Round sealed; no further effects admitted');
       await guard(this.p, this.dir, this.io);
+      if (this.halted)
+        throw new InspectionRequired(
+          'Round sealed during identity guard; no further call admitted'
+        );
       const at = this.io.now();
       const env = {
         ...cleanEnvironment(),
@@ -311,6 +310,7 @@ export class RoundClient {
       try {
         return await once(directory, name, input, invoke, this.secrets);
       } catch (e) {
+        this.halted = true;
         if (e instanceof InspectionRequired) throw e;
         throw new InspectionRequired(
           `Mutation ${op} receipt refused or incomplete; inspect without resubmission`,
@@ -435,7 +435,7 @@ async function create(client, name) {
   return r.data.id;
 }
 
-/** Each group owns one directory and one fresh Thread, ready for future caller-level concurrency. */
+/** Each group owns one directory and one fresh Thread, for independent concurrent execution. */
 export async function runtimeGroup(client, runtime) {
   const p = client.p,
     cfg = p.runtimes[runtime],
@@ -453,7 +453,7 @@ export async function runtimeGroup(client, runtime) {
     return record;
   }
   const prompts = {
-    A: `Reply with exactly ${cfg.marker} and nothing else.`,
+    A: `Repeat this public, synthetic test sentence once, without quotation marks: ${replySentence(p, runtime)}`,
     B: `Using only the github MCP tools, read issue ${p.issue.number} of ${p.issue.repository} and reply with its exact title and state. Do not modify anything.`,
     C: `Write exactly the UTF-8 text ${cfg.marker} with no trailing newline to ${cfg.filename} in your admitted default output root, and the same bytes to notes/${cfg.filename} in the retained Workspace. Read both files back. Submit the actual default-output file with work_submit_artifact using its canonical absolute path, kind file, media type text/plain and title ${cfg.filename}. Report the filename, bytes and returned Artifact id. Remember the marker.`,
     D: `State the marker from conversation memory. Read notes/${cfg.filename} from the retained Workspace without rewriting or recreating it. Copy its existing bytes to ${cfg.filename} in this Turn's default output root and submit that actual file using work_submit_artifact, canonical absolute path, kind file, media type text/plain, title ${cfg.filename}, and a new submission request id. Report the marker, filename and returned Artifact id. If the file is absent report the failure; never recreate it.`,
@@ -531,44 +531,6 @@ async function github(p, dir, io, label, route) {
     hasNextPage: /^link:.*rel="next"/im.test(headers),
   };
   return { receipt, data: r.exitCode === 0 ? JSON.parse(body) : null };
-}
-
-async function browserCommand(p, io, commands, session, args) {
-  try {
-    const r = await io.exec('agent-browser', ['--session', session, ...args], {
-      timeout: args[0] === 'close' ? 20000 : p.bounds.processMs,
-      env: cleanEnvironment(),
-    });
-    commands.push({ arguments: args, ...r });
-    return r;
-  } catch (error) {
-    commands.push({
-      arguments: args,
-      exitCode: null,
-      stdout: '',
-      stderr: error instanceof Error ? error.message : String(error),
-    });
-    throw error;
-  }
-}
-
-/** Prove the local browser can open a blank page, then close the session. */
-async function browserLaunch(p, io, commands, session) {
-  let launchError;
-  try {
-    const opened = await browserCommand(p, io, commands, session, ['open', 'about:blank']);
-    if (opened.exitCode !== 0) launchError = Error('Browser launch preflight failed');
-  } catch (error) {
-    launchError = error;
-  }
-  try {
-    const closed = await browserCommand(p, io, commands, session, ['close']);
-    if (!launchError && closed.exitCode !== 0)
-      launchError = Error('Browser launch preflight failed');
-  } catch (error) {
-    if (!launchError) launchError = error;
-  }
-  if (launchError) throw launchError;
 }
 
 const diagnosticsSource =
@@ -657,20 +619,11 @@ export async function round(dir, seams = {}) {
       },
     };
   const persist = () => save(path.join(dir, 'round.json'), bundle, [secret], false);
-  const independent = async (name, effect) => {
-    try {
-      await effect();
-    } catch (e) {
-      if (e instanceof InspectionRequired) throw e;
-      bundle[name] ??= {};
-      bundle[name].observationFailure = { error: String(e), at: io.now() };
-    }
-    await persist();
-  };
   try {
     bundle.binding = await client.call('catalog.mcp-list', { workspaceId: p.workspaceId });
-    for (const runtime of RUNTIMES) {
-      await independent('runtimes', async () => {
+    // Settle all already admitted groups before closing attribution, even after a lost mutation.
+    const groups = await Promise.allSettled(
+      RUNTIMES.map(async (runtime) => {
         const issue = await github(
           p,
           dir,
@@ -684,8 +637,19 @@ export async function round(dir, seams = {}) {
           receipt: issue.receipt,
         };
         bundle.runtimes[runtime] = await runtimeGroup(client, runtime);
-      });
-    }
+      })
+    );
+    await persist();
+    const unknown = groups.find(
+      (r) => r.status === 'rejected' && r.reason instanceof InspectionRequired
+    );
+    if (unknown) throw unknown.reason;
+    for (const [index, result] of groups.entries())
+      if (result.status === 'rejected') {
+        bundle.runtimes[RUNTIMES[index]] = {
+          observationFailure: { error: String(result.reason), at: io.now() },
+        };
+      }
     const diagnosticEnd = io.now();
     let diagnostic;
     try {

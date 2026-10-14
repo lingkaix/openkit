@@ -3,7 +3,7 @@ status: Accepted
 implementation: Implemented
 kind: process
 date: "2026-09-09"
-updated: "2026-10-13"
+updated: "2026-10-14"
 ---
 # Persistent Deployment Acceptance
 
@@ -56,6 +56,12 @@ The existing deployment resource owner remains responsible for concurrent work. 
 
 Cold or destructive proofs explicitly select their own isolated fixture. Reusing a persistent instance cannot prove fresh-install behavior, interruption recovery or absence of interference on a host it did not observe. Those tests continue under their owning specifications; ordinary live acceptance does not invoke their teardown.
 
+## Release Update And Qualification Projection
+
+[Release Management](20260829-release_management.md#bounded-test-deployment-update) owns the separate standing deployment and Provider-workload grant. Supply one explicit authorized target with no default. Preserve separate App, NanoHost, Worker, and qualification results and exact component identities. Public reads of selected retained Workspace records establish content continuity separately from authentication metadata. Unknown effects require inspection without replay. Each update ends prior attribution windows; each qualification starts a fresh pinned window.
+
+The maintained kit runs sixteen Worker cases after each deployment update, with concurrent runtime groups and sequential A to D within each Thread. A Worker-only preparation has no browser prerequisite. Non-pass and undecidable rows require independent checks. This mechanical qualification supplies no L6 actor or judge verdict.
+
 ## Test Scope And Default Placement
 
 These modes primarily host L6 Stories and Agent task/benchmark suites representing real user goals and full product flows. They are the default for ordinary L6 execution, not a new home for all L1-L5 checks and not a requirement that the Actor run inside the product. A story selects a dedicated environment only for an explicit condition the persistent deployment cannot witness. The existing L6 admission and repeated-run rules remain applicable; one successful Task proves that execution seam, not automatic admission of a new story.
@@ -104,4 +110,4 @@ Existing public operations, Task/Goal execution and evidence producers remain th
 
 On that same deployment, a later exact-commit App/Web update completes through the public packaged Skill, and an actual Web-directed Worker Task completes with a meaningful CONTRIBUTING-only diff Artifact. Independent exact-base patch/whitespace verification passes; the existing Web action resolves its durable Workspace Sync Review as rejected without applying the test change. The independent external verification report is imported through the existing Artifact interface and visible in the Task. Retained runtime evidence reconciles all seven Gateway calls in that Worker Turn. This proves the bounded composition, not a new internal judge service, a benchmark comparison, release publication, merge, destructive recovery or every Provider's Worker path. Other roadmap plans retain their individual acceptance obligations.
 
-The exact-commit update above is historical evidence for the formerly supported product update mode. It does not establish acceptance of the current release-only update helper. The release gate uses catalog story 2 and the built-in update tools. A persistent deployment updates only to a published release. No supported exact-source update procedure exists. [The update-mode removal decision](../decisions/20261010-remove_app_update_exact_commit.md) records why the helper is release-only. [Retire The Exact-Source Update Procedure](../decisions/20261013-retire_exact_source_update.md) records this retirement.
+The exact-commit update above is historical evidence for the formerly supported product update mode. It does not establish acceptance of the current release-only update helper. The release flow uses the bounded automatic deployment procedure and built-in update tools under [Release Management](20260829-release_management.md#bounded-test-deployment-update). Catalog stories 1 and 2 run at cycle/change cadence; story 2 remains required on the prerelease selected for stable promotion. A persistent deployment updates only to a published release. No supported exact-source update procedure exists. [The update-mode removal decision](../decisions/20261010-remove_app_update_exact_commit.md) records why the helper is release-only. [Retire The Exact-Source Update Procedure](../decisions/20261013-retire_exact_source_update.md) records this retirement.

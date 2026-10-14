@@ -108,7 +108,7 @@ The current catalog has ten stories. Only the engineer may add, remove, or repla
 9. The operator reviews diagnostics and health. Diagnostics do not reveal a raw secret. Public health, the Web entry, authenticated diagnostics, and the runtime-target read show readiness.
 10. Restart or update during work has an accounted outcome and no duplicate protected effect. The restart or the update is a perturbation. The actor does not receive that procedure. A claim that no replacement worker is ever created is not a predicate.
 
-Deploy readiness checks are post-conditions of stories 2 and 9. They are not a story. The four-runtime matrix is Worker qualification. [Release Management](20260829-release_management.md) owns when that qualification runs. It is not a story. Story files come in a later package.
+Deployment readiness checks remain post-conditions of stories 2 and 9; they are not catalog stories. The four-runtime matrix is Worker qualification, not a story. [Release Management](20260829-release_management.md#catalog-stories) owns catalog and qualification cadence. Automated updates and qualification supply no L6 verdict; independent Actor and Judge rules remain binding. Story files come in a later package.
 
 ## Story Artifact Contract
 
