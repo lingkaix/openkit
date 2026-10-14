@@ -95,6 +95,7 @@ fn document(id: &str, bytes: &[u8], content: Content) -> Document {
         title: "unrelated".into(),
         media_type: "application/octet-stream".into(),
         content,
+        text_ranges: None,
         language: None,
         metadata: BTreeMap::new(),
         locator: None,
@@ -155,6 +156,203 @@ fn title_preference_and_deterministic_ties() {
     assert_eq!(result.hits[2].key.id, "b");
     assert_eq!(result.hits[1].score, result.hits[2].score);
     assert_eq!(result, f.search(Mode::Lexical, "testing", vec![view], 20));
+}
+
+/// Adapters select searchable canonical ranges without changing full-unit identity or offsets.
+#[test]
+fn declared_text_ranges_confine_all_text_search() {
+    let f = Fixture::new();
+    let text =
+        "governancehidden カナ\nbodymarker 测试\ndescriptiontoken\ntagtoken\ncrossleftcrossright\n";
+    let range = |value: &str| {
+        let start = text.find(value).unwrap() as u64;
+        ByteRange {
+            start,
+            end: start + value.len() as u64,
+        }
+    };
+    let body = range("bodymarker 测试");
+    let description = range("descriptiontoken");
+    let tag = range("tagtoken");
+    let cross_left = range("crossleft");
+    let cross_right = range("crossright");
+    assert_eq!(cross_left.end, cross_right.start);
+    let mut selected = document(
+        "selected",
+        text.as_bytes(),
+        Content::InlineText {
+            text: Some(text.into()),
+        },
+    );
+    selected.text_ranges = Some(vec![
+        body.clone(),
+        description.clone(),
+        tag.clone(),
+        cross_left,
+        cross_right,
+    ]);
+    selected.title = "preferredtitle".into();
+    let wire = serde_json::to_value(&selected).unwrap();
+    assert_eq!(
+        serde_json::from_value::<Document>(wire)
+            .unwrap()
+            .text_ranges,
+        selected.text_ranges
+    );
+    let mut title_only = document(
+        "title-only",
+        b"governancehidden",
+        Content::InlineText {
+            text: Some("governancehidden".into()),
+        },
+    );
+    title_only.text_ranges = Some(vec![]);
+    title_only.title = "bodymarker bodymarker".into();
+    let view = f.view("ranges", vec![selected.clone(), title_only]);
+    let generation = f.kernel.publish(view.clone(), None).unwrap();
+
+    let pin = f.kernel.pin("ranges").unwrap();
+    assert_eq!(pin.manifest.documents[0].language, "zh");
+    assert_eq!(
+        pin.manifest.documents[0].document.text_ranges,
+        selected.text_ranges
+    );
+    drop(pin);
+    for (mode, query) in [
+        (Mode::Lexical, "governancehidden"),
+        (Mode::Exact, "governancehidden"),
+        (Mode::Regex, "governancehidden"),
+        (Mode::Exact, "crossleftcrossright"),
+    ] {
+        let result = f.search(mode, query, vec![view.clone()], 20);
+        assert!(result.complete);
+        assert!(result.hits.is_empty(), "{mode:?}: {query}");
+    }
+    for query in [
+        "测试",
+        "descriptiontoken",
+        "tagtoken",
+        "crossleft",
+        "crossright",
+    ] {
+        let result = f.search(Mode::Lexical, query, vec![view.clone()], 20);
+        assert!(result.hits.iter().any(|hit| hit.key.id == "selected"));
+    }
+    let exact = f.search(Mode::Exact, "bodymarker", vec![view.clone()], 20);
+    assert!(matches!(
+        exact.hits[0].locator,
+        Locator::Text { start, end, .. }
+            if start == body.start && end == body.start + "bodymarker".len() as u64
+    ));
+    for mode in [Mode::Exact, Mode::Regex] {
+        let admitted = f.search(mode, "descriptiontoken", vec![view.clone()], 20);
+        assert_eq!(admitted.hits.len(), 1);
+        assert!(matches!(
+            admitted.hits[0].locator,
+            Locator::Text { start, .. } if start == description.start
+        ));
+    }
+    let title = f.search(Mode::Lexical, "bodymarker", vec![view.clone()], 20);
+    assert_eq!(title.hits[0].key.id, "title-only");
+
+    let mut stale = view.clone();
+    stale.documents[0].text_ranges = Some(vec![body.clone()]);
+    let stale_result = f.search(Mode::Exact, "descriptiontoken", vec![stale], 20);
+    assert!(!stale_result.complete);
+    assert!(stale_result.hits.is_empty());
+    let mut changed_ranges = view.clone();
+    changed_ranges.documents[0].text_ranges = Some(vec![body.clone()]);
+    assert_eq!(
+        f.kernel
+            .publish(changed_ranges, Some(generation))
+            .unwrap_err()
+            .code,
+        "conflict"
+    );
+
+    let mut wrong_digest = selected;
+    wrong_digest.digest = digest("bodymarker 测试".as_bytes());
+    wrong_digest.revision = "wrong-digest".into();
+    let error = f
+        .kernel
+        .publish(f.view("wrong-digest", vec![wrong_digest]), None)
+        .unwrap_err();
+    assert_eq!(error.code, "conflict");
+}
+
+/// Search ranges are a bounded, sorted direct-text contract and never apply to sidecars.
+#[test]
+fn invalid_text_ranges_fail_admission() {
+    let f = Fixture::new();
+    let base = f.text("ranges", "0123456789");
+    for ranges in [
+        vec![
+            ByteRange { start: 2, end: 6 },
+            ByteRange { start: 5, end: 8 },
+        ],
+        vec![ByteRange { start: 4, end: 4 }],
+        vec![ByteRange { start: 0, end: 11 }],
+    ] {
+        let mut invalid = base.clone();
+        invalid.text_ranges = Some(ranges);
+        assert_eq!(
+            f.kernel
+                .publish(f.view("invalid", vec![invalid]), None)
+                .unwrap_err()
+                .code,
+            "invalid-request"
+        );
+    }
+    let mut too_many = base.clone();
+    too_many.text_ranges = Some(
+        (0..257)
+            .map(|index| ByteRange {
+                start: index,
+                end: index + 1,
+            })
+            .collect(),
+    );
+    too_many.size = 257;
+    assert_eq!(
+        f.kernel
+            .publish(f.view("too-many", vec![too_many]), None)
+            .unwrap_err()
+            .code,
+        "invalid-request"
+    );
+    let mut unreadable = document("binary", b"binary", Content::Unreadable);
+    unreadable.text_ranges = Some(vec![]);
+    assert_eq!(
+        f.kernel
+            .publish(f.view("unreadable-ranges", vec![unreadable]), None)
+            .unwrap_err()
+            .code,
+        "invalid-request"
+    );
+    let mut unavailable = document("missing", b"missing", Content::Unavailable);
+    unavailable.text_ranges = Some(vec![]);
+    assert_eq!(
+        f.kernel
+            .publish(f.view("unavailable-ranges", vec![unavailable]), None)
+            .unwrap_err()
+            .code,
+        "invalid-request"
+    );
+    let mut split_utf8 = document(
+        "split-utf8",
+        "测试".as_bytes(),
+        Content::InlineText {
+            text: Some("测试".into()),
+        },
+    );
+    split_utf8.text_ranges = Some(vec![ByteRange { start: 1, end: 2 }]);
+    assert_eq!(
+        f.kernel
+            .publish(f.view("split-utf8", vec![split_utf8]), None)
+            .unwrap_err()
+            .code,
+        "invalid-request"
+    );
 }
 
 /// Healthy and poisoned unrequested scopes cannot affect public scores, coverage, or access.

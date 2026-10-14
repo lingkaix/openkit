@@ -12,7 +12,7 @@ use tantivy::{Index, TantivyDocument};
 
 /// Output-changing machinery is part of every derived generation identity.
 pub(crate) fn machinery() -> String {
-    digest(format!("schema=3;word-filter=any-alnum;token-bytes=49152;sidecar=identity-markdown-v1;chunks={CHUNK_BYTES};score=max-bm25-title2-gram0.1;normalization=lowercase;grams=1-3;dictionary={DICTIONARY_SHA256};lock={}", digest(include_bytes!("../../../Cargo.lock"))).as_bytes())
+    digest(format!("schema=4;text-ranges=disjoint-v1;word-filter=any-alnum;token-bytes=49152;sidecar=identity-markdown-v1;chunks={CHUNK_BYTES};score=max-bm25-title2-gram0.1;normalization=lowercase;grams=1-3;dictionary={DICTIONARY_SHA256};lock={}", digest(include_bytes!("../../../Cargo.lock"))).as_bytes())
 }
 /// Identity-only phase-1 processor; changes require fresh representations.
 pub(crate) const PROCESSOR: &str = "identity-markdown-v1";
@@ -37,7 +37,7 @@ pub(crate) struct Record {
     pub units: Vec<Unit>,
 }
 /// A searchable unit preserves metadata boundaries; text has one canonical unit.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Unit {
     pub field: Option<String>,
     pub start: u64,
@@ -127,7 +127,7 @@ impl Kernel {
                 record.document.size
             };
             if !["zh", "ja", "unicode"].contains(&record.language.as_str())
-                || record.units.len() > 72
+                || record.units.len() > 256
                 || record
                     .units
                     .iter()
@@ -135,6 +135,12 @@ impl Kernel {
                 || record.sidecar.as_ref().is_some_and(|p| {
                     *p != cache_path(&record.document, &record.representation_digest)
                 })
+                || (record.sidecar.is_none()
+                    && matches!(
+                        record.document.content,
+                        Content::Text { .. } | Content::InlineText { .. }
+                    )
+                    && record.units != text_units(&record.document))
             {
                 return Err(error(
                     "unavailable",
@@ -285,11 +291,7 @@ impl Kernel {
                 String::new()
             };
             let units = if direct {
-                vec![Unit {
-                    field: None,
-                    start: 0,
-                    end: document.size,
-                }]
+                text_units(&document)
             } else {
                 vec![]
             };
@@ -307,7 +309,7 @@ impl Kernel {
                     Content::Text { path, range } => {
                         let mut source =
                             TextFile::new(open_source(&self.source, path)?, range.as_ref())?;
-                        let (hash, size, lang) = inspect(&mut source, budget)?;
+                        let (hash, size, _) = inspect(&mut source, budget)?;
                         if hash != record.document.digest || size != record.document.size {
                             return Err(error(
                                 "conflict",
@@ -315,17 +317,14 @@ impl Kernel {
                             ));
                         }
                         record.representation_digest = hash;
-                        record.units = vec![Unit {
-                            field: None,
-                            start: 0,
-                            end: size,
-                        }];
+                        record.units = text_units(&record.document);
                         record.status = TextStatus::TextExtracted;
-                        (source, lang.to_string())
+                        let detected = detected_language(&mut source, &record.units, budget)?;
+                        (source, detected)
                     }
                     Content::InlineText { text } => {
                         let mut source = TextFile::inline(text)?;
-                        let (hash, size, lang) = inspect(&mut source, budget)?;
+                        let (hash, size, _) = inspect(&mut source, budget)?;
                         if hash != record.document.digest || size != record.document.size {
                             return Err(error(
                                 "conflict",
@@ -333,13 +332,10 @@ impl Kernel {
                             ));
                         }
                         record.representation_digest = hash;
-                        record.units = vec![Unit {
-                            field: None,
-                            start: 0,
-                            end: size,
-                        }];
+                        record.units = text_units(&record.document);
                         record.status = TextStatus::TextExtracted;
-                        (source, lang.to_string())
+                        let detected = detected_language(&mut source, &record.units, budget)?;
+                        (source, detected)
                     }
                     Content::Unreadable => {
                         let (bytes, units) = sidecar(&record.document)?;
@@ -641,6 +637,61 @@ pub(crate) fn validate_scope(scope: &str) -> Result<()> {
         Ok(())
     }
 }
+
+/// Convert the adapter's direct-text ranges into persisted searchable units.
+fn text_units(document: &Document) -> Vec<Unit> {
+    let mut units: Vec<_> = document
+        .searchable_ranges()
+        .into_iter()
+        .map(|range| Unit {
+            field: None,
+            start: range.start,
+            end: range.end,
+        })
+        .collect();
+    if units.is_empty() {
+        units.push(Unit {
+            field: None,
+            start: 0,
+            end: 0,
+        });
+    }
+    units
+}
+
+/// Select one analyzer from title plus only the caller-declared searchable ranges.
+fn detected_language(
+    input: &mut (impl Read + std::io::Seek),
+    units: &[Unit],
+    budget: &Budget,
+) -> Result<String> {
+    use std::io::SeekFrom;
+    let mut detected = "unicode";
+    for unit in units {
+        input.seek(SeekFrom::Start(unit.start)).map_err(io_error)?;
+        let mut selected = (&mut *input).take(unit.end - unit.start);
+        let (_, _, language) = inspect(&mut selected, budget).map_err(|failure| {
+            if failure.code == "failed" {
+                error(
+                    "invalid-request",
+                    "text range must preserve canonical UTF-8 boundaries",
+                )
+            } else {
+                failure
+            }
+        })?;
+        if language == "ja" {
+            detected = "ja";
+            break;
+        }
+        if language == "zh" {
+            detected = "zh";
+        }
+    }
+    input.seek(SeekFrom::Start(0)).map_err(io_error)?;
+    Ok(detected.to_string())
+}
+
 /// Validate the admission boundary before any canonical access or index mutation.
 pub(crate) fn validate_view(view: &ScopeView, require_text: bool) -> Result<()> {
     validate_scope(&view.scope)?;
@@ -699,6 +750,19 @@ pub(crate) fn validate_view(view: &ScopeView, require_text: bool) -> Result<()> 
             return Err(error(
                 "invalid-request",
                 "bounded canonical adapter text required",
+            ));
+        }
+        if let Some(ranges) = &d.text_ranges
+            && (ranges.len() > 256
+                || !matches!(d.content, Content::Text { .. } | Content::InlineText { .. })
+                || ranges
+                    .iter()
+                    .any(|range| range.end <= range.start || range.end > d.size)
+                || ranges.windows(2).any(|pair| pair[0].end > pair[1].start))
+        {
+            return Err(error(
+                "invalid-request",
+                "text ranges must be bounded, sorted, disjoint direct-text ranges",
             ));
         }
         if let Some(language) = &d.language

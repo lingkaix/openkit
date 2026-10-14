@@ -292,6 +292,7 @@ impl Directory {
                 title: name,
                 media_type,
                 content,
+                text_ranges: None,
                 language: None,
                 metadata,
                 locator: None,

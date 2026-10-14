@@ -31,6 +31,9 @@ pub struct Document {
     pub media_type: String,
     /// The adapter declares text or an unreadable body.
     pub content: Content,
+    /// Searchable half-open ranges within the full canonical text unit. Absent means the full unit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_ranges: Option<Vec<ByteRange>>,
     /// Reliable language hint: zh, ja, or unicode.
     #[serde(default)]
     pub language: Option<String>,
@@ -273,6 +276,16 @@ impl Document {
             *text = None;
         }
         document
+    }
+
+    /// Resolve the adapter's searchable direct-text units without joining their boundaries.
+    pub(crate) fn searchable_ranges(&self) -> Vec<ByteRange> {
+        self.text_ranges.clone().unwrap_or_else(|| {
+            vec![ByteRange {
+                start: 0,
+                end: self.size,
+            }]
+        })
     }
 }
 
