@@ -762,18 +762,28 @@ describe('workspace storage migration', () => {
       now: () => timestamp,
     });
 
-    const published = JSON.parse(
-      readFileSync(
-        join(fixture.dataRoot, 'workspaces', fixture.workspaceId, 'indexes', 'search.json'),
-        'utf8'
-      )
-    ) as { rebuiltAt: string; schemaVersion: number; workspaceId: string };
-    expect(published).toMatchObject({
-      rebuiltAt: timestamp,
-      schemaVersion: 1,
-      workspaceId: fixture.workspaceId,
-    });
-    expect(published.rebuiltAt).not.toBe(seededAt);
+    const publishedRoot = join(fixture.dataRoot, 'workspaces', fixture.workspaceId, 'indexes');
+    const expectedFiles = [
+      'knowledge-links.json',
+      'knowledge-source-refs.json',
+      'knowledge-validation.json',
+    ];
+    expect(readdirSync(publishedRoot).sort()).toEqual(expectedFiles);
+    for (const name of expectedFiles) {
+      const published = JSON.parse(readFileSync(join(publishedRoot, name), 'utf8')) as {
+        rebuiltAt: string;
+        schemaVersion: number;
+        workspaceId: string;
+      };
+      expect(published).toMatchObject({
+        rebuiltAt: timestamp,
+        schemaVersion: 1,
+        workspaceId: fixture.workspaceId,
+      });
+      expect(published.rebuiltAt).not.toBe(seededAt);
+    }
+    expect(existsSync(join(publishedRoot, 'search.json'))).toBe(false);
+    expect(existsSync(join(publishedRoot, 'knowledge-fts.json'))).toBe(false);
   });
 
   it('fails closed when a published top-level root still has the v1 marker', () => {

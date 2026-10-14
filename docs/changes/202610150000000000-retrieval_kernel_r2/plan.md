@@ -24,11 +24,11 @@ The bounded replacement is implemented. The old lexical JSON index, tokenizer, s
 
 The engineer's narrower scope supersedes the earlier notebook cutover route. The builder has removed that implementation and retained its incomplete patch externally. Scoped Git notebooks, full S39 commit pinning and portability remain pre-existing work. Union pin/trace effects, the upload maximum regression and the Assistant history Tool binding remain blocked on owner decisions. WP1 still owns the NanoCore package guide and one synchronous runtime test fixture. No WP1 path is edited.
 
-Both target images built. The amd64 offline full App smoke passed. After stand-in admission, the ARM full-system guest established packaged retrieval and resource behavior through the exact shipped bytes; its full App smoke failed the unchanged 60-second health deadline. The cause of that startup delay is unknown. This failure remains an unresolved qualification finding; no timeout or product limit was changed. The independent direction check found no further retrieval VM investment justified. Next action belongs to independent Grok diff review and the coordinator's owner-decision/WP1 batch, including disposition or investigation of the ARM App-startup qualification failure. No release or merge is authorized by this record.
+Both target images built. The amd64 offline full App smoke passed. After stand-in admission, the ARM full-system guest established packaged retrieval and resource behavior through the exact shipped bytes; its full App smoke failed the unchanged 60-second health deadline. A later common-App comparison found no R2-specific regression, as accepted by the coordinator; native qualification belongs to a1 later with the exact reviewed image. The earlier failure remains historical evidence, and no timeout or product limit was changed. The Grok migration regression and three owner-text findings are corrected. The final whole NanoCore suite passes all 260 tests in the five changed test files; seven failures and ten unhandled errors remain in two unchanged WP1-owned files. Next action belongs to renewed independent review and the coordinator's WP1/owner-decision batch. No release or merge is authorized by this record.
 
 ## Evidence And Closeout
 
-[Builder report](#builder-report) records exact observed checks, blocked owner decisions, pre-existing gaps, WP1 changes, deferred patch, changed paths and residual risks. Independent Grok review and the coordinator's post-rc.6 merge decision remain pending. Builder verification does not approve the owner amendments or publication.
+[Builder report](#builder-report) records exact observed checks, blocked owner decisions, pre-existing gaps, WP1 changes, deferred patch, changed paths and residual risks. The independent Grok review at `/home/simonx/AI/temp/research/2026-10-14-retrieval-kernel/r2-review.md` returned `CHANGES REQUIRED` against `ef1bb84b`. The correction evidence is recorded below; renewed acceptance and the coordinator's post-rc.6 merge decision remain pending. Builder verification does not approve the owner amendments or publication.
 
 ## Intent Revision 3
 
@@ -41,6 +41,43 @@ Source: the engineer authorized read-only HTTPS retrieval of missing locked-crat
 ## Intent Revision 5
 
 Source: the engineer's SCOPE-012 correction on 2026-10-15: “R2 replaces the Knowledge retrieval path and its index, nothing more.” Implement a pre-existing Knowledge requirement only when the replacement cannot work or would be wrong without it. Notebook editing base revisions, complete deletion confirmation, S39 history, portable closure and similar pre-existing gaps are excluded. Preserve their work as a patch outside the branch. The coordinator will batch the portable historical-closure gap with the other owner decisions; stop only its dependent publication.
+
+## Intent Revision 6
+
+Source: the coordinator's Grok-review correction dispatch on 2026-10-15. Correct the Workspace migration test to require exactly the three non-lexical derived files and the absence of both removed lexical files, then run the whole NanoCore suite. Align the three identified owner-text findings with the accepted retrieval replacement. Historical import closure is settled by coordinator–Consultant agreement as bounded fail-closed rejection of imports that need unavailable historical closure; no new project or R2 import implementation is authorized. Union pins and the combined trace ledger wait for the engineer. The upload maximum and Assistant history Tool wait for the Artifacts and Chat Mode topics. Keep all dependent effects stopped. The coordinator accepts the ARM comparison as “no R2-specific regression; native qualification happens on a1 later with the exact reviewed image”. Commit the correction with the requested identity and no trailer; do not push.
+
+## Grok Review Correction
+
+The migration regression was reproduced before editing: 1 failed, 16 skipped, exit 1, with `ENOENT` on `indexes/search.json`. The correction preserves the old rebuilt-header assertions for each of the three non-lexical files, requires the exact directory entries, and explicitly rejects both `search.json` and `knowledge-fts.json`. No product writer is changed.
+
+The initial whole-suite attempt found another stale assertion in the unprotected `server.test.ts`: the Task Mode trace expectation omitted normalized `states: ['active']`, required by Knowledge Store line 201. The selected page and completed Task were correct. Its isolated reproduction failed at that exact trace assertion; adding the exact default-state expectation passed (1 passed, 165 filtered skips). No assertion or production behavior was weakened. The old whole-suite attempt had already loaded that file, so it was stopped before restarting the complete suite against the final assertions. Its partial output is retained and is not a completed suite result.
+
+The complete run also exposed missing normalized states in the shared fixtures in `workspace-export-lineage.test.ts` and `workspace-portable-file-state-io.test.ts`. Isolated runs reproduced 8 and 4 failures respectively, all caused by fixture trace rows without `retrievalParameters.states`. Those two fixtures now declare the exact default `['active']`; existing import/export and rejection assertions are unchanged. This corrects retrieval trace test data only and adds no historical closure or import publication behavior.
+
+The same full run found the App search case in `b6-operation-retirement.test.ts` using a memory-only store despite an existing canonical data root. Its isolated reproduction returned the required 409 durable-storage failure instead of the fixture's expected 200. The fixture now supplies that existing root to `createDemoStore`; every binding/schema assertion remains. Its complete 27-test file passed. This adds no fallback or compatibility path.
+
+The complete discovery run used eight workers on the 16-CPU host, without a file or test-name filter: 343 files (339 passed, 4 failed), 5986 tests (5970 passed, 16 failed, 0 skipped), 10 unhandled errors, exit 1, 1117.28 seconds. Its JSON and log are `review-fix-full-final.json` and `review-fix-full-final.log`. Nine failed cases were the corrected unprotected lineage and App search fixtures; their focused files passed all 77 tests after correction. The seven other failures and all ten unhandled errors belong to the protected WP1 paths described below. The migration file passed all 17 tests and the server file passed all 166 tests in this complete run.
+
+The final confirmation ran every NanoCore test against the final fixtures with the same eight-worker configuration and unchanged timeouts: 343 files (341 passed, 2 failed), 5986 tests (5979 passed, 7 failed, 0 skipped), 10 unhandled errors, exit 1, 970.25 seconds. All five changed test files passed all 260 tests. The seven failures and all ten unhandled errors are confined to the same two unchanged WP1-owned files. This is not a green package gate. Its complete log and JSON are `review-fix-full-confirmed.log` and `review-fix-full-confirmed.json`.
+
+Both complete runs used `mise exec node@24.18.0 -- corepack pnpm --filter @openkit/nanocore exec vitest run --maxWorkers=8 --reporter=default --reporter=json --outputFile=<named task evidence JSON>`, with `MISE_STATE_DIR=/tmp/openkit-mise-state`, `COREPACK_HOME=/tmp/openkit-corepack` and the task-owned on-disk `review-fix-tmp` as `TMPDIR`. No file, test-name, exclusion or skip filter was used. No test timeout, assertion or production contract was weakened. Raw results stay under `temp/changes/202610150000000000-retrieval_kernel_r2/review-fix-*`.
+
+| Correction check | Exact result |
+| --- | --- |
+| Migration file before correction, named regression only | 1 failed, 16 filtered skips, exit 1; missing `indexes/search.json` reproduced. |
+| Complete migration file after correction | 17 passed, 0 failed, exit 0; also 17 passed in both complete package runs. |
+| Task Mode trace regression after correction | 1 passed, 165 filtered skips, exit 0; complete server file passed all 166 tests in both complete package runs. |
+| Portable trace fixture files after correction | 2 files, 50 passed, 0 failed, exit 0; all 50 passed again in the final complete package run. |
+| Complete B6 binding retirement file after correction | 27 passed, 0 failed, exit 0; all 27 passed again in the final complete package run. |
+| NanoCore typecheck | `pnpm --filter @openkit/nanocore typecheck`, exit 0; `review-fix-typecheck.log`. |
+| Focused Biome | All 5 changed test files checked, no fixes, exit 0; `review-fix-lint-final.log`. |
+| Documentation validators | Spec lifecycle passed; 10 stories; 480 documents; generated index current; reachability 5 passed; terminology 2 passed; test governance passed; exit 0. `review-fix-docs-final.log`. |
+
+The nine-file correction changes tests and documentation only. Existing packaged image and Cargo results remain the earlier observations; neither runtime payload nor build input is changed by this correction. No WP1 path, workflow or database migration is edited. Renewed independent acceptance remains required.
+
+The separate ARM comparison used the same common App smoke, unchanged 60-second deadline, and sequential fresh guests under Cortex-A72/TCG, 4 vCPUs and 8 GiB RAM. Main startup was 49.307 and 47.766 seconds; R2 was 49.263 and 48.317 seconds. All four common App smokes passed. Kernel service startup was 156.496 and 168.689 ms, excluding Node/module loading. The comparison does not rerun the R2-only retrieval prelude or qualify native ARM. Its source and guest files were removed; small evidence remains at `/var/tmp/openkit-r2-arm-comparison.4y8dPu/REPORT.md`. No tracked file changed during that probe.
+
+The pre-commit `publicationInputsAt` comparison returned `publicationInputsChanged=false`: base `ba79e4e0` and reviewed HEAD `ef1bb84b` both hash to `9029285e5b35bf435c3f5afb0fe90600151b8f00c5f27caa433b49bba5cbd1e4`, exit 0. The correction paths are outside the observed publication inputs. The committed revision is checked again after commit; the handoff reports that result. No publication job is edited.
 
 ## Scope Correction Checkpoint
 
@@ -110,13 +147,15 @@ The two local image tags, Docker build cache, installed ARM toolchains and ignor
 
 ### Owner Decision Batch
 
+Current coordinator status: items 1 (union pins) and 2 (combined trace ledger) wait for the engineer; item 3 (historical import closure) is settled as bounded fail-closed rejection; items 4 (upload maximum) and 5 (Assistant history Tool) wait for the Artifacts and Chat Mode topics. All dependent effects remain stopped. The table retains the exact owner lines, alternatives and reasons; the settled row replaces the earlier recommendation.
+
 | Gap and exact owner lines | Options and recommendation |
 | --- | --- |
 | Maximum-upload regression: [retrieval:33](../../specs/20261014-retrieval_kernel.md:33), [retrieval:268](../../specs/20261014-retrieval_kernel.md:268); [core-experience ruling 4:56](../202610140256550000-v0_1_0_core_experience/plan.md:56) sets only 1 GB per upload. | Wait for the Artifact/upload owner to define byte count, unit and arbitrary-file admission. Do not choose a number or add a maximum-upload test. This is the engineer's confirmed disposition. |
 | Assistant history Tool amendment: [retrieval:285](../../specs/20261014-retrieval_kernel.md:285), [Chat Mode:108](../../specs/20260704-chat_mode_assistant.md:108). The current Assistant has no history Tool implementation. | Bind the adapter after Chat Mode settles its intended Tool/operation, or explicitly amend that owner. Recommend the first option to keep history continuity and Tool admission under one owner. No Tool or operation id is added here. |
 | Union pins: [Knowledge Store:195](../../specs/20260703-knowledge_store_implementation.md:195), [Knowledge Store:197](../../specs/20260703-knowledge_store_implementation.md:197), [scoped learning:64](../../specs/20260909-personal_memory_and_knowledge_learning.md:64). Pins are plain page ids while candidate identities include scopes; duplicate ids have no binding rule. | Options: address both pages; address only the first ordered scope; or scope-qualify pins. Recommend scope-qualified pins because they name one intended page and remain unambiguous when identifier generation changes. Scope order is explicitly a ranking tie-break, not authority. No union rule is selected in code. |
 | Combined private trace ledger: [Knowledge Store:201](../../specs/20260703-knowledge_store_implementation.md:201), [Knowledge Store:209](../../specs/20260703-knowledge_store_implementation.md:209), [scoped learning:62](../../specs/20260909-personal_memory_and_knowledge_learning.md:62) and [:64](../../specs/20260909-personal_memory_and_knowledge_learning.md:64) require one combined trace but do not assign its owning ledger. | Options: current User ledger, Workspace ledger with a separately defined private boundary, or a newly accepted private owner. Recommend the User ledger because combined results include private Memory; an ordinary Workspace ledger could expose that evidence to Workspace members. Do not introduce a new ledger when the User owner can hold it. No union trace is written here. |
-| Portable historical notebook closure: [S51:220–222](../../specs/20260704-workspace_backup_export_import.md:220), [S39:299](../../specs/20260703-worker_context_package.md:299), [Notebook:48](../../specs/20260909-knowledge_notebook_editing.md:48), [:50](../../specs/20260909-knowledge_notebook_editing.md:50), [:102](../../specs/20260909-knowledge_notebook_editing.md:102), [:104](../../specs/20260909-knowledge_notebook_editing.md:104). Import remints a page's Context Package digest, selected pages bind exact notebook commits, and changed bytes require new commits. Current export lacks complete historical trees. | Define a verified, disclosed historical notebook export/remint closure, or reject only imports that require missing closure. Recommend defining the closure to preserve accepted history without invented commits. Assigning the reminted current commit to historical selections can create a digest cycle. The engineer placed this dependent publication and all related implementation outside R2. |
+| Portable historical notebook closure: [S51:220–222](../../specs/20260704-workspace_backup_export_import.md:220), [S39:299](../../specs/20260703-worker_context_package.md:299), [Notebook:48](../../specs/20260909-knowledge_notebook_editing.md:48), [:50](../../specs/20260909-knowledge_notebook_editing.md:50), [:102](../../specs/20260909-knowledge_notebook_editing.md:102), [:104](../../specs/20260909-knowledge_notebook_editing.md:104). Import remints a page's Context Package digest, selected pages bind exact notebook commits, and changed bytes require new commits. Current export lacks complete historical trees. | Decision-batch item 3 is settled by coordinator–Consultant agreement, reported in Intent Revision 6: bounded fail-closed rejection of imports that need unavailable historical closure. No new project is opened. This replaces the earlier recommendation to define the closure. Assigning the reminted current commit to historical selections can create a digest cycle. Implementation remains pre-existing work outside R2; dependent import publication stays stopped. |
 
 ### Pre-existing Knowledge Gaps Outside R2
 
@@ -134,12 +173,15 @@ No listed WP1 path was edited. After WP1 merges and the coordinator releases own
 
 - `apps/nanocore/README.md:188`: replace the old full-text JSON index description with the three non-lexical projections and supervised kernel path; document current admission, asynchronous retrieval, binary/dictionary supply and explicit failures. Retain the current one-Workspace limitation and the pre-existing notebook gap.
 - `apps/nanocore/src/runtime/turn-executor-factory.test.ts:9091`: change the synchronous retrieval fixture map to `await Promise.all(...map(async ...))`; await `retrieveWorkspaceKnowledge` at the current call near line 9134 and pass current `{store,coreDb,actor:entry.triggerActor,outputThreadId:entry.threadId}` access. Use ordinary service cleanup. No production runtime factory change or Core migration is requested.
+- The complete discovery run confirms five failed capacity scenarios in that runtime factory file (`active`, `closeout`, `late-capacity`, `materialization-initial-guard`, and `materialization-forced-retirement-guard`) plus ten unhandled `access.coreDb` errors from the unawaited fixture call at line 9134. The failed Task preparation reports contradictory Knowledge selection because the trace has not been published.
+- `apps/nanocore/src/runtime/nanohost-lifecycle-diagnostics.test.ts:471`: inspect the two failed `sampled-event-loop-control` and `sampled-event-loop-before-sample` cases under the whole suite. Their first sampled delays were 533 and 511 ms against the existing `<250` ms assertion. No threshold, deadline or production diagnostic is changed. Their cause remains unqualified; ownership stays with WP1.
+- The final complete confirmation reproduced those same five factory failures and ten unhandled missing-access rejections, plus both diagnostic failures. Its diagnostic delays were 616 and 663 ms against `<250` ms. Both complete runs remain failed observations, and no protected assertion is weakened or skipped.
 
 ### Residual Risks
 
 The four unresolved notice gaps are recorded in `apps/retrieval-kernel/notices/GAPS.json`: htmlescape 0.3.1 has no recorded/verified revision; kanaria 0.2.0 has no obtainable matching notice at recorded commit `c994ccf06d179851a1c7c3285c3a408ccb6279ec`; winapi-i686-pc-windows-gnu and winapi-x86_64-pc-windows-gnu 0.4.0 have no recorded/verified revision. The Windows crates are not Linux runtime dependencies. SPDX metadata and supplied notices do not replace missing copyright notices.
 
-The full ARM App-health smoke failed in the full-system guest even though all target retrieval/resource checks passed. The timeout cause is unknown. Native ARM App startup, the ARM Docker deployment profile, macOS resource enforcement and native ARM performance were not qualified on this Linux host. The protected WP1 runtime test cannot pass unchanged against the asynchronous API until its owner applies the listed fixture change. Full repository gates were not claimed; focused checks cover the changed slice. The accepted owner amendments and actual diff still require independent review. No release approval is implied.
+The earlier full ARM App-health smoke failed in the full-system guest even though all target retrieval/resource checks passed. The timeout cause is unknown; the coordinator accepts the later comparison as no R2-specific regression. Native ARM qualification belongs to a1 later with the exact reviewed image. The ARM Docker deployment profile, macOS resource enforcement and native ARM performance were not qualified on this Linux host. The protected WP1 runtime fixture cannot pass unchanged against the asynchronous API until its owner applies the listed change. The complete discovery run also exposed two protected diagnostics failures, whose cause remains unqualified. The final whole-suite confirmation is recorded in the review correction section; no full repository gate or release approval is implied. The accepted owner amendments and actual diff still require renewed independent review.
 
 ### Commits, Changed Paths And Publication Inputs
 
@@ -157,7 +199,7 @@ c754be0d docs(retrieval): align accepted owners for kernel integration
 c9ed0226 test(retrieval): exercise packaged faces and NanoCore supervision
 ```
 
-The final net diff contains 100 files, including 8 owning Core/specification documents (7 required available owner amendments and the retrieval implementation projection). The 12 named product/mechanism owners touched are Retrieval Kernel, Knowledge Store, Knowledge Manager, Core Storage, Storage Layout, Personal Memory, Work Resource Interaction, Thread Visibility, Policy Enforcement Mapping, Worker Context Package, Container Image Packaging and Deployment Host Requirements. No new product registry, operation catalog or database table is added. The stdio operation set adds `analyze`; searchable-range admission extends the existing Document shape. Third-party supply adds one dictionary archive and a 26-file upstream-notice provenance inventory. These are raw counts, not acceptance thresholds.
+The final net diff contains 105 files after the review correction, including 8 owning Core/specification documents (7 required available owner amendments and the retrieval implementation projection). The 12 named product/mechanism owners touched are Retrieval Kernel, Knowledge Store, Knowledge Manager, Core Storage, Storage Layout, Personal Memory, Work Resource Interaction, Thread Visibility, Policy Enforcement Mapping, Worker Context Package, Container Image Packaging and Deployment Host Requirements. No new product registry, operation catalog or database table is added. The stdio operation set adds `analyze`; searchable-range admission extends the existing Document shape. Third-party supply adds one dictionary archive and a 26-file upstream-notice provenance inventory. These are raw counts, not acceptance thresholds. The review correction itself touches nine files and three owning documents, with no new closed set or registry.
 
 Changed paths relative to `ba79e4e0973b952fe2dd515fa23c0d4b91304f19`:
 
@@ -165,6 +207,7 @@ Changed paths relative to `ba79e4e0973b952fe2dd515fa23c0d4b91304f19`:
 apps/nanocore/openapi/app-api.openapi.json
 apps/nanocore/src/README.md
 apps/nanocore/src/app-search-operation-implementations.ts
+apps/nanocore/src/b6-operation-retirement.test.ts
 apps/nanocore/src/bootstrap/README.md
 apps/nanocore/src/bootstrap/phase-order.test.ts
 apps/nanocore/src/dashboard-search-visibility.test.ts
@@ -186,10 +229,14 @@ apps/nanocore/src/retrieval-sources.ts
 apps/nanocore/src/runtime/worker-governance-turn-executor.test.ts
 apps/nanocore/src/runtime/worker-governance-turn-executor.ts
 apps/nanocore/src/search.test.ts
+apps/nanocore/src/server.test.ts
 apps/nanocore/src/storage/README.md
 apps/nanocore/src/storage/index-rebuild.test.ts
 apps/nanocore/src/storage/index-rebuild.ts
 apps/nanocore/src/storage/knowledge-proposal-authority.test.ts
+apps/nanocore/src/storage/workspace-export-lineage.test.ts
+apps/nanocore/src/storage/workspace-portable-file-state-io.test.ts
+apps/nanocore/src/storage/workspace-storage-migration.test.ts
 apps/retrieval-kernel/README.md
 apps/retrieval-kernel/notices/GAPS.json
 apps/retrieval-kernel/notices/README.md

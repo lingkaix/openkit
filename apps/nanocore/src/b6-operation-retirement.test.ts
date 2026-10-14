@@ -233,7 +233,7 @@ describe('B6 binding retirement', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore();
+    const store = createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
     const vaultUnlockState = createVaultUnlockState({
       backendKind: 'encrypted-file',

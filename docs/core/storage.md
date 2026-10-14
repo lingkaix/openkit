@@ -192,6 +192,6 @@ Compaction MAY materialize completed item snapshots, but it MUST NOT change item
 
 User-level and workspace-level databases should be introduced only when their independent ownership scopes need them.
 
-SQLite full-text search is the default search index family. Vector search remains an optional future index family until promoted by stable core requirements.
+The rebuildable Retrieval Kernel projection is the default full-text search index family. Vector search remains an optional future index family until promoted by stable core requirements.
 
 The current local and server realization uses the encrypted-file Vault through the vault boundary, not normal storage records. Concrete ciphertext, metadata, and key-file layout remain implementation-facing Vault concerns.

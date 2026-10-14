@@ -125,7 +125,7 @@ function writePortableFixture(root: string): void {
     workspaceId,
     caller: 'app-api',
     requestDigest: `sha256:${'0'.repeat(64)}`,
-    retrievalParameters: { limit: 1, pinnedConceptIds: [] },
+    retrievalParameters: { limit: 1, pinnedConceptIds: [], states: ['active'] },
     createdAt: JULY,
     selected: [],
     excluded: [],

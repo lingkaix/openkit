@@ -5172,7 +5172,7 @@ describe('nanocore server', () => {
       expect(retrievalTrace).toEqual(
         expect.objectContaining({
           caller: 'task-mode',
-          retrievalParameters: { limit: 5, pinnedConceptIds: [] },
+          retrievalParameters: { limit: 5, pinnedConceptIds: [], states: ['active'] },
           traceId: expect.stringMatching(
             /^krt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
           ),

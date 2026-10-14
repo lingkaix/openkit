@@ -1024,7 +1024,7 @@ function createWorkResourceLineageExportInput(followUp?: {
             requestDigest: `sha256:${createHash('sha256')
               .update('portable Knowledge retrieval')
               .digest('hex')}`,
-            retrievalParameters: { limit: 5, pinnedConceptIds: [] },
+            retrievalParameters: { limit: 5, pinnedConceptIds: [], states: ['active'] },
             selected: [
               {
                 contentDigest: knowledgeContentDigest,
