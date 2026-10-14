@@ -66,9 +66,37 @@ describe('OpenKit administrator CLI e2e', () => {
       data: {
         endpoint: harness.baseUrl,
         authentication: 'environment',
-        nanocore: { ready: true, protocolVersion: PROTOCOL_VERSION },
+        nanocore: {
+          serviceAvailability: 'available',
+          productWorkReadiness: 'ready',
+          updateReadiness: { state: 'unconfigured', qualification: 'prepare-required' },
+          maintenanceSafety: {
+            state: 'idle',
+            observation: {
+              state: 'idle',
+              observedAt: expect.any(String),
+              counts: {
+                runningTurns: 0,
+                pendingTurns: 0,
+                queuedAdmissions: 0,
+                openAttempts: 0,
+                closingAttempts: 0,
+                inFlightCommands: 0,
+              },
+            },
+          },
+          executionHost: {
+            state: 'unconfigured',
+            observedAt: null,
+            observationAgeMs: null,
+            liveProbe: false,
+            freshEmpty: null,
+          },
+          protocolVersion: PROTOCOL_VERSION,
+        },
       },
     });
+    expect(doctor.data.nanocore).not.toHaveProperty('ready');
     expect(doctor.requestId).toMatch(/^[0-9a-f-]{36}$/);
 
     const created = await runCli(
