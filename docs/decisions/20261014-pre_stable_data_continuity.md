@@ -8,7 +8,7 @@ supersedes: docs/decisions/20260928-compatibility_rests_on_data.md
 
 ## Decision
 
-On 2026-10-14, the engineer chose option B as the additional interpretation of root AGENTS.md clauses NONNEG-001 and COMPAT-001 for versions before `v0.1.0`. This decision records that interpretation; AGENTS.md remains unchanged. Under it, the data-continuity obligation starts with the first stable release, `v0.1.0`. A prerelease does not start it. Before that release, a change may reset deployment data instead of migrating it. Work must already move toward stable storage and file formats and safe retention and reading after release. Each shape needs an owner, a closed core, and an open extension. [Contract Evolution](../core/contract-evolution.md#retained-data-continuity) owns that boundary.
+On 2026-10-14, the engineer chose option B as the additional interpretation of root AGENTS.md clauses NONNEG-001 and COMPAT-001 for versions before `v0.1.0`. This decision records that interpretation, and COMPAT-001 cites it for when the obligation starts. Under it, the data-continuity obligation starts with the first stable release, `v0.1.0`. A prerelease does not start it. Before that release, a change may reset deployment data instead of migrating it. Work must already move toward stable storage and file formats and safe retention and reading after release. Each shape needs an owner, a closed core, and an open extension. [Contract Evolution](../core/contract-evolution.md#retained-data-continuity) owns that boundary.
 
 A release that cannot read the previous release's retained data must say so in its release record and operator procedure. A reset requires explicit operator authorization and scope. It preserves the engineer-named accounts and does not follow automatically from startup failure. [Release Management](../specs/20260829-release_management.md#pre-stable-deployment-reset-and-protected-accounts) owns these minimum reset conditions. This documentation change resets no deployment.
 
@@ -38,17 +38,25 @@ Translation supplied with that instruction:
 
 > No need for that much trouble; AGENTS.md does not need to change. Record the additional interpretation of these two rules for versions before 0.1 as a decision record; that is enough.
 
-The engineer chose a decision record instead of changing AGENTS.md. This record states the pre-`v0.1.0` interpretation of NONNEG-001 and COMPAT-001; it does not claim that their text contains a release boundary or reset permission.
+The coordinator then advised to keep the two clauses separate but to remove their overlap. The engineer approved that edit on 2026-10-14, verbatim (the quoted part is the coordinator's proposal):
+
+> `NONNEG-001 不动。COMPAT-001 删掉和 NONNEG-001 重复的两句，其中一句是「数据必须能继续使用」，另一句是「不用永久的旧格式读取器、不双写」；时间上的说法统一改为引用这份决策记录。大约能省下 25 个词，这两条之间也不会再有说法不一致的地方。` 同意你的这个修法，你来进行修改，由独立的 Astra Agent 进行 review 和 audit 之后，可以提交。
+
+Translation:
+
+> "`NONNEG-001 stays unchanged. COMPAT-001 removes the two sentences that repeat NONNEG-001: one is 'data must stay usable', the other is 'no permanent legacy reader, no dual write'. Its timing wording instead cites this decision record. This saves about 25 words, and the two clauses no longer state different things.` I agree with this edit. You make it, and after an independent Astra agent reviews and audits it, you may commit."
+
+The engineer chose a decision record instead of writing the release boundary and reset conditions into AGENTS.md, and then approved a smaller COMPAT-001 edit. NONNEG-001 is unchanged. COMPAT-001 no longer repeats NONNEG-001's usability and no-dual-write obligations, and it takes its timing from this record instead of stating its own. Neither clause states the release boundary or the reset permission; this record does.
 
 The 2026-09-28 record misread an instruction to work toward stable storage as an immediate obligation to preserve all retained data across changes. The engineer corrected that reading and chose the standing stable-release boundary. The earlier message about the three deployments having no production data explains the current identifier cutover; it is not a standing claim that pre-stable deployments can never hold user data.
 
-Option B keeps preparation for future retention separate from mandatory continuity after release. A pre-stable reset can avoid an unnecessary migration, but operators must know which release cannot read predecessor data. Preserving the required accounts keeps the deployments usable for their owners and for staging operations. The reset conditions above are the writer's minimum realization for Consultant scrutiny; they add no reset service, account store, or automatic recovery mechanism.
+Option B keeps preparation for future retention separate from mandatory continuity after release. A pre-stable reset can avoid an unnecessary migration, but operators must know which release cannot read predecessor data. Preserving the required accounts keeps the deployments usable for their owners and for staging operations. The reset conditions above are the coordinator's minimum realization, accepted after Consultant review; they add no reset service, account store, or automatic recovery mechanism.
 
 ## Rejected Alternatives
 
 Option A was a one-time exception for the current identifier cutover, with immediate continuity continuing for other pre-stable changes. The engineer chose option B instead and explicitly corrected the 2026-09-28 reading. The correction therefore applies until `v0.1.0`, not only to this cutover.
 
-The engineer rejected an AGENTS.md amendment as unnecessary. Recording the additional pre-`v0.1.0` interpretation is sufficient.
+An AGENTS.md amendment that wrote the release boundary and reset conditions into NONNEG-001 and COMPAT-001 was rejected as unnecessary; this record carries them. Merging the two clauses into one was rejected because NONNEG-001 states the engineer's intent in the engineer's language and COMPAT-001 states the realization rules, which change at a different rate.
 
 The earlier alternatives remain rejected where they concern scope or mechanism: release-coupled surfaces need no general support window, everything on disk is not automatically Durable, and permanent legacy readers or dual writes do not preserve data under the obligation. Separately accepted external contracts retain their own requirements. A stable-release boundary does not authorize automatic startup resets or silent account deletion.
 
@@ -58,7 +66,7 @@ Revisit the reset permission if the engineer changes the stable-release boundary
 
 ## Affected Owners
 
-- Root AGENTS.md, NONNEG-001 and COMPAT-001: unchanged. This record states the engineer's additional interpretation for versions before `v0.1.0`.
+- Root AGENTS.md: NONNEG-001 is unchanged. COMPAT-001 drops its two restatements of NONNEG-001 and cites this record for when the obligation starts.
 - [Contract Evolution](../core/contract-evolution.md): the continuity boundary, pre-stable preparation, and unchanged strict rules.
 - [Release Management](../specs/20260829-release_management.md): reset disclosure, operator scope, protected accounts, and Story 2 release qualification.
 - [L6 Story Acceptance](../specs/20260529-l6_story_acceptance.md): Story 2's conditional data-continuity predicate.
