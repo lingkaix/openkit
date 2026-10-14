@@ -10,13 +10,13 @@ import { prepare, round } from './release-round/live.mjs';
 export async function main(args = process.argv.slice(2)) {
   if (args.includes('--help') || !args.length) {
     process.stdout.write(
-      'Usage: node tests/support/release-round.mjs prepare --target ALIAS_OR_URL --params FILE --evidence-dir NEW_DIR\n       round --target ALIAS_OR_URL --evidence-dir DIR\n       summarize --evidence-dir DIR [--adjudications FILE]\n'
+      'Usage: node tests/support/release-round.mjs prepare --target ALIAS_OR_URL --params FILE --evidence-dir NEW_DIR [--purpose worker|browser-story]\n       round --target ALIAS_OR_URL --evidence-dir DIR\n       summarize --evidence-dir DIR [--adjudications FILE]\n'
     );
     return;
   }
   const command = args.shift(),
     allowed = {
-      prepare: ['params', 'evidence-dir', 'target'],
+      prepare: ['params', 'evidence-dir', 'target', 'purpose'],
       round: ['evidence-dir', 'target'],
       summarize: ['evidence-dir', 'adjudications'],
     }[command];
@@ -47,7 +47,7 @@ export async function main(args = process.argv.slice(2)) {
   let result;
   if (command === 'prepare') {
     if (!options.params) throw Error('--params required');
-    result = await prepare(path.resolve(options.params), dir);
+    result = await prepare(path.resolve(options.params), dir, {}, options.purpose ?? 'worker');
   }
   if (command === 'round') {
     await round(dir);

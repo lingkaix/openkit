@@ -213,6 +213,55 @@ test('Worker-only prepare makes no browser or remote call', async (t) => {
     sha(await fs.readFile(new URL('../scripts/release-safety.mjs', import.meta.url)))
   );
 });
+for (const failure of ['none', 'open', 'close', 'throw', 'timeout'])
+  test(`browser-story preparation retains launch and close evidence: ${failure}`, async (t) => {
+    const parent = await temp(t),
+      p = parameters(),
+      input = path.join(parent, 'params.json'),
+      dir = path.join(parent, 'story'),
+      calls = [];
+    await save(input, p);
+    const previous = process.env.NODE_OPTIONS;
+    process.env.NODE_OPTIONS = '--synthetic-browser-environment-probe';
+    t.after(() => {
+      if (previous === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = previous;
+    });
+    const launch = prepare(
+      input,
+      dir,
+      {
+        credential: 'synthetic-private-value',
+        ssh: async () => {
+          throw Error('No remote preparation permitted');
+        },
+        exec: async (exe, args, options) => {
+          if (exe === 'git')
+            return { exitCode: 0, stdout: args[0] === 'diff' ? '' : p.checklistBlob, stderr: '' };
+          assert.equal(exe, 'agent-browser');
+          assert.equal(Object.hasOwn(options.env, 'NODE_OPTIONS'), false);
+          const command = args[2];
+          calls.push(command);
+          if (command === 'open' && failure === 'throw') throw Error('Launch exception');
+          return {
+            exitCode: command === failure ? 1 : 0,
+            timedOut: command === 'open' && failure === 'timeout',
+            stdout: 'browser-output',
+            stderr: 'browser-diagnostic',
+          };
+        },
+      },
+      'browser-story'
+    );
+    if (failure === 'none') await launch;
+    else await assert.rejects(launch, /Browser launch|Launch exception/);
+    assert.deepEqual(calls, ['open', 'close']);
+    const retained = await readJson(path.join(dir, 'browser-preflight.json'));
+    assert.equal(retained.commands.length, 2);
+    assert.deepEqual(retained.commands[0].arguments, ['open', 'about:blank']);
+    if (failure !== 'none')
+      await assert.rejects(fs.access(path.join(dir, 'prepare-complete.json')), /ENOENT/);
+  });
 
 test('observe retains a non-inspection failure instead of marking only a timeout', async (t) => {
   const p = parameters(),

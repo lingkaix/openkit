@@ -64,6 +64,8 @@ node tests/support/release-round.mjs summarize --evidence-dir /example/private/r
 
 `round` requires completed preparation and admits one writer. On completion it automatically generates the offline summary and per-case rows. `round` and `summarize` return nonzero unless all sixteen rows pass. The runner does not build an image or replace a container. It runs each runtime's A–D rows and the four runtime groups concurrently within admitted capacity, then telemetry and cleanup.
 
+`prepare` defaults to Worker-only purpose and makes no browser launch. For a browser-dependent catalog story, use `--purpose browser-story`: preparation must retain successful blank-page launch and session closure in `browser-preflight.json`. Failed launch, timeout, exception or failed close prevents `prepare-complete.json`; inspect that retained failure before a fresh attempt. This shared prerequisite does not perform or judge the story.
+
 `round` can outlive the operator's shell call and must be launched as a process that survives the operator's shell call, in its own session, for example with Python `subprocess.Popen(..., start_new_session=True)` or `setsid`. Supply standard input from the null device, append output to a private process log such as `/example/private/round-process.log`, use the declared protected operator environment, and record the round process's exit status in that log.
 
 A failed or refused independent scenario does not authorize a retry or stop unrelated scenarios; an unknown mutation outcome seals the entire round for inspection, and the start receipt refuses a second invocation.

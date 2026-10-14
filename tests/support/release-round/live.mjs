@@ -151,8 +151,9 @@ def run(a):
 def inspect(name):return json.loads(run(['docker','inspect',name]))[0]
 `;
 
-/** Pin exact published source and instrument identities for Worker-only qualification. */
-export async function prepare(paramsFile, dir, seams = {}) {
+/** Pin exact release/instrument identities; launch preflight only for a browser-dependent story. */
+export async function prepare(paramsFile, dir, seams = {}, purpose = 'worker') {
+  if (!['worker', 'browser-story'].includes(purpose)) throw Error('Unknown preparation purpose');
   const io = { ...defaults, ...seams },
     raw = await fs.readFile(paramsFile),
     p = validateParams(JSON.parse(raw));
@@ -169,6 +170,7 @@ export async function prepare(paramsFile, dir, seams = {}) {
   for (const r of RUNTIMES)
     await fs.mkdir(path.join(dir, 'runtimes', r), { recursive: true, mode: 0o700 });
   const receipt = {
+    purpose,
     runnerCommit: commit,
     runnerSha256: code.sha256,
     instrumentFiles: code.entries,
@@ -179,6 +181,18 @@ export async function prepare(paramsFile, dir, seams = {}) {
   };
   await save(path.join(dir, 'prepare.json'), receipt);
   const secret = seams.credential ?? (await credential(p.cli.credentialFile));
+  if (purpose === 'browser-story') {
+    const commands = [];
+    let launchError;
+    try {
+      await browserLaunch(p, io, commands, `preflight-${p.roundId}`);
+    } catch (error) {
+      launchError = error;
+    } finally {
+      await save(path.join(dir, 'browser-preflight.json'), { commands }, [secret]);
+    }
+    if (launchError) throw launchError;
+  }
   const components = {};
   for (const component of ['nanoHost', 'worker']) {
     const changed = await git(io, [
@@ -208,6 +222,35 @@ export async function prepare(paramsFile, dir, seams = {}) {
     runnerSha256: receipt.runnerSha256,
   });
   return receipt;
+}
+
+/** Retain browser process evidence with the same secret-free environment as the CLI. */
+async function browserCommand(p, io, commands, session, args) {
+  try {
+    const result = await io.exec('agent-browser', ['--session', session, ...args], {
+      timeout: args[0] === 'close' ? 20000 : p.bounds.processMs,
+      env: cleanEnvironment(),
+    });
+    commands.push({ arguments: args, ...result });
+    return result;
+  } catch (error) {
+    commands.push({ arguments: args, exitCode: null, stdout: '', stderr: error.message });
+    throw error;
+  }
+}
+/** Prove blank-page launch and close; preserve the first failure and always attempt closure. */
+async function browserLaunch(p, io, commands, session) {
+  let failure;
+  for (const args of [['open', 'about:blank'], ['close']]) {
+    try {
+      const result = await browserCommand(p, io, commands, session, args);
+      if (result.exitCode !== 0 || result.timedOut || result.signal)
+        failure ??= Error('Browser launch preflight failed');
+    } catch (error) {
+      failure ??= error;
+    }
+  }
+  if (failure) throw failure;
 }
 
 /** A response is ambiguous until a valid product envelope is retained; mutations never retry. */
