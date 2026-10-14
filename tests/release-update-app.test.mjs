@@ -46,6 +46,7 @@ function params() {
   return {
     manifest,
     expectedCurrentImageId: previous,
+    helperSha256: 'e'.repeat(64),
     platform: 'linux/arm64',
     pollAttempts: 2,
     pollMs: 1,
@@ -75,6 +76,8 @@ async function setup(t, change = () => {}) {
     requestId,
     source,
     outcome: 'succeeded',
+    helperSha256: p.helperSha256,
+    preparedHelperSha256: p.helperSha256,
     predicates: Object.fromEntries(
       [
         'imageMatch',
@@ -91,6 +94,7 @@ async function setup(t, change = () => {}) {
   };
   const io = {
     sleep: async () => {},
+    currentGrant: async () => structuredClone(p.grant),
     identities: async () => ({ sourceCommit: sha, appDigest: digest, webDigest: digest }),
     call: async (op, input) => {
       calls.push(op);
@@ -113,7 +117,37 @@ async function setup(t, change = () => {}) {
           : op === 'thread.read'
             ? { thread: { id: input.threadId, name: 'retained content' } }
             : op === 'app-update.prepare'
-              ? { requestId, source, expectedCurrentImageId: previous }
+              ? {
+                  requestId,
+                  source,
+                  expectedCurrentImageId: previous,
+                  helperSha256: p.helperSha256,
+                  preparedHelperSha256: p.helperSha256,
+                  approvalSummary: {
+                    targetRelease: source,
+                    expectedCurrentImageId: previous,
+                    observedCurrentImageId: previous,
+                    interruptionScope: 'NanoCore, Web and active clients; NanoHost unchanged',
+                    recoveryLimitations: ['Migration-free assessed replacement only'],
+                    safetyEvidence: {
+                      deploymentBindings: true,
+                      preflight: {
+                        state: 'idle',
+                        observedAt: '2026-10-14T00:00:00Z',
+                        counts: Object.fromEntries(
+                          [
+                            'runningTurns',
+                            'pendingTurns',
+                            'queuedAdmissions',
+                            'openAttempts',
+                            'closingAttempts',
+                            'inFlightCommands',
+                          ].map((key) => [key, 0])
+                        ),
+                      },
+                    },
+                  },
+                }
               : structuredClone(status);
       change(op, data, calls);
       return data;
@@ -175,6 +209,105 @@ for (const [name, change] of [
     assert.equal(r.outcome, 'unknown');
     assert(r.reason);
   });
+for (const [name, change] of [
+  [
+    'missing summary',
+    (d) => {
+      delete d.approvalSummary;
+    },
+  ],
+  [
+    'changed helper',
+    (d) => {
+      d.helperSha256 = 'f'.repeat(64);
+    },
+  ],
+  [
+    'changed preparation helper',
+    (d) => {
+      d.preparedHelperSha256 = 'f'.repeat(64);
+    },
+  ],
+  [
+    'wrong summary source',
+    (d) => {
+      d.approvalSummary.targetRelease.sourceCommit = 'f'.repeat(40);
+    },
+  ],
+  [
+    'wrong observed image',
+    (d) => {
+      d.approvalSummary.observedCurrentImageId = digest;
+    },
+  ],
+  [
+    'missing bindings',
+    (d) => {
+      d.approvalSummary.safetyEvidence.deploymentBindings = false;
+    },
+  ],
+  [
+    'busy prepared preflight',
+    (d) => {
+      d.approvalSummary.safetyEvidence.preflight.counts.pendingTurns = 1;
+    },
+  ],
+  [
+    'missing recovery limits',
+    (d) => {
+      d.approvalSummary.recoveryLimitations = [];
+    },
+  ],
+])
+  test(`App procedure refuses ${name} before start`, async (t) => {
+    const { p, calls, dir, io } = await setup(t, (op, data) => {
+      if (op === 'app-update.prepare') change(data);
+    });
+    await assert.rejects(updateApp(target, p, dir, io));
+    assert(!calls.includes('app-update.start'));
+  });
+test('changed installed helper during status cannot establish update success', async (t) => {
+  const { p, dir, io } = await setup(t, (op, data) => {
+    if (op === 'app-update.status') data.helperSha256 = 'f'.repeat(64);
+  });
+  await assert.rejects(updateApp(target, p, dir, io));
+});
+for (const [name, grantChange] of [
+  [
+    'revoked grant',
+    (grant) => {
+      grant.revoked = true;
+    },
+  ],
+  [
+    'changed grant target',
+    (grant) => {
+      grant.target = 'https://a2';
+    },
+  ],
+  [
+    'different grant reference',
+    (grant) => {
+      grant.reference = 'unrelated-grant';
+    },
+  ],
+])
+  test(`${name} before start stops the App effect`, async (t) => {
+    const { p, calls, dir, io } = await setup(t);
+    io.currentGrant = async () => {
+      const grant = structuredClone(p.grant);
+      grantChange(grant);
+      return grant;
+    };
+    await assert.rejects(updateApp(target, p, dir, io));
+    assert(!calls.includes('app-update.start'));
+  });
+test('absent authority observation cannot start under a copied parameter grant', async (t) => {
+  const { p, calls, dir, io } = await setup(t);
+  delete io.currentGrant;
+  await assert.rejects(updateApp(target, p, dir, io), /current administrator grant/);
+  assert(!calls.includes('app-update.start'));
+});
 test('lost start response is retained and never resubmitted', async (t) => {
   const { p, calls, dir, io } = await setup(t);
   const original = io.call;

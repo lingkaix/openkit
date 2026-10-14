@@ -11,6 +11,10 @@ const candidateJobs = [
   'Workspace portability target',
   'L5 app-image stopped-server recovery',
   'NanoHost installer fixed-path gate',
+  'Smoke worker-common (linux/amd64)',
+  'Smoke worker-common (linux/arm64)',
+  'Smoke worker-runtimes (linux/amd64)',
+  'Smoke worker-runtimes (linux/arm64)',
 ];
 const publicationJobs = [
   'Publish app image',
@@ -33,12 +37,15 @@ function successfulJobs(run, names) {
     run.runId > 0 &&
     run.conclusion === 'success' &&
     Array.isArray(run.jobs) &&
-    names.every((name) =>
-      run.jobs.some(
-        (j) =>
-          j.name === name && j.conclusion === 'success' && Number.isSafeInteger(j.id) && j.id > 0
-      )
-    )
+    names.every((name) => {
+      const matches = run.jobs.filter((job) => job.name === name);
+      return (
+        matches.length === 1 &&
+        matches[0].conclusion === 'success' &&
+        Number.isSafeInteger(matches[0].id) &&
+        matches[0].id > 0
+      );
+    })
   );
 }
 /** Check every standing-grant predicate; this does not collect evidence or create a tag. */

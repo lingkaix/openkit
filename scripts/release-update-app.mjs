@@ -73,6 +73,10 @@ export function validateUpdate(target, p) {
     'assessment/current-image mismatch'
   );
   requireFact(
+    /^[a-f0-9]{64}$/.test(p.helperSha256 ?? ''),
+    'verified target helper checksum required'
+  );
+  requireFact(
     p.platform === 'linux/arm64' || p.platform === 'linux/amd64',
     'exact deployment platform required'
   );
@@ -106,6 +110,28 @@ function idle(observation) {
       counts.every((k) => observation.counts?.[k] === 0),
     'preflight refuses busy, missing, or contradictory work counts'
   );
+}
+/** Bind WP2's complete review object to the assessed image and checksum-covered helper bytes. */
+function preparedReview(receipt, source, p) {
+  requireFact(
+    receipt.helperSha256 === p.helperSha256 && receipt.preparedHelperSha256 === p.helperSha256,
+    'installed/preparation helper differs from verified target bytes'
+  );
+  const summary = receipt.approvalSummary;
+  requireFact(
+    summary &&
+      canonical(summary.targetRelease) === canonical(source) &&
+      summary.expectedCurrentImageId === p.expectedCurrentImageId &&
+      summary.observedCurrentImageId === p.expectedCurrentImageId &&
+      typeof summary.interruptionScope === 'string' &&
+      summary.interruptionScope.length > 0 &&
+      summary.safetyEvidence?.deploymentBindings === true &&
+      Array.isArray(summary.recoveryLimitations) &&
+      summary.recoveryLimitations.length > 0 &&
+      summary.recoveryLimitations.every((limit) => typeof limit === 'string' && limit.length > 0),
+    'prepared approval summary is missing or contradicts the bounded assessment'
+  );
+  idle(summary.safetyEvidence.preflight);
 }
 /** Submit once, observe the pinned receipt, and compare exact retained public responses. */
 export async function updateApp(target, p, dir, io) {
@@ -154,8 +180,21 @@ export async function updateApp(target, p, dir, io) {
       'prepared receipt binding mismatch'
     );
     result.requestId = prepared.requestId;
+    preparedReview(prepared, source, p);
+    result.approvalSummary = prepared.approvalSummary;
     // Preflight is an instantaneous observation, not an admission barrier; start retains its host lock checks.
     idle(await call('app-update.preflight', {}));
+    // The live adapter must read retained administrator authority, never infer it from manifest facts.
+    requireFact(
+      typeof io.currentGrant === 'function',
+      'current administrator grant observation required'
+    );
+    const grant = await io.currentGrant();
+    requireFact(
+      grant?.reference === p.grant.reference,
+      'standing grant identity changed before start'
+    );
+    validateUpdate(target, { ...p, grant });
     await once(dir, 'start', { requestId: prepared.requestId, maintenanceConsent: true }, () =>
       call('app-update.start', { requestId: prepared.requestId, maintenanceConsent: true })
     );
@@ -165,6 +204,10 @@ export async function updateApp(target, p, dir, io) {
       requireFact(
         status.requestId === prepared.requestId && canonical(status.source) === canonical(source),
         'status receipt identity conflict'
+      );
+      requireFact(
+        status.helperSha256 === p.helperSha256 && status.preparedHelperSha256 === p.helperSha256,
+        'status helper identity conflict; inspect same request ID'
       );
       if (status.outcome === 'succeeded' || !['prepared', 'running'].includes(status.outcome))
         break;
@@ -221,9 +264,9 @@ async function main() {
     throw Error('Explicit target, params and new evidence directory required');
   const p = JSON.parse(await fs.readFile(options['--params'], 'utf8'));
   validateUpdate(options['--target'], p);
-  // WP2 owns diagnostics identity delivery; do not infer an OCI digest from Docker image ID or a version label.
+  // Do not infer an OCI platform digest from Docker image ID or a version label.
   throw Error(
-    'App update automation is not admitted: exact live platform identity adapter and Phase 2 owner alignment are pending'
+    'App update automation is not executable: exact live platform identity adapter is pending'
   );
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href)

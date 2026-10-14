@@ -5,9 +5,9 @@ This directory contains repository-level CI workflows. Test-image jobs use Docke
 The current workflow policy is intentionally resource-light:
 
 - Pull requests run the lightweight repository check and the isolated NanoHost installer host gate.
-- Ordinary branch pushes do not run CI.
+- Every push to `main` runs the complete nonpublishing release gate; other branch pushes do not run CI. L0-L2 uses `verify:l0-l2` and its admitted single coverage-enabled Vitest execution, retaining root/native tests.
 - Lowercase version tags matching `v*.*.*` run the release gate through L0-L3 and L5, then publish the controlled release bundle.
-- The L0-L2 job directly runs `python3 -I -B scripts/docker/app-update-helper.test.py` on release-tag pushes and the `l0-l2`, `release-gate`, and `full` workflow-dispatch gates, unless an exact-commit successful candidate job is reused. Pull requests do not run that suite.
+- The L0-L2 job directly runs `python3 -I -B scripts/docker/app-update-helper.test.py` on main and release-tag pushes and the `l0-l2`, `release-gate`, and `full` workflow-dispatch gates, unless an exact-commit successful candidate job is reused. Pull requests do not run that suite.
 - L4 Web e2e is a manual workflow-dispatch gate. Agent-first L6 story acceptance has no GitHub Actions job.
 - Release tags run `scripts/release-preflight.mjs` before publication to validate lowercase tag shape, current prerelease admission, main-branch ancestry, portable Skill and NanoHost inputs, the promoted host manifest, the supported OpenShell release and Cargo SDK consistency, the image manifest, and every release image base digest.
 - The tag workflow reads `release-notes/<tag>.md` through `scripts/release-notes.mjs` and fails before image promotion when that file is missing or malformed.
@@ -18,6 +18,8 @@ The current workflow policy is intentionally resource-light:
 - Same-tag reruns reuse a complete version, version-without-`v`, and source-revision identity, while partial or conflicting identities fail closed; each new release tag uses a commit that has not already been released.
 - Release tag workflows are serialized, third-party Actions are commit-pinned, and OCI creation time comes from the release commit.
 - The terminal job verifies GitHub Release state and all four attachments, every image tag and digest, stable or prerelease `latest` behavior, the bundled Skill under the supported Node runtime and its helper bytes against the reviewed release checkout, both downloaded NanoHost archives through the shared staging verifier, and the public worker base through a logged-out exact-digest inspection.
+
+The machine-readable manifest producer is implemented in `scripts/release-notes.mjs`, but its workflow attachment remains blocked: the frozen `github-release` and `verify-release` jobs admit exactly four assets. Adding the fifth asset and its verification requires a publication-path amendment and scratch rehearsal; no manifest job currently publishes or attests that asset.
 
 The detailed testing strategy is documented in `docs/specs/20260529-test_strategy.md`.
 
@@ -37,7 +39,7 @@ The `CI` workflow exposes these manual `gate` choices:
 - `release-gate`: tag-release gate equivalent.
 - `full`: explicit full manual validation, including L4.
 
-The manual `release-gate` and `full` gates also build and smoke every worker image from the catalog on both declared Linux platforms without registry publication.
+Main pushes and the manual `release-gate` and `full` gates also build and smoke every worker image from the catalog on both declared Linux platforms without registry publication. Main pushes also run the disposable stopped-server recovery probe.
 
 Agent-first L6 is not wired into GitHub Actions.
 

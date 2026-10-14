@@ -4,7 +4,7 @@ Root `package.json` owns the command surface and `docs/toolchain.md` owns setup 
 
 ## Release Inputs And Verification
 
-`release-ci-reuse.mjs --repository <owner/repo> --workflow ci.yml --sha <full sha> --job <exact job name>` reads GitHub Actions with the job-scoped `GITHUB_TOKEN` and reports the run, latest attempt, and successful job identity for one completed exact-commit dispatch. It paginates runs and attempt jobs, rechecks the selected attempt, and exits 1 when no job qualifies or 2 on usage/API errors. The tag-only L0-L2 and NanoCore e2e steps use either failure result to run their normal tests; fixtures inject HTTP responses without network access.
+`release-ci-reuse.mjs --repository <owner/repo> --workflow ci.yml --sha <full sha> --job <exact job name>` reads GitHub Actions with the job-scoped `GITHUB_TOKEN` and reports the run, latest attempt, and successful job identity for one completed exact-commit workflow-dispatch run or main-push release-gate run. Reuse remains per job, never across commits or from another branch. It paginates runs and attempt jobs, rechecks the selected attempt, and exits 1 when no job qualifies or 2 on usage/API errors. The tag-only L0-L2 and NanoCore e2e steps use either failure result to run their normal tests; fixtures inject HTTP responses without network access.
 
 `release-notes.mjs` checks `release-notes/<tag>.md` and the tag workflow fails before image promotion when that file is missing or malformed. The verify job compares the published release body through `--compare-body`.
 

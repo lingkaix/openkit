@@ -265,7 +265,7 @@ node scripts/release-notes.mjs --tag v0.1.0-rc.6 --draft-input /example/private/
 
 The draft input has nonempty `changes` and `knownIssues` arrays. Commit only the reviewed two-section notes input. The primary owns release notes and change records.
 
-Generate the manifest from existing image JSON, portable checksums, and the explicit reviewed compatibility assessment:
+The workflow attachment remains blocked by the frozen publication jobs' exact four-asset list; do not add an asset through an alternate uploader. A publication-job amendment and rehearsal are required. Generate the manifest from existing image JSON, portable checksums, and the explicit reviewed compatibility assessment:
 
 ```bash
 node scripts/release-notes.mjs --tag v0.1.0-rc.6 --sha FULL_COMMIT --repository example/project --records /example/private/image-records --checksum-file /example/private/SHA256SUMS --assertions /example/private/assertions.json --manifest-output /example/private/openkit-release-v0.1.0-rc.6.json
@@ -279,9 +279,9 @@ For a private closeout projection, supply `--header /example/private/header.json
 
 Apply [Bounded Test Deployment Update](../specs/20260829-release_management.md#bounded-test-deployment-update). `a1` is staging; `a2`, the earlier persistent test deployment, is now stable production and excluded from automation. Supply the target explicitly, retain separate component results, and prove selected existing Workspace content through public reads. App receipt authentication predicates alone do not establish that content continuity. The App procedure uses prepare, idle preflight, start once, and status of the known request ID. Unknown handoff results require inspection of that ID, never a new start.
 
-`release-update-app.mjs` currently admits its App procedure through offline injected operation adapters only. Its CLI refuses live execution pending Phase 2 owner alignment and an exact live platform-identity adapter. The NanoHost installer refuses differing installed bytes; it is not an unattended replacement operation. Do not bypass its fencing, inhibition, compatibility, or retention contract. Worker activation retains its exact administrator-decision boundary. The coordinator must supply the admitted replacement and activation paths before calling the complete automatic sequence ready.
+`release-update-app.mjs` currently admits its App procedure through offline injected operation adapters only. Its CLI refuses live execution pending an exact live platform-identity adapter. The App owner now admits the bounded administrator-run path, preserving WP2's helper replacement and first-upgrade refusal. Private inputs pin the verified target helper checksum; the adapter must read the current retained grant before start, and missing or changed helper/summary/authority evidence refuses before interruption. The NanoHost installer refuses differing installed bytes; it is not an unattended replacement operation. Do not bypass its fencing, inhibition, compatibility, or retention contract. Worker activation retains its exact administrator-decision boundary. The coordinator must supply the admitted replacement and activation paths before calling the complete automatic sequence ready.
 
-Before the first workflow substitution, run `node scripts/release-tests.mjs --inventory-only`. Repeat this proof when suite-selection or command inputs change. Routine CI executes only the admitted coverage recipe. The WP5 local admission check collected equal inventories for all ten Vitest suites, totaling 9,340 cases, in about eight minutes; that local timing is not a CI timing guarantee.
+Before the first workflow substitution, run `node scripts/release-tests.mjs --inventory-only`. Repeat this proof when suite-selection or command inputs change. Routine CI executes only the admitted coverage recipe. The initial WP5 local admission check collected equal inventories for all ten Vitest suites, totaling 9,340 cases, in about eight minutes; the post-WP2 rebase repeated the comparison with 9,351 equal cases; that local timing is not a CI timing guarantee.
 
 ## Planning Allowance
 

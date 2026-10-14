@@ -41,6 +41,10 @@ function evidence() {
         'Workspace portability target',
         'L5 app-image stopped-server recovery',
         'NanoHost installer fixed-path gate',
+        'Smoke worker-common (linux/amd64)',
+        'Smoke worker-common (linux/arm64)',
+        'Smoke worker-runtimes (linux/amd64)',
+        'Smoke worker-runtimes (linux/arm64)',
       ].map((name) => ({ name, conclusion: 'success', id: 1 })),
     },
     baseline: {
@@ -62,6 +66,18 @@ function evidence() {
   };
 }
 const now = new Date('2026-10-14T00:30:00Z');
+for (const name of evidence().candidate.jobs.map((job) => job.name)) {
+  for (const state of ['absent', 'skipped', 'failure', 'duplicate'])
+    test(`pre-tag refuses ${name}: ${state}`, () => {
+      const input = evidence();
+      const job = input.candidate.jobs.find((entry) => entry.name === name);
+      if (state === 'absent')
+        input.candidate.jobs = input.candidate.jobs.filter((entry) => entry !== job);
+      else if (state === 'duplicate') input.candidate.jobs.push({ ...job });
+      else job.conclusion = state;
+      assert.throws(() => checkPublication(input, { now }));
+    });
+}
 test('first covered prerelease passes a complete mechanical publication check', () => {
   assert.equal(checkPublication(evidence(), { now }).tag, 'v0.1.0-rc.6');
 });

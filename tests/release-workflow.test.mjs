@@ -409,13 +409,13 @@ test('workspace portability uses two runners only behind release or manual gates
   assert.ok(workflow.jobs['package-release-assets'].needs.includes('workspace-portability-target'));
 });
 
-test('app-image recovery smoke is manual, host-placed, opted in, and root-Node pinned', () => {
+test('app-image recovery smoke is main-push or manual, host-placed, opted in, and root-Node pinned', () => {
   const job = workflow.jobs['app-image-admin-recovery'];
   assert.equal(
     job.if,
-    `github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","release-gate","full"]'), inputs.gate)`
+    `(github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","release-gate","full"]'), inputs.gate))`
   );
-  assert.doesNotMatch(job.if, /pull_request|github\.event_name == 'push'/u);
+  assert.doesNotMatch(job.if, /pull_request/u);
   assert.equal(job.container, undefined);
   assert.match(String(job['runs-on']), /^ubuntu-/u);
 
@@ -533,7 +533,7 @@ test('release notes are checked before publication and verified against the gene
   assert.doesNotMatch(workflowBytes, /R001 exact-product no-host-reboot runtime gate remains open/);
 });
 
-// Recorded from main at a6f40272f7566244d55aa1dc5d4e4a59d335ac9a, before CI reuse edits.
+// Unchanged jobs are pinned to reviewed main 23f3e2dc; cadence changes are checked separately below.
 // release-preflight, publish-container-images, github-release, and verify-release were re-recorded for the release-notes generator.
 // verify-release was re-recorded again when the published-body comparison moved into scripts/release-notes.mjs.
 // publish-container-images was re-recorded when the App release build gained identity build arguments.
@@ -548,13 +548,10 @@ const unchangedJobBaseline = {
     '797453722686d9086ed90ccc253580ee7c74a87c3d41b2dec96a3b50bf6fcd27',
   'web-e2e': '9648f5055d4cbfb7dce59b6a7bf8609ed75ddd0125cc5972658c1643aaf919e0',
   smoke: '809f71ab17a0109adbc1775f9d7dcdb37118c99d38f30f8842981a09a925d048',
-  'app-image-admin-recovery': '9c224480a78632a0bf6cee04ad6219264bfcad3601c413dc7d5196235aba0c87',
   'build-nanohost-amd64': '346b895871f280deff3d571843906b4952431d5dcf4870f64a53b7f140169180',
   'build-nanohost-arm64': 'd0b7cdb6291ef8eedacddda56ad81b8f602398ce35acd2ef3eb32a4ae9c9cf32',
   'package-release-assets': '9bb6035b4d43646481b89f1a40651ec23203e343a29a9506d209e5f551de4eea',
   'qualify-nanohost': '9c42422c9716a0ad27688e745ac4ca1716671c9709349dfdca2fd01abe619474',
-  'container-image-matrix': '9c7bb0793a5b45481b14a25502b41d5aea5ec7118d086fdef68867808dcca36d',
-  'smoke-worker-images': 'be01e798f959e57e037827b605e89cb36da82d9c986ff3b3742df12e26c67606',
   'publish-container-images': 'd354fc4bdb01687274e33f475445833d56a1970f18fc3e8c585c4b4b8086c38a',
   'github-release': '342e687fc7bcb4773a791cc7d8925fb4bab7306f4cabade9513ac69238407cfd',
   'verify-release': '20c614ff0f1300b403789cfb9145f5ca26fdfa2f5482d7a3089f0682681b5c9f',
@@ -570,7 +567,16 @@ test('publication, packaging and all other jobs remain byte-identical to the rec
   );
   assert.deepEqual(
     Object.keys(workflow.jobs)
-      .filter((name) => !['l0-l2', 'nano-core-e2e'].includes(name))
+      .filter(
+        (name) =>
+          ![
+            'l0-l2',
+            'nano-core-e2e',
+            'app-image-admin-recovery',
+            'container-image-matrix',
+            'smoke-worker-images',
+          ].includes(name)
+      )
       .sort(),
     Object.keys(unchangedJobBaseline).sort()
   );
@@ -647,4 +653,71 @@ test('reuse shell succeeds for proof and falls back on either unavailable or err
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+/** Evaluate the finite GitHub job expressions with synthetic event contexts only. */
+function jobRuns(id, event, ref, gate = '') {
+  return Boolean(
+    new Function(
+      'github',
+      'inputs',
+      'contains',
+      'fromJSON',
+      'startsWith',
+      `return (${workflow.jobs[id].if});`
+    )(
+      { event_name: event, ref },
+      { gate },
+      (values, value) => values.includes(value),
+      JSON.parse,
+      (value, prefix) => value.startsWith(prefix)
+    )
+  );
+}
+
+test('every main push runs the complete nonpublishing candidate gate without publishing', () => {
+  assert.deepEqual(workflow.on.push.branches, ['main']);
+  assert.equal(workflow.on.push['paths-ignore'], undefined);
+  assert.equal(workflow.on.push.paths, undefined);
+  const gate = [
+    'l0-l2',
+    'nano-core-e2e',
+    'workspace-portability-source',
+    'workspace-portability-target',
+    'smoke',
+    'app-image-admin-recovery',
+    'container-image-matrix',
+    'smoke-worker-images',
+  ];
+  for (const id of gate) {
+    assert.equal(jobRuns(id, 'push', 'refs/heads/main'), true, id);
+    assert.equal(jobRuns(id, 'workflow_dispatch', 'refs/heads/main', 'release-gate'), true, id);
+    assert.equal(jobRuns(id, 'pull_request', 'refs/pull/1/merge'), false, id);
+  }
+  for (const id of [
+    'publish-container-images',
+    'github-release',
+    'verify-release',
+    'release-preflight',
+    'package-release-assets',
+    'qualify-nanohost',
+  ]) {
+    assert.equal(jobRuns(id, 'push', 'refs/heads/main'), false, id);
+    assert.equal(jobRuns(id, 'push', 'refs/tags/v0.1.0-rc.6'), true, id);
+  }
+  for (const id of ['app-image-admin-recovery', 'smoke-worker-images'])
+    assert.equal(jobRuns(id, 'push', 'refs/heads/feature'), false, id);
+  assert.equal(jobRuns('web-e2e', 'push', 'refs/heads/main'), false);
+});
+
+test('L0-L2 uses the admitted single coverage execution while keeping native and root tests', () => {
+  const command = step(
+    workflow.jobs['l0-l2'],
+    'Run L0-L2 verification as the unprivileged image user'
+  );
+  assert.match(command.run, /pnpm -w verify:l0-l2/u);
+  const scripts = JSON.parse(readFileSync('package.json', 'utf8')).scripts;
+  assert.match(scripts['verify:l0-l2'], /pnpm run test:ci/u);
+  assert.doesNotMatch(scripts['verify:l0-l2'], /test:unit|test:coverage/u);
+  assert.match(scripts['test:ci'], /release-tests\.mjs/u);
 });
