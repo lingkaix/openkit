@@ -229,7 +229,7 @@ gh release view "${OPENKIT_RELEASE_TAG}" --json tagName,isDraft,isPrerelease,ass
 gh run view <run-id>
 ```
 
-Close the release change record only when the workflow is green, the GitHub Release is published with exactly the three archives, `SHA256SUMS`, and the machine-readable manifest, both downloaded NanoHost archives pass the shared contained staging verifier, and `worker-common` is anonymously inspectable by digest.
+Close the release change record only when the workflow is green, the GitHub Release is published with exactly the three archives and `SHA256SUMS` for rc.6, both downloaded NanoHost archives pass the shared contained staging verifier, and `worker-common` is anonymously inspectable by digest.
 
 ## Failure And Retry
 
@@ -265,7 +265,7 @@ node scripts/release-notes.mjs --tag v0.1.0-rc.6 --draft-input /example/private/
 
 The draft input has nonempty `changes` and `knownIssues` arrays. Commit only the reviewed two-section notes input. The primary owns release notes and change records.
 
-The workflow attachment remains blocked by the frozen publication jobs' exact four-asset list; do not add an asset through an alternate uploader. A publication-job amendment and rehearsal are required. Generate the manifest from existing image JSON, portable checksums, and the explicit reviewed compatibility assessment:
+The workflow attachment remains blocked by the frozen publication jobs' exact four-asset list; do not add an asset through an alternate uploader. A publication-job amendment and scratch rehearsal are planned together with #225. The manifest is required only after both `github-release` and `verify-release` carry it; rc.6 closes with the existing four assets. Generate the manifest from existing image JSON, portable checksums, and the explicit reviewed compatibility assessment:
 
 ```bash
 node scripts/release-notes.mjs --tag v0.1.0-rc.6 --sha FULL_COMMIT --repository example/project --records /example/private/image-records --checksum-file /example/private/SHA256SUMS --assertions /example/private/assertions.json --manifest-output /example/private/openkit-release-v0.1.0-rc.6.json
