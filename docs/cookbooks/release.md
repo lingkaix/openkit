@@ -260,7 +260,7 @@ Do not split chunks or change the Vite warning threshold without a measured perf
 Before freezing P, generate a draft from accepted change descriptions and carried-forward issue dispositions, then review its meaning:
 
 ```bash
-node scripts/release-notes.mjs --tag v0.1.0-rc.6 --draft-input /example/private/accepted-work.json --output /example/private/notes-draft.md
+node scripts/release-record.mjs --tag v0.1.0-rc.6 --draft-input /example/private/accepted-work.json --output /example/private/notes-draft.md
 ```
 
 The draft input has nonempty `changes` and `knownIssues` arrays. Commit only the reviewed two-section notes input. The primary owns release notes and change records.
@@ -268,12 +268,12 @@ The draft input has nonempty `changes` and `knownIssues` arrays. Commit only the
 The workflow attachment remains blocked by the frozen publication jobs' exact four-asset list; do not add an asset through an alternate uploader. A publication-job amendment and scratch rehearsal are planned together with #225. The manifest is required only after both `github-release` and `verify-release` carry it; rc.6 closes with the existing four assets. Generate the manifest from existing image JSON, portable checksums, and the explicit reviewed compatibility assessment:
 
 ```bash
-node scripts/release-notes.mjs --tag v0.1.0-rc.6 --sha FULL_COMMIT --repository example/project --records /example/private/image-records --checksum-file /example/private/SHA256SUMS --assertions /example/private/assertions.json --manifest-output /example/private/openkit-release-v0.1.0-rc.6.json
+node scripts/release-record.mjs --tag v0.1.0-rc.6 --sha FULL_COMMIT --repository example/project --records /example/private/image-records --checksum-file /example/private/SHA256SUMS --assertions /example/private/assertions.json --manifest-output /example/private/openkit-release-v0.1.0-rc.6.json
 ```
 
 The assertion shape is documented in the [tests guide](../../tests/README.md). Missing or unknown compatibility stops generation. It does not replace protected host compatibility assessment or authorize a migration or rollback.
 
-For a private closeout projection, supply `--header /example/private/header.json` and `--qualification-summary /example/private/summary.json` to the existing notes generation command. The producer renders bounded stage results and sixteen kit-generated rows. Do not edit immutable published notes to append post-publication results; retain closeout in the existing release change record.
+For a private closeout projection, supply `--header /example/private/header.json` and `--qualification-summary /example/private/summary.json` to `scripts/release-record.mjs`, which imports the unchanged notes producer. The producer renders bounded stage results and sixteen kit-generated rows. Do not edit immutable published notes to append post-publication results; retain closeout in the existing release change record.
 
 ## Automatic Deployment Boundary
 

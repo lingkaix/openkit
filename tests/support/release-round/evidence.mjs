@@ -1,18 +1,8 @@
 /** Offline comparisons of complete deciding public records; no transport or host access. */
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import {
-  canonical,
-  digest,
-  files,
-  RUNTIMES,
-  readJson,
-  replySentence,
-  SCENARIOS,
-  save,
-  sha,
-  validateParams,
-} from './safety.mjs';
+import { canonical, files, readJson, save, sha } from '../../../scripts/release-safety.mjs';
+import { digest, RUNTIMES, replySentence, SCENARIOS, validateParams } from './safety.mjs';
 
 const terminal = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
 const data = (v) => (v?.ok === true ? v.data : undefined);

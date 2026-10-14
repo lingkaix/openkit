@@ -3,8 +3,8 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { canonical, noSecrets, once, save } from '../tests/support/release-round/safety.mjs';
-import { createReleaseManifest } from './release-notes.mjs';
+import { createReleaseManifest } from './release-record.mjs';
+import { canonical, noSecrets, once, save } from './release-safety.mjs';
 
 const predicates = [
   'imageMatch',

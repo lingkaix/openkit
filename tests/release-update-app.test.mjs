@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { createReleaseManifest } from '../scripts/release-notes.mjs';
+import { createReleaseManifest } from '../scripts/release-record.mjs';
 import { updateApp, validateUpdate } from '../scripts/release-update-app.mjs';
 
 const target = 'https://staging.example.invalid',

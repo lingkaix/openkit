@@ -168,7 +168,7 @@ Retain one release-level header with the tag, the asset set, publication authori
 
 Outcome codes are P (pass), K (known defect), E (accepted external), N (new defect), T (environment or tool failure), and I (inconclusive). The maintained kit generates verdicts from retained product records. An independent check is required for a non-pass row and for a row the collector cannot decide. An L6 judge remains required for a catalog story. Do not add per-pass narrative review. Complete evidence stays private under Persistent Deployment Acceptance, including attribution, deciding records, and diagnostic coverage. The public record contains no host name, private path, Thread identifier, or transcript. The compact projection never replaces that evidence and never creates a product record owner.
 
-Generate the header and per-case rows from existing image records, qualification summaries, and reviewed authored intent through the existing notes producer. Retain stage start/end timestamps. Generate draft changes from accepted work and carry forward known issues for meaning review; commit the reviewed two-section input before freezing P. Do not rewrite completed evidence into P.
+Generate the header and per-case rows from existing image records, qualification summaries, and reviewed authored intent through `scripts/release-record.mjs`, which reuses the existing notes producer. Retain stage start/end timestamps. Generate draft changes from accepted work and carry forward known issues for meaning review; commit the reviewed two-section input before freezing P. Do not rewrite completed evidence into P.
 
 ### Candidate CI And Tag Reuse
 

@@ -4,22 +4,20 @@ import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { telemetry } from './evidence.mjs';
 import {
   canonical,
   credential,
   execute,
   noSecrets,
   once,
-  RUNTIMES,
   readJson,
   redact,
-  replySentence,
   save,
   scan,
   sha,
-  validateParams,
-} from './safety.mjs';
+} from '../../../scripts/release-safety.mjs';
+import { telemetry } from './evidence.mjs';
+import { RUNTIMES, replySentence, validateParams } from './safety.mjs';
 
 const here = fileURLToPath(import.meta.url),
   repo = path.resolve(path.dirname(here), '../../..');
@@ -67,6 +65,10 @@ async function instrument() {
     entries = [];
   for (const n of names)
     entries.push({ file: n, sha256: sha(await fs.readFile(path.join(repo, 'tests/support', n))) });
+  entries.push({
+    file: 'scripts/release-safety.mjs',
+    sha256: sha(await fs.readFile(path.join(repo, 'scripts/release-safety.mjs'))),
+  });
   return { entries, sha256: sha(canonical(entries)) };
 }
 async function git(io, args) {

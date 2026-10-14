@@ -19,7 +19,7 @@ The current workflow policy is intentionally resource-light:
 - Release tag workflows are serialized, third-party Actions are commit-pinned, and OCI creation time comes from the release commit.
 - The terminal job verifies GitHub Release state and all four attachments, every image tag and digest, stable or prerelease `latest` behavior, the bundled Skill under the supported Node runtime and its helper bytes against the reviewed release checkout, both downloaded NanoHost archives through the shared staging verifier, and the public worker base through a logged-out exact-digest inspection.
 
-The machine-readable manifest producer is implemented in `scripts/release-notes.mjs`, but its workflow attachment remains blocked: the frozen `github-release` and `verify-release` jobs admit exactly four assets. Adding the fifth asset and its verification requires a publication-path amendment and scratch rehearsal; no manifest job currently publishes or attests that asset.
+The machine-readable manifest producer is implemented in `scripts/release-record.mjs`, but its workflow attachment remains blocked: the frozen `github-release` and `verify-release` jobs admit exactly four assets. Adding the fifth asset and its verification requires a publication-path amendment and scratch rehearsal; no manifest job currently publishes or attests that asset.
 
 The detailed testing strategy is documented in `docs/specs/20260529-test_strategy.md`.
 

@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { canonical, execute, readJson, save, sha } from '../scripts/release-safety.mjs';
 import {
   bundle as originalBundle,
   parameters as originalParameters,
@@ -17,15 +18,10 @@ import {
   runtimeGroup,
 } from './support/release-round/live.mjs';
 import {
-  canonical,
   digest,
-  execute,
   RUNTIMES,
-  readJson,
   replySentence,
   SCENARIOS,
-  save,
-  sha,
   validateParams,
 } from './support/release-round/safety.mjs';
 
@@ -211,6 +207,11 @@ test('Worker-only prepare makes no browser or remote call', async (t) => {
   });
   await assert.rejects(fs.access(path.join(dir, 'browser-preflight.json')), /ENOENT/);
   assert((await readJson(path.join(dir, 'prepare-complete.json'))).runnerSha256);
+  const prepared = await readJson(path.join(dir, 'prepare.json'));
+  assert.equal(
+    prepared.instrumentFiles.find((entry) => entry.file === 'scripts/release-safety.mjs').sha256,
+    sha(await fs.readFile(new URL('../scripts/release-safety.mjs', import.meta.url)))
+  );
 });
 
 test('observe retains a non-inspection failure instead of marking only a timeout', async (t) => {
@@ -386,6 +387,11 @@ async function summaryFixture(dir, p, b = bundle(p)) {
     entries = [{ file: 'synthetic-instrument', sha256: sha('example') }];
   b.attribution.runnerSha256 = sha(canonical(entries));
   b.attribution.parameterSha256 = sha(raw);
+  entries.push({
+    file: 'scripts/release-safety.mjs',
+    sha256: sha(await fs.readFile(new URL('../scripts/release-safety.mjs', import.meta.url))),
+  });
+  b.attribution.runnerSha256 = sha(canonical(entries));
   await fs.writeFile(path.join(dir, 'params.json'), raw);
   await save(path.join(dir, 'prepare.json'), {
     parameterSha256: sha(raw),
@@ -417,6 +423,10 @@ async function pinnedFixture(dir, p) {
       file: name,
       sha256: sha(await fs.readFile(new URL(`./support/${name}`, import.meta.url))),
     });
+  entries.push({
+    file: 'scripts/release-safety.mjs',
+    sha256: sha(await fs.readFile(new URL('../scripts/release-safety.mjs', import.meta.url))),
+  });
   await fs.writeFile(path.join(dir, 'params.json'), raw);
   await save(path.join(dir, 'prepare.json'), {
     parameterSha256: sha(raw),

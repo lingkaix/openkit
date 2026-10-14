@@ -4,12 +4,19 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { createReleaseNotes, parseReleaseNotesInput } from '../scripts/release-notes.mjs';
 import {
   compactReleaseRecord,
   createReleaseManifest,
+  createReleaseRecord,
   draftReleaseNotes,
-  parseReleaseNotesInput,
-} from '../scripts/release-notes.mjs';
+} from '../scripts/release-record.mjs';
+
+test('the invoked release-notes file is byte-identical to the proved baseline', () => {
+  const baseline = spawnSync('git', ['show', '23f3e2dc:scripts/release-notes.mjs']);
+  assert.equal(baseline.status, 0);
+  assert.deepEqual(readFileSync('scripts/release-notes.mjs'), baseline.stdout);
+});
 
 /** Exact synthetic image/checksum/assessment inputs from the existing producers. */
 export function manifestInput() {
@@ -128,6 +135,61 @@ test('draft producer preserves the existing reviewed two-section grammar', () =>
   assert.equal(parseReleaseNotesInput(draft), draft.trimEnd());
   assert.throws(() => draftReleaseNotes({ changes: [], knownIssues: ['None.'] }));
 });
+test('record command reuses the unchanged published notes and generates the reviewed draft', (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'release-record-cli-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const tag = 'v0.1.0-rc.6',
+    digest = `sha256:${'b'.repeat(64)}`;
+  mkdirSync(path.join(dir, 'release-notes'));
+  mkdirSync(path.join(dir, 'records'));
+  writeFileSync(
+    path.join(dir, 'release-notes', `${tag}.md`),
+    draftReleaseNotes({ changes: ['Reviewed change.'], knownIssues: ['Known limitation.'] })
+  );
+  writeFileSync(
+    path.join(dir, 'records/app.json'),
+    JSON.stringify({ id: 'app', digest, platforms: [{ platform: 'linux/arm64', digest }] })
+  );
+  writeFileSync(path.join(dir, 'records/app.md'), `App: ${digest}\n`);
+  const input = {
+    repoRoot: dir,
+    recordsDir: path.join(dir, 'records'),
+    tag,
+    sha: 'a'.repeat(40),
+    checksum: 'c'.repeat(64),
+    visibility: 'public',
+    runUrl: 'https://example.invalid/actions/runs/1',
+  };
+  const original = createReleaseNotes(input);
+  assert.equal(createReleaseRecord(input), original);
+  const header = {
+    tag,
+    sourceCommit: input.sha,
+    authorizationReference: 'synthetic-grant',
+    candidateRunId: 1,
+    visibility: 'public',
+    stages: [],
+  };
+  const compact = createReleaseRecord({ ...input, header });
+  assert(compact.startsWith(original));
+  assert.match(compact, /Compact Release Record/);
+  const draftInput = path.join(dir, 'draft.json'),
+    output = path.join(dir, 'draft.md');
+  writeFileSync(
+    draftInput,
+    JSON.stringify({ changes: ['Reviewed change.'], knownIssues: ['Known limitation.'] })
+  );
+  const run = spawnSync(
+    process.execPath,
+    ['scripts/release-record.mjs', '--tag', tag, '--draft-input', draftInput, '--output', output],
+    { encoding: 'utf8' }
+  );
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(
+    readFileSync(output, 'utf8').trimEnd(),
+    readFileSync(path.join(dir, 'release-notes', `${tag}.md`), 'utf8').trimEnd()
+  );
+});
 test('compact record keeps effect results separate and refuses an incomplete header', () => {
   const tag = 'v0.1.0-rc.6',
     sha = 'a'.repeat(40);
@@ -168,7 +230,7 @@ test('manifest CLI generates the asset and refuses changed downloaded bytes', (t
   writeFileSync(assertions, JSON.stringify(input.assertions));
   writeFileSync(checksums, input.checksums);
   const args = [
-    path.resolve('scripts/release-notes.mjs'),
+    path.resolve('scripts/release-record.mjs'),
     '--tag',
     input.tag,
     '--sha',

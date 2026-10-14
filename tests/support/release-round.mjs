@@ -2,9 +2,9 @@
 /** One release-round entry point; summarize is strictly offline. */
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readJson } from '../../scripts/release-safety.mjs';
 import { summarize } from './release-round/evidence.mjs';
 import { prepare, round } from './release-round/live.mjs';
-import { readJson } from './release-round/safety.mjs';
 
 /** Parse the three declared commands. */
 export async function main(args = process.argv.slice(2)) {
