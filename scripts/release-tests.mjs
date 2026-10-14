@@ -120,6 +120,7 @@ export function releaseTests({ root = process.cwd(), inventoryOnly = false } = {
     'build',
     ...owners.filter((o) => o.vitest).map((o) => `--filter=${o.name}^...`),
   ]);
+  command(['pnpm', '--filter', '@openkit/retrieval-kernel', 'build']);
   for (const owner of owners.filter((o) => o.vitest))
     console.log(JSON.stringify(coveredSuite(owner, { inventoryOnly })));
   if (inventoryOnly) return;

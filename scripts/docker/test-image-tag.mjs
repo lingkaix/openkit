@@ -101,10 +101,20 @@ if (requestedField) {
   process.stdout.write(`${Array.isArray(value) ? value.join(',') : value}\n`);
   process.exit(0);
 }
-const digest = digestBuildInputs([entry.dockerfile, entry.smoke, 'apps/web/package.json'], {
-  context: entry.context,
-  platforms: entry.platforms,
-});
+const digest = digestBuildInputs(
+  [
+    entry.dockerfile,
+    entry.smoke,
+    'apps/web/package.json',
+    'scripts/retrieval-dictionary.py',
+    'apps/retrieval-kernel/vendor/mecab-ipadic-2.7.0-20250920.tar.gz',
+    'apps/retrieval-kernel/vendor/IPADIC-COPYING',
+  ],
+  {
+    context: entry.context,
+    platforms: entry.platforms,
+  }
+);
 if (process.argv.includes('--digest')) {
   process.stdout.write(`${digest}\n`);
   process.exit(0);

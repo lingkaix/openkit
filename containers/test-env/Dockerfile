@@ -71,6 +71,13 @@ RUN apt-get update \
   && cargo clippy --version \
   && rustfmt --version
 
+# Cache and verify the sole tokenizer archive before ordinary offline Cargo gates.
+ENV LINDERA_BUILD_DICTIONARY_CACHE_DIR="/opt/openkit-lindera"
+COPY scripts/retrieval-dictionary.py /usr/local/lib/openkit/retrieval-dictionary.py
+COPY apps/retrieval-kernel/vendor/ /usr/local/lib/openkit/vendor/
+RUN python3 /usr/local/lib/openkit/retrieval-dictionary.py --cache "${LINDERA_BUILD_DICTIONARY_CACHE_DIR}" --archive /usr/local/lib/openkit/vendor/mecab-ipadic-2.7.0-20250920.tar.gz \
+  && chown -R node:node "${LINDERA_BUILD_DICTIONARY_CACHE_DIR}"
+
 # The repository arrives as a bind mount owned by the host user, which Git
 # refuses to read as root without this declaration. pnpm test:unit runs
 # `git diff --exit-code` on the generated CLI bundle and depends on it.

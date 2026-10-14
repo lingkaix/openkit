@@ -146,3 +146,5 @@ Run the focused offline checks:
 ```bash
 node --test tests/release-publication-check.test.mjs tests/release-manifest.test.mjs tests/release-tests.test.mjs tests/release-update-app.test.mjs tests/release-round.test.mjs tests/release-notes.test.mjs
 ```
+
+`retrieval-packaging.test.mjs` verifies the exact vendored IPADIC archive, offline cache population/reuse, exact COPYING notice, corrupt-cache refusal without replacement, and upstream missing-crate notice provenance. It performs no network requests or container effects.

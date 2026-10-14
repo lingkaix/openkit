@@ -32,12 +32,14 @@ describe('app Dockerfile', () => {
     expect(runtimeStage).toContain('    git \\\n');
   });
 
-  it('uses the cataloged digest-pinned base in both stages', () => {
+  it('uses the cataloged digest-pinned base in every stage', () => {
     const dockerfile = readFileSync(appDockerfile, 'utf8');
     const manifest = JSON.parse(readFileSync(imageManifest, 'utf8'));
     const app = manifest.images.find((image: { id: string }) => image.id === 'app');
 
     expect(app.baseImage).toMatch(/@sha256:[a-f0-9]{64}$/);
-    expect(dockerfile.split(`FROM ${app.baseImage}`).length - 1).toBe(2);
+    const stages = dockerfile.split('\n').filter((line) => line.startsWith('FROM '));
+    expect(stages).toHaveLength(3);
+    expect(stages.every((line) => line.startsWith(`FROM ${app.baseImage} AS `))).toBe(true);
   });
 });

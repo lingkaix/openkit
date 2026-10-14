@@ -2,7 +2,7 @@
 
 This image packages NanoCore, Web UI assets, Caddy, migrations, and data templates behind one public HTTP port.
 
-Both build stages use the exact digest-pinned Node base declared for `app` in `containers/images.json`.
+All build and runtime stages use the exact digest-pinned Node base declared for `app` in `containers/images.json`.
 
 A release build passes `OPENKIT_RELEASE_TAG` and `OPENKIT_SOURCE_COMMIT` and the runtime stage writes `/usr/local/lib/openkit/release-identity.json`. A build without those arguments, including local and non-release CI builds, omits the file. The identity is not an image `ENV`: the App-update helper replays the previous container's `Config.Env`, which would otherwise keep the old identity after an update. NanoCore reads the file at startup. See [Container Image Packaging](../../docs/specs/20260708-container_image_packaging.md).
 
@@ -44,3 +44,5 @@ NanoCore uses Node's detached process groups and a private supervisor IPC channe
 The manual CI `smoke` gate builds this image and runs the operator against disposable data and credential bind mounts without starting NanoCore or Caddy. After a local image build, the same opt-in host check is `OPENKIT_TEST_APP_IMAGE_RECOVERY=1 pnpm run test:app-image-admin-recovery`; never point it at an active or persistent deployment.
 
 It does not own worker agent runtimes. Worker execution belongs in `containers/worker-*` images.
+
+The retrieval build stage supplies the target-native Rust executable for Linux amd64 or arm64. It verifies the vendored mecab-ipadic 2.7.0-20250920 archive before compiling embedded tokenizers, then copies the executable to `/usr/local/bin/retrieval-kernel` and the complete available dependency notices, exact SPDX metadata, and upstream notice provenance to `/usr/local/share/licenses/retrieval-kernel/`. Runtime performs no dictionary download. The app's `notices/GAPS.json` lists unresolved upstream notice supply; packaging does not claim those gaps are settled. No CLI or MCP face is installed in a Sandbox image.

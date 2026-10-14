@@ -9,7 +9,13 @@
     "pnpm-workspace.yaml",
     "tsconfig.base.json"
   ],
-  "globalPassThroughEnv": ["CARGO_HOME", "RUSTUP_HOME", "RUST_VERSION"],
+  "globalPassThroughEnv": [
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+    "RUST_VERSION",
+    "LINDERA_BUILD_DICTIONARY_CACHE_DIR",
+    "RUSTUP_TOOLCHAIN"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
@@ -47,6 +53,21 @@
     },
     "clean": {
       "cache": false
+    },
+    "@openkit/retrieval-kernel#build": {
+      "dependsOn": ["^build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "../../Cargo.toml",
+        "../../Cargo.lock",
+        "../../scripts/retrieval-cargo.sh",
+        "../../scripts/retrieval-dictionary.py"
+      ],
+      "outputs": ["../../target/debug/retrieval-kernel"]
+    },
+    "@openkit/nanocore#test": {
+      "dependsOn": ["^build", "^test", "@openkit/retrieval-kernel#build"],
+      "outputs": ["coverage/**"]
     }
   }
 }

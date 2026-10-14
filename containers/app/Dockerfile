@@ -1,3 +1,30 @@
+FROM node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS retrieval-builder
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ENV RUST_VERSION=1.97.1
+ENV CARGO_HOME="/usr/local/cargo"
+ENV RUSTUP_HOME="/usr/local/rustup"
+ENV PATH="${CARGO_HOME}/bin:${PATH}"
+ENV LINDERA_BUILD_DICTIONARY_CACHE_DIR="/opt/openkit-lindera"
+ARG TARGETARCH
+WORKDIR /build
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl g++ python3 pkg-config \
+  && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain "${RUST_VERSION}" --profile minimal \
+  && rm -rf /var/lib/apt/lists/*
+COPY Cargo.toml Cargo.lock ./
+COPY apps/retrieval-kernel/ apps/retrieval-kernel/
+COPY scripts/retrieval-dictionary.py scripts/retrieval-notices.py scripts/
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=openkit-retrieval-registry-${TARGETARCH} \
+    --mount=type=cache,target=/build/target,id=openkit-retrieval-target-${TARGETARCH} \
+    python3 scripts/retrieval-dictionary.py --cache "${LINDERA_BUILD_DICTIONARY_CACHE_DIR}" --notice /out/licenses/IPADIC-COPYING \
+  && cargo fetch --locked \
+  && cargo build --locked --offline --release -p retrieval-kernel \
+  && strip target/release/retrieval-kernel \
+  && cp target/release/retrieval-kernel /out/retrieval-kernel \
+  && python3 scripts/retrieval-notices.py --output /out/licenses/crates
+
 FROM node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS builder
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -64,6 +91,8 @@ RUN corepack enable \
   && corepack prepare pnpm@10.33.3 --activate \
   && pnpm --version
 
+COPY --from=retrieval-builder /out/retrieval-kernel /usr/local/bin/retrieval-kernel
+COPY --from=retrieval-builder /out/licenses/ /usr/local/share/licenses/retrieval-kernel/
 COPY --from=builder /deploy/nanocore/ /app/nanocore/
 COPY --from=builder /build/apps/web/dist/ /srv/web/
 COPY Caddyfile /etc/caddy/Caddyfile

@@ -1,0 +1,23 @@
+[
+  {
+    "crate": "htmlescape",
+    "version": "0.3.1",
+    "reason": "No recorded upstream revision; no release tag was verified."
+  },
+  {
+    "crate": "kanaria",
+    "version": "0.2.0",
+    "revision": "c994ccf06d179851a1c7c3285c3a408ccb6279ec",
+    "reason": "No matching upstream license file was obtainable."
+  },
+  {
+    "crate": "winapi-i686-pc-windows-gnu",
+    "version": "0.4.0",
+    "reason": "No recorded upstream revision; no release tag was verified."
+  },
+  {
+    "crate": "winapi-x86_64-pc-windows-gnu",
+    "version": "0.4.0",
+    "reason": "No recorded upstream revision; no release tag was verified."
+  }
+]
