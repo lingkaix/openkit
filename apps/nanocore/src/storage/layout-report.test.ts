@@ -31,7 +31,10 @@ describe('storage layout report', () => {
       const report = createStorageLayoutReport(dataRoot);
 
       expect(report.serverDb.exists).toBe(true);
-      expect(report.serverDb.appliedMigrations).toEqual(['core_0000_setup']);
+      expect(report.serverDb.appliedMigrations).toEqual([
+        'core_0000_setup',
+        'core_0001_concurrent_turn_capacity',
+      ]);
       expect(report.users).toEqual(
         expect.arrayContaining([
           {
