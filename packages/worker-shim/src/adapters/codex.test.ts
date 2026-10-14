@@ -3123,11 +3123,22 @@ describe('round 4 failure boundaries', () => {
   });
 
   it('bounds setup and native cleanup without waiting for an unadmitted capture', async () => {
-    const cancelled = vi.spyOn(CodexRuntimeCapture.prototype, 'invalidate');
+    const originalInvalidate = CodexRuntimeCapture.prototype.invalidate;
+    let invalidateSettled = Promise.resolve();
+    const cancelled = vi
+      .spyOn(CodexRuntimeCapture.prototype, 'invalidate')
+      .mockImplementation(function (this: CodexRuntimeCapture) {
+        invalidateSettled = originalInvalidate.call(this);
+        return invalidateSettled;
+      });
+    let release: () => void = () => undefined;
     try {
       const roots = await tempRoots();
       closers.push(async () => rm(roots.base, { recursive: true, force: true }));
       const child = controlledPeer();
+      // Hold the setup and stop budgets until the capture sink has actually been entered.
+      // Wall-clock expiry under load otherwise fires during handshake, before invalidation exists.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
       const session = await openCodexResidentSession(openInput(roots), {
         spawnProcess: () => child,
         // The peer never exits; cleanup remains unproved when setup expires.
@@ -3135,30 +3146,51 @@ describe('round 4 failure boundaries', () => {
         setupTimeoutMs: 10,
         controlTimeoutMs: 20,
       });
-      let release: (() => void) | undefined;
       const captureWait = new Promise<void>((resolve) => {
         release = resolve;
+      });
+      let signalSinkEntered: () => void = () => undefined;
+      const sinkEntered = new Promise<void>((resolve) => {
+        signalSinkEntered = resolve;
       });
       const input = turnInput(roots, [], 'capture deadline', []);
       const starting = session.startTurn({
         ...input,
-        runtimeCapture: { ...input.runtimeCapture, emit: () => captureWait },
+        runtimeCapture: {
+          ...input.runtimeCapture,
+          emit: () => {
+            signalSinkEntered();
+            return captureWait;
+          },
+        },
       });
       const observed = starting.then(
         (turn) =>
           turn.settled.then(
-            () => 'resolved',
-            () => 'rejected'
+            () => 'resolved' as const,
+            () => 'rejected' as const
           ),
-        () => 'rejected'
+        () => 'rejected' as const
       );
-      expect(await Promise.race([observed, delay(100).then(() => 'pending')])).toBe('rejected');
+      await sinkEntered;
+      expect(cancelled).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(cancelled).toHaveBeenCalledOnce();
+      // Two stopGraceMs signal windows share one stop budget of the same length.
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await observed).toBe('rejected');
       expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
-      release!();
-      await delay(5);
+      release();
+      await invalidateSettled;
+      await vi.advanceTimersByTimeAsync(20);
       expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
       expect(cancelled).toHaveBeenCalledOnce();
     } finally {
+      release();
+      if (vi.isFakeTimers()) {
+        await vi.advanceTimersByTimeAsync(50);
+        vi.useRealTimers();
+      }
       cancelled.mockRestore();
     }
   });
