@@ -1,10 +1,16 @@
 // openkit-test-platform: posix
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { compareInventory, coveredSuite, testOwners } from '../scripts/release-tests.mjs';
+import {
+  compareInventory,
+  coveredSuite,
+  packageSuite,
+  releaseTests,
+  testOwners,
+} from '../scripts/release-tests.mjs';
 import { runTestSuite } from '../scripts/validate-test-governance.mjs';
 
 const inventory = [{ name: 'case', file: '/example/case.test.ts' }];
@@ -79,6 +85,52 @@ test('root and native suites remain distinct discovered owners', () => {
   assert.equal(owners.filter((o) => o.vitest).length, 10);
   assert(owners.some((o) => o.name === '@openkit/nanohost' && !o.vitest));
   assert(owners.some((o) => o.name === '@openkit/models-dev-catalog' && !o.vitest));
+});
+for (const [name, subject, passes] of [
+  ['success', 'console.log("ok 1 - fixture.native > success");', true],
+  ['undeclared skip', 'console.log("ok 1 - fixture.native > skipped # SKIP");', false],
+  ['failure', 'process.exitCode = 7;', false],
+])
+  test(`actual non-Vitest package execution enforces ${name}`, (t) => {
+    const root = mkdtempSync(path.join(tmpdir(), 'release-package-admission-'));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(path.join(root, 'apps'));
+    const pkg = path.join(root, 'packages/native');
+    mkdirSync(pkg, { recursive: true });
+    writeFileSync(path.join(root, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\n');
+    writeFileSync(path.join(root, 'package.json'), JSON.stringify({ private: true }));
+    writeFileSync(
+      path.join(pkg, 'package.json'),
+      JSON.stringify({ name: '@fixture/native', scripts: { test: 'node subject.mjs' } })
+    );
+    writeFileSync(path.join(pkg, 'subject.mjs'), subject);
+    const run = () => packageSuite({ name: '@fixture/native' }, { root });
+    if (passes) assert.doesNotThrow(run);
+    else assert.throws(run, /Guarded test execution failed/);
+  });
+test('routine test:ci refuses a non-Vitest skip before later build or root checks', (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'release-routine-admission-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(path.join(root, 'apps'));
+  mkdirSync(path.join(root, 'packages/native'), { recursive: true });
+  symlinkSync(path.resolve('node_modules'), path.join(root, 'node_modules'));
+  const { packageManager } = JSON.parse(readFileSync('package.json', 'utf8'));
+  writeFileSync(path.join(root, 'package.json'), JSON.stringify({ private: true, packageManager }));
+  writeFileSync(path.join(root, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\n');
+  writeFileSync(
+    path.join(root, 'pnpm-lock.yaml'),
+    "lockfileVersion: '9.0'\nimporters:\n  .: {}\n  packages/native: {}\n"
+  );
+  writeFileSync(path.join(root, 'turbo.json'), JSON.stringify({ tasks: { build: {} } }));
+  writeFileSync(
+    path.join(root, 'packages/native/package.json'),
+    JSON.stringify({ name: '@fixture/native', scripts: { test: 'node subject.mjs' } })
+  );
+  writeFileSync(
+    path.join(root, 'packages/native/subject.mjs'),
+    'console.log("ok 1 - fixture.native > injected # SKIP");'
+  );
+  assert.throws(() => releaseTests({ root }), /@fixture\/native: Guarded test execution failed/);
 });
 
 /** The real coverage invocation sees a stable local success/failure/skip subject. */

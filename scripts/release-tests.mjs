@@ -98,6 +98,11 @@ export function coveredSuite(
     execution: inventoryOnly ? 'not run' : 'coverage passed',
   };
 }
+/** Run distinct package tests under the same failure and skip admission as coverage and root suites. */
+export function packageSuite(owner, { root = process.cwd(), run = guardedExecution } = {}) {
+  const errors = run({ cwd: root, command: ['pnpm', '--filter', owner.name, 'test'] });
+  if (errors.length) throw Error(`${owner.name}: ${errors.join('; ')}`);
+}
 /** Run distinct native/catalog tests and root tests without losing the previous unit gate's build checks. */
 export function releaseTests({ root = process.cwd(), inventoryOnly = false } = {}) {
   const owners = testOwners(root);
@@ -118,8 +123,7 @@ export function releaseTests({ root = process.cwd(), inventoryOnly = false } = {
   for (const owner of owners.filter((o) => o.vitest))
     console.log(JSON.stringify(coveredSuite(owner, { inventoryOnly })));
   if (inventoryOnly) return;
-  for (const owner of owners.filter((o) => !o.vitest))
-    command(['pnpm', '--filter', owner.name, 'test']);
+  for (const owner of owners.filter((o) => !o.vitest)) packageSuite(owner, { root });
   command(['pnpm', '--filter', '@openkit/core-client...', 'build']);
   command([
     'pnpm',
