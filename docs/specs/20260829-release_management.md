@@ -210,7 +210,7 @@ The `release-blocker` label identifies an open finding that blocks the applicabl
 
 ### Pre-Stable Deployment Reset And Protected Accounts
 
-Before the first stable release, `v0.1.0`, a change MAY reset deployment data instead of migrating it. [Contract Evolution](../core/contract-evolution.md#retained-data-continuity) owns that boundary. The engineer's correction is recorded in [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md).
+Before the first stable release, `v0.1.0`, a change MAY reset deployment data instead of migrating it. [Contract Evolution](../core/contract-evolution.md#retained-data-continuity) owns that boundary. [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md) records the engineer's pre-`v0.1.0` interpretation of root AGENTS.md clauses NONNEG-001 and COMPAT-001. This reset scope follows that interpretation, not an AGENTS.md amendment.
 
 If a release cannot read the previous release's retained data, its release record and operator procedure MUST say so. They MUST name the affected data and state whether the selected transition carries it forward or resets it. A reset requires an explicitly authorized operator procedure for the exact deployment and data scope. Ordinary startup MUST NOT reset data. A reset does not expand the standing automated update grant, authorize a production effect, replay unknown work, or bypass predecessor fencing.
 

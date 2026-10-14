@@ -298,7 +298,7 @@ Optional extension fields must be namespaced and must not become the only place 
 
 ## Manifest Evolution Rules
 
-General authority-bearing field classification and required-feature fail-closed rejection are owned by `docs/specs/20260703-schema_evolution_record_envelope.md`. This contract provides no older-reader compatibility obligation: an older reader need not accept a newer manifest. Existing manifests follow the first-stable-release continuity boundary in [Contract Evolution](../core/contract-evolution.md#retained-data-continuity). Before `v0.1.0`, an explicit deployment reset may replace migration; current manifest validation remains binding.
+General authority-bearing field classification and required-feature fail-closed rejection are owned by `docs/specs/20260703-schema_evolution_record_envelope.md`. This contract provides no older-reader compatibility obligation: an older reader need not accept a newer manifest. Existing manifests follow the first-stable-release continuity boundary in [Contract Evolution](../core/contract-evolution.md#retained-data-continuity). Before `v0.1.0`, an explicit deployment reset may replace migration; current manifest validation remains binding. The pre-`v0.1.0` scope follows the engineer's interpretation of NONNEG-001 and COMPAT-001 in [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md).
 
 This spec owns only the manifest-specific classification:
 

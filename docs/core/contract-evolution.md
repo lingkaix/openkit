@@ -92,7 +92,7 @@ A schema is not automatically durable, and a durable semantic contract does not 
 
 ## Retained Data Continuity
 
-OpenKit's data-continuity obligation starts with the first stable release, `v0.1.0`. Before that release, a change MAY reset deployment data instead of migrating it. A prerelease does not start the obligation. Teams MUST already design owned shapes for stable storage and file formats and safe retention and reading after release. Closed Core, Open Extension applies now. The engineer corrected the earlier reading in [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md).
+OpenKit's data-continuity obligation starts with the first stable release, `v0.1.0`. Before that release, a change MAY reset deployment data instead of migrating it. A prerelease does not start the obligation. Teams MUST already design owned shapes for stable storage and file formats and safe retention and reading after release. Closed Core, Open Extension applies now. [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md) records the engineer's interpretation of root AGENTS.md clauses NONNEG-001 and COMPAT-001 for versions before `v0.1.0`. This rule applies that interpretation; AGENTS.md remains unchanged.
 
 If a release cannot read the previous release's retained data, its release record and operator procedure MUST state that limit. An explicit operator reset MUST preserve the protected deployment accounts under their deployment-operation owner. Startup MUST NOT reset data automatically. The reset permission does not waive authorization, effect-domain fencing, credential handling, or other Safety Kernel rules.
 

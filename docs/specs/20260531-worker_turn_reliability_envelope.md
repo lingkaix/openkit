@@ -68,7 +68,7 @@ The protocol promotion is limited to a stable `StopReason` enum and a rule that 
 
 All other pieces begin in `apps/nanocore`: the shared Internal Agent Loop's Provider-call reliability, runtime checkpoints, context package projection, accepted-request delivery, and worker-turn stop policy.
 
-Implementation may break app-local shapes where that gives a cleaner design. Retained records follow the first-stable-release continuity boundary in [Contract Evolution](../core/contract-evolution.md#retained-data-continuity). Before `v0.1.0`, an explicit deployment reset may replace carry-forward. Reset permission never proves an interrupted external effect absent or authorizes its replay.
+Implementation may break app-local shapes where that gives a cleaner design. Retained records follow the first-stable-release continuity boundary in [Contract Evolution](../core/contract-evolution.md#retained-data-continuity). Before `v0.1.0`, an explicit deployment reset may replace carry-forward. Reset permission never proves an interrupted external effect absent or authorizes its replay. The pre-`v0.1.0` scope follows the engineer's interpretation of NONNEG-001 and COMPAT-001 in [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md).
 
 ### Reliability Posture
 

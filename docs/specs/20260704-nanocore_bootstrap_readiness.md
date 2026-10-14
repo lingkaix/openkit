@@ -116,7 +116,7 @@ Rules:
 
 Operational process observations accompany the existing boot/readiness read model after deployment-admin authorization. They describe only the sampled NanoCore process, reset with its lifetime, and are not durable state, host-wide capacity or real Worker readiness. `docs/specs/20260731-operational_telemetry_standardization.md` owns the target operational sample shape and optional instrumentation; its failure cannot change boot readiness or product outcomes. Current implementation remains documented separately below.
 
-An explicit pre-stable deployment reset follows [Release Management](20260829-release_management.md#pre-stable-deployment-reset-and-protected-accounts) before ordinary boot. Startup failure never grants reset authority. After the operator completes the authorized reset, normal boot validates the current Data Root without fabricating predecessor integrity or recovery evidence.
+An explicit pre-stable deployment reset follows [Release Management](20260829-release_management.md#pre-stable-deployment-reset-and-protected-accounts) before ordinary boot. Startup failure never grants reset authority. After the operator completes the authorized reset, normal boot validates the current Data Root without fabricating predecessor integrity or recovery evidence. The pre-`v0.1.0` scope follows the engineer's interpretation of NONNEG-001 and COMPAT-001 in [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md).
 
 ### Boot-time corruption handling
 

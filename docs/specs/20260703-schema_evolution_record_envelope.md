@@ -73,7 +73,7 @@ The clean target wins over pre-baseline internal compatibility.
 
 For the current storage and manifest reset, OpenKit does not need permanent legacy readers, aliases, shims, or fallback paths for old internal shapes.
 
-The shape and validation contract starts at the accepted baseline created by the active storage, manifest, audit, vault, and context specs. Mandatory cross-release data continuity starts with `v0.1.0` under [Contract Evolution](../core/contract-evolution.md#retained-data-continuity). Before then, an explicit deployment reset may replace migration; the current closed-core, open-extension, and fail-closed rules still apply.
+The shape and validation contract starts at the accepted baseline created by the active storage, manifest, audit, vault, and context specs. Mandatory cross-release data continuity starts with `v0.1.0` under [Contract Evolution](../core/contract-evolution.md#retained-data-continuity). Before then, an explicit deployment reset may replace migration; the current closed-core, open-extension, and fail-closed rules still apply. The pre-`v0.1.0` scope follows the engineer's interpretation of NONNEG-001 and COMPAT-001 in [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md).
 
 Future versions follow the optional-field and fail-closed rules and Retained Data Continuity in `docs/core/contract-evolution.md`.
 

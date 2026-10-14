@@ -22,7 +22,7 @@ One persistent deployment is running an earlier published release. It carries th
 
 ## Setup
 
-The stage manager confirms that the real data of the earlier published release is already present. The stage manager does not replace that data with test data. The published release record determines the disposition: carry forward, or an explicit reset before `v0.1.0` under Release Management. A reset requires the separate operator procedure and authority; no failed helper request triggers one. The account list and credentials stay with the operator, outside the story and evidence.
+The stage manager confirms that the real data of the earlier published release is already present. The stage manager does not replace that data with test data. The published release record determines the disposition: carry forward, or an explicit reset before `v0.1.0` under Release Management. A reset requires the separate operator procedure and authority; no failed helper request triggers one. The account list and credentials stay with the operator, outside the story and evidence. The pre-`v0.1.0` scope follows the engineer's interpretation of NONNEG-001 and COMPAT-001 in [Pre-Stable Data Continuity](../../docs/decisions/20261014-pre_stable_data_continuity.md).
 
 ## Outcome Predicates
 
