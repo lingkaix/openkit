@@ -137,7 +137,7 @@ Minor versions MAY make breaking schema changes when an accepted spec records th
 
 [Core Concepts](core-concepts.md#identifier-semantics) owns identifier opacity. Consumers MUST NOT use an identifier's encoded time, routing, ownership, storage, or provider information as authority.
 
-This document owns the shared text form and independent generation rule for OpenKit entity identifiers, and the output encoding of the derived kinds below. The machine-readable schemas define the concrete ID fields and project this rule into each record family. Each record owner retains allocation authority and its existing lifecycle. The coordinator's recommendation and pending engineer confirmation are recorded in [One Identifier Mechanism](../decisions/20261014-one_identifier_mechanism.md).
+This document owns the shared text form and independent generation rule for OpenKit entity identifiers, and the output encoding of the derived kinds below. The machine-readable schemas define the concrete ID fields and project this rule into each record family. Each record owner retains allocation authority and its existing lifecycle. The decision is recorded in [One Identifier Mechanism](../decisions/20261014-one_identifier_mechanism.md).
 
 Every new independently generated OpenKit entity identifier MUST use a UUIDv7 from one shared function, as defined by [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562.html#section-5.7). Each covered kind has one text form: its prefix, one underscore, and canonical lowercase UUID text. The UUID text MUST use the 8-4-4-4-12 hexadecimal layout with hyphens. The prefix MUST be nonempty. TypeID base32 is not this format.
 

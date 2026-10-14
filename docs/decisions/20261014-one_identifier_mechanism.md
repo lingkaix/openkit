@@ -1,29 +1,27 @@
 ---
 status: Accepted
 date: "2026-10-14"
-decider: Coordinator and Consultant (conditional agreement; engineer confirmation pending)
+decider: Engineer (UUIDv7 unification); Coordinator and Consultant under delegated acceptance (realization)
 ---
 # One Identifier Mechanism
 
 ## Decision
 
-On 2026-10-14, the engineer proposed UUIDv7 unification as a question. The coordinator recommended UUIDv7. The engineer's next message addressed only the data consequence; it did not explicitly confirm UUIDv7. The record keeps `status: Accepted` on this branch as instructed, but the branch must not merge before the coordinator replaces the confirmation sentence below with the engineer's verbatim answer. If the engineer declines, the coordinator drops this record and its dependent amendments.
+On 2026-10-14, the engineer proposed UUIDv7 unification as a question, the coordinator recommended it, and the engineer then confirmed it. Verbatim: "统一使用 UUIDv7：确认". Translation: "Use UUIDv7 everywhere: confirmed."
 
-Engineer confirmation: pending; the coordinator adds the verbatim answer before merge.
-
-The coordinator and Consultant agreed on prefixed canonical UUID text, preservation of derivation inputs and retry semantics, and a table limited to current entity kinds. Ruling 9 delegates ordinary acceptance when they agree. It leaves blockers, authorizations, important problems, and disagreements with the engineer. That delegation is not evidence that the engineer answered the UUIDv7 question. [Core Protocol](../core/protocol.md#ids) owns the recommended format and encoding; record owners retain allocation authority and their existing lifecycles.
+The coordinator and Consultant agreed on prefixed canonical UUID text, preservation of derivation inputs and retry semantics, and a table limited to current entity kinds. Ruling 9 delegates ordinary acceptance when they agree. It leaves blockers, authorizations, important problems, and disagreements with the engineer. [Core Protocol](../core/protocol.md#ids) owns the format and encoding; record owners retain allocation authority and their existing lifecycles.
 
 Independent allocation uses UUIDv7. A kind with an owning derivation keeps its existing complete input and retry semantics, and encodes that input as UUIDv5 in one fixed OpenKit namespace per kind. Both use the same kind prefix, one underscore, and canonical lowercase UUID text in the 8-4-4-4-12 layout. Only a boundary whose field or parameter names the kind checks that prefix. It accepts version 7, and version 5 only for a kind with an owning derivation. Every other consumer keeps the identifier opaque.
 
 Covered derived outputs include Workspace, Thread, Turn, Item, Artifact, Material, Material revision, Artifact Review, and Knowledge Review. The output encoding changes; inputs, allocation triggers, publication, and retry and recovery rules do not. Light App and record fields carry bare UUIDv5 values without the shared prefix, so they remain opaque owner-defined values with their existing namespace and name rules. Command request IDs, Workspace root selectors, Goal card and Plan revisions, and Light App indexes remain outside the independent entity table. External, provider-native, and adapter-native runtime identifiers remain excluded and opaque.
 
-Existing identifiers are not migrated because the deployment data that holds them is deleted before the change ships. This documentation change deletes no data. The continuity decision is separate from the conditional identifier recommendation.
+Existing identifiers are not migrated because the deployment data that holds them is deleted before the change ships. This documentation change deletes no data. The continuity decision is a separate record.
 
 ## Reason
 
-The source is Intent Revision 5 in change record 202610131730000000-v0_1_0_rc_6_prerelease. The engineer's exact question was: "比如我们统一使用 uuidv7, 你认为呢？" Translation: "For example, should we use UUIDv7 everywhere? What do you think?" The coordinator recommended unification. The next engineer message permits deletion of the current deployment data instead of identifier migration and says compatibility need not be considered because no formal release exists. It supplies no explicit answer to the UUIDv7 question.
+The source is Intent Revision 5 in change record 202610131730000000-v0_1_0_rc_6_prerelease. The engineer's exact question was: "比如我们统一使用 uuidv7, 你认为呢？" Translation: "For example, should we use UUIDv7 everywhere? What do you think?" The coordinator recommended unification. The next engineer message permits deletion of the current deployment data instead of identifier migration and says compatibility need not be considered because no formal release exists. The engineer confirmed UUIDv7 explicitly later the same day, as quoted in the Decision section.
 
-Rulings 8 and 9 are present in change record 202610140256550000-v0_1_0_core_experience on the rebased branch. Ruling 8 accepts the Retrieval Kernel specification. Ruling 9 supplies delegated acceptance; it does not select an identifier algorithm. The earlier draft incorrectly converted the engineer's question into a selection. Coordinator and Consultant agreement covers the realization only, subject to the explicit confirmation sentence above.
+Rulings 8 and 9 are present in change record 202610140256550000-v0_1_0_core_experience on the rebased branch. Ruling 8 accepts the Retrieval Kernel specification. Ruling 9 supplies delegated acceptance; it does not select an identifier algorithm. Coordinator and Consultant agreement covers the realization only; the engineer's confirmation covers the choice of UUIDv7.
 
 A shared generator removes independent allocation algorithms. Canonical UUID text uses one familiar representation without a base32 codec. The prefix shows the kind in logs, paths, and APIs. A boundary that already names the kind can check the prefix without requiring every consumer to parse it. UUIDv7 supports lexical sorting by allocation time within one kind; different prefixes group kinds before time. Derived UUIDv5 values have no allocation-time ordering promise. Sorting proves neither event order nor authority.
 
@@ -35,7 +33,7 @@ Existing derivation inputs let retries find the same result after a failure. Rep
 
 ## Rejected Alternatives
 
-The coordinator recommends UUIDv7 unification instead of retaining inconsistent generators. Engineer selection remains pending.
+Keeping the existing inconsistent generators was rejected because each kind would keep its own allocation algorithm and text form.
 
 The coordinator and Consultant rejected TypeID base32 in favor of prefixed canonical UUID text. Base32 would add a codec and a different alphabet to paths, APIs, and prompts for a shorter representation. Bare UUID text was not selected because the prefix makes the kind visible and supports checks at a boundary that names the expected kind.
 
