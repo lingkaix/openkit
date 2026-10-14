@@ -46,7 +46,9 @@ Translation:
 
 > "`NONNEG-001 stays unchanged. COMPAT-001 removes the two sentences that repeat NONNEG-001: one is 'data must stay usable', the other is 'no permanent legacy reader, no dual write'. Its timing wording instead cites this decision record. This saves about 25 words, and the two clauses no longer state different things.` I agree with this edit. You make it, and after an independent Astra agent reviews and audits it, you may commit."
 
-The engineer chose a decision record instead of writing the release boundary and reset conditions into AGENTS.md, and then approved a smaller COMPAT-001 edit. NONNEG-001 is unchanged. COMPAT-001 no longer repeats NONNEG-001's usability and no-dual-write obligations, and it takes its timing from this record instead of stating its own. Neither clause states the release boundary or the reset permission; this record does.
+The engineer chose a decision record instead of writing the release boundary and reset conditions into AGENTS.md, and then approved a smaller COMPAT-001 edit. NONNEG-001 is unchanged. COMPAT-001 no longer repeats NONNEG-001's usability and no-dual-write obligations, and it takes its timing from this record instead of stating its own. Neither clause states the release boundary or the reset permission; this record does. The approved reduction was 11 whitespace-delimited words, from 2,095 to 2,084, before the timing clarification below.
+
+After the independent Astra review, the coordinator added "When it applies," to COMPAT-001's carry-forward instruction to remove a timing ambiguity. The qualifier makes that instruction conditional on the data obligation applying. It changes no other root text.
 
 The 2026-09-28 record misread an instruction to work toward stable storage as an immediate obligation to preserve all retained data across changes. The engineer corrected that reading and chose the standing stable-release boundary. The earlier message about the three deployments having no production data explains the current identifier cutover; it is not a standing claim that pre-stable deployments can never hold user data.
 
@@ -56,17 +58,17 @@ Option B keeps preparation for future retention separate from mandatory continui
 
 Option A was a one-time exception for the current identifier cutover, with immediate continuity continuing for other pre-stable changes. The engineer chose option B instead and explicitly corrected the 2026-09-28 reading. The correction therefore applies until `v0.1.0`, not only to this cutover.
 
-An AGENTS.md amendment that wrote the release boundary and reset conditions into NONNEG-001 and COMPAT-001 was rejected as unnecessary; this record carries them. Merging the two clauses into one was rejected because NONNEG-001 states the engineer's intent in the engineer's language and COMPAT-001 states the realization rules, which change at a different rate.
+An AGENTS.md amendment that wrote the release boundary and reset conditions into NONNEG-001 and COMPAT-001 was rejected as unnecessary; this record carries them. The two clauses remain separate to keep the engineer's concise instruction in NONNEG-001 and the non-duplicated elaboration and owner pointer in COMPAT-001. Both contain design obligations.
 
 The earlier alternatives remain rejected where they concern scope or mechanism: release-coupled surfaces need no general support window, everything on disk is not automatically Durable, and permanent legacy readers or dual writes do not preserve data under the obligation. Separately accepted external contracts retain their own requirements. A stable-release boundary does not authorize automatic startup resets or silent account deletion.
 
 ## Revisit When
 
-Revisit the reset permission if the engineer changes the stable-release boundary or a separately accepted contract requires earlier continuity. At `v0.1.0`, mandatory data continuity begins. Revisit a reset procedure when it cannot preserve the required accounts or safely fence the affected effect domains. A later data retirement still needs its owner's explicit decision.
+Revisit the reset permission if the engineer changes the stable-release boundary or a separately accepted contract requires earlier continuity. At `v0.1.0`, mandatory data continuity begins. Revisit a reset procedure when it cannot preserve the required accounts or safely fence the affected effect domains. A later data retirement still needs its owner's explicit decision. Revisit when a consumer that ships independently starts depending on a release-coupled surface, or when a backup/restore design changes what server data must survive.
 
 ## Affected Owners
 
-- Root AGENTS.md: NONNEG-001 is unchanged. COMPAT-001 drops its two restatements of NONNEG-001 and cites this record for when the obligation starts.
+- Root AGENTS.md: NONNEG-001 is unchanged. COMPAT-001 drops its two restatements of NONNEG-001, cites this record for timing, and qualifies carry-forward with "When it applies," after the Astra review.
 - [Contract Evolution](../core/contract-evolution.md): the continuity boundary, pre-stable preparation, and unchanged strict rules.
 - [Release Management](../specs/20260829-release_management.md): reset disclosure, operator scope, protected accounts, and Story 2 release qualification.
 - [L6 Story Acceptance](../specs/20260529-l6_story_acceptance.md): Story 2's conditional data-continuity predicate.
@@ -75,4 +77,5 @@ Revisit the reset permission if the engineer changes the stable-release boundary
 - [NanoHost Runtime](../specs/20260802-nanohost_runtime_and_transport.md): retained-input replacement and conversion rules exclude an explicitly authorized pre-stable reset; fencing and recovery stay strict.
 - [Configuration Identity](../specs/20260628-nanocore_config_identity_contract.md), [Agent Manifest](../specs/20260703-agent_manifest_aep_resolution.md), [Agent Environment Package](../specs/20260616-agent_environment_package.md), and [Worker Reliability](../specs/20260531-worker_turn_reliability_envelope.md): future changes follow the corrected continuity boundary.
 - [Core Storage](../core/storage.md): opaque retained bytes follow the same release boundary without weakening ordinary storage lifecycle rules.
-- [NanoHost Workspace Data Boundary](../specs/20260801-nanohost_workspace_data_boundary.md) and [Persistent Worker Volumes](../specs/20260910-persistent_worker_volumes.md): the WP1 builder must align their retained-byte and association rules; this writer does not edit those paths.
+- [NanoHost Workspace Data Boundary](../specs/20260801-nanohost_workspace_data_boundary.md): ordinary retained-byte collection and close rules remain strict.
+- [Persistent Worker Volumes](../specs/20260910-persistent_worker_volumes.md): WP1 owns this path. After WP1 merges, the pending amendment must limit cross-release preservation and one-way migration to carry-forward and permit the disclosed explicit pre-stable reset under Contract Evolution and Release Management. It must preserve the designated accounts and keep ordinary close, purge, source audience, holds, fencing, and recovery strict. This branch leaves that owner unchanged; the amendment lands after WP1 merges.
