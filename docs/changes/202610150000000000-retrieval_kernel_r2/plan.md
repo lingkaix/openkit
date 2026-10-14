@@ -20,7 +20,7 @@ The retrieval specification identifies eight owner amendments. The Chat Mode Too
 
 ## Checkpoint
 
-The worktree started clean. R1's version-1 NDJSON service supports publish, inspect, search, bounded inline text, root-confined file streams, and verified-digest identity sidecars. Current NanoCore Knowledge uses synchronous JSON term postings and occurrence/title scoring. The accepted notebook and ordered-scope extensions are not implemented in that path. Current App search uses substring matching. No Assistant history Tool exists. The upload owner has not settled its maximum byte count/unit.
+The worktree started clean. Owner amendments are committed in `c754be0d`. R1's version-1 NDJSON service supports publish, inspect, search, bounded inline text, root-confined file streams, and verified-digest identity sidecars. Current NanoCore Knowledge uses synchronous JSON term postings and occurrence/title scoring. The accepted notebook and ordered-scope extensions are not implemented in that path. Current App search uses substring matching. No Assistant history Tool exists. The upload owner has not settled its maximum byte count/unit.
 
 The implementation seam is the real NanoCore producer and Rust stdio consumer, followed by current canonical source admission and final source validation. The test-author owns only `apps/nanocore/src/retrieval-service.test.ts`; the builder owns other R2 paths outside WP1's list. The external Grok reviewer retains independent diff review. A producer's self-check does not accept owner amendments.
 
@@ -35,3 +35,15 @@ Next Action: amend the available owners and implement the supervised service sea
 ## Evidence And Closeout
 
 Pending. Record exact focused checks, publication-input comparison, image builds for both architectures, commits, changed paths, complexity observations, unresolved findings and residual risks before handoff. Completion of the builder slice does not approve a release or a protected owner decision.
+
+## Current Evidence
+
+The real stdio seam initially returned `1 failed | 2 passed`: the first request after SIGKILL raced the child exit event. The source-free preflight health probe fixed that race before sending the real operation; it does not replay a publish. The combined focused run `vitest run src/retrieval-service.test.ts src/retrieval-sources.test.ts src/bootstrap/phase-order.test.ts src/bootstrap/shutdown.test.ts --maxWorkers=2 --reporter=verbose` passed 4 files and 15 tests. NanoCore typecheck passed after prerequisite packages were built with Node 24.18.0. Separate canonical Git notebook fixtures passed 3 tests outside the sandbox; the sandbox's synchronous Git subprocess EPERM was setup failure, not a deciding product result. The pinned-A/then-published-B fixture proves the primitive reads A's exact text after B and process reconstruction; S39 integration remains pending.
+
+The cold App build received HTTP 403 from the recorded dictionary URL. R2 uses the explicitly permitted vendored option instead: exact cached R1 bytes, verified SHA-256 and COPYING, no build-time dictionary network. The Linux amd64 App image built and its packaged `retrieval-kernel --version` passed with networking disabled. The arm64 Rust cross-build passed; the arm64 App image build is still running. Final image reruns must include the completed adapter/canonical cutover diff. The packaging test rerun outside the sandbox executed both deciding cases and passed 2/2; the sandbox's file-only wrapper count was not treated as case evidence.
+
+The engineer authorized narrow read-only HTTPS supply of missing locked-crate notices at recorded revisions. Twenty-six files were obtained with URL, revision and SHA-256 provenance. Four gaps remain: htmlescape 0.3.1 and two Windows import-library crates lack a verified recorded revision; kanaria 0.2.0 yielded no matching notice at its recorded commit. SPDX metadata stays packaged. The two Windows crates are not Linux runtime supply.
+
+An independent Consultant inspected the actual source and accepted owners. Its direction is to retain the coordinated Git-backed canonical cutover, then replace the projection and carry exact revisions through S39; a scorer-only swap over mutable files is insufficient. Two union effects are stopped by the engineer's clarification: duplicate page-id pin binding and ownership of the one combined User/Workspace trace. Options and recommendations will be reported with exact owner lines. One-scope work continues.
+
+Additional WP1 dependencies found by direct inspection: `packages/config-schema/src/server.ts` and tests need the accepted Server `knowledgeMaintenance` setting; its package guide is locked. `apps/nanocore/src/runtime/turn-executor-factory.test.ts` has a synchronous retrieval fixture that must await the stdio-backed result. No Core database migration is added.

@@ -60,12 +60,14 @@ function evaluateCloseNanoCoreListeners(bindings: {
   return new Function(
     'shutdownTelemetry',
     'workerMcpGateway',
+    'closeRetrievalServices',
     'appServer',
     'nanoHostServer',
     `${javascript}\nreturn closeNanoCoreListeners;`
   )(
     bindings.shutdownTelemetry,
     bindings.workerMcpGateway,
+    async () => undefined,
     bindings.appServer,
     bindings.nanoHostServer
   ) as (onClosed: () => void) => void;

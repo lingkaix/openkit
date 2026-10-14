@@ -426,3 +426,48 @@ pub(crate) fn is_cjk(c: char) -> bool {
         || ('\u{3130}'..='\u{318f}').contains(&c)
         || ('\u{ac00}'..='\u{d7af}').contains(&c)
 }
+
+/// Analyze admitted text for the existing answer rule without another tokenizer implementation.
+pub fn analyze(
+    query: &str,
+    title: &str,
+    body: &str,
+    hint: Option<&str>,
+) -> Result<crate::Analysis> {
+    if query.is_empty()
+        || query.len() > QUERY_BYTES
+        || title.len() > QUERY_BYTES
+        || body.len() > FRAME_BYTES
+    {
+        return Err(error(
+            "invalid-request",
+            "analysis text exceeds admitted bounds",
+        ));
+    }
+    let language = hint.unwrap_or_else(|| {
+        if title.chars().chain(body.chars()).any(is_kana) {
+            "ja"
+        } else if title.chars().chain(body.chars()).any(is_han) {
+            "zh"
+        } else {
+            "unicode"
+        }
+    });
+    let query_terms = tokens(language, query)?;
+    let title_terms = tokens(language, title)?;
+    let mut body_terms = std::collections::BTreeSet::new();
+    let budget = Budget::new();
+    let mut chunks = Chunks::new(body.as_bytes());
+    while let Some((_, chunk)) = chunks.next(&budget)? {
+        body_terms.extend(tokens(language, &chunk)?);
+        if body_terms.len() > DOCUMENT_LIMIT {
+            return Err(error("resource-limited", "analysis term budget exhausted"));
+        }
+    }
+    Ok(crate::Analysis {
+        language: language.into(),
+        query_terms,
+        title_terms,
+        body_terms: body_terms.into_iter().collect(),
+    })
+}

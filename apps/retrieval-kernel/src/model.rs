@@ -275,3 +275,16 @@ impl Document {
         document
     }
 }
+
+/// Kernel-owned term evidence for deterministic answer sufficiency, using one source analyzer.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Analysis {
+    /// The single selected Document language, shared by every returned term set.
+    pub language: String,
+    /// Distinct normalized query terms.
+    pub query_terms: Vec<String>,
+    /// Distinct normalized canonical title terms.
+    pub title_terms: Vec<String>,
+    /// Distinct normalized canonical body terms across the same bounded chunks as indexing.
+    pub body_terms: Vec<String>,
+}

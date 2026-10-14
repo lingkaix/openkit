@@ -216,6 +216,13 @@ enum Operation {
     Inspect {
         scope: String,
     },
+    Analyze {
+        query: String,
+        title: String,
+        body: String,
+        #[serde(default)]
+        language: Option<String>,
+    },
 }
 /// Project local requests into the same kernel used by CLI and MCP.
 fn service(kernel: &Kernel, value: Value) -> Option<Value> {
@@ -241,6 +248,13 @@ fn service(kernel: &Kernel, value: Value) -> Option<Value> {
                 expected_generation,
             } => Ok(json!({"generation":kernel.publish(view, expected_generation)?})),
             Operation::Search { request } => serde_json::to_value(kernel.search(request)?)
+                .map_err(|_| error("io", "response serialization failed")),
+            Operation::Analyze {
+                query,
+                title,
+                body,
+                language,
+            } => serde_json::to_value(analyze(&query, &title, &body, language.as_deref())?)
                 .map_err(|_| error("io", "response serialization failed")),
             Operation::Inspect { scope } => Ok(json!({"generation":kernel.generation(&scope)?})),
         }

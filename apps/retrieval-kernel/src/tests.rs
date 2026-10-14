@@ -1640,3 +1640,39 @@ fn failed_publication_releases_inherited_writer_lock() {
     assert_eq!(failure.unwrap_err().code, "io");
     assert!(retry.is_ok(), "retry after failed publication: {retry:?}");
 }
+
+#[test]
+fn answer_analysis_shares_selected_dictionary_and_chunk_tokenization() {
+    let chinese = crate::analyze(
+        "测试 修复",
+        "Unrelated",
+        "我们完成了测试，并修复了缺陷。",
+        None,
+    )
+    .unwrap();
+    assert_eq!(chinese.language, "zh");
+    assert!(
+        chinese
+            .query_terms
+            .iter()
+            .all(|term| chinese.body_terms.contains(term))
+    );
+    assert!(
+        chinese
+            .query_terms
+            .iter()
+            .all(|term| !chinese.title_terms.contains(term))
+    );
+    let japanese =
+        crate::analyze("検索 改善", "Unrelated", "検索機能を改善しました。", None).unwrap();
+    assert_eq!(japanese.language, "ja");
+    assert!(
+        japanese
+            .query_terms
+            .iter()
+            .all(|term| japanese.body_terms.contains(term))
+    );
+    let title = crate::analyze("测试", "测试", "", None).unwrap();
+    assert!(title.title_terms.contains(&"测试".to_string()));
+    assert!(crate::analyze("x", "", "", Some("unknown")).is_err());
+}

@@ -55,6 +55,7 @@ import {
   createProviderCredentialConfigured,
   createVaultProviderCredentialResolver,
 } from './providers/vault-credential-resolver.js';
+import { closeRetrievalServices, getRetrievalService } from './retrieval-service.js';
 import { markSchedulerAttemptForTerminalTurn } from './runtime/execution-attempt-records.js';
 import {
   classifyNanoHostAttemptsAfterRestart,
@@ -106,6 +107,7 @@ import {
   ensureConfigTemplateSurface,
   ensureLayout,
   readDataRootLayoutMarker,
+  resolveDataRootPath,
 } from './storage/fs-layout.js';
 import { rebuildInvalidExistingWorkspaceDerivedIndexes } from './storage/index-rebuild.js';
 import { applyMigrations, listAppliedMigrationIds } from './storage/migrate.js';
@@ -464,6 +466,13 @@ if (criticalBootFailure || !bootReadiness.acceptingProductWork) {
   throw new Error(message);
 }
 
+// Retrieval failure is contained in the supervised child; dependent requests fail explicitly.
+try {
+  await getRetrievalService(dataRoot, resolveDataRootPath(dataRoot, 'server')).start();
+} catch {
+  console.warn('Retrieval service is unavailable; dependent retrieval requests will fail.');
+}
+
 runtimeConfigSnapshot = requireBootValue(runtimeConfigSnapshot, 'Runtime config was not loaded.');
 mode = requireBootValue(mode, 'Core mode was not resolved.');
 coreDb = requireBootValue(coreDb, 'Core database was not initialized.');
@@ -742,8 +751,7 @@ function shutdown(signal: NodeJS.Signals): void {
 /** Closes both process listeners before completing orderly shutdown. */
 function closeNanoCoreListeners(onClosed: () => void): void {
   void shutdownTelemetry().catch(() => undefined);
-  void workerMcpGateway
-    .close()
+  void Promise.all([workerMcpGateway.close(), closeRetrievalServices()])
     .catch(() => undefined)
     .then(() => {
       let remaining = nanoHostServer ? 2 : 1;

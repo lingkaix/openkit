@@ -6,7 +6,7 @@ mod store;
 mod text;
 pub use model::*;
 pub use store::Kernel;
-pub use text::tokens;
+pub use text::{analyze, tokens};
 
 #[cfg(test)]
 mod tests;
