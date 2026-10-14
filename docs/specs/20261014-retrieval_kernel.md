@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Partial
 kind: mechanism
 date: "2026-10-14"
 ---
@@ -242,7 +242,7 @@ Runtime packages must not download dictionaries on first query. Package their id
 
 ## Current Implementation Projection
 
-Not implemented. The current Knowledge JSON index and `unicode-simple-v1` remain implementation facts until the coordinated owner amendment and cutover.
+Partially implemented. The Rust executable provides CLI, MCP and trusted local service faces. NanoCore supervises the service, admits current product sources and replaces Knowledge lexical JSON postings with kernel retrieval while retaining non-lexical projections. Canonical Git notebooks, commit-bearing traces and User/Server scope surfaces remain pre-existing unimplemented requirements. The current file-backed Workspace path verifies exact observed page bytes without claiming retained commit pinning. The upload admission maximum, Assistant history Tool binding and union pin/trace decisions remain unresolved.
 
 The initial dependency baseline is Tantivy 0.26.2, tantivy-jieba, and lindera-tantivy with the runtime-packaged IPADIC Japanese dictionary. Select one segmentation tokenizer per Document: Chinese Jieba, Japanese Lindera, or Unicode word tokenization for other text. A reliable source language hint selects it. Without a hint, kana selects Japanese, Han without kana selects Chinese, and other text selects Unicode tokenization. Query, sidecar, title, and body use the corresponding settings and shared Latin normalization. Do not run both dictionary tokenizers because a hint is absent.
 
