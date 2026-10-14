@@ -115,7 +115,11 @@ for (const [name, subject, passes] of [
     const pkg = path.join(root, 'packages/native');
     mkdirSync(pkg, { recursive: true });
     writeFileSync(path.join(root, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\n');
-    writeFileSync(path.join(root, 'package.json'), JSON.stringify({ private: true }));
+    const { packageManager } = JSON.parse(readFileSync('package.json', 'utf8'));
+    writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ private: true, packageManager })
+    );
     writeFileSync(
       path.join(pkg, 'package.json'),
       JSON.stringify({ name: '@fixture/native', scripts: { test: 'node subject.mjs' } })
@@ -130,8 +134,9 @@ for (const [name, subject, passes] of [
       assert.match(result.stdout, /fixture.native > skipped # SKIP/);
       assert.match(result.stderr, /Test suite reported undeclared skip: fixture.native > skipped/);
     }
-    // pnpm maps the subject's nonzero exit to the package command's status 1.
-    if (name === 'failure') assert.match(result.stderr, /Test command exited with status 1/);
+    // The gate owns nonzero command rejection, independent of package-manager exit mapping.
+    if (name === 'failure')
+      assert.match(result.stderr, /Test command exited with status [1-9]\d*\./);
   });
 test('routine test:ci refuses a non-Vitest skip before later build or root checks', (t) => {
   const root = mkdtempSync(path.join(tmpdir(), 'release-routine-admission-'));

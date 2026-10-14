@@ -2,7 +2,7 @@
 
 Root `package.json` owns the command surface and `docs/toolchain.md` owns setup and execution placement. These scripts implement those commands; they do not supply design authority.
 
-`validate-test-governance.mjs --run -- <command>` retains command failures and rejects undeclared TAP skips. It also rejects positive unnamed skipped counts from Vitest and Node's spec reporter because those summaries cannot prove file-bound skip authorization.
+`validate-test-governance.mjs --run -- <command>` retains command failures and rejects undeclared TAP skips. It also rejects positive unnamed skipped counts from Vitest and Node's default and spec reporters because those summaries cannot prove file-bound skip authorization. It removes ANSI decoration for skip parsing and retains the original output for display.
 
 ## Release Inputs And Verification
 

@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripVTControlCharacters } from 'node:util';
 import ts from 'typescript';
 
 const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/u;
@@ -133,7 +134,8 @@ function executeTestSuite(options) {
   const cwd = options.cwd ?? process.cwd();
   const declarations = options.allowedSkipDeclarations ?? declaredSkipNames(cwd);
   const discoveredTestFiles = options.discoveredTestFiles ?? relativeTestFiles(cwd);
-  const output = `${stdout}\n${stderr}`;
+  // Reporter decoration must not hide skips; retain raw streams for the CLI.
+  const output = stripVTControlCharacters(`${stdout}\n${stderr}`);
   for (const name of reportedTapSkipNames(output)) {
     if (!fileBoundSkipIsAllowed(hierarchyParts(name), declarations, discoveredTestFiles)) {
       errors.push(`Test suite reported undeclared skip: ${name}`);

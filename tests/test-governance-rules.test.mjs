@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { stripVTControlCharacters } from 'node:util';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const governanceScript = join(repoRoot, 'scripts/validate-test-governance.mjs');
@@ -711,40 +712,43 @@ test('runTestSuite retains full repository-scale reporter output', async () => {
   }
 });
 
-test('runTestSuite attributes Turbo tap-flat skip lines by hierarchy component', async () => {
-  const { runTestSuite } = await loadGovernance();
-  const reporter = writeFixtureRepo({
-    'report.mjs': `process.stdout.write('@openkit/nanocore:test: ok 1 - src/file.test.ts > declared suite > leaf # SKIP\\n');
+for (const colored of [false, true]) {
+  test(`runTestSuite attributes ${colored ? 'colored' : 'plain'} Turbo tap-flat skip lines by hierarchy component`, async () => {
+    const { runTestSuite } = await loadGovernance();
+    const line = '@openkit/nanocore:test: ok 1 - src/file.test.ts > declared suite > leaf # SKIP\n';
+    const reporter = writeFixtureRepo({
+      'report.mjs': `process.stdout.write(${JSON.stringify(colored ? `\u001b[90m${line.replace('ok 1', '\u001b[34mok 1')}\u001b[39m` : line)});
 `,
-  });
-
-  try {
-    const discoveredTestFiles = ['src/file.test.ts'];
-    const observed = Object.fromEntries(
-      [
-        ['empty', []],
-        ['unrelated', [{ file: 'src/file.test.ts', name: 'undeclared' }]],
-        ['leaf', [{ file: 'src/file.test.ts', name: 'leaf' }]],
-        ['suite', [{ file: 'src/file.test.ts', name: 'declared suite' }]],
-      ].map(([id, allowedSkipDeclarations]) => {
-        const errors = runTestSuite({
-          allowedSkipDeclarations,
-          command: [process.execPath, join(reporter, 'report.mjs')],
-          discoveredTestFiles,
-        });
-        return [id, errors.length === 0];
-      })
-    );
-    assert.deepEqual(observed, {
-      empty: false,
-      unrelated: false,
-      leaf: true,
-      suite: true,
     });
-  } finally {
-    rmSync(reporter, { force: true, recursive: true });
-  }
-});
+
+    try {
+      const discoveredTestFiles = ['src/file.test.ts'];
+      const observed = Object.fromEntries(
+        [
+          ['empty', []],
+          ['unrelated', [{ file: 'src/file.test.ts', name: 'undeclared' }]],
+          ['leaf', [{ file: 'src/file.test.ts', name: 'leaf' }]],
+          ['suite', [{ file: 'src/file.test.ts', name: 'declared suite' }]],
+        ].map(([id, allowedSkipDeclarations]) => {
+          const errors = runTestSuite({
+            allowedSkipDeclarations,
+            command: [process.execPath, join(reporter, 'report.mjs')],
+            discoveredTestFiles,
+          });
+          return [id, errors.length === 0];
+        })
+      );
+      assert.deepEqual(observed, {
+        empty: false,
+        unrelated: false,
+        leaf: true,
+        suite: true,
+      });
+    } finally {
+      rmSync(reporter, { force: true, recursive: true });
+    }
+  });
+}
 
 test('root skip guard keeps release admission falsifiers private', () => {
   const env = { ...process.env };
@@ -766,42 +770,52 @@ test('root skip guard keeps release admission falsifiers private', () => {
     result.stdout,
     /actual single coverage execution refuses a deliberate undeclared Vitest skip/
   );
-  assert.match(result.stdout, /skipped 0/);
+  assert.match(stripVTControlCharacters(result.stdout), /skipped 0/);
 });
 
-for (const reporter of ['default', 'spec', 'tap']) {
-  test(`root skip guard rejects a real undeclared Node skip with the ${reporter} reporter`, () => {
-    const root = writeFixtureRepo({
-      'subject.test.mjs': `import test from 'node:test';
+for (const color of ['FORCE_COLOR', 'NO_COLOR']) {
+  for (const reporter of ['default', 'spec', 'tap']) {
+    test(`root skip guard rejects a real undeclared Node skip with the ${reporter} reporter and ${color}=1`, () => {
+      const root = writeFixtureRepo({
+        'subject.test.mjs': `import test from 'node:test';
 test.skip('real-undeclared', () => {});
 `,
-    });
-    const env = { ...process.env };
-    delete env.NODE_TEST_CONTEXT;
-    try {
-      const result = spawnSync(
-        process.execPath,
-        [
-          governanceScript,
-          '--run',
-          '--',
+      });
+      const env = { ...process.env };
+      delete env.NODE_TEST_CONTEXT;
+      delete env.FORCE_COLOR;
+      delete env.NO_COLOR;
+      delete env.NODE_DISABLE_COLORS;
+      env[color] = '1';
+      try {
+        const result = spawnSync(
           process.execPath,
-          '--test',
-          ...(reporter === 'default' ? [] : [`--test-reporter=${reporter}`]),
-          join(root, 'subject.test.mjs'),
-        ],
-        { cwd: root, encoding: 'utf8', env }
-      );
-      assert.equal(result.status, 1, result.stdout + result.stderr);
-      assert.match(result.stdout, /(?:ℹ|#) skipped 1/);
-      assert.match(
-        result.stderr,
-        reporter === 'tap'
-          ? /Test suite reported undeclared skip: real-undeclared/
-          : /reported 1 skipped test\(s\) that cannot be attributed/
-      );
-    } finally {
-      rmSync(root, { force: true, recursive: true });
-    }
-  });
+          [
+            governanceScript,
+            '--run',
+            '--',
+            process.execPath,
+            '--test',
+            ...(reporter === 'default' ? [] : [`--test-reporter=${reporter}`]),
+            join(root, 'subject.test.mjs'),
+          ],
+          { cwd: root, encoding: 'utf8', env }
+        );
+        assert.equal(result.status, 1, result.stdout + result.stderr);
+        const stdout = stripVTControlCharacters(result.stdout);
+        assert.match(stdout, /(?:ℹ|#) skipped 1/);
+        // Node's TAP reporter emits plain TAP even when color is forced.
+        if (color === 'FORCE_COLOR' && reporter !== 'tap') assert.notEqual(result.stdout, stdout);
+        if (color === 'NO_COLOR') assert.equal(result.stdout, stdout);
+        assert.match(
+          result.stderr,
+          reporter === 'tap'
+            ? /Test suite reported undeclared skip: real-undeclared/
+            : /reported 1 skipped test\(s\) that cannot be attributed/
+        );
+      } finally {
+        rmSync(root, { force: true, recursive: true });
+      }
+    });
+  }
 }
