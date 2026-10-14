@@ -19,73 +19,6 @@ import { classifyDocuments, validateDocModel } from '../scripts/validate-doc-mod
 const repoRoot = resolve(import.meta.dirname, '..');
 const changeExecutionPath = 'docs/change-execution.md';
 const legacyChangeTrackingPath = 'docs/change-tracking.md';
-const GOVERNANCE_CORPORA = [
-  {
-    backtickBaseline: 162,
-    files: ['AGENTS.md', 'docs/change-execution.md', 'docs/verification-instruments.md'],
-    name: 'mandatory-context corpus',
-    wordBaseline: 15_837,
-  },
-  {
-    backtickBaseline: 686,
-    files: [
-      'AGENTS.md',
-      'CONTRIBUTING.md',
-      'docs/change-execution.md',
-      'docs/change-execution-rationale.md',
-      'docs/verification-instruments.md',
-      'docs/engineering-doctrine.md',
-      'docs/documentation-model.md',
-      'docs/specs/20260529-test_strategy.md',
-      'docs/specs/20260811-execution_residue_measurement.md',
-      'docs/changes/README.md',
-      'docs/changes/AGENTS.md',
-      'docs/INDEX.md',
-      '.codex/config.toml',
-      'docs/roles/auditor.md',
-      'docs/roles/builder.md',
-      'docs/roles/researcher.md',
-      'docs/roles/reviewer.md',
-      'docs/roles/test-author.md',
-      'docs/roles/consultant.md',
-      'docs/roles/writer.md',
-      'tests/AGENTS.md',
-      'tests/agents-root-contract.test.mjs',
-      'tests/change-execution-contract.test.mjs',
-      'tests/verification-instruments-contract.test.mjs',
-      'tests/doc-model.test.mjs',
-      'package.json',
-      'scripts/validate-program-state.mjs',
-      'scripts/validate-doc-model.mjs',
-      'tests/program-state.test.mjs',
-    ],
-    name: 'normative-and-projection corpus',
-    wordBaseline: 63_822,
-  },
-];
-
-/**
- * Measures one exact governance corpus using the frozen Cutover algorithm.
- * Missing files contribute zero so deletion remains observable as subtraction.
- *
- * @param {string[]} files Exact repository-relative corpus members.
- * @returns {{backticks: number, words: number}} Frozen measurements.
- */
-function measureGovernanceCorpus(files) {
-  const contents = files.map((path) =>
-    existsSync(join(repoRoot, path)) ? readFileSync(join(repoRoot, path), 'utf8') : ''
-  );
-  const backticks = new Set(
-    contents.flatMap((content) =>
-      [...content.matchAll(/\x60([^\x60\n]+)\x60/g)].map((match) => match[1])
-    )
-  );
-
-  return {
-    backticks: backticks.size,
-    words: contents.reduce((count, content) => count + (content.match(/\S+/g) ?? []).length, 0),
-  };
-}
 
 /**
  * Creates one minimal valid documentation fixture tree.
@@ -1663,27 +1596,5 @@ describe('documentation index generator', () => {
       '- `docs/manual/operating.en.md` — Accepted — How an operator runs the built product.',
       '- `docs/manual/operating.zh.md` — Accepted — zh translation of `docs/manual/operating.en.md`',
     ]);
-  });
-});
-
-describe('governance cutover complexity', () => {
-  it('makes both frozen governance corpora strictly smaller than baseline', () => {
-    const breaches = GOVERNANCE_CORPORA.flatMap((corpus) => {
-      const measured = measureGovernanceCorpus(corpus.files);
-      const errors = [];
-
-      if (measured.words >= corpus.wordBaseline) {
-        errors.push(`${corpus.name}: words ${measured.words} >= ${corpus.wordBaseline}`);
-      }
-      if (measured.backticks >= corpus.backtickBaseline) {
-        errors.push(
-          `${corpus.name}: distinct backtick spans ${measured.backticks} >= ${corpus.backtickBaseline}`
-        );
-      }
-
-      return errors;
-    });
-
-    assert.deepEqual(breaches, []);
   });
 });

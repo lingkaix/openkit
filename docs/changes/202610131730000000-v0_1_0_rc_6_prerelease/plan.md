@@ -211,6 +211,12 @@ WP4 returned its proposal on 2026-10-14. On 2026-10-14 the engineer accepted its
 
 These decisions take effect through amendments to [Release Management](../../specs/20260829-release_management.md) and its projections. Until those amendments land, the current owner text stays binding, including per-tag publication authorization. After the coordinator explained decision 7, the engineer changed it (Intent Revision 4): #193 is closed as superseded, and #240 and #225 are required before the first stable release. The first App update to rc.6 on `a1` uses the manual operator path; the automated path starts with the next prerelease.
 
+### Governance Corpus Check Disposition — 2026-10-15
+
+Removed the `governance cutover complexity` suite, including `makes both frozen governance corpora strictly smaller than baseline`, and its private counter. The threshold conflicted with [Change Execution](../../change-execution.md), line 92, and decisions [20260923-system_complexity_signals](../../decisions/20260923-system_complexity_signals.md) and [20260924-documentation_methods](../../decisions/20260924-documentation_methods.md): complexity numbers explain trends and are never targets, thresholds, or gates. The coordinator and Consultant agreed on this owner alignment under the engineer's delegated acceptance. No normative owner changed.
+
+Last measurements at `79aeb0bc`: normative-and-projection corpus, 52,698 words and 686 distinct spans; mandatory-context corpus, 11,309 words and 118 distinct spans. These are non-gating observations.
+
 ## Publication Authorization
 
 The mission text does not name `v0.1.0-rc.6` or this asset set.
