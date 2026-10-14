@@ -1,0 +1,52 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { answerKnowledgeManager } from './knowledge-manager.js';
+import { FsStore } from './lib/store.js';
+import { closeRetrievalServices } from './retrieval-service.js';
+
+afterEach(closeRetrievalServices);
+
+describe('Knowledge retrieval and answer segmentation', () => {
+  it.each([
+    {
+      title: 'Chinese body',
+      body: '我们完成了测试，并修复了缺陷。',
+      one: '测试',
+      two: '测试 修复',
+    },
+    { title: 'Japanese body', body: '検索機能を改善しました。', one: '検索', two: '検索 改善' },
+  ])('preserves one-term title sufficiency and cites two body terms: $title', async ({
+    body,
+    one,
+    two,
+  }) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'retrieval-knowledge-cjk-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Knowledge segmentation');
+    const page = store.createKnowledgeEntry(workspace.id, {
+      kind: 'project-context',
+      title: 'Unrelated',
+      content: body,
+    });
+    const answer = (query: string) =>
+      answerKnowledgeManager({
+        dataRoot,
+        workspaceId: workspace.id,
+        operationId: `answer-${query}`,
+        caller: 'app-api',
+        query,
+      });
+    expect(await answer(one)).toMatchObject({ outcome: 'insufficient-evidence', citations: [] });
+    expect(await answer(two)).toMatchObject({
+      outcome: 'answered',
+      citations: [{ knowledgeEntryId: page.id }],
+    });
+    store.updateKnowledgeEntry(workspace.id, page.id, { title: one });
+    expect(await answer(one)).toMatchObject({
+      outcome: 'answered',
+      citations: [{ knowledgeEntryId: page.id }],
+    });
+  });
+});
