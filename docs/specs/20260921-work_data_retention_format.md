@@ -428,12 +428,14 @@ Missing evidence stays unknown.
 | Outcome-initiated handoff Thread | `th` | `outcomeScope` |
 | Outcome-initiated first handoff Task Turn | `tu` | `outcomeScope` |
 | Initiating Chat user Item | `it` | `["chat-user", assistantTurnId]` |
-| Chat result Item or handoff status Item | `it` | `[resultRole, assistantTurnId]` |
+| Chat-owned result Item or handoff status Item | `it` | `[resultRole, assistantTurnId]` |
 | Initiating downstream Task user Item | `it` | `["task-user", downstreamTurnId]` |
 | Artifact introduction Turn | `tu` | `[actor, workspaceId, threadId, "artifact.introduce", requestId]` |
 | Artifact communication or introduction Item | `it` | `[artifactId, communicatingTurnId]` |
 | Review refinement or redo Turn | `tu` | `[workspaceId, artifactId, artifactVersion, decisionRequestId]` |
-| Pending-request publication Item | `it` | `[requestId, role]` |
+| Pending Requests request or outcome Item | `it` | `[requestId, role]` |
+
+The Chat-owned result row excludes clarification and approval request Items. [Pending Requests](20260930-pending_requests.md#deliver) alone names those Items with `[requestId, "request"]`, using the original durable `userInputRequestId` or `approvalRequestId`, respectively. The existing request association supplies that id on replay; the Assistant Turn and `resultKind` supply no second name.
 
 **Exclusions.** Consumers MUST NOT parse a timestamp out of the id (`docs/core/core-concepts.md`, `Identifier Semantics`). Id order is never the correctness criterion; after a prefilter the implementation MUST recheck authoritative `ts` / `turn.json` timestamps. This repository currently has a generator (`apps/nanocore/src/runtime/session-id.ts`, `generateUuidV7`) and no UUIDv7 timestamp parser, so a "must consume only via helper" rule is not yet an executable invariant; until a unique helper plus a failing test exists, the two consumption rules are a review obligation, not a storage invariant. New UUIDv7 allocation MUST NOT replace existing request-derived Item identities.
 
