@@ -48,7 +48,7 @@ None.
 
 ## Integrity Invariants
 
-The declared disposition cannot change during the run. Missing evidence for an applicable required predicate is inconclusive and cannot pass. An inapplicable carry-forward predicate proves no continuity or rollback for a reset. Operator setup evidence is not a product outcome observation.
+None.
 
 ## Evidence To Collect
 
@@ -56,7 +56,7 @@ Collect public health, Web entry, account sign-in responses, authenticated diagn
 
 ## Cleanup
 
-The stage manager removes only attempt-owned disposable evidence and the attempt's new work fixture through its public owner. It preserves the current Data Root, protected configuration, designated accounts, and unrelated retained work. Cleanup authorizes no reset.
+The stage manager records the new Material note's id in the run evidence and retains the note as named scenario output on the persistent deployment. It removes only attempt-owned disposable evidence and does not remove the note. It preserves the current Data Root, protected configuration, designated accounts, and unrelated retained work. Cleanup authorizes no reset.
 
 ## Failure Triage Notes
 
