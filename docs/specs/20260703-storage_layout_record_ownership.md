@@ -216,7 +216,6 @@ SQLite-derived records:
 
 - dashboard read models
 - search tables
-- full-text search indexes
 - vector or embedding metadata
 - pagination indexes
 - readiness summaries
@@ -226,6 +225,14 @@ SQLite-derived records:
 Derived records must be rebuildable from file-backed records or authoritative SQLite ledgers.
 
 Descriptive canonical history reads ignore unknown object annotations while validating known values and lineage; same-record writes preserve safe owned annotations, append-only history and immutable digest-referenced bytes, while public and effect-facing projections contain only validated known fields.
+
+## Retrieval Projection Storage
+
+The [Retrieval Kernel](20261014-retrieval_kernel.md) replaces the mixed `indexes/search.json` and lexical Knowledge JSON projection. Non-lexical page, link, source-reference and validation projections retain their owners. SQLite retains its unrelated derived uses.
+
+Each canonical ownership root holds `indexes/retrieval/`: `users/<userId>/indexes/retrieval/`, `server/indexes/retrieval/`, or `workspaces/<workspaceId>/indexes/retrieval/`. A private-origin Thread instead holds `workspaces/<workspaceId>/threads/<threadId>/indexes/retrieval/`; it never enters the Workspace-shared root. Beneath that boundary the kernel stores each opaque scope at `SHA256(scope)/CURRENT` and immutable generation directories. Sidecar cache entries are the generation's `sidecars/` members, separate from authored files, with immutable references and reader-pinned cleanup under the retrieval owner. The adapter chooses the source-owned root after current audience admission; the path grants no access.
+
+Ordinary Workspace export excludes every derived retrieval index and sidecar cache, including private Thread generations. A local directory index is not product data and must not enter product export. Backup retains its separate scope and authority. Disposal or rebuild affects derived bytes only and never migrates an old lexical projection or changes canonical content.
 
 ## Retained Sandbox Association Storage
 

@@ -206,6 +206,10 @@ Grounded annotation, exact text-range patching, locator relocation, compare-driv
 
 A future implementation requires a separately accepted specification that names one concrete product need and defines the exact command scope and canonical input, locator units and stale rules, durable Item or review owner, lifecycle, replay, failure mapping, privacy boundary, public API, and acceptance evidence. It MUST reuse an existing lifecycle where one fits and MUST NOT introduce a universal feedback or locator framework.
 
+## Retrieval Representations
+
+The [Retrieval Kernel](20261014-retrieval_kernel.md) receives exact admitted Artifact versions and Material revisions. Canonical UTF-8 is indexed directly without a sidecar. For an unreadable admitted file, the adapter supplies its canonical owner's verified digest, size, media type, name and stable identity to the identity-only sidecar processor. Missing digest makes that sidecar unavailable; retrieval does not open the body to invent identity. Exact version, immutable origin, current audience, admission limits and storage ownership remain mandatory. Sidecar discovery uses `artifact.read` for Artifacts and `workspace.read` for Materials; it grants no file access. Arbitrary-file upload admission and authored description storage remain separate owner decisions.
+
 ## Work Resource Class 1: Workspace-native Material
 
 ### Definition

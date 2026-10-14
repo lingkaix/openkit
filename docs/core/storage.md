@@ -20,7 +20,9 @@ Most durable data should be stored as files or directories so workspace data rem
 
 SQLite is a companion store, not the default source of truth for every object.
 
-Use SQLite where the system needs structured query, indexes, full-text search, vector or embedding metadata, pagination, constraints, transactions, materialized read models, or operational summaries.
+Use SQLite where the system needs structured query, indexes, vector or embedding metadata, pagination, constraints, transactions, materialized read models, or operational summaries.
+
+Full-text retrieval MUST use the rebuildable Retrieval Kernel projection. Its per-scope generations and derived sidecars retain their canonical source ownership and audience. SQLite retains its other companion-store uses.
 
 The source of truth MUST be explicit per data class.
 

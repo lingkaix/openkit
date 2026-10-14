@@ -65,6 +65,10 @@ For the initial combined small-deployment profile, begin with at least 2 availab
 
 A machine below the recommendation has recommendation observation `unmet`; that observation does not change a static hard-requirement verdict or real-product qualification. If a concrete required allocation, filesystem write, image import, process start, or owned runtime capacity proof fails, that owning operation fails truthfully and NanoCore or NanoHost remains non-ready as its existing owner requires. A split deployment does not divide or duplicate the combined recommendation: no independent per-role resource recommendation is qualified yet.
 
+### Retrieval Service Supply
+
+NanoCore requires a target-matched supervised Retrieval Kernel executable with its embedded tokenizer dictionaries and license notices on Linux amd64 and arm64, and compatible source-build supply on supported macOS targets. Runtime queries download no dictionaries and perform no inference. Missing executable or required dictionary fails the dependent retrieval operation explicitly. Child resource exhaustion must not terminate NanoCore. Service qualification measures bounded UTF-8 indexing, RPC wall time, process memory and CPU, and derived-store growth separately for each supported target. These measurements do not convert the combined deployment recommendation into a hard minimum. No format extractor or Sandbox CLI/MCP installation is added.
+
 ### Machine-Readable Requirement Sources
 
 | Concern | Authoritative machine-readable projection |

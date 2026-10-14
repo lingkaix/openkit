@@ -178,6 +178,10 @@ Keep existing deterministic operations and one S61 retrieval owner. Optional sem
 
 `20260909-personal_memory_and_knowledge_learning.md` owns source capture, scope/audience and bounded extraction. `20260909-knowledge_notebook_editing.md` owns editing/publication/history. Capture opt-in alone cannot enable unattended maintenance. An assessment remains one bounded invocation recorded by existing Observation evidence, never a Judge service or self-approval. Deterministic retrieval retains exact scope, commit/digest, source authority and audience; contradictions are not resolved by simply preferring a higher scope.
 
+### Answer Text Analysis
+
+Use the same selected Retrieval Kernel tokenizer for the query, canonical title, and body as for indexing. Retain the deterministic sufficiency rule: two distinct query terms in a page, or a one-term query in its title. A one-term body-only match remains `insufficient-evidence`; a sufficient result retains its exact citation. No second tokenizer or selector belongs to Knowledge Manager.
+
 ## Current Implementation Projection
 
 NanoCore exposes the five deterministic Knowledge Manager operations through the Knowledge definition table, native invocation, derived JSON routes and OpenAPI, `client.operations`, the bundled CLI and remote MCP. Public and trusted Task preparation enter the same definition and admission, preserving public metadata and Task’s exact trace-only view. Answer and context preparation delegate to S61's governed retrieval owner; context preparation returns that owner's trace reference and exposes no standalone worker-context materialization or delivery surface.
