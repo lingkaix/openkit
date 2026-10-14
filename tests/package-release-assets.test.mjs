@@ -1218,6 +1218,43 @@ function writeAppUpdateHelperFixture(repoRoot) {
   );
 }
 
+for (const mutation of ['missing', 'modified']) {
+  test(`operations archive refuses ${mutation} reviewed App-update helper`, () => {
+    const root = candidateOperationsRepository();
+    const extracted = mkdtempSync(join(tmpdir(), 'openkit-helper-negative-'));
+    try {
+      const packaged = packageReleaseAssets({
+        repoRoot: root,
+        ref: 'HEAD',
+        outputDir: join(root, 'out'),
+        tag: 'v0.0.0-helper-negative',
+      });
+      const envelope = 'openkit-ops-skill-v0.0.0-helper-negative';
+      const unpack = spawnSync('tar', ['-xzf', packaged.opsArchivePath, '-C', extracted], {
+        encoding: 'utf8',
+      });
+      assert.equal(unpack.status, 0, unpack.stderr);
+      const helper = join(extracted, envelope, 'scripts', 'docker', 'app-update-helper.py');
+      if (mutation === 'missing') rmSync(helper);
+      else writeFileSync(helper, '# unreviewed helper bytes\n');
+      const archive = join(root, 'negative.tar.gz');
+      const packed = spawnSync('tar', ['-czf', archive, '-C', extracted, envelope], {
+        encoding: 'utf8',
+      });
+      assert.equal(packed.status, 0, packed.stderr);
+      assert.throws(
+        () => verifyOperationsSkillArchive({ archivePath: archive, destDir: join(root, 'verify') }),
+        mutation === 'missing'
+          ? /missing scripts\/docker\/app-update-helper\.py/
+          : /App-update helper bytes do not match the reviewed checkout/
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(extracted, { recursive: true, force: true });
+    }
+  });
+}
+
 /** Writes one operations Skill tree with sibling reference links. */
 function writeOpsSkillFixture(repoRoot) {
   writeAppUpdateHelperFixture(repoRoot);

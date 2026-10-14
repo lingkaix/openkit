@@ -88,7 +88,7 @@ export function packageReleaseAssets(input) {
   };
 }
 
-/** Archives one Skill tree and repository license from the selected revision. */
+/** Archives the operations package, reviewed helper and license from the selected revision. */
 function gitArchiveSkill(repoRoot, ref, outputDir, prefix, paths) {
   const archiveName = `${prefix}.tar.gz`;
   const archivePath = resolve(outputDir, archiveName);
@@ -109,7 +109,7 @@ function gitArchiveSkill(repoRoot, ref, outputDir, prefix, paths) {
 }
 
 /**
- * Extracts one operations Skill archive and verifies its entrypoint and packaged references.
+ * Extracts one operations Skill archive and verifies its helper, entrypoint and references.
  *
  * @param {object} input Verification input.
  * @param {string} input.archivePath Path to `openkit-ops-skill-<tag>.tar.gz`.
@@ -139,6 +139,15 @@ export function verifyOperationsSkillArchive(input) {
   }
   if (!lstatSync(skillPath, { throwIfNoEntry: false })?.isFile()) {
     throw new Error('Operations Skill archive is missing skills/openkit-ops/SKILL.md.');
+  }
+  const helperPath = join(envelopePath, 'scripts', 'docker', 'app-update-helper.py');
+  if (!lstatSync(helperPath, { throwIfNoEntry: false })?.isFile()) {
+    throw new Error('Operations Skill archive is missing scripts/docker/app-update-helper.py.');
+  }
+  // The verifier checkout is the reviewed release source, independent of archive contents.
+  const reviewedHelper = readFileSync(new URL('./docker/app-update-helper.py', import.meta.url));
+  if (!readFileSync(helperPath).equals(reviewedHelper)) {
+    throw new Error('App-update helper bytes do not match the reviewed checkout.');
   }
 
   const skillRoot = join(envelopePath, 'skills', 'openkit-ops');
