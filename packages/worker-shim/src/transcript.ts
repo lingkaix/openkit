@@ -54,7 +54,7 @@ export type WorkerTerminalOutcomeInput = WorkerCanonicalTerminalEventDataInput;
 export interface WorkerTranscriptWriterOptions {
   /** Shared Turn recorder for queue counts and observed live-delivery waits. */
   recordLifecycleFact?: TurnLifecycleRecorder;
-  /** Durable session directory, usually `/openkit/session`. */
+  /** Caller-supplied output directory; production uses the exact admitted Turn capture. */
   sessionDir: string;
   /** Lineage fields attached to every record. */
   lineage: WorkerLineage;

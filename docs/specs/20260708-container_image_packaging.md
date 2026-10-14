@@ -778,7 +778,7 @@ Dockerfile static tests:
 - App image Dockerfile writes `/usr/local/lib/openkit/release-identity.json` from `OPENKIT_RELEASE_TAG` and `OPENKIT_SOURCE_COMMIT` and does not publish those values as `ENV`. The release workflow passes those arguments to the App image build only.
 - The shared worker Dockerfile uses digest-pinned direct image inputs, builds `@openkit/worker-protocol` and `@openkit/worker-shim` once, and exposes `worker-common` plus the one deployment target `worker-runtimes`.
 - Every final worker target installs exactly its catalog-declared runtime set and verified binary paths.
-- The shared worker stage creates `/openkit/sessions`, `/openkit/session`, and `/openkit/artifacts` and declares the sandbox user expected by OpenShell.
+- The shared worker stage creates `/openkit/sessions`, `/openkit/threads`, and `/openkit/artifacts` and declares the sandbox user expected by OpenShell. `/openkit/sessions` holds disposable AgentSession inputs; `/openkit/threads` is the retained Thread/runtime root.
 - Codex image and launcher tests separately require a writable runtime home and the governed Node proxy contract when the optional S33 provenance extension is enabled.
 
 Local build acceptance:
@@ -802,7 +802,7 @@ Worker image smoke acceptance:
 - The image contains the generic `openkit-worker-shim` and proves that its manifest-selected adapter exists in the static registry.
 - The image contains every native runtime binary and worker-local executable path declared by its authored `AgentManifest`.
 - The image can read an AEP package from `/openkit/sessions/<agent-session-id>/config/package.json`.
-- The image can write session records under `/openkit/session`.
+- The image can write Turn records under the exact admitted `/openkit/threads/<threadId>/<harness>/capture/<turnId>/`, where `<harness>` is the stable runtime adapter id, as owned by [Worker Runtime Sub-Agent Provenance](20260711-worker_runtime_subagent_provenance.md#2-runtime-provenance-capture).
 - The image smoke does not require a bounded machine-readable native mode and does not treat MCP loading as a packaging failure. It still fails an OpenKit-managed capability route or an integrated external system the AEP did not select. Worker-configured in-Sandbox MCP is outside that supply plane and is not a packaging failure merely for lacking a catalog selection or Gateway hop. Image contents confer no external authority.
 - The Codex image exposes a writable `CODEX_HOME` or `HOME` when the optional S33 provenance extension is enabled; this is not a shared worker-image requirement.
 
