@@ -688,15 +688,42 @@ function dataRootBackupResponse() {
 
 /** Returns one prepared App-update review fixture. */
 function appUpdatePrepared() {
+  const expectedCurrentImageId = `sha256:${'b'.repeat(64)}`;
+  const source = {
+    appDigest: `sha256:${'b'.repeat(64)}`,
+    sourceCommit: 'a'.repeat(40),
+    tag: 'v0.1.0',
+  };
   return {
-    expectedCurrentImageId: `sha256:${'b'.repeat(64)}`,
+    approvalSummary: {
+      targetRelease: source,
+      expectedCurrentImageId,
+      observedCurrentImageId: expectedCurrentImageId,
+      interruptionScope: 'NanoCore, Web, and active client connections.',
+      safetyEvidence: {
+        deploymentBindings: true,
+        preflight: {
+          observedAt: timestamp,
+          workspaceCount: 1,
+          counts: {
+            runningTurns: 0,
+            pendingTurns: 0,
+            queuedAdmissions: 0,
+            openAttempts: 0,
+            closingAttempts: 0,
+            inFlightCommands: 0,
+          },
+          state: 'idle',
+        },
+      },
+      recoveryLimitations: ['No migration rollback, automatic resume, or interrupted-work replay.'],
+    },
+    helperSha256: 'c'.repeat(64),
+    preparedHelperSha256: 'c'.repeat(64),
+    expectedCurrentImageId,
     preparedAt: timestamp,
     requestId: '11111111-1111-4111-8111-111111111111',
-    source: {
-      appDigest: `sha256:${'b'.repeat(64)}`,
-      sourceCommit: 'a'.repeat(40),
-      tag: 'v0.1.0',
-    },
+    source,
     stage: 'prepared' as const,
   };
 }
