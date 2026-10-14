@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -12,6 +13,13 @@ const target = 'https://staging.example.invalid',
   previous = `sha256:${'c'.repeat(64)}`,
   tag = 'v0.1.0-rc.6',
   requestId = '12345678-1234-1234-1234-123456789abc';
+const deployment = {
+  reference: 'retained-staging-binding',
+  sshAlias: 'a1',
+  origin: target,
+  machineId: 'a'.repeat(32),
+  container: 'openkit-app',
+};
 /** Synthetic admitted inputs with exact reviewed assessment and public retained-record selector. */
 function params() {
   const manifest = createReleaseManifest({
@@ -60,6 +68,7 @@ function params() {
       target,
       environment: 'staging-test',
       reference: 'synthetic-standing-grant',
+      deploymentReference: deployment.reference,
       revoked: false,
       operations: ['app-update'],
       maintenance: 'idle-only',
@@ -95,7 +104,13 @@ async function setup(t, change = () => {}) {
   const io = {
     sleep: async () => {},
     currentGrant: async () => structuredClone(p.grant),
-    identities: async () => ({ sourceCommit: sha, appDigest: digest, webDigest: digest }),
+    deploymentRecord: async () => structuredClone(deployment),
+    identities: async () => ({
+      ...deployment,
+      sourceCommit: sha,
+      appDigest: digest,
+      webDigest: digest,
+    }),
     call: async (op, input) => {
       calls.push(op);
       const data =
@@ -307,6 +322,112 @@ test('absent authority observation cannot start under a copied parameter grant',
   delete io.currentGrant;
   await assert.rejects(updateApp(target, p, dir, io), /current administrator grant/);
   assert(!calls.includes('app-update.start'));
+});
+for (const [name, change] of [
+  [
+    'production alias',
+    (record) => {
+      record.sshAlias = 'a2';
+    },
+  ],
+  [
+    'different target',
+    (record) => {
+      record.origin = 'https://other.example.invalid';
+    },
+  ],
+  [
+    'missing physical identity',
+    (record) => {
+      delete record.machineId;
+    },
+  ],
+  [
+    'wrong grant binding',
+    (record) => {
+      record.reference = 'unrelated-record';
+    },
+  ],
+])
+  test(`retained staging record refuses ${name} before public operations`, async (t) => {
+    const { p, calls, dir, io } = await setup(t);
+    io.deploymentRecord = async () => {
+      const record = structuredClone(deployment);
+      change(record);
+      return record;
+    };
+    await assert.rejects(updateApp(target, p, dir, io));
+    assert.deepEqual(calls, []);
+  });
+test('a self-declared staging URL cannot replace the retained a1 record', () => {
+  const p = params(),
+    other = 'https://production.example.invalid';
+  p.grant.target = other;
+  assert.throws(() => validateUpdate(other, p, deployment));
+});
+test('a missing retained-record adapter cannot use the parameter grant as target proof', async (t) => {
+  const { p, calls, dir, io } = await setup(t);
+  delete io.deploymentRecord;
+  await assert.rejects(updateApp(target, p, dir, io));
+  assert.deepEqual(calls, []);
+});
+test('actual target machine mismatch refuses before App operations', async (t) => {
+  const { p, calls, dir, io } = await setup(t),
+    original = io.identities;
+  io.identities = async () => ({ ...(await original()), machineId: 'f'.repeat(32) });
+  await assert.rejects(updateApp(target, p, dir, io));
+  assert.deepEqual(calls, []);
+});
+for (const changed of ['record', 'target'])
+  test(`changed ${changed} before start stops the App effect`, async (t) => {
+    const { p, calls, dir, io } = await setup(t);
+    let recordReads = 0,
+      identityReads = 0;
+    const original = io.identities;
+    io.deploymentRecord = async () => ({
+      ...deployment,
+      machineId: changed === 'record' && ++recordReads > 1 ? 'f'.repeat(32) : deployment.machineId,
+    });
+    io.identities = async () => ({
+      ...(await original()),
+      machineId:
+        changed === 'target' && ++identityReads > 1 ? 'f'.repeat(32) : deployment.machineId,
+    });
+    await assert.rejects(updateApp(target, p, dir, io));
+    assert(!calls.includes('app-update.start'));
+  });
+test('disabled CLI reads only a protected regular retained deployment artifact', async (t) => {
+  const { p, dir } = await setup(t),
+    parent = path.dirname(dir),
+    paramsFile = path.join(parent, 'params.json'),
+    recordFile = path.join(parent, 'deployment.json');
+  await fs.writeFile(paramsFile, JSON.stringify(p));
+  await fs.writeFile(recordFile, JSON.stringify(deployment), { mode: 0o600 });
+  const run = (file) =>
+    spawnSync(
+      process.execPath,
+      [
+        'scripts/release-update-app.mjs',
+        '--target',
+        target,
+        '--params',
+        paramsFile,
+        '--deployment-record',
+        file,
+        '--evidence-dir',
+        dir,
+      ],
+      { encoding: 'utf8' }
+    );
+  const admitted = run(recordFile);
+  assert.equal(admitted.status, 1);
+  assert.match(admitted.stderr, /not executable/);
+  await fs.chmod(recordFile, 0o644);
+  assert.match(run(recordFile).stderr, /regular mode 0600/);
+  const link = path.join(parent, 'record-link.json');
+  await fs.symlink(recordFile, link);
+  assert.match(run(link).stderr, /ELOOP/);
+  await assert.rejects(fs.access(dir), /ENOENT/);
 });
 test('lost start response is retained and never resubmitted', async (t) => {
   const { p, calls, dir, io } = await setup(t);

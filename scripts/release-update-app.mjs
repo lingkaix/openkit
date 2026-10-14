@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /** Bounded App update through existing public operations; later component effects retain their owners. */
-import { promises as fs } from 'node:fs';
+import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createReleaseManifest } from './release-record.mjs';
@@ -30,7 +30,7 @@ function requireFact(holds, name) {
   if (!holds) throw Error(`App Update Delivery: ${name}`);
 }
 /** Reject absent target/authority/assessment before any public operation or credential read. */
-export function validateUpdate(target, p) {
+export function validateUpdate(target, p, deployment) {
   const url = new URL(target);
   requireFact(
     url.protocol === 'https:' &&
@@ -48,6 +48,16 @@ export function validateUpdate(target, p) {
       p.grant.revoked === false &&
       p.grant.reference,
     'target outside bounded deployment grant'
+  );
+  requireFact(
+    deployment?.sshAlias === 'a1' &&
+      deployment.origin === url.origin &&
+      /^[a-f0-9]{32}$/.test(deployment.machineId ?? '') &&
+      /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(deployment.container ?? '') &&
+      typeof deployment.reference === 'string' &&
+      deployment.reference.length > 0 &&
+      p.grant.deploymentReference === deployment.reference,
+    'target differs from retained a1 deployment binding'
   );
   requireFact(
     p.grant.operations?.includes('app-update') && p.grant.maintenance === 'idle-only',
@@ -102,6 +112,35 @@ export function validateUpdate(target, p) {
   );
   return p;
 }
+/** Compare the retained identity core; descriptive additive record fields do not become authority. */
+function deploymentBinding(record) {
+  return Object.fromEntries(
+    ['reference', 'sshAlias', 'origin', 'machineId', 'container'].map((key) => [key, record[key]])
+  );
+}
+/** A matching URL cannot substitute for observation of the exact physical host and container. */
+function targetIdentity(actual, deployment) {
+  requireFact(
+    actual?.machineId === deployment.machineId &&
+      actual.container === deployment.container &&
+      actual.origin === deployment.origin,
+    'live target differs from retained a1 physical identity'
+  );
+}
+/** Read the existing retained deployment artifact without following a link or admitting public bytes. */
+async function retainedDeployment(file) {
+  const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = await handle.stat();
+    requireFact(
+      stat.isFile() && (stat.mode & 0o777) === 0o600,
+      'retained deployment record must be regular mode 0600'
+    );
+    return JSON.parse(await handle.readFile('utf8'));
+  } finally {
+    await handle.close();
+  }
+}
 /** Require every owned instantaneous work count to agree with idle. */
 function idle(observation) {
   requireFact(
@@ -135,7 +174,13 @@ function preparedReview(receipt, source, p) {
 }
 /** Submit once, observe the pinned receipt, and compare exact retained public responses. */
 export async function updateApp(target, p, dir, io) {
-  validateUpdate(target, p);
+  requireFact(
+    typeof io.deploymentRecord === 'function',
+    'retained deployment record adapter required'
+  );
+  const deployment = await io.deploymentRecord();
+  validateUpdate(target, p, deployment);
+  targetIdentity(await io.identities(target), deployment);
   await fs.mkdir(dir, { mode: 0o700 });
   const now = io.now ?? (() => new Date().toISOString());
   const result = {
@@ -194,7 +239,13 @@ export async function updateApp(target, p, dir, io) {
       grant?.reference === p.grant.reference,
       'standing grant identity changed before start'
     );
-    validateUpdate(target, { ...p, grant });
+    const currentDeployment = await io.deploymentRecord();
+    validateUpdate(target, { ...p, grant }, currentDeployment);
+    requireFact(
+      canonical(deploymentBinding(currentDeployment)) === canonical(deploymentBinding(deployment)),
+      'retained deployment binding changed before start'
+    );
+    targetIdentity(await io.identities(target), deployment);
     await once(dir, 'start', { requestId: prepared.requestId, maintenanceConsent: true }, () =>
       call('app-update.start', { requestId: prepared.requestId, maintenanceConsent: true })
     );
@@ -224,6 +275,7 @@ export async function updateApp(target, p, dir, io) {
       'receipt failed, incomplete, or unknown; inspect same request ID'
     );
     const identities = await io.identities();
+    targetIdentity(identities, deployment);
     const app = p.manifest.images.find((i) => i.id === 'app');
     requireFact(
       identities.sourceCommit === source.sourceCommit &&
@@ -254,16 +306,27 @@ async function main() {
     options = {};
   while (args.length) {
     const key = args.shift();
-    if (!['--target', '--params', '--evidence-dir'].includes(key) || options[key] || !args.length)
+    if (
+      !['--target', '--params', '--evidence-dir', '--deployment-record'].includes(key) ||
+      options[key] ||
+      !args.length
+    )
       throw Error(
-        'Usage: release-update-app.mjs --target URL --params FILE --evidence-dir NEW_DIR'
+        'Usage: release-update-app.mjs --target URL --params FILE --deployment-record FILE --evidence-dir NEW_DIR'
       );
     options[key] = args.shift();
   }
-  if (!options['--target'] || !options['--params'] || !options['--evidence-dir'])
-    throw Error('Explicit target, params and new evidence directory required');
+  if (
+    !options['--target'] ||
+    !options['--params'] ||
+    !options['--evidence-dir'] ||
+    !options['--deployment-record']
+  )
+    throw Error(
+      'Explicit target, params, retained deployment record and new evidence directory required'
+    );
   const p = JSON.parse(await fs.readFile(options['--params'], 'utf8'));
-  validateUpdate(options['--target'], p);
+  validateUpdate(options['--target'], p, await retainedDeployment(options['--deployment-record']));
   // Do not infer an OCI platform digest from Docker image ID or a version label.
   throw Error(
     'App update automation is not executable: exact live platform identity adapter is pending'
