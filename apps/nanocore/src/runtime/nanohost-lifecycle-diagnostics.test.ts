@@ -34,10 +34,38 @@ import {
   registerNanoHostSessionSemanticRoutes,
 } from './nanohost-session-dispatch.js';
 
-// Use Node's real sampler and observe sample arrival rather than guessing a sleep duration.
+// Inject histogram readings so sibling test load cannot choose the diagnostic oracle.
+// Keep real sample arrival to exercise deferred reset and one-shot carry.
+const delaySource = vi.hoisted(() => ({ nextSampleMs: 10 }));
 vi.mock('node:perf_hooks', async (original) => {
   const actual = await original<typeof import('node:perf_hooks')>();
-  const histogram = actual.monitorEventLoopDelay({ resolution: 10 });
+  const native = actual.monitorEventLoopDelay({ resolution: 10 });
+  let sampledCount = 0;
+  let maximumMs = 0;
+  const observeSample = () => {
+    if (native.count > sampledCount) {
+      sampledCount = native.count;
+      maximumMs = Math.max(maximumMs, delaySource.nextSampleMs);
+      // A block is one observation. Repeating it after reset would mask a lost carry.
+      delaySource.nextSampleMs = 10;
+    }
+  };
+  const histogram = {
+    enable: () => native.enable(),
+    get count() {
+      observeSample();
+      return native.count;
+    },
+    get max() {
+      observeSample();
+      return maximumMs * 1_000_000;
+    },
+    reset() {
+      native.reset();
+      sampledCount = 0;
+      maximumMs = 0;
+    },
+  };
   return { ...actual, monitorEventLoopDelay: () => histogram };
 });
 const delayHistogram = monitorEventLoopDelay({ resolution: 10 });
@@ -161,7 +189,9 @@ describe('Harness delivery localization through real Core and shim owners', () =
             }
           }
           // A response callback can precede the delayed sample. Join its count explicitly.
+          delaySource.nextSampleMs = scenario === 'sampled-event-loop-block' ? 1100 : 10;
           await nextDelaySample(beforeBlock);
+          delaySource.nextSampleMs = 10;
         }
         coreClock = 850;
       }
@@ -185,6 +215,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
           }
           expect(delayHistogram.count).toBe(count);
           diagnosticResponse.emit('finish');
+          delaySource.nextSampleMs = 1125;
           return end(...args);
         }) as typeof response.end;
       }
@@ -465,10 +496,11 @@ describe('Harness delivery localization through real Core and shim owners', () =
         expect(Number.isInteger(first.eventLoopDelayMaxMs)).toBe(true);
         expect(Number.isInteger(first.eventLoopDelayWindowMs)).toBe(true);
         if (scenario === 'sampled-event-loop-block') {
+          expect(first.eventLoopDelayMaxMs).toBe(1100);
           expect(first.eventLoopDelayMaxMs).toBeGreaterThan(1000);
           expect(first.eventLoopDelayWindowMs).toBeGreaterThanOrEqual(1100);
         } else {
-          expect(first.eventLoopDelayMaxMs).toBeLessThan(250);
+          expect(first.eventLoopDelayMaxMs).toBe(10);
         }
         // Settle and dispatch another operation: the old maximum must not survive the record.
         expect(
@@ -510,7 +542,9 @@ describe('Harness delivery localization through real Core and shim owners', () =
           .map(([line]) => JSON.parse(String(line)))
           .filter((line) => line.event === 'worker.harness.response')[1];
         if (scenario === 'sampled-event-loop-before-sample') {
+          expect(second.eventLoopDelayMaxMs).toBe(1125);
           expect(second.eventLoopDelayMaxMs).toBeGreaterThan(1000);
+          delaySource.nextSampleMs = 10;
           expect(second.eventLoopDelayWindowMs).toBeGreaterThanOrEqual(1125);
           // An ordinary subsequent response must consume the carried maximum exactly once.
           const command = dispatchedCommand!;
@@ -558,9 +592,9 @@ describe('Harness delivery localization through real Core and shim owners', () =
           const third = log.mock.calls
             .map(([line]) => JSON.parse(String(line)))
             .filter((line) => line.event === 'worker.harness.response')[2];
-          expect(third.eventLoopDelayMaxMs).toBeLessThan(250);
+          expect(third.eventLoopDelayMaxMs).toBe(10);
         } else {
-          expect(second.eventLoopDelayMaxMs).toBeLessThan(250);
+          expect(second.eventLoopDelayMaxMs).toBe(10);
         }
         return;
       }
