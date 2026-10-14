@@ -131,6 +131,8 @@ NanoHost-local runtime storage contains disposable materializations, caches, scr
 
 It is not canonical Workspace, Artifact, Material, knowledge, review, or work history. Only explicitly disposable runtime storage may be discarded by AgentSession or Runtime Epoch cleanup. The separately owned retained volumes survive those events in full, including unknown and ignored contents, without becoming product truth. Required product evidence still crosses the existing accepted import boundary; persistence alone is not evidence acceptance.
 
+Cross-release continuity follows [Contract Evolution](../core/contract-evolution.md#retained-data-continuity). Before `v0.1.0`, an explicit deployment reset may replace carry-forward under [Release Management](20260829-release_management.md#pre-stable-deployment-reset-and-protected-accounts). It preserves the required accounts and follows the disclosed operator procedure. This permission does not authorize AgentSession or Runtime Epoch cleanup to discard retained volumes, weaken transfer validation, or replay an unknown effect.
+
 ### Native Data Systems
 
 Native data systems include Git repositories, specifically accepted object stores, uploads, provider file systems, and other sources selected by an existing Workspace data-source contract.
