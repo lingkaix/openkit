@@ -1,9 +1,62 @@
+// openkit-test-platform: posix
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import { checkPublication } from '../scripts/release-publication-check.mjs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { after, test } from 'node:test';
+import {
+  checkPublication as actualCheck,
+  publicationInputsAt,
+} from '../scripts/release-publication-check.mjs';
 
-const sha = 'a'.repeat(40),
-  hash = 'b'.repeat(64);
+/** Actual local Git objects let false, missing and changed byte claims fail independently of fixtures. */
+function repository() {
+  const root = mkdtempSync(path.join(tmpdir(), 'release-publication-git-'));
+  after(() => rmSync(root, { recursive: true, force: true }));
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_NAME: 'Lingkai.Xu',
+    GIT_AUTHOR_EMAIL: '3234555+lingkaix@users.noreply.github.com',
+    GIT_COMMITTER_NAME: 'Lingkai.Xu',
+    GIT_COMMITTER_EMAIL: '3234555+lingkaix@users.noreply.github.com',
+  };
+  const git = (...args) => {
+    const r = spawnSync('git', args, { cwd: root, env, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout.trim();
+  };
+  git('init', '--initial-branch=main');
+  mkdirSync(path.join(root, '.github/workflows'), { recursive: true });
+  mkdirSync(path.join(root, 'scripts'));
+  writeFileSync(
+    path.join(root, '.github/workflows/ci.yml'),
+    'jobs:\n' +
+      ['publish-container-images', 'github-release', 'verify-release']
+        .map((n) => `  ${n}:\n    steps:\n      - run: node scripts/release-notes.mjs\n`)
+        .join('')
+  );
+  writeFileSync(
+    path.join(root, 'scripts/release-notes.mjs'),
+    "import './publication-helper.mjs';\n"
+  );
+  writeFileSync(path.join(root, 'scripts/publication-helper.mjs'), 'export const fixture = 1;\n');
+  git('add', '.');
+  git('commit', '-m', 'synthetic proved baseline');
+  const baseline = git('rev-parse', 'HEAD');
+  writeFileSync(path.join(root, 'README.md'), 'Unrelated reviewed change.\n');
+  git('add', '.');
+  git('commit', '-m', 'synthetic candidate');
+  const head = git('rev-parse', 'HEAD');
+  return { root, baseline, head, git };
+}
+const repo = repository(),
+  sha = repo.head,
+  hash = 'b'.repeat(64),
+  publicationHash = publicationInputsAt(repo.root, repo.baseline).sha256;
+function checkPublication(input, options) {
+  return actualCheck(input, { ...options, repoRoot: repo.root });
+}
 /** Complete synthetic observations, never a live authorization source. */
 function evidence() {
   return {
@@ -17,12 +70,12 @@ function evidence() {
       repository: 'lingkaix/openkit',
       firstTag: 'v0.1.0-rc.6',
       assetSet: hash,
-      publicationInputs: hash,
+      publicationInputs: publicationHash,
       revoked: false,
       cycleOpen: true,
     },
     assetSet: hash,
-    publicationInputs: hash,
+    publicationInputs: publicationHash,
     review: { sha, reference: 'synthetic-review' },
     main: { sha, contained: true },
     candidate: {
@@ -48,10 +101,11 @@ function evidence() {
       ].map((name) => ({ name, conclusion: 'success', id: 1 })),
     },
     baseline: {
+      sha: repo.baseline,
       tag: 'v0.1.0-rc.5',
       conclusion: 'success',
       runId: 2,
-      publicationInputs: hash,
+      publicationInputs: publicationHash,
       jobs: [
         'Publish app image',
         'Publish worker-common image',
@@ -80,6 +134,14 @@ for (const name of evidence().candidate.jobs.map((job) => job.name)) {
 }
 test('first covered prerelease passes a complete mechanical publication check', () => {
   assert.equal(checkPublication(evidence(), { now }).tag, 'v0.1.0-rc.6');
+});
+test('self-consistent false publication fingerprints cannot prove repository bytes', () => {
+  const input = evidence();
+  input.publicationInputs =
+    input.grant.publicationInputs =
+    input.baseline.publicationInputs =
+      'f'.repeat(64);
+  assert.throws(() => checkPublication(input, { now }));
 });
 for (const key of Object.keys(evidence()))
   test(`pre-tag refuses absent ${key}`, () => {
@@ -220,3 +282,36 @@ for (const [name, change] of [
     change(input);
     assert.throws(() => checkPublication(input, { now }));
   });
+
+test('declared freshness longer than one hour is admitted for the exact commit', () => {
+  const input = evidence();
+  input.validUntil = '2026-10-15T00:00:00Z';
+  assert.equal(checkPublication(input, { now }).status, 'eligible');
+});
+test('changed transitive publication bytes refuse even when all snapshot hashes agree', () => {
+  writeFileSync(
+    path.join(repo.root, 'scripts/publication-helper.mjs'),
+    'export const fixture = 2;\n'
+  );
+  repo.git('add', '.');
+  repo.git('commit', '-m', 'synthetic changed publication implementation');
+  const input = evidence(),
+    changed = repo.git('rev-parse', 'HEAD');
+  input.sha = input.candidate.sha = input.review.sha = input.main.sha = changed;
+  const actual = publicationInputsAt(repo.root, changed);
+  assert.notEqual(actual.sha256, publicationHash);
+  input.publicationInputs =
+    input.grant.publicationInputs =
+    input.baseline.publicationInputs =
+      actual.sha256;
+  assert.throws(() => checkPublication(input, { now }), /actual repository publication inputs/);
+});
+test('missing repository commit and missing baseline identity cannot prove publication inputs', () => {
+  assert.throws(
+    () => publicationInputsAt(repo.root, 'f'.repeat(40)),
+    /repository publication proof/
+  );
+  const input = evidence();
+  delete input.baseline.sha;
+  assert.throws(() => checkPublication(input, { now }), /publication proof exact commit/);
+});

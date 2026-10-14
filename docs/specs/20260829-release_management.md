@@ -198,11 +198,11 @@ Before tagging, a mechanical check MUST establish all of these predicates from c
 
 - The unrevoked grant applies to this repository, version family, tag, and exact asset set.
 - Exact publishing commit P is reviewed, contained in `main`, and has successful candidate run and required job evidence.
-- The publication jobs and their implementation inputs match an approved successful real-tag baseline. A changed path leaves routine authorization until reviewed and rehearsed.
+- The publication jobs and their implementation inputs match an approved successful real-tag baseline. Read immutable Git bytes at exact P and the proved baseline commit: hash each publication job YAML block, every script it invokes, and the current static relative-import/literal-file dependency closure. Retain the per-input Git blob identities and aggregate comparison. Self-consistent snapshot hashes alone establish no proof. Missing objects or changed bytes refuse. A changed path leaves routine authorization until reviewed and rehearsed.
 - The tag and immutable image identities are unused, or an explicitly permitted same-tag retry proves the existing immutable-reuse rules.
 - The blocker label exists, the backlog was initially reconciled, and current triage coverage is complete. No applicable open prerelease blocker exists; every known non-blocker has a disposition and disclosure.
 - Prerelease flags are fixed, GHCR `latest` stays untouched, and GitHub Latest is not assigned.
-- Evidence is available, fresh, internally consistent, and bound to P and the proposed tag. A missing condition refuses publication.
+- Evidence is available, fresh within its declared observation validity, internally consistent, and bound to P and the proposed tag. Exact-commit binding is required; no one-hour freshness cap is specified. A missing condition refuses publication.
 
 The `release-blocker` label identifies an open finding that blocks the applicable prerelease under an owning contract or engineer decision. Label absence alone proves nothing. Initially reconcile all open findings before admitting the standing grant, and retain that reconciliation. A known defect is not automatically a non-blocker. Record the owner, applicability, disposition, and disclosure for each finding; strict-risk dispositions stay engineer-reserved. The policy is prospective and does not rewrite earlier release triage.
 

@@ -1,7 +1,10 @@
 #!/usr/bin/env node
+import { spawnSync } from 'node:child_process';
 /** Offline pre-tag admission over retained, independently collected publication observations. */
 import { readFileSync } from 'node:fs';
+import { posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { canonical, sha } from './release-safety.mjs';
 
 const candidateJobs = [
   'L0-L2 static, unit, contract',
@@ -30,6 +33,74 @@ const firstCoveredTag = 'v0.1.0-rc.6';
 function requireFact(holds, name) {
   if (!holds) throw Error(`Release Management: publication refused: ${name}`);
 }
+/** Observe immutable Git bytes, not checkout files or claims in the evidence snapshot. */
+export function publicationInputsAt(repoRoot, sourceCommit) {
+  requireFact(commit.test(sourceCommit ?? ''), 'publication proof exact commit');
+  const git = (args, input) => {
+    const result = spawnSync('git', args, {
+      cwd: repoRoot,
+      input,
+      encoding: 'utf8',
+      timeout: 10000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    requireFact(
+      !result.error && !result.signal && result.status === 0,
+      `repository publication proof unavailable: ${args[0]}`
+    );
+    return result.stdout;
+  };
+  requireFact(
+    git(['rev-parse', `${sourceCommit}^{commit}`]).trim() === sourceCommit,
+    'publication proof must name a commit object'
+  );
+  const read = (file) => {
+    const entry = git(['ls-tree', sourceCommit, '--', file]);
+    requireFact(
+      /^100(?:644|755) blob [a-f0-9]{40}\t/.test(entry),
+      `publication input must be a regular tracked file: ${file}`
+    );
+    return { blob: entry.split(/\s+/)[2], bytes: git(['show', `${sourceCommit}:${file}`]) };
+  };
+  const workflow = read('.github/workflows/ci.yml').bytes;
+  const blocks = new Map(
+    [
+      ...workflow
+        .slice(workflow.indexOf('jobs:\n') + 6)
+        .matchAll(/^ {2}([a-z0-9-]+):\n(.*?)(?=^ {2}[a-z0-9-]+:\n|(?![\s\S]))/gms),
+    ].map((match) => [match[1], match[2]])
+  );
+  const jobs = {},
+    files = {},
+    pending = new Set();
+  for (const name of ['publish-container-images', 'github-release', 'verify-release']) {
+    const block = blocks.get(name);
+    requireFact(typeof block === 'string', `publication job missing: ${name}`);
+    jobs[name] = git(['hash-object', '--stdin'], block).trim();
+    for (const match of block.matchAll(/\bscripts\/[a-zA-Z0-9_./-]+\.(?:mjs|sh|py)\b/g))
+      pending.add(match[0]);
+  }
+  requireFact(pending.size > 0, 'publication jobs have no admitted script inputs');
+  // Current publication scripts use relative static imports and literal URL file reads.
+  // Follow that actual dependency closure; a missing or untracked dependency refuses proof.
+  for (const file of pending) {
+    requireFact(
+      !posix.isAbsolute(file) && !file.startsWith('../'),
+      'publication input escapes repository'
+    );
+    const { blob, bytes } = read(file);
+    files[file] = blob;
+    if (!/\.(?:mjs|js)$/.test(file)) continue;
+    for (const match of bytes.matchAll(
+      /(?:\bfrom\s*|\bimport\s*(?:\(\s*)?|\bnew URL\(\s*)['"](\.[^'"]+)['"]/g
+    )) {
+      const dependency = posix.normalize(posix.join(posix.dirname(file), match[1]));
+      pending.add(dependency);
+    }
+  }
+  const inputs = { jobs, files };
+  return { ...inputs, sha256: sha(canonical(inputs)) };
+}
 /** Skipped or unnamed jobs cannot supply the required real-run proof. */
 function successfulJobs(run, names) {
   return (
@@ -49,7 +120,7 @@ function successfulJobs(run, names) {
   );
 }
 /** Check every standing-grant predicate; this does not collect evidence or create a tag. */
-export function checkPublication(e, { now = new Date() } = {}) {
+export function checkPublication(e, { now = new Date(), repoRoot = process.cwd() } = {}) {
   requireFact(e && typeof e === 'object', 'evidence');
   const n = /^v0\.1\.0-rc\.([1-9][0-9]*)$/.exec(e.tag ?? '');
   requireFact(
@@ -70,18 +141,19 @@ export function checkPublication(e, { now = new Date() } = {}) {
     'applicable unrevoked grant'
   );
   requireFact(hash.test(e.assetSet ?? '') && e.assetSet === g.assetSet, 'approved asset set');
+  const actual = publicationInputsAt(repoRoot, e.sha);
+  const baselineInputs = publicationInputsAt(repoRoot, e.baseline?.sha);
   requireFact(
-    hash.test(e.publicationInputs ?? '') && e.publicationInputs === g.publicationInputs,
-    'approved publication jobs and implementation inputs'
+    actual.sha256 === baselineInputs.sha256 &&
+      e.publicationInputs === actual.sha256 &&
+      g.publicationInputs === baselineInputs.sha256 &&
+      e.baseline.publicationInputs === baselineInputs.sha256,
+    'actual repository publication inputs differ from approved baseline'
   );
   const start = Date.parse(e.observedAt),
     end = Date.parse(e.validUntil);
   requireFact(
-    Number.isFinite(start) &&
-      Number.isFinite(end) &&
-      start <= now.getTime() &&
-      now.getTime() < end &&
-      end - start <= 3600000,
+    Number.isFinite(start) && Number.isFinite(end) && start <= now.getTime() && now.getTime() < end,
     'fresh bounded evidence window'
   );
   requireFact(
@@ -154,6 +226,11 @@ export function checkPublication(e, { now = new Date() } = {}) {
     sha: e.sha,
     grant: g.reference,
     status: 'eligible',
+    publicationProof: {
+      candidate: actual,
+      baseline: baselineInputs,
+      baselineCommit: e.baseline.sha,
+    },
     observedAt: e.observedAt,
   };
 }
