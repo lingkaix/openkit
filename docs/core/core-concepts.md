@@ -156,7 +156,7 @@ An external, provider-native, or adapter-native runtime identifier must not beco
 
 `requestId` is caller-provided command correlation and idempotency input, not a durable object identifier.
 
-[Core Protocol](protocol.md#ids) owns the shared format and generation rule for independently generated entity identifiers. Owning schemas and accepted design define concrete ID fields, allocation, validation, and request-derived identities. Record writers implement those contracts. This document does not define their encodings or maintain a registry of future IDs.
+[Core Protocol](protocol.md#ids) owns the shared text form, independent generation rule, and covered derived-output encoding. Owning schemas and accepted design define concrete ID fields, allocation, validation, and request-derived identities. Record writers implement those contracts. This document does not define their encodings or maintain a registry of future IDs.
 
 ## Naming Rules
 

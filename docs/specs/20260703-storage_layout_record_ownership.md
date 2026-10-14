@@ -257,6 +257,8 @@ This fail-closed rule does not apply to derived SQLite indexes and read models. 
 
 The Phase 1 Material graph is an explicit exception to the ordinary file-backed workspace-history default. Its three authoritative families and the command ledger that acknowledges their mutations live in the same `workspace.sqlite`; no Material authority exists under `files/`, `sources/`, `knowledge/`, `artifacts/`, or a private Material directory.
 
+Derived Material, revision, Artifact Review, and follow-up Turn identifiers retain their owning inputs and retry rules. Their output encoding uses the fixed kind namespaces and prefixed canonical UUIDv5 text in [Core Protocol](../core/protocol.md#ids), as recorded in [One Identifier Mechanism](../decisions/20261014-one_identifier_mechanism.md). Transaction keys, version-keyed Review uniqueness, and immutable parent linkage remain unchanged.
+
 The exact logical keys and storage payloads are:
 
 | Record | Key and required storage contract |

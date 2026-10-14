@@ -137,15 +137,23 @@ Minor versions MAY make breaking schema changes when an accepted spec records th
 
 [Core Concepts](core-concepts.md#identifier-semantics) owns identifier opacity. Consumers MUST NOT use an identifier's encoded time, routing, ownership, storage, or provider information as authority.
 
-This document owns the shared format and generation rule for new independently generated OpenKit entity identifiers. The machine-readable schemas define the concrete ID fields and project this rule into each record family. Each record owner retains allocation authority and its existing lifecycle. The engineer's ruling and delegated acceptance are recorded in [One Identifier Mechanism](../decisions/20261014-one_identifier_mechanism.md).
+This document owns the shared text form and independent generation rule for OpenKit entity identifiers, and the output encoding of the derived kinds below. The machine-readable schemas define the concrete ID fields and project this rule into each record family. Each record owner retains allocation authority and its existing lifecycle. The coordinator's recommendation and pending engineer confirmation are recorded in [One Identifier Mechanism](../decisions/20261014-one_identifier_mechanism.md).
 
-Every new independently generated OpenKit entity identifier MUST use a UUIDv7 from one shared function, as defined by [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562.html#section-5.7). Its text form MUST contain the entity kind's prefix, one underscore, and canonical lowercase UUIDv7 text. The UUID text MUST use the 8-4-4-4-12 hexadecimal layout with hyphens. The prefix MUST be nonempty. TypeID base32 is not this format.
+Every new independently generated OpenKit entity identifier MUST use a UUIDv7 from one shared function, as defined by [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562.html#section-5.7). Each covered kind has one text form: its prefix, one underscore, and canonical lowercase UUID text. The UUID text MUST use the 8-4-4-4-12 hexadecimal layout with hyphens. The prefix MUST be nonempty. TypeID base32 is not this format.
 
-If a parameter or field names the expected independently generated entity kind, its admission validator MUST check that kind's prefix and canonical UUIDv7 text. The validator MUST check version 7 and the RFC 9562 variant bits. A wrong-kind or malformed identifier MUST fail that validation before an effect. The validator MUST NOT coerce an older encoding or infer a missing kind. Only a boundary whose parameter or field names the expected kind may check the prefix. Every other consumer MUST treat the complete identifier as opaque when storing, displaying, or forwarding it. Identifier lookup follows the owner's existing not-found, conflict, or access-denial contract.
+If a covered kind's owner derives identifiers, its derived output MUST use [UUIDv5](https://www.rfc-editor.org/rfc/rfc9562.html#section-5.5) in that same text form. The name is the owner's existing complete derivation input, in the canonical byte encoding below. Its existing scope, request, purpose, role, and other distinguishing inputs MUST remain unchanged. An existing discriminator carried by a longer output prefix remains part of the derivation input when the output uses the short kind prefix. This changes the output encoding, not allocation triggers or retry semantics.
 
-Within one kind, lexical sorting follows the UUIDv7 allocation timestamp. Prefixes group different kinds before time. Identifiers MUST NOT replace event sequences, record timestamps, or explicit lineage as authority. Equal milliseconds, clock changes, and separate generators do not establish a total creation order. UUIDv7 reveals creation time to the millisecond through its allocation timestamp. Consumers MUST NOT extract that time for product behavior. The prefix makes the kind visible in logs, paths, and APIs; it grants no authority.
+Each kind has one fixed OpenKit namespace UUID. It is UUIDv5 in the RFC 9562 URL namespace `6ba7b811-9dad-11d1-80b4-00c04fd430c8`, with the UTF-8 name `openkit:entity-kind:` followed by its exact prefix. That definition fixes the namespace independently of any entity, deployment, request, or clock. The derived-family table gives the resulting constants for its current kinds. A namespace is a derivation constant, not a new entity or durable state.
 
-Request-derived identifiers remain with their allocating owners and retain their derivation and retry semantics. This includes request-derived Item, Artifact, Material, revision, Review, Light App, and record identifiers. The shared generator MUST NOT replace those identifiers with fresh UUIDv7 values. Their owning validators retain their existing contracts; this text form does not apply to them. Command request IDs, composite keys, operation names, revision numbers, and authored selector names also remain outside this independent-generation rule.
+The canonical name bytes are the UTF-8 encoding of compact JSON of the owner's existing complete input. Use ECMAScript JSON serialization without a replacer or indentation. Preserve the owner's fixed tuple order and fixed object-member order, string contents, value types, and existing role or purpose labels. Add no byte-order mark, inter-token whitespace, or trailing newline. Do not trim strings or normalize Unicode. An owner whose input order or values are not stable cannot use this encoding until that owner resolves the instability.
+
+If a parameter or field names a covered entity kind, its admission validator MUST check that kind's prefix and canonical UUID text. The validator MUST accept version 7, and version 5 only when that kind's owner defines a derivation. It MUST check the RFC 9562 variant bits. A wrong-kind or malformed identifier MUST fail that validation before an effect. The validator MUST NOT infer allocation, ownership, or authority from the UUID version, coerce an older encoding, or infer a missing kind. Only a boundary whose parameter or field names the expected kind may check the prefix. Every other consumer MUST treat the complete identifier as opaque when storing, displaying, or forwarding it. Identifier lookup follows the owner's existing not-found, conflict, or access-denial contract.
+
+Within one kind, lexical sorting of independently generated UUIDv7 identifiers follows their allocation timestamp. A derived UUIDv5 has no allocation-time ordering promise. Prefixes group different kinds before time. Identifiers MUST NOT replace event sequences, record timestamps, or explicit lineage as authority. Equal milliseconds, clock changes, and separate generators do not establish a total creation order. UUIDv7 reveals creation time to the millisecond through its allocation timestamp. Consumers MUST NOT extract that time for product behavior. The prefix makes the kind visible in logs, paths, and APIs; it grants no authority.
+
+Derived identifiers remain with their allocating owners and retain their inputs, allocation triggers, and retry semantics. A prefixed identifier exposed in a field that names its kind uses that kind's UUIDv5 namespace and the shared text form. This includes derived Workspace, Thread, Turn, Item, Artifact, Material, Material revision, Artifact Review, and Knowledge Review identifiers. The shared independent generator MUST NOT replace a derived identifier with a fresh UUIDv7 value.
+
+A derived value without a kind-named prefixed field remains opaque and owner-defined. Light App `appId` and record `recordId` currently carry bare owner-derived UUIDv5 values; their existing namespace and name rules remain unchanged. Command request IDs, composite keys, operation names, revision numbers, Workspace root selectors, Goal card and Plan revisions, and authored selector names remain outside this rule. A Light App index has no identifier.
 
 For an independently generated entity identifier, the record owner MUST assign it once and preserve it through update, termination, replay, and restart. Recovery of that same record MUST preserve its identifier. If an accepted import or recovery contract independently generates a new entity identifier, it MUST use the shared function. An exact retry MUST follow the existing request and result owners rather than allocate a replacement identifier. If generation fails, the owner MUST fail creation before its effect. Missing, conflicting, stale, or unavailable authority MUST follow the record owner's existing failure contract; an identifier MUST NOT repair it. Identifier deletion follows the record owner's lifecycle and adds no separate lifecycle.
 
@@ -153,11 +161,11 @@ External, provider-native, and adapter-native runtime identifiers are excluded f
 
 For this pre-stable cutover, existing identifiers are not migrated. The deployment data that holds them is deleted before the identifier change ships, under Retained Data Continuity in `docs/core/contract-evolution.md`. This documentation change performs no reset.
 
-Acceptance requires shared generation and canonical UUIDv7 text for independently generated entity identifiers. If a boundary names the expected independently generated kind, its validator MUST reject a wrong prefix, malformed UUID text, and a non-v7 UUID. Other consumers MUST preserve opacity. Conformance also requires preservation of request-derived identifiers and exact retry and recovery semantics, exclusion of native and external identifiers, and no legacy reader for discarded identifiers.
+Acceptance requires UUIDv7 for independent generation and UUIDv5 for covered derivations, with one prefixed canonical UUID text form per kind. Identical namespace and canonical input bytes MUST produce the same derived output across retry and restart. A boundary that names a kind MUST reject a wrong prefix, malformed text, a wrong variant, and a UUID version that the kind does not permit. Other consumers MUST preserve opacity. Conformance also requires unchanged derivation inputs, allocation triggers, and exact retry and recovery semantics, exclusion of native and external identifiers, and no legacy reader for discarded identifiers.
 
 ### Independent Entity Kinds And Prefixes
 
-This table names prefixes only for independent generation paths. A row does not change an owner's request-derived identifiers or require generation for a reference, projection, or revision. Each allocating owner decides when it independently generates an identifier under the shared rule.
+This table names prefixes for independent generation paths. Workspace, Thread, and Turn also have owning derivations, so their named-kind validators accept both UUIDv7 and UUIDv5 in the same text form. A row does not require independent generation for a reference, projection, or revision. Each allocating owner decides when it independently generates an identifier under the shared rule.
 
 | Entity kind | Prefix |
 | --- | --- |
@@ -194,6 +202,22 @@ This table names prefixes only for independent generation paths. A row does not 
 | Generative presentation | `pres` |
 | Workspace export | `wsexp` |
 | Data-root backup | `drb` |
+
+### Derived Entity Kinds And Namespaces
+
+These kinds retain their owning derivations and use the same text form as any independent UUIDv7 allocation of that kind. Only a kind with an owning derivation admits UUIDv5. These constants encode existing identities; they add no independent allocation requirement.
+
+| Entity kind | Prefix | Fixed namespace UUID |
+| --- | --- | --- |
+| Workspace | `ws` | `41710f31-94f8-5e51-9589-1744ce75680d` |
+| Thread | `th` | `1ea1147f-0d1a-5ae4-ba03-7ba2cd6a0eea` |
+| Turn | `tu` | `946f39c9-520d-5df2-985f-afaf05790c9d` |
+| Item | `it` | `585ca877-60b4-584f-a217-02b4aea5c651` |
+| Artifact | `ar` | `fbb6ef57-8026-536c-aa29-0892c321c113` |
+| Workspace Material | `mat` | `68a8d824-718c-5c44-831a-3292e9846783` |
+| Material revision | `mrev` | `c027bad1-40fa-5b1e-a480-421753232801` |
+| Artifact Review | `arev` | `59bffd58-b464-5c91-917f-a066bc9ce605` |
+| Knowledge Review | `kr` | `5e78300b-9458-5519-b104-d47e32923804` |
 
 Core MUST assign the IDs of Core-owned durable records according to their owning schema and accepted specification.
 

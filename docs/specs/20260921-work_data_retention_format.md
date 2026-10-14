@@ -416,7 +416,7 @@ Missing evidence stays unknown.
 
 ### Identifiers
 
-**Definition.** Thread and Turn ids use UUIDv7. Item ids remain deterministically derived for idempotency. Consumers MAY use UUIDv7 directory-name lexicographic order as a prefilter for time-range scans.
+**Definition.** Independently generated Thread and Turn ids use UUIDv7. Owner-derived Thread, Turn, and Item ids retain their existing inputs and idempotency semantics and use UUIDv5. Both paths use the kind prefix plus canonical lowercase UUID text defined by [Core Protocol](../core/protocol.md#ids). The output-encoding decision is recorded in [One Identifier Mechanism](../decisions/20261014-one_identifier_mechanism.md). Consumers MAY use UUIDv7 directory-name lexicographic order as a prefilter for time-range scans. UUIDv5 order is not a time prefilter.
 
 **Exclusions.** Consumers MUST NOT parse a timestamp out of the id (`docs/core/core-concepts.md`, `Identifier Semantics`). Id order is never the correctness criterion; after a prefilter the implementation MUST recheck authoritative `ts` / `turn.json` timestamps. This repository currently has a generator (`apps/nanocore/src/runtime/session-id.ts`, `generateUuidV7`) and no UUIDv7 timestamp parser, so a "must consume only via helper" rule is not yet an executable invariant; until a unique helper plus a failing test exists, the two consumption rules are a review obligation, not a storage invariant. New UUIDv7 allocation MUST NOT replace existing request-derived Item identities.
 
