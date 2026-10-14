@@ -67,7 +67,6 @@ ENV DEBIAN_FRONTEND="noninteractive" \
     NPM_CONFIG_FUND="false" \
     NPM_CONFIG_UPDATE_NOTIFIER="false" \
     OPENKIT_ARTIFACT_DIR="/openkit/artifacts" \
-    OPENKIT_SESSION_DIR="/openkit/session" \
     PATH="/opt/openkit/venv/bin:/usr/local/bin:/usr/bin:/bin" \
     PIP_DISABLE_PIP_VERSION_CHECK="1" \
     PYTHONDONTWRITEBYTECODE="1" \
@@ -164,7 +163,7 @@ RUN /usr/sbin/groupmod --new-name sandbox node \
   && mkdir -p \
     /openkit/artifacts \
     /openkit/instructions \
-    /openkit/session \
+    /openkit/threads \
     /openkit/sessions \
     /opt/openkit \
     /sandbox/.cache \
@@ -203,7 +202,7 @@ LABEL org.openkit.smoke="/usr/local/bin/openkit-worker-common-base-smoke"
 LABEL org.openkit.storage.family="openkit-worker"
 LABEL org.openkit.storage.version="1"
 
-VOLUME ["/workspace", "/sandbox"]
+VOLUME ["/workspace", "/sandbox", "/openkit/threads"]
 
 WORKDIR /tmp/openkit-bootstrap
 

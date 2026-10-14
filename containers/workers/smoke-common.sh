@@ -91,7 +91,7 @@ for path in \
   /workspace/scratch \
   /workspace/.openkit/cache \
   /openkit/sessions \
-  /openkit/session \
+  /openkit/threads \
   /openkit/artifacts \
   /openkit/instructions; do
   test -d "${path}"

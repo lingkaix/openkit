@@ -18,6 +18,10 @@ Incremental work observations use strict `observation.recorded` metadata and `ob
 
 Unavailable content may identify one earlier expected observation for exact failure anchoring; other content states have no such field.
 
+Harness `session.open.maxActiveTurns` carries the positive authored operating bound. Omission uses the Harness's current bound, initially 20; subsequent opens cannot change a resident Harness's declaration. Known admission refusals carry the closed `exhaustedBound` diagnostic; physical spawn failures do not guess CPU or memory exhaustion. The one active Turn per AgentSession and Thread rule remains independent of aggregate capacity.
+
+`workerThreadRuntimeRoot` and `workerTurnCapturePaths` preserve the exact canonical Thread, stable adapter and Turn identities in `/openkit/threads/<threadId>/<harness>/`. Native state stays beneath `native/`; each Turn's transcript and collector-relative `runtime/` files use `capture/<turnId>/`. Invalid path segments fail rather than being encoded or hashed. These paths separate writers, not readers or Sandbox security domains.
+
 ## Commands
 
 - `pnpm --filter @openkit/worker-protocol test`

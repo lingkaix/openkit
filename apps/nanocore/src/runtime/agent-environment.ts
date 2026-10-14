@@ -19,7 +19,11 @@ import {
   type WorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
 import { type ActorRef, ActorRefSchema, type TurnSchema } from '@openkit/protocol';
-import { WORKER_ADAPTER_SUPPLY_FORMS, workerSessionInputPaths } from '@openkit/worker-protocol';
+import {
+  WORKER_ADAPTER_SUPPLY_FORMS,
+  workerSessionInputPaths,
+  workerTurnCapturePaths,
+} from '@openkit/worker-protocol';
 import { ZodError, type z } from 'zod';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import { publishedErrorMessage } from '../api-errors.js';
@@ -447,6 +451,11 @@ function resolveOpenShellAgentEnvironmentPackage(
     input.coreDb?.dataRoot,
     input.agentSessionId
   );
+  const capturePaths = workerTurnCapturePaths(
+    input.turn.threadId,
+    manifest.runtime.adapter,
+    input.turn.id
+  );
   const workerMcpServers = [
     ...resolveWorkerMcpServerSupply(
       (manifest.mcp ?? []).map((server) => server.id),
@@ -617,9 +626,9 @@ function resolveOpenShellAgentEnvironmentPackage(
         },
       },
       transcript: {
-        root: '/openkit/session',
-        eventsPath: '/openkit/session/events.jsonl',
-        itemsPath: '/openkit/session/items.jsonl',
+        root: capturePaths.root,
+        eventsPath: capturePaths.eventsPath,
+        itemsPath: capturePaths.itemsPath,
         flush: 'line',
         import: 'turn-end',
         required: true,
@@ -628,9 +637,9 @@ function resolveOpenShellAgentEnvironmentPackage(
               runtimeProvenance: {
                 maxStreamCount: 64,
                 maxTotalBytes: 256 * 1024 * 1024,
-                nativeOriginIndexPath: '/openkit/session/runtime/native-origin-index.jsonl',
-                rawStreamsRoot: '/openkit/session/runtime/raw',
-                streamManifestPath: '/openkit/session/runtime/raw-streams.json',
+                nativeOriginIndexPath: capturePaths.nativeOriginIndexPath,
+                rawStreamsRoot: capturePaths.rawStreamsRoot,
+                streamManifestPath: capturePaths.streamManifestPath,
               },
             }
           : {}),

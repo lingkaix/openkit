@@ -147,6 +147,8 @@ interface FakeResident {
   closed: boolean;
   closeFails: boolean;
   completedTurns: number;
+  /** Completes a held Turn without interrupting its siblings. */
+  finish(text?: string): void;
   /** Ends the resident host on its own. */
   exit(): void;
   /** Overrides the reported handle; null reports the default. */
@@ -182,6 +184,9 @@ function fakeAdapter(
         closed: false,
         closeFails: options.closeFails ?? false,
         completedTurns: 0,
+        finish() {
+          throw new Error('No held Turn is running.');
+        },
         exit,
         handleOverride: options.initialHandle ?? null,
         input,
@@ -211,6 +216,8 @@ function fakeAdapter(
           resident.turns.push(turnInput);
           let interrupt!: () => void;
           const interrupted = new Promise<WorkerAdapterResult>((resolve) => {
+            resident.finish = (text = `answer-${turnInput.turnId}`) =>
+              resolve({ assistantText: text, status: 'completed', stopReason: 'completed' });
             interrupt = () =>
               resolve({
                 assistantText: null,
@@ -379,10 +386,9 @@ function harnessFixture(
     ...(options.registryAdapterId ? {} : { adapters: { [ADAPTER]: fake.adapter } }),
     environment: options.environment ?? {},
     integration: integration.client,
-    nativeDataRootDirectory: nativeRoot,
+    threadRootDirectory: nativeRoot,
     rootDirectory: privateRoot,
     sandboxRoot,
-    turnOutputDirectory: join(sandboxRoot, 'session'),
   });
   let sequence = 0;
   const send = (operation: string, body: Readonly<Record<string, unknown>>) =>
@@ -403,6 +409,7 @@ function harnessFixture(
     extra: {
       resume?: { digest: string; locator: string } | null;
       initialPackage?: boolean;
+      maxActiveTurns?: number;
       runtimeEnvironment?: Record<string, string>;
       nativeEnvironment?: Record<string, string>;
       threadId?: string;
@@ -421,6 +428,7 @@ function harnessFixture(
       effectiveSetupGeneration: 1,
       inferenceLoopbackCredential: credential(`inference-${agentSessionId}`),
       resume: extra.resume ?? null,
+      ...(extra.maxActiveTurns === undefined ? {} : { maxActiveTurns: extra.maxActiveTurns }),
       ...(extra.runtimeEnvironment ? { runtimeEnvironment: extra.runtimeEnvironment } : {}),
       ...(extra.nativeEnvironment ? { nativeEnvironment: extra.nativeEnvironment } : {}),
       threadId: extra.threadId ?? 'thread-one',
@@ -580,8 +588,10 @@ function harnessFixture(
     );
   };
   const referencePath = (agentSessionId: string) =>
-    join(nativeRoot, 'agent-session-references', agentSessionId);
+    join(nativeRoot, 'thread-one', adapterId, 'agent-session-references', agentSessionId);
   return {
+    capturePath: (turnId: string, threadId = 'thread-one') =>
+      join(nativeRoot, threadId, adapterId, 'capture', turnId),
     contextRoot,
     fake,
     harness,
@@ -612,6 +622,217 @@ function command(operation: string, sequence: number, body: Readonly<Record<stri
     sequence,
   };
 }
+
+describe('concurrent Thread Turns', () => {
+  it('starts eight independent Thread Turns in one Harness without a lower convenience cap', async () => {
+    const f = harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) });
+    const started: string[] = [];
+    const sessions = Array.from({ length: 8 }, (_, index) => `concurrent-session-${index}`);
+    try {
+      for (const [index, agentSessionId] of sessions.entries()) {
+        expect(
+          await f.open(agentSessionId, { threadId: `concurrent-thread-${index}` })
+        ).toMatchObject({ disposition: 'succeeded' });
+      }
+      f.fake.script.push(...sessions.map(() => ({ kind: 'hold' as const })));
+      for (const [index, agentSessionId] of sessions.entries()) {
+        const turnId = `concurrent-turn-${index}`;
+        f.writePackage(agentSessionId, turnId, { threadId: `concurrent-thread-${index}` });
+        const result = await f.send('turn.start', {
+          ...f.startBody(agentSessionId, turnId),
+          threadId: `concurrent-thread-${index}`,
+        });
+        if (result.disposition === 'succeeded') started.push(agentSessionId);
+        expect(result).toMatchObject({ disposition: 'succeeded', body: { state: 'started' } });
+      }
+      expect(f.fake.residents.every((resident) => resident.turns.length === 1)).toBe(true);
+      expect(new Set(f.fake.residents.map((resident) => resident.input.stateRoot)).size).toBe(8);
+      expect(
+        new Set(f.fake.residents.map((resident) => resident.input.loopback.inferenceCredential))
+          .size
+      ).toBe(8);
+    } finally {
+      for (const agentSessionId of started) {
+        const index = sessions.indexOf(agentSessionId);
+        await f.send('turn.interrupt', {
+          ...f.selector(agentSessionId),
+          turnId: `concurrent-turn-${index}`,
+          leaseId: `lease-concurrent-turn-${index}`,
+          purpose: 'interrupt',
+        });
+        await f.settle(agentSessionId);
+      }
+      for (const agentSessionId of sessions)
+        expect(await f.send('session.close', f.selector(agentSessionId))).toMatchObject({
+          disposition: 'succeeded',
+        });
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Thread-local Turn admission and capture', () => {
+  it('does not consume a capacity declaration from an unsupported first open', async () => {
+    const f = harnessFixture();
+    expect(
+      await f.open('unsupported-capacity', {
+        maxActiveTurns: 2,
+        runtimeEnvironment: { HOME: '/untrusted-home' },
+      })
+    ).toMatchObject({ disposition: 'refused', body: { reasonCode: 'unsupported' } });
+    expect(f.fake.residents).toHaveLength(0);
+    expect(await f.open('first-valid-open')).toMatchObject({
+      disposition: 'succeeded',
+      body: { maxActiveTurns: 20 },
+    });
+    expect(await f.send('session.close', f.selector('first-valid-open'))).toMatchObject({
+      disposition: 'succeeded',
+    });
+  });
+
+  it.each([
+    'completed',
+    'failed',
+  ] as const)('keeps a sibling running when one Thread reaches %s and closes', async (status) => {
+    const f = harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) });
+    const sessions = ['sibling-a', 'sibling-b'];
+    try {
+      for (const id of sessions)
+        expect(await f.open(id, { threadId: id })).toMatchObject({ disposition: 'succeeded' });
+      f.fake.script.push({ kind: 'hold' }, { kind: status === 'failed' ? 'fail' : 'hold' });
+      for (const id of sessions) {
+        f.writePackage(id, `turn-${id}`, { threadId: id });
+        expect(
+          await f.send('turn.start', { ...f.startBody(id, `turn-${id}`), threadId: id })
+        ).toMatchObject({ disposition: 'succeeded' });
+      }
+      if (status === 'completed') f.fake.residents[1]!.finish();
+      await f.settle('sibling-b');
+      const sealed = readFileSync(
+        join(f.capturePath('turn-sibling-b', 'sibling-b'), 'events.jsonl')
+      );
+      expect(f.integration.finalStatuses).toMatchObject([
+        { body: { status }, lineage: { turnId: 'turn-sibling-b' } },
+      ]);
+      expect(await f.send('session.close', f.selector('sibling-b'))).toMatchObject({
+        disposition: 'succeeded',
+      });
+      expect(await f.send('session.inspect', f.selector('sibling-a'))).toMatchObject({
+        body: { state: 'active', cleanupState: 'clean' },
+      });
+      expect(f.fake.residents[0]!.closed).toBe(false);
+      expect(f.fake.residents[0]!.interrupts).toBe(0);
+      expect(f.integration.calls).not.toContain('clear:sibling-a');
+      f.fake.residents[0]!.finish();
+      await f.settle('sibling-a');
+      expect(
+        readFileSync(join(f.capturePath('turn-sibling-b', 'sibling-b'), 'events.jsonl'))
+      ).toEqual(sealed);
+      const first = readFileSync(
+        join(f.capturePath('turn-sibling-a', 'sibling-a'), 'events.jsonl'),
+        'utf8'
+      );
+      expect(first).not.toContain('turn-sibling-b');
+      expect(sealed.toString('utf8')).not.toContain('turn-sibling-a');
+    } finally {
+      for (const id of sessions) {
+        await f.send('turn.interrupt', {
+          ...f.selector(id),
+          turnId: `turn-${id}`,
+          leaseId: `lease-turn-${id}`,
+          purpose: 'interrupt',
+        });
+        await f.send('session.close', f.selector(id));
+      }
+    }
+  });
+
+  it('reserves the configured bound before asynchronous preparation and releases only the named Turn', async () => {
+    const f = harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) });
+    const sessions = ['bounded-a', 'bounded-b', 'bounded-c'];
+    try {
+      for (const id of sessions) {
+        expect(await f.open(id, { maxActiveTurns: 2, threadId: id })).toMatchObject({
+          disposition: 'succeeded',
+          body: { maxActiveTurns: 2 },
+        });
+        f.writePackage(id, `turn-${id}`, { threadId: id });
+      }
+      expect(
+        await f.open('conflicting-capacity', { maxActiveTurns: 8, threadId: 'capacity-other' })
+      ).toMatchObject({ disposition: 'refused', body: { reasonCode: 'conflict' } });
+      expect(f.fake.residents).toHaveLength(3);
+      f.fake.script.push({ kind: 'hold' }, { kind: 'hold' }, { kind: 'hold' });
+      const results = await Promise.all(
+        sessions.map((id) =>
+          f.send('turn.start', {
+            ...f.startBody(id, `turn-${id}`),
+            threadId: id,
+          })
+        )
+      );
+      expect(results.slice(0, 2)).toMatchObject([
+        { disposition: 'succeeded' },
+        { disposition: 'succeeded' },
+      ]);
+      expect(results[2]).toMatchObject({
+        disposition: 'refused',
+        body: { reasonCode: 'busy', exhaustedBound: 'harness.activeTurns' },
+      });
+      expect(f.fake.residents[2]!.turns).toHaveLength(0);
+      expect(
+        await f.send('turn.interrupt', {
+          ...f.selector('bounded-a'),
+          turnId: 'turn-bounded-a',
+          leaseId: 'lease-turn-bounded-a',
+          purpose: 'interrupt',
+        })
+      ).toMatchObject({ disposition: 'succeeded' });
+      expect(f.fake.residents[1]!.interrupts).toBe(0);
+      expect(await f.send('session.inspect', f.selector('bounded-b'))).toMatchObject({
+        body: { state: 'active' },
+      });
+      expect(
+        await f.send('turn.start', {
+          ...f.startBody('bounded-c', 'turn-bounded-c'),
+          threadId: 'bounded-c',
+        })
+      ).toMatchObject({ disposition: 'succeeded' });
+    } finally {
+      for (const id of sessions) {
+        await f.send('turn.interrupt', {
+          ...f.selector(id),
+          turnId: `turn-${id}`,
+          leaseId: `lease-turn-${id}`,
+          purpose: 'interrupt',
+        });
+        await f.send('session.close', f.selector(id));
+      }
+    }
+  });
+
+  it('never overwrites a sealed capture when a Turn identity is reused', async () => {
+    const f = harnessFixture();
+    await f.open('sealed-session');
+    expect(await f.start('sealed-session', 'sealed-turn')).toMatchObject({
+      disposition: 'succeeded',
+    });
+    await f.settle('sealed-session');
+    const path = join(f.capturePath('sealed-turn'), 'events.jsonl');
+    const sealed = readFileSync(path);
+    expect(await f.start('sealed-session', 'sealed-turn')).toMatchObject({
+      disposition: 'refused',
+      body: { reasonCode: 'dependency_failed' },
+    });
+    await f.settle('sealed-session');
+    expect(f.fake.residents[0]!.turns).toHaveLength(1);
+    expect(readFileSync(path)).toEqual(sealed);
+    expect(await f.send('session.close', f.selector('sealed-session'))).toMatchObject({
+      disposition: 'succeeded',
+    });
+    expect(readFileSync(path)).toEqual(sealed);
+  });
+});
 
 describe('generated session-private output slot', () => {
   it('prepares before native open, clears between Turns, and preserves sibling output', async () => {
@@ -1118,12 +1339,12 @@ describe('Worker Harness resident AgentSessions', () => {
       const f = harnessFixture({ adapter: fake, registryAdapterId: 'fixture-fourth' });
       expect(await f.open('as-a')).toMatchObject({ disposition: 'succeeded' });
       expect(fake.residents[0]?.input.stateRoot).toBe(
-        join(f.nativeRoot, 'fixture-fourth', 'threads', sha256('thread-one'))
+        join(f.nativeRoot, 'thread-one', 'fixture-fourth', 'native')
       );
       await f.start('as-a', 'turn-1');
       await f.settle('as-a');
       expect(f.integration.finalStatuses).toMatchObject([{ body: { status: 'completed' } }]);
-      expect(readFileSync(join(f.sandboxRoot, 'session', 'items.jsonl'), 'utf8')).toContain(
+      expect(readFileSync(join(f.capturePath('turn-1'), 'items.jsonl'), 'utf8')).toContain(
         'answer-turn-1'
       );
       expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
@@ -1164,7 +1385,7 @@ describe('Worker Harness resident AgentSessions', () => {
       await f.open('as-a', { runtimeEnvironment: { VENDOR_TOKEN: 'vendor-secret' } })
     ).toMatchObject({
       body: {
-        maxActiveTurns: 1,
+        maxActiveTurns: 20,
         nativeHandleDigest: null,
         nativeHandleState: 'pending',
         state: 'open',
@@ -1181,7 +1402,7 @@ describe('Worker Harness resident AgentSessions', () => {
         inferenceCredential: credential('inference-as-a'),
       },
       resumeReference: null,
-      stateRoot: join(f.nativeRoot, ADAPTER, 'threads', sha256('thread-one')),
+      stateRoot: join(f.nativeRoot, 'thread-one', ADAPTER, 'native'),
     });
     expect(resident?.input.controlRoot.startsWith(f.privateRoot)).toBe(true);
     expect(resident?.input.environment).toMatchObject({
@@ -1361,7 +1582,10 @@ describe('Worker Harness resident AgentSessions', () => {
     );
     expect(sibling.fake.residents).toHaveLength(0);
     expect(await f.open('as-c', { threadId: 'thread-two' })).toEqual(
-      expect.objectContaining({ body: { reasonCode: 'busy' }, disposition: 'refused' })
+      expect.objectContaining({
+        body: { reasonCode: 'busy', exhaustedBound: 'harness.draining' },
+        disposition: 'refused',
+      })
     );
     expect(await f.send('harness.drain', {})).toMatchObject({
       body: { activeTurns: 0, openSessions: 1, state: 'draining' },
@@ -1697,7 +1921,7 @@ describe('Worker Harness resident AgentSessions', () => {
     }
     expect(attempts).toHaveLength(2);
     expect(attempts[1]).toBe(attempts[0]);
-    const events = readFileSync(join(f.sandboxRoot, 'session', 'events.jsonl'), 'utf8')
+    const events = readFileSync(join(f.capturePath('turn-1'), 'events.jsonl'), 'utf8')
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line));
@@ -1754,7 +1978,7 @@ describe('Worker Harness resident AgentSessions', () => {
       await clock.advance(1100);
       expect(heartbeatAttempts).toBe(stopped);
       expect(integration.finalStatuses).toHaveLength(0);
-      const events = readFileSync(join(f.sandboxRoot, 'session', 'events.jsonl'), 'utf8')
+      const events = readFileSync(join(f.capturePath('turn-1'), 'events.jsonl'), 'utf8')
         .trim()
         .split('\n')
         .map((line) => JSON.parse(line));
@@ -1864,7 +2088,7 @@ describe('Worker Harness resident AgentSessions', () => {
       clock.restore();
       await f.settle('as-a');
     }
-    const terminal = readFileSync(join(f.sandboxRoot, 'session', 'events.jsonl'), 'utf8')
+    const terminal = readFileSync(join(f.capturePath('turn-1'), 'events.jsonl'), 'utf8')
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line))
@@ -2042,7 +2266,7 @@ describe('Worker Harness resident AgentSessions', () => {
     await f.open('as-a');
     expect(await f.start('as-a', 'turn-1')).toMatchObject({ disposition: 'succeeded' });
     await f.settle('as-a');
-    const events = readFileSync(join(f.sandboxRoot, 'session', 'events.jsonl'), 'utf8')
+    const events = readFileSync(join(f.capturePath('turn-1'), 'events.jsonl'), 'utf8')
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line));
@@ -2308,9 +2532,9 @@ describe('Worker Harness resident AgentSessions', () => {
     expect(Buffer.byteLength(diagnostic, 'utf8')).toBeLessThanOrEqual(16 * 1024);
     for (const secret of [...secrets, 'unknown-bearer', 'unknown-key', 'ghp_unknown']) {
       expect(JSON.stringify(final)).not.toContain(secret);
-      expect(
-        readFileSync(join(f.root, 'openkit', 'session', 'events.jsonl'), 'utf8')
-      ).not.toContain(secret);
+      expect(readFileSync(join(f.capturePath('turn-1'), 'events.jsonl'), 'utf8')).not.toContain(
+        secret
+      );
     }
     expect(diagnostic).toContain('[redacted]');
     await f.send('session.close', f.selector('as-a'));
@@ -2394,12 +2618,14 @@ describe('Worker Harness resident AgentSessions', () => {
     const interrupt = (turnId: string, leaseId: string) =>
       f.send('turn.interrupt', { ...f.selector('as-a'), leaseId, purpose: 'interrupt', turnId });
 
-    expect(await f.start('as-a', 'turn-3')).toEqual(
-      expect.objectContaining({ body: { reasonCode: 'busy' } })
-    );
-    expect(await f.send('session.close', f.selector('as-a'))).toEqual(
-      expect.objectContaining({ body: { reasonCode: 'busy' } })
-    );
+    expect(await f.start('as-a', 'turn-3')).toMatchObject({
+      disposition: 'refused',
+      body: { reasonCode: 'busy', exhaustedBound: 'agentSession.activeTurn' },
+    });
+    expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
+      disposition: 'refused',
+      body: { reasonCode: 'busy', exhaustedBound: 'agentSession.activeTurn' },
+    });
     expect(await interrupt('turn-2', 'lease-other')).toEqual(
       expect.objectContaining({ body: { reasonCode: 'stale' } })
     );
@@ -2438,7 +2664,7 @@ describe('Worker Harness resident AgentSessions', () => {
       disposition: 'succeeded',
     });
     expect(await f.open('as-b', { threadId: 'thread-two' })).toEqual(
-      expect.objectContaining({ body: { reasonCode: 'busy' } })
+      expect.objectContaining({ body: { reasonCode: 'busy', exhaustedBound: 'harness.draining' } })
     );
     await f.send('turn.interrupt', {
       ...f.selector('as-a'),
@@ -2446,9 +2672,10 @@ describe('Worker Harness resident AgentSessions', () => {
       purpose: 'interrupt',
       turnId: 'turn-2',
     });
-    expect(await f.start('as-a', 'turn-3')).toEqual(
-      expect.objectContaining({ body: { reasonCode: 'busy' } })
-    );
+    expect(await f.start('as-a', 'turn-3')).toMatchObject({
+      disposition: 'refused',
+      body: { reasonCode: 'busy', exhaustedBound: 'harness.draining' },
+    });
     expect(await f.send('session.close', f.selector('as-a'))).toMatchObject({
       disposition: 'succeeded',
     });
@@ -2521,14 +2748,15 @@ describe('Worker Harness resident AgentSessions', () => {
     ).toEqual(expect.objectContaining({ body: { reasonCode: 'unsupported' } }));
     expect(f.fake.residents[0]?.turns).toHaveLength(0);
 
-    for (let index = 1; index < 8; index += 1) {
+    for (let index = 1; index < 20; index += 1) {
       expect(await f.open(`as-${index}`, { threadId: `thread-${index}` })).toMatchObject({
         disposition: 'succeeded',
       });
     }
-    expect(await f.open('as-9', { threadId: 'thread-9' })).toEqual(
-      expect.objectContaining({ body: { reasonCode: 'busy' } })
-    );
+    expect(await f.open('as-21', { threadId: 'thread-21' })).toMatchObject({
+      disposition: 'refused',
+      body: { reasonCode: 'busy', exhaustedBound: 'harness.openSessions' },
+    });
   });
 
   it.each([
@@ -2589,7 +2817,7 @@ describe('Worker Harness resident AgentSessions', () => {
       await f.start('as-a', 'turn-1', { runtimeEnvNames: ['VENDOR_TOKEN'] });
       await f.settle('as-a');
       expect(f.integration.finalStatuses).toMatchObject([{ body: { status: 'failed' } }]);
-      expect(readFileSync(join(f.sandboxRoot, 'session', 'events.jsonl'), 'utf8')).not.toContain(
+      expect(readFileSync(join(f.capturePath('turn-1'), 'events.jsonl'), 'utf8')).not.toContain(
         leaked
       );
       expect(await f.start('as-a', 'turn-2', { runtimeEnvNames: ['VENDOR_TOKEN'] })).toEqual(
@@ -2638,7 +2866,7 @@ describe('Worker Harness resident AgentSessions', () => {
       expect(f.integration.finalStatuses[0]?.body.status).toBe(status);
       expect(f.integration.finalStatuses[0]?.body.diagnostics?.timeline).toBeUndefined();
       expect(snapshot).toHaveBeenCalledTimes(status === 'failed' ? 1 : 0);
-      const events = readFileSync(join(f.sandboxRoot, 'session', 'events.jsonl'), 'utf8')
+      const events = readFileSync(join(f.capturePath('turn-1'), 'events.jsonl'), 'utf8')
         .trim()
         .split('\n')
         .map((line) => JSON.parse(line));
@@ -2864,7 +3092,7 @@ describe('Worker Harness resident AgentSessions', () => {
       expect.objectContaining({ body: { reasonCode: 'conflict' } })
     );
     expect(await f.open('as-b', { threadId: 'thread-two' })).toEqual(
-      expect.objectContaining({ body: { reasonCode: 'busy' } })
+      expect.objectContaining({ body: { reasonCode: 'busy', exhaustedBound: 'harness.draining' } })
     );
   });
 

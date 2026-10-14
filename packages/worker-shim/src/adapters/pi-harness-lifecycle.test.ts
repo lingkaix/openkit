@@ -110,10 +110,9 @@ function harnessFor(
     },
     environment: { HOME: join(root, 'home'), PATH: process.env.PATH ?? '' },
     integration,
-    nativeDataRootDirectory: nativeRoot,
+    threadRootDirectory: nativeRoot,
     rootDirectory: join(root, 'private'),
     sandboxRoot,
-    turnOutputDirectory: join(sandboxRoot, 'session'),
   });
   let sequence = 0;
   const send = (operation: string, body: Readonly<Record<string, unknown>>) =>
@@ -396,7 +395,9 @@ describe('Pi real Integration lifecycle', () => {
       await vi.waitFor(() => expect(f.finalStatuses).toHaveLength(1), { timeout: 20000 });
       await waitIdle(f);
       const first = await f.send('session.inspect', f.selector('session-a'));
-      const reference = readFileSync(join(f.nativeRoot, 'agent-session-references', 'session-a'));
+      const reference = readFileSync(
+        join(f.nativeRoot, 'thread-one', 'pi', 'agent-session-references', 'session-a')
+      );
       expect(sha256(reference)).toBe(first.body.nativeHandleDigest);
       expect(f.finalStatuses.find((status) => status.lineage.turnId === 'turn-1')).toMatchObject({
         body: { status: 'completed' },
@@ -414,7 +415,9 @@ describe('Pi real Integration lifecycle', () => {
       expect(f.bindings).toHaveLength(1);
       expect(children).toHaveLength(1);
       expect(
-        readFileSync(join(f.nativeRoot, 'agent-session-references', 'session-a')).equals(reference)
+        readFileSync(
+          join(f.nativeRoot, 'thread-one', 'pi', 'agent-session-references', 'session-a')
+        ).equals(reference)
       ).toBe(true);
       expect(
         (await f.send('session.inspect', f.selector('session-a'))).body.nativeHandleDigest
@@ -633,7 +636,9 @@ describe('Pi real Integration lifecycle', () => {
       await vi.waitFor(() => expect(f.finalStatuses).toHaveLength(1), { timeout: 20000 });
       await waitIdle(f);
       const handle = await f.send('session.inspect', f.selector('session-a'));
-      const reference = readFileSync(join(f.nativeRoot, 'agent-session-references', 'session-a'));
+      const reference = readFileSync(
+        join(f.nativeRoot, 'thread-one', 'pi', 'agent-session-references', 'session-a')
+      );
       if (rejectedStart) {
         const write = vi.spyOn(channel!, 'write');
         expect(await f.run('turn-refused', 1, 'session-a', ['openkit-extra'])).toMatchObject({
@@ -687,7 +692,9 @@ describe('Pi real Integration lifecycle', () => {
       );
       expect(f.capability.log.filter((r) => r.method === 'initialize')).toHaveLength(2);
       expect(
-        readFileSync(join(f.nativeRoot, 'agent-session-references', 'session-b')).equals(reference)
+        readFileSync(
+          join(f.nativeRoot, 'thread-one', 'pi', 'agent-session-references', 'session-b')
+        ).equals(reference)
       ).toBe(true);
       expect(f.upstream.filter((r) => r.path.startsWith('/inference/')).at(-1)?.authorization).toBe(
         `Bearer ${credential('inference-token-turn-2')}`
@@ -715,7 +722,10 @@ describe('Pi real Integration lifecycle', () => {
       await vi.waitFor(() => expect(f.finalStatuses).toHaveLength(1), { timeout: 20000 });
       await waitIdle(f);
       const reference = JSON.parse(
-        readFileSync(join(f.nativeRoot, 'agent-session-references', 'session-a'), 'utf8')
+        readFileSync(
+          join(f.nativeRoot, 'thread-one', 'pi', 'agent-session-references', 'session-a'),
+          'utf8'
+        )
       ) as { path: string };
       const retained = readFileSync(reference.path);
       f.capability.holdToolCall = true;

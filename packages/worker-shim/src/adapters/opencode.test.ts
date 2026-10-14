@@ -2041,10 +2041,9 @@ describe('OpenCode resident adapter', () => {
     const harness = new WorkerHarness({
       environment: process.env,
       integration: integration.client,
-      nativeDataRootDirectory: join(layout.root, 'native'),
+      threadRootDirectory: join(layout.root, 'native'),
       rootDirectory: join(layout.root, 'private'),
       sandboxRoot: join(layout.root, 'sandbox'),
-      turnOutputDirectory: join(layout.root, 'sandbox', 'session'),
     });
     let sequence = 0;
     const send = (operation: string, body: Readonly<Record<string, unknown>>) =>
@@ -3936,10 +3935,9 @@ describe('W4 round-eight refused setup cleanup', () => {
           },
           environment: { PATH: process.env.PATH! },
           integration: integration.client,
-          nativeDataRootDirectory: nativeRoot,
+          threadRootDirectory: nativeRoot,
           rootDirectory: join(layout.root, 'private'),
           sandboxRoot,
-          turnOutputDirectory: join(sandboxRoot, 'session'),
         });
         let sequence = 0;
         const send = (operation: string, body: Readonly<Record<string, unknown>>) =>
@@ -3983,7 +3981,9 @@ describe('W4 round-eight refused setup cleanup', () => {
             disposition: 'succeeded',
             body: { nativeHandleState: 'ready' },
           });
-          const reference = readFileSync(join(nativeRoot, 'agent-session-references', 'as-r8'));
+          const reference = readFileSync(
+            join(nativeRoot, 'thread-r8', 'opencode', 'agent-session-references', 'as-r8')
+          );
           const config = join(sandboxRoot, 'sessions', 'as-r8', 'config');
           mkdirSync(config, { recursive: true });
           const packagePath = join(config, 'package.json');
@@ -4096,7 +4096,15 @@ describe('W4 round-eight refused setup cleanup', () => {
             if (resumed.state === 'ready')
               expect(Buffer.from(resumed.reference)).toEqual(reference);
             expect(
-              readFileSync(join(nativeRoot, 'agent-session-references', 'as-r8-successor'))
+              readFileSync(
+                join(
+                  nativeRoot,
+                  'thread-r8',
+                  'opencode',
+                  'agent-session-references',
+                  'as-r8-successor'
+                )
+              )
             ).toEqual(reference);
             expect(await send('session.close', selector('as-r8-successor'))).toMatchObject({
               disposition: 'succeeded',

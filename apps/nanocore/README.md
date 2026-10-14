@@ -22,6 +22,8 @@ Thread dashboard work status projects selected Agent, active Turn status, pendin
 
 NanoCore derives private AEP and Context input paths from the admitted AgentSession, opens or inspects that exact session before importing its complete Turn inputs, and starts the Worker only after all imports succeed. Turn-specific paths and payloads do not partition otherwise compatible shared Sandbox or Harness identities.
 
+AEP transcript projection uses `/openkit/threads/<threadId>/<harness>/capture/<turnId>/`, with the stable adapter id as `<harness>` and collector-relative `runtime/` paths beneath that root. This is writer separation, not cross-Thread confidentiality. The #204 integration remains incomplete until NanoCore admission, retained image mounts and capture-only export consume the same layout and authored capacity; the package projection alone is not end-to-end concurrency qualification.
+
 Harness result timeouts identify the fixed operation and whether it was never dispatched or dispatched while awaiting a result. These diagnostics use the existing Turn failure projection without runtime identities or command content; they do not prove whether a dispatched effect executed or authorize automatic retry.
 
 After a NanoCore-only restart, current package compatibility and the ready physical Epoch can restore an exact healthy idle Sandbox/Harness and its attached storage before later-Turn reuse classification. Empty process-local caches alone do not authorize replacement; native-session proof and current admission remain required.

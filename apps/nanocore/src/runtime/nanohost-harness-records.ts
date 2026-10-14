@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 import { createHash, randomBytes } from 'node:crypto';
 import {
   canonicalNativeEnvironment,
+  HARNESS_DEFAULT_MAX_ACTIVE_TURNS,
   HarnessQueuedCommandBodySchemas,
   HarnessResultEnvelopeReaderSchema,
   NativeEnvironmentRecordSchema,
@@ -49,6 +50,8 @@ export interface NanoHostHarnessResult {
 
 /** Input for adding one Harness Instance to a Sandbox runtime projection. */
 export interface CreateNanoHostHarnessRuntimeInput {
+  /** Authored operating bound for new Sandbox/Harness declarations; defaults to 20. */
+  readonly maxActiveTurns?: number;
   /** Opaque adapter identity; the Harness's static registry decides whether it is supported. */
   readonly adapterId: string;
   readonly adapterVersion: string;
@@ -188,6 +191,7 @@ export function deriveNanoHostAgentSessionCompatibilityKey(input: {
 
 /** Raw durable Harness row used by checked transitions. */
 interface HarnessRow {
+  readonly sandbox_runtime_id: string;
   readonly adapter_id: string;
   readonly adapter_version: string;
   readonly harness_instance_id: string;
@@ -214,6 +218,9 @@ export function createNanoHostHarnessRuntime(
   coreDb: CoreDb,
   input: CreateNanoHostHarnessRuntimeInput
 ): void {
+  const capacity = input.maxActiveTurns ?? HARNESS_DEFAULT_MAX_ACTIVE_TURNS;
+  if (!Number.isSafeInteger(capacity) || capacity < 1)
+    throw new Error('NanoHost active-Turn capacity is invalid.');
   requireIdentity(input.runtimeTargetId, 'RuntimeTarget');
   requireIdentity(input.sandboxRuntimeId, 'Sandbox runtime');
   requireIdentity(input.sandboxBindingRef, 'Sandbox binding');
@@ -282,7 +289,7 @@ export function createNanoHostHarnessRuntime(
              sandbox_integration_binding_ref, sandbox_compatibility_key, image_digest,
              environment_class, max_open_sessions, max_harnesses, max_active_turns,
              lifecycle_state, health_state, drain_state, cleanup_state, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, 'shared-worker', 64, 8, 1,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, 'shared-worker', ?, 8, ?,
              'open', 'ready', 'accepting', 'clean', ?, ?)`
         )
         .run(
@@ -293,6 +300,8 @@ export function createNanoHostHarnessRuntime(
           input.sandboxIntegrationBindingRef,
           input.sandboxCompatibilityKey,
           input.imageDigest,
+          Math.max(64, capacity),
+          capacity,
           input.timestamp,
           input.timestamp
         );
@@ -323,7 +332,7 @@ export function createNanoHostHarnessRuntime(
            capabilities_json, max_open_sessions, max_active_turns,
            open_session_count, active_turn_count, lifecycle_state, drain_state,
            next_sequence, operation_state, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, '[]', 8, 1, 0, 0, 'open', 'accepting', 0, 'idle', ?, ?)`
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, '[]', ?, ?, 0, 0, 'open', 'accepting', 0, 'idle', ?, ?)`
       )
       .run(
         input.harnessInstanceId,
@@ -333,6 +342,8 @@ export function createNanoHostHarnessRuntime(
         input.adapterId,
         input.adapterId,
         input.adapterVersion,
+        Math.max(8, capacity),
+        capacity,
         input.timestamp,
         input.timestamp
       );
@@ -845,7 +856,7 @@ export function listNanoHostMeasuredHarnessIdentities(
 export function queueNanoHostHarnessOperation(
   coreDb: CoreDb,
   input: QueueNanoHostHarnessOperationInput
-): void {
+): number {
   input = { ...input, body: requireHarnessOperationBody(input.operation, input.body) };
   coreDb.sqlite.exec('BEGIN IMMEDIATE');
   try {
@@ -877,6 +888,7 @@ export function queueNanoHostHarnessOperation(
         input.harnessInstanceId
       );
     coreDb.sqlite.exec('COMMIT');
+    return harness.next_sequence;
   } catch (error) {
     coreDb.sqlite.exec('ROLLBACK');
     throw error;
@@ -1103,7 +1115,7 @@ export function settleNanoHostHarnessOperation(
         harness.operation_state === 'queued'
           ? NANO_HOST_HARNESS_OPERATIONS.filter((candidate) => {
               try {
-                requireHarnessResult(candidate, receipt);
+                requireHarnessResult(candidate, receipt, harness.max_active_turns);
                 return true;
               } catch {
                 return false;
@@ -1121,10 +1133,18 @@ export function settleNanoHostHarnessOperation(
         try {
           identical =
             canonicalJson(
-              requireHarnessResult(operation, receipt) as unknown as Record<string, unknown>
+              requireHarnessResult(
+                operation,
+                receipt,
+                harness.max_active_turns
+              ) as unknown as Record<string, unknown>
             ) ===
             canonicalJson(
-              requireHarnessResult(operation, input.result) as unknown as Record<string, unknown>
+              requireHarnessResult(
+                operation,
+                input.result,
+                harness.max_active_turns
+              ) as unknown as Record<string, unknown>
             );
         } catch {
           // Reader refusal is a replay conflict, just like a changed normalized core.
@@ -1135,7 +1155,10 @@ export function settleNanoHostHarnessOperation(
       coreDb.sqlite.exec('COMMIT');
       return 'replayed';
     } else if (harness.operation) {
-      input = { ...input, result: requireHarnessResult(harness.operation, input.result) };
+      input = {
+        ...input,
+        result: requireHarnessResult(harness.operation, input.result, harness.max_active_turns),
+      };
     }
     const resultJson = canonicalJson(input.result as unknown as Record<string, unknown>);
     if (harness.operation_state === 'settled') {
@@ -1300,7 +1323,7 @@ function projectSuccessfulResult(
       );
     const occupied = coreDb.sqlite
       .prepare(
-        'UPDATE harness_instance_records SET active_turn_count = 1 WHERE harness_instance_id = ? AND active_turn_count = 0'
+        'UPDATE harness_instance_records SET active_turn_count = active_turn_count + 1 WHERE harness_instance_id = ? AND active_turn_count < max_active_turns'
       )
       .run(harness.harness_instance_id);
     if (started.changes !== 1 || occupied.changes !== 1) {
@@ -1334,7 +1357,7 @@ function projectSuccessfulResult(
       );
     const released = coreDb.sqlite
       .prepare(
-        'UPDATE harness_instance_records SET active_turn_count = 0 WHERE harness_instance_id = ? AND active_turn_count IN (0, 1)'
+        'UPDATE harness_instance_records SET active_turn_count = active_turn_count - 1 WHERE harness_instance_id = ? AND active_turn_count > 0'
       )
       .run(harness.harness_instance_id);
     if (inspected.changes !== 1 || released.changes !== 1) {
@@ -1407,7 +1430,7 @@ function requireOperationLineage(
   }
   if (operation === 'turn.interrupt') {
     if (
-      harness.active_turn_count !== 1 ||
+      harness.active_turn_count < 1 ||
       binding.lifecycleState !== 'active' ||
       binding.currentTurnId !== body.turnId ||
       binding.currentAttemptId !== body.leaseId
@@ -1447,10 +1470,16 @@ function requireOperationLineage(
             lease.inputRef
           )
       : null;
-    const activeTurnStart =
-      harness.operation === 'turn.start' && harness.command_body_json
-        ? readJsonObject(harness.command_body_json)
-        : null;
+    // The immutable backend session preserves the admitted AEP after a sibling replaces
+    // the Harness command cell. Keep the same exact-package guard, not a last-command guess.
+    const launch = coreDb.sqlite
+      .prepare(`
+      SELECT package_snapshot_id AS packageSnapshotId FROM worker_backend_sessions
+      WHERE attempt_id = ? AND agent_session_id = ? AND workspace_id = ? AND thread_id = ? AND turn_id = ?
+    `)
+      .get(body.leaseId, body.agentSessionId, binding.workspaceId, binding.threadId, body.turnId) as
+      | { packageSnapshotId: string }
+      | undefined;
     if (
       !lease ||
       !['open', 'closing'].includes(lease.phase) ||
@@ -1458,7 +1487,7 @@ function requireOperationLineage(
       lease.threadId !== binding.threadId ||
       lease.turnId !== body.turnId ||
       lease.agentSessionId !== body.agentSessionId ||
-      activeTurnStart?.packageSnapshotId !== lease.inputRef ||
+      launch?.packageSnapshotId !== lease.inputRef ||
       acceptedFinal
     ) {
       throw new Error('NanoHost Harness interrupt conflicts with the live lease lineage.');
@@ -1468,8 +1497,30 @@ function requireOperationLineage(
   if (operation !== 'turn.start') {
     return;
   }
+  // A queued/dispatched start reserves aggregate capacity before its native result arrives.
+  // Other Harnesses have independent command cells but share this one Sandbox bound.
+  const aggregate = coreDb.sqlite
+    .prepare(`
+    SELECT s.max_active_turns AS capacity,
+           SUM(h.active_turn_count + CASE
+             WHEN h.harness_instance_id <> ? AND h.operation = 'turn.start'
+                  AND h.operation_state IN ('queued', 'dispatched') THEN 1 ELSE 0 END) AS occupied
+    FROM sandbox_runtime_records s JOIN harness_instance_records h
+      ON h.sandbox_runtime_id = s.sandbox_runtime_id
+    WHERE s.sandbox_runtime_id = ? GROUP BY s.sandbox_runtime_id
+  `)
+    .get(harness.harness_instance_id, harness.sandbox_runtime_id) as {
+    capacity: number;
+    occupied: number;
+  };
+  if (aggregate.occupied >= aggregate.capacity) {
+    throw Object.assign(new Error('NanoHost Sandbox active-Turn capacity is exhausted.'), {
+      reasonCode: 'busy',
+      exhaustedBound: 'sandbox.activeTurns',
+    });
+  }
   if (
-    harness.active_turn_count !== 0 ||
+    harness.active_turn_count >= harness.max_active_turns ||
     binding.workspaceId !== body.workspaceId ||
     binding.threadId !== body.threadId ||
     binding.nextTurnSequence !== body.turnSequence ||
@@ -1517,10 +1568,11 @@ function requireHarnessOperationBody(
   return parsed.data;
 }
 
-/** Reads the result core and preserves the admitted descriptor's single active-Turn proof. */
+/** Reads the result core and requires the exact admitted Harness capacity declaration. */
 function requireHarnessResult(
   operation: NanoHostHarnessOperation,
-  result: NanoHostHarnessResult
+  result: NanoHostHarnessResult,
+  maxActiveTurns: number
 ): NanoHostHarnessResult {
   let body: Record<string, unknown>;
   try {
@@ -1533,7 +1585,7 @@ function requireHarnessResult(
   if (
     operation === 'session.open' &&
     result.disposition === 'succeeded' &&
-    body.maxActiveTurns !== 1
+    body.maxActiveTurns !== maxActiveTurns
   )
     throw new Error('NanoHost Harness session.open success is invalid.');
   return { ...result, body };

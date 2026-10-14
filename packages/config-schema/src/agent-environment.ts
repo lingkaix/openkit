@@ -7,6 +7,7 @@ import {
   CaptureCoverageBindingSchema as AgentEnvironmentCaptureCoverageSchema,
   NativeEnvironmentRecordSchema,
   WORKER_RUNTIME_PROVENANCE_FEATURE,
+  workerTurnCapturePaths,
 } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import { SECRET_SHAPED_BUILD_ARGUMENT_PATTERN } from './build-argument-pattern.js';
@@ -533,9 +534,9 @@ export const AgentEnvironmentSupplySchema = z
 /** Bounded runtime-native provenance outputs declared beneath the worker transcript root. */
 export const AgentEnvironmentRuntimeProvenanceOutputSchema = z
   .object({
-    rawStreamsRoot: z.literal('/openkit/session/runtime/raw'),
-    streamManifestPath: z.literal('/openkit/session/runtime/raw-streams.json'),
-    nativeOriginIndexPath: z.literal('/openkit/session/runtime/native-origin-index.jsonl'),
+    rawStreamsRoot: z.string().min(1),
+    streamManifestPath: z.string().min(1),
+    nativeOriginIndexPath: z.string().min(1),
     maxTotalBytes: z.number().int().positive(),
     maxStreamCount: z.number().int().positive(),
   })
@@ -1236,7 +1237,23 @@ export const AgentEnvironmentPackageSchema = z
         path: ['backend', 'requiredCapabilities'],
       });
     }
-    if (runtimeProvenanceRequired && value.control.transcript?.root !== '/openkit/session') {
+    let provenancePathsValid = false;
+    try {
+      const paths = workerTurnCapturePaths(
+        value.scope.threadId,
+        value.control.adapter?.targetRuntime ?? '',
+        value.scope.turnId
+      );
+      const transcript = value.control.transcript;
+      provenancePathsValid =
+        transcript?.root === paths.root &&
+        transcript.runtimeProvenance?.rawStreamsRoot === paths.rawStreamsRoot &&
+        transcript.runtimeProvenance?.streamManifestPath === paths.streamManifestPath &&
+        transcript.runtimeProvenance?.nativeOriginIndexPath === paths.nativeOriginIndexPath;
+    } catch {
+      /* Invalid identity cannot authorize a filesystem path. */
+    }
+    if (runtimeProvenanceRequired && !provenancePathsValid) {
       ctx.addIssue({
         code: 'custom',
         message: 'Runtime provenance requires the canonical transcript root.',

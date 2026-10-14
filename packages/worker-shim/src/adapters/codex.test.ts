@@ -625,7 +625,7 @@ describe('Codex App Server adapter', () => {
           frames.pop();
           await writeFile(
             history.thread.path,
-            frames.map((frame) => JSON.stringify(frame)).join('\n') + '\n'
+            `${frames.map((frame) => JSON.stringify(frame)).join('\n')}\n`
           );
         } else if (mode === 'torn') await writeFile(history.thread.path, original.slice(0, -3));
         else
@@ -2408,9 +2408,10 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     ).rejects.toThrow(/route/);
     expect(inference.bodies).toHaveLength(beforeLaterDirect);
 
-    // The earlier interrupted Turn is outside the established completed-history projection.
-    await expect(session.close()).rejects.toThrow(/flush boundary/);
-    expect(session.nativeEvidence?.().persistencePreservingClose).toBe(false);
+    // Codex owner, Tests qualification: close preserves context and a successor resumes the same native conversation.
+    // docs/specs/20260716-codex_worker_adapter.md#tests admits this text-only history through exact native proof, not terminal status alone.
+    await expect(session.close()).resolves.toBeUndefined();
+    expect(session.nativeEvidence?.().persistencePreservingClose).toBe(true);
     expect(session.childState()).toBe('absent');
     const retained = await walk(roots.state);
     expect(retained.some((name) => name.includes('rollout-'))).toBe(true);
@@ -2460,9 +2461,9 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     const rolloutCount = (await walk(roots.state)).filter((name) =>
       name.includes('rollout-')
     ).length;
-    // Exact resume preserves the earlier interrupted history; it does not qualify that history for close.
-    await expect(successor.close()).rejects.toThrow(/flush boundary/);
-    expect(successor.nativeEvidence?.().persistencePreservingClose).toBe(false);
+    // The same Codex-owner context-preservation criterion applies to the successor's qualified text-only history.
+    await expect(successor.close()).resolves.toBeUndefined();
+    expect(successor.nativeEvidence?.().persistencePreservingClose).toBe(true);
     expect(successor.childState()).toBe('absent');
     expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(
       'model_provider = "retained-bad"\n# retained user configuration marker\n'

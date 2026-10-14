@@ -89,10 +89,9 @@ it.each([
     adapters: { deepseek: adapter },
     environment: { PATH: process.env.PATH! },
     integration,
-    nativeDataRootDirectory: nativeRoot,
+    threadRootDirectory: nativeRoot,
     rootDirectory: join(root, 'private'),
     sandboxRoot,
-    turnOutputDirectory: join(sandboxRoot, 'session'),
   });
   let sequence = 0;
   const send = (operation: string, body: Record<string, unknown>) =>
@@ -234,7 +233,9 @@ it.each([
       disposition: 'succeeded',
     });
     await settled('as-first');
-    const reference = readFileSync(join(nativeRoot, 'agent-session-references', 'as-first'));
+    const reference = readFileSync(
+      join(nativeRoot, 'thread-one', 'deepseek', 'agent-session-references', 'as-first')
+    );
     const resume = { locator: 'as-first', digest: hash(reference) };
     expect(await send('session.close', selector('as-first'))).toMatchObject({
       disposition: 'succeeded',
@@ -305,9 +306,11 @@ it.each([
         body: { reasonCode: 'cleanup_required' },
       });
       expect(await open('as-fenced-successor', resume)).toMatchObject({ disposition: 'refused' });
-      expect(readFileSync(join(nativeRoot, 'agent-session-references', 'as-refused'))).toEqual(
-        reference
-      );
+      expect(
+        readFileSync(
+          join(nativeRoot, 'thread-one', 'deepseek', 'agent-session-references', 'as-refused')
+        )
+      ).toEqual(reference);
       return;
     }
     expect(
@@ -322,9 +325,11 @@ it.each([
       body: { state: 'closed', childState: 'absent', privateState: 'absent' },
     });
     // Even the refused successor's accepted idle proof keeps its exact resume reference.
-    expect(readFileSync(join(nativeRoot, 'agent-session-references', 'as-refused'))).toEqual(
-      reference
-    );
+    expect(
+      readFileSync(
+        join(nativeRoot, 'thread-one', 'deepseek', 'agent-session-references', 'as-refused')
+      )
+    ).toEqual(reference);
     const failedResume = { locator: 'as-refused', digest: resume.digest };
     expect(await open('as-recovered', failedResume)).toMatchObject({
       disposition: 'succeeded',
@@ -338,9 +343,11 @@ it.each([
       'HARNESS-RETAINED-A'
     );
     expect(inference.requests.at(-1)?.body.model).toBe('a');
-    expect(readFileSync(join(nativeRoot, 'agent-session-references', 'as-recovered'))).toEqual(
-      reference
-    );
+    expect(
+      readFileSync(
+        join(nativeRoot, 'thread-one', 'deepseek', 'agent-session-references', 'as-recovered')
+      )
+    ).toEqual(reference);
     expect(await send('session.close', selector('as-recovered'))).toMatchObject({
       disposition: 'succeeded',
     });

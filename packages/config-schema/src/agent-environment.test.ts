@@ -329,10 +329,15 @@ function runtimeProvenancePackageFixture(): Record<string, unknown> {
       ...control,
       transcript: {
         ...transcript,
+        root: '/openkit/threads/th_demo/codex/capture/turn_demo',
+        eventsPath: '/openkit/threads/th_demo/codex/capture/turn_demo/events.jsonl',
+        itemsPath: '/openkit/threads/th_demo/codex/capture/turn_demo/items.jsonl',
         runtimeProvenance: {
-          rawStreamsRoot: '/openkit/session/runtime/raw',
-          streamManifestPath: '/openkit/session/runtime/raw-streams.json',
-          nativeOriginIndexPath: '/openkit/session/runtime/native-origin-index.jsonl',
+          rawStreamsRoot: '/openkit/threads/th_demo/codex/capture/turn_demo/runtime/raw',
+          streamManifestPath:
+            '/openkit/threads/th_demo/codex/capture/turn_demo/runtime/raw-streams.json',
+          nativeOriginIndexPath:
+            '/openkit/threads/th_demo/codex/capture/turn_demo/runtime/native-origin-index.jsonl',
           maxTotalBytes: 268_435_456,
           maxStreamCount: 64,
         },
@@ -1498,9 +1503,11 @@ describe('agent environment package schema', () => {
     expect(WORKER_RUNTIME_PROVENANCE_FEATURE).toBe(WORKER_PROTOCOL_RUNTIME_PROVENANCE_FEATURE);
     expect(parsed.backend.requiredCapabilities).toContain(WORKER_RUNTIME_PROVENANCE_FEATURE);
     expect(parsed.control.transcript?.runtimeProvenance).toEqual({
-      rawStreamsRoot: '/openkit/session/runtime/raw',
-      streamManifestPath: '/openkit/session/runtime/raw-streams.json',
-      nativeOriginIndexPath: '/openkit/session/runtime/native-origin-index.jsonl',
+      rawStreamsRoot: '/openkit/threads/th_demo/codex/capture/turn_demo/runtime/raw',
+      streamManifestPath:
+        '/openkit/threads/th_demo/codex/capture/turn_demo/runtime/raw-streams.json',
+      nativeOriginIndexPath:
+        '/openkit/threads/th_demo/codex/capture/turn_demo/runtime/native-origin-index.jsonl',
       maxTotalBytes: 268_435_456,
       maxStreamCount: 64,
     });
@@ -1565,6 +1572,9 @@ describe('agent environment package schema', () => {
 
     for (const override of [
       { rawStreamsRoot: '/tmp/runtime/raw' },
+      { rawStreamsRoot: '/openkit/threads/sibling/codex/capture/turn_demo/runtime/raw' },
+      { rawStreamsRoot: '/openkit/threads/th_demo/pi/capture/turn_demo/runtime/raw' },
+      { rawStreamsRoot: '/openkit/threads/th_demo/codex/capture/other_turn/runtime/raw' },
       { streamManifestPath: '../raw-streams.json' },
       { nativeOriginIndexPath: '/openkit/session/native-origin-index.jsonl' },
       { maxTotalBytes: 0 },

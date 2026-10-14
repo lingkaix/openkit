@@ -6,11 +6,13 @@ import {
   EMPTY_BUILD_CONTEXT_DIGEST,
   EMPTY_BUILD_CONTEXT_REF,
   planSessionWorkspaceMaterialization,
+  sessionStaticControl,
   validateAgentEnvironmentPackageForBackend,
   type WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
 import { responsibleUserIdForActor } from '@openkit/protocol';
 import {
+  HARNESS_DEFAULT_MAX_ACTIVE_TURNS,
   WorkerRuntimeRawStreamManifestSchema,
   type WorkerStartupFailure,
   WorkerStartupFailureSchema,
@@ -151,6 +153,7 @@ import {
   resolveWorkerStorageWorkSlotRef,
   selectWorkerStorageBinding,
   type WorkerStorageBinding,
+  WorkerStorageBindingError,
   type WorkerStorageContributor,
   type WorkerStorageSelectionInput,
   type WorkerStorageTarget,
@@ -326,7 +329,8 @@ function createNanoHostWorkerLifecycleRuntime(
     },
     nanoHostSessionDispatch,
     workerControlGateway,
-    vaultBackend
+    vaultBackend,
+    readRuntimeConfig
   );
   const turnExecutor =
     env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
@@ -479,6 +483,8 @@ interface NanoHostBackendTurnSession {
 
 /** One process-local waiter for an exact durable private Harness operation. */
 interface PendingNanoHostHarnessOperation {
+  /** Exact durable sequence returned by enqueue; null while waiting for the command slot. */
+  sequence: number | null;
   readonly operation: NanoHostHarnessOperation;
   operationId: string | null;
   readonly reject: (error: Error) => void;
@@ -494,6 +500,8 @@ interface NanoHostAgentSessionCloseOwner {
 
 /** One compatible physical Sandbox and Harness retained across AgentSessions and Turns. */
 interface NanoHostSharedHarness {
+  /** Immutable operating declaration consumed by every session.open on this Harness. */
+  readonly maxActiveTurns: number;
   readonly bindings: Map<
     string,
     {
@@ -515,6 +523,8 @@ interface NanoHostSharedHarness {
 /** One compatible physical Sandbox and its single retained Integration bridge. */
 interface NanoHostSharedSandbox {
   bridgeOpen: boolean;
+  /** Live-instance deletion proof shared with sibling closeout; never restored or set on uncertainty. */
+  writerCleanupProved: boolean;
   readonly imageDigest: string;
   readonly originPhysicalEpoch: string;
   readonly runtimeTargetId: string;
@@ -631,6 +641,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   private readonly sessions = new Map<string, NanoHostBackendTurnSession>();
   private readonly sharedSandboxes = new Map<string, NanoHostSharedSandbox>();
   private readonly sharedHarnesses = new Map<string, NanoHostSharedHarness>();
+  /** Serializes live producers onto each Harness's single durable command cell; never replays effects. */
+  private readonly harnessOperationSettlements = new Map<string, Promise<void>>();
 
   /**
    * Creates the NanoHost backend over the composition root's one session dispatcher.
@@ -640,6 +652,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
    * @param sessionDispatch Optional dispatcher; production composition always supplies it.
    * @param workerControlGateway Optional existing semantic worker-control owner.
    * @param collectionVaultBackend Existing Vault owner for private release snapshots.
+   * @param readRuntimeConfig Current authored Sandbox capacity configuration.
    */
   public constructor(
     private readonly coreDb: CoreDb,
@@ -650,8 +663,19 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     ) => void,
     private readonly sessionDispatch?: NanoHostSessionDispatch,
     private readonly workerControlGateway?: WorkerControlGateway,
-    private readonly collectionVaultBackend?: () => VaultBackend
+    private readonly collectionVaultBackend?: () => VaultBackend,
+    private readonly readRuntimeConfig?: () => PublicNetworkConfiguration
   ) {}
+
+  /** Reads the authored aggregate bound; invalid current configuration fails closed. */
+  private configuredActiveTurnCapacity(): number {
+    const capacity =
+      this.readRuntimeConfig?.().openKitConfig.nanohost?.maxActiveTurnsPerSandbox ??
+      HARNESS_DEFAULT_MAX_ACTIVE_TURNS;
+    if (!Number.isSafeInteger(capacity) || capacity < 1)
+      throw new Error('NanoHost active-Turn capacity is invalid.');
+    return capacity;
+  }
 
   /** Binds dispatched Turn route tokens and adds Vault values only to private wire bytes. */
   public acceptHarnessCommand(command: NanoHostHarnessCommand): NanoHostHarnessCommand {
@@ -660,6 +684,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       (candidate) =>
         candidate.harnessInstanceId === command.harnessInstanceId &&
         candidate.pendingHarnessOperation?.operation === command.operation &&
+        candidate.pendingHarnessOperation.sequence === command.sequence &&
         (typeof bindingId !== 'string' || candidate.agentSessionRuntimeBindingId === bindingId)
     );
     const closeOwner =
@@ -667,7 +692,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         ? this.agentSessionCloseOwners.get(bindingId)
         : undefined;
     const pending = session?.pendingHarnessOperation ?? closeOwner?.pending;
-    if (!pending || pending.operation !== command.operation || pending.operationId) {
+    if (
+      !pending ||
+      pending.sequence !== command.sequence ||
+      pending.operation !== command.operation ||
+      pending.operationId
+    ) {
       throw new Error('NanoHost dispatched operation does not match its live producer.');
     }
     if (command.operation === 'session.open' && session?.runtimeEnvironment === null) {
@@ -781,19 +811,20 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const session = [...this.sessions.values()].find(
       (candidate) =>
         candidate.harnessInstanceId === result.harnessInstanceId &&
-        candidate.pendingHarnessOperation
+        candidate.pendingHarnessOperation?.operationId === result.operationId
     );
     const closeOwner = !session
       ? [...this.agentSessionCloseOwners.values()].find(
           (candidate) =>
-            candidate.inspection.harnessInstanceId === result.harnessInstanceId && candidate.pending
+            candidate.inspection.harnessInstanceId === result.harnessInstanceId &&
+            candidate.pending?.operationId === result.operationId
         )
       : undefined;
     const pending = session?.pendingHarnessOperation ?? closeOwner?.pending;
     if (!pending) {
       return;
     }
-    if (pending.operationId !== result.operationId) {
+    if (pending.sequence !== result.sequence) {
       throw new Error('NanoHost Harness result does not match its live producer.');
     }
     if (pending.timeout) {
@@ -897,6 +928,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     const sandbox: NanoHostSharedSandbox = {
       bridgeOpen: true,
+      writerCleanupProved: false,
       imageDigest: row.imageDigest,
       originPhysicalEpoch: row.originPhysicalEpoch,
       runtimeTargetId: row.runtimeTargetId,
@@ -992,8 +1024,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       row.originPhysicalEpoch !== currentPhysicalEpoch ||
       row.adapterId !== adapterId ||
       row.adapterVersion !== adapterVersion ||
-      row.maxOpenSessions !== 8 ||
-      row.maxActiveTurns !== 1 ||
+      row.maxOpenSessions !== Math.max(8, row.maxActiveTurns) ||
+      !Number.isSafeInteger(row.maxActiveTurns) ||
+      row.maxActiveTurns < 1 ||
       row.sandboxLifecycleState !== 'open' ||
       row.harnessLifecycleState !== 'open' ||
       row.healthState !== 'ready' ||
@@ -1005,6 +1038,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     const sandbox = this.sharedSandboxes.get(sandboxCompatibilityKey) ?? {
       bridgeOpen: true,
+      writerCleanupProved: false,
       imageDigest: row.imageDigest,
       originPhysicalEpoch: row.originPhysicalEpoch,
       runtimeTargetId: row.runtimeTargetId,
@@ -1021,6 +1055,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     };
     this.sharedSandboxes.set(sandboxCompatibilityKey, sandbox);
     const sharedHarness: NanoHostSharedHarness = {
+      maxActiveTurns: row.maxActiveTurns,
       adapterId,
       adapterVersion,
       bindings: new Map(),
@@ -1585,6 +1620,81 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     this.cleanupRecoveryResults.set(identity.packageSnapshotId, result);
   }
 
+  /** Projects a correlated physical deletion to every live owner of that exact instance. */
+  private markProvedSandboxDeletion(bindingRef: string, originPhysicalEpoch: string): void {
+    const scopes = new Set([
+      ...this.sharedSandboxes.values(),
+      ...[...this.sessions.values()].map((session) => session.sharedHarness.sandbox),
+    ]);
+    for (const scope of scopes) {
+      if (
+        scope.sandboxBindingRef === bindingRef &&
+        scope.originPhysicalEpoch === originPhysicalEpoch
+      ) {
+        scope.writerCleanupProved = true;
+        scope.bridgeOpen = false;
+      }
+    }
+  }
+
+  /** Transfers every sole ready proof before a Sandbox-wide binding cascade, including idle siblings. */
+  private handoffSandboxAgentSessionProofs(bindingRef: string): void {
+    const bindings = this.coreDb.sqlite
+      .prepare(`
+      SELECT b.agent_session_id AS agentSessionId,
+        b.agent_session_runtime_binding_id AS agentSessionRuntimeBindingId,
+        h.harness_instance_id AS harnessInstanceId, h.harness_binding_ref AS harnessBindingRef,
+        h.harness_compatibility_key AS harnessCompatibilityKey, b.native_handle_digest AS nativeHandleDigest
+      FROM agent_session_runtime_bindings b JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
+      JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
+      WHERE s.sandbox_binding_ref = ? AND b.native_handle_state = 'ready'
+    `)
+      .all(bindingRef) as Array<Omit<NanoHostAgentSessionContinuityInspection, 'reusable'>>;
+    for (const binding of bindings) {
+      const candidates = [...this.sessions.values()].filter(
+        (session) =>
+          session.agentSessionRuntimeBindingId === binding.agentSessionRuntimeBindingId &&
+          session.harnessBindingRef === binding.harnessBindingRef
+      );
+      const live =
+        candidates.find((session) => session.acceptedProofUnrecorded) ??
+        candidates.find((session) => session.recordNativeHandleDigest);
+      // A synchronous recorder already accepted this immutable ready proof in this process.
+      if (live?.acceptedProofUnrecorded === false) continue;
+      if (live?.recordNativeHandleDigest && binding.nativeHandleDigest) {
+        this.recordAcceptedNativeHandleDigest(live, binding.nativeHandleDigest);
+      } else {
+        this.handoffDurableAgentSessionProof({ ...binding, reusable: false });
+      }
+    }
+  }
+
+  /** Completes Core handoff after known physical deletion; a failed transfer retains and fences its rows. */
+  private finishProvedSandboxCleanup(scope: NanoHostSharedSandbox): void {
+    try {
+      this.handoffSandboxAgentSessionProofs(scope.sandboxBindingRef);
+      if (
+        getWorkerStorageBindingForSandbox(this.coreDb, {
+          sandboxBindingRef: scope.sandboxBindingRef,
+        })
+      )
+        this.releaseWorkerStorageForSandbox(scope.sandboxBindingRef);
+      removeNanoHostSandboxRuntimeByBinding(this.coreDb, scope.sandboxBindingRef);
+      if (
+        this.sharedSandboxes.get(scope.sandboxCompatibilityKey)?.sandboxBindingRef ===
+        scope.sandboxBindingRef
+      )
+        this.forgetSharedSandbox(scope.sandboxCompatibilityKey);
+    } catch (error) {
+      fenceNanoHostSandboxRuntime(this.coreDb, {
+        sandboxBindingRef: scope.sandboxBindingRef,
+        timestamp: new Date().toISOString(),
+      });
+      this.fenceWorkerStorageForSandbox(scope.sandboxBindingRef);
+      throw error;
+    }
+  }
+
   /** Clears one Turn locally, retaining only a proved reusable shared Harness. */
   public async cleanupSession(
     identity: WorkerGovernanceBackendSessionIdentity,
@@ -1592,7 +1702,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   ): Promise<void> {
     const attemptId = this.requireAttemptId(identity.packageSnapshotId);
     const session = this.sessions.get(identity.packageSnapshotId);
-    const durableSandbox = session ? null : this.findDurableSandboxBinding(identity);
+    const durableSandbox = this.findDurableSandboxBinding(identity);
     const durableBackend =
       session || durableSandbox ? null : this.findDurableBackendSession(identity);
     const durableCleanupFailure =
@@ -1603,6 +1713,35 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         : null;
     let retainUnrecordedProof = false;
     try {
+      const epoch =
+        session?.sharedHarness.sandbox.originPhysicalEpoch ??
+        durableSandbox?.originPhysicalEpoch ??
+        (
+          this.coreDb.sqlite
+            .prepare(
+              'SELECT origin_physical_epoch AS epoch FROM worker_backend_sessions WHERE attempt_id = ?'
+            )
+            .get(attemptId) as { epoch: string } | undefined
+        )?.epoch;
+      const provedScope = [
+        session?.sharedHarness.sandbox,
+        ...[...this.sessions.values()].map((candidate) => candidate.sharedHarness.sandbox),
+      ].find(
+        (scope) =>
+          scope?.writerCleanupProved &&
+          scope.runtimeTargetId === identity.runtimeTargetId &&
+          scope.originPhysicalEpoch === epoch &&
+          scope.sandboxId === nanoHostSandboxIdFromBackendSessionId(identity.backendSessionId)
+      );
+      if (provedScope) {
+        try {
+          this.finishProvedSandboxCleanup(provedScope);
+        } catch (error) {
+          retainUnrecordedProof = !!session;
+          throw error;
+        }
+        return;
+      }
       if (session?.acceptedProofUnrecorded) {
         // The binding row is the only retained copy. Do not close, delete, or drop this session.
         retainUnrecordedProof = true;
@@ -1614,26 +1753,27 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           'NanoHost accepted native ready proof could not be recorded before cleanup.'
         );
       }
-      // A closed no-effect incoming attempt has no authority to clean a shared resident.
+      // A no-effect closing attempt has no authority to clean a shared resident or its idle AS.
       const untouchedResident =
-        !session &&
-        durableSandbox &&
+        (session || durableSandbox) &&
         this.coreDb.sqlite
           .prepare(`
         SELECT 1 FROM scheduler_execution_attempts a WHERE a.attempt_id = ?
           AND a.backend_id = ? AND a.agent_session_id = ? AND a.input_ref = ?
-          AND a.phase = 'closed' AND a.disposition = 'not_accepted'
+          AND a.phase IN ('closing', 'closed') AND a.disposition IN ('unknown', 'not_accepted')
           AND a.operation_id IS NULL AND a.deadline IS NULL
           AND a.last_accepted_heartbeat_at IS NULL AND a.last_worker_sequence IS NULL
           AND a.worker_process_key_hash IS NULL AND a.worker_control_token_hash IS NULL
           AND a.worker_inference_token_hash IS NULL AND a.worker_capability_token_hash IS NULL
           AND NOT EXISTS (SELECT 1 FROM agent_session_runtime_bindings b
-            WHERE b.agent_session_id = a.agent_session_id OR b.current_attempt_id = a.attempt_id)
+            WHERE b.current_attempt_id = a.attempt_id)
         `)
           .get(attemptId, this.id, identity.agentSessionId, identity.packageSnapshotId);
       if (this.failedPreSandboxPreparations.has(identity.packageSnapshotId) || untouchedResident)
         return;
-      if (durableSandbox?.cleanupState === 'unknown') {
+      // A live owner can still issue its first exact delete after a Harness-result loss.
+      // Without that owner, an unknown cleanup needs later-Epoch absence proof, never replay.
+      if (!session && durableSandbox?.cleanupState === 'unknown') {
         if (
           durableSandbox.lifecycleState !== 'failed' ||
           durableSandbox.healthState !== 'unknown' ||
@@ -1647,20 +1787,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           identity.deploymentId
         );
         // Physical absence does not erase accepted native proof or its immutable storage lineage.
-        const bindings = this.coreDb.sqlite
-          .prepare(`SELECT b.agent_session_id AS agentSessionId,
-          b.agent_session_runtime_binding_id AS agentSessionRuntimeBindingId,
-          h.harness_instance_id AS harnessInstanceId, h.harness_binding_ref AS harnessBindingRef,
-          h.harness_compatibility_key AS harnessCompatibilityKey,
-          CASE WHEN b.native_handle_state = 'ready' THEN b.native_handle_digest ELSE NULL END AS nativeHandleDigest
-          FROM agent_session_runtime_bindings b JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
-          JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
-          WHERE s.sandbox_binding_ref = ?`)
-          .all(durableSandbox.sandboxBindingRef) as Array<
-          Omit<NanoHostAgentSessionContinuityInspection, 'reusable'>
-        >;
-        for (const binding of bindings)
-          this.handoffDurableAgentSessionProof({ ...binding, reusable: false });
+        this.handoffSandboxAgentSessionProofs(durableSandbox.sandboxBindingRef);
         this.releaseWorkerStorageForSandbox(durableSandbox.sandboxBindingRef);
         removeNanoHostSandboxRuntimeByBinding(this.coreDb, durableSandbox.sandboxBindingRef);
         this.forgetSharedSandbox(durableSandbox.sandboxCompatibilityKey);
@@ -1746,6 +1873,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             );
             requireNanoHostResultObject(retained.result);
             awaitingCleanupResult = false;
+            if (retained.kind === 'sandbox.delete' && durableSandbox)
+              this.markProvedSandboxDeletion(
+                durableSandbox.sandboxBindingRef,
+                durableSandbox.originPhysicalEpoch
+              );
             if (retained.kind === 'bridge.close') {
               if (durableSandbox)
                 this.drainSandboxAfterCleanupEffect(
@@ -1784,10 +1916,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           throw error;
         }
         if (session) {
-          this.releaseWorkerStorageForSandbox(session.sharedHarness.sandbox.sandboxBindingRef);
-          removeNanoHostSandboxRuntimeForHarness(this.coreDb, session.harnessInstanceId);
-          this.forgetSharedSandbox(session.sharedHarness.sandbox.sandboxCompatibilityKey);
+          try {
+            this.finishProvedSandboxCleanup(session.sharedHarness.sandbox);
+          } catch (error) {
+            retainUnrecordedProof = true;
+            throw error;
+          }
         } else if (durableSandbox) {
+          this.handoffSandboxAgentSessionProofs(durableSandbox.sandboxBindingRef);
           this.releaseWorkerStorageForSandbox(durableSandbox.sandboxBindingRef);
           removeNanoHostSandboxRuntimeByBinding(this.coreDb, durableSandbox.sandboxBindingRef);
         } else {
@@ -1958,12 +2094,47 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     });
   }
 
+  /** Finds canonical nonclosed owners across per-Turn routes, excluding only this no-effect preparation. */
+  private nonClosedSandboxAttempts(
+    environmentPackage: AgentEnvironmentPackagePreview,
+    runtimeTargetId: string,
+    originPhysicalEpoch: string,
+    sandboxId: string
+  ): Array<{ attemptId: string; deadline: string | null }> {
+    return (
+      this.coreDb.sqlite
+        .prepare(`
+      SELECT a.attempt_id AS attemptId, w.backend_session_id AS backendSessionId, a.deadline
+      FROM scheduler_execution_attempts a JOIN worker_backend_sessions w ON w.attempt_id = a.attempt_id
+      WHERE a.backend_id = ? AND w.runtime_target_id = ? AND w.origin_physical_epoch = ? AND a.phase <> 'closed'
+        AND NOT (a.phase = 'open' AND a.operation_id IS NULL AND a.deadline IS NULL
+          AND a.workspace_id = ? AND a.thread_id = ? AND a.turn_id = ? AND a.input_ref = ?)
+    `)
+        .all(
+          this.id,
+          runtimeTargetId,
+          originPhysicalEpoch,
+          environmentPackage.scope.workspaceId,
+          environmentPackage.scope.threadId,
+          environmentPackage.scope.turnId,
+          environmentPackage.snapshotId
+        ) as Array<{
+        attemptId: string;
+        backendSessionId: string;
+        deadline: string | null;
+      }>
+    ).filter(
+      (attempt) => nanoHostSandboxIdFromBackendSessionId(attempt.backendSessionId) === sandboxId
+    );
+  }
+
   /** Reports capacity after preserving any retiring binding's proof, without runtime effects. */
   public inspectMaterializationCapacity(
     environmentPackage: AgentEnvironmentPackagePreview
   ): 'available' | 'capacity-saturated' {
-    // A compatible resident is not spare capacity until its prior Turn's full handoff releases it.
-    const eviction = this.inspectIncompatibleIdleSandbox(environmentPackage, true);
+    // Compatible live residents share only the authored aggregate capacity. Closing Turns
+    // retain their live reservation through output collection and the complete handoff.
+    const eviction = this.inspectIncompatibleIdleSandbox(environmentPackage);
     if (eviction === 'capacity-saturated') return 'capacity-saturated';
     for (const binding of eviction?.bindings ?? []) {
       this.handoffDurableAgentSessionProof(binding);
@@ -1985,7 +2156,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
                 sandbox_compatibility_key AS sandboxCompatibilityKey,
                 origin_physical_epoch AS originPhysicalEpoch,
                 lifecycle_state AS lifecycleState, health_state AS healthState,
-                drain_state AS drainState, cleanup_state AS cleanupState
+                drain_state AS drainState, cleanup_state AS cleanupState,
+                max_active_turns AS maxActiveTurns
          FROM sandbox_runtime_records
          WHERE runtime_target_id = ?
          ORDER BY sandbox_runtime_id`
@@ -1999,16 +2171,25 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       readonly sandboxBindingRef: string;
       readonly sandboxCompatibilityKey: string;
       readonly sandboxRuntimeId: string;
+      readonly maxActiveTurns: number;
     }>;
+    const currentPhysicalEpoch = this.readCurrentPhysicalEpoch(runtimeTargetId);
+    if (!currentPhysicalEpoch) return 'capacity-saturated';
     if (sandboxes.length === 0) {
-      return null;
+      // A known delete does not permit the same physical name to alias pending Core closeouts.
+      return this.nonClosedSandboxAttempts(
+        environmentPackage,
+        runtimeTargetId,
+        currentPhysicalEpoch,
+        nanoHostSandboxId(desiredKey)
+      ).length > 0
+        ? 'capacity-saturated'
+        : null;
     }
     if (sandboxes.length !== 1) {
       return 'capacity-saturated';
     }
     const sandbox = sandboxes[0]!;
-    const currentPhysicalEpoch = this.readCurrentPhysicalEpoch(runtimeTargetId);
-    if (!currentPhysicalEpoch) return 'capacity-saturated';
     const sandboxOriginPhysicalEpoch = requireStoredNanoHostPhysicalEpoch(
       sandbox.originPhysicalEpoch
     );
@@ -2032,6 +2213,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
                 harness_binding_ref AS harnessBindingRef,
                 lifecycle_state AS lifecycleState, drain_state AS drainState,
                 active_turn_count AS activeTurnCount, operation_state AS operationState,
+                harness_compatibility_key AS harnessCompatibilityKey,
+                max_active_turns AS maxActiveTurns,
+                open_session_count AS openSessionCount, max_open_sessions AS maxOpenSessions,
                 (lifecycle_state = 'failed' AND drain_state = 'draining'
                  AND operation = 'session.close' AND operation_state = 'settled'
                  AND json_extract(result_json, '$.disposition') = 'refused'
@@ -2048,6 +2232,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       )
       .all(sandbox.sandboxRuntimeId) as Array<{
       readonly activeTurnCount: number;
+      readonly harnessCompatibilityKey: string;
+      readonly maxActiveTurns: number;
+      readonly openSessionCount: number;
+      readonly maxOpenSessions: number;
       readonly closeCleanupRequired: number | null;
       readonly drainState: string;
       readonly harnessBindingRef: string;
@@ -2069,20 +2257,85 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     // Retire its complete idle Sandbox through the old resident's deletion owner without replay.
     const widenCleanup =
       !physicalAbsent && harnesses.some((harness) => harness.closeCleanupRequired === 1);
-    if (harnesses.some((harness) => harness.activeTurnCount !== 0)) return 'capacity-saturated';
+    const liveSessions = [...this.sessions.values()].filter(
+      (session) =>
+        session.sharedHarness.sandbox.sandboxBindingRef === sandbox.sandboxBindingRef &&
+        (requireSchedulerExecutionAttempt(this.coreDb, session.attemptId).phase !== 'closed' ||
+          !!session.acceptedProofUnrecorded ||
+          !!session.pendingHarnessOperation ||
+          (session.turnStarted && !session.terminalInspectionComplete))
+    );
+    const domainAttempts = this.nonClosedSandboxAttempts(
+      environmentPackage,
+      runtimeTargetId,
+      sandboxOriginPhysicalEpoch,
+      nanoHostSandboxId(sandbox.sandboxCompatibilityKey)
+    );
     if (
       !forceRetirement &&
       !widenCleanup &&
       sandbox.sandboxCompatibilityKey === desiredKey &&
       processLocalSandbox
     ) {
+      const activeBindings = this.coreDb.sqlite
+        .prepare(`
+        SELECT b.current_attempt_id AS attemptId, b.agent_session_runtime_binding_id AS bindingId
+        FROM agent_session_runtime_bindings b JOIN harness_instance_records h
+          ON h.harness_instance_id = b.harness_instance_id
+        WHERE h.sandbox_runtime_id = ? AND b.lifecycle_state = 'active'
+      `)
+        .all(sandbox.sandboxRuntimeId) as Array<{ attemptId: string; bindingId: string }>;
+      const nativeActive = harnesses.reduce((count, harness) => count + harness.activeTurnCount, 0);
+      // An unowned/unknown active attempt is a fence, not evidence of a free operating slot.
+      if (
+        activeBindings.length !== nativeActive ||
+        activeBindings.some(
+          (binding) =>
+            !liveSessions.some(
+              (session) =>
+                session.attemptId === binding.attemptId &&
+                session.agentSessionRuntimeBindingId === binding.bindingId &&
+                session.liveRouteTokens !== null
+            )
+        )
+      ) {
+        return 'capacity-saturated';
+      }
+      const submittedAttempts = domainAttempts.filter((attempt) => attempt.deadline !== null);
+      // Native inspection and local session removal do not release the Core output/revocation
+      // barrier. Count each exact owner once until its submitted attempt is closed.
+      const heldAttempts = new Set([
+        ...liveSessions.map((session) => session.attemptId),
+        ...submittedAttempts.map((attempt) => attempt.attemptId),
+        ...activeBindings.map((binding) => binding.attemptId),
+      ]);
+      const capacity = Math.min(sandbox.maxActiveTurns, this.configuredActiveTurnCapacity());
+      if (heldAttempts.size >= capacity) return 'capacity-saturated';
+      const selectedHarness = harnesses.find(
+        (harness) =>
+          harness.harnessCompatibilityKey === nanoHostHarnessCompatibilityKey(environmentPackage)
+      );
+      if (selectedHarness) {
+        if (selectedHarness.activeTurnCount >= selectedHarness.maxActiveTurns)
+          return 'capacity-saturated';
+        const retainedThread = this.coreDb.sqlite
+          .prepare(`
+          SELECT 1 FROM agent_session_runtime_bindings
+          WHERE harness_instance_id = ? AND workspace_id = ? AND thread_id = ? AND lifecycle_state <> 'closed'
+        `)
+          .get(
+            selectedHarness.harnessInstanceId,
+            environmentPackage.scope.workspaceId,
+            environmentPackage.scope.threadId
+          );
+        if (!retainedThread && selectedHarness.openSessionCount >= selectedHarness.maxOpenSessions)
+          return 'capacity-saturated';
+      }
       return null;
     }
     if (
-      (!physicalAbsent &&
-        [...this.sessions.values()].some(
-          (session) => session.sharedHarness.sandbox.sandboxRuntimeId === sandbox.sandboxRuntimeId
-        )) ||
+      (!physicalAbsent && liveSessions.length > 0) ||
+      domainAttempts.length > 0 ||
       (harnesses.length === 0 && !physicalAbsent) ||
       harnesses.some(
         (harness) =>
@@ -2096,14 +2349,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       physicalAbsent &&
       this.coreDb.sqlite
         .prepare(
-          `SELECT 1 FROM scheduler_execution_attempts
-           WHERE binding_ref = ? AND phase <> 'closed'
-           LIMIT 1`
+          "SELECT 1 FROM scheduler_execution_attempts WHERE binding_ref = ? AND phase <> 'closed' LIMIT 1"
         )
         .get(sandbox.sandboxBindingRef)
-    ) {
+    )
       return 'capacity-saturated';
-    }
     const bindings = this.coreDb.sqlite
       .prepare(
         `SELECT b.agent_session_id AS agentSessionId,
@@ -2502,9 +2752,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         false,
         replacementSelection
       );
-    } catch {
+    } catch (error) {
       // Eviction owns the resident's fence; this incoming attempt created no Sandbox or bridge.
       this.failedPreSandboxPreparations.add(identity.packageSnapshotId);
+      if (error instanceof WorkerStorageBindingError) throw error;
       throw new WorkerGovernanceCapacityUnavailableError(
         'Incompatible resident cleanup requires exact deletion or Epoch fence proof.'
       );
@@ -2633,6 +2884,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         imageInspection = parseNanoHostImageInspection(
           await this.effect(identity, attemptId, 'image.inspect', { imageDigest })
         );
+        if (!imageInspection.layout.targets.some((target) => target.target === '/openkit/threads'))
+          throw new Error(
+            'NanoHost Worker image has no declared retained /openkit/threads target.'
+          );
         if (
           imageInspection.imageDigest !== imageDigest ||
           (environmentPackage.runtime.environment &&
@@ -2749,6 +3004,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       const sandboxIdentity = sandboxCompatibilityKey.slice(0, 24);
       sharedSandbox = {
         bridgeOpen: false,
+        writerCleanupProved: false,
         imageDigest,
         originPhysicalEpoch,
         runtimeTargetId: requireNanoHostRuntimeTargetId(identity),
@@ -2771,6 +3027,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         .digest('hex')
         .slice(0, 24);
       sharedHarness = {
+        maxActiveTurns: this.configuredActiveTurnCapacity(),
         adapterId,
         adapterVersion,
         bindings: new Map(),
@@ -2856,6 +3113,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     );
     if (!this.sharedHarnesses.has(harnessMapKey)) {
       createNanoHostHarnessRuntime(this.coreDb, {
+        maxActiveTurns: sharedHarness.maxActiveTurns,
         adapterId,
         adapterVersion,
         harnessBindingRef: sharedHarness.harnessBindingRef,
@@ -3033,6 +3291,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         );
       const opened = await this.queueAndWaitForHarnessOperation(session, 'session.open', {
         adapterId: session.sharedHarness.adapterId,
+        maxActiveTurns: session.sharedHarness.maxActiveTurns,
         nativeEnvironment: session.environmentPackage.runtime.environment?.values,
         agentSessionCompatibilityKey: session.agentSessionCompatibilityKey,
         agentSessionId: session.environmentPackage.scope.agentSessionId,
@@ -3050,7 +3309,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         /^[0-9a-f]{64}$/.test(opened.nativeHandleDigest);
       if (
         opened.state !== 'open' ||
-        opened.maxActiveTurns !== 1 ||
+        opened.maxActiveTurns !== session.sharedHarness.maxActiveTurns ||
         !(
           openedReady ||
           (opened.nativeHandleState === 'pending' && opened.nativeHandleDigest === null)
@@ -3227,24 +3486,41 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       inputRef: attempt.inputRef,
       operation: 'submit',
     });
+    // Active binding ownership outlives the shared command cell, which siblings may already use.
     const native =
-      attempt.operationId === submissionId
+      attempt.operationId === submissionId && anchor
         ? (this.coreDb.sqlite
-            .prepare(`SELECT h.operation_state AS state, h.result_json AS resultJson
-      FROM harness_instance_records h JOIN agent_session_runtime_bindings b ON b.harness_instance_id = h.harness_instance_id
-      WHERE b.agent_session_id = ? AND h.operation = 'turn.start'
-        AND json_extract(h.command_body_json, '$.leaseId') = ?
-        AND json_extract(h.command_body_json, '$.turnId') = ?
-        AND json_extract(h.command_body_json, '$.packageSnapshotId') = ?`)
-            .get(attempt.agentSessionId, attempt.attemptId, attempt.turnId, attempt.inputRef) as
-            | { state: string; resultJson: string | null }
-            | undefined)
+            .prepare(`
+        SELECT s.sandbox_compatibility_key AS sandboxCompatibilityKey
+        FROM agent_session_runtime_bindings b
+        JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
+        JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
+        JOIN nanohost_runtime_targets r ON r.target_id = s.runtime_target_id
+        JOIN worker_backend_sessions w ON w.attempt_id = b.current_attempt_id
+        WHERE b.agent_session_id = ? AND b.current_attempt_id = ? AND b.current_turn_id = ?
+          AND b.workspace_id = ? AND b.thread_id = ? AND b.lifecycle_state = 'active'
+          AND w.package_snapshot_id = ? AND w.agent_session_id = b.agent_session_id
+          AND w.workspace_id = b.workspace_id AND w.thread_id = b.thread_id AND w.turn_id = b.current_turn_id
+          AND s.runtime_target_id = ? AND s.origin_physical_epoch = ?
+          AND r.physical_epoch = s.origin_physical_epoch AND r.ready = 1
+          AND h.lifecycle_state = 'open' AND h.active_turn_count > 0 AND s.lifecycle_state = 'open'
+      `)
+            .get(
+              attempt.agentSessionId,
+              attempt.attemptId,
+              attempt.turnId,
+              attempt.workspaceId,
+              attempt.threadId,
+              attempt.inputRef,
+              anchor.runtimeTargetId,
+              anchor.originPhysicalEpoch
+            ) as { sandboxCompatibilityKey: string } | undefined)
         : undefined;
     const nativeAccepted =
-      native?.state === 'settled' &&
-      native.resultJson !== null &&
-      JSON.parse(native.resultJson).disposition === 'succeeded' &&
-      JSON.parse(native.resultJson).body?.state === 'started';
+      !!native &&
+      !!anchor &&
+      nanoHostSandboxIdFromBackendSessionId(anchor.backendSessionId) ===
+        nanoHostSandboxId(native.sandboxCompatibilityKey);
     const final =
       attempt.agentSessionId && attempt.inputRef
         ? getWorkerControlAcceptedFinalStatus(this.coreDb, {
@@ -3264,7 +3540,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       disposition: final || nativeAccepted ? 'accepted' : attempt.disposition,
       execution: final
         ? 'terminal'
-        : anchor?.state === 'launching' && (nativeAccepted || attempt.disposition === 'accepted')
+        : anchor?.state === 'launching' && nativeAccepted
           ? 'running'
           : 'unknown',
       fenceRef: attempt.fenceRef,
@@ -3535,6 +3811,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         session.environmentPackage,
         workerPath
       );
+      // Artifact output slots are valid exports, but never transcript capture sources.
+      if (slot !== 'session')
+        throw new Error('NanoHost transcript export is outside its exact admitted Turn capture.');
       const result = await this.effect(session.identity, session.attemptId, 'file.export', {
         finalStatusAccepted,
         maxByteLength: NANO_HOST_FILE_EXPORT_MAX_BYTES,
@@ -3559,6 +3838,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           session.environmentPackage,
           workerPath
         );
+        if (slot !== 'session')
+          throw new Error('NanoHost provenance export is outside its exact admitted Turn capture.');
         const result = await this.effect(session.identity, session.attemptId, 'file.export', {
           finalStatusAccepted,
           maxByteLength: NANO_HOST_FILE_EXPORT_MAX_BYTES,
@@ -4041,6 +4322,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         });
       throw error;
     }
+    if (cleanupTarget && operation === 'sandbox.delete')
+      this.markProvedSandboxDeletion(cleanupTarget.sandboxBindingRef, originPhysicalEpoch);
     if (cleanupTarget)
       this.drainSandboxAfterCleanupEffect(cleanupTarget.sandboxBindingRef, originPhysicalEpoch);
     if (recorded)
@@ -4657,44 +4940,49 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const packageSnapshotId = session.environmentPackage.snapshotId;
     try {
       await this.collectWorkspaceSnapshot(session, 'successor');
-      await new Promise<Readonly<Record<string, unknown>>>((resolve, reject) => {
-        const pending: PendingNanoHostHarnessOperation = {
-          operation: 'session.close',
-          operationId: null,
-          reject,
-          resolve,
-          timeout: null,
-        };
-        const owner: NanoHostAgentSessionCloseOwner = {
-          inspection,
-          pending,
-        };
-        this.agentSessionCloseOwners.set(inspection.agentSessionRuntimeBindingId, owner);
-        try {
-          queueNanoHostHarnessOperation(this.coreDb, {
-            body: {
-              agentSessionId: inspection.agentSessionId,
-              agentSessionRuntimeBindingId: inspection.agentSessionRuntimeBindingId,
-            },
-            harnessInstanceId: inspection.harnessInstanceId,
-            operation: 'session.close',
-            timestamp: new Date().toISOString(),
-          });
-          this.armHarnessOperationTimeout(
-            pending,
-            inspection.harnessBindingRef,
-            () => owner.pending === pending,
-            () => {
-              owner.pending = null;
+      await this.withHarnessOperationSlot(
+        inspection.harnessInstanceId,
+        () =>
+          new Promise<Readonly<Record<string, unknown>>>((resolve, reject) => {
+            const pending: PendingNanoHostHarnessOperation = {
+              operation: 'session.close',
+              sequence: null,
+              operationId: null,
+              reject,
+              resolve,
+              timeout: null,
+            };
+            const owner: NanoHostAgentSessionCloseOwner = {
+              inspection,
+              pending,
+            };
+            this.agentSessionCloseOwners.set(inspection.agentSessionRuntimeBindingId, owner);
+            try {
+              pending.sequence = queueNanoHostHarnessOperation(this.coreDb, {
+                body: {
+                  agentSessionId: inspection.agentSessionId,
+                  agentSessionRuntimeBindingId: inspection.agentSessionRuntimeBindingId,
+                },
+                harnessInstanceId: inspection.harnessInstanceId,
+                operation: 'session.close',
+                timestamp: new Date().toISOString(),
+              });
+              this.armHarnessOperationTimeout(
+                pending,
+                inspection.harnessBindingRef,
+                () => owner.pending === pending,
+                () => {
+                  owner.pending = null;
+                  this.agentSessionCloseOwners.delete(inspection.agentSessionRuntimeBindingId);
+                }
+              );
+            } catch (error) {
               this.agentSessionCloseOwners.delete(inspection.agentSessionRuntimeBindingId);
+              owner.pending = null;
+              reject(error);
             }
-          );
-        } catch (error) {
-          this.agentSessionCloseOwners.delete(inspection.agentSessionRuntimeBindingId);
-          owner.pending = null;
-          reject(error);
-        }
-      }).then((closed) => {
+          })
+      ).then((closed) => {
         if (closed.state !== 'closed' || closed.privateState !== 'absent') {
           throw new Error('NanoHost Harness session.close result is incompatible.');
         }
@@ -4703,6 +4991,28 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       // Idle close restores a Turn handle only for collection and close, not active occupancy.
       // Sandbox identities repeat on later compatible creation, so retaining it can block admission.
       this.sessions.delete(packageSnapshotId);
+    }
+  }
+
+  /** Acquires the existing single command cell, releasing it only after its owner's settlement. */
+  private async withHarnessOperationSlot<T>(
+    harnessInstanceId: string,
+    action: () => Promise<T>
+  ): Promise<T> {
+    const predecessor = this.harnessOperationSettlements.get(harnessInstanceId);
+    let release!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.harnessOperationSettlements.set(harnessInstanceId, settlement);
+    try {
+      if (predecessor) await predecessor;
+      return await action();
+    } finally {
+      release();
+      if (this.harnessOperationSettlements.get(harnessInstanceId) === settlement) {
+        this.harnessOperationSettlements.delete(harnessInstanceId);
+      }
     }
   }
 
@@ -4729,41 +5039,44 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     });
     const pending: PendingNanoHostHarnessOperation = {
       operation,
+      sequence: null,
       operationId: null,
       reject: rejectResult,
       resolve: resolveResult,
       timeout: null,
     };
     session.pendingHarnessOperation = pending;
-    try {
-      queueNanoHostHarnessOperation(this.coreDb, {
-        body,
-        harnessInstanceId: session.harnessInstanceId,
-        operation,
-        timestamp: new Date().toISOString(),
-      });
-      this.armHarnessOperationTimeout(
-        pending,
-        session.harnessBindingRef,
-        () => session.pendingHarnessOperation === pending,
-        () => {
-          session.pendingHarnessOperation = null;
-        }
-      );
-    } catch (error) {
-      session.pendingHarnessOperation = null;
-      throw error;
-    }
-    return result.then((observation) => {
-      if (recorded)
-        acceptSchedulerExecutionObservation(this.coreDb, {
-          ...schedulerExecutionCorrelation(recorded),
-          disposition: 'accepted',
-          execution: 'pending',
-          fenceRef: null,
-          outcomeRef: null,
+    return this.withHarnessOperationSlot(session.harnessInstanceId, async () => {
+      try {
+        pending.sequence = queueNanoHostHarnessOperation(this.coreDb, {
+          body,
+          harnessInstanceId: session.harnessInstanceId,
+          operation,
+          timestamp: new Date().toISOString(),
         });
-      return observation;
+        this.armHarnessOperationTimeout(
+          pending,
+          session.harnessBindingRef,
+          () => session.pendingHarnessOperation === pending,
+          () => {
+            session.pendingHarnessOperation = null;
+          }
+        );
+      } catch (error) {
+        session.pendingHarnessOperation = null;
+        throw error;
+      }
+      return await result.then((observation) => {
+        if (recorded)
+          acceptSchedulerExecutionObservation(this.coreDb, {
+            ...schedulerExecutionCorrelation(recorded),
+            disposition: 'accepted',
+            execution: 'pending',
+            fenceRef: null,
+            outcomeRef: null,
+          });
+        return observation;
+      });
     });
   }
 
@@ -5251,9 +5564,9 @@ function nanoHostHarnessCompatibilityKey(
           kind: environmentPackage.agent.runtimeKind,
           version: environmentPackage.agent.runtimeVersion,
         },
-        control: {
+        control: sessionStaticControl({
           transcript: environmentPackage.control.transcript ?? null,
-        },
+        }),
         credentials: environmentPackage.credentials,
         extensions: { ...extensions, openkit: openkitRecord ? staticOpenkit : openkit },
         resources: environmentPackage.resources,

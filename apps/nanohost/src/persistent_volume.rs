@@ -1087,6 +1087,7 @@ fn validate_attachment_request(
     Ok(())
 }
 
+/// Admits canonical retained targets, including only the exact Thread/native/capture root under /openkit.
 fn validate_target(target: &str) -> Result<(), &'static str> {
     if target.len() < 2
         || target.len() > 4096
@@ -1103,6 +1104,11 @@ fn validate_target(target: &str) -> Result<(), &'static str> {
         .any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
     {
         return Err("persistent storage target invalid");
+    }
+    // Control and input siblings remain disposable; neither /openkit nor descendants of
+    // the retained root are independently image-selectable mounts.
+    if target == "/openkit/threads" {
+        return Ok(());
     }
     for forbidden in [
         "/openkit",
@@ -2246,6 +2252,37 @@ pub(crate) mod tests {
             format!("sha256:{:x}", Sha256::digest(canonical.as_bytes()))
         );
         assert_eq!(layout.result_json()["storageLayout"]["uid"], 1000);
+    }
+
+    #[test]
+    fn thread_native_capture_root_is_the_only_retained_openkit_target() {
+        let image_digest = digest('a');
+        let fixture = json!({
+            "Id": image_digest, "Os": "linux", "Architecture": "amd64",
+            "Config": {
+                "User": "1000:1000", "WorkingDir": "/tmp/openkit-bootstrap",
+                "Volumes": {"/workspace": {}, "/sandbox": {}, "/openkit/threads": {}},
+                "Labels": {FAMILY_LABEL: "openkit-worker", VERSION_LABEL: "1"}
+            }
+        });
+        let layout =
+            parse_image_inspect(&image_digest, &serde_json::to_vec(&fixture).unwrap()).unwrap();
+        assert_eq!(
+            layout.targets,
+            ["/openkit/threads", "/sandbox", "/workspace"]
+        );
+        for target in [
+            "/openkit",
+            "/openkit/session",
+            "/openkit/sessions",
+            "/openkit/control",
+            "/openkit/threads/",
+            "/openkit/threads/thread_one",
+            "/openkit/threads/../control",
+            "/openkit/threads//native",
+        ] {
+            assert!(validate_target(target).is_err(), "{target}");
+        }
     }
 
     #[test]

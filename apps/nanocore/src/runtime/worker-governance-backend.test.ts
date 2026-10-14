@@ -305,6 +305,27 @@ describe('public exact grant materialization', () => {
   });
 });
 
+it('exports only the exact admitted Turn capture, even with a changed transcript declaration', () => {
+  const pkg = createNanoHostPackage();
+  const { threadId, turnId } = pkg.scope;
+  const runtime = pkg.control.adapter.targetRuntime;
+  const root = `/openkit/threads/${threadId}/${runtime}/capture/${turnId}`;
+  expect(resolveNanoHostExportPath(pkg, `${root}/events.jsonl`)).toEqual({
+    slot: 'session',
+    relativePath: `${threadId}/${runtime}/capture/${turnId}/events.jsonl`,
+  });
+  for (const foreign of [
+    `/openkit/threads/sibling/${runtime}/capture/${turnId}`,
+    `/openkit/threads/${threadId}/pi/capture/${turnId}`,
+    `/openkit/threads/${threadId}/${runtime}/capture/other-turn`,
+    `/openkit/threads/${threadId}/${runtime}/native`,
+  ]) {
+    const changed = structuredClone(pkg);
+    changed.control.transcript.root = foreign;
+    expect(() => resolveNanoHostExportPath(changed, `${foreign}/events.jsonl`)).toThrow();
+  }
+});
+
 it.each([
   true,
   false,

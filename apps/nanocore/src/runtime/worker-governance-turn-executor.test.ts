@@ -10196,7 +10196,11 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
                 family: 'openkit-worker',
                 gid: 1000,
                 uid: 1000,
-                targets: [{ target: '/sandbox' }, { target: '/workspace' }],
+                targets: [
+                  { target: '/openkit/threads' },
+                  { target: '/sandbox' },
+                  { target: '/workspace' },
+                ],
                 version: '1',
                 workingDirectory: '/tmp/openkit-bootstrap',
               },
@@ -10424,7 +10428,7 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
                 : command.operation === 'session.open'
                   ? {
                       state: 'open',
-                      maxActiveTurns: 1,
+                      maxActiveTurns: command.body.maxActiveTurns,
                       nativeHandleState: 'pending',
                       nativeHandleDigest: null,
                       workspaceGitBaseline: {

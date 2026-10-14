@@ -1,5 +1,6 @@
 import { isAbsolute } from 'node:path';
 
+import { HARNESS_DEFAULT_MAX_ACTIVE_TURNS } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import { AuthoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
 
@@ -153,6 +154,9 @@ function addRawSecretIssues(
   }
 }
 
+/** Default aggregate active-Turn bound for one shared Sandbox. */
+export const NANO_HOST_DEFAULT_MAX_ACTIVE_TURNS = HARNESS_DEFAULT_MAX_ACTIVE_TURNS;
+
 /**
  * Secret-free NanoHost deployment projection loaded from server config.
  *
@@ -172,6 +176,8 @@ export const OpenKitNanoHostConfigSchema = z
       .strict(),
     deploymentId: z.string().min(1),
     identityId: z.string().min(1),
+    /** Positive backend-private Sandbox bound; omission uses the current default. */
+    maxActiveTurnsPerSandbox: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
     rendezvousUrl: HttpOriginSchema,
   })
   .strict()

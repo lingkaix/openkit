@@ -1,8 +1,41 @@
 import { describe, expect, it } from 'vitest';
 
-import { getConfigPolicyCatalog, getConfigSchemaCatalog, OpenKitConfigSchema } from './index.js';
+import {
+  getConfigPolicyCatalog,
+  getConfigSchemaCatalog,
+  NANO_HOST_DEFAULT_MAX_ACTIVE_TURNS,
+  OpenKitConfigSchema,
+} from './index.js';
 
 describe('server config schema', () => {
+  it('admits an authored positive Sandbox active-Turn bound with a default of twenty', () => {
+    const nanohost = {
+      bind: { host: '127.0.0.1', port: 9443 },
+      credentialRef: 'nanohost-slot',
+      credentialSlots: {
+        A: { companionPath: '/run/nanohost/a.json', secretPath: '/run/nanohost/a.token' },
+        B: { companionPath: '/run/nanohost/b.json', secretPath: '/run/nanohost/b.token' },
+      },
+      deploymentId: 'local',
+      identityId: 'host',
+      rendezvousUrl: 'https://core.example',
+    };
+    expect(NANO_HOST_DEFAULT_MAX_ACTIVE_TURNS).toBe(20);
+    expect(
+      OpenKitConfigSchema.parse({ nanohost }).nanohost?.maxActiveTurnsPerSandbox
+    ).toBeUndefined();
+    expect(
+      OpenKitConfigSchema.parse({ nanohost: { ...nanohost, maxActiveTurnsPerSandbox: 8 } }).nanohost
+        ?.maxActiveTurnsPerSandbox
+    ).toBe(8);
+    for (const maxActiveTurnsPerSandbox of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(
+        OpenKitConfigSchema.safeParse({ nanohost: { ...nanohost, maxActiveTurnsPerSandbox } })
+          .success
+      ).toBe(false);
+    }
+  });
+
   it('defaults work-data capture to off on the server policy switch', () => {
     expect(OpenKitConfigSchema.parse({}).policy).toBeUndefined();
     expect(

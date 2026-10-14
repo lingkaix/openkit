@@ -115,10 +115,9 @@ describe('real native child environment through Harness', () => {
       adapters: { [adapterId]: adapter },
       environment: harnessEnvironment,
       integration: integration(),
-      nativeDataRootDirectory: join(root, 'native'),
+      threadRootDirectory: join(root, 'native'),
       rootDirectory: join(root, 'control'),
       sandboxRoot: join(root, 'sandbox'),
-      turnOutputDirectory: join(root, 'sandbox', 'session'),
     });
     let sequence = 0;
     const send = (operation: 'session.open' | 'session.close', body: Record<string, unknown>) =>

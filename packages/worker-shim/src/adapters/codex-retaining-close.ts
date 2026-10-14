@@ -1,6 +1,10 @@
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 
+/** Native 0.160.0 context marker omitted from thread/read after a requested interruption. */
+const INTERRUPTED_CONTEXT =
+  '<turn_aborted>\nThe user interrupted the previous turn on purpose. Any running unified exec processes may still be running in the background. If any tools/commands were aborted, they may have partially executed.\n</turn_aborted>';
+
 /** Exact last settled native Turn, retained only for this binding's close qualification. */
 export interface CodexCloseTerminal {
   /** Native Turn identity from the correlated terminal. */
@@ -156,27 +160,34 @@ export function requireCodexCloseHistory(
   const terminals = frames.filter(
     (frame) =>
       frame.type === 'event_msg' &&
-      frame.payload.type === 'task_complete' &&
+      ['task_complete', 'turn_aborted'].includes(frame.payload.type) &&
       frame.payload.turn_id === terminal.id
   );
   if (
-    terminal.status !== 'completed' ||
     terminals.length !== 1 ||
-    terminals[0].payload.last_agent_message !== (terminal.texts.at(-1) ?? null)
+    (terminal.status === 'completed'
+      ? terminals[0].payload.type !== 'task_complete' ||
+        terminals[0].payload.last_agent_message !== (terminal.texts.at(-1) ?? null)
+      : terminal.status !== 'interrupted' ||
+        terminals[0].payload.type !== 'turn_aborted' ||
+        terminals[0].payload.reason !== 'interrupted')
   )
-    throw new Error('Codex retaining close has no exact raw completed terminal.');
+    throw new Error(
+      `Codex retaining close has no exact raw ${terminal.status === 'interrupted' ? 'interrupted' : 'completed'} terminal.`
+    );
   // The barrier represents the complete retained conversation, not only its last Turn.
   // Other item shapes stay unqualified until their native retained projection is established.
   const turnIds = new Set<string>();
   const barrierMessages: Array<{ turnId: string; role: string; texts: string[] }> = [];
-  const completed: Array<{ turnId: string; lastMessage: string | null }> = [];
+  const settled: Array<{ turnId: string; status: string; lastMessage?: string | null }> = [];
+  const interrupted = new Set<string>();
   for (const turn of thread.turns) {
     if (
       !turn ||
       typeof turn.id !== 'string' ||
       !turn.id ||
       turnIds.has(turn.id) ||
-      turn.status !== 'completed' ||
+      !['completed', 'interrupted'].includes(turn.status) ||
       !Array.isArray(turn.items)
     )
       throw new Error('Codex retaining close earlier Turn context is unqualified.');
@@ -204,8 +215,53 @@ export function requireCodexCloseHistory(
         throw new Error('Codex retaining close barrier item context is unqualified.');
       }
     }
-    completed.push({ turnId: turn.id, lastMessage });
+    if (turn.status === 'interrupted') interrupted.add(turn.id);
+    settled.push({
+      turnId: turn.id,
+      status: turn.status,
+      ...(turn.status === 'completed' ? { lastMessage } : {}),
+    });
   }
+  // thread/read omits the exact native abort marker from this qualified text-only history.
+  // The unchanged-prefix proof still covers its bytes through orderly EOF.
+  // Tool and child-writer histories remain unqualified; the generic warning is not cleanup proof.
+  const abortPositions = new Map<string, number>();
+  for (const [index, frame] of frames.entries()) {
+    if (
+      frame.type === 'event_msg' &&
+      frame.payload.type === 'turn_aborted' &&
+      frame.payload.reason === 'interrupted'
+    )
+      abortPositions.set(frame.payload.turn_id, index);
+  }
+  const markers = new Set<string>();
+  for (const [index, frame] of frames.entries()) {
+    if (
+      frame.type !== 'response_item' ||
+      JSON.stringify(
+        frame.payload.internal_chat_message_metadata_passthrough?.content_item_kinds
+      ) !== JSON.stringify(['generic.turn_aborted'])
+    )
+      continue;
+    const id = frame.payload.internal_chat_message_metadata_passthrough?.turn_id;
+    const abortIndex = abortPositions.get(id);
+    if (
+      !interrupted.has(id) ||
+      markers.has(id) ||
+      frame.payload.type !== 'message' ||
+      frame.payload.role !== 'user' ||
+      !Array.isArray(frame.payload.content) ||
+      frame.payload.content.length !== 1 ||
+      frame.payload.content[0]?.type !== 'input_text' ||
+      frame.payload.content[0]?.text !== INTERRUPTED_CONTEXT ||
+      abortIndex === undefined ||
+      abortIndex <= index
+    )
+      throw new Error('Codex retaining close abort context is unqualified.');
+    markers.add(id);
+  }
+  if (markers.size !== interrupted.size)
+    throw new Error('Codex retaining close abort context is incomplete.');
   if (
     frames.some(
       (frame) =>
@@ -229,7 +285,10 @@ export function requireCodexCloseHistory(
           JSON.stringify(
             frame.payload.internal_chat_message_metadata_passthrough?.content_item_kinds
           ) === JSON.stringify(['environments.environment_context'])
-        )
+        ) &&
+        JSON.stringify(
+          frame.payload.internal_chat_message_metadata_passthrough?.content_item_kinds
+        ) !== JSON.stringify(['generic.turn_aborted'])
     )
     .map((frame) => {
       const { role, content, internal_chat_message_metadata_passthrough: metadata } = frame.payload;
@@ -253,16 +312,25 @@ export function requireCodexCloseHistory(
     });
   if (JSON.stringify(retainedMessages) !== JSON.stringify(barrierMessages))
     throw new Error('Codex retaining close whole retained history does not match the barrier.');
-  const retainedCompleted = frames
-    .filter((frame) => frame.type === 'event_msg' && frame.payload.type === 'task_complete')
-    .map((frame) => ({
-      turnId: frame.payload.turn_id,
-      lastMessage: frame.payload.last_agent_message,
-    }));
-  if (JSON.stringify(retainedCompleted) !== JSON.stringify(completed))
-    throw new Error(
-      'Codex retaining close whole raw completed history does not match the barrier.'
-    );
+  const retainedSettled = frames
+    .filter(
+      (frame) =>
+        frame.type === 'event_msg' && ['task_complete', 'turn_aborted'].includes(frame.payload.type)
+    )
+    .map((frame) => {
+      if (frame.payload.type === 'turn_aborted') {
+        if (frame.payload.reason !== 'interrupted')
+          throw new Error('Codex retaining close abort reason is unqualified.');
+        return { turnId: frame.payload.turn_id, status: 'interrupted' };
+      }
+      return {
+        turnId: frame.payload.turn_id,
+        status: 'completed',
+        lastMessage: frame.payload.last_agent_message,
+      };
+    });
+  if (JSON.stringify(retainedSettled) !== JSON.stringify(settled))
+    throw new Error('Codex retaining close whole raw terminal history does not match the barrier.');
   const lastContext = frames.filter((frame) => frame.type === 'turn_context').at(-1);
   if (lastContext?.payload.turn_id !== terminal.id)
     throw new Error('Codex retaining close context advanced beyond the settled Turn.');

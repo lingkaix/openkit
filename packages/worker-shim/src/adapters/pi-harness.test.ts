@@ -71,10 +71,9 @@ function harnessFor(
     adapters: { pi: createPiResidentAdapter({ hostCommand }) },
     environment: { HOME: join(root, 'home'), PATH: process.env.PATH ?? '' },
     integration: fakeIntegration(finalStatuses),
-    nativeDataRootDirectory: nativeRoot,
+    threadRootDirectory: nativeRoot,
     rootDirectory: join(root, 'private'),
     sandboxRoot,
-    turnOutputDirectory: join(sandboxRoot, 'session'),
   });
   let sequence = 0;
   const send = (operation: string, body: Readonly<Record<string, unknown>>) =>
@@ -314,7 +313,7 @@ describe('Pi Harness integration', () => {
         body: { nativeHandleDigest: null, nativeHandleState: 'pending', state: 'open' },
         disposition: 'succeeded',
       });
-      const stateRoot = join(harness.nativeRoot, 'pi', 'threads', sha256('thread-one'));
+      const stateRoot = join(harness.nativeRoot, 'thread-one', 'pi', 'native');
       expect(existsSync(join(stateRoot, 'sessions'))).toBe(false);
       const inspected = await harness.send('session.inspect', harness.selector('session-a'));
       expect(inspected).toMatchObject({
@@ -372,7 +371,7 @@ describe('Pi Harness integration', () => {
         '--eval',
         `require('node:fs').writeFileSync(${JSON.stringify(marker)}, '1')`,
       ]);
-      const stateRoot = join(bad.nativeRoot, 'pi', 'threads', sha256('thread-one'));
+      const stateRoot = join(bad.nativeRoot, 'thread-one', 'pi', 'native');
       const sessionPath = join(stateRoot, 'sessions', 'binding-proof', 'session.jsonl');
       const work = join(root, 'work');
       await mkdir(dirname(sessionPath), { recursive: true });
@@ -385,7 +384,13 @@ describe('Pi Harness integration', () => {
       );
       const handle = JSON.stringify({ cwd: work, path: sessionPath, sessionId: headerId });
       const predecessor = 'session-pred';
-      const referencePath = join(bad.nativeRoot, 'agent-session-references', predecessor);
+      const referencePath = join(
+        bad.nativeRoot,
+        'thread-one',
+        'pi',
+        'agent-session-references',
+        predecessor
+      );
       await mkdir(dirname(referencePath), { recursive: true });
       writeFileSync(referencePath, handle);
       const refused = await bad.open('session-new', {
@@ -397,9 +402,11 @@ describe('Pi Harness integration', () => {
         disposition: 'refused',
       });
       expect(existsSync(marker)).toBe(false);
-      expect(existsSync(join(bad.nativeRoot, 'agent-session-references', 'session-new'))).toBe(
-        false
-      );
+      expect(
+        existsSync(
+          join(bad.nativeRoot, 'thread-one', 'pi', 'agent-session-references', 'session-new')
+        )
+      ).toBe(false);
       expect(readFileSync(referencePath, 'utf8')).toBe(handle);
 
       writeFileSync(

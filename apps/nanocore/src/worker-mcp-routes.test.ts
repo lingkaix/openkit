@@ -2125,7 +2125,7 @@ describe('worker MCP routes', () => {
             storageLayout: {
               family: 'openkit-worker',
               gid: 1000,
-              targets: [{ target: '/workspace' }],
+              targets: [{ target: '/openkit/threads' }, { target: '/workspace' }],
               uid: 1000,
               version: '1',
               workingDirectory: '/workspace',
@@ -2301,7 +2301,7 @@ describe('worker MCP routes', () => {
       if (blocked) {
         const opened = await dispatchNext('session.open');
         settle(opened, {
-          maxActiveTurns: 1,
+          maxActiveTurns: opened.command.body.maxActiveTurns,
           nativeHandleDigest: null,
           nativeHandleState: 'pending',
           state: 'open',

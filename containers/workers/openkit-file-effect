@@ -21,7 +21,7 @@ const CANONICAL_WORKSPACE_SLOT_ROOTS = Object.freeze({
   instructions: '/openkit/instructions',
   'main-worktree': '/workspace/worktrees',
   scratch: '/workspace/scratch',
-  session: '/openkit/session',
+  session: '/openkit/threads',
   'turn-inputs': '/workspace/inputs',
   'turn-output': '/openkit/sessions',
 });
@@ -140,6 +140,10 @@ function parseCommand(argv, slotRoots) {
     const root = resolveSlotRoot(slotRoots, slot, EXPORT_SLOTS);
     const relativePath = parseRelativePath(exportArgs[4]);
     if (slot === 'main-worktree') validateMainWorktreeExportPath(relativePath);
+    // Core hash-qualified Thread/Turn ids contain literal colons, which do not escape POSIX segments.
+    if (slot === 'session' && !/^[A-Za-z0-9_:-]+\/(?:codex|pi|opencode|deepseek)\/capture\/[A-Za-z0-9_:-]+\/.+$/.test(relativePath)) {
+      throw new Error('invalid Turn capture path');
+    }
     if (slot === 'turn-output' && !/^[A-Za-z0-9_-]+\/outputs\/.+$/.test(relativePath)) {
       throw new Error('invalid session output path');
     }

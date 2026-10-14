@@ -130,12 +130,12 @@ This extension uses the separately governed worker-inference binding and does no
 Sub-agent-capable runtime adapters MUST produce a bounded raw stream set plus two index files when the AEP requires `worker.runtime-provenance.v1`:
 
 ```text
-/openkit/session/runtime/raw/
+/openkit/threads/<threadId>/<harness>/capture/<turnId>/runtime/raw/
   stream-0000.jsonl
   stream-0001.jsonl
   ...
-/openkit/session/runtime/raw-streams.json
-/openkit/session/runtime/native-origin-index.jsonl
+/openkit/threads/<threadId>/<harness>/capture/<turnId>/runtime/raw-streams.json
+/openkit/threads/<threadId>/<harness>/capture/<turnId>/runtime/native-origin-index.jsonl
 ```
 
 `raw/stream-0000.jsonl` is the byte-preserved primary runtime stream, the Codex App Server v2 event stream. The shim MUST stream this output to disk while the process runs and MUST NOT retain the complete stream in memory.
@@ -169,7 +169,9 @@ Every physical raw frame in every manifest stream MUST have exactly one index en
 
 The adapter MUST discover child streams by traversing runtime-native spawn edges or parent-thread metadata from the primary runtime thread. It MUST NOT collect every file under a shared runtime home by timestamp or directory scan alone. A child referenced by the reachable graph but missing from the collected stream set, still running, or still changing at collection time makes provenance incomplete.
 
-The AEP transcript declaration MUST name `/openkit/session/runtime/raw`, `/openkit/session/runtime/raw-streams.json`, and `/openkit/session/runtime/native-origin-index.jsonl`, plus positive maximum total bytes and stream count. Synthetic stream refs MUST match `stream-<four decimal digits>.jsonl` and MUST resolve only beneath the declared raw root. Reaching either limit MUST close capture cleanly, mark remaining provenance `truncated`, and prevent the turn from being represented as provenance-complete.
+The native runtime MUST retain its own unchanged file structure under `/openkit/threads/<threadId>/<harness>/native/`. The adapter collects per-Turn evidence under `/openkit/threads/<threadId>/<harness>/capture/<turnId>/` and closes its writers when the Turn ends; a sealed capture is not overwritten by another Turn. `<harness>` is the stable adapter id (`codex`, `pi`, `opencode`, or `deepseek`), not an ephemeral process or Harness Instance id. The existing collector-relative `runtime/` child is retained beneath the capture directory. The AEP transcript declaration MUST name that capture root's `runtime/raw`, `runtime/raw-streams.json`, and `runtime/native-origin-index.jsonl`, plus positive maximum total bytes and stream count. No native data or capture of different runtime families is mixed.
+
+Thread-level isolation inside a shared Sandbox is not provided. Threads that share a Sandbox can read each other's files. Directory separation prevents collisions, not cross-Thread reads or confidentiality breaches; it MUST NOT be represented as a security boundary. Synthetic stream refs MUST match `stream-<four decimal digits>.jsonl` and MUST resolve only beneath the declared raw root. Reaching either limit MUST close capture cleanly, mark remaining provenance `truncated`, and prevent the turn from being represented as provenance-complete.
 
 ### 3. NanoCore Normalization And Reconstruction
 

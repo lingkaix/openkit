@@ -5,9 +5,11 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import {
+  HARNESS_DEFAULT_MAX_ACTIVE_TURNS,
   HarnessCommandBodySchemas,
   type HarnessCommandEnvelope,
   HarnessCommandEnvelopeReaderSchema,
+  HarnessExhaustedBoundSchema,
   type HarnessRefusalReason,
   type HarnessResultEnvelope,
   HarnessResultEnvelopeSchema,
@@ -20,6 +22,8 @@ import {
   type WorkerStartupFailure,
   WorkerStartupFailureSchema,
   workerSessionInputPaths,
+  workerThreadRuntimeRoot,
+  workerTurnCapturePaths,
 } from '@openkit/worker-protocol';
 import {
   WORKER_ADAPTERS,
@@ -46,7 +50,7 @@ import {
 const HARNESS_POLL_PATH = '/worker-control/harness/poll';
 const HARNESS_RESULT_PATH = '/worker-control/harness/result';
 const HARNESS_OUTAGE_BUDGET_MS = 300_000;
-/** Open AgentSessions one Harness serves; active Turns stay at one per Harness. */
+/** Minimum resident binding capacity; authored active capacity can require more resident bindings. */
 const HARNESS_MAX_OPEN_SESSIONS = 8;
 /** Canonical AgentSession identity, which also names its input and reference slots. */
 const AGENT_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
@@ -142,14 +146,12 @@ export interface WorkerHarnessOptions {
   readonly environment?: WorkerShimEnvironment | undefined;
   /** Harness-lifetime Sandbox Integration client. */
   readonly integration: SandboxIntegrationClient;
-  /** Retained native-data root inside the `/sandbox` volume. */
-  readonly nativeDataRootDirectory?: string | undefined;
+  /** Test projection of the retained `/openkit/threads` root. */
+  readonly threadRootDirectory?: string | undefined;
   /** Private writable root for disposable AgentSession control and Turn-private outputs. */
   readonly rootDirectory?: string | undefined;
   /** Sandbox root containing owner-materialized AEP and Context references. */
   readonly sandboxRoot?: string | undefined;
-  /** Fixed Turn output root exported through the existing file-effect slots. */
-  readonly turnOutputDirectory?: string | undefined;
 }
 
 /**
@@ -167,31 +169,28 @@ export class WorkerHarness {
    */
   private unprovedResidents = 0;
   private readonly integration: SandboxIntegrationClient;
-  private readonly nativeDataRootDirectory: string;
+  private readonly threadRootDirectory: string;
+  private maxActiveTurns = HARNESS_DEFAULT_MAX_ACTIVE_TURNS;
   private readonly rootDirectory: string;
   private readonly sandboxRoot: string;
   private readonly sessions = new Map<string, HarnessSession>();
-  private readonly turnOutputDirectory: string;
 
   /** Creates one Harness with an empty AgentSession registry. */
   public constructor(options: WorkerHarnessOptions) {
     this.adapters = options.adapters ?? WORKER_ADAPTERS;
     this.environment = options.environment ?? process.env;
     this.integration = options.integration;
-    this.nativeDataRootDirectory = resolve(
-      options.nativeDataRootDirectory ?? '/sandbox/openkit/native'
-    );
+    this.threadRootDirectory = resolve(options.threadRootDirectory ?? '/openkit/threads');
     this.rootDirectory = resolve(options.rootDirectory ?? '/openkit/harness/agent-sessions');
     this.sandboxRoot = resolve(options.sandboxRoot ?? '/openkit');
-    this.turnOutputDirectory = resolve(options.turnOutputDirectory ?? '/openkit/session');
   }
 
   /**
    * Executes one sequenced command and returns its exact result envelope.
    *
    * @param command Parsed command envelope.
-   * @returns A succeeded or refused result; a refusal carries only its reason, plus closed
-   *   startup-failure metadata for a dependency-failed `turn.start`.
+   * @returns A succeeded or refused result with a closed reason and, where applicable, the
+   *   observed exhausted bound or operation-specific startup-failure diagnostic.
    */
   public async handle(command: HarnessCommandEnvelope): Promise<HarnessResultEnvelope> {
     try {
@@ -233,6 +232,12 @@ export class WorkerHarness {
           : undefined;
       return result(command, 'refused', {
         reasonCode: reasonCode(error),
+        ...(error &&
+        typeof error === 'object' &&
+        'exhaustedBound' in error &&
+        HarnessExhaustedBoundSchema.safeParse(error.exhaustedBound).success
+          ? { exhaustedBound: error.exhaustedBound }
+          : {}),
         ...(startupFailure ? { startupFailure } : {}),
       });
     }
@@ -240,9 +245,18 @@ export class WorkerHarness {
 
   /** Opens one resident binding, new or by resume, and registers its loopback credentials. */
   private async openSession(body: HarnessSessionOpenBody) {
-    if (this.draining || this.sessions.size >= HARNESS_MAX_OPEN_SESSIONS) {
-      throw harnessError('busy');
-    }
+    if (
+      this.adapterId !== null &&
+      body.maxActiveTurns !== undefined &&
+      body.maxActiveTurns !== this.maxActiveTurns
+    )
+      throw harnessError('conflict');
+    if (this.draining) throw harnessError('busy', 'harness.draining');
+    if (
+      this.sessions.size + this.unprovedResidents >=
+      Math.max(HARNESS_MAX_OPEN_SESSIONS, this.maxActiveTurns)
+    )
+      throw harnessError('busy', 'harness.openSessions');
     const adapter = this.adapters[body.adapterId];
     if (
       !adapter ||
@@ -275,8 +289,11 @@ export class WorkerHarness {
     ) {
       throw harnessError('unsupported');
     }
-    const resumeReference = body.resume ? await this.readResumeReference(body.resume) : null;
+    const resumeReference = body.resume
+      ? await this.readResumeReference(body.resume, body.threadId, body.adapterId)
+      : null;
 
+    if (this.adapterId === null) this.maxActiveTurns = body.maxActiveTurns ?? this.maxActiveTurns;
     this.adapterId = body.adapterId;
     LIVE_THREAD_BINDINGS.set(threadKey, body.agentSessionRuntimeBindingId);
     const sessionDirectory = resolve(
@@ -299,12 +316,7 @@ export class WorkerHarness {
         throw harnessError('conflict');
       }
       const controlRoot = resolve(sessionDirectory, 'native-control');
-      const stateRoot = resolve(
-        this.nativeDataRootDirectory,
-        body.adapterId,
-        'threads',
-        createHash('sha256').update(body.threadId).digest('hex')
-      );
+      const stateRoot = join(this.runtimeRoot(body.threadId, body.adapterId), 'native');
       const inputPaths = workerSessionInputPaths(body.agentSessionId);
       await rm(sessionDirectory, { force: true, recursive: true });
       await mkdir(controlRoot, { mode: 0o700, recursive: true });
@@ -392,7 +404,7 @@ export class WorkerHarness {
       void resident.exited.then(onExit, onExit);
       return {
         ...(workspaceGitBaseline ? { workspaceGitBaseline } : {}),
-        maxActiveTurns: 1,
+        maxActiveTurns: this.maxActiveTurns,
         nativeHandleDigest: handle.nativeHandleDigest,
         nativeHandleState: handle.nativeHandleState,
         state: 'open',
@@ -451,14 +463,11 @@ export class WorkerHarness {
       // unknown, or that is closing takes no Turn.
       throw harnessError('conflict');
     }
-    if (
-      this.draining ||
-      session.activeTurn ||
-      session.cleanupState !== 'clean' ||
-      this.activeTurnCount() >= 1
-    ) {
-      throw harnessError('busy');
-    }
+    if (this.draining) throw harnessError('busy', 'harness.draining');
+    if (session.activeTurn || session.cleanupState !== 'clean')
+      throw harnessError('busy', 'agentSession.activeTurn');
+    if (this.activeTurnCount() >= this.maxActiveTurns)
+      throw harnessError('busy', 'harness.activeTurns');
     const inputPaths = workerSessionInputPaths(session.agentSessionId);
     const packagePath = this.mapSandboxPath(inputPaths.packagePath);
     if (
@@ -477,49 +486,57 @@ export class WorkerHarness {
       'turns',
       createHash('sha256').update(body.turnId).digest('hex')
     );
-    await rm(this.turnOutputDirectory, { force: true, recursive: true });
-    await mkdir(this.turnOutputDirectory, { mode: 0o700, recursive: true });
-    await mkdir(turnDirectory, { mode: 0o700, recursive: true });
+    const capturePaths = workerTurnCapturePaths(session.threadId, this.adapterId!, body.turnId);
+    const captureDirectory = resolve(
+      this.threadRootDirectory,
+      relative('/openkit/threads', capturePaths.root)
+    );
     let markStarted!: () => void;
     const started = new Promise<void>((resolveStarted) => {
       markStarted = resolveStarted;
     });
     let startupFailure: WorkerStartupFailure | undefined;
-    const run = runResidentTurn({
-      adapterId: this.adapterId as string,
-      credentialValues: session.credentialValues,
-      environment: this.environment,
-      integration: this.integration,
-      lineage: {
-        agentSessionId: session.agentSessionId,
-        packageSnapshotId: body.packageSnapshotId,
-        threadId: session.threadId,
-        turnId: body.turnId,
-        workspaceId: session.workspaceId,
-      },
-      onStarted: markStarted,
-      onStartupFailure: (failure) => {
-        startupFailure = failure;
-      },
-      onTurnBarrier: () => {
-        if (session.activeTurn?.turnId === body.turnId) {
-          session.activeTurn.barrierReached = true;
-          session.cleanupState = 'pending';
-        }
-      },
-      packagePath,
-      resident: session.resident,
-      runtimeEnvironmentNames: session.runtimeEnvironmentNames,
-      nativeEnvironment: session.nativeEnvironment,
-      sessionDir: this.turnOutputDirectory,
-      signal: abort.signal,
-      tokens: {
-        capabilityToken: body.capabilityToken,
-        controlToken: body.workerControlToken,
-        inferenceToken: body.inferenceToken,
-      },
-      turnDirectory,
-    });
+    // Reserve activeTurn in this synchronous entry before preparation can yield to another start.
+    const run = (async () => {
+      await mkdir(dirname(captureDirectory), { mode: 0o700, recursive: true });
+      await mkdir(captureDirectory, { mode: 0o700 });
+      await mkdir(turnDirectory, { mode: 0o700, recursive: true });
+      return runResidentTurn({
+        adapterId: this.adapterId as string,
+        credentialValues: session.credentialValues,
+        environment: this.environment,
+        integration: this.integration,
+        lineage: {
+          agentSessionId: session.agentSessionId,
+          packageSnapshotId: body.packageSnapshotId,
+          threadId: session.threadId,
+          turnId: body.turnId,
+          workspaceId: session.workspaceId,
+        },
+        onStarted: markStarted,
+        onStartupFailure: (failure) => {
+          startupFailure = failure;
+        },
+        onTurnBarrier: () => {
+          if (session.activeTurn?.turnId === body.turnId) {
+            session.activeTurn.barrierReached = true;
+            session.cleanupState = 'pending';
+          }
+        },
+        packagePath,
+        resident: session.resident,
+        runtimeEnvironmentNames: session.runtimeEnvironmentNames,
+        nativeEnvironment: session.nativeEnvironment,
+        sessionDir: captureDirectory,
+        signal: abort.signal,
+        tokens: {
+          capabilityToken: body.capabilityToken,
+          controlToken: body.workerControlToken,
+          inferenceToken: body.inferenceToken,
+        },
+        turnDirectory,
+      });
+    })();
     const promise = run.then(
       async (turn) => {
         if (turn.status === 'completed') session.established = true;
@@ -594,7 +611,8 @@ export class WorkerHarness {
   private async closeSession(body: HarnessSessionSelectorBody) {
     const session = this.requireSession(body);
     if (session.activeTurn) {
-      throw harnessError(session.cleanupState === 'unknown' ? 'cleanup_required' : 'busy');
+      if (session.cleanupState === 'unknown') throw harnessError('cleanup_required');
+      throw harnessError('busy', 'agentSession.activeTurn');
     }
     session.closing = true;
     try {
@@ -639,7 +657,7 @@ export class WorkerHarness {
       session.handleDigest === null &&
       (session.expectedHandleDigest === null || digest === session.expectedHandleDigest)
     ) {
-      await this.storeReference(session.agentSessionId, handle.reference);
+      await this.storeReference(session, handle.reference);
       session.handleDigest = digest;
     }
     return session.handleDigest === digest
@@ -652,13 +670,17 @@ export class WorkerHarness {
    *
    * @throws A `missing` refusal when no reference is stored, `conflict` when its digest differs.
    */
-  private async readResumeReference(resume: { digest: string; locator: string }) {
+  private async readResumeReference(
+    resume: { digest: string; locator: string },
+    threadId: string,
+    adapterId: string
+  ) {
     if (!AGENT_SESSION_ID_PATTERN.test(resume.locator)) {
       throw harnessError('missing');
     }
     let reference: Buffer;
     try {
-      reference = await readFile(this.referencePath(resume.locator));
+      reference = await readFile(this.referencePath(resume.locator, threadId, adapterId));
     } catch {
       throw harnessError('missing');
     }
@@ -669,8 +691,8 @@ export class WorkerHarness {
   }
 
   /** Stores one ready reference under its AgentSession id, atomically and privately. */
-  private async storeReference(agentSessionId: string, reference: Uint8Array): Promise<void> {
-    const path = this.referencePath(agentSessionId);
+  private async storeReference(session: HarnessSession, reference: Uint8Array): Promise<void> {
+    const path = this.referencePath(session.agentSessionId, session.threadId, this.adapterId!);
     await mkdir(dirname(path), { mode: 0o700, recursive: true });
     const staging = `${path}.${randomBytes(8).toString('hex')}.tmp`;
     await writeFile(staging, reference, { mode: 0o600 });
@@ -678,8 +700,16 @@ export class WorkerHarness {
   }
 
   /** Retained reference slot of one AgentSession, outside the disposable control root. */
-  private referencePath(agentSessionId: string): string {
-    return join(this.nativeDataRootDirectory, 'agent-session-references', agentSessionId);
+  private referencePath(agentSessionId: string, threadId: string, adapterId: string): string {
+    return join(this.runtimeRoot(threadId, adapterId), 'agent-session-references', agentSessionId);
+  }
+
+  /** Projects the canonical Thread/runtime root into the injected filesystem in tests. */
+  private runtimeRoot(threadId: string, adapterId: string): string {
+    return resolve(
+      this.threadRootDirectory,
+      relative('/openkit/threads', workerThreadRuntimeRoot(threadId, adapterId))
+    );
   }
 
   /**
@@ -921,9 +951,13 @@ function result(
 }
 
 /** Creates a private typed refusal error. */
-function harnessError(code: HarnessRefusalReason): Error {
+function harnessError(
+  code: HarnessRefusalReason,
+  exhaustedBound?: import('zod').infer<typeof HarnessExhaustedBoundSchema>
+): Error {
   return Object.assign(new Error(`Harness operation refused: ${code}`), {
     harnessReasonCode: code,
+    ...(exhaustedBound ? { exhaustedBound } : {}),
   });
 }
 

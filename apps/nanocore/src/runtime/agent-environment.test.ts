@@ -491,6 +491,13 @@ describe('agent environment package resolver', () => {
     });
     expect(preview.backend.requiredCapabilities).toContain('trusted-worker-inference-relay');
     expect(resolved.backend.requiredCapabilities).not.toContain('worker.runtime-provenance.v1');
+    const captureRoot = `/openkit/threads/${input.turn.threadId}/codex/capture/${input.turn.id}`;
+    expect(resolved.control.transcript).toMatchObject({
+      root: captureRoot,
+      eventsPath: `${captureRoot}/events.jsonl`,
+      itemsPath: `${captureRoot}/items.jsonl`,
+    });
+    expect(preview.control.transcript).toEqual(resolved.control.transcript);
     expect(preview.control.transcript.runtimeProvenance).toBeUndefined();
     expect(resolved.control.transcript.runtimeProvenance).toBeUndefined();
   });
@@ -588,6 +595,24 @@ describe('agent environment package resolver', () => {
         ).toBe(key);
       }
     }
+  });
+
+  it('keeps Turn capture addresses out of AgentSession compatibility', () => {
+    const input = {
+      agentSetup: createTestSetup(),
+      agentSessionId: 'session_capture',
+      backend: { kind: 'openshell' as const },
+      turn: createTurnFixture('first capture'),
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceRoots: [],
+    };
+    const next = { ...input, turn: { ...input.turn, id: 'turn_next_capture' } };
+    expect(resolveAgentSessionCompatibilityKey(next)).toBe(
+      resolveAgentSessionCompatibilityKey(input)
+    );
+    const a = resolveAgentEnvironmentPackageMetadata(input);
+    const b = resolveAgentEnvironmentPackageMetadata(next);
+    expect(a.control.transcript.root).not.toBe(b.control.transcript.root);
   });
 
   it('rejects missing capture admission before credential authority resolution', () => {

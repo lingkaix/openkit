@@ -2,6 +2,9 @@
 set -euo pipefail
 
 openkit-worker-common-smoke
+test -d /openkit/threads
+test ! -L /openkit/threads
+test -w /openkit/threads
 ! command -v codex
 ! command -v opencode
 ! command -v pi

@@ -90,7 +90,11 @@ function operationDouble(
               gid: 1000,
               uid: 1000,
               version: '1',
-              targets: [{ target: '/sandbox' }, { target: '/workspace' }],
+              targets: [
+                { target: '/openkit/threads' },
+                { target: '/sandbox' },
+                { target: '/workspace' },
+              ],
               workingDirectory: '/tmp/openkit-bootstrap',
             },
           };
@@ -303,10 +307,11 @@ async function faultFixture() {
   const enqueueObserver = vi
     .spyOn(harnessRecords, 'queueNanoHostHarnessOperation')
     .mockImplementation((db, input) => {
-      queueOperation(db, input);
+      const sequence = queueOperation(db, input);
       if (db === coreDb && input.operation in enqueued) {
         enqueued[input.operation as keyof typeof enqueued].resolve();
       }
+      return sequence;
     });
   let settled = false;
   const running = runSchedulerDispatchLoop({
@@ -350,22 +355,21 @@ async function faultFixture() {
   const dispatch = async (operation: keyof typeof enqueued) => {
     await waitQueued(operation);
     const response = await poll();
-    expect(response.status).toBe(200);
+    expect(response.status, response.body).toBe(200);
     const command = JSON.parse(response.body) as NanoHostHarnessCommand;
     expect(command.operation).toBe(operation);
     return command;
   };
   const result = async (command: NanoHostHarnessCommand, body: Record<string, unknown>) => {
-    expect(
-      await post('/worker-control/harness/result', {
-        schemaVersion: 2,
-        harnessInstanceId: command.harnessInstanceId,
-        operationId: command.operationId,
-        sequence: command.sequence,
-        disposition: 'succeeded',
-        body,
-      })
-    ).toEqual({ status: 204, body: '' });
+    const response = await post('/worker-control/harness/result', {
+      schemaVersion: 2,
+      harnessInstanceId: command.harnessInstanceId,
+      operationId: command.operationId,
+      sequence: command.sequence,
+      disposition: 'succeeded',
+      body,
+    });
+    expect(response, response.body).toEqual({ status: 204, body: '' });
   };
   const controlClient = (command: NanoHostHarnessCommand) =>
     new WorkerControlClient({
@@ -447,9 +451,10 @@ describe('first-release worker faults (real Core crossings)', () => {
     const workspaceDb = openWorkspaceDb(f.coreDb.dataRoot, 'ws_demo');
     applyScopedMigrations(workspaceDb);
     try {
-      await f.result(await f.dispatch('session.open'), {
+      const opened = await f.dispatch('session.open');
+      await f.result(opened, {
         ...ready,
-        maxActiveTurns: 1,
+        maxActiveTurns: opened.body.maxActiveTurns,
         state: 'open',
       });
       const start = await f.dispatch('turn.start');
@@ -567,9 +572,10 @@ describe('first-release worker faults (real Core crossings)', () => {
     vi.setSystemTime(new Date(NOW));
     const f = await faultFixture();
     try {
-      await f.result(await f.dispatch('session.open'), {
+      const opened = await f.dispatch('session.open');
+      await f.result(opened, {
         ...ready,
-        maxActiveTurns: 1,
+        maxActiveTurns: opened.body.maxActiveTurns,
         state: 'open',
       });
       await f.waitQueued('turn.start');
@@ -648,9 +654,10 @@ describe('first-release worker faults (real Core crossings)', () => {
     vi.setSystemTime(new Date(NOW));
     const f = await faultFixture();
     try {
-      await f.result(await f.dispatch('session.open'), {
+      const opened = await f.dispatch('session.open');
+      await f.result(opened, {
         ...ready,
-        maxActiveTurns: 1,
+        maxActiveTurns: opened.body.maxActiveTurns,
         state: 'open',
       });
       const start = await f.dispatch('turn.start');

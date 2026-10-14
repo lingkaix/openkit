@@ -33,7 +33,7 @@ const CANONICAL_WORKSPACE_SLOT_ROOTS = {
   instructions: '/openkit/instructions',
   'main-worktree': '/workspace/worktrees',
   scratch: '/workspace/scratch',
-  session: '/openkit/session',
+  session: '/openkit/threads',
   'turn-inputs': '/workspace/inputs',
   'turn-output': '/openkit/sessions',
 };
@@ -82,6 +82,39 @@ async function assertRejected(runFileEffect, slotRoots, rejection) {
     }
   }
 }
+
+test('session export admits only a Thread/runtime/Turn capture, never native state', async () => {
+  const { CANONICAL_SLOT_ROOTS: actualRoots, runFileEffect } = await import(pathToFileURL(helperPath).href);
+  assert.equal(actualRoots.session, '/openkit/threads');
+  const root = await mkdtemp(join(tmpdir(), 'openkit-turn-capture-'));
+  try {
+    const path = 'thread_one/codex/capture/turn_one/events.jsonl';
+    await mkdir(dirname(join(root, path)), { recursive: true });
+    await writeFile(join(root, path), 'exact Turn capture\n');
+    const invoke = relativePath => invokeFileEffect(runFileEffect, { session: root }, [
+      'file.export', '--slot', 'session', '--path', relativePath, '--max-length', String(MAX_FILE_BYTES),
+    ]);
+    const captured = await invoke(path);
+    assert.equal(captured.exitCode, 0);
+    assert.equal(captured.stdout.toString(), 'exact Turn capture\n');
+    const hashQualified = 'th_task_sha256:0123/codex/capture/tu_task_sha256:4567/events.jsonl';
+    await mkdir(dirname(join(root, hashQualified)), { recursive: true });
+    await writeFile(join(root, hashQualified), 'hash-qualified Core capture\n');
+    assert.equal((await invoke(hashQualified)).exitCode, 0);
+    for (const rejected of [
+      'events.jsonl', 'thread_one/codex/native/state_5.sqlite',
+      'thread_one/pi/agent-session-references/as_one',
+      'thread_one/codex/capture/turn_one/../../native/state_5.sqlite',
+      'thread_one/unknown/capture/turn_one/events.jsonl',
+      'thread_one/codex/capture/turn_one',
+    ]) assert.equal((await invoke(rejected)).exitCode, 1, rejected);
+    await rm(join(root, 'thread_one', 'codex', 'capture', 'turn_one'), { recursive: true });
+    await mkdir(join(root, 'elsewhere'));
+    await writeFile(join(root, 'elsewhere', 'events.jsonl'), 'foreign bytes');
+    await symlink(join(root, 'elsewhere'), join(root, 'thread_one', 'codex', 'capture', 'turn_one'));
+    assert.equal((await invoke(path)).exitCode, 1);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 test('generated output capture uses only a private AgentSession output namespace', async () => {
   const { CANONICAL_SLOT_ROOTS: actualRoots, runFileEffect } = await import(
@@ -822,7 +855,9 @@ test('export stays bound to its directory when an ancestor is swapped before the
 test('terminal export refuses growth, truncation and same-length mutation after reading', async () => {
   const { runFileEffect } = await import(pathToFileURL(helperPath).href);
   const root = await mkdtemp(join(tmpdir(), 'openkit-terminal-drift-'));
-  const path = join(root, 'entry.txt');
+  const relativePath = 'thread_one/codex/capture/turn_one/entry.txt';
+  const path = join(root, relativePath);
+  await mkdir(dirname(path), { recursive: true });
   const initial = Buffer.from('before');
   const mutations = [
     () => fs.appendFileSync(path, '!'),
@@ -860,7 +895,7 @@ test('terminal export refuses growth, truncation and same-length mutation after 
           '--slot',
           'session',
           '--path',
-          'entry.txt',
+          relativePath,
           '--max-length',
           String(MAX_FILE_BYTES),
         ],

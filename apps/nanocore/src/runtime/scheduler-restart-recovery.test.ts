@@ -4646,7 +4646,20 @@ describe('minimal scheduler reconnect contract', () => {
       workspaceId: 'ws_demo',
       workspaceRoots: [],
     });
-    const fixture = await prepareReconnectLease(coreDb, suffix);
+    // Real materialization precedes submitted/native ownership; it cannot create over a live lease.
+    dispatchLease(coreDb, suffix, undefined, false);
+    recordBackendSession(coreDb, suffix, 'materializing');
+    const fixture = {
+      reconnectKey: reconnectKeyFor(suffix),
+      lineage: {
+        agentSessionId: `as_${suffix}`,
+        packageSnapshotId: `aepsnap_turn_${suffix}_as_${suffix}`,
+        requestId: `request_${suffix}`,
+        threadId: `thread_${suffix}`,
+        turnId: `turn_${suffix}`,
+        workspaceId: 'ws_demo',
+      },
+    };
     const leaseId = `lease_${suffix}`;
     const runtimeTargetId = getWorkerBackendSession(coreDb, leaseId)!.runtimeTargetId;
     // The real backend restoration must join the same target selected by the original admission.
@@ -4680,7 +4693,11 @@ describe('minimal scheduler reconnect contract', () => {
             storageLayout: {
               family: 'openkit-worker',
               gid: 1000,
-              targets: [{ target: '/sandbox' }, { target: '/workspace' }],
+              targets: [
+                { target: '/openkit/threads' },
+                { target: '/sandbox' },
+                { target: '/workspace' },
+              ],
               uid: 1000,
               version: '1',
               workingDirectory: '/tmp/openkit-bootstrap',
@@ -4776,6 +4793,40 @@ describe('minimal scheduler reconnect contract', () => {
       vi.setSystemTime(new Date('2026-07-05T00:00:07.000Z'));
       try {
         await initialBackend.materialize(environmentPackage, { workspaceRoots: [] });
+        const submitted = attempts.recordSchedulerExecutionOperation(coreDb, {
+          attemptId: leaseId,
+          operationId: `operation_${suffix}`,
+          submission: true,
+        });
+        attempts.acceptSchedulerExecutionObservation(
+          coreDb,
+          await new SimulatedTurnExecutor({ coreDb }).submit({
+            ...attempts.schedulerExecutionCorrelation(submitted),
+            deadline: submitted.deadline!,
+          })
+        );
+        transitionWorkerBackendSessionState(coreDb, {
+          attemptId: leaseId,
+          fromState: 'materializing',
+          toState: 'materialized',
+        });
+        transitionWorkerBackendSessionState(coreDb, {
+          attemptId: leaseId,
+          fromState: 'materialized',
+          toState: 'launching',
+        });
+        markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: leaseId });
+        acceptNanoHostAttemptHeartbeat(coreDb, {
+          attemptId: leaseId,
+          heartbeatTimeoutMs: 30_000,
+          workerProcessKeyHash: reconnectKeyHash(fixture.reconnectKey),
+          workerSequence: 0,
+        });
+        acceptNanoHostAttemptHeartbeat(coreDb, {
+          attemptId: leaseId,
+          heartbeatTimeoutMs: 30_000,
+          workerSequence: 1,
+        });
       } finally {
         vi.useRealTimers();
       }

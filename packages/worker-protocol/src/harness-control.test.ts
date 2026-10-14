@@ -48,6 +48,26 @@ const turnStart = {
 };
 
 describe('private Harness command bodies', () => {
+  it('carries positive authored capacity and a closed exhausted-bound diagnostic', () => {
+    const schema = HarnessCommandBodySchemas['session.open'];
+    expect(schema.safeParse({ ...sessionOpen, maxActiveTurns: 20 }).success).toBe(true);
+    expect(schema.safeParse({ ...sessionOpen, maxActiveTurns: 8 }).success).toBe(true);
+    for (const maxActiveTurns of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])
+      expect(schema.safeParse({ ...sessionOpen, maxActiveTurns }).success).toBe(false);
+    expect(
+      isHarnessResultBodyValid('turn.start', {
+        disposition: 'refused',
+        body: { reasonCode: 'busy', exhaustedBound: 'harness.activeTurns' },
+      })
+    ).toBe(true);
+    expect(
+      isHarnessResultBodyValid('turn.start', {
+        disposition: 'refused',
+        body: { reasonCode: 'busy', exhaustedBound: 'guessed_memory' },
+      })
+    ).toBe(false);
+  });
+
   it('has exactly the six fixed operations', () => {
     expect(HarnessOperationSchema.options).toEqual([
       'session.open',

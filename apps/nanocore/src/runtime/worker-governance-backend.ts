@@ -14,7 +14,7 @@ import {
   type SessionWorkspaceMaterializationPlan,
   type WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
-import { workerSessionInputPaths } from '@openkit/worker-protocol';
+import { workerSessionInputPaths, workerTurnCapturePaths } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import { skillSnapshotPath } from '../catalog/resource-catalog.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
@@ -669,7 +669,15 @@ export function resolveNanoHostExportPath(
   workerPath: string
 ): { readonly relativePath: string; readonly slot: string } {
   const transcriptRoot = environmentPackage.control.transcript?.root ?? null;
-  const inTranscript = transcriptRoot ? isWorkerPathWithin(transcriptRoot, workerPath) : false;
+  const capture = workerTurnCapturePaths(
+    environmentPackage.scope.threadId,
+    environmentPackage.control.adapter.targetRuntime,
+    environmentPackage.scope.turnId
+  );
+  if (transcriptRoot !== capture.root) {
+    throw new Error('NanoHost transcript export has no exact admitted Turn capture.');
+  }
+  const inTranscript = isWorkerPathWithin(capture.root, workerPath);
   const inOutput = environmentPackage.workspace.outputs.some((output) =>
     isWorkerPathWithin(output.path, workerPath)
   );
@@ -690,6 +698,12 @@ export function resolveNanoHostExportPath(
   const relativePath = posix.relative(slot.path, workerPath);
   if (!relativePath || relativePath.startsWith('../') || posix.isAbsolute(relativePath)) {
     throw new Error('NanoHost export path is not one declared regular file.');
+  }
+  if (slot.id === 'session') {
+    if (!inTranscript || slot.path !== '/openkit/threads') {
+      throw new Error('NanoHost session export has no exact admitted Turn capture.');
+    }
+    return { relativePath, slot: slot.id };
   }
   if (slot.id === 'turn-output') {
     const { root } = workerSessionInputPaths(environmentPackage.scope.agentSessionId);

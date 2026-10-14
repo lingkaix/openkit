@@ -70,10 +70,116 @@ afterEach(async () => {
 
 /** Encodes the exact retained native JSONL prefix for the qualification oracle. */
 function encode(value: unknown[] = frames): Buffer {
-  return Buffer.from(value.map((frame) => JSON.stringify(frame)).join('\n') + '\n');
+  return Buffer.from(`${value.map((frame) => JSON.stringify(frame)).join('\n')}\n`);
 }
 
 describe('Codex retaining close context proof', () => {
+  it('reconciles an interrupted text Turn and its exact native abort marker', () => {
+    const aborted = { ...terminal, id: 'turn-aborted', status: 'interrupted', texts: [] };
+    const turn = {
+      id: aborted.id,
+      status: aborted.status,
+      items: [{ type: 'userMessage', content: [{ type: 'text', text: 'prompt' }] }],
+    };
+    const barrier = { thread: { ...history.thread, turns: [turn] } };
+    const retained = [
+      frames[0],
+      { type: 'turn_context', payload: { turn_id: aborted.id } },
+      {
+        ...frames[2],
+        payload: {
+          ...frames[2]!.payload,
+          internal_chat_message_metadata_passthrough: {
+            turn_id: aborted.id,
+            content_item_kinds: ['user.text'],
+          },
+        },
+      },
+      {
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text: '<turn_aborted>\nThe user interrupted the previous turn on purpose. Any running unified exec processes may still be running in the background. If any tools/commands were aborted, they may have partially executed.\n</turn_aborted>',
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            turn_id: aborted.id,
+            content_item_kinds: ['generic.turn_aborted'],
+          },
+        },
+      },
+      {
+        type: 'event_msg',
+        payload: { type: 'turn_aborted', turn_id: aborted.id, reason: 'interrupted' },
+      },
+    ];
+    expect(() =>
+      requireCodexCloseHistory(barrier, encode(retained), THREAD, aborted)
+    ).not.toThrow();
+    const earlier = { thread: { ...history.thread, turns: [turn, ...history.thread.turns] } };
+    expect(() =>
+      requireCodexCloseHistory(earlier, encode([...retained, ...frames.slice(1)]), THREAD, terminal)
+    ).not.toThrow();
+    for (const reason of ['replaced', 'unknown']) {
+      const wrong = retained.map((frame) =>
+        frame.payload.type === 'turn_aborted'
+          ? { ...frame, payload: { ...frame.payload, reason } }
+          : frame
+      );
+      expect(() => requireCodexCloseHistory(barrier, encode(wrong), THREAD, aborted)).toThrow();
+    }
+    for (const index of [3, 4]) {
+      expect(() =>
+        requireCodexCloseHistory(
+          barrier,
+          encode(retained.filter((_, i) => i !== index)),
+          THREAD,
+          aborted
+        )
+      ).toThrow();
+      expect(() =>
+        requireCodexCloseHistory(barrier, encode([...retained, retained[index]]), THREAD, aborted)
+      ).toThrow();
+    }
+    const lateMarker = [...retained.slice(0, 3), retained[4], retained[3]];
+    expect(() => requireCodexCloseHistory(barrier, encode(lateMarker), THREAD, aborted)).toThrow();
+    const foreignMarker = retained.map((frame, index) =>
+      index === 3
+        ? {
+            ...frame,
+            payload: {
+              ...frame.payload,
+              internal_chat_message_metadata_passthrough: {
+                turn_id: 'sibling-turn',
+                content_item_kinds: ['generic.turn_aborted'],
+              },
+            },
+          }
+        : frame
+    );
+    expect(() =>
+      requireCodexCloseHistory(barrier, encode(foreignMarker), THREAD, aborted)
+    ).toThrow();
+    const changedMarker = retained.map((frame, index) =>
+      index === 3
+        ? {
+            ...frame,
+            payload: {
+              ...frame.payload,
+              content: [{ type: 'input_text', text: 'changed native context' }],
+            },
+          }
+        : frame
+    );
+    expect(() =>
+      requireCodexCloseHistory(barrier, encode(changedMarker), THREAD, aborted)
+    ).toThrow();
+  });
+
   it('R2 reconciles earlier Turn messages as well as the settled last Turn', () => {
     const earlier = structuredClone(history.thread.turns[0]!);
     earlier.id = 'earlier-turn';
@@ -162,6 +268,7 @@ describe('Codex retaining close context proof', () => {
     {
       thread: { ...history.thread, turns: [{ ...history.thread.turns[0], status: 'interrupted' }] },
     },
+    { thread: { ...history.thread, turns: [{ ...history.thread.turns[0], status: 'failed' }] } },
     {
       thread: {
         ...history.thread,
@@ -230,6 +337,7 @@ describe('Codex retaining close context proof', () => {
     'unsupported-frame',
     'compacted',
     'orphaned-checkpoint',
+    'child-writer',
   ])('refuses unqualified retained bytes: %s', async (mode) => {
     const root = await mkdtemp(join(tmpdir(), 'codex-close-proof-'));
     roots.push(root);
@@ -257,6 +365,11 @@ describe('Codex retaining close context proof', () => {
                 : 'world_state',
           payload: { full: false, state: {} },
         },
+      ]);
+    if (mode === 'child-writer')
+      bytes = encode([
+        ...frames,
+        { type: 'event_msg', payload: { type: 'collab_spawn_begin', turn_id: terminal.id } },
       ]);
     await writeFile(path, bytes);
     await expect(readCodexCloseRollout(path, THREAD)).rejects.toThrow();

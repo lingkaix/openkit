@@ -81,7 +81,7 @@ const canonicalWorkspaceRoots = [
   '/workspace/outputs',
   '/workspace/scratch',
   '/workspace/.openkit/cache',
-  '/openkit/session',
+  '/openkit/threads',
   '/openkit/sessions',
   '/openkit/instructions',
 ] as const;
@@ -202,7 +202,7 @@ describe('governed worker image contracts', () => {
 
     expect(common).toContain('LABEL org.openkit.storage.family="openkit-worker"');
     expect(common).toContain('LABEL org.openkit.storage.version="1"');
-    expect(common).toContain('VOLUME ["/workspace", "/sandbox"]');
+    expect(common).toContain('VOLUME ["/workspace", "/sandbox", "/openkit/threads"]');
     expect(common).toContain('WORKDIR /tmp/openkit-bootstrap');
     expect(common).toContain('chmod 0700 /tmp/openkit-bootstrap');
     expect(common).toContain('USER 1000:1000');

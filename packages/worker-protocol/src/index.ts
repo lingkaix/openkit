@@ -684,7 +684,7 @@ export const WorkerTextPartSchema = z
   .strict();
 
 /**
- * Exact worker transcript item emitted into `/openkit/session/items.jsonl`.
+ * Exact worker transcript item emitted into the admitted Turn capture's `items.jsonl`.
  */
 export const WorkerTranscriptItemRecordEmissionSchema = WorkerRecordBaseSchema.extend({
   kind: z.literal('item'),
@@ -718,7 +718,7 @@ export const WorkerTranscriptItemRecordSchema = WorkerTranscriptItemRecordEmissi
 ).strip();
 
 /**
- * Worker transcript event record collected from `/openkit/session/events.jsonl`.
+ * Worker transcript event record collected from the admitted Turn capture's `events.jsonl`.
  */
 export const WorkerTranscriptEventRecordSchema = WorkerCanonicalEventRecordReaderSchema;
 
@@ -943,6 +943,37 @@ export function workerSessionInputPaths(agentSessionId: string | undefined) {
     packageRelativePath: `${agentSessionId}/config/package.json`,
     contextRelativePath: `${agentSessionId}/context`,
     supplyRelativePath: `${agentSessionId}/supply/inputs`,
+  };
+}
+
+/** Preserves Core hash-qualified ids: a colon is literal POSIX segment data, not URI authority. */
+function runtimePathSegment(value: string): string {
+  if (!/^[A-Za-z0-9_:-]+$/.test(value))
+    throw new Error('Runtime data requires canonical identity segments.');
+  return value;
+}
+
+/** Returns the Thread/runtime root; the runtime segment is its stable adapter id, not a process id. */
+export function workerThreadRuntimeRoot(threadId: string, harness: string): string {
+  return `/openkit/threads/${runtimePathSegment(threadId)}/${runtimePathSegment(harness)}`;
+}
+
+/**
+ * Derives the exact per-Turn capture declaration without changing native runtime file structure.
+ * @param threadId Core Thread identity.
+ * @param harness Stable runtime adapter id.
+ * @param turnId Core Turn identity, never a runtime-native Turn id.
+ * @returns Paths under the existing collector's runtime subdirectory within the Turn capture.
+ */
+export function workerTurnCapturePaths(threadId: string, harness: string, turnId: string) {
+  const root = `${workerThreadRuntimeRoot(threadId, harness)}/capture/${runtimePathSegment(turnId)}`;
+  return {
+    root,
+    eventsPath: `${root}/events.jsonl`,
+    itemsPath: `${root}/items.jsonl`,
+    rawStreamsRoot: `${root}/runtime/raw`,
+    streamManifestPath: `${root}/runtime/raw-streams.json`,
+    nativeOriginIndexPath: `${root}/runtime/native-origin-index.jsonl`,
   };
 }
 

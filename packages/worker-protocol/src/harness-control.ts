@@ -6,6 +6,9 @@ import { NativeEnvironmentValuesSchema } from './native-environment.js';
  * Private Harness control vocabulary owned by `docs/specs/20260703-worker_control_protocol.md` (section Harness Control Operations). Exact producer assertions and descriptive readers share the known field definitions; effect-bearing command bodies remain exact.
  */
 
+/** Default authored active-Turn operating bound; resources and exact binding exclusions still apply. */
+export const HARNESS_DEFAULT_MAX_ACTIVE_TURNS = 20;
+
 /** Value-free pre-native startup diagnostics carried by a private Harness refusal. */
 export const WorkerStartupFailureSchema = z
   .object({
@@ -116,6 +119,7 @@ const HarnessSessionOpenQueuedBodyCoreSchema = z
   .object({
     ...AgentSessionSelectorShape,
     adapterId: HarnessIdentitySchema,
+    maxActiveTurns: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
     nativeEnvironment: NativeEnvironmentValuesSchema.optional(),
     agentSessionCompatibilityKey: HarnessSha256HexSchema,
     effectiveSetupGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
@@ -252,12 +256,23 @@ export const HarnessRefusalReasonSchema = z.enum([
 /** One refusal reason. */
 export type HarnessRefusalReason = z.infer<typeof HarnessRefusalReasonSchema>;
 
+/** Exact exhausted admission bound; diagnostics never guess a physical resource cause. */
+export const HarnessExhaustedBoundSchema = z.enum([
+  'harness.activeTurns',
+  'harness.openSessions',
+  'agentSession.activeTurn',
+  'harness.draining',
+  'sandbox.activeTurns',
+  'adapter.isolationProof',
+]);
+
 /**
  * Refusal body. `startupFailure` is the value-free pre-native stage and reason that a dependency-failed `turn.start` or workspace-materialization `session.open` refusal may carry.
  */
 export const HarnessRefusedBodySchema = z
   .object({
     reasonCode: HarnessRefusalReasonSchema,
+    exhaustedBound: HarnessExhaustedBoundSchema.optional(),
     startupFailure: WorkerStartupFailureSchema.optional(),
   })
   .strict();

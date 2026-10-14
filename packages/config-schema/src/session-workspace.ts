@@ -323,7 +323,7 @@ export function computeSessionCompatibilityKey(
         stableJson({
           agent: environmentPackage.agent ?? null,
           backend: environmentPackage.backend ?? null,
-          control: environmentPackage.control ?? null,
+          control: sessionStaticControl(environmentPackage.control),
           layout,
           policy: environmentPackage.policy ?? null,
           runtime: environmentPackage.runtime ?? null,
@@ -332,6 +332,31 @@ export function computeSessionCompatibilityKey(
       )
       .digest('hex')}`,
   });
+}
+
+/** Preserves resident control policy and limits but excludes identity-derived Turn capture sinks. */
+export function sessionStaticControl(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value ?? null;
+  const control = value as Record<string, unknown>;
+  if (
+    !control.transcript ||
+    typeof control.transcript !== 'object' ||
+    Array.isArray(control.transcript)
+  )
+    return control;
+  const transcript = { ...control.transcript } as Record<string, unknown>;
+  for (const key of ['root', 'eventsPath', 'itemsPath']) delete transcript[key];
+  if (
+    transcript.runtimeProvenance &&
+    typeof transcript.runtimeProvenance === 'object' &&
+    !Array.isArray(transcript.runtimeProvenance)
+  ) {
+    const provenance = { ...transcript.runtimeProvenance } as Record<string, unknown>;
+    for (const key of ['rawStreamsRoot', 'streamManifestPath', 'nativeOriginIndexPath'])
+      delete provenance[key];
+    transcript.runtimeProvenance = provenance;
+  }
+  return { ...control, transcript };
 }
 
 /**
@@ -428,7 +453,7 @@ function createDefaultSessionWorkspaceLayout(
       slot(
         'session',
         'session',
-        '/openkit/session',
+        '/openkit/threads',
         'read-write',
         ['generated'],
         ['create-empty'],
@@ -469,7 +494,7 @@ function createDefaultSessionWorkspaceLayout(
       ),
     ],
     control: {
-      transcriptRoot: '/openkit/session',
+      transcriptRoot: '/openkit/threads',
       contextRoot,
       instructionsRoot: '/openkit/instructions',
     },
