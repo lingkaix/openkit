@@ -1422,6 +1422,7 @@ dependencies = [
  "libc",
  "lindera",
  "lindera-tantivy",
+ "regex-syntax",
  "serde",
  "serde_json",
  "sha2",
