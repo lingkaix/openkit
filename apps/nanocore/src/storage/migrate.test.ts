@@ -11,6 +11,7 @@ import { join, relative, sep } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { BootConfigError } from '../config/mode';
+import { readNanoHostThreadAgentSessionBinding } from '../runtime/nanohost-harness-records.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership';
 import { openCoreDb, openUserDb, openWorkspaceDb } from './db';
 import { coreDbPath, workspaceDbPath } from './fs-layout';
@@ -194,13 +195,16 @@ describe('database setup', () => {
 
       expect(
         readdirSync(join(process.cwd(), 'drizzle', 'core')).filter((name) => name.endsWith('.sql'))
-      ).toEqual(['0000_setup.sql']);
+      ).toEqual(['0000_setup.sql', '0001_concurrent_turn_capacity.sql']);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
           existsSync(join(process.cwd(), 'drizzle', scope, 'meta', '_journal.json'))
         )
       ).toBe(true);
-      expect(listAppliedMigrationIds(coreDb)).toEqual(['core_0000_setup']);
+      expect(listAppliedMigrationIds(coreDb)).toEqual([
+        'core_0000_setup',
+        'core_0001_concurrent_turn_capacity',
+      ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       expect(listTableNames(coreDb)).toEqual(expect.arrayContaining(CORE_TABLES));
       for (const retired of [
@@ -836,6 +840,130 @@ describe('database setup', () => {
 });
 
 describe('native Drizzle migrate', () => {
+  it('carries retained Sandbox, Harness and binding rows through the concurrent-Turn journal', () => {
+    const journal = JSON.parse(
+      readFileSync(join(process.cwd(), 'drizzle/core/meta/_journal.json'), 'utf8')
+    ) as { entries: Array<{ tag: string; when: number }> };
+    const setup = journal.entries[0]!;
+    const folder = createNativeJournalFolder([
+      { ...setup, sql: readFileSync(join(process.cwd(), `drizzle/core/${setup.tag}.sql`), 'utf8') },
+    ]);
+    const coreDb = openCoreDb(folder);
+    const sqlite = coreDb.sqlite;
+    sqlite.pragma('foreign_keys = ON');
+    try {
+      applyNativeScopeMigrations(sqlite, 'core', folder);
+      // Seed every required predecessor field without using the new runtime's defaults.
+      const insert = (table: string, values: Record<string, string | number>) => {
+        const columns = sqlite.pragma(`table_info(${table})`) as Array<{
+          name: string;
+          type: string;
+          notnull: number;
+          dflt_value: unknown;
+        }>;
+        const row = Object.fromEntries(
+          columns
+            .filter(
+              (column) =>
+                Object.hasOwn(values, column.name) || (column.notnull && column.dflt_value === null)
+            )
+            .map((column) => [
+              column.name,
+              values[column.name] ?? (column.type === 'INTEGER' ? 1 : `${table}:${column.name}`),
+            ])
+        );
+        sqlite
+          .prepare(
+            `INSERT INTO ${table} (${Object.keys(row).join(',')}) VALUES (${Object.keys(row)
+              .map(() => '?')
+              .join(',')})`
+          )
+          .run(...Object.values(row));
+      };
+      insert('nanohost_runtime_targets', { target_id: 'retained-target' });
+      insert('sandbox_runtime_records', {
+        sandbox_runtime_id: 'retained-sandbox',
+        runtime_target_id: 'retained-target',
+        max_open_sessions: 8,
+        max_harnesses: 8,
+        max_active_turns: 1,
+      });
+      insert('harness_instance_records', {
+        harness_instance_id: 'retained-harness',
+        sandbox_runtime_id: 'retained-sandbox',
+        max_open_sessions: 8,
+        max_active_turns: 1,
+        active_turn_count: 1,
+        open_session_count: 1,
+        next_sequence: 7,
+        command_body_json: '{"retained":"command"}',
+        result_json: '{"retained":"receipt"}',
+      });
+      insert('agent_session_runtime_bindings', {
+        agent_session_runtime_binding_id: 'retained-binding',
+        harness_instance_id: 'retained-harness',
+        agent_session_id: 'retained-session',
+        workspace_id: 'retained-workspace',
+        thread_id: 'retained-thread',
+        current_turn_id: 'retained-turn',
+        current_attempt_id: 'retained-attempt',
+        native_handle_digest: 'a'.repeat(64),
+        next_turn_sequence: 3,
+      });
+      const names = [
+        'sandbox_runtime_records',
+        'harness_instance_records',
+        'agent_session_runtime_bindings',
+      ];
+      const before = names.map((name) => sqlite.prepare(`SELECT * FROM ${name}`).all());
+      const indices = names.map((name) => sqlite.pragma(`index_list(${name})`));
+      const binding = readNanoHostThreadAgentSessionBinding(coreDb, {
+        workspaceId: 'retained-workspace',
+        threadId: 'retained-thread',
+      });
+      expect(binding).toEqual({ agentSessionId: 'retained-session' });
+      expect(() =>
+        sqlite.exec('UPDATE sandbox_runtime_records SET max_active_turns = 8')
+      ).toThrow();
+      for (const entry of journal.entries.slice(1))
+        appendNativeJournalEntry(folder, {
+          ...entry,
+          sql: readFileSync(join(process.cwd(), `drizzle/core/${entry.tag}.sql`), 'utf8'),
+        });
+      applyNativeScopeMigrations(sqlite, 'core', folder);
+      const after = names.map((name) => sqlite.prepare(`SELECT * FROM ${name}`).all());
+      expect(after).toEqual(before);
+      expect(sqlite.pragma('foreign_key_check')).toEqual([]);
+      expect(sqlite.pragma('foreign_keys', { simple: true })).toBe(1);
+      expect(names.map((name) => sqlite.pragma(`index_list(${name})`))).toEqual(indices);
+      expect(
+        readNanoHostThreadAgentSessionBinding(coreDb, {
+          workspaceId: 'retained-workspace',
+          threadId: 'retained-thread',
+        })
+      ).toEqual(binding);
+      applyNativeScopeMigrations(sqlite, 'core', folder);
+      expect(names.map((name) => sqlite.prepare(`SELECT * FROM ${name}`).all())).toEqual(after);
+      expect(countNativeLedgerRows(sqlite)).toBe(journal.entries.length);
+      expect(() =>
+        sqlite.exec('UPDATE sandbox_runtime_records SET max_active_turns = 8')
+      ).not.toThrow();
+      expect(() =>
+        sqlite.exec(
+          'UPDATE harness_instance_records SET max_active_turns = 8, active_turn_count = 8'
+        )
+      ).not.toThrow();
+      expect(() =>
+        sqlite.exec('UPDATE sandbox_runtime_records SET max_active_turns = 0')
+      ).toThrow();
+      expect(() =>
+        sqlite.exec('UPDATE harness_instance_records SET active_turn_count = 9')
+      ).toThrow();
+    } finally {
+      sqlite.close();
+    }
+  });
+
   it('applies a second pending SQL file exactly once', () => {
     const folder = createNativeJournalFolder([
       {

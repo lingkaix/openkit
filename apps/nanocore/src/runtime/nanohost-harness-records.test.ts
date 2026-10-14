@@ -33,6 +33,20 @@ const now = '2098-08-21T00:00:00.000Z';
 const physicalEpoch = 'e'.repeat(64);
 
 describe('private NanoHost Harness records', () => {
+  it('admits a positive aggregate Sandbox active-Turn bound above one', () => {
+    const coreDb = openOpeningBindingDb('sandbox-concurrent-capacity-');
+    try {
+      expect(() =>
+        coreDb.sqlite.exec('UPDATE sandbox_runtime_records SET max_active_turns = 8')
+      ).not.toThrow();
+      expect(() =>
+        coreDb.sqlite.exec('UPDATE sandbox_runtime_records SET max_active_turns = 0')
+      ).toThrow();
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('carries the exact Core attempt id in the unchanged private leaseId field for start and interrupt', () => {
     const coreDb = openActiveTurnDb('route-b-attempt-wire-');
     try {

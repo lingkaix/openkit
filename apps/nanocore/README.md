@@ -123,6 +123,10 @@ Every Worker package supplies the built-in `openkit-work` MCP server. It raises 
 
 `agent-environment.ts` refuses authored host-directory sources with a root-id/source-kind diagnostic during NanoHost preparation, before Sandbox effects; the backend currently materializes only remote Git sources. Every package also declares the generated `turn-output` root at `/openkit/sessions/<agent-session-id>/outputs`, independently of authored roots. Workers finish a file there and call `work_submit_artifact`; the authenticated route regression in `src/worker-mcp-routes.test.ts` captures a real file and reads its committed Artifact during the active Turn. See [AgentSession Static Workspace Materialization](../../docs/specs/20260704-session_static_workspace_materialization.md).
 
+## Capacity Migration
+
+This release is migration-bearing. The Core native journal `0001_concurrent_turn_capacity` replaces the fixed one-Turn Sandbox and Harness constraints with positive capacity bounds. It carries retained Sandbox, Harness and AgentSession binding rows forward in one transaction, with foreign keys enabled. All retained capacity declarations, active occupancy, native handles, pending commands and result receipts keep their values. The scheduling owner's current default is 20; applying the schema migration alone does not enable concurrent dispatch. There is no legacy reader or dual write. Use the normal backup and deployment procedure before startup applies this migration.
+
 ## Commands
 
 Tests of unrelated AEP consumers use `src/test-support/prepared-agent-environment.ts` for confirmed image evidence and explicit default-off capture fixtures. Capture-admission tests use the production resolver directly so missing historical coverage remains a dispatch refusal.
