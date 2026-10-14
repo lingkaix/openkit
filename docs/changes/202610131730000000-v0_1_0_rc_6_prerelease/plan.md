@@ -101,6 +101,23 @@ Effect boundary change:
 - [#193](https://github.com/lingkaix/openkit/issues/193) is closed as superseded. [#240](https://github.com/lingkaix/openkit/issues/240) and [#225](https://github.com/lingkaix/openkit/issues/225) are required before the first stable release.
 - The coordinator dispatches concrete work and dispatches no Claude-family worker without explicit engineer authorization.
 
+### Intent Revision 5 — 2026-10-14
+
+Source: the engineer's messages to the coordinator on 2026-10-14 about where Worker runtimes write their native data when several Threads share a Sandbox, and about identifier generation. The engineer's words, quoted verbatim:
+
+> 我认为这个文件路径以及背后的问题，我们还需要细化一下，然后再来讨论。我认为对于在沙盒当中运行的这些 worker agents，我们尽量的就让他们遵循他们原有的。 行为去运行，包括他们输出的这些原始数据，然后由我们的 adapter 和 integration plugin 再来收集。当然，考虑到我们的需求，收集的便利性和数据的完整性。 我们可以做一些定制，不过我们不应该把不同的 agent harness 的这些数据混在一起。事实上，在我们现在的设计里面，每一个 thread 不管它是否处于同一个沙盒里面，都相当于是一个独立的 process 在进行运行，所以每一个 thread 上都有一个 active turn 是没有任何问题的。我们完全可以把这个 thread的ID作为他们辨识的路径，你认为呢？你认为还有更好的方案，或者你还有其他想法吗？另外，一个额外的话题是，我发现当前 我们整个系统当中的 ID generation 是不一致的, 比如，user ID、workspace ID、thread ID 等等，我们是否可以把它统一成一个 unified 机制？比如我们统一使用 uuidv7, 你认为呢？
+
+> 关于第一点，我们先不考虑隔离的问题，只把这个限制标注在相关的规格文档上就可以了。 关于第二点，我们现在所有的三台服务器上的数据没有任何的生产数据，直接把这些数据删掉就好了。 另外，由于我们现在也没有发布任何的正式版本，因此也不需要考虑任何的兼容性。
+
+Faithful English translation: "I think this file path and the problem behind it need more refinement before we discuss them. For Worker agents that run in a Sandbox, we should let them run with their original behavior as far as possible, including the raw data they output, and our adapter and integration plugin then collect it. Of course, for our needs, convenience of collection and completeness of data, we can do some customization, but we should not mix the data of different agent harnesses. In fact, in our current design each Thread, whether or not it is in the same Sandbox, acts as an independent process, so one active Turn on each Thread is no problem at all. We can use the Thread ID as the identifying path. What do you think? Do you have a better scheme or other ideas? Also, an extra topic: identifier generation in the whole system is inconsistent, for example user ID, Workspace ID and Thread ID. Can we unify it into one mechanism, for example UUIDv7 everywhere?" Second message: "On the first point, we do not consider isolation now; only state this limitation in the related specifications. On the second point, the data on all three of our servers is not production data; just delete it. Also, because we have not published any formal release, we need not consider any compatibility."
+
+Outcome change:
+
+- Each native Worker runtime keeps its native behavior and data layout, and the adapter collects. Inside a Sandbox, `/openkit/threads/<threadId>/<harness>/native/` holds the runtime's own state and `/openkit/threads/<threadId>/<harness>/capture/<turnId>/` holds the adapter's capture for one Turn. Data of different harnesses is never mixed. The coordinator proposed this layout and the engineer accepted the Thread ID as the path key.
+- Thread-level isolation inside a shared Sandbox is not provided now. The related specifications state the limitation.
+- No deployment holds production data and no formal release exists, so this work carries no compatibility obligation. Existing deployment data may be deleted instead of migrated.
+- Identifier generation becomes one mechanism based on UUIDv7. The coordinator recommended a type prefix on each identifier. Existing identifiers are not migrated; the data that holds them is deleted. This work follows rc.6 and is outside this plan.
+
 ## Preparation Checkpoint — Rewritable
 
 This checkpoint is rewritable and is not authority.
