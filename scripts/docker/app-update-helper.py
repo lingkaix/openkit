@@ -677,8 +677,15 @@ class AppUpdateHelper:
                 receipt["webStagedDigest"] = web_plan["staged_digest"]
                 self._write_receipt(receipt)
                 self._assert_exclusive_dataroot_users({self.config["containerName"]})
+                try:
+                    self._idle_preflight()
+                except Exception:
+                    # A refused pre-stop recheck must not leave a staged Web tree behind.
+                    if os.path.lexists(web_plan["partial"]):
+                        _rmtree(web_plan["partial"])
+                    raise
+                # Retained names change only after the work recheck has admitted interruption.
                 self._aside_existing_previous(retained, request_id)
-                self._idle_preflight()
                 self._run_required(
                     ["docker", "stop", "--time", "60", self.config["containerName"]],
                     "Failed to stop the running App.",

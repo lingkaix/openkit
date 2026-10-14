@@ -603,7 +603,9 @@ def assert_closed_host_output(module, body: dict) -> None:
             "host output failed AppUpdateHostOutputSchema: %s body=%s"
             % (completed.stderr.strip() or completed.stdout.strip(), body)
         )
-    if isinstance(body.get("error"), dict) and set(body).issubset({"error", "helperSha256"}):
+    if isinstance(body.get("error"), dict) and "stage" not in body:
+        if set(body) != {"error", "helperSha256"}:
+            raise AssertionError("coded error requires exactly error and helperSha256")
         return
     expected = "running" if body["stage"] in module.IN_PROGRESS_STAGES else body["stage"]
     if body["outcome"] != expected:
@@ -817,6 +819,12 @@ def idle_preflight() -> dict:
 class RC6RegressionTests(unittest.TestCase):
     """Accepted update safety, environment and review regressions."""
 
+    def test_coded_error_shape_requires_helper_identity(self) -> None:
+        module = load_helper()
+        with self.assertRaisesRegex(AssertionError, "coded error requires exactly error and helperSha256"):
+            assert_closed_host_output(module, {"error": {"code": "app_update_unavailable", "message": "Unavailable."}})
+
+
     def test_prepare_refuses_active_work_without_receipt_or_interruption(self) -> None:
         module = load_helper()
         with tempfile.TemporaryDirectory() as tmp:
@@ -849,6 +857,12 @@ class RC6RegressionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             path, effects, _code, prepared = _prepare(module, root)
+            effects.containers.add(PREVIOUS)
+            names_before = set(effects.containers)
+            web = root / "web"
+            files_before = {str(p.relative_to(web)): p.read_bytes() for p in web.rglob("*") if p.is_file()}
+            entries_before = {str(p.relative_to(web)) for p in web.rglob("*")}
+            current_before = os.readlink(web / "current")
             original = effects.run
             def run(argv, timeout=None):
                 result = original(argv, timeout)
@@ -872,6 +886,10 @@ class RC6RegressionTests(unittest.TestCase):
             self.assertIsInstance(body["error"], dict)
             self.assertEqual(body["error"]["code"], "app_update_work_active")
             self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+            self.assertEqual(effects.containers, names_before)
+            self.assertEqual(os.readlink(web / "current"), current_before)
+            self.assertEqual({str(p.relative_to(web)) for p in web.rglob("*")}, entries_before)
+            self.assertEqual({str(p.relative_to(web)): p.read_bytes() for p in web.rglob("*") if p.is_file()}, files_before)
             receipt = json.loads((root / "receipts" / (prepared["requestId"] + ".json")).read_text())
             self.assertEqual(receipt["stage"], "failed")
             self.assertFalse(receipt["appStopped"])
