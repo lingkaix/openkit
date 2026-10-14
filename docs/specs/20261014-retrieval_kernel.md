@@ -1,5 +1,5 @@
 ---
-status: Draft
+status: Accepted
 implementation: Not Started
 kind: mechanism
 date: "2026-10-14"
