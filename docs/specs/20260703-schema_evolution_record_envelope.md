@@ -73,7 +73,7 @@ The clean target wins over pre-baseline internal compatibility.
 
 For the current storage and manifest reset, OpenKit does not need permanent legacy readers, aliases, shims, or fallback paths for old internal shapes.
 
-The compatibility contract in this spec starts at the accepted baseline created by the active storage, manifest, audit, vault, and context specs.
+The shape and validation contract starts at the accepted baseline created by the active storage, manifest, audit, vault, and context specs. Mandatory cross-release data continuity starts with `v0.1.0` under [Contract Evolution](../core/contract-evolution.md#retained-data-continuity). Before then, an explicit deployment reset may replace migration; the current closed-core, open-extension, and fail-closed rules still apply.
 
 Future versions follow the optional-field and fail-closed rules and Retained Data Continuity in `docs/core/contract-evolution.md`.
 
@@ -310,7 +310,7 @@ Unknown evidence may be retained as restricted evidence when storage policy allo
 
 ## Resolved Decisions
 
-- The pre-baseline migration does not require compatibility with old internal storage or manifest shapes; later record changes keep retained data usable.
+- The pre-baseline migration does not require compatibility with old internal storage or manifest shapes. Later changes follow Contract Evolution: prepare stable shapes now, permit an explicit pre-stable reset, and keep retained data usable from `v0.1.0`.
 - General additive evolution, unknown-field preservation, and required or authority-bearing fail-closed semantics are owned by `docs/core/contract-evolution.md`; this spec realizes them through the envelope and required-feature registry.
 - Namespaced extensions are optional hints, not the stable product contract.
 - Canonical file-backed records should use a common envelope unless their owning spec defines a narrower line-oriented format.

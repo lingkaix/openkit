@@ -322,7 +322,7 @@ Specs must not preserve repository-owned backward compatibility layers for old s
 
 When such a contract changes, the clean target wins. Specs should describe direct removal, same-change migration, repair tooling, or replacement links rather than permanent compatibility readers, aliases, shims, or fallback behavior.
 
-Retained data is the exception that carries an obligation. A spec that changes the shape of retained canonical data or authored configuration keeps that data usable under Retained Data Continuity in `docs/core/contract-evolution.md`, by additive evolution or a one-way migration; completed cutovers recorded by their owners stand.
+Retained canonical data and authored configuration carry a continuity obligation from the first stable release, `v0.1.0`. Before then, specs already design owned shapes for stable storage and safe post-release retention and reading. An explicit operator reset may replace a migration. [Contract Evolution](../core/contract-evolution.md#retained-data-continuity) owns the boundary and reset conditions. Once the obligation applies, additive evolution or an accepted one-way migration keeps the data usable; completed cutovers stand.
 
 Compatibility language is allowed only when it describes intentional external interoperability, temporary operator migration evidence, retained data continuity, or a historical spec that has been moved out of the active root.
 

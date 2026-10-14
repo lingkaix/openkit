@@ -84,7 +84,7 @@ Story documents are still validated mechanically. `pnpm -w check:repo` runs `scr
 Admitted L6 stories:
 
 - `first-install-from-release-assets.story.md`: Install a published release on an empty machine. The operator installs that release and checks that it is ready to use.
-- `persistent-deployment-prerelease-update.story.md`: Update a persistent deployment to the published prerelease. The operator updates the deployment and keeps existing work readable.
+- `persistent-deployment-prerelease-update.story.md`: Update a persistent deployment to the published prerelease. The operator updates the deployment, keeps carried-forward work readable, and verifies required accounts after any disclosed pre-stable reset.
 - `provider-credential-subscription-reply.story.md`: Configure one provider and receive one reply. The operator connects one provider, stores its credential, attaches one subscription, and gets one ordinary reply.
 - `issue-and-revoke-workspace-access.story.md`: Issue workspace access and then revoke it. The operator grants access that can start a thread, checks that look-only access cannot, and then withdraws the changing access.
 - `external-agent-grounded-record.story.md`: Explain a recorded result through the remote connection. A team member asks an outside agent to explain the designated thread's latest completed result.

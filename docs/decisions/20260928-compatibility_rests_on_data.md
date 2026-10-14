@@ -1,7 +1,8 @@
 ---
-status: Accepted
+status: Superseded
 date: "2026-09-28"
 decider: Engineer
+superseded-by: docs/decisions/20261014-pre_stable_data_continuity.md
 supersedes: docs/decisions/20260709-no_backward_compatibility.md
 ---
 # Compatibility Obligations Rest On Data

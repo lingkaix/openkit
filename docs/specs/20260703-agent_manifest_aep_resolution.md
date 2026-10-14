@@ -298,7 +298,7 @@ Optional extension fields must be namespaced and must not become the only place 
 
 ## Manifest Evolution Rules
 
-General authority-bearing field classification and required-feature fail-closed rejection are owned by `docs/specs/20260703-schema_evolution_record_envelope.md`. This contract provides no older-reader compatibility obligation: an older reader need not accept a newer manifest. Existing manifests stay usable under Retained Data Continuity in `docs/core/contract-evolution.md`.
+General authority-bearing field classification and required-feature fail-closed rejection are owned by `docs/specs/20260703-schema_evolution_record_envelope.md`. This contract provides no older-reader compatibility obligation: an older reader need not accept a newer manifest. Existing manifests follow the first-stable-release continuity boundary in [Contract Evolution](../core/contract-evolution.md#retained-data-continuity). Before `v0.1.0`, an explicit deployment reset may replace migration; current manifest validation remains binding.
 
 This spec owns only the manifest-specific classification:
 
@@ -620,7 +620,7 @@ Verification should start with a regression whose expected failure is loss or re
 - Authored Skill and MCP references resolve to exact versions under their independent catalog owners. Ranges are outside this target; Plugin expansion does not change component authority or the current MCP selection constraint.
 - Scale intent fields remain preferences or upper bounds; scheduler records own concrete placement, queueing, reuse, warm-pool realization, and capacity.
 - Product-visible readiness remediation hints must be redacted and action-oriented.
-- Manifest evolution changes the accepted current schema explicitly. Known fields retain their owning validation; unknown additive descriptive keys outside authority-bearing sections are ignored with a located warning under Contract Evolution, while unknown keys inside authority-bearing sections, unknown core values and unsupported required features fail closed. No permanent older-shape reader is required, and a schema change keeps existing manifests usable by additive evolution or one-way migration.
+- Manifest evolution changes the accepted current schema explicitly. Known fields retain their owning validation; unknown additive descriptive keys outside authority-bearing sections are ignored with a located warning under Contract Evolution, while unknown keys inside authority-bearing sections, unknown core values and unsupported required features fail closed. No permanent older-shape reader is required. From `v0.1.0`, a schema change keeps existing manifests usable by additive evolution or one-way migration. Before then, an explicit deployment reset may replace carry-forward under Contract Evolution.
 - Authority-bearing manifest additions must declare required features, minimum Core version, required backend capabilities, or equivalent required semantics.
 
 ## Deferred / Future Work

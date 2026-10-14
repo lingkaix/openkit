@@ -10,6 +10,8 @@ This document owns OpenKit's file-system-first storage principles, logical stora
 
 This document does not own the complete physical schema, table layout, file layout, migration plan, backup format, app read models, protocol record semantics, vault backend design, or implementation-specific data-root paths.
 
+Cross-release continuity follows [Contract Evolution](contract-evolution.md#retained-data-continuity), including its `v0.1.0` start and explicit pre-stable reset conditions. Ordinary storage lifecycle, access, holds, and cleanup rules remain binding for retained data. The reset permission alone authorizes no AgentSession cleanup, purge, or runtime-effect replay.
+
 ## Principles
 
 OpenKit is file-system first.
