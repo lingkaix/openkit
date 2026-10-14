@@ -47,3 +47,21 @@ The engineer authorized narrow read-only HTTPS supply of missing locked-crate no
 An independent Consultant inspected the actual source and accepted owners. Its direction is to retain the coordinated Git-backed canonical cutover, then replace the projection and carry exact revisions through S39; a scorer-only swap over mutable files is insufficient. Two union effects are stopped by the engineer's clarification: duplicate page-id pin binding and ownership of the one combined User/Workspace trace. Options and recommendations will be reported with exact owner lines. One-scope work continues.
 
 Additional WP1 dependencies found by direct inspection: `packages/config-schema/src/server.ts` and tests need the accepted Server `knowledgeMaintenance` setting; its package guide is locked. `apps/nanocore/src/runtime/turn-executor-factory.test.ts` has a synchronous retrieval fixture that must await the stdio-backed result. No Core database migration is added.
+
+## Intent Revision 3
+
+Source: the engineer confirmed stopping union pin and union trace effects on 2026-10-15. Plain duplicate page ids and the combined private trace ledger remain owner gaps. Continue the one-scope retrieval path; report exact owner lines, options and recommendations without selecting a union rule in code.
+
+## Intent Revision 4
+
+Source: the engineer authorized read-only HTTPS retrieval of missing locked-crate license and notice files on 2026-10-15, only at their exact recorded upstream revisions, with vendored URL/revision/SHA-256 provenance. No other upstream files or external writes are authorized.
+
+## Intent Revision 5
+
+Source: the engineer's SCOPE-012 correction on 2026-10-15: “R2 replaces the Knowledge retrieval path and its index, nothing more.” Implement a pre-existing Knowledge requirement only when the replacement cannot work or would be wrong without it. Notebook editing base revisions, complete deletion confirmation, S39 history, portable closure and similar pre-existing gaps are excluded. Preserve their work as a patch outside the branch. The coordinator will batch the portable historical-closure gap with the other owner decisions; stop only its dependent publication.
+
+## Scope Correction Checkpoint
+
+An independent Consultant checked this narrower route against the base and owners. Git pinning, v4 scopes and expanded history traces already existed as unimplemented targets before R2. The existing file-backed owner and one-Workspace content-digest trace remain during this bounded lexical replacement. Exact observed canonical digests identify internal kernel source versions only; they are not notebook commits, retained history or ABA protection. Current source/destination authorization, complete lexical enumeration, dispositions, digest checks, one trace and shared tokenizer remain necessary retrieval work. All earlier notebook editing and portability WIP is preserved in `/home/simonx/AI/temp/rc6/r2-deferred/20261015-knowledge-notebook-cutover.patch` (361884 bytes; SHA-256 `9ff2668082d155755f9f58055c2aaf5d4fc841993c3da58f4739c3c665e367fb`). It is incomplete and unreviewed. The committed notebook primitive slice is removed by a later coherent commit rather than rewritten from history.
+
+Next Action: replace only the existing JSON lexical owner and its asynchronous consumers over current canonical files. Expected observation: the real CJK answer regression passes, full enumeration precedes governed exclusion, and changed or revoked sources yield no successful trace. A source/metadata identity disagreement fails closed. Pre-existing notebook and portability implementation is not a deciding oracle for this slice.
