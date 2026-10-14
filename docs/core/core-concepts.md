@@ -152,11 +152,11 @@ The canonical term index in `docs/core/README.md` routes every specialized conce
 
 Durable Core identifiers are stable opaque strings. Consumers must not parse an identifier for time, routing, storage path, ownership, provider identity, or database location.
 
-An external or provider-native identifier must not become Core identity. An owning schema may retain it as an explicit external reference or private implementation projection.
+An external, provider-native, or adapter-native runtime identifier must not become Core identity. An owning schema may retain it as an explicit external reference or private implementation projection.
 
 `requestId` is caller-provided command correlation and idempotency input, not a durable object identifier.
 
-The owning protocol schema and accepted design define concrete ID fields, encodings, allocation, and validation. Record writers implement that contract. This document does not impose one universal encoding or maintain a speculative registry of future IDs.
+[Core Protocol](protocol.md#ids) owns the shared format and generation rule for independently generated entity identifiers. Owning schemas and accepted design define concrete ID fields, allocation, validation, and request-derived identities. Record writers implement those contracts. This document does not define their encodings or maintain a registry of future IDs.
 
 ## Naming Rules
 
