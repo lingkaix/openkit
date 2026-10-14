@@ -259,6 +259,15 @@ The Phase 1 Material graph is an explicit exception to the ordinary file-backed 
 
 Derived Material, revision, Artifact Review, and follow-up Turn identifiers retain their owning inputs and retry rules. Their output encoding uses the fixed kind namespaces and prefixed canonical UUIDv5 text in [Core Protocol](../core/protocol.md#ids), as recorded in [One Identifier Mechanism](../decisions/20261014-one_identifier_mechanism.md). Transaction keys, version-keyed Review uniqueness, and immutable parent linkage remain unchanged.
 
+The following name-byte table is a projection of [Work Resource Interaction Model](20260713-work_resource_interaction_model.md#artifact-and-item-lineage). That owner defines its actor and identifier values and retains allocation and retry authority. Each name is exactly the UTF-8 RFC 8785 JSON Canonicalization Scheme output for the listed JSON array; no storage-specific field is added.
+
+| Derived output | Prefix | JSON name value, in fixed array order |
+| --- | --- | --- |
+| Material creation | `mat` | `["material.create", actor, workspaceId, requestId]` |
+| Material revision, including accepted Review apply | `mrev` | `["material.save", actor, workspaceId, materialId, requestId]` |
+| Version-keyed Artifact Review | `arev` | `[workspaceId, artifactId, artifactVersion]` |
+| Review refinement or redo Turn | `tu` | `[workspaceId, artifactId, artifactVersion, decisionRequestId]` |
+
 The exact logical keys and storage payloads are:
 
 | Record | Key and required storage contract |

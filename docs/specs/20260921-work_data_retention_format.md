@@ -418,6 +418,23 @@ Missing evidence stays unknown.
 
 **Definition.** Independently generated Thread and Turn ids use UUIDv7. Owner-derived Thread, Turn, and Item ids retain their existing inputs and idempotency semantics and use UUIDv5. Both paths use the kind prefix plus canonical lowercase UUID text defined by [Core Protocol](../core/protocol.md#ids). The output-encoding decision is recorded in [One Identifier Mechanism](../decisions/20261014-one_identifier_mechanism.md). Consumers MAY use UUIDv7 directory-name lexicographic order as a prefilter for time-range scans. UUIDv5 order is not a time prefilter.
 
+**Name-byte projection.** This storage format adds no derivation or input. Each derived name is the UTF-8 RFC 8785 JSON Canonicalization Scheme output for the value below, with arrays in the listed order. These rows project the allocating owners; their definitions of `actor`, `commandScope`, `outcomeScope`, `resultRole`, identifiers, and request values apply unchanged. [Chat Mode Assistant](20260704-chat_mode_assistant.md#unified-command-branch-and-replay), [Work Resource Interaction Model](20260713-work_resource_interaction_model.md#artifact-and-item-lineage), and [Pending Requests](20260930-pending_requests.md#deliver) remain those owners.
+
+| Derived output | Prefix | JSON name value, in fixed array order |
+| --- | --- | --- |
+| Command-initiated Assistant Turn | `tu` | `commandScope` |
+| Command-initiated handoff Thread | `th` | `[actor, workspaceId, originatingThreadId, requestId]` |
+| Command-initiated first handoff Task Turn | `tu` | `[actor, workspaceId, originatingThreadId, receivingThreadId, requestId]` |
+| Outcome-initiated handoff Thread | `th` | `outcomeScope` |
+| Outcome-initiated first handoff Task Turn | `tu` | `outcomeScope` |
+| Initiating Chat user Item | `it` | `["chat-user", assistantTurnId]` |
+| Chat result Item or handoff status Item | `it` | `[resultRole, assistantTurnId]` |
+| Initiating downstream Task user Item | `it` | `["task-user", downstreamTurnId]` |
+| Artifact introduction Turn | `tu` | `[actor, workspaceId, threadId, "artifact.introduce", requestId]` |
+| Artifact communication or introduction Item | `it` | `[artifactId, communicatingTurnId]` |
+| Review refinement or redo Turn | `tu` | `[workspaceId, artifactId, artifactVersion, decisionRequestId]` |
+| Pending-request publication Item | `it` | `[requestId, role]` |
+
 **Exclusions.** Consumers MUST NOT parse a timestamp out of the id (`docs/core/core-concepts.md`, `Identifier Semantics`). Id order is never the correctness criterion; after a prefilter the implementation MUST recheck authoritative `ts` / `turn.json` timestamps. This repository currently has a generator (`apps/nanocore/src/runtime/session-id.ts`, `generateUuidV7`) and no UUIDv7 timestamp parser, so a "must consume only via helper" rule is not yet an executable invariant; until a unique helper plus a failing test exists, the two consumption rules are a review obligation, not a storage invariant. New UUIDv7 allocation MUST NOT replace existing request-derived Item identities.
 
 **Lifecycle.** Allocate at create. Remint on portable import for in-package owner ids.
