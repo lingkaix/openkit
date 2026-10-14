@@ -282,7 +282,7 @@ Manual workflow dispatch should expose `pr-check`, `l0-l2`, `nanocore-e2e`, `web
 
 The release gate should run `pnpm -w verify:release`.
 
-The overlapping deterministic Vitest unit and coverage suites execute once with coverage enabled. Substitution requires equal collected test inventories, propagated injected failure, and preserved skip enforcement. Root JavaScript tests, native Cargo tests, schema/catalog validation, builds, and artifact gates remain distinct required executions. A missing suite, changed inventory, collection failure, undeclared skip, or failed command fails the gate. Coverage executes on every exact P; cycle-only coverage is insufficient. [Release cadence](../decisions/20261014-release_cadence.md) records this decision.
+The overlapping deterministic Vitest unit and coverage suites execute once with coverage enabled. Substitution requires equal collected test inventories, propagated injected failure, and preserved skip enforcement. Repeat that admission proof when suite-selection or command inputs change. Routine execution reuses the admitted recipe instead of collecting both inventories again. Root JavaScript tests, native Cargo tests, schema/catalog validation, builds, and artifact gates remain distinct required executions. A missing suite, changed inventory, collection failure, undeclared skip, or failed command fails the gate. Coverage executes on every exact P; cycle-only coverage is insufficient. [Release cadence](../decisions/20261014-release_cadence.md) records this decision.
 
 Release candidates may additionally run staging smoke tests and packaged-route browser tests through explicit manual workflows.
 

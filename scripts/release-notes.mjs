@@ -2,10 +2,12 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { noSecrets } from '../tests/support/release-round/safety.mjs';
 
 const SHA256 = /^sha256:[a-f0-9]{64}$/u;
 /** Generate the narrow release asset from existing image JSON, checksums and reviewed assessments. */
 export function createReleaseManifest({ repository, tag, sha, images, checksums, assertions }) {
+  noSecrets(assertions);
   const fail = (message) => {
     throw Error(`Release Management: manifest refused: ${message}`);
   };
@@ -89,7 +91,7 @@ export function createReleaseManifest({ repository, tag, sha, images, checksums,
     assertions.retainedDataCompatible !== true ||
     assertions.recovery !== 'previous-image-compatible' ||
     typeof assertions.provenance !== 'string' ||
-    !assertions.provenance.trim()
+    !/^[a-z0-9-]+$/u.test(assertions.provenance)
   )
     fail('explicit bound compatibility/recovery assertions');
   if (
@@ -140,6 +142,8 @@ export function draftReleaseNotes({ changes, knownIssues }) {
 /** Project only bounded public header fields and kit-generated rows into the existing release notes. */
 export function compactReleaseRecord({ tag, sha, header, qualification }) {
   if (
+    !/^v\d+\.\d+\.\d+(?:-[a-z0-9.]+)?$/u.test(tag ?? '') ||
+    !/^[a-f0-9]{40}$/u.test(sha ?? '') ||
     !header ||
     !/^[a-z0-9-]+$/u.test(header.authorizationReference ?? '') ||
     header.sourceCommit !== sha ||

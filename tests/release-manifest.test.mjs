@@ -61,6 +61,18 @@ for (const key of Object.keys(manifestInput().assertions))
   });
 for (const [name, change] of [
   [
+    'private provenance path',
+    (i) => {
+      i.assertions.provenance = '/example/private/assessment';
+    },
+  ],
+  [
+    'credential-shaped provenance',
+    (i) => {
+      i.assertions.provenance = 'sk-syntheticcredentialvalue';
+    },
+  ],
+  [
     'unknown recovery',
     (i) => {
       i.assertions.recovery = 'unknown';
@@ -136,6 +148,7 @@ test('compact record keeps effect results separate and refuses an incomplete hea
     ],
   };
   const text = compactReleaseRecord({ tag, sha, header });
+  assert.throws(() => compactReleaseRecord({ tag: '/example/private', sha, header }));
   assert.match(text, /app \| passed/);
   assert.match(text, /nanohost \| unknown/);
   delete header.authorizationReference;

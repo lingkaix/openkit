@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Execute the admitted deterministic suites once, proving collection equivalence before coverage substitution. */
+/** Execute deterministic suites once; inventory-only proves collection equivalence before recipe admission. */
 import { spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -58,7 +58,7 @@ export function compareInventory(unit, covered) {
     throw Error('Test Strategy: coverage collected a different test inventory');
   return a.length;
 }
-/** Prove actual collection, then execute coverage once with the existing TAP skip guard. */
+/** Either prove inventory admission or execute the admitted coverage recipe with the existing skip guard. */
 export function coveredSuite(
   owner,
   { inventoryOnly = false, spawn = spawnSync, run = guardedExecution } = {}
@@ -83,7 +83,7 @@ export function coveredSuite(
       );
     return JSON.parse(r.stdout);
   };
-  const count = compareInventory(collect(false), collect(true));
+  const count = inventoryOnly ? compareInventory(collect(false), collect(true)) : undefined;
   if (!inventoryOnly) {
     const errors = run({
       cwd: owner.cwd,
@@ -94,7 +94,7 @@ export function coveredSuite(
   return {
     name: owner.name,
     cases: count,
-    inventory: 'equal',
+    inventory: inventoryOnly ? 'equal' : 'not collected',
     execution: inventoryOnly ? 'not run' : 'coverage passed',
   };
 }

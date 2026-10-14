@@ -281,6 +281,8 @@ Apply [Bounded Test Deployment Update](../specs/20260829-release_management.md#b
 
 `release-update-app.mjs` currently admits its App procedure through offline injected operation adapters only. Its CLI refuses live execution pending Phase 2 owner alignment and an exact live platform-identity adapter. The NanoHost installer refuses differing installed bytes; it is not an unattended replacement operation. Do not bypass its fencing, inhibition, compatibility, or retention contract. Worker activation retains its exact administrator-decision boundary. The coordinator must supply the admitted replacement and activation paths before calling the complete automatic sequence ready.
 
+Before the first workflow substitution, run `node scripts/release-tests.mjs --inventory-only`. Repeat this proof when suite-selection or command inputs change. Routine CI executes only the admitted coverage recipe. The WP5 local admission check collected equal inventories for all ten Vitest suites, totaling 9,340 cases, in about eight minutes; that local timing is not a CI timing guarantee.
+
 ## Planning Allowance
 
 | Step from frozen P | Projected duration | Basis and limitation |
@@ -289,6 +291,6 @@ Apply [Bounded Test Deployment Update](../specs/20260829-release_management.md#b
 | Tag publication and verification | 35 to 45 minutes | rc.4/rc.5: 35m23s/44m56s; assumes unchanged admitted publication path. |
 | Deployment update | 5 to 15 minutes | Unmeasured clean sequence; rc.5 App start-to-success was 32s, but component update required failure/workaround diagnosis. |
 | Concurrent Worker qualification | 6 to 8 minutes | rc.5 longest runtime group 4m49.795s plus overhead gives 5m55.623s; live concurrency remains to be measured. |
-| Total | About 90 to 115 minutes, rounded | Conditional projection, not a guarantee or timeout. Collection-proof overhead and remaining deployment blockers can defeat it. |
+| Total | About 90 to 115 minutes, rounded | Conditional projection, not a guarantee or timeout. Admission-proof overhead and remaining deployment blockers can defeat it. |
 
 [The ruling](../decisions/20261014-release_cadence.md#reason) links the measured CI runs. Retain actual stage timestamps on the first eligible release. Concurrency preserves sixteen submitted Turns per release and changes no Provider-consumption budget.

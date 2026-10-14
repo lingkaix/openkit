@@ -13,21 +13,24 @@ test('inventory equality preserves duplicate counts and refuses lost cases', () 
   assert.throws(() => compareInventory([...inventory, ...inventory], inventory), /different/);
   assert.throws(() => compareInventory([], []), /missing/);
 });
-test('covered suite collects both variants and executes once with coverage and TAP', () => {
-  const calls = [];
-  const result = coveredSuite(
-    { name: 'synthetic', cwd: '/example' },
-    {
-      spawn: (_exe, args) => {
-        calls.push(args);
-        return { status: 0, stdout: JSON.stringify(inventory) };
-      },
-      run: ({ command }) => {
-        calls.push(command);
-        return [];
-      },
-    }
-  );
+test('admission collects both variants and routine execution runs coverage once', () => {
+  const calls = [],
+    owner = { name: 'synthetic', cwd: '/example' };
+  const seams = {
+    spawn: (_exe, args) => {
+      calls.push(args);
+      return { status: 0, stdout: JSON.stringify(inventory) };
+    },
+    run: ({ command }) => {
+      calls.push(command);
+      return [];
+    },
+  };
+  const proof = coveredSuite(owner, { ...seams, inventoryOnly: true });
+  assert.equal(proof.inventory, 'equal');
+  assert.equal(proof.execution, 'not run');
+  assert.equal(calls.length, 2);
+  const result = coveredSuite(owner, seams);
   assert.equal(calls.length, 3);
   assert(!calls[0].includes('--coverage'));
   assert(calls[1].includes('--coverage'));
@@ -37,6 +40,7 @@ test('covered suite collects both variants and executes once with coverage and T
       calls[2].includes('--reporter=tap-flat')
   );
   assert.equal(result.execution, 'coverage passed');
+  assert.equal(result.inventory, 'not collected');
 });
 test('deduplicated command propagates execution failure', () => {
   assert.throws(
