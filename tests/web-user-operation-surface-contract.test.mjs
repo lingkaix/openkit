@@ -8,8 +8,8 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 237;
-const EXPECTED_SERVER_SIZE = 56;
+const EXPECTED_CATALOG_SIZE = 238;
+const EXPECTED_SERVER_SIZE = 57;
 const EXPECTED_GATEWAY_SIZE = 2;
 const EXPECTED_INCLUDED_SIZE = 179;
 
@@ -423,6 +423,7 @@ describe('Web user operation surface contract', () => {
     assert.equal(catalog.server.length, EXPECTED_SERVER_SIZE);
     assert.equal(catalog.gateway.length, EXPECTED_GATEWAY_SIZE);
     assert.equal(catalog.included.length, EXPECTED_INCLUDED_SIZE);
+    assert.ok(catalog.server.includes('app-update.preflight'));
     assert.deepEqual(catalog.gateway, ['POST /v1/chat/completions', 'POST /v1/responses']);
     assert.deepEqual(inventory.duplicates, []);
     assert.deepEqual(
