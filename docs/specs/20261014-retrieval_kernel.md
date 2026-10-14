@@ -32,7 +32,7 @@ The kernel does not decide whether a retrieved claim is true. It does not publis
 
 Before v0.1.0, users need one retrieval tool over Knowledge, Workspace data, Artifacts and uploads, and past conversations. The engineer's size target applies to one upload. Its admission owner defines the maximum and byte unit; the kernel does not define upload admission.
 
-On 2026-10-14, the engineer accepted a domain-free Retrieval Kernel patterned after the Policy Kernel. The refined ruling 7 indexes readable UTF-8 directly and uses sidecars only for files that are not directly readable or indexable. Multimodal vectors follow lexical retrieval; optical character recognition (OCR) comes last.
+On 2026-10-14, the engineer accepted a [domain-free Retrieval Kernel](../decisions/20261014-retrieval_kernel_design.md) patterned after the Policy Kernel. The refined ruling 7 indexes readable UTF-8 directly and uses sidecars only for files that are not directly readable or indexable. Multimodal vectors follow lexical retrieval; optical character recognition (OCR) comes last.
 
 This Draft specifies that accepted direction for review. It does not supersede the existing owners. The amendments listed below must be accepted before the corresponding implementation changes.
 
