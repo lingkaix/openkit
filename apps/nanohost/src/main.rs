@@ -973,6 +973,7 @@ async fn run_sessions(
                 },
             ),
             |generation, mut sender| {
+                coordinator.record_readiness_acknowledgement();
                 let readiness_commit = if fence_started.is_some() {
                     clear_fence_started().map_err(|_| {
                         OuterSessionFailure::terminal(
@@ -1523,6 +1524,10 @@ mod tests {
             "TCP deadline must export the startup invalidation report"
         );
         assert_eq!(reports[0]["trigger"], "epoch-creation-failure");
+        assert_eq!(
+            reports[0]["fields"]["readiness"],
+            "last_succeeded=unavailable"
+        );
         assert_eq!(reports[0]["complete"], true);
         assert!(root.0.join("fence-started").is_file());
         assert!(
@@ -1594,7 +1599,8 @@ mod tests {
         };
         let (mut coordinator, _) = EpochCoordinator::collection_fixture(&root.0);
         let physical_epoch = coordinator.physical_epoch().to_string();
-        let members = coordinator.fixture_member_events();
+        let reports = coordinator.fixture_invalidation_reports(&root.0);
+        let members = coordinator.fixture_invalidation_requester();
         let (observations, mut observed) = tokio::sync::mpsc::unbounded_channel();
 
         /// Acts as Core authority: each physical connection gets one admission and readiness.
@@ -1732,7 +1738,7 @@ mod tests {
             result = &mut host => panic!("Host ended after successor readiness: {}", result.unwrap_err()),
             extra = tokio::time::timeout(Duration::from_millis(20), listener.accept()) => assert!(extra.is_err(), "only one physical successor connection"),
         }
-        members.send(EpochFault::MemberExited(None)).unwrap();
+        members.send(Some(EpochFault::MemberExited(None))).unwrap();
         let terminal = tokio::time::timeout(Duration::from_secs(5), &mut host)
             .await
             .unwrap()
@@ -1742,6 +1748,22 @@ mod tests {
         };
         assert_eq!(terminal.disposition(), OuterSessionDisposition::Terminal);
         assert_eq!(terminal.reason(), "nanohost epoch member failed");
+        let reports = std::fs::read_dir(reports)
+            .unwrap()
+            .map(|entry| {
+                serde_json::from_slice::<serde_json::Value>(
+                    &std::fs::read(entry.unwrap().path()).unwrap(),
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0]["trigger"], "member-exit");
+        assert_eq!(reports[0]["complete"], true);
+        assert_eq!(
+            reports[0]["fields"]["readiness"],
+            "last_succeeded=core-acknowledgement"
+        );
         peer.abort();
         assert!(peer.await.unwrap_err().is_cancelled());
     }

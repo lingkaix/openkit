@@ -14,6 +14,7 @@ use std::os::unix::process::CommandExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -61,6 +62,45 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Fresh roots through complete readiness share the transport specification's hard bound.
 pub const STARTUP_READINESS_HARD_LIMIT: Duration = Duration::from_secs(120);
+
+/// Last successful readiness observation, used only by private forensic reports.
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum ReadinessProof {
+    /// No readiness check has been observed.
+    Unavailable,
+    /// Both fresh private roots were created.
+    PrivateRoots,
+    /// Gateway authentication, configuration and resolver files were written.
+    Configuration,
+    /// Containerd namespaces were retained and its socket became available.
+    ContainerdSocket,
+    /// Slirp proved its route while containerd remained running.
+    PrivateNetwork,
+    /// Docker namespace membership and socket availability were proved.
+    DockerSocket,
+    /// Gateway health and all local member liveness checks succeeded.
+    GatewayHealth,
+    /// Core completed the exact readiness acknowledgement within its deadline.
+    CoreAcknowledgement,
+}
+
+impl ReadinessProof {
+    /// Snapshots one closed proof name without waiting for diagnostic collection.
+    fn report_value(observation: &AtomicU8) -> String {
+        let last_succeeded = match observation.load(Ordering::Acquire) {
+            value if value == Self::PrivateRoots as u8 => "private-roots",
+            value if value == Self::Configuration as u8 => "configuration",
+            value if value == Self::ContainerdSocket as u8 => "containerd-socket",
+            value if value == Self::PrivateNetwork as u8 => "private-network",
+            value if value == Self::DockerSocket as u8 => "docker-socket",
+            value if value == Self::GatewayHealth as u8 => "gateway-health",
+            value if value == Self::CoreAcknowledgement as u8 => "core-acknowledgement",
+            _ => "unavailable",
+        };
+        format!("last_succeeded={last_succeeded}")
+    }
+}
 
 /// Enters one retained Linux network namespace.
 unsafe fn setns_network(fd: i32) -> i32 {
@@ -1221,6 +1261,7 @@ struct EpochMemberMonitor {
     member_failure: mpsc::Receiver<EpochFault>,
     worker: Option<JoinHandle<()>>,
     harness_tasks: Arc<Mutex<Option<(AbortHandle, AbortHandle)>>>,
+    readiness: Arc<AtomicU8>,
 }
 
 /// Child-handle aggregate whose normal drop always kills and reaps the group.
@@ -1252,6 +1293,7 @@ impl EpochMemberMonitor {
             None,
             evidence,
             PathBuf::from(REBUILD_FENCE_STARTED_PATH),
+            Arc::new(AtomicU8::new(ReadinessProof::Unavailable as u8)),
         )
     }
 
@@ -1261,11 +1303,13 @@ impl EpochMemberMonitor {
         private_namespaces: Option<PrivateNamespaceDescriptors>,
         mut evidence: EpochEvidenceWriter,
         fence_started_path: PathBuf,
+        readiness: Arc<AtomicU8>,
     ) -> Self {
         let (fence, fence_rx) = mpsc::sync_channel(1);
         let (failure_tx, member_failure) = mpsc::sync_channel(1);
         let harness_tasks = Arc::new(Mutex::new(None));
         let watched_tasks = Arc::clone(&harness_tasks);
+        let observed_readiness = Arc::clone(&readiness);
         let worker = thread::spawn(move || {
             let mut children = OwnedEpochChildren {
                 children,
@@ -1279,6 +1323,7 @@ impl EpochMemberMonitor {
                     &mut children.children,
                     &fault,
                     fence_started_path,
+                    &observed_readiness,
                 );
                 let _ = failure_tx.send(fault);
             }
@@ -1288,6 +1333,7 @@ impl EpochMemberMonitor {
             member_failure,
             worker: Some(worker),
             harness_tasks,
+            readiness,
         }
     }
 
@@ -1470,16 +1516,19 @@ impl EpochCoordinator {
         let image_backend = image_backend.take().ok_or(EpochFault::PartialStart)?;
         let persistent_volumes = persistent_volumes.take().ok_or(EpochFault::PartialStart)?;
         let mut children = Vec::with_capacity(plan.members().len());
+        let readiness = Arc::new(AtomicU8::new(ReadinessProof::Unavailable as u8));
         let runtime = {
             let export_before_fence = |fault: EpochFault| {
                 let mut writer = evidence.clone();
+                let readiness = ReadinessProof::report_value(&readiness);
                 let (completed_tx, completed_rx) = mpsc::sync_channel(1);
                 let fence_started = SystemTime::now();
                 let worker = catch_unwind(AssertUnwindSafe(|| {
                     thread::spawn(move || {
                         let started = Instant::now();
                         let _ = record_fence_started(fence_started);
-                        let fields = invalidation_report_fields(&fault);
+                        let mut fields = invalidation_report_fields(&fault);
+                        fields.push(("readiness", readiness));
                         let field_refs = fields
                             .iter()
                             .map(|(name, value)| (*name, value.as_str()))
@@ -1506,6 +1555,7 @@ impl EpochCoordinator {
                 terminate_children(&mut children);
                 return Err(EpochFault::PartialStart);
             }
+            readiness.store(ReadinessProof::PrivateRoots as u8, Ordering::Release);
             let resolver_target = match fs::canonicalize("/etc/resolv.conf") {
                 Ok(path) if path.is_file() => path,
                 _ => {
@@ -1523,6 +1573,7 @@ impl EpochCoordinator {
                 terminate_children(&mut children);
                 return Err(EpochFault::PartialStart);
             }
+            readiness.store(ReadinessProof::Configuration as u8, Ordering::Release);
 
             let runtime = Handle::current();
 
@@ -1559,6 +1610,7 @@ impl EpochCoordinator {
                 terminate_children(&mut children);
                 return Err(EpochFault::PartialStart);
             }
+            readiness.store(ReadinessProof::ContainerdSocket as u8, Ordering::Release);
 
             let slirp_ready = match spawn_member(
                 &mut children,
@@ -1583,6 +1635,7 @@ impl EpochCoordinator {
                 terminate_children(&mut children);
                 return Err(EpochFault::PartialStart);
             }
+            readiness.store(ReadinessProof::PrivateNetwork as u8, Ordering::Release);
 
             if spawn_member(
                 &mut children,
@@ -1608,6 +1661,7 @@ impl EpochCoordinator {
                 terminate_children(&mut children);
                 return Err(EpochFault::PartialStart);
             }
+            readiness.store(ReadinessProof::DockerSocket as u8, Ordering::Release);
 
             if spawn_member(
                 &mut children,
@@ -1671,6 +1725,7 @@ impl EpochCoordinator {
                 terminate_children(&mut children);
                 return Err(fault);
             }
+            readiness.store(ReadinessProof::GatewayHealth as u8, Ordering::Release);
             (runtime, private_namespaces)
         };
 
@@ -1682,6 +1737,7 @@ impl EpochCoordinator {
                 Some(private_namespaces),
                 evidence,
                 PathBuf::from(REBUILD_FENCE_STARTED_PATH),
+                readiness,
             ),
             runtime,
             client,
@@ -1704,6 +1760,13 @@ impl EpochCoordinator {
     /// Returns the private physical-incarnation witness retained by this coordinator.
     pub fn physical_epoch(&self) -> &str {
         &self.physical_epoch
+    }
+
+    /// Records a completed Core acknowledgement for reports, never as readiness authority.
+    pub fn record_readiness_acknowledgement(&self) {
+        self.monitor
+            .readiness
+            .store(ReadinessProof::CoreAcknowledgement as u8, Ordering::Release);
     }
 
     /// Returns the epoch-retained outer route projection for successor rebinding.
@@ -1756,6 +1819,7 @@ impl EpochCoordinator {
                     member_failure,
                     worker: None,
                     harness_tasks: Arc::new(Mutex::new(None)),
+                    readiness: Arc::new(AtomicU8::new(ReadinessProof::Unavailable as u8)),
                 },
                 runtime: Handle::current(),
                 client: NanoHostOpenShellClient::new(
@@ -1779,14 +1843,6 @@ impl EpochCoordinator {
         )
     }
 
-    /// Keeps synthetic epoch members supervised until the test injects their terminal event.
-    #[cfg(test)]
-    pub(crate) fn fixture_member_events(&mut self) -> mpsc::SyncSender<EpochFault> {
-        let (sender, receiver) = mpsc::sync_channel(1);
-        self.monitor.member_failure = receiver;
-        sender
-    }
-
     /// Uses the production invalidation monitor with only fixture-owned report and marker paths.
     #[cfg(test)]
     pub(crate) fn fixture_invalidation_reports(&mut self, root: &Path) -> PathBuf {
@@ -1797,8 +1853,15 @@ impl EpochCoordinator {
             None,
             evidence,
             root.join("fence-started"),
+            Arc::clone(&self.monitor.readiness),
         );
         reports
+    }
+
+    /// Injects a fault through the real monitor's report-before-fence path.
+    #[cfg(test)]
+    pub(crate) fn fixture_invalidation_requester(&self) -> mpsc::SyncSender<Option<EpochFault>> {
+        self.monitor.fence.clone()
     }
 
     /// Proves live-epoch identity before the storage owner opens worker-controlled children.
@@ -2526,16 +2589,19 @@ fn fence_initiated(
     children: &mut [Child],
     fault: &EpochFault,
     fence_started_path: PathBuf,
+    readiness: &AtomicU8,
 ) {
     let mut writer = evidence.clone();
     let fault = fault.clone();
+    let readiness = ReadinessProof::report_value(readiness);
     let (completed_tx, completed_rx) = mpsc::sync_channel(1);
     let fence_started = SystemTime::now();
     let worker = catch_unwind(AssertUnwindSafe(|| {
         thread::spawn(move || {
             let started = Instant::now();
             let _ = record_fence_started_at(&fence_started_path, fence_started);
-            let fields = invalidation_report_fields(&fault);
+            let mut fields = invalidation_report_fields(&fault);
+            fields.push(("readiness", readiness));
             let field_refs = fields
                 .iter()
                 .map(|(name, value)| (*name, value.as_str()))
@@ -3157,6 +3223,9 @@ mod tests {
             member_failure,
             worker: Some(worker),
             harness_tasks,
+            readiness: Arc::new(super::AtomicU8::new(
+                super::ReadinessProof::Unavailable as u8,
+            )),
         }
     }
 
@@ -3397,6 +3466,51 @@ mod tests {
             .stderr(std::process::Stdio::null())
             .spawn()
             .expect("short-lived test child")
+    }
+
+    /// Local health does not imply a Core acknowledgement when startup is invalidated.
+    #[test]
+    fn readiness_report_retains_local_proof_before_core_acknowledgement() {
+        let root = std::env::temp_dir().join(format!(
+            "nanohost-readiness-report-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let reports = root.join("reports");
+        let readiness = Arc::new(super::AtomicU8::new(
+            super::ReadinessProof::GatewayHealth as u8,
+        ));
+        let mut monitor = EpochMemberMonitor::start_with_namespaces(
+            Vec::new(),
+            None,
+            EpochEvidenceWriter::new(reports.clone()).unwrap(),
+            root.join("fence-started"),
+            readiness,
+        );
+        monitor.invalidate_startup();
+        let artifacts = std::fs::read_dir(&reports)
+            .unwrap()
+            .map(|entry| {
+                serde_json::from_slice::<serde_json::Value>(
+                    &std::fs::read(entry.unwrap().path()).unwrap(),
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0]["trigger"], "epoch-creation-failure");
+        assert_eq!(artifacts[0]["complete"], true);
+        assert_eq!(artifacts[0]["fields"]["fence"], "initiated");
+        assert_eq!(
+            artifacts[0]["fields"]["readiness"],
+            "last_succeeded=gateway-health"
+        );
+        assert!(root.join("fence-started").is_file());
+        drop(monitor);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
