@@ -66,20 +66,12 @@ export interface InternalAgentLogicalModel {
   readonly modelFamilyId: string | null;
 }
 
-/** OpenKit-owned context policy pinned for one internal Agent run. */
-export interface InternalAgentContextManagement {
-  readonly type: 'compaction';
-  readonly compactThreshold: number;
-  readonly authority: 'openkit';
-}
-
 /** Complete trusted input to one bounded internal Agent run. */
 export interface InternalAgentLoopInput {
   readonly systemPrompt: string;
   readonly messages: readonly AgentMessage[];
   readonly tools: readonly AgentTool[];
   readonly model: InternalAgentLogicalModel;
-  readonly contextManagement: InternalAgentContextManagement;
   readonly limits: {
     readonly maxModelTurns: number;
     readonly maxToolCalls: number;
@@ -102,15 +94,13 @@ export interface InternalAgentProviderRequest {
   readonly messages: readonly AgentMessage[];
   readonly tools: readonly InternalAgentProviderTool[];
   readonly model: InternalAgentLogicalModel;
-  readonly contextManagement: InternalAgentContextManagement;
   readonly signal: AbortSignal;
   readonly onTextIncrement?: (text: string) => void;
 }
 
-/** Gateway response after provider conversion and optional admitted compaction. */
+/** Gateway response containing only the completed ordinary inference message. */
 export interface InternalAgentProviderResponse {
   readonly message: AgentAssistantMessage;
-  readonly compactedMessages?: readonly AgentMessage[];
 }
 
 /** Injected Gateway projection used by the product-agnostic loop. */
@@ -151,7 +141,7 @@ export async function runInternalAgentLoop(
   input: InternalAgentLoopInput,
   callProvider: InternalAgentProviderCall
 ): Promise<InternalAgentLoopExit> {
-  let messages = Array.isArray(input.messages) ? [...input.messages] : [];
+  const messages = Array.isArray(input.messages) ? [...input.messages] : [];
   const schemaValidator = new Ajv2020({ allErrors: false, strict: false });
   let validators: ReadonlyMap<string, ReturnType<typeof schemaValidator.compile>>;
   try {
@@ -210,7 +200,6 @@ export async function runInternalAgentLoop(
             messages: [...messages],
             tools: providerTools,
             model: input.model,
-            contextManagement: input.contextManagement,
             signal,
             ...(input.onTextIncrement
               ? {
@@ -243,12 +232,6 @@ export async function runInternalAgentLoop(
       if (cancelledAfterProvider) return cancelledAfterProvider;
       if (!isAssistantMessage(response.message)) {
         return { kind: 'failed', messages, code: 'provider_response_invalid' };
-      }
-      if (response.compactedMessages) {
-        if (!response.compactedMessages.every(isAgentMessage)) {
-          return { kind: 'failed', messages, code: 'provider_response_invalid' };
-        }
-        messages = [...response.compactedMessages];
       }
       messages.push(response.message);
 
@@ -332,9 +315,6 @@ function assertInput(input: InternalAgentLoopInput): void {
   if (
     !input.systemPrompt.trim() ||
     !input.model.logicalModelId.trim() ||
-    input.contextManagement.type !== 'compaction' ||
-    input.contextManagement.authority !== 'openkit' ||
-    !positiveInteger(input.contextManagement.compactThreshold) ||
     !positiveInteger(input.limits.maxModelTurns) ||
     !positiveInteger(input.limits.maxToolCalls) ||
     !positiveInteger(input.limits.deadlineMs) ||
