@@ -1,12 +1,12 @@
 ---
 type: change-plan
-status: in-progress
+status: implemented
 date: "2026-10-15"
 branch: rc8/p02-nanohost-transport
 ---
 # NanoHost Invalidation Member Inventory
 
-Status: running-member inventory reviewed; partial-start implementation prepared for review and exact-head pre-train checks. Updated: 2026-10-16. This record supplies no design authority.
+Status: running-member and partial-start inventory reviewed, with focused and pre-train verification complete; merge-train CI pending. Updated: 2026-10-16. This record supplies no design authority.
 
 ## Intent Revision 1
 
@@ -42,10 +42,12 @@ The same reviewer approved corrected running-member implementation revision 5f91
 
 For the partial-start phase, the separate author observed the intended missing-members assertion fail after the actual producer and exporter ran. After implementation, `cargo test --locked --bin nanohost epoch_inventory_tests:: -- --test-threads=1` passed all ten cases, including the three new startup cases, in 4.23 seconds. The startup cases cover actual prefixes from zero through four members, an empty array without invented later rows, installed-path replacement, cached exit code or signal with unavailable reaped measurements, original trigger and readiness, no invented first-failure cause, and a blocked exporter followed by a bounded fence and late incomplete report. The existing seven cases remain intact. The coordinator suite passed thirty-eight with one existing privileged ignore; the evidence suite passed six. Formatting and whitespace checks passed. The old source-shape bound assertion now follows startup's call into the sole shared worker and retains its timeout, export order and no-join-before-fence assertions. Independent review must also inspect the actual startup branch wiring; the fixture does not launch a full backend stack.
 
-Next Action: commit the bounded partial-start slice and run package lint, Rust typecheck and `pnpm run check:repo` on that exact head. An independent exact-head review precedes the final train submission. Stop after reporting that slice. A missing safe observation remains unavailable; it does not permit inference, a wider export deadline or a weakened fence. This delivery does not claim every remaining invalidation-evidence criterion is closed.
+The fresh independent reviewer approved partial-start implementation revision 82f37d9b with no actionable findings after inspecting all thirteen startup branches, the shared worker and namespace teardown order, and the deciding assertions. Exact-head `pnpm run check:repo`, NanoHost package lint and `cargo check --locked --all-targets --all-features` passed. The repository check retained the parent's non-blocking warning and informational diagnostics; no check was suppressed or changed to obtain green. This closeout changes only the record. The final exact-head verdict and pre-train logs accompany the coordinator submission.
+
+Next Action: submit the approved head to the coordinator's merge train, then stop as directed. A missing safe observation remains unavailable; it does not permit inference, a wider export deadline or a weakened fence. This delivery does not claim every remaining invalidation-evidence criterion is closed.
 
 ## Completion Evidence
 
-The reviewed running-member phase added the accepted observations to the existing private report; the active follow-up adds partial-start coverage through the same exporter. The exact-head independent verdict and pre-train checks accompany each coordinator submission; merge-train CI remains with the coordinator. The unchanged source owner supplies every criterion, and this record adds no design decision. The private status vocabulary remains running, exited, signaled and unavailable, with only observed exit codes or signals. Version proof and unavailable process or cgroup evidence remain explicit unknowns. Other report-context fields remain outside this bounded follow-up.
+The reviewed running-member phase added the accepted observations to the existing private report; the reviewed follow-up adds partial-start coverage through the same exporter. The exact-head independent verdict and pre-train checks accompany each coordinator submission; merge-train CI remains with the coordinator. The unchanged source owner supplies every criterion, and this record adds no design decision. The private status vocabulary remains running, exited, signaled and unavailable, with only observed exit codes or signals. Version proof and unavailable process or cgroup evidence remain explicit unknowns. Other report-context fields remain outside this bounded follow-up. The fixtures establish the producer correction without claiming a full backend launch, installed-service behavior or published-host qualification.
 
 The temporary-directory rule applies to every check and helper. Original intent revisions remain unchanged; raw output, host paths, host identifiers and credentials stay outside this record. No branch CI or installed-service effect was performed. Published-host proof stays separate.
