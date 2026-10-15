@@ -32,7 +32,10 @@ export interface AppUpdateHostChild {
   readonly stderr: NodeJS.ReadableStream | null;
   kill(signal?: NodeJS.Signals): boolean;
   on(event: 'error', listener: (error: Error) => void): unknown;
-  on(event: 'close', listener: (code: number | null) => void): unknown;
+  on(
+    event: 'close',
+    listener: (code: number | null, signal: NodeJS.Signals | null) => void
+  ): unknown;
 }
 
 /**
@@ -160,9 +163,20 @@ export function invokeAppUpdateHostChild(
         message: 'App-update host helper could not start.',
       })
     );
-    child.on('close', (_exitCode) => {
+    child.on('close', (exitCode, signal) => {
+      if (settled) {
+        return;
+      }
       const output = Buffer.concat(stdout);
       if (output.byteLength === 0) {
+        if (exitCode !== 0) {
+          // Raw stderr can contain host paths and secrets. Retain only process facts.
+          console.warn('App-update host helper exited before its observation.', {
+            code: 'app_update_helper_exit_before_envelope',
+            exitCode,
+            signal: signal ?? null,
+          });
+        }
         finish({
           ok: false,
           code: 'app_update_unavailable',
