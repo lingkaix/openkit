@@ -16,6 +16,10 @@ The repository is public, and only `worker-common` is required to be anonymously
 
 Do not change repository or package visibility as an implied part of preparation or publication.
 
+### Stable Promotion Notes
+
+Select the reviewed notes from the prerelease being promoted. Set the release title to the stable tag and retain its explicit unresolved items and accepted limitations. Verify that the source commit, image digests, and asset bytes remain those of the selected prerelease. Do not rebuild assets or require a stable-notes file added by another source commit. Present the resulting notes with the existing stable-publication evidence for the reserved engineer gate.
+
 ## Release Bundle
 
 One lowercase semantic-version tag identifies the complete product bundle:

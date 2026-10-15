@@ -88,6 +88,8 @@ A prerelease publishes exact-version and source-revision image tags and creates 
 
 A stable release promotes a prerelease of a release cycle in which every catalog story passed, publishes that prerelease's immutable identities, and updates `latest` only after those bytes have passed their release smoke checks. The promoted prerelease itself passed story 2 and Worker qualification. The promotion uses that prerelease's published bytes. It does not rebuild those bytes. Stable publication stays an engineer-reserved gate.
 
+For a stable tag that promotes a reviewed prerelease commit, derive the stable release notes from that prerelease's reviewed notes at the same source commit. Use the stable tag as the release title. Carry forward unresolved items and accepted limitations explicitly; a stable title must not imply that they are closed. This derivation changes neither the promoted source commit nor any packaged asset or image byte. It requires no rebuild or separate notes commit. Retain the exact prerelease notes source and the stable-title transformation in the existing publication evidence. The engineer-reserved stable publication gate remains required.
+
 ### Release Assets
 
 The current release bundle contains exactly these controlled assets:
