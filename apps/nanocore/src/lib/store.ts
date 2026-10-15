@@ -68,14 +68,14 @@ import {
   recordCommandRequestRecord,
   recordCommandRequestRecordInDb,
 } from '../storage/command-request-records.js';
-import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { type CoreDb, openWorkspaceDbAtRoot, type WorkspaceDb } from '../storage/db.js';
 import {
   ensureLayoutDirectories,
   ensureWorkspaceLayout,
-  ensureWorkspaceLayoutRoot,
   LOCAL_USER_ID,
   resolveDataRootPath,
 } from '../storage/fs-layout.js';
+import { applyScopedMigrations } from '../storage/migrate.js';
 import {
   AgentSessionRecordSchema,
   appendWorkspaceItemRevision,
@@ -1427,7 +1427,7 @@ export class FsStore {
   }
 
   /**
-   * Publishes one new workspace through a same-filesystem staging root.
+   * Publishes one new workspace with its migrated database through a same-filesystem staging root.
    *
    * @param records Complete canonical records to publish.
    * @param stageWorkspace Optional side-effect writer that runs under the staging root.
@@ -1460,7 +1460,17 @@ export class FsStore {
 
     try {
       rmSync(stagingRoot, { recursive: true, force: true });
-      ensureWorkspaceLayoutRoot(stagingRoot);
+      const workspaceDb = openWorkspaceDbAtRoot({
+        dataRoot: this.dataRoot,
+        workspaceId,
+        workspaceRoot: stagingRoot,
+      });
+      try {
+        applyScopedMigrations(workspaceDb);
+      } finally {
+        // Publish a complete main database rather than depending on an open handle or WAL sidecar.
+        workspaceDb.sqlite.close();
+      }
       stageWorkspace?.({ workspaceId, workspaceRoot: stagingRoot });
       writeWorkspaceFileRecords(stagingRoot, records);
       publishCanonicalPath(stagingRoot, finalRoot);
