@@ -21,6 +21,58 @@ Source: the coordinator asked for rc.7 preparation on a fresh branch and worktre
 
 Source: the coordinator confirmed #248 on main as `3a80b6d7` and `06b0d27c`. Rebase onto `06b0d27c`. Describe the correction as fixed pending host verification. Keep #248 open until the published rc.7 NanoHost reaches a positive ready generation on a real host. Remove the pending-integration mark; retain the host-verification gate.
 
+### Intent Revision 3 — 2026-10-15
+
+Source: the coordinator relayed two engineer rulings for rc.7 admission. Record the original questions, selected answers and option text verbatim, with faithful English translations. Apply the #223 disposition to every prerelease before the first `v0.1.0` stable release. Permit prereleases with the four disclosed notice gaps; track their first-stable closure in #249. Keep both issues unlabeled. Commit this increment separately for the ongoing independent Grok review; do not amend or publish.
+
+## Engineer Rulings — 2026-10-15
+
+The coordinator supplied these engineer selections on 2026-10-15. Chinese quotations are retained verbatim as requested; the English translations preserve their scope.
+
+### #223: All Prereleases Before The First Stable Release
+
+Question (Chinese, verbatim):
+
+> #223（部分写入在 rename 前没有 fsync，断电可能丢一条记录）在 rc.6 时你裁定为：公开披露、不阻塞 rc.6，但阻塞第一个正式版。这个裁定只写了 rc.6，rc.7 需要你重新确认。怎么处理？
+
+Selected answer (Chinese, verbatim):
+
+> 正式版前都沿用
+
+Option text (Chinese, verbatim):
+
+> 所有 v0.1.0 正式版之前的预发布都按 rc.6 的裁定处理：公开披露、不阻塞，仍然阻塞第一个正式版。以后的 rc 不用再问你。
+
+Faithful English translation of the question: "For #223 (some writes do not fsync before rename, so power loss can lose a record), your rc.6 ruling was: disclose it publicly, do not block rc.6, but block the first stable release. That ruling named only rc.6, so rc.7 needs your confirmation. How should we handle it?"
+
+Faithful English translation of the selected answer: "Keep applying it before the stable release."
+
+Faithful English translation of the option: "Apply the rc.6 ruling to all prereleases before the v0.1.0 stable release: disclose it publicly and do not block, while retaining it as a blocker for the first stable release. Later release candidates do not need to ask you again."
+
+Disposition: #223 is a disclosed non-blocker for rc.7 and every later prerelease before the first `v0.1.0` stable release. It remains a first-stable blocker and stays unlabeled. Later rc admission needs no new #223 ruling. The defect remains open; this ruling does not itself perform or widen a deployment reset.
+
+### Four Notice Gaps: Disclose For Prereleases, Close Before Stable
+
+Question (Chinese, verbatim):
+
+> rc.7 是第一个带 retrieval-kernel 二进制的版本，其中 4 个 Rust crate 的许可证说明没找齐：htmlescape 0.3.1、kanaria 0.2.0，以及两个 winapi-*-pc-windows-gnu 0.4.0（这两个是 Windows 专用 crate，很可能不会编进 Linux 镜像）。缺口已写在镜像里的 GAPS.json 和发布说明中。怎么处理？
+
+Selected answer (Chinese, verbatim):
+
+> 披露后发布
+
+Option text (Chinese, verbatim):
+
+> 预发布照常发，缺口公开披露；第一个正式版之前必须补齐。我会另开 issue 跟踪补齐工作。
+
+Faithful English translation of the question: "rc.7 is the first version carrying the retrieval-kernel binary. License notices are incomplete for four Rust crates: htmlescape 0.3.1, kanaria 0.2.0 and the two winapi-*-pc-windows-gnu 0.4.0 crates. The last two are Windows-only crates and are likely not compiled into the Linux image. The gaps are recorded in GAPS.json inside the image and in the release notes. How should we handle them?"
+
+Faithful English translation of the selected answer: "Publish after disclosure."
+
+Faithful English translation of the option: "Publish prereleases as usual, with the gaps publicly disclosed. Complete the missing notices before the first stable release. I will open a separate issue to track that work."
+
+Disposition: prereleases may ship with these four gaps disclosed. All four must be closed before the first stable release. The coordinator supplied [#249](https://github.com/lingkaix/openkit/issues/249) as the new tracking issue. It is a first-stable blocker, remains unlabeled and does not block rc.7 under this ruling. No complete notice provenance or compliance result is claimed. The question's Windows-build statement remains qualified as likely, not a verified packaging result.
+
 ## Preparation Checkpoint — Rewritable
 
 | Field | Current fact or pending gate |
@@ -38,7 +90,7 @@ Source: the coordinator confirmed #248 on main as `3a80b6d7` and `06b0d27c`. Reb
 | Grant | Standing prerelease grant first covers rc.6 and includes rc.7 while all owner predicates hold. This preparer commits locally; the coordinator admits and tags |
 | Publication proof | The three publication job blocks and nine invoked script inputs match rc.6. Successful rc.6 tag run is the baseline below. No new scratch rehearsal is required for that unchanged proved mechanism |
 | Known host limits | #248 is fixed in source, pending published-asset positive readiness. #242 remains unverified on that host path. Neither issue is closed here |
-| Risk dispositions | #223 disclosure and first-stable blocker are retained. The recorded engineer acceptance explicitly named rc.6; confirm applicable rc.7 strict-risk disposition at admission. Four notice-provenance gaps remain explicit; this preparer claims no complete license provenance or new risk waiver |
+| Risk dispositions | The 2026-10-15 engineer rulings admit #223 as a disclosed non-blocker for every prerelease before first stable `v0.1.0`, without another rc question. The four disclosed notice gaps are permitted in prereleases and tracked by #249. Both issues block first stable and stay unlabeled |
 | Manual gates | Catalog stories remain post-tag at release-cycle/change cadence. Worker qualification runs after the deployment update, separately from L6. No live result is claimed |
 | Production boundary | No contact with staging or production. No push, tag, release, label, visibility or credential change by this preparer |
 | Next action | Verify this preparation, commit it and hand it to the coordinator for review and exact-P main CI. Recheck publication inputs after any further landing or amendment |
@@ -85,16 +137,17 @@ R2 changes the App Dockerfile, its smoke test and retrieval build supply. These 
 
 ## Known Issues, Dispositions And Disclosure
 
-The read-only backlog refresh contains 110 open issues and no issue carrying `release-blocker`. Its issue-number set equals the rc.6 record's 108 rows, minus closed #245, plus #246, #247 and #248. Carry unchanged owner/disposition/disclosure rows from the [rc.6 reconciliation](../202610131730000000-v0_1_0_rc_6_prerelease/plan.md#initial-release-blocker-reconciliation), with these current deltas. Label absence does not establish admission.
+The refreshed read-only backlog contains 111 open issues and no issue carrying `release-blocker`. Its issue-number set equals the rc.6 record's 108 rows, minus closed #245, plus #246, #247, #248 and new #249. The earlier rc.7 snapshot had 110 rows; #249 is the only addition and no issue was removed. Carry unchanged owner/disposition/disclosure rows from the [rc.6 reconciliation](../202610131730000000-v0_1_0_rc_6_prerelease/plan.md#initial-release-blocker-reconciliation), with these current deltas. Label absence does not establish admission.
 
 | Finding | Owner or receiver | Current disposition and disclosure |
 | --- | --- | --- |
 | #245 | [Runtime Scheduling](../../specs/20260703-runtime_scheduling_scale.md) | Closed after staged startup and CPU-limited admission; listed under changes, removed from current known failures. No new provider/host qualification claim |
 | #246 | [OpenCode Adapter](../../specs/20260716-opencode_worker_adapter.md) | Disclosed one-CPU close-proof failure. Keep errors, fencing and all assertions/deadlines; do not claim native persistence or successful retaining close. Separate from #245 |
 | #247 | [Shared Conversation Decision](../../decisions/20261015-shared_conversation_and_single_agent_threads.md) | Deferred until after `v0.1.0` and the private Timeline. Design record only; not a delivered feature |
+| #249 | Retrieval Kernel notice supply, `apps/retrieval-kernel/notices/GAPS.json`, engineer ruling above | The four gaps may ship in prereleases with public disclosure. Close all four before first stable. Open first-stable blocker, unlabeled; notes and this record disclose the exact crate/version set |
 | #248 | [NanoHost Runtime](../../specs/20260802-nanohost_runtime_and_transport.md) | Fixed in source, pending published rc.7 positive ready generation on a real host. Open issue retained; notes and this record disclose the limit |
 | #242 | NanoHost image preparation under the same runtime owner | Source correction remains included. rc.6 stopped before positive readiness and did not exercise registry preparation. Verify after rc.7 readiness; no pass or issue closure inferred |
-| #223 | [Work Data Retention](../../specs/20260921-work_data_retention_format.md), engineer for strict-risk disposition | Power-loss gap remains disclosed and blocks first stable. The dated ruling explicitly accepted rc.6; final rc.7 admission must confirm its applicability. Do not label it or infer a new waiver/reset permission |
+| #223 | [Work Data Retention](../../specs/20260921-work_data_retention_format.md), engineer ruling above | Disclosed non-blocker for all prereleases before first stable `v0.1.0`; later rc admissions need no new ruling. Still a first-stable blocker, open and unlabeled. The notes carry the defect and disposition |
 | #120 | NanoHost R001 runtime gate and Release Management | Stable/readiness hold stays open. Hosted distribution qualification and source transport regressions do not replace the exact-product runtime proof |
 | #195 | Release installation guide | Existing incomplete release-only first-install procedure remains disclosed. No host operation or guide-completion claim |
 | #222 | [Knowledge Store](../../specs/20260703-knowledge_store_implementation.md), Retrieval Kernel | R2 changes the search path and has embedded-CJK regressions. Keep broader open issue status; do not turn these tests into a published-host or complete-answer acceptance claim |
@@ -113,7 +166,7 @@ The App image retains supplied notices, SPDX metadata and `apps/retrieval-kernel
 | `winapi-i686-pc-windows-gnu` | `0.4.0` | No recorded upstream revision; no release tag verified |
 | `winapi-x86_64-pc-windows-gnu` | `0.4.0` | No recorded upstream revision; no release tag verified |
 
-These are disclosed supply/provenance gaps. Do not invent a revision or claim complete notice compliance. Applicable release-risk disposition remains with the owner or engineer at final admission; this preparer grants no exception.
+These are disclosed supply/provenance gaps. The 2026-10-15 engineer ruling permits prerelease publication with disclosure and requires closure of all four before first stable. #249 tracks that work and remains unlabeled. Do not invent a revision or claim complete notice compliance. The dated ruling above supplies the disposition; it is not a compliance verification.
 
 ## Verification Evidence
 
@@ -128,6 +181,12 @@ The seven focused root suites are `tests/release-manifest.test.mjs`, `tests/rele
 Focused Biome printed `Checked 0 files`; it supplies no Markdown lint evidence. Documentation validators are the deciding checks for this documentation slice. `git diff --check` exited 0 with no output. No test or oracle was changed.
 
 Local checks do not establish candidate CI, main membership or final publication admission.
+
+### Engineer-Ruling Increment Verification — 2026-10-15
+
+All six Chinese question, selected-answer and option quotations were compared with the supplied strings and match exactly. Their English translations were checked for scope and the distinction between a disclosed prerelease non-blocker and a first-stable blocker. The live issue refresh shows 111 open issues, with #249 as the only addition; #223 and #249 are open and unlabeled.
+
+The seven focused root suites were rerun unchanged after this increment: `tests 193`, `pass 193`, `fail 0`, `skipped 0`, exit 0. Documentation model validation again reported 485 documents; lifecycle, generated-index and ten-story checks passed. The rc.7 notes check and local release preflight passed with the exact result lines above. Focused Biome checked zero Markdown files, and `git diff --check` exited 0. Incremental independent review and exact-P candidate CI remain separate pending gates.
 
 ### Committed Operations Archive Probe
 
