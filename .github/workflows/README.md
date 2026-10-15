@@ -2,12 +2,12 @@
 
 This directory contains repository-level CI workflows. Test-image jobs use Docker `--init` to reap orphaned child processes, matching the local `scripts/test-env.sh` container path. The L0-L2 job prepares checkout, dependency, cache, and toolchain write ownership as root, then runs verification as the image's unprivileged `node` user so permission-refusal fixtures exercise ordinary filesystem authority.
 
-The current workflow policy is intentionally resource-light:
+The current workflow policy is:
 
 - Pull requests run the lightweight repository check and the isolated NanoHost installer host gate.
-- Every push to `main` runs the complete nonpublishing release gate; other branch pushes do not run CI. L0-L2 uses `verify:l0-l2` and its admitted single coverage-enabled Vitest execution, retaining root/native tests.
+- Every push to `main` runs the complete nonpublishing release gate; other branch pushes do not run CI. L0-L2 derives whole-package coverage shards through `scripts/ci-l0-l2.mjs`, plus static/build, native/catalog, and root/Python shards. Every selected coverage file must execute exactly once, with unchanged thresholds and skip enforcement. The aggregate requires the complete successful shard inventory. Main and tags may reuse successful exact-SHA candidate shards, retaining the original execution links.
 - Lowercase version tags matching `v*.*.*` run the release gate through L0-L3 and L5, then publish the controlled release bundle.
-- The L0-L2 job directly runs `python3 -I -B scripts/docker/app-update-helper.test.py` on main and release-tag pushes and the `l0-l2`, `release-gate`, and `full` workflow-dispatch gates, unless an exact-commit successful candidate job is reused. Pull requests do not run that suite.
+- The L0-L2 root shard runs `python3 -I -B scripts/docker/app-update-helper.test.py` on main and release-tag pushes and the `l0-l2`, `release-gate`, and `full` workflow-dispatch gates, unless that exact-commit successful shard is reused. Pull requests do not run that suite.
 - L4 Web e2e is a manual workflow-dispatch gate. Agent-first L6 story acceptance has no GitHub Actions job.
 - Release tags run `scripts/release-preflight.mjs` before publication to validate lowercase tag shape, current prerelease admission, main-branch ancestry, portable Skill and NanoHost inputs, the promoted host manifest, the supported OpenShell release and Cargo SDK consistency, the image manifest, and every release image base digest.
 - The tag workflow reads `release-notes/<tag>.md` through `scripts/release-notes.mjs` and fails before image promotion when that file is missing or malformed.

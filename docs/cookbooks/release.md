@@ -110,6 +110,8 @@ pnpm release:preflight -- --tag "${OPENKIT_RELEASE_TAG}"
 
 Use the main-push release gate, or dispatch `gate=release-gate` or `gate=full`, on the exact commit you will tag. Retain its successful completed run and job evidence. A run on another commit does not establish this commit. Each L0-L2 and NanoCore e2e tag job reuses only its own successful latest-attempt job in a completed same-workflow candidate run on the exact tagged commit, records the supporting run, and otherwise runs its tests as before.
 
+L0-L2 now runs complete package coverage suites in parallel with separate static/build, native and root shards. Its aggregate retains the existing candidate job name and refuses any incomplete shard set. Each coverage shard compares collected file identities with its actual execution report and requires every selected file exactly once. The unchanged coverage thresholds and skip guard still decide success. Build caches are partitioned by runner architecture, shard, toolchain and lock inputs; tests still execute on each new P. Use `node scripts/ci-l0-l2.mjs --matrix` to inspect ownership. Use `node scripts/ci-l0-l2.mjs --run <id>` for one focused shard.
+
 ### Publication-Path Proof Before Tagging
 
 For each image publish/promotion, GitHub Release creation/upload, and published-release verification job, retain an earlier real tag run's successful execution plus the comparison showing that job and its implementation inputs unchanged since that run. Record that run, its successful jobs, and the comparison. The designation of a past run does not by itself prove a result.
