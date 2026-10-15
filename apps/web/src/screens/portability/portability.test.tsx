@@ -1052,7 +1052,15 @@ describe('Portability', () => {
     });
 
     importedWorkspaces.resolve({
-      items: [WORKSPACE, IMPORTED_WORKSPACE].map((workspace) => ({ workspace })),
+      items: [WORKSPACE, IMPORTED_WORKSPACE].map((workspace) => ({
+        workspace,
+        effectiveRole: 'owner' as const,
+        membershipStatus: 'active' as const,
+        accessCause: 'membership' as const,
+        membershipRevision: 1,
+        ownerUserId: 'user_local',
+        registryRevision: 1,
+      })),
     });
     await expectImportedSuccess({
       id: COLLISION.suggestedWorkspaceId,

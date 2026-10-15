@@ -217,7 +217,17 @@ describe('account selected Workspace', () => {
       () =>
         new Promise<{ items: Array<{ workspace: WorkspaceRecord }> }>((resolve) => {
           releaseDiscovery = (items) =>
-            resolve({ items: items.map((workspace) => ({ workspace })) });
+            resolve({
+              items: items.map((workspace) => ({
+                workspace,
+                effectiveRole: 'owner' as const,
+                membershipStatus: 'active' as const,
+                accessCause: 'membership' as const,
+                membershipRevision: 1,
+                ownerUserId: 'user_local',
+                registryRevision: 1,
+              })),
+            });
         })
     );
     const listWorkspaceMembers = vi.fn().mockResolvedValue({ items: [] });
