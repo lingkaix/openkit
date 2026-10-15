@@ -30,7 +30,7 @@ The private administration entry may prepare and apply an exact Worker environme
 - A general web search, browser, shell, filesystem write, MCP tool, or worker execution capability for the Assistant.
 - Direct provider error codes, redaction, and retry semantics. `docs/specs/20260531-worker_turn_reliability_envelope.md` owns that exact call-boundary contract.
 - The generic internal Agent loop or Tool contract. `docs/specs/20260813-internal_agent_runtime.md` owns those mechanisms; this specification owns only the Assistant role assembly projected onto them.
-- Logical-model context policy and automatic runtime compaction. `docs/specs/20260902-agent_runtime_context_compaction.md` owns those mechanisms; this specification only supplies Assistant context through the shared loop.
+- The shared durable rolling context mechanism. [Context Management](20260902-agent_runtime_context_compaction.md#internal-durable-rolling-context) owns it; this specification binds Assistant context to its private Timeline or shared conversation.
 - Permission evaluation or disclosure authorization. `docs/core/permissions.md` owns `AssistantReadScope`, `OutputAudience`, per-call authorization, approval strength, and the publication guard; this specification narrows and projects those decisions for Assistant Turns. When an administration resource family is cut over, the per-call administrator check is invocation's, as Derived internal tools states, and this specification still keeps revocation and provenance.
 - Conversation-target enumeration, structured submission, Artifact references, and public command identity. `docs/specs/20260831-unified_conversation_composer.md` owns that boundary and invokes this Assistant branch.
 
@@ -55,6 +55,24 @@ The Assistant may answer directly only when the request fits its limited role bo
 ## Personal Assistant And Visibility
 
 Core Assistant is presented as the current user's Personal Assistant. Private continuity and user Memory personalize interaction; they do not create a per-user runtime process, agent supply entry or authorization identity. `20260909-thread_visibility_and_sharing.md` owns private conversation and shared Task/Goal disclosure; `20260909-personal_memory_and_knowledge_learning.md` owns User Memory and scoped Knowledge retrieval. The five existing information-source classes remain unchanged: Memory is governed reusable context, and raw personal conversation remains Thread history. Selected Workspace resources are read on demand under current user and output-audience authority.
+
+### Private Timeline and response triggering
+
+Each `(User, Workspace)` has exactly one private Assistant Timeline. It uses the existing Thread, Turn, and Item owners, not a second conversation store. Users cannot create additional private chat Threads. The separate private administration entry retains its own fixed Tool set and current administrator checks; it is not another ordinary Assistant Timeline. These are the [accepted Chat Mode rulings](../decisions/20261015-private_assistant_timeline_and_rolling_context.md).
+
+The default personal Workspace is an ordinary `personal` Workspace with Task, Goal, Artifact, and Sandbox capability. It cannot add members. Memory exists only in User scope and follows the User; Workspace and Server personalization stays in Knowledge. Workspace selection grants no ambient source access. The private administration entry moves to the personal Workspace without gaining ordinary conversational Tools.
+
+The Assistant responds to user-triggered requests. Dispatching a Task or Goal creates no separate result-card mechanism and no proactive completion reply. The Thread list exposes the related work. When the User asks for status or results, the Assistant queries the existing work owner and answers through ordinary Items. Existing pending-request outcome delivery remains governed by Pending Requests; it is not a proactive result-card channel.
+
+### Shared conversations after v0.1.0
+
+Shared conversation implementation waits until after `v0.1.0` and the private Timeline, under [Shared Conversations And Single-Agent Chat Threads](../decisions/20261015-shared_conversation_and_single_agent_threads.md). Team Workspace members may then create a Workspace-shared Chat Thread directly, without first publishing a private snapshot. Personal Workspaces cannot provide this shared conversation.
+
+The Core Assistant is the only agent in every private or shared Chat Thread. In a shared conversation, it acts as a Workspace role. It reads no participant's Memory or private Timeline and exposes no administration Tools. Each shared conversation has its own rolling context window. Knowledge and history sources must be eligible for the whole current output audience. The addressing member is the Actor for that Turn and every Tool call or handoff; another participant's prior authority grants nothing.
+
+The Assistant replies only when a member addresses it. One Turn per Thread applies; simultaneous requests queue. A shared query trace belongs to its querying shared Turn, or its Thread when no Turn exists, and remains visible only to that audience. It never enters a participant's private Timeline. Explicit `thread.share` publishes only its selected private snapshot through the sharing owner.
+
+Addressing a Worker from Chat requires a confirmed Task handoff that creates a linked Task execution Thread. The Worker does not join Chat. Task and Goal execution Threads retain their Workspace-shared audience and existing AgentSession continuity. Multi-agent work uses Goal Mode under the Coordinator and an approved Plan. Ordinary Items show work state and results without a special result-card channel.
 
 ## Goals / Non-goals
 
@@ -88,7 +106,7 @@ The missing V1 contract is the concrete Assistant boundary: which tools it may u
 - The Assistant must choose one successful routing outcome for every accepted user request: answer, clarify, hand off to Task Mode, hand off to Goal Mode, or refuse. System failure uses the typed App API error contract and is not a success-shaped routing outcome.
 - Handoff to Workflow Coordinator is explicit Core state and must be visible through item history or a stable App API projection.
 - Assistant calls to the LLM gateway must use the same capability, usage, and audit foundation as other gateway-mediated LLM calls.
-- Every model-backed Assistant answer, including one in Quick Chat, must use the shared Internal Agent Loop and its resolved logical-model context policy; short answers receive no direct-call exception.
+- Every model-backed Assistant answer, including one in a personal Workspace, uses the shared Internal Agent Loop and its durable rolling context; short answers receive no direct-call exception.
 
 ## Contract / Expected Behavior
 
@@ -198,7 +216,7 @@ Assistant continuity is reconstructible in this precedence order:
 3. The bounded Turn input records the admitted Thread range or summary, selected sources, Tool evidence, important exclusions, freshness, and destination audience needed to explain a consequential answer.
 4. Provider-native conversation state, prompt caches, and warm connections are replaceable latency caches that add no authority and hold no unique product truth.
 
-A new Turn is assembled from the smallest relevant durable Thread range or governed summary plus current request-scoped sources. A warm provider context may be reused only while its prompt, Tool set, read scope, output audience, source revisions, policy, and retained Thread context remain compatible; otherwise NanoCore discards it and reconstructs from current owners.
+All NanoCore internal roles use the shared [durable rolling context](20260902-agent_runtime_context_compaction.md#internal-durable-rolling-context), replacing the unimplemented Gateway compactor. Each Assistant Timeline or shared conversation has one continuing window isolated by its owning audience. A new Turn continues that window from durable authorized context plus current request-scoped sources. A warm provider context may be reused only while its prompt, Tool set, read scope, output audience, source revisions, policy, and retained Thread context remain compatible; otherwise NanoCore discards it and reconstructs from current owners.
 
 User correction, authorization revocation, deletion, retention change, source revision, audience change, policy change, or incompatible role configuration invalidates affected summaries and provider caches for later calls. An in-progress Turn remains pinned to its admitted input, but publication still performs the current audience guard and may fail closed.
 
@@ -210,7 +228,7 @@ Acceptance is observable when replacing the provider or deleting all provider-si
 
 Administration is a private, narrowed Personal Assistant Turn, not a separate Agent role or runtime and not an extension of the ordinary conversational Tool set. The server resolves the dedicated private administration surface and the initiating user's current usable administrator authority under Permissions Core; an ordinary administration request proposes a new private administration Thread. R035 conversation and R048 validated forms use the same configuration/command owners. This section owns the finite initial management contract. Resolving this administration surface is entry admission and stays in this specification. Until the administration family is cut over, the usable administrator authority named here is also the per-call check. When the family is cut over, that per-call administrator check moves into invocation under Derived internal tools, and entry admission stays.
 
-The Thread's immutable server-authored `entryPath` distinguishes administration from ordinary conversation under `20260909-thread_visibility_and_sharing.md`. The first implementation uses the real user's private Quick Chat Workspace and a dedicated administration endpoint; subsequent requests retain that Thread identity. Entry classification never substitutes for current administrator authorization. Ordinary and administration submissions reject the other entry's Threads instead of changing their Tool sets or interpreting an id prefix or prose marker as routing authority.
+The Thread's immutable server-authored `entryPath` distinguishes administration from ordinary conversation under `20260909-thread_visibility_and_sharing.md`. The administration entry uses the real user's personal Workspace and a dedicated administration endpoint; subsequent requests retain that Thread identity. Entry classification never substitutes for current administrator authorization. Ordinary and administration submissions reject the other entry's Threads instead of changing their Tool sets or interpreting an id prefix or prose marker as routing authority.
 
 The model cannot supply or widen the administration surface or current actor authority. The administration Turn receives no ordinary conversational observation Tools, so retrieved untrusted material and administration operations do not coexist in one Tool array. Direct edits use validated forms; model-backed administration is for drafting, explanation or diagnosis, and application remains the human-confirmed Core command rather than a model Tool. The finite conversational setup scope below deliberately makes R035 usable without creating another configuration owner.
 
@@ -279,8 +297,8 @@ The outcome must include a short explanation suitable for diagnostics and option
 - The Assistant must hand off to a Goal when the request is long-running, ambiguous, high-risk, multi-step, multi-agent, or benefits from an approved Plan version.
 - The Assistant must not silently start worker execution. It hands bounded worker work to Workflow Coordinator. A Goal handoff calls the Goal owner's create operation. The Task owner or the Goal owner keeps the durable state and effects.
 - Handoff records must preserve the original user request, Assistant rationale, selected target mode, and relevant context references.
-- The Assistant owns semantic choice among an answer, clarification, refusal, Task handoff, and Goal handoff within its admitted Tools and authority. Ordinary conversation is not explicit Task delegation. Once the Assistant invokes an authorized explicit Task handoff, it uses the same explicit-delegation admission and worker-request composition as direct `task.start`; Core must not run a second keyword vote on its instruction. The handoff still requires the existing Workspace, audience, source, actor, request, and durable-admission evidence, including the Quick Chat Workspace resolution rule. A failed downstream admission produces the existing truthful clarification or refusal outcome, not a handoff to nonexistent work. No nested Task receipt is added.
-- When the current conversation is owned by Quick Chat, the one handoff confirmation MUST also resolve an existing eligible executing Workspace or propose creation of an empty project Workspace. Acceptance creates or resolves the executing Workspace, creates the new execution Thread there, and submits the Task or Goal handoff as one visible user decision; Quick Chat itself gains no worker capability.
+- The Assistant owns semantic choice among an answer, clarification, refusal, Task handoff, and Goal handoff within its admitted Tools and authority. Ordinary conversation is not explicit Task delegation. Once the Assistant invokes an authorized explicit Task handoff, it uses the same explicit-delegation admission and worker-request composition as direct `task.start`; Core must not run a second keyword vote on its instruction. The handoff still requires the existing Workspace, audience, source, actor, request, and durable-admission evidence, including current receiving-Workspace and disclosure admission. A failed downstream admission produces the existing truthful clarification or refusal outcome, not a handoff to nonexistent work. No nested Task receipt is added.
+- A personal Workspace may own the receiving Task or Goal execution. A handoff creates a linked execution Thread under the same current-authority and disclosure rules as any other Workspace. Personal placement requires no forced move to another Workspace.
 - If no executing Workspace can be resolved or created because exact authorization is missing, the Assistant MUST create a durable refusal Item naming the exact missing authorization and MUST create no Task, Goal, Worker Turn, or execution Thread.
 
 ### Thread and item projection
@@ -396,6 +414,10 @@ The accepted Assistant routing and projection path is implemented behind `conver
 
 ## Testing Strategy / Acceptance Criteria
 
+- One private Timeline exists per `(User, Workspace)`; ordinary private chat creation cannot allocate a second one. Restart retains the same continuity and current audience rules.
+- A personal Workspace can own Task, Goal, Artifact, and Sandbox work but refuses member addition. Memory remains User-scoped.
+- Dispatch produces no result card or proactive completion reply. A user-requested status read returns current owner evidence through ordinary Items.
+- All internal roles use the same durable rolling-context mechanism and no Gateway compactor. Shared conversation implementation remains after `v0.1.0`; its later checks cover whole-audience source filtering, current Actor authority, queued Turns, private-window isolation, and one Core Assistant.
 - L1: routing classification tests for answer, clarify, approval-required, Task handoff, Goal handoff, and refusal.
 - L3: a direct Assistant run and an outcome-initiated Assistant Turn can each raise an actionable pending approval without stopping the run or requiring an `approval-required` conversation receipt; the ordinary result and any existing conversation receipt remain independently replayable; grant executes the captured call once inside the approval response command, and a later Assistant Turn receives the outcome without reissuing the call. Missing or contradictory request owners remain inspect-only.
 - L3: a conversation completes with `clarification-needed`; its answer admits an Assistant Turn that hands off a bounded Task; that Task's worker raises a user-input request. The handoff lineage derives from the admitted Assistant Turn, no conversation or `task.start` receipt is created or rewritten, the worker's request validates against the pending request's responsible user and that source tuple, and a missing or conflicting source tuple is `recovery_required` without rerunning the Assistant, Coordinator, or worker.
@@ -410,7 +432,7 @@ The accepted Assistant routing and projection path is implemented behind `conver
 
 Acceptance: Assistant never directly starts a worker, never mutates arbitrary files or Workspace/Server Knowledge, emits visible thread history, routes bounded worker work to Workflow Coordinator, and routes a Goal handoff through the Goal owner's create operation.
 
-Acceptance also requires identical ordered ordinary-entry Tool definitions across message classes under the same resolved configuration, metadata-only assembly with zero ambient business or operational reads for a general question, per-call authorization and publication guarding, with an administration Tool's per-call administrator check located as Derived internal tools states, reconstructible continuity, a separate propose-only administration Thread, and a Quick Chat work request that reaches one confirmed executing Workspace and Task or Goal or leaves an exact durable missing-authorization refusal.
+Acceptance also requires identical ordered ordinary-entry Tool definitions across message classes under the same resolved configuration, metadata-only assembly with zero ambient business or operational reads for a general question, per-call authorization and publication guarding, with an administration Tool's per-call administrator check located as Derived internal tools states, reconstructible continuity, a separate propose-only administration Thread, and a personal-Workspace work request that reaches the confirmed Task or Goal or leaves an exact durable missing-authorization refusal.
 
 ## Risks & Mitigations
 

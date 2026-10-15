@@ -41,23 +41,23 @@ A product projection may summarize or reorganize these records, but it must pres
 
 Product surfaces present parallel work as related execution Threads linked from the originating or Coordinator Thread. They keep worker Items in the execution narrative that produced them instead of interleaving several agents' work into one conversation, while still making status, results, evidence, and navigation understandable from the parent surface.
 
-## Quick Chat Workspace
+## Personal Workspace
 
-Quick Chat is each user's initial owner-only Workspace for lightweight conversation and ordinary Thread and Item history. The Personal Assistant may retrieve that user's Memory through the governed knowledge owner; Memory belongs to the User independently of Quick Chat.
+Each User receives a default personal Workspace. It is an ordinary Workspace with Task, Goal, Artifact, Sandbox, repository, and data-source capability under their existing owners. It cannot add members. User Memory belongs to the User independently of that Workspace. Existing Quick Chat data moves one way into the personal Workspace; the former capability restrictions end ([decision](../decisions/20261015-private_assistant_timeline_and_rolling_context.md)).
 
-Quick Chat is a real Workspace, but it is not a project Workspace. It must not silently expose repository or workspace-data-source binding, Task Mode, Goal Mode, worker execution, or Git write behavior.
-
-When work needs a project boundary, the product must ask the user to create or select an eligible Workspace instead of using Quick Chat as a hidden bridge.
-
-Exact workspace kinds, seed behavior, route guards, record fields, error codes, and client selection mechanics belong to implementation-facing contracts.
+Exact kinds, provisioning, migration, and client selection belong to implementation-facing contracts.
 
 ## Personal Assistant And Shared Work
 
 Core Assistant is the user's Personal Assistant across eligible work contexts. It uses shared internal runtime machinery while maintaining private conversation and personally owned Memory. Workspace capabilities, configuration and information remain governed resources selected on demand; personalization does not widen authority.
 
-Quick Chat, private project Assistant conversations and management dialogue are visible only to their initiating user by default. Task and Goal narratives are Workspace-shared, including their execution Threads and eligible results. A private project Thread remains Workspace-owned with a narrower audience; persistent personal Memory is independently User-owned. Other members do not gain private conversation access merely through Workspace membership. A currently usable administrator credential is eligible under the administrator eligibility rule in `docs/core/permissions.md`.
+Each `(User, Workspace)` has one private Assistant Timeline. Users cannot create additional private chat Threads. Management dialogue retains its separate private entry. Task and Goal narratives are Workspace-shared, including their execution Threads and eligible results. A private project Thread remains Workspace-owned with a narrower audience; persistent personal Memory is independently User-owned. Other members do not gain private conversation access merely through Workspace membership. A currently usable administrator credential is eligible under the administrator eligibility rule in `docs/core/permissions.md`.
 
 Users may explicitly publish selected personal conversation material to a shared discussion or formal task. Handoff identifies the receiving Workspace and exact disclosed brief/inputs; private history, personal Memory and hidden provider context are not implicitly copied. Shared effects and their eligible audit remain visible according to their resource owner, without publishing the private discussion. A shared card never delegates the original caller's privileges to its reader. Visibility and notification prominence are separate: full shared work can remain inspectable while attention surfaces emphasize decisions, progress and outcomes.
+
+Chat has no special result-card mechanism or proactive completion response. The Assistant dispatches requested work and answers status/result questions when the User asks. Existing Thread and Item projections expose that work ([decision](../decisions/20261015-private_assistant_timeline_and_rolling_context.md)).
+
+After `v0.1.0` and the private Timeline, team Workspaces may offer directly created shared Chat Threads. The Core Assistant is their only agent and acts as a Workspace role, without personal Memory, private Timeline input, or administration Tools. Each shared conversation has its own rolling context and uses the addressing member's authority. Whole-audience source admission and linked Task/Goal handoffs retain their existing boundaries ([decision](../decisions/20261015-shared_conversation_and_single_agent_threads.md)).
 
 ## Product Modes
 
