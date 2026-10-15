@@ -28,7 +28,7 @@ use tokio::time::{sleep, timeout};
 
 use crate::epoch_evidence::{
     EXPORT_TIMEOUT, EpochEvidenceWriter, EpochInvalidationTrigger, REBUILD_FENCE_STARTED_PATH,
-    record_fence_started, record_fence_started_at,
+    record_fence_started_at,
 };
 use crate::image_acquisition::{
     AcquisitionTrigger, BuildDefinition, BuildPlan, EMPTY_BUILD_CONTEXT_DIGEST,
@@ -1510,7 +1510,7 @@ impl EpochMemberMonitor {
     fn start_with_namespaces(
         mut children: Vec<Child>,
         private_namespaces: Option<PrivateNamespaceDescriptors>,
-        mut evidence: EpochEvidenceWriter,
+        evidence: EpochEvidenceWriter,
         fence_started_path: PathBuf,
         readiness: Arc<AtomicU8>,
         inspection: Option<Arc<crate::live_inspection::InspectionState>>,
@@ -1538,7 +1538,7 @@ impl EpochMemberMonitor {
                     inspection.close();
                 }
                 fence_initiated(
-                    &mut evidence,
+                    &evidence,
                     &mut children.children,
                     &fault,
                     fence_started_path,
@@ -1790,49 +1790,28 @@ impl EpochCoordinator {
         let mut children = Vec::with_capacity(plan.members().len());
         let readiness = Arc::new(AtomicU8::new(ReadinessProof::Unavailable as u8));
         let runtime = {
-            let export_before_fence = |fault: EpochFault| {
-                let mut writer = evidence.clone();
-                let readiness = ReadinessProof::report_value(&readiness);
-                let (completed_tx, completed_rx) = mpsc::sync_channel(1);
-                let fence_started = SystemTime::now();
-                let worker = catch_unwind(AssertUnwindSafe(|| {
-                    thread::spawn(move || {
-                        let started = Instant::now();
-                        let _ = record_fence_started(fence_started);
-                        let mut fields = invalidation_report_fields(&fault);
-                        fields.push(("readiness", readiness));
-                        let field_refs = fields
-                            .iter()
-                            .map(|(name, value)| (*name, value.as_str()))
-                            .collect::<Vec<_>>();
-                        let _ = writer.export_invalidation(
-                            invalidation_trigger(&fault),
-                            &field_refs,
-                            started,
-                        );
-                        let _ = completed_tx.send(());
-                    })
-                }));
-                if let Ok(_worker) = worker {
-                    let _ = completed_rx.recv_timeout(EXPORT_TIMEOUT);
-                }
+            let fence_failed_startup = |fault: EpochFault, children: &mut [Child]| {
+                fence_startup_failure(
+                    &evidence,
+                    children,
+                    &fault,
+                    PathBuf::from(REBUILD_FENCE_STARTED_PATH),
+                    &readiness,
+                );
             };
             if create_private_dir(plan.epoch_root()).is_err() {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
+                fence_failed_startup(EpochFault::PartialStart, &mut children);
                 return Err(EpochFault::PartialStart);
             }
             if create_private_dir(plan.run_root()).is_err() {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
+                fence_failed_startup(EpochFault::PartialStart, &mut children);
                 return Err(EpochFault::PartialStart);
             }
             readiness.store(ReadinessProof::PrivateRoots as u8, Ordering::Release);
             let resolver_target = match fs::canonicalize("/etc/resolv.conf") {
                 Ok(path) if path.is_file() => path,
                 _ => {
-                    export_before_fence(EpochFault::PartialStart);
-                    terminate_children(&mut children);
+                    fence_failed_startup(EpochFault::PartialStart, &mut children);
                     return Err(EpochFault::PartialStart);
                 }
             };
@@ -1841,8 +1820,7 @@ impl EpochCoordinator {
                     .is_err()
                 || write_private_file(plan.resolver_path(), plan.resolver_contents()).is_err()
             {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
+                fence_failed_startup(EpochFault::PartialStart, &mut children);
                 return Err(EpochFault::PartialStart);
             }
             readiness.store(ReadinessProof::Configuration as u8, Ordering::Release);
@@ -1857,8 +1835,7 @@ impl EpochCoordinator {
             )
             .is_err()
             {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
+                fence_failed_startup(EpochFault::PartialStart, &mut children);
                 return Err(EpochFault::PartialStart);
             }
             let private_namespaces = match children
@@ -1869,8 +1846,7 @@ impl EpochCoordinator {
                 }) {
                 Ok(descriptor) => descriptor,
                 Err(fault) => {
-                    export_before_fence(fault.clone());
-                    terminate_children(&mut children);
+                    fence_failed_startup(fault.clone(), &mut children);
                     return Err(fault);
                 }
             };
@@ -1878,8 +1854,7 @@ impl EpochCoordinator {
                 .last_mut()
                 .is_some_and(|child| wait_for_socket(child, plan.containerd_socket()));
             if !containerd_ready {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
+                fence_failed_startup(EpochFault::PartialStart, &mut children);
                 return Err(EpochFault::PartialStart);
             }
             readiness.store(ReadinessProof::ContainerdSocket as u8, Ordering::Release);
@@ -1903,8 +1878,7 @@ impl EpochCoordinator {
                 .first_mut()
                 .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
             if !slirp_ready || !containerd_running {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
+                fence_failed_startup(EpochFault::PartialStart, &mut children);
                 return Err(EpochFault::PartialStart);
             }
             readiness.store(ReadinessProof::PrivateNetwork as u8, Ordering::Release);
@@ -1917,8 +1891,7 @@ impl EpochCoordinator {
             )
             .is_err()
             {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
+                fence_failed_startup(EpochFault::PartialStart, &mut children);
                 return Err(EpochFault::PartialStart);
             }
             let dockerd_ready = children.last_mut().is_some_and(|child| {
@@ -1929,8 +1902,7 @@ impl EpochCoordinator {
                 .first_mut()
                 .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
             if !dockerd_ready || !containerd_running {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
+                fence_failed_startup(EpochFault::PartialStart, &mut children);
                 return Err(EpochFault::PartialStart);
             }
             readiness.store(ReadinessProof::DockerSocket as u8, Ordering::Release);
@@ -1949,16 +1921,14 @@ impl EpochCoordinator {
                     .first_mut()
                     .is_some_and(|child| matches!(child.try_wait(), Ok(None)))
             {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
+                fence_failed_startup(EpochFault::PartialStart, &mut children);
                 return Err(EpochFault::PartialStart);
             }
             if client
                 .bind_network_namespace(Arc::clone(&private_namespaces.network))
                 .is_err()
             {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
+                fence_failed_startup(EpochFault::PartialStart, &mut children);
                 return Err(EpochFault::PartialStart);
             }
 
@@ -1993,8 +1963,7 @@ impl EpochCoordinator {
                     Ok(Err(fault)) => fault,
                     Err(_) | Ok(Ok(())) => EpochFault::PartialStart,
                 };
-                export_before_fence(fault.clone());
-                terminate_children(&mut children);
+                fence_failed_startup(fault.clone(), &mut children);
                 return Err(fault);
             }
             readiness.store(ReadinessProof::GatewayHealth as u8, Ordering::Release);
@@ -2873,9 +2842,57 @@ impl Drop for EpochCoordinator {
     }
 }
 
+/// Captures the actually started prefix and enters the existing bounded invalidation fence.
+fn fence_startup_failure(
+    evidence: &EpochEvidenceWriter,
+    children: &mut [Child],
+    fault: &EpochFault,
+    fence_started_path: PathBuf,
+    readiness: &AtomicU8,
+) {
+    let inventory = children
+        .iter_mut()
+        .enumerate()
+        .map(|(index, child)| MemberInventory::pin(index, child))
+        .collect();
+    fence_initiated(
+        evidence,
+        children,
+        fault,
+        fence_started_path,
+        readiness,
+        inventory,
+    );
+}
+
+/// Invokes the actual startup failure producer with fixture-owned processes and evidence paths.
+#[cfg(test)]
+pub(crate) fn fixture_startup_failure(
+    children: Vec<Child>,
+    root: &Path,
+    fault: EpochFault,
+    before_export: Option<Arc<dyn Fn() + Send + Sync>>,
+) {
+    let mut children = OwnedEpochChildren {
+        children,
+        private_namespaces: None,
+    };
+    let mut evidence = EpochEvidenceWriter::new(root.join("reports")).unwrap();
+    if let Some(hook) = before_export {
+        evidence.before_export(hook);
+    }
+    fence_startup_failure(
+        &evidence,
+        &mut children.children,
+        &fault,
+        root.join("fence-started"),
+        &AtomicU8::new(ReadinessProof::Unavailable as u8),
+    );
+}
+
 /// Starts exactly one bounded invalidation export before fencing owned children.
 fn fence_initiated(
-    evidence: &mut EpochEvidenceWriter,
+    evidence: &EpochEvidenceWriter,
     children: &mut [Child],
     fault: &EpochFault,
     fence_started_path: PathBuf,
@@ -5696,7 +5713,24 @@ mod tests {
             .nth(1)
             .and_then(|source| source.split("fn invalidation_trigger").next())
             .expect("running invalidation boundary");
-        let all_fences_bounded = [startup_fence, running_fence].into_iter().all(|boundary| {
+        let startup_capture = coordinator
+            .split_once("fn fence_startup_failure(")
+            .and_then(|(_, source)| {
+                source
+                    .split("/// Invokes the actual startup failure producer")
+                    .next()
+            })
+            .expect("startup process capture boundary");
+        // Startup now enters the same fence owner, so check that call boundary
+        // before applying the unchanged hard-bound checks to its sole worker.
+        assert!(startup_fence.contains("fence_startup_failure("));
+        assert!(!startup_fence.contains("terminate_children("));
+        assert!(startup_capture.contains("MemberInventory::pin"));
+        assert!(startup_capture.contains("fence_initiated("));
+        assert!(!startup_capture.contains("terminate_children("));
+        assert!(!startup_capture.contains("thread::spawn"));
+        assert_eq!(running_fence.matches("export_invalidation(").count(), 1);
+        let all_fences_bounded = [running_fence].into_iter().all(|boundary| {
             let worker = boundary.find("thread::spawn(move || {");
             let worker_body = worker.and_then(|worker| {
                 boundary[worker..]

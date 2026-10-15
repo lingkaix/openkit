@@ -8,6 +8,7 @@
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -16,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::epoch_coordinator::InventoryMonitorFixture;
+use crate::epoch_coordinator::{EpochFault, InventoryMonitorFixture, fixture_startup_failure};
 
 static NEXT_ROOT: AtomicUsize = AtomicUsize::new(0);
 
@@ -74,6 +75,116 @@ fn epoch_inventory_real_monitor_exports_owned_members() {
     }
     assert_eq!(report["complete"], true);
     assert_private(&report, &fixture.root);
+}
+
+#[test]
+fn epoch_inventory_startup_exports_only_the_started_member_prefix() {
+    for prefix in 0..=4 {
+        let fixture = LocalInventory::new();
+        let mut children = ReapChildren(Vec::new());
+        for index in 0..prefix {
+            children.0.push(fixture.sleep_member(index));
+        }
+        let pids: Vec<_> = children.0.iter().map(Child::id).collect();
+        let images: Vec<_> = pids.iter().map(|pid| live_image_identity(*pid)).collect();
+        let cgroups: Vec<_> = pids.iter().map(|pid| live_cgroup_identity(*pid)).collect();
+        if prefix > 0 {
+            let installed = fixture.root.join(format!("private-member-{}", prefix - 1));
+            std::fs::write(
+                fixture.root.join("replacement"),
+                b"new installed image bytes",
+            )
+            .unwrap();
+            std::fs::rename(fixture.root.join("replacement"), &installed).unwrap();
+            assert_ne!(
+                images[prefix - 1]["inode"],
+                json!(std::fs::metadata(installed).unwrap().ino())
+            );
+        }
+        fixture_startup_failure(
+            children.take(),
+            &fixture.root,
+            EpochFault::PartialStart,
+            None,
+        );
+        let report = read_report(&fixture.root.join("reports"));
+        assert!(
+            report["fields"]["members"].is_string(),
+            "actual partial-start report omitted the started member inventory: {report}"
+        );
+        let rows = members(&report, &pids);
+        for (index, row) in rows.iter().enumerate() {
+            assert_eq!(row["binary"], images[index]);
+            assert_eq!(row["cgroup"], cgroups[index]);
+            assert_eq!(row["status"], json!({"state":"running"}));
+        }
+        if prefix == 0 {
+            assert_eq!(report["fields"]["members"], "[]");
+        }
+        assert_eq!(report["trigger"], "epoch-creation-failure");
+        assert_eq!(report["fields"]["readiness"], "last_succeeded=unavailable");
+        assert_eq!(report["fields"]["fence"], "initiated");
+        assert_eq!(report["complete"], true);
+        for pid in pids {
+            assert!(
+                !Path::new(&format!("/proc/{pid}")).exists(),
+                "startup fence did not reap its owned member"
+            );
+        }
+        assert_private(&report, &fixture.root);
+    }
+}
+
+#[test]
+fn epoch_inventory_startup_retains_observed_exit_and_signal_without_invented_proof() {
+    for (terminal, fault, trigger) in [
+        ("exited", EpochFault::PartialStart, "epoch-creation-failure"),
+        (
+            "signaled",
+            EpochFault::IdentityMismatch,
+            "member-identity-change",
+        ),
+    ] {
+        let fixture = LocalInventory::new();
+        let mut children = ReapChildren(vec![fixture.sleep_member(0)]);
+        let (stopped, mut input) = fixture.exit_member(1);
+        children.0.push(stopped);
+        let pids: Vec<_> = children.0.iter().map(Child::id).collect();
+        let live_binary = live_image_identity(pids[0]);
+        let live_cgroup = live_cgroup_identity(pids[0]);
+        if terminal == "exited" {
+            input.write_all(b"7\n").unwrap();
+            assert_eq!(children.0[1].wait().unwrap().code(), Some(7));
+        } else {
+            signal_child(pids[1], libc::SIGTERM);
+            assert_eq!(children.0[1].wait().unwrap().signal(), Some(15));
+        }
+        assert!(!Path::new(&format!("/proc/{}/exe", pids[1])).exists());
+        fixture_startup_failure(children.take(), &fixture.root, fault, None);
+        let report = read_report(&fixture.root.join("reports"));
+        let rows = members(&report, &pids);
+        assert_eq!(rows[0]["binary"], live_binary);
+        assert_eq!(rows[0]["cgroup"], live_cgroup);
+        assert_eq!(rows[0]["status"], json!({"state":"running"}));
+        assert_eq!(rows[1]["binary"], "unavailable");
+        assert_eq!(rows[1]["cgroup"], "unavailable");
+        assert_eq!(
+            rows[1]["status"],
+            if terminal == "exited" {
+                json!({"state":"exited","code":7})
+            } else {
+                json!({"state":"signaled","signal":15})
+            }
+        );
+        assert_eq!(report["trigger"], trigger);
+        assert_eq!(report["fields"]["readiness"], "last_succeeded=unavailable");
+        assert!(
+            report["fields"]["failed_member"].is_null(),
+            "startup status collection invented a first-failure cause"
+        );
+        assert_eq!(report["complete"], true);
+        assert_private(&report, &fixture.root);
+    }
 }
 
 /// Owns one isolated report root; the monitor separately owns transferred children.
@@ -252,7 +363,7 @@ fn wait_for(what: &str, ready: impl Fn() -> bool) {
 
 /// Sends a signal only to a still-owned fixture child, never an installed member.
 fn signal_child(pid: u32, signal: i32) {
-    // SAFETY: each caller retains this child through the production monitor.
+    // SAFETY: each caller retains this child directly or through the production monitor.
     assert_eq!(unsafe { libc::kill(pid as i32, signal) }, 0);
 }
 
@@ -476,6 +587,64 @@ fn epoch_inventory_export_timeout_never_delays_the_fence() {
     assert_eq!(
         report["complete"], false,
         "an export that exceeded its deadline claimed completeness"
+    );
+    assert_private(&report, &fixture.root);
+}
+
+#[test]
+fn epoch_inventory_startup_export_timeout_preserves_export_before_fence_order() {
+    let fixture = LocalInventory::new();
+    let children = ReapChildren(vec![fixture.sleep_member(0)]);
+    let pid = children.0[0].id();
+    let gate = Arc::new(ExportGate::default());
+    let _release = ReleaseExport(gate.clone());
+    let blocked = gate.clone();
+    let root = fixture.root.clone();
+    let started = Instant::now();
+    let worker = std::thread::spawn(move || {
+        fixture_startup_failure(
+            children.take(),
+            &root,
+            EpochFault::PartialStart,
+            Some(Arc::new(move || blocked.block())),
+        )
+    });
+    wait_for("actual partial-start export attempt", || {
+        gate.entered.load(Ordering::SeqCst) == 1
+    });
+    assert!(
+        std::fs::read_link(format!("/proc/{pid}/exe")).is_ok(),
+        "partial-start member was fenced before the export attempt"
+    );
+    wait_for("bounded partial-start fence", || worker.is_finished());
+    worker.join().unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "startup export exceeded the existing two-second fence allowance"
+    );
+    assert!(
+        !Path::new(&format!("/proc/{pid}")).exists(),
+        "partial-start fence did not reap its owned child"
+    );
+    gate.release();
+    wait_for("late incomplete partial-start report", || {
+        std::fs::read_dir(fixture.root.join("reports"))
+            .unwrap()
+            .any(|entry| {
+                let Ok(entry) = entry else {
+                    return false;
+                };
+                std::fs::read(entry.path())
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .is_some()
+            })
+    });
+    let report = read_report(&fixture.root.join("reports"));
+    assert_eq!(report["trigger"], "epoch-creation-failure");
+    assert_eq!(
+        report["complete"], false,
+        "expired startup export claimed completeness"
     );
     assert_private(&report, &fixture.root);
 }
