@@ -6,9 +6,9 @@ import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
   type AdmittedWorkBody,
-  appendWorkObservation,
   type AssistantSkillAdmission,
   AssistantSkillAdmissionSchema,
+  appendWorkObservation,
   readWorkObservationTurnBinding,
   type WorkObservationDraft,
 } from '../storage/work-observations.js';
