@@ -120,53 +120,37 @@ Outcome change:
 
 ## Preparation Checkpoint — Rewritable
 
-This checkpoint is rewritable and is not authority.
+This checkpoint records facts and pending gates. It is not authority.
 
 | Field | Current fact or pending observation |
 | --- | --- |
-| Intended tag | `v0.1.0-rc.6`, a non-draft prerelease that never becomes GitHub Latest and never creates or changes a GHCR `latest` tag |
-| Controlled asset set | The rc.5 set, with the tag replaced by `v0.1.0-rc.6`, as detailed below |
-| Publication authorization | Standing prerelease authorization, which covers rc.6 (Intent Revision 4); it applies after its Release Management amendment lands and its conditions hold |
-| Tested commit T and publishing commit P | Not fixed. Intent Revision 2 supersedes the candidate `67bf536b`, which passed candidate CI and is not tagged. P will carry the Intent Revision 2 work packages, this record and `release-notes/v0.1.0-rc.6.md` |
-| Classified comparison of T and P | Not fixed, because T and P are not fixed. [Release Management](../../specs/20260829-release_management.md#candidate-ci-and-tag-reuse) requires candidate CI on exact P |
-| Candidate CI proof | Pending. This preparation has not run candidate CI for `v0.1.0-rc.6` |
-| Visibility | `gh repo view lingkaix/openkit --json visibility` returned `PUBLIC` during this preparation. This preparation did not re-read image-package visibility. The rc.5 record states that verification on 2026-10-13 observed the repository and the three image packages as public. This record changes no visibility |
-| Published identity | Not published |
-| Known-defect disposition | User-facing issues belong in the notes input and are tracked in [#177](https://github.com/lingkaix/openkit/issues/177). The R001 gate [#120](https://github.com/lingkaix/openkit/issues/120) stays open. [#242](https://github.com/lingkaix/openkit/issues/242) is the change in this candidate, not a known-issue line. [#243](https://github.com/lingkaix/openkit/issues/243) stays out of the user notes |
-| Frozen checklist identity | Not applicable. [Catalog Stories](../../specs/20260829-release_management.md#catalog-stories) governs post-tag story selection |
-| Manual-gate disposition | Pending. No catalog story and no Worker qualification has run for `v0.1.0-rc.6` |
-| Known limitations | Recorded in the notes input. R001 remains open under [#120](https://github.com/lingkaix/openkit/issues/120), so supported Worker execution and stable promotion are not claimed |
-| Scratch rehearsal | Not required. The publication-path comparison below is empty, and this preparation does not change those paths |
+| Intended tag | `v0.1.0-rc.6`, non-draft prerelease; no GitHub Latest assignment or GHCR `latest` mutation |
+| Source base | `origin/main` `8acc9e3c09092762c50de19b1e904e6186974b4f`; fresh `rc6/release-prep` branch |
+| Controlled assets | Three catalog release images; operations archive including the reviewed helper; two target-native NanoHost archives; `SHA256SUMS`. Four GitHub attachments; no release manifest attachment until the rehearsed #225 delivery path admits it |
+| Authorization | Standing prerelease grant covers rc.6. The 2026-10-15 standing scratch grant permits the required rehearsal only in `notrucked/openkit`. This preparer has no permission to push or tag `lingkaix/openkit` |
+| Tested commit T | `8acc9e3c09092762c50de19b1e904e6186974b4f`; main-push [run 38659540662](https://github.com/lingkaix/openkit/actions/runs/38659540662), attempt 1, completed success; all candidate jobs succeeded. Root suite: 879/879 |
+| Publishing commit P | P-candidate is the local preparation commit carrying this checkpoint and reviewed notes. The final release-prep HEAD may advance to record rehearsal evidence; exact SHA is reported in the handoff. It still requires independent review, main membership and successful candidate CI on exactly P |
+| T-to-P comparison | Preparation changes documentation and notes only. This is not permission to reuse T across commits; final P needs its own main-push gate |
+| Publication-path proof | rc.5 real-tag baseline is successful run 38396894772 at `2f07da54f647342868e416a658b55b6dd6c40957`. All three job blocks match. The operations packager changed and newly invokes the reviewed helper. Scratch rehearsal is required and authorized; see the per-input comparison below |
+| Blocker reconciliation | [All 108 open issues reconciled](#initial-release-blocker-reconciliation). #223 is an unresolved strict data-loss case; its blocker classification and disposition are engineer-reserved. No waiver is inferred and no label is applied to it. Refresh issue and label state before admission |
+| Manual gates | L4 is not required by the deterministic prerelease gate. Catalog stories remain post-tag, with their independent Actor and Judge; stories 1/2 follow release-cycle/change cadence. No rc.6 story or Worker-qualification pass is claimed |
+| Deployment update | First rc.6 update on staging `a1` uses the authorized manual operator path; its old App has no new preflight. Production `a2` is excluded. No host update or Provider workload is performed here |
+| Stable prerequisites | R001 #120 stays open. #225 and #240 are required before the first stable release. #241 attachment delivery is planned with #225. No stable release is authorized |
+| Publication state | Not published. Exact rc.6 tag and image identities must remain unused. Real repository releases, tags, image digests and absence of `latest` are retained before/after the scratch rehearsal |
 
-### Controlled Asset Set
+## Work Packages Since rc.5 And Since 67bf536b — Rewritable
 
-The rc.5 record is the base.
+The product base is `v0.1.0-rc.5` at `2f07da54f647342868e416a658b55b6dd6c40957`. Before package base `67bf536b`, `48f44553` fixed fresh-epoch registry staging (#242); `d07af797`, `0e08dbb9`, `ec62e052` and `67bf536b` retained the rc.5 closeout and initial rc.6 preparation. Those commits are included in this candidate, unlike the published rc.5.
 
-It describes a non-draft prerelease with exactly four assets: `openkit-ops-skill-v0.1.0-rc.5.tar.gz`, `openkit-nanohost-v0.1.0-rc.5-linux-amd64.tar.gz`, `openkit-nanohost-v0.1.0-rc.5-linux-arm64.tar.gz`, and `SHA256SUMS`.
+From `67bf536b` through T:
 
-The published rc.5 body names `openkit-app`, `openkit-worker-common`, and `openkit-worker-runtimes`.
-
-For `v0.1.0-rc.6` the same three images and the same four attachment roles use the tag `v0.1.0-rc.6`.
-
-The prerelease does not become Latest and does not create or change a GHCR `latest` tag.
-
-The notes input does not contain image digests.
-
-`scripts/release-notes.mjs` writes the image section when the tag run builds the release notes.
-
-The published `v0.1.0-rc.5` body contains the text of `release-notes/v0.1.0-rc.5.md` unchanged, and the body adds the image digests before that input.
-
-This preparation does not write rc.6 image digests.
-
-## Work Packages Since rc.5
-
-The commits before this preparation are `git log --reverse v0.1.0-rc.5..ec62e05226c0b606f012abdb7427428d38f08480`.
-
-- `48f44553` creates the registry acquisition staging parent on a fresh epoch. It refers to [#242](https://github.com/lingkaix/openkit/issues/242).
-- `d07af797` closes the rc.5 record.
-- `0e08dbb9` records issue 243 in the rc.5 closeout.
-- `ec62e052` projects the rc.5 qualification cases and the story 2 alias. That commit is the accepted rc.5 closeout and the base of this preparation.
-- This preparation adds `release-notes/v0.1.0-rc.6.md` and this record.
+- WP1: `a607597e`, `bb410e7b`, `a7233f36`, `95df382e`, `fa921acc`, `3255eb23`, `43906fef` and `79aeb0bc` implement concurrent Turns, retained capacity migration, per-Thread/harness native state and per-Turn capture, plus owned scheduling/storage projections. Default capacity is 20, with resource bounds binding. #245 remains a real one-CPU burst limit.
+- WP2: `ae3b67fb`, `8b07dc39`, `673ea2f2`, `aed98091` and `23f3e2dc` add idle maintenance preflight/recheck, complete approval summaries, separate diagnostic states, image-default handling and checksum-covered helper publication/verification.
+- WP3: `8f8761ea`, `36190f16` and `11d54f8b` remove wall-clock, keystroke and capture-entry races from deterministic regressions (#244, #212, #178).
+- WP5: `3d3eb491` through `a9856390` implement bounded prerelease preparation, exact-P per-job reuse, main-push gates, one coverage execution, sixteen-case concurrent qualification, strict benign replies, offline records and manifests, browser-story preflight, retained staging binding and shared script-side safety. Manifest delivery remains deferred; frozen publication notes bytes are preserved.
+- Integration and CI: `79434019`, `34742023`, `839f3aa9`, `61a633f9`, `b663bca2`, `97ab99b9`, `2c5af5ca`, `7b45f767`, `5a184c66` and `8acc9e3c` align producer/consumer fixtures and the generated CLI, remove the obsolete governance threshold, preserve skip enforcement across reporters, separate cold-start resource load from the concurrency fixture, and pin frozen notes without historical Git in shallow CI. The fixture change is not a fix for #245.
+- Main also carries accepted data-continuity/native-layout and identifier decisions, and the initial Retrieval Kernel implementation (`6ea4a6eb`, `ee70af1a`, `ba79e4e0`). Identifier implementation remains outside this release plan. These source/documentation changes are included in T; no private workspace package is an npm release asset.
+- This preparation adds the standing scratch-grant ruling and projections, current notes, initial backlog reconciliation, and retained publication evidence. It changes no publication job, invoked script, image catalog, runtime or package code.
 
 ## Work Packages For Intent Revision 2 — Rewritable
 
@@ -184,11 +168,7 @@ The primary owns this record and `release-notes/v0.1.0-rc.6.md`. Each package re
 
 ## Pending Engineer Decisions
 
-This plan needs the following decisions from the engineer.
-
-This record does not invent a ruling.
-
-- The WP1 capacity model, if it amends an accepted owner beyond the accepted concurrent-Turn target, is pending.
+WP1's capacity and native-layout rulings are accepted and implemented. The [initial reconciliation](#initial-release-blocker-reconciliation) identifies #223 as a strict data-loss case whose blocker classification and disposition this preparer cannot decide. #245 needs a later governing choice for burst startup; current failure is disclosed and is not a false success. Existing #127/#170 authority questions remain with their owners; no new authority claim is made here.
 
 ## Engineer Rulings For Intent Revision 2
 
@@ -211,6 +191,14 @@ WP4 returned its proposal on 2026-10-14. On 2026-10-14 the engineer accepted its
 
 These decisions take effect through amendments to [Release Management](../../specs/20260829-release_management.md) and its projections. Until those amendments land, the current owner text stays binding, including per-tag publication authorization. After the coordinator explained decision 7, the engineer changed it (Intent Revision 4): #193 is closed as superseded, and #240 and #225 are required before the first stable release. The first App update to rc.6 on `a1` uses the manual operator path; the automated path starts with the next prerelease.
 
+### Standing Scratch Grant — 2026-10-15
+
+The engineer selected this option verbatim on 2026-10-15:
+
+> Standing scratch grant (Recommended) — Authorize scratch rehearsals in notrucked/openkit for any prerelease whose publication path changed, now and for later prereleases. A rehearsal writes only to notrucked/openkit (scratch tag, prerelease, package versions). If it passes, rc.6 is tagged under the standing grant. This also removes this question from future releases.
+
+The accepted owner amendment and [decision](../../decisions/20261015-standing_scratch_rehearsal_grant.md) limit the rehearsal to prereleases in the existing `notrucked/openkit` repository. The grant creates no new scratch owner and permits no write to `lingkaix/openkit`, stable publication, Latest mutation, visibility change or credential expansion. Passing scratch proof does not satisfy exact-P review, candidate CI or release-blocker conditions. This preparer may commit locally and rehearse in scratch, but may not push or tag in `lingkaix/openkit`.
+
 ### Governance Corpus Check Disposition — 2026-10-15
 
 Removed the `governance cutover complexity` suite, including `makes both frozen governance corpora strictly smaller than baseline`, and its private counter. The threshold conflicted with [Change Execution](../../change-execution.md), line 92, and decisions [20260923-system_complexity_signals](../../decisions/20260923-system_complexity_signals.md) and [20260924-documentation_methods](../../decisions/20260924-documentation_methods.md): complexity numbers explain trends and are never targets, thresholds, or gates. The coordinator and Consultant agreed on this owner alignment under the engineer's delegated acceptance. No normative owner changed.
@@ -219,107 +207,184 @@ Last measurements at `79aeb0bc`: normative-and-projection corpus, 52,698 words a
 
 ## Publication Authorization
 
-The mission text does not name `v0.1.0-rc.6` or this asset set.
+The initial mission did not name the exact rc.6 tag and asset set. The later engineer rulings below grant this prerelease subject to the current owner conditions.
 
 On 2026-10-14 the engineer accepted a standing publication authorization for prereleases (WP4 decision 1) and stated that it covers `v0.1.0-rc.6` (Intent Revision 4). The tag is published only after the Release Management amendment that defines the grant lands and its conditions hold for this tag: reviewed work packages merged into `main`, a successful candidate gate on exact P, and no open release blocker.
 
 No stable release is authorized.
 
-This preparation does not push a tag, dispatch a workflow, or publish an asset.
+This preparation may push the authorized scratch preparation and unused scratch tag to `notrucked/openkit`. It pushes no commit or tag to `lingkaix/openkit` and dispatches no real candidate workflow.
 
 ## Publication-Path Proof
 
-[Release Management](../../specs/20260829-release_management.md#publication-path-proof) requires a scratch rehearsal before the real tag when a publication job changes.
+The existing `publicationInputsAt` reader in `scripts/release-publication-check.mjs` read immutable Git objects at the successful rc.5 real-tag commit and T. GitHub REST confirmed that [run 38396894772](https://github.com/lingkaix/openkit/actions/runs/38396894772), attempt 1, concluded success at `2f07da54f647342868e416a658b55b6dd6c40957`; all three image publication jobs, GitHub Release creation and published-release verification succeeded.
 
-An unchanged proved publication job does not need a routine rehearsal.
+| Input | rc.5 real-tag baseline Git blob | rc.6 source Git blob |
+| --- | --- | --- |
+| `publish-container-images` job block | `5b904b9a1cfcc58f40419332dfd7d2de1f599581` | Same |
+| `github-release` job block | `734976e10dcbce2a92b09b7cd3bf84b8bc4a3821` | Same |
+| `verify-release` job block | `c6030d2217362808cae8c3dce2f62805cb6c7940` | Same |
+| `scripts/release-image-state.mjs` | `129c09a2e2489b617760c08db2fdc1bb37ca1db2` | Same |
+| `scripts/release-notes.mjs` | `c4bb3ebce44c9f240c75bbd21b757580fa26d14d` | Same |
+| `scripts/package-release-assets.mjs` | `6728ea6ad1e66a87dc21fa18f04d59a5862e62b5` | `6a0a31c621a20cc413eebb58ea57eeacc0e40fd1` |
+| `scripts/verify-nanohost-release.mjs` | `687c837d8d12385d9faa61aef79e2aead14e9d40` | Same |
+| `scripts/lib/nanohost-elf.mjs` | `3db207f37fb7e96dc1b0a8cb50b516b0842afe1c` | Same |
+| `scripts/release-preflight.mjs` | `87d2cd0a6b44472f916d83569a7096aa54d08702` | Same |
+| `scripts/validate-doc-model.mjs` | `fd4b0fcb1d825b78d1892371f09afbe2328900f5` | Same |
+| `scripts/lib/doc-fields.mjs` | `fc88cd5d4b3a12c29a1df0245579ed338136fc8f` | Same |
+| `scripts/docker/app-update-helper.py` | Not in the invoked closure | `56d8023549062c278b50404a4053a667404176ee` |
 
-The rc.5 record states that tag run [38396894772](https://github.com/lingkaix/openkit/actions/runs/38396894772) concluded `success` for `v0.1.0-rc.5`.
+Baseline aggregate: `09969191926f22385e68061b7e47b59f4c7f010c338aa5b275ae87dbdbbeffb8`. rc.6 aggregate: `9029285e5b35bf435c3f5afb0fe90600151b8f00c5f27caa433b49bba5cbd1e4`. The two changed inputs include the archive/helper binding that WP2 accepted. Matching job text alone does not supply proof. The initial stop was correct; the 2026-10-15 engineer ruling now authorizes the required scratch execution in `notrucked/openkit`.
 
-`git diff --stat v0.1.0-rc.5 ec62e05226c0b606f012abdb7427428d38f08480 -- .github scripts containers` printed no output and exited 0.
-
-That comparison includes `.github/workflows/ci.yml`.
-
-This preparation does not change `.github`, `scripts`, or `containers`.
-
-A scratch rehearsal is not required for this candidate.
+The next unused scratch tag observed is `v0.0.0-scratch.3`; `.1` and `.2` exist. Recheck before pushing it. Prepare a scratch merge commit from P-candidate plus scratch notes, preserving the three job blocks and all nine script inputs exactly. Capture the real repository's release/tag/image baseline before the scratch write and compare it after. A failed, skipped or unknown publication job leaves proof pending. The result and helper-byte verification will be recorded here after execution; no success is claimed yet.
 
 ## Manual-Gate Disposition And Known Issues
 
-The notes input is `release-notes/v0.1.0-rc.6.md`.
+The user notes state the fresh-epoch #242 fix, concurrent Turns with default 20 per Sandbox and resource limits, native/capture layout, App preflight/summary/helper/defaults/diagnostics, and release-cadence changes. They retain current product limits and add #245. #177 remains an index, not a blanket waiver. #120 remains a stable/readiness hold. #223 is disclosed but still needs the engineer's strict-risk disposition before real admission.
 
-[#177](https://github.com/lingkaix/openkit/issues/177) tracks the known issues.
-
-The notes keep the R001 statement for [#120](https://github.com/lingkaix/openkit/issues/120).
-
-The R001 runtime gate stays open, so a stable promotion is not possible.
-
-This record does not claim that a catalog story or Worker qualification passed.
-
-The changes section states the [#242](https://github.com/lingkaix/openkit/issues/242) fix in user terms.
-
-The notes do not list [#242](https://github.com/lingkaix/openkit/issues/242) as a known issue.
-
-[#242](https://github.com/lingkaix/openkit/issues/242) stays open until the post-tag proof below.
-
-The rc.5 changes section said that an update from `v0.1.0-rc.4` or earlier still needs the operator to know the running release.
-
-[#232](https://github.com/lingkaix/openkit/issues/232) is still open.
-
-The rc.6 notes keep that limit under known issues, because it is not a change since rc.5.
-
-The notes add [#240](https://github.com/lingkaix/openkit/issues/240) and [#241](https://github.com/lingkaix/openkit/issues/241).
-
-Both were open, and both match the existing user-facing App-update notes.
-
-[#243](https://github.com/lingkaix/openkit/issues/243) is open.
-
-It records a release-test instrument gap.
-
-No owning document says to put [#243](https://github.com/lingkaix/openkit/issues/243) in the user notes.
-
-The notes omit it.
-
-During this preparation, `gh issue view` returned `OPEN` for every issue number in `release-notes/v0.1.0-rc.5.md`, and for 240, 241, 242, and 243.
-
-No linked known-issue line was removed for a closed issue.
+No L4 browser gate is required by the automatic prerelease gate. Catalog stories and Worker qualification run after publication on those published bytes; story Actor/Judge independence remains required. No run on an unpublished candidate counts. No rc.6 story or Worker case has run in this preparation. Stories 1/2 use release-cycle/change cadence; story 2 still runs on the exact prerelease promoted to stable.
 
 ## Post-Tag Plan
 
-These actions wait for publication.
+The first rc.6 update on `a1` is the separately authorized manual operator path, including reviewed helper installation and exact App/NanoHost/Worker identities. The new automatic App path cannot update a predecessor that lacks preflight. Do not exercise that path as an override. `a2` is production and excluded from automation. No SSH, deployment update or Provider workload is performed by this preparer.
 
-None of them has run.
+After the manual update, replace NanoHost through its accepted procedure, prepare and activate the Worker environments from the published registry identities without the old staging workaround, and retain the fresh-epoch #242 evidence. Run all sixteen Worker cases with four admitted runtime groups and sequential A–D in each Thread. Keep App, NanoHost, Worker and qualification results separate; capacity refusal, wrong/refusal replies and unknown effects remain non-pass. Run the cycle's required catalog stories with independent actors/judges. This paragraph creates no new live-effect authorization or data reset.
 
-The persistent test deployment updates its App from published `v0.1.0-rc.5` to published `v0.1.0-rc.6`.
+## Initial Release-Blocker Reconciliation
 
-[Catalog Stories](../../specs/20260829-release_management.md#catalog-stories) say to run story 2 when the test server already runs an earlier published release with its data.
+This is release evidence, not design authority. On 2026-10-15 the preparer read every open issue in `lingkaix/openkit` through all REST pages, excluding pull requests: 108 issues. Titles and owning criteria determine the rows below; label absence is not a non-blocker decision. The [release owner](../../specs/20260829-release_management.md#publication-authorization) governs admission. The snapshot must be refreshed before tagging if the backlog changes.
 
-The rc.5 record states the engineer's data-retention selection.
+One unresolved strict data-loss case is identified: #223. Its blocker classification and disposition are engineer-reserved. It is listed without an issue label; real admission stays pending. Earlier prereleases and pre-stable reset permission do not supply a waiver. No issue is labelled a prerelease blocker by this preparation. The `release-blocker` label is created; applying it to #223 was rejected by automatic approval review because that would decide an engineer-reserved case. #120, #225 and #240 remain stable prerequisites; #241 attachment delivery is planned with #225. #245 is a disclosed ordinary startup/resource defect; its implementation choice is not decided here. #127 and #170 retain their existing governing questions; this preparation grants no new authority or repository-confinement claim.
 
-Story 1 starts from an empty machine and conflicts with keeping the server data.
+Issues with merged fixes remain OPEN until their primary closes them or obtains their remaining product evidence. A passing CI run does not imply a live deployment or story pass. No issue is closed, commented on, or otherwise rewritten by this reconciliation.
 
-The selected operator path keeps the existing Data Root, and that path does not count as a story 1 run.
-
-This plan does not choose story 2 or that operator path for the rc.6 App update.
-
-The deployment then replaces NanoHost with `v0.1.0-rc.6` on a fresh epoch.
-
-It prepares and activates the four Worker environments from the registry.
-
-The rc.5 record says that deployment's four registry preparations failed on the fresh rc.5 epoch, and that later preparations used the recorded diagnostic workaround.
-
-The rc.6 preparation does not use that workaround.
-
-That result is the deciding post-tag proof of [#242](https://github.com/lingkaix/openkit/issues/242) in the deployment.
-
-The deployment then runs Worker qualification A to D.
-
-[Worker Qualification](../../specs/20260829-release_management.md#worker-qualification) owns that matrix.
-
-No compact-record row exists yet for a catalog story or a qualification case.
+| Issue | Owner | rc.6 applicability | Disposition | Disclosure | rc.6 blocker |
+| --- | --- | --- | --- | --- | --- |
+| [#108](https://github.com/lingkaix/openkit/issues/108) Provider-subscription Codex: logged_in vs dead credential / stuck login_active blocks recovery | [20260721-provider_subscription_accounts.md](../../specs/20260721-provider_subscription_accounts.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#116](https://github.com/lingkaix/openkit/issues/116) Release cookbook says the repository is private, but it is public | [20260829-release_management.md](../../specs/20260829-release_management.md) | Resolved in candidate; issue remains open | Current release cookbook states PUBLIC is merged and covered by successful main CI on T; no issue closure is performed here. | Changes / this reconciliation | No new prerelease blocker established |
+| [#117](https://github.com/lingkaix/openkit/issues/117) Pending MCP approval is refused as schema-changed when an unrelated upstream tool's description changes | [20260930-pending_requests.md](../../specs/20260930-pending_requests.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#120](https://github.com/lingkaix/openkit/issues/120) [release] Establish the exact-product no-reboot Worker readiness proof | [20260802-nanohost_runtime_and_transport.md](../../specs/20260802-nanohost_runtime_and_transport.md) | Stable prerequisite / future delivery | R001 stays open; the release owner permits disclosed prereleases and blocks stable readiness. | Known issues (#120/#240/#241) / change record (#225) | No new prerelease blocker established |
+| [#121](https://github.com/lingkaix/openkit/issues/121) [nanocore] Implement the accepted live Task steering contract | [20260704-task_mode_worker_delegation.md](../../specs/20260704-task_mode_worker_delegation.md) | Current disclosed limitation | Existing accepted deferred scope; no feature-completion claim. | Known issues / #177 | No new prerelease blocker established |
+| [#122](https://github.com/lingkaix/openkit/issues/122) [nanocore] Implement user selection of shared Workspace Sandboxes | [20260910-persistent_worker_volumes.md](../../specs/20260910-persistent_worker_volumes.md) | Current disclosed limitation | Existing accepted deferred scope; no feature-completion claim. | Known issues / #177 | No new prerelease blocker established |
+| [#123](https://github.com/lingkaix/openkit/issues/123) [gateway] Classify confirmed required-compaction failures consistently | [20260902-agent_runtime_context_compaction.md](../../specs/20260902-agent_runtime_context_compaction.md) | Current disclosed limitation | Existing disclosed defect; no new release-specific regression or strict-risk waiver established here. | Known issues / #177 | No new prerelease blocker established |
+| [#124](https://github.com/lingkaix/openkit/issues/124) [gateway] Prove upstream acceptance of historical tool pairs during compaction | [20260902-agent_runtime_context_compaction.md](../../specs/20260902-agent_runtime_context_compaction.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#125](https://github.com/lingkaix/openkit/issues/125) [nanocore] Implement accepted context compaction for internal Agent runs | [20260902-agent_runtime_context_compaction.md](../../specs/20260902-agent_runtime_context_compaction.md) | Current disclosed limitation | Existing accepted deferred scope; no feature-completion claim. | Known issues / #177 | No new prerelease blocker established |
+| [#126](https://github.com/lingkaix/openkit/issues/126) [docs] Add verification examples to the existing npm grant update recipe | [20260703-agent_manifest_aep_resolution.md](../../specs/20260703-agent_manifest_aep_resolution.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#127](https://github.com/lingkaix/openkit/issues/127) [gateway] Align new Chat tool calls with request declarations | [20260708-pi_ai_unified_llm_backend.md](../../specs/20260708-pi_ai_unified_llm_backend.md) | Current boundary / governing decision | Existing disclosed gap; no unauthorized effect is established by this issue. Any new authority rule, relaxation or claim of repository confinement remains engineer-reserved; this preparation makes no such decision. | Known issues and reserved-decision notes | No new prerelease blocker established |
+| [#128](https://github.com/lingkaix/openkit/issues/128) [docs] Distinguish bounded Task completion from objective completion | [20260704-task_mode_worker_delegation.md](../../specs/20260704-task_mode_worker_delegation.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#129](https://github.com/lingkaix/openkit/issues/129) [nanocore] Explain when Gateway recovery requires a new Thread | [20260704-agent_session_continuity.md](../../specs/20260704-agent_session_continuity.md) | Current disclosed limitation | Deferred improvement; current behavior remains disclosed. | Known issues / #177 | No new prerelease blocker established |
+| [#130](https://github.com/lingkaix/openkit/issues/130) [worker-shim] Obtain bounded evidence for the unproved Pi self-stop incident | [20260716-pi_worker_adapter.md](../../specs/20260716-pi_worker_adapter.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#131](https://github.com/lingkaix/openkit/issues/131) [docs] Explain the network grants required by repository tool bootstrap | [20260709-worker_sandbox_freedom_policy.md](../../specs/20260709-worker_sandbox_freedom_policy.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#132](https://github.com/lingkaix/openkit/issues/132) [nanocore] Resolve historical checkpoints from their original package lineage | [20260531-worker_turn_reliability_envelope.md](../../specs/20260531-worker_turn_reliability_envelope.md) | Current disclosed limitation | Existing disclosed defect; no new release-specific regression or strict-risk waiver established here. | Known issues / #177 | No new prerelease blocker established |
+| [#133](https://github.com/lingkaix/openkit/issues/133) [nanocore] Define explicit Agent selection for task.start | [20260704-task_mode_worker_delegation.md](../../specs/20260704-task_mode_worker_delegation.md) | Current disclosed limitation | Existing governing decision remains open; no new implementation or waiver. | Known issues / #177 | No new prerelease blocker established |
+| [#134](https://github.com/lingkaix/openkit/issues/134) [nanocore] Decide how unpinned Agents enter the conversation target catalog | [20260831-unified_conversation_composer.md](../../specs/20260831-unified_conversation_composer.md) | Current disclosed limitation | Existing governing decision remains open; no new implementation or waiver. | Known issues / #177 | No new prerelease blocker established |
+| [#135](https://github.com/lingkaix/openkit/issues/135) [nanohost] Investigate shared-socket identity denial during package downloads | [20260703-openshell_mechanism_internalization.md](../../specs/20260703-openshell_mechanism_internalization.md) | Current disclosed limitation | Existing governing decision remains open; no new implementation or waiver. | Known issues / #177 | No new prerelease blocker established |
+| [#136](https://github.com/lingkaix/openkit/issues/136) [nanohost] Correlate pre-CONNECT failures with the affected download request | [20260731-operational_telemetry_standardization.md](../../specs/20260731-operational_telemetry_standardization.md) | Current disclosed limitation | Deferred improvement; current behavior remains disclosed. | Known issues / #177 | No new prerelease blocker established |
+| [#137](https://github.com/lingkaix/openkit/issues/137) [docs] Reconcile the recovery command name with the operation catalog | [20260531-worker_turn_reliability_envelope.md](../../specs/20260531-worker_turn_reliability_envelope.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#138](https://github.com/lingkaix/openkit/issues/138) [ci] Bound the L0-L2 job with an explicit timeout | [20260529-test_strategy.md](../../specs/20260529-test_strategy.md) | Deferred instrument/design or documentation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | This reconciliation / #177 | No new prerelease blocker established |
+| [#139](https://github.com/lingkaix/openkit/issues/139) [test] Make native-adapter verification reliable on supported local hosts | [20260529-test_strategy.md](../../specs/20260529-test_strategy.md) | Deferred instrument/design or documentation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | This reconciliation / #177 | No new prerelease blocker established |
+| [#140](https://github.com/lingkaix/openkit/issues/140) [worker-shim] Make existing artifact output-root guidance actionable before writing | [20260703-worker_agent_capability.md](../../specs/20260703-worker_agent_capability.md) | Current disclosed limitation | Deferred improvement; current behavior remains disclosed. | Known issues / #177 | No new prerelease blocker established |
+| [#141](https://github.com/lingkaix/openkit/issues/141) [nanocore] Deliver selected prior Task artifacts to review Workers | [20260704-task_mode_worker_delegation.md](../../specs/20260704-task_mode_worker_delegation.md) | Current disclosed limitation | Existing governing decision remains open; no new implementation or waiver. | Known issues / #177 | No new prerelease blocker established |
+| [#142](https://github.com/lingkaix/openkit/issues/142) [nanocore] Let the Goal Coordinator discover eligible Worker Agents | [20261002-goal.md](../../specs/20261002-goal.md) | Current disclosed limitation | Existing governing decision remains open; no new implementation or waiver. | Known issues / #177 | No new prerelease blocker established |
+| [#143](https://github.com/lingkaix/openkit/issues/143) [nanocore] Preview upstream MCP tools before requiring an allowlist | [20260907-mcp_catalog_management.md](../../specs/20260907-mcp_catalog_management.md) | Current disclosed limitation | Existing accepted deferred scope; no feature-completion claim. | Known issues / #177 | No new prerelease blocker established |
+| [#144](https://github.com/lingkaix/openkit/issues/144) [nanocore] Implement the deferred internal Assistant resource integration | [20260909-internal_agent_resource_integration.md](../../specs/20260909-internal_agent_resource_integration.md) | Current disclosed limitation | Existing accepted deferred scope; no feature-completion claim. | Known issues / #177 | No new prerelease blocker established |
+| [#145](https://github.com/lingkaix/openkit/issues/145) [nanocore] Implement the accepted browser OAuth entry for remote MCP | [20261002-remote_mcp_interface.md](../../specs/20261002-remote_mcp_interface.md) | Current disclosed limitation | Existing accepted deferred scope; no feature-completion claim. | Known issues / #177 | No new prerelease blocker established |
+| [#146](https://github.com/lingkaix/openkit/issues/146) [gateway] Design and implement upstream MCP OAuth lifecycle support | [20260907-mcp_catalog_management.md](../../specs/20260907-mcp_catalog_management.md) | Current disclosed limitation | Existing accepted deferred scope; no feature-completion claim. | Known issues / #177 | No new prerelease blocker established |
+| [#147](https://github.com/lingkaix/openkit/issues/147) [gateway] Support an explicit non-secret HTTP query map for MCP servers | [20260907-mcp_catalog_management.md](../../specs/20260907-mcp_catalog_management.md) | Current disclosed limitation | Existing accepted deferred scope; no feature-completion claim. | Known issues / #177 | No new prerelease blocker established |
+| [#148](https://github.com/lingkaix/openkit/issues/148) [nanocore] Adopt native MCP Tasks when a supported pinned client can drive it | [20260930-pending_requests.md](../../specs/20260930-pending_requests.md) | Current disclosed limitation | Existing accepted deferred scope; no feature-completion claim. | This reconciliation / #177 | No new prerelease blocker established |
+| [#149](https://github.com/lingkaix/openkit/issues/149) [nanocore] Implement Agent withdrawal after the MCP cancellation contract stabilizes | [20260930-pending_requests.md](../../specs/20260930-pending_requests.md) | Current disclosed limitation | Existing accepted deferred scope; no feature-completion claim. | Known issues / #177 | No new prerelease blocker established |
+| [#150](https://github.com/lingkaix/openkit/issues/150) [nanocore] Decide the authority model for asking a peer Worker a question | [20260629-worker_runtime_communication_model.md](../../specs/20260629-worker_runtime_communication_model.md) | Current disclosed limitation | Existing governing decision remains open; no new implementation or waiver. | Known issues / #177 | No new prerelease blocker established |
+| [#151](https://github.com/lingkaix/openkit/issues/151) [nanocore] Define permission-aware relatedness beyond a shared Sandbox | [20260703-worker_agent_capability.md](../../specs/20260703-worker_agent_capability.md) | Current disclosed limitation | Existing governing decision remains open; no new implementation or waiver. | Known issues / #177 | No new prerelease blocker established |
+| [#152](https://github.com/lingkaix/openkit/issues/152) [nanocore] Design independent Agent identities under the Policy Kernel | [20260629-openkit_policy_model.md](../../specs/20260629-openkit_policy_model.md) | Current disclosed limitation | Existing governing decision remains open; no new implementation or waiver. | Known issues / #177 | No new prerelease blocker established |
+| [#153](https://github.com/lingkaix/openkit/issues/153) [nanocore] Add permission-based operation blocking through the Policy Kernel | [20261002-operation_definition.md](../../specs/20261002-operation_definition.md) | Current disclosed limitation | Existing accepted deferred scope; no feature-completion claim. | Known issues / #177 | No new prerelease blocker established |
+| [#154](https://github.com/lingkaix/openkit/issues/154) [nanohost] Complete the deferred refresh-status polling relocation | [20260703-openshell_mechanism_internalization.md](../../specs/20260703-openshell_mechanism_internalization.md) | Current disclosed limitation | Existing accepted deferred scope; no feature-completion claim. | This reconciliation / #177 | No new prerelease blocker established |
+| [#155](https://github.com/lingkaix/openkit/issues/155) [test] Implement the deferred four-protocol fault scenario matrix | [20260529-test_strategy.md](../../specs/20260529-test_strategy.md) | Deferred instrument/design or documentation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | This reconciliation / #177 | No new prerelease blocker established |
+| [#156](https://github.com/lingkaix/openkit/issues/156) [test] Qualify the deferred physical runtime fault chain | [20260529-test_strategy.md](../../specs/20260529-test_strategy.md) | Deferred instrument/design or documentation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | This reconciliation / #177 | No new prerelease blocker established |
+| [#157](https://github.com/lingkaix/openkit/issues/157) [nanocore] Design demand-driven eviction of idle backend bindings | [20260703-durable_scheduler_design.md](../../specs/20260703-durable_scheduler_design.md) | Current disclosed limitation | Existing accepted deferred scope; no feature-completion claim. | Known issues / #177 | No new prerelease blocker established |
+| [#158](https://github.com/lingkaix/openkit/issues/158) [storage] Design recoverable Workspace and whole-server backups | [20260704-workspace_backup_export_import.md](../../specs/20260704-workspace_backup_export_import.md) | Current disclosed limitation | Existing governing decision remains open; no new implementation or waiver. | Known issues / #177 | No new prerelease blocker established |
+| [#159](https://github.com/lingkaix/openkit/issues/159) [nanocore] Complete the equal-member Workspace lifecycle cutover | [20260715-multi_user_workspace_system.md](../../specs/20260715-multi_user_workspace_system.md) | Current disclosed limitation | Existing accepted deferred scope; no feature-completion claim. | Known issues / #177 | No new prerelease blocker established |
+| [#160](https://github.com/lingkaix/openkit/issues/160) [web] Build the deferred multi-user Workspace interface | [20260715-multi_user_workspace_system.md](../../specs/20260715-multi_user_workspace_system.md) | Current disclosed limitation | Existing accepted deferred scope; no feature-completion claim. | Known issues / #177 | No new prerelease blocker established |
+| [#161](https://github.com/lingkaix/openkit/issues/161) [docs] Complete the deferred communication specification slimming pass | [20260629-worker_runtime_communication_model.md](../../specs/20260629-worker_runtime_communication_model.md) | Deferred instrument/design or documentation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | This reconciliation / #177 | No new prerelease blocker established |
+| [#162](https://github.com/lingkaix/openkit/issues/162) [docs] Update stale Worker reliability implementation projections | [20260531-worker_turn_reliability_envelope.md](../../specs/20260531-worker_turn_reliability_envelope.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#163](https://github.com/lingkaix/openkit/issues/163) [storage] Measure and bound remaining synchronous observation I/O stalls | [20260921-work_data_retention_format.md](../../specs/20260921-work_data_retention_format.md) | Current disclosed limitation | Deferred improvement; current behavior remains disclosed. | Known issues / #177 | No new prerelease blocker established |
+| [#164](https://github.com/lingkaix/openkit/issues/164) [nanocore] Bound failed-start maintenance cost as retained history grows | [20260703-durable_scheduler_design.md](../../specs/20260703-durable_scheduler_design.md) | Current disclosed limitation | Deferred improvement; current behavior remains disclosed. | Known issues / #177 | No new prerelease blocker established |
+| [#165](https://github.com/lingkaix/openkit/issues/165) [test] Prevent zero-file Biome checks from appearing to verify a worktree | [20260529-test_strategy.md](../../specs/20260529-test_strategy.md) | Deferred instrument/design or documentation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | This reconciliation / #177 | No new prerelease blocker established |
+| [#166](https://github.com/lingkaix/openkit/issues/166) [test] Verify native child cleanup after interrupted end-to-end suites | [20260529-test_strategy.md](../../specs/20260529-test_strategy.md) | Deferred instrument/design or documentation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | This reconciliation / #177 | No new prerelease blocker established |
+| [#167](https://github.com/lingkaix/openkit/issues/167) [gateway] Measure repeated parsing of streamed tool arguments | [20260708-pi_ai_unified_llm_backend.md](../../specs/20260708-pi_ai_unified_llm_backend.md) | Current disclosed limitation | Deferred improvement; current behavior remains disclosed. | Known issues / #177 | No new prerelease blocker established |
+| [#168](https://github.com/lingkaix/openkit/issues/168) [nanocore] Evaluate the accepted first-session resume-proof loss window | [20260704-agent_session_continuity.md](../../specs/20260704-agent_session_continuity.md) | Current disclosed limitation | Existing governing decision remains open; no new implementation or waiver. | Known issues / #177 | No new prerelease blocker established |
+| [#169](https://github.com/lingkaix/openkit/issues/169) [nanocore] Evaluate backwards-clock ordering of successor sessions | [20260704-agent_session_continuity.md](../../specs/20260704-agent_session_continuity.md) | Current disclosed limitation | Existing governing decision remains open; no new implementation or waiver. | Known issues / #177 | No new prerelease blocker established |
+| [#170](https://github.com/lingkaix/openkit/issues/170) [gateway] Resolve the deferred repository binding comparison for vendor MCP | [20260704-worker_mcp_tool_supply.md](../../specs/20260704-worker_mcp_tool_supply.md) | Current boundary / governing decision | Existing disclosed gap; no unauthorized effect is established by this issue. Any new authority rule, relaxation or claim of repository confinement remains engineer-reserved; this preparation makes no such decision. | Known issues and reserved-decision notes | No new prerelease blocker established |
+| [#171](https://github.com/lingkaix/openkit/issues/171) [nanocore] Define a second execution backend and mixed placement | [20260703-durable_scheduler_design.md](../../specs/20260703-durable_scheduler_design.md) | Current disclosed limitation | Existing governing decision remains open; no new implementation or waiver. | Known issues / #177 | No new prerelease blocker established |
+| [#172](https://github.com/lingkaix/openkit/issues/172) [nanocore] Define the deferred execution quota policy | [20260703-durable_scheduler_design.md](../../specs/20260703-durable_scheduler_design.md) | Current disclosed limitation | Existing governing decision remains open; no new implementation or waiver. | Known issues / #177 | No new prerelease blocker established |
+| [#173](https://github.com/lingkaix/openkit/issues/173) [nanocore] Decide fairness and aging requirements for queued execution | [20260703-durable_scheduler_design.md](../../specs/20260703-durable_scheduler_design.md) | Current disclosed limitation | Existing governing decision remains open; no new implementation or waiver. | Known issues / #177 | No new prerelease blocker established |
+| [#174](https://github.com/lingkaix/openkit/issues/174) [nanocore] Evaluate warm pools against a measured execution startup cost | [20260703-durable_scheduler_design.md](../../specs/20260703-durable_scheduler_design.md) | Deferred instrument/design or documentation | Existing governing decision remains open; no new implementation or waiver. | This reconciliation / #177 | No new prerelease blocker established |
+| [#175](https://github.com/lingkaix/openkit/issues/175) [nanocore] Design deferred fleet selection and placement affinity | [20260703-durable_scheduler_design.md](../../specs/20260703-durable_scheduler_design.md) | Current disclosed limitation | Existing governing decision remains open; no new implementation or waiver. | Known issues / #177 | No new prerelease blocker established |
+| [#176](https://github.com/lingkaix/openkit/issues/176) [nanocore] Define the deferred multi-process scheduling and failover contract | [20260703-durable_scheduler_design.md](../../specs/20260703-durable_scheduler_design.md) | Current disclosed limitation | Existing governing decision remains open; no new implementation or waiver. | Known issues / #177 | No new prerelease blocker established |
+| [#177](https://github.com/lingkaix/openkit/issues/177) [release] v0.1.0 acceptance-program backlog index | [20260829-release_management.md](../../specs/20260829-release_management.md) | Backlog index | Tracking index, not evidence that every child issue is non-blocking. This reconciliation covers all currently open issues individually. | Known issues and this reconciliation | No new prerelease blocker established |
+| [#178](https://github.com/lingkaix/openkit/issues/178) [test] Make the Codex round 4 failure-boundary regression deterministic | [20260529-test_strategy.md](../../specs/20260529-test_strategy.md) | Resolved in candidate; issue remains open | WP3 explicit Codex capture-entry signal is merged and covered by successful main CI on T; no issue closure is performed here. | Changes / this reconciliation | No new prerelease blocker established |
+| [#179](https://github.com/lingkaix/openkit/issues/179) [worker-shim] Preserve cancellation final status after an ordinary append refusal | [20260703-worker_control_protocol.md](../../specs/20260703-worker_control_protocol.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#180](https://github.com/lingkaix/openkit/issues/180) [gateway] Retain a product-safe cause diagnostic for committed inference failures | [20260731-operational_telemetry_standardization.md](../../specs/20260731-operational_telemetry_standardization.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#182](https://github.com/lingkaix/openkit/issues/182) [nanocore] Name the initial cleanup attempt in aggregate Turn failure text | [20260531-worker_turn_reliability_envelope.md](../../specs/20260531-worker_turn_reliability_envelope.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#184](https://github.com/lingkaix/openkit/issues/184) [ci] Run the App update helper regression suite in CI | [20260529-test_strategy.md](../../specs/20260529-test_strategy.md) | Resolved in candidate; issue remains open | WP2 helper CI regressions is merged and covered by successful main CI on T; no issue closure is performed here. | Changes / this reconciliation | No new prerelease blocker established |
+| [#186](https://github.com/lingkaix/openkit/issues/186) [gateway] Keep a product-safe cause for worker-inference failures before output | [20260526-llm_gateway_responses_api.md](../../specs/20260526-llm_gateway_responses_api.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#189](https://github.com/lingkaix/openkit/issues/189) [docs] Core Client Boundary still lists the retired Workspace repository routes | [20260528-core_client_boundary.md](../../specs/20260528-core_client_boundary.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#190](https://github.com/lingkaix/openkit/issues/190) [nanocore] Deliver folders and binary outputs for non-software work | [20260704-session_static_workspace_materialization.md](../../specs/20260704-session_static_workspace_materialization.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#191](https://github.com/lingkaix/openkit/issues/191) [workers] Give Workers a neutral identity across the four runtimes | [20260716-pi_worker_adapter.md](../../specs/20260716-pi_worker_adapter.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#192](https://github.com/lingkaix/openkit/issues/192) [chat] Redesign Chat mode delegation | [20260704-chat_mode_assistant.md](../../specs/20260704-chat_mode_assistant.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#194](https://github.com/lingkaix/openkit/issues/194) [goal] Calendar recurrence for Goals | [20261002-goal.md](../../specs/20261002-goal.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#195](https://github.com/lingkaix/openkit/issues/195) [rc.1] Add a verified release-only first-install guide | [20260829-release_management.md](../../specs/20260829-release_management.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#197](https://github.com/lingkaix/openkit/issues/197) [app-update] Read receipt status without a pre-removal compatibility assessment, and classify a helper that exits before its envelope | [20260910-app_update_delivery.md](../../specs/20260910-app_update_delivery.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#203](https://github.com/lingkaix/openkit/issues/203) Server-scoped shared MCP entries and their Vault credentials cannot be created or used | [20260704-vault_backend_implementation.md](../../specs/20260704-vault_backend_implementation.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#204](https://github.com/lingkaix/openkit/issues/204) [nanocore] Worker Turns run one at a time across the whole deployment | [20260703-runtime_scheduling_scale.md](../../specs/20260703-runtime_scheduling_scale.md) | Resolved in candidate; issue remains open | WP1 concurrent Turns is merged and covered by successful main CI on T; no issue closure is performed here. | Changes / this reconciliation | No new prerelease blocker established |
+| [#205](https://github.com/lingkaix/openkit/issues/205) [worker-shim] Real-native DeepSeek test can build the first model request before an authored local stdio MCP server is ready | [20260529-test_strategy.md](../../specs/20260529-test_strategy.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | This reconciliation / #177 | No new prerelease blocker established |
+| [#207](https://github.com/lingkaix/openkit/issues/207) [nanocore] Internal Gateway transport failures keep no cause on the capability attempt or in the log | [20260703-runtime_scheduling_scale.md](../../specs/20260703-runtime_scheduling_scale.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#208](https://github.com/lingkaix/openkit/issues/208) [nanocore] Worker checkpoint scan reports recovery_required for a Workspace whose database is not yet created | [20260703-runtime_scheduling_scale.md](../../specs/20260703-runtime_scheduling_scale.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#209](https://github.com/lingkaix/openkit/issues/209) [gateway] Packaged App proxy answers the agent-facing /v1 Gateway surface with the Web index (HTTP 200) | [20260526-llm_gateway_responses_api.md](../../specs/20260526-llm_gateway_responses_api.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#212](https://github.com/lingkaix/openkit/issues/212) Web S7 concurrency tests in chat.test.tsx can time out on a slow CI runner | [20260829-release_management.md](../../specs/20260829-release_management.md) | Resolved in candidate; issue remains open | WP3 deterministic Web concurrency fixture is merged and covered by successful main CI on T; no issue closure is performed here. | Changes / this reconciliation | No new prerelease blocker established |
+| [#218](https://github.com/lingkaix/openkit/issues/218) [docs] Audit and rewrite existing documents to the unified writing rules | [20260529-test_strategy.md](../../specs/20260529-test_strategy.md) | Deferred instrument/design or documentation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | This reconciliation / #177 | No new prerelease blocker established |
+| [#219](https://github.com/lingkaix/openkit/issues/219) [nanocore] Add the Turn-chain telemetry spans that the telemetry specification already targets | [20260731-operational_telemetry_standardization.md](../../specs/20260731-operational_telemetry_standardization.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#220](https://github.com/lingkaix/openkit/issues/220) [nanohost] Add tracing and carry W3C trace context over the session protocol | [20260802-nanohost_runtime_and_transport.md](../../specs/20260802-nanohost_runtime_and_transport.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#221](https://github.com/lingkaix/openkit/issues/221) [telemetry] Decide whether and how sandboxed Worker runtimes may export telemetry | [20260829-release_management.md](../../specs/20260829-release_management.md) | Deferred instrument/design or documentation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | This reconciliation / #177 | No new prerelease blocker established |
+| [#222](https://github.com/lingkaix/openkit/issues/222) [nanocore] Knowledge search cannot find a Chinese or Japanese word inside a sentence | [20260703-knowledge_store_implementation.md](../../specs/20260703-knowledge_store_implementation.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#223](https://github.com/lingkaix/openkit/issues/223) [storage] Some durable writers rename without fsync and can lose a record on power loss | [20260921-work_data_retention_format.md](../../specs/20260921-work_data_retention_format.md) | Current canonical-writer power-loss gap | Engineer-reserved strict data-loss disposition. The retention owner defines fsync-backed publication; the issue lists writers that do not meet it. No waiver is inferred from earlier publication or pre-stable reset permission. | Known issues (#223) and engineer queue | Engineer classification pending; unlabeled |
+| [#224](https://github.com/lingkaix/openkit/issues/224) [storage] Every persist rewrites and fsyncs each unchanged thread.json in the Workspace | [20260921-work_data_retention_format.md](../../specs/20260921-work_data_retention_format.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#225](https://github.com/lingkaix/openkit/issues/225) [release] Promote a passing prerelease to stable without a rebuild | [20260829-release_management.md](../../specs/20260829-release_management.md) | Stable prerequisite / future delivery | Engineer requires stable promotion without rebuild before the first stable release. | Known issues (#120/#240/#241) / change record (#225) | No new prerelease blocker established |
+| [#226](https://github.com/lingkaix/openkit/issues/226) [nanocore] Let the operator see what is waiting for cleanup | [20260715-multi_user_workspace_system.md](../../specs/20260715-multi_user_workspace_system.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#227](https://github.com/lingkaix/openkit/issues/227) [nanohost] Index-archive image import stages its projection in the system temp directory | [20260802-nanohost_runtime_and_transport.md](../../specs/20260802-nanohost_runtime_and_transport.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#229](https://github.com/lingkaix/openkit/issues/229) [nanocore] Implement the Workspace integrity check integrity.workspace.check | [20261012-product_integrity_check.md](../../specs/20261012-product_integrity_check.md) | Deferred instrument/design or documentation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | This reconciliation / #177 | No new prerelease blocker established |
+| [#230](https://github.com/lingkaix/openkit/issues/230) [app-update] An installed App update helper has no update path, so a release's helper fix does not reach existing deployments | [20260910-app_update_delivery.md](../../specs/20260910-app_update_delivery.md) | Resolved in candidate; issue remains open | WP2 checksum-covered reviewed helper supply is merged and covered by successful main CI on T; no issue closure is performed here. | Changes / this reconciliation | No new prerelease blocker established |
+| [#231](https://github.com/lingkaix/openkit/issues/231) [test] NanoHost lifecycle diagnostics control scenarios use a wall-clock event-loop bound that fails under load | [20260529-test_strategy.md](../../specs/20260529-test_strategy.md) | Resolved in candidate; issue remains open | WP1 deterministic lifecycle sampling is merged and covered by successful main CI on T; no issue closure is performed here. | Changes / this reconciliation | No new prerelease blocker established |
+| [#232](https://github.com/lingkaix/openkit/issues/232) [app-update] No public read reports the running release or image that app-update.prepare requires | [20260910-app_update_delivery.md](../../specs/20260910-app_update_delivery.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#233](https://github.com/lingkaix/openkit/issues/233) [app-update] Add a content-free active-work preflight and recheck it before the App stops | [20260910-app_update_delivery.md](../../specs/20260910-app_update_delivery.md) | Resolved in candidate; issue remains open | WP2 idle preflight and apply-time recheck is merged and covered by successful main CI on T; no issue closure is performed here. | Changes / this reconciliation | No new prerelease blocker established |
+| [#234](https://github.com/lingkaix/openkit/issues/234) [diagnostics] Separate service availability, product readiness, update readiness and maintenance safety | [20260731-operational_telemetry_standardization.md](../../specs/20260731-operational_telemetry_standardization.md) | Resolved in candidate; issue remains open | WP2 separate diagnostic states is merged and covered by successful main CI on T; no issue closure is performed here. | Changes / this reconciliation | No new prerelease blocker established |
+| [#235](https://github.com/lingkaix/openkit/issues/235) [auth] Add a secret-safe caller identity read and a content-free retained-work check | [20260829-release_management.md](../../specs/20260829-release_management.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#236](https://github.com/lingkaix/openkit/issues/236) [cli] Make administrator search, describe and help usable for an update | [20260910-agent_operator_skill.md](../../specs/20260910-agent_operator_skill.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#237](https://github.com/lingkaix/openkit/issues/237) [docs] Add an HTTPS-only App update runbook with explicit stop conditions | [20260529-test_strategy.md](../../specs/20260529-test_strategy.md) | Current disclosed limitation | Retain the existing backlog item; this preparation does not claim its acceptance criteria are met. | Known issues / #177 | No new prerelease blocker established |
+| [#238](https://github.com/lingkaix/openkit/issues/238) [app-update] Return one approval summary with the prepared update | [20260910-app_update_delivery.md](../../specs/20260910-app_update_delivery.md) | Resolved in candidate; issue remains open | WP2 complete prepared approval summary is merged and covered by successful main CI on T; no issue closure is performed here. | Changes / this reconciliation | No new prerelease blocker established |
+| [#239](https://github.com/lingkaix/openkit/issues/239) [app-update] The helper replays the old container's full environment, so old image ENV defaults override the new image | [20260910-app_update_delivery.md](../../specs/20260910-app_update_delivery.md) | Resolved in candidate; issue remains open | WP2 image-default environment handling is merged and covered by successful main CI on T; no issue closure is performed here. | Changes / this reconciliation | No new prerelease blocker established |
+| [#240](https://github.com/lingkaix/openkit/issues/240) [cli] Make doctor report Skill compatibility and App-update availability | [20260910-agent_operator_skill.md](../../specs/20260910-agent_operator_skill.md) | Stable prerequisite / future delivery | Engineer requires Skill/update doctor compatibility before the first stable release. | Known issues (#120/#240/#241) / change record (#225) | No new prerelease blocker established |
+| [#241](https://github.com/lingkaix/openkit/issues/241) [release] Publish one release manifest for an App update | [20260829-release_management.md](../../specs/20260829-release_management.md) | Stable prerequisite / future delivery | Manifest generator exists; attachment delivery and its scratch rehearsal are planned with #225. rc.6 keeps four attachments. | Known issues (#120/#240/#241) / change record (#225) | No new prerelease blocker established |
+| [#242](https://github.com/lingkaix/openkit/issues/242) [nanohost] Registry Worker image preparation fails on every fresh epoch: the acquisition staging parent is never created | [20260802-nanohost_runtime_and_transport.md](../../specs/20260802-nanohost_runtime_and_transport.md) | Fix in candidate; deployment proof pending | 48f44553 implements the fresh-epoch acquisition fix; retained regressions passed. Confirm the exact published bytes after NanoHost replacement. | Changes (#242) and post-tag plan | No new prerelease blocker established |
+| [#243](https://github.com/lingkaix/openkit/issues/243) [test] Worker qualification cannot classify a Pi marker refusal: no Pi native-context evidence is retained | [20260529-test_strategy.md](../../specs/20260529-test_strategy.md) | Qualification instrument changed | Accepted option (b) uses the benign attempt-specific exact sentence. Refusal remains non-pass; no rc.6 live qualification pass is claimed. | Change record; qualification-only issue | No new prerelease blocker established |
+| [#244](https://github.com/lingkaix/openkit/issues/244) [nanohost] Readiness marker test races its 1 ms deadline and fails when the client correctly skips the readiness request | [20260802-nanohost_runtime_and_transport.md](../../specs/20260802-nanohost_runtime_and_transport.md) | Resolved in candidate; issue remains open | WP3 paused readiness-marker clock is merged and covered by successful main CI on T; no issue closure is performed here. | Changes / this reconciliation | No new prerelease blocker established |
+| [#245](https://github.com/lingkaix/openkit/issues/245) [worker-shim] 20 simultaneous native cold starts miss the 8 s RPC deadline on one CPU | [20260703-runtime_scheduling_scale.md](../../specs/20260703-runtime_scheduling_scale.md) | One-CPU burst startup limit | Non-blocker ordinary resource/startup defect; explicitly disclosed. The 20-Turn count is not a resource guarantee. Staged test starts are not a product fix; the governing fix choice remains with the engineer. | Known issues (#245) | No new prerelease blocker established |
 
 ## Verification Evidence
 
-These checks ran on the tree that contains this preparation.
+### Current Preparation — 2026-10-15
+
+`node scripts/validate-doc-model.mjs` printed `Validated documentation model (481 documents).`; `node scripts/validate-spec-lifecycle.mjs` printed `Validated spec lifecycle metadata.`; `node scripts/generate-doc-index.mjs --check` printed `Documentation index is current.`; `node scripts/validate-story-schema.mjs` printed `Validated story schema (10 stories).` All exited 0. The index was regenerated only through its generator and has no content diff.
+
+`node scripts/release-notes.mjs --check --repo-root . --tag v0.1.0-rc.6` printed `Release notes input passed for v0.1.0-rc.6.` `node scripts/release-preflight.mjs --tag v0.1.0-rc.6 --repo-root .` printed `Release preflight passed for 0.1.0-rc.6.` and `Release images: app, worker-common, worker-runtimes`. Both exited 0. This local preflight does not establish future P's main membership or candidate CI.
+
+Focused root execution of `tests/release-manifest.test.mjs`, `tests/release-notes.test.mjs`, `tests/release-publication-check.test.mjs`, `tests/release-workflow.test.mjs`, `tests/release-preflight.test.mjs` and `tests/package-release-assets.test.mjs` reported `tests 191`, `pass 191`, `fail 0`, `skipped 0`, exit 0. Biome received the changed Markdown paths and reported `Checked 0 files`; this is not a lint claim. The documentation validators are the deciding checks for this Markdown-only slice. `git diff --check` exited 0 with no output.
+
+The `release-blocker` label was created with the owner policy description. No issue was labelled: automatic approval review rejected the attempted #223 label as an engineer-reserved strict-risk disposition. The issue remains listed for the engineer, and real admission is not claimed. The complete mechanical check still needs a passing scratch baseline, independent review of final P, P contained in main, successful candidate CI on exact P, refreshed unused identities, and resolved current blocker triage.
+
+### Historical Initial Preparation
+
+
+These checks ran on the current preparation tree. Historical preparation results below remain evidence for their earlier tree; the current results are recorded separately.
 
 `node scripts/validate-spec-lifecycle.mjs` printed `Validated spec lifecycle metadata.` and exited 0.
 

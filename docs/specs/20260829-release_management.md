@@ -3,7 +3,7 @@ status: Accepted
 implementation: Partial
 kind: process
 date: 2026-08-29
-updated: "2026-10-14"
+updated: "2026-10-15"
 ---
 # Release Management
 
@@ -186,7 +186,7 @@ On a tag that builds release artifacts, every other tag job still runs: prefligh
 
 An image publication and promotion job, GitHub Release creation and upload job, or published-release verification job is proved when an earlier real tag run executed it successfully and that job and its implementation inputs are unchanged since then. Retain the earlier tag/run, successful job evidence, and comparison establishing the unchanged job. Skipped publication jobs or non-publishing probes do not establish this proof.
 
-A changed publication job MUST be rehearsed before the real tag in a scratch repository under a different GitHub owner. The rehearsal executes the real changed publication path while leaving the real package names, tags, and Latest pointers untouched. Creating the scratch target and its packages is a separate external effect requiring the engineer's authorization at that time. Missing or conflicting proof blocks the real tag until qualifying evidence exists; no routine different-owner rehearsal is required for an unchanged proved job. [L6 story reorganization](../decisions/20261012-l6_story_reorganization.md) records the decision and exclusions.
+A changed publication job MUST be rehearsed before the real tag in a scratch repository under a different GitHub owner. The rehearsal executes the real changed publication path while leaving the real package names, tags, and Latest pointers untouched. For prereleases, the engineer grants standing authorization for the required rehearsals only in the existing `notrucked/openkit` repository, including scratch preparation commits, unused scratch tags, prereleases and package versions needed by the publication workflow. This grant creates no new scratch owner or repository and authorizes no write to `lingkaix/openkit`, stable publication, Latest mutation, visibility change or credential expansion. Effects outside that bound remain engineer-reserved. [Standing Scratch Rehearsal Grant](../decisions/20261015-standing_scratch_rehearsal_grant.md) records the 2026-10-15 ruling. Missing or conflicting proof blocks the real tag until qualifying evidence exists; no routine different-owner rehearsal is required for an unchanged proved job. [L6 story reorganization](../decisions/20261012-l6_story_reorganization.md) records the decision and exclusions.
 
 ### Publication Authorization
 
