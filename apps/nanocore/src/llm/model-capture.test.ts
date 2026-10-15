@@ -581,6 +581,15 @@ describe('Gateway model retention', () => {
         ? {
             model: 'capture-model',
             messages: [{ role: 'user' as const, content: '  input 雪\n\t' }],
+            tools: [
+              {
+                type: 'function' as const,
+                function: {
+                  name: 'run',
+                  parameters: { type: 'object', properties: { text: { type: 'string' } } },
+                },
+              },
+            ],
           }
         : {
             model: 'capture-model',
