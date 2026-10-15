@@ -7,6 +7,7 @@ const deepseekNative = [
   'src/adapters/deepseek.test.ts',
   'src/adapters/deepseek-native.test.ts',
   'src/adapters/deepseek-fault.test.ts',
+  'src/adapters/deepseek-harness.test.ts',
   'src/adapters/concurrent-sessions.test.ts',
 ];
 export default defineConfig({
