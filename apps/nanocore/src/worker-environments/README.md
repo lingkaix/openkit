@@ -8,6 +8,8 @@ The surface never exposes host paths, native runtime handles, credentials, or re
 
 Preparation creates separate immutable authored and resolved Artifact version 1 records on a private administration Turn before and after exact image settlement. Preparation, recovery and activation use global operations, while storage list, select, status and purge remain Workspace-scoped. Preparation returns the canonical activation confirmation for human review. Activation consumes only the resolved Artifact and exact Agent file SHA, target, successor prompt and storage revision confirmation, applies the existing configuration CAS and safe reload, then delegates writer fencing and replacement to the ordinary interrupt and scheduler owners. Its private Turn retains the exact partial response in one immutable Artifact; command replay reads that response without repeating effects. Explicit preparation recovery uses a fresh causation Turn and reads only the original retained image result.
 
+New activation checks private administration Thread occupancy before image inspection and again after that asynchronous observation, before admitting defaults or changing configuration. A busy Thread returns `thread_busy` without those mutations. Exact receipt replay remains available while unrelated work runs because replay performs no activation effects.
+
 An exact local image digest still performs `image.acquire` and has an ordinary durable image-effect result. Recovery must recover that result before read-only inspection and candidate publication; it never treats the old preload assumption as proof or replays acquisition.
 
 Run focused checks with `pnpm --dir apps/nanocore exec vitest run src/worker-environments` and `pnpm --dir apps/nanocore typecheck`.
