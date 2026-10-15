@@ -78,7 +78,7 @@ Knowledge Manager may prepare source-traceable material and draft proposals. It 
 
 ### Operation families
 
-Read operations inherit S61's trusted query context, narrowing-only source selection and qualified page references. Knowledge Manager cannot supply a different Actor, User or querying Thread, merge Memory with Knowledge, or rerank separate source results. Citations and trace results retain the Core Protocol scope-qualified reference. This is the consumer projection of [Query Context, Sources, References And Acts](../decisions/20261015-context_sources_references_query_acts.md), not another retrieval owner.
+Read operations inherit S61's trusted query context, narrowing-only source selection and qualified page references. Knowledge Manager cannot supply a different Actor, User or querying Thread, merge Memory with Knowledge, or rerank separate source results. Citations retain the Core Protocol scope-qualified reference. Every result that identifies an existing selection trace uses `retrievalTraceRef` as `{scopeId,objectId}`, never a bare `retrievalTraceId`. Direct User App calls with no Thread or Turn return their existing selection/outcome projection without a trace id or reference; they publish no trace and retain S61's same source and current-access checks. A caller cannot omit existing Thread/Turn context to skip publication. This is the consumer projection of [Query Context, Sources, References And Acts](../decisions/20261015-context_sources_references_query_acts.md), not another retrieval owner.
 
 `answer`:
 
@@ -186,7 +186,7 @@ Use the same selected Retrieval Kernel tokenizer for the query, canonical title,
 
 ## Current Implementation Projection
 
-The Phase A qualified-reference and query-act amendments await Consultant review and Phase B implementation. Current code still returns the plain `retrievalTraceId` and uses Workspace-owned trace storage; that implementation fact does not retain the retired target shape.
+The coordinator and Consultant accepted the qualified-reference and query-act amendments under the engineer's delegation; Phase B implements them. Current code still returns the plain `retrievalTraceId` and uses Workspace-owned trace storage; that implementation fact does not retain the retired target shape.
 
 NanoCore exposes the five deterministic Knowledge Manager operations through the Knowledge definition table, native invocation, derived JSON routes and OpenAPI, `client.operations`, the bundled CLI and remote MCP. Public and trusted Task preparation enter the same definition and admission, preserving public metadata and Task’s exact trace-only view. Answer and context preparation delegate to S61's governed retrieval owner; context preparation returns that owner's trace reference and exposes no standalone worker-context materialization or delivery surface.
 

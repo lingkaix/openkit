@@ -1,13 +1,13 @@
 ---
 status: Accepted
 date: "2026-10-15"
-decider: Engineer (direction; realization awaits Coordinator and Consultant review)
+decider: Engineer; details agreed by Coordinator and Consultant under delegation
 ---
 # Query Context, Sources, References And Acts
 
 ## Decision
 
-The engineer accepted this direction on 2026-10-15: every query has one current Server, Workspace, Actor and querying Thread/Turn. Trusted context derives its eligible sources; request input may only narrow them. Workspace and Server own Knowledge bases. The Assistant's current User owns Memory. Memory recall and Knowledge retrieval are separate invocations with labelled context sections and separate budgets. Workers cannot read Memory. Scores from different indexes do not establish a common relevance order.
+The engineer accepted this direction on 2026-10-15: every query has one current Server, Workspace and Actor, with its querying Thread/Turn when present. Trusted context derives its eligible sources; request input may only narrow them. Workspace and Server own Knowledge bases. The Assistant's current User owns Memory. Memory recall and Knowledge retrieval are separate invocations with labelled context sections and separate budgets. Workers cannot read Memory. Scores from different indexes do not establish a common relevance order.
 
 Pins, traces and citations use one scope-qualified reference form: `(scope id, object id)`. Current Server context resolves the reference; cross-server references later add an explicit server identity. A reference identifies an object and supplies no access grant. The existing page owner retains its stable bundle-relative path identity; this direction requires qualification, not another independently generated page identifier.
 
@@ -25,7 +25,7 @@ The context supplies authority facts that a model request cannot select for itse
 
 The querying Thread already has an audience, retention owner and durable evidence. A source notebook cannot own the disclosure boundary of a query that uses it. The confirmed private Assistant Timeline keeps Memory evidence private without a User-plus-Workspace trace ledger. Explicit future read bindings can share selected Knowledge without adding members to a personal Workspace or making a query itself an authorization mechanism. A copy is not automatic declassification.
 
-This record preserves the engineer-approved model. Phase A realization details are exposed in the R2 change record for Consultant scrutiny; their drafting is not Consultant agreement or permission to begin Phase B.
+This record preserves the engineer-approved model. On 2026-10-15 the coordinator and Consultant agreed its realization under the engineer's delegation: fixed path grammar for scope ids, one write-once file per trace under the querying Thread/Turn, and no trace for direct User App calls without either owner. The owning contracts state those rules and the coordinator authorized Phase B after the separate revision commit. The quotation records remain unchanged.
 
 ## Rejected Alternatives
 

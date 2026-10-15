@@ -318,6 +318,8 @@ Canonical file-backed records should use the common record envelope from the sch
 
 Line-oriented families under this spec apply the split-envelope minimum from the schema evolution spec as follows: `items.jsonl` lines are protocol item event records whose per-line version and type discriminators come from the protocol item schemas, with thread and turn lineage carried by the owning `thread.json` and `turn.json` records acting as the file-level manifest; observation ledgers and other workspace JSONL ledgers carry a per-line `v`, `type`, `id`, and `ts` header, with `ownerScope`, lineage defaults, and `requiredFeatures` in a directory-level manifest file. Rotation and compaction preserve manifest linkage.
 
+The retrieval publisher alone writes immutable selection traces at `threads/<threadId>/retrieval-traces/<traceId>.json` for a Thread query without a Turn, or `threads/<threadId>/turns/<turnId>/retrieval-traces/<traceId>.json` for a Turn query. The file name without `.json`, body `traceId` and reference `objectId` are the same existing `krt_` id. Same-directory temporary-file publication and rename must preserve an existing target as a conflict. These files belong to the querying Thread/Turn; neither manifest has a trace array, and no Workspace Knowledge trace ledger or second writer is retained. Threadless direct User App queries publish none. Knowledge Store owns the body and current-access projection rules; S51 owns export and reminting.
+
 ## Current Implementation Projection
 
 Workspace scoped migration applies a one-way drop of `workspace_repository_resources` and `git_push_records`, including their pre-release records. Historical setup DDL is unchanged. Pre-retirement Workspace archives remain verifiable and import surviving families without restoring retired host tables; authored Workspace configuration remains loadable.
@@ -381,10 +383,12 @@ catalog/
 threads/
   <threadId>/
     thread.json
+    retrieval-traces/<traceId>.json  # query with a Thread and no Turn
     turns/
       <turnId>/
         turn.json
         items.jsonl
+        retrieval-traces/<traceId>.json  # query with this Turn
         context-package.json
         context-package/  # exact worker-visible package files indexed by context-package.json
         inputs/

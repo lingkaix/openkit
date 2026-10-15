@@ -59,7 +59,7 @@ Timeline coverage remains partial when a collection gap follows observed runtime
 
 ## Verification
 
-The 2026-10-15 context/source/reference/query-act direction is a documentation-only Phase A for Consultant review. The revised [Knowledge retrieval contract](../../../../docs/specs/20260703-knowledge_store_implementation.md#retrieval-pipeline) separates Memory and Knowledge, scopes pins, and assigns trace evidence to the querying Thread/Turn. Current code still uses plain pin ids and Workspace JSONL traces; it does not implement that Phase A contract yet. Phase B waits for the coordinator's go. This guide's implementation inventory is not permission to retain the old contract after that cutover or to add a compatibility reader, new ledger or private Memory union.
+The accepted [Knowledge retrieval contract](../../../../docs/specs/20260703-knowledge_store_implementation.md#retrieval-pipeline) separates Memory and Knowledge, uses Core Protocol's path-qualified references and publishes one immutable trace file under its querying Thread/Turn. Threadless direct User App calls publish no trace. Current code still uses plain pins and Workspace JSONL traces; Phase B replaces them directly. The retrieval publisher alone writes query-owned trace files; no manifest array, compatibility reader, second writer or private Memory union is permitted.
 
 Run focused layout, migration, database, canonical reload, index rebuild, export, import, integrity failure, and backup tests for the changed owner, followed by the package gates in the [NanoCore source guide](../README.md).
 
