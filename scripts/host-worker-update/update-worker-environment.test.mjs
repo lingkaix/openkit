@@ -22,6 +22,7 @@ const children = {
 const revision = `sha256:${'e'.repeat(64)}`;
 const previousPhysicalEpoch = '1'.repeat(64);
 const currentPhysicalEpoch = '2'.repeat(64);
+const replacementReference = 'preceding-nanohost-stage';
 const tag = 'v0.1.0-rc.8';
 const deployment = {
   reference: 'retained-staging-binding',
@@ -68,6 +69,7 @@ function parameters(platform = 'linux/arm64') {
     manifest,
     platform,
     previousPhysicalEpoch,
+    nanoHostReplacementReference: replacementReference,
     prepare: {
       administrationThreadId: 'private-administration-thread',
       requestId: '11111111-1111-4111-8111-111111111111',
@@ -109,10 +111,27 @@ async function fixture(t, platform) {
       observedAt: '2026-10-15T00:00:00Z',
     }),
   };
+  // This upstream observation is fixed independently of caller parameter assertions.
+  const replacement = {
+    reference: replacementReference,
+    target,
+    grantReference: 'standing-staging-grant',
+    outcome: 'passed',
+    release: { tag, sourceCommit },
+    before: {
+      ...structuredClone(host),
+      physicalEpoch: previousPhysicalEpoch,
+      runtimeTarget: { ...structuredClone(host.runtimeTarget), connectionGeneration: 7 },
+      sourceCommit: '8'.repeat(40),
+      distributionSha256: '9'.repeat(64),
+    },
+    after: structuredClone(host),
+  };
   const controls = {
     host: () => structuredClone(host),
     binding: () => structuredClone(deployment),
     grant: () => structuredClone(p.grant),
+    replacement: () => structuredClone(replacement),
     preflight: () =>
       AppUpdatePreflightResponseSchema.parse({
         observedAt: '2026-10-15T00:00:00Z',
@@ -134,6 +153,10 @@ async function fixture(t, platform) {
   const io = {
     deploymentRecord: async () => controls.binding(),
     currentGrant: async () => controls.grant(),
+    replacementObservation: async (selected) => {
+      assert.equal(selected, target);
+      return controls.replacement();
+    },
     observeHost: async (selected) => {
       assert.equal(selected, target);
       return controls.host();
@@ -781,6 +804,131 @@ test('reports distinct bounded refusal reasons for busy work and conflicting hos
   assert.deepEqual(effects(wrongSource), []);
 });
 
+test('refuses fabricated predecessor when independent stage observations show the same warm Epoch', async (t) => {
+  const f = await fixture(t);
+  f.io.replacementObservation = async () => ({
+    reference: replacementReference,
+    target,
+    grantReference: 'standing-staging-grant',
+    outcome: 'passed',
+    release: { tag, sourceCommit },
+    before: structuredClone(f.host),
+    after: structuredClone(f.host),
+  });
+  await assert.rejects(() => run(f));
+  assert.deepEqual(effects(f), []);
+});
+
+test('uses the independently observed preceding replacement for fresh preparation', async (t) => {
+  const f = await fixture(t);
+  let observed = 0;
+  const reader = f.io.replacementObservation;
+  f.io.replacementObservation = async (selected) => {
+    observed += 1;
+    return reader(selected);
+  };
+  const result = await run(f);
+  assert.equal(result.outcome, 'activated');
+  assert.equal(result.freshEpochPreparation, true);
+  assert.ok(observed > 0);
+});
+
+for (const [name, change] of [
+  [
+    'missing replacement reader',
+    (f) => {
+      f.io.replacementObservation = undefined;
+    },
+  ],
+  [
+    'missing replacement evidence',
+    (f) => {
+      f.controls.replacement = () => null;
+    },
+  ],
+  [
+    'another replacement reference',
+    (_f, record) => {
+      record.reference = 'another-update-stage';
+    },
+  ],
+  [
+    'another target',
+    (_f, record) => {
+      record.target = 'https://other.example.invalid';
+    },
+  ],
+  [
+    'another grant',
+    (_f, record) => {
+      record.grantReference = 'another-grant';
+    },
+  ],
+  [
+    'another release tag',
+    (_f, record) => {
+      record.release.tag = 'v0.1.0-rc.7';
+    },
+  ],
+  [
+    'another release source',
+    (_f, record) => {
+      record.release.sourceCommit = '8'.repeat(40);
+    },
+  ],
+  [
+    'another predecessor deployment',
+    (_f, record) => {
+      record.before.runtimeTarget.deploymentId = 'another-deployment';
+    },
+  ],
+  [
+    'another predecessor machine',
+    (_f, record) => {
+      record.before.machineId = '5'.repeat(32);
+    },
+  ],
+  [
+    'another observed successor Epoch',
+    (_f, record) => {
+      record.after.physicalEpoch = '7'.repeat(64);
+    },
+  ],
+  [
+    'another successor distribution',
+    (_f, record) => {
+      record.after.distributionSha256 = '6'.repeat(64);
+    },
+  ],
+  [
+    'failed replacement',
+    (_f, record) => {
+      record.outcome = 'failed';
+    },
+  ],
+  [
+    'unknown replacement outcome',
+    (_f, record) => {
+      record.outcome = 'unknown';
+    },
+  ],
+  [
+    'stale asserted predecessor',
+    (f) => {
+      f.p.previousPhysicalEpoch = '4'.repeat(64);
+    },
+  ],
+]) {
+  test(`refuses ${name} before Worker preparation`, async (t) => {
+    const f = await fixture(t);
+    const record = f.controls.replacement();
+    f.controls.replacement = () => structuredClone(record);
+    change(f, record);
+    await assert.rejects(() => run(f));
+    assert.deepEqual(effects(f), []);
+  });
+}
+
 test('compares activation authority against the original grant snapshot', async (t) => {
   const f = await fixture(t);
   const sharedGrant = structuredClone(f.p.grant);
@@ -794,4 +942,14 @@ test('compares activation authority against the original grant snapshot', async 
     effects(f).map(({ operation }) => operation),
     ['worker-environment.prepare']
   );
+});
+
+test('refuses a changed physical witness within the predecessor connection generation', async (t) => {
+  const f = await fixture(t);
+  const record = f.controls.replacement();
+  record.before.runtimeTarget.connectionGeneration =
+    record.after.runtimeTarget.connectionGeneration;
+  f.controls.replacement = () => record;
+  await assert.rejects(() => run(f));
+  assert.deepEqual(effects(f), []);
 });

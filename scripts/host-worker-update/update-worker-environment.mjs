@@ -112,6 +112,51 @@ function hostObservation(raw, binding, selection) {
   };
 }
 
+/** Bind the existing upstream component evidence; an asserted historical witness cannot prove replacement. */
+function replacementObservation(raw, target, p, binding, grant, host, selection) {
+  requireFact(
+    raw?.outcome === 'passed' &&
+      raw.reference === p.nanoHostReplacementReference &&
+      raw.target === target &&
+      raw.grantReference === grant.reference &&
+      raw.release?.tag === selection.manifest.tag &&
+      raw.release.sourceCommit === selection.manifest.sourceCommit,
+    'accepted NanoHost replacement evidence for this invocation required'
+  );
+  const previousTarget = admit(
+    NanoHostRuntimeTargetStatusResponseSchema.strip(),
+    raw.before?.runtimeTarget,
+    'NanoHost predecessor observation unavailable'
+  );
+  const successor = hostObservation(raw.after, binding, selection);
+  requireFact(
+    raw.before.machineId === binding.machineId &&
+      /^[a-f0-9]{64}$/.test(raw.before.physicalEpoch ?? '') &&
+      raw.before.physicalEpoch === p.previousPhysicalEpoch &&
+      raw.before.physicalEpoch !== successor.physicalEpoch &&
+      previousTarget.identityId === host.runtimeTarget.identityId &&
+      previousTarget.deploymentId === host.runtimeTarget.deploymentId &&
+      successor.physicalEpoch === host.physicalEpoch &&
+      successor.runtimeTarget.freshEmpty &&
+      successor.runtimeTarget.identityId === host.runtimeTarget.identityId &&
+      successor.runtimeTarget.deploymentId === host.runtimeTarget.deploymentId &&
+      successor.runtimeTarget.connectionGeneration > previousTarget.connectionGeneration &&
+      successor.runtimeTarget.connectionGeneration <= host.runtimeTarget.connectionGeneration,
+    'NanoHost replacement does not prove the selected predecessor and current fresh Epoch'
+  );
+  return {
+    reference: raw.reference,
+    outcome: 'passed',
+    release: { tag: selection.manifest.tag, sourceCommit: selection.manifest.sourceCommit },
+    before: {
+      machineId: raw.before.machineId,
+      physicalEpoch: raw.before.physicalEpoch,
+      runtimeTarget: previousTarget,
+    },
+    after: successor,
+  };
+}
+
 /** Require all instantaneous work counts to be zero; the runtime owner still owns the drain fence. */
 function requireIdle(raw) {
   const observation = admit(
@@ -163,12 +208,13 @@ export async function updateWorkerEnvironment(target, params, evidenceDir, io) {
             'activationRequestId',
             'grant',
             'previousPhysicalEpoch',
+            'nanoHostReplacementReference',
           ].includes(key)
         ),
       'unknown update instruction'
     );
     requireFact(
-      ['call', 'deploymentRecord', 'currentGrant', 'observeHost'].every(
+      ['call', 'deploymentRecord', 'currentGrant', 'observeHost', 'replacementObservation'].every(
         (key) => typeof io?.[key] === 'function'
       ),
       'independent administrator adapters required'
@@ -176,8 +222,11 @@ export async function updateWorkerEnvironment(target, params, evidenceDir, io) {
     const selection = releaseSelection(p);
     requireFact(
       /^[a-f0-9]{64}$/.test(p.previousPhysicalEpoch ?? '') &&
+        typeof p.nanoHostReplacementReference === 'string' &&
+        p.nanoHostReplacementReference.length > 0 &&
+        p.nanoHostReplacementReference.length <= 128 &&
         !Object.hasOwn(p.prepare ?? {}, 'declaration'),
-      'previous Epoch and release-derived declaration required'
+      'replacement evidence reference, previous Epoch and release-derived declaration required'
     );
     const request = admit(
       WorkerEnvironmentPrepareInputSchema,
@@ -206,6 +255,15 @@ export async function updateWorkerEnvironment(target, params, evidenceDir, io) {
     requireFact(
       host.physicalEpoch !== p.previousPhysicalEpoch && host.runtimeTarget.freshEmpty,
       'fresh physical Epoch evidence required before registry preparation'
+    );
+    result.nanoHostReplacement = replacementObservation(
+      await io.replacementObservation(target),
+      target,
+      p,
+      binding,
+      grant,
+      host,
+      selection
     );
     result.release = {
       tag: selection.manifest.tag,
