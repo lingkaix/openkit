@@ -566,9 +566,12 @@ describe('fresh Workspace database publication', () => {
       this: Database.Database,
       source: string
     ) {
+      const [operation, entity, table] = source.trimStart().split(/\s+/, 3);
       if (
         this.name.includes('/workspaces/.staging/') &&
-        /CREATE TABLE\s+`worker_turn_checkpoints`/.test(source)
+        operation === 'CREATE' &&
+        entity === 'TABLE' &&
+        table === '`worker_turn_checkpoints`'
       ) {
         faults += 1;
         throw new Error('Injected Workspace migration failure');
