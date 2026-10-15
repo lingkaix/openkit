@@ -24,10 +24,12 @@ const processStamp = z.object({
   startTimeTicks: z.string().regex(/^[1-9][0-9]*$/),
 });
 // P12 owns the public projection. Remove this local draft extension when its SHA lands.
-// Missing physicalEpoch must fail while P02/P12 are pending; no old-response fallback exists.
+// Missing physicalEpoch must fail while producer implementations are pending; no old-response fallback exists.
 const StoredRuntimeTargetSchema = NanoHostRuntimeTargetStatusResponseSchema.strip().extend({
   physicalEpoch: digest.nullable(),
 });
+// P02's accepted Live Operator Inspection owner (08b252dc) defines this wire shape.
+// The effective-unit digest is opaque here; P02 owns its 40-property normalization.
 const inspectionSchema = z.object({
   nonce: digest,
   outcome: z.literal('observed'),
@@ -72,7 +74,7 @@ function requireFact(condition) {
   if (!condition) throw new Error('Host observation unavailable; inspect before any new effect.');
 }
 
-/** Strip descriptive annotations while requiring the complete authority-bearing draft shape. */
+/** Strip descriptive annotations while requiring the complete authority-bearing shape. */
 function admit(schema, raw) {
   const parsed = schema.safeParse(raw);
   requireFact(parsed.success);
@@ -122,7 +124,8 @@ export function admitHostObservation(raw, { binding, archiveAttribution, effecti
 
 /**
  * Read/inspect/read once through independently authenticated administrator adapters.
- * P02 owns process-handle measurement and its deadline; P12 owns the stored projection.
+ * P02 owns process-handle measurement, post-acknowledgement connection binding and its deadline.
+ * P12 owns the stored projection; loss of inspection availability cannot reuse a prior sample.
  * No unknown/unavailable result is retried and no prior nonce can answer this challenge.
  * @param {string} target Explicit HTTPS origin selected by retained operator binding.
  * @param {object} expected Retained machine, verified archive and accepted effective unit digest.
