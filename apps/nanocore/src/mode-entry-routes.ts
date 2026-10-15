@@ -1970,6 +1970,8 @@ function createTaskModeDelegation(input: {
   readonly threadId: string;
   /** User task prompt. */
   readonly prompt: string;
+  /** Optional exact Agent selection narrows existing eligible candidates without substitution. */
+  readonly agentId?: string;
   /** Resolves ready worker candidates for the workspace. */
   readonly workerCoordinatorCandidates: (
     store: FsStore,
@@ -1979,7 +1981,9 @@ function createTaskModeDelegation(input: {
   const coordinatorInput = {
     entryIntent: input.entryIntent,
     prompt: input.prompt,
-    readiness: input.workerCoordinatorCandidates(input.store, input.workspaceId),
+    readiness: input
+      .workerCoordinatorCandidates(input.store, input.workspaceId)
+      .filter((candidate) => input.agentId === undefined || candidate.agentId === input.agentId),
     threadState: { status: 'idle', threadId: input.threadId },
     workspaceSummary: {
       name: input.store.getWorkspace(input.workspaceId).name,
@@ -4409,11 +4413,14 @@ export function createTaskStartOperation({
       id: actor.userId,
     } as const satisfies ActorRef;
     const actorId = triggerActor.id;
-    const requestInputHash = commandInputHash({
+    // An omitted selector retains the original command input and replay hash.
+    const requestInput = {
       input: taskInput.input,
+      ...(taskInput.agentId === undefined ? {} : { agentId: taskInput.agentId }),
       modelId: taskInput.modelId,
       workerStorageChoice: taskInput.workerStorageChoice,
-    });
+    };
+    const requestInputHash = commandInputHash(requestInput);
 
     let resolveReceiptPublished!: () => void;
     const receiptPublished = new Promise<void>((resolve) => {
@@ -4550,6 +4557,7 @@ export function createTaskStartOperation({
         workspaceId,
         threadId,
         prompt: taskInput.input,
+        ...(taskInput.agentId === undefined ? {} : { agentId: taskInput.agentId }),
         workerCoordinatorCandidates,
       });
 
@@ -4740,11 +4748,7 @@ export function createTaskStartOperation({
         command: 'task.start',
         execute: () => executeTaskCommand(store, workspaceId, threadId),
         inflightCommands,
-        input: {
-          input: taskInput.input,
-          modelId: taskInput.modelId,
-          workerStorageChoice: taskInput.workerStorageChoice,
-        },
+        input: requestInput,
         replay: async (record) => {
           const turnId = directTaskModeTurnId(actorId, workspaceId, threadId, record.requestId);
           const closeout = activeTaskCloseouts.get(turnId);

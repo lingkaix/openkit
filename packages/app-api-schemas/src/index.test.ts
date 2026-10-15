@@ -183,6 +183,7 @@ import {
   WorkspaceReconciliationRecordSchema,
   WorkspaceRecoveryDecisionSchema,
 } from './index.js';
+import { TASK_OPERATION_DEFINITIONS } from './operation-definitions.js';
 
 const timestamp = '2026-05-15T05:17:42.000Z';
 
@@ -3682,6 +3683,46 @@ describe('app api schemas', () => {
         id: 'workspaces/ws_demo/mcp-servers.jsonc',
         kind: 'mcp-server',
         content: '{"schemaVersion":1,"servers":[]}',
+      }).success
+    ).toBe(false);
+  });
+
+  it('preserves an optional exact Task Agent selector in the shared and operation schemas', () => {
+    const request = {
+      input: 'Implement the focused fix.',
+      requestId: '0190f4c8-0000-7000-8000-000000000133',
+    };
+    const selector = { agentId: 'agent_selected' };
+    const scope = { workspaceId: 'ws_demo', threadId: 'th_demo' };
+    expect(StartTaskModeRequestSchema.parse({ ...request, ...selector })).toEqual({
+      ...request,
+      ...selector,
+    });
+    expect(
+      TASK_OPERATION_DEFINITIONS['task.start'].inputSchema.parse({
+        ...request,
+        ...scope,
+        ...selector,
+      })
+    ).toEqual({ ...request, ...scope, ...selector });
+    expect(StartTaskModeRequestSchema.parse(request)).toEqual(request);
+    expect(
+      TASK_OPERATION_DEFINITIONS['task.start'].inputSchema.parse({ ...request, ...scope })
+    ).toEqual({ ...request, ...scope });
+  });
+
+  it.each(['', null, 133])('rejects an invalid exact Task Agent selector %s', (agentId) => {
+    const request = {
+      agentId,
+      input: 'Implement the focused fix.',
+      requestId: '0190f4c8-0000-7000-8000-000000000133',
+    };
+    expect(StartTaskModeRequestSchema.safeParse(request).success).toBe(false);
+    expect(
+      TASK_OPERATION_DEFINITIONS['task.start'].inputSchema.safeParse({
+        ...request,
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
       }).success
     ).toBe(false);
   });
