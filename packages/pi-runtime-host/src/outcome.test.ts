@@ -62,13 +62,95 @@ describe('PiTurnOutcomeTracker', () => {
   });
 
   it.each([
-    ['error', assistant({ stopReason: 'error' })],
     ['unknown stop', assistant({ stopReason: 'future-stop' })],
     ['terminal tool use', assistant({ stopReason: 'toolUse' })],
   ])('rejects %s', (_name, message) => {
     const tracker = new PiTurnOutcomeTracker();
     settle(tracker, message);
     expect(finish(tracker)).toEqual({ reason: 'pi-terminal-correlation-failed', status: 'failed' });
+  });
+
+  it.each([
+    { content: [] },
+    { content: [{ text: 'partial answer is not success', type: 'text' }] },
+  ])('classifies a fully correlated inference error without requiring successful text: $content', ({
+    content,
+  }) => {
+    const tracker = new PiTurnOutcomeTracker();
+    settle(
+      tracker,
+      assistant({ content, errorMessage: 'private native failure', stopReason: 'error' })
+    );
+    expect(finish(tracker)).toEqual({ reason: 'pi-inference-failed', status: 'failed' });
+    expect(finish(tracker, { interrupted: true })).toEqual({
+      reason: 'worker-interrupted',
+      status: 'interrupted',
+    });
+    expect(finish(tracker, { promptFailed: true })).toEqual({
+      reason: 'pi-prompt-failed',
+      status: 'failed',
+    });
+  });
+
+  it.each([
+    'message_end',
+    'turn_end',
+    'agent_end',
+    'agent_settled',
+  ])('keeps an inference error with missing %s as a correlation failure', (missing) => {
+    const tracker = new PiTurnOutcomeTracker();
+    const message = assistant({ content: [], stopReason: 'error' });
+    for (const event of [
+      { message, type: 'message_end' },
+      { message, type: 'turn_end' },
+      { messages: [message], type: 'agent_end', willRetry: false },
+      { type: 'agent_settled' },
+    ])
+      if (event.type !== missing) tracker.observe(event);
+    expect(finish(tracker)).toEqual({ reason: 'pi-terminal-correlation-failed', status: 'failed' });
+  });
+
+  it.each([
+    'unmatched-turn',
+    'unmatched-agent',
+    'retrying',
+    'after-settlement',
+  ])('keeps %s inference evidence as a correlation failure', (fault) => {
+    const tracker = new PiTurnOutcomeTracker();
+    const message = assistant({ content: [], stopReason: 'error' });
+    const different = assistant({
+      content: [{ type: 'text', text: 'different' }],
+      stopReason: 'error',
+    });
+    tracker.observe({ message, type: 'message_end' });
+    tracker.observe({
+      message: fault === 'unmatched-turn' ? different : message,
+      type: 'turn_end',
+    });
+    tracker.observe({
+      messages: [fault === 'unmatched-agent' ? different : message],
+      type: 'agent_end',
+      willRetry: fault === 'retrying',
+    });
+    tracker.observe({ type: 'agent_settled' });
+    if (fault === 'after-settlement') tracker.observe({ message, type: 'message_end' });
+    expect(finish(tracker)).toEqual({ reason: 'pi-terminal-correlation-failed', status: 'failed' });
+  });
+
+  it.each([
+    ['wrong model', { model: 'another-model' }, 'pi-route-mismatch'],
+    ['wrong provider', { provider: 'another-provider' }, 'pi-route-mismatch'],
+    ['malformed text', { content: [{ type: 'text', text: 42 }] }, 'pi-output-malformed'],
+    ['malformed part', { content: [null] }, 'pi-output-malformed'],
+    [
+      'oversized non-text content',
+      { content: [{ type: 'thinking', thinking: 'a'.repeat(16 * 1024 * 1024) }] },
+      'pi-output-too-large',
+    ],
+  ] as const)('does not let a correlated inference error disguise %s', (_name, overrides, reason) => {
+    const tracker = new PiTurnOutcomeTracker();
+    settle(tracker, assistant({ content: [], stopReason: 'error', ...overrides }));
+    expect(finish(tracker)).toEqual({ reason, status: 'failed' });
   });
 
   it('reports a correlated native self-abort without inferring an OpenKit interrupt', () => {

@@ -31,7 +31,7 @@ interface PiAssistantMessage extends Record<string, unknown> {
 /**
  * Correlates the session events of one prompt into one trustworthy outcome.
  *
- * A terminal assistant stop, length, or abort message must match its turn end, final non-retrying agent end, and `agent_settled`, with no terminal event after settlement. Length preserves exhaustion and an unrequested abort preserves a safe self-stop diagnostic, without a successful assistant candidate. Errors and terminal tool use cannot establish success; unknown events cannot satisfy correlation.
+ * A terminal assistant stop, length, abort, or inference-error message must match its turn end, final non-retrying agent end, and `agent_settled`, with no terminal event after settlement. Length preserves exhaustion, an unrequested abort preserves a safe self-stop diagnostic, and a correlated inference error preserves its private failure reason without a successful assistant candidate. Terminal tool use cannot establish success; unknown events cannot satisfy correlation.
  */
 export class PiTurnOutcomeTracker {
   #agentMatched = false;
@@ -137,6 +137,8 @@ export class PiTurnOutcomeTracker {
       if (typeof part.text !== 'string') return { status: 'failed', reason: 'pi-output-malformed' };
       texts.push(part.text);
     }
+    if (candidate.stopReason === 'error')
+      return { status: 'failed', reason: 'pi-inference-failed' };
     if (candidate.stopReason === 'length') return { status: 'length', reason: 'pi-length' };
     if (candidate.stopReason === 'aborted') {
       return {
@@ -151,13 +153,14 @@ export class PiTurnOutcomeTracker {
   }
 }
 
-/** Reads one settled assistant stop, length, or abort message for terminal correlation. */
+/** Reads one settled assistant stop, length, abort, or inference-error message for terminal correlation. */
 function readSettledAssistantMessage(value: unknown): PiAssistantMessage | null {
   if (
     !isRecord(value) ||
     value.role !== 'assistant' ||
     (value.stopReason !== 'stop' &&
       value.stopReason !== 'length' &&
+      value.stopReason !== 'error' &&
       value.stopReason !== 'aborted') ||
     !Array.isArray(value.content) ||
     typeof value.provider !== 'string' ||

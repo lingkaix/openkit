@@ -21,6 +21,9 @@ import { fileURLToPath } from 'node:url';
 import type { ReasoningEffort } from '@openkit/protocol';
 import { workerTurnCapturePaths } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+// Test-only composition checks the private host producer and its actual supervising reader.
+import { encodeFrame } from '../../../pi-runtime-host/src/channel.ts';
+import { PiTurnOutcomeTracker } from '../../../pi-runtime-host/src/outcome.ts';
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
 import type { RuntimeObservation } from '../runtime-capture.js';
 import { waitForPiHostReadiness } from '../test-support/pi-host-readiness.js';
@@ -530,6 +533,90 @@ describe('Pi frame projection', () => {
       'Authorization: Bearer [redacted] token=[redacted]'
     );
   });
+
+  it.each([
+    0, 1, 47,
+  ])('carries the real inference failure producer through a split private frame at byte %s', (split) => {
+    const tracker = new PiTurnOutcomeTracker();
+    const route = { model: 'logical-a', provider: 'openkit-worker-inference' };
+    const message = {
+      role: 'assistant',
+      ...route,
+      stopReason: 'error',
+      content: [],
+      errorMessage: 'private provider detail',
+    };
+    tracker.observe({ type: 'message_end', message });
+    tracker.observe({ type: 'turn_end', message });
+    tracker.observe({ type: 'agent_end', messages: [message], willRetry: false });
+    tracker.observe({ type: 'agent_settled' });
+    const outcome = tracker.finish({ route, interrupted: false, promptFailed: false });
+    const encoded = Buffer.from(
+      encodeFrame(
+        {
+          event: 'turn_settled',
+          turnId: 'turn-1',
+          outcome,
+          nativeHandle: { state: 'unknown' },
+          compactionEntryIds: [],
+          reasoningEffort: 'unknown',
+        },
+        []
+      )
+    );
+    const projected: ReturnType<typeof projectPiTurnSettlement>[] = [];
+    const reader = createPiLineReader(
+      (line) => {
+        const frame = parsePiHostFrame(line);
+        expect(frame.kind).toBe('settled');
+        if (frame.kind === 'settled')
+          projected.push(
+            projectPiTurnSettlement(frame.settled, { expectedHandleText: null, secrets: [] })
+          );
+      },
+      () => {
+        throw new Error('The admitted private frame must not overflow.');
+      }
+    );
+    reader(encoded.subarray(0, split));
+    expect(projected).toEqual([]);
+    reader(encoded.subarray(split));
+    reader.finish();
+    expect(projected).toEqual([
+      expect.objectContaining({
+        status: 'failed',
+        stopReason: 'pi-inference-failed',
+        assistantText: null,
+        establishes: false,
+        validEvidence: true,
+      }),
+    ]);
+    expect(encoded.toString()).not.toContain('private provider detail');
+  });
+
+  it.each([
+    'pi-inference-failed-unknown',
+    'PI-INFERENCE-FAILED',
+    'future-reason',
+  ])('rejects the unknown private inference failure reason %s', (reason) => {
+    expect(project({ status: 'failed', reason })).toMatchObject({
+      status: 'failed',
+      stopReason: 'pi-output-malformed',
+      assistantText: null,
+      establishes: false,
+      validEvidence: false,
+    });
+  });
+
+  it('admits the exact private inference failure without a successful assistant candidate', () => {
+    expect(project({ status: 'failed', reason: 'pi-inference-failed' })).toMatchObject({
+      status: 'failed',
+      stopReason: 'pi-inference-failed',
+      assistantText: null,
+      establishes: false,
+      validEvidence: true,
+    });
+  });
 });
 
 describe('Pi resume proof', () => {
@@ -1010,6 +1097,56 @@ describe('Pi controlled channel faults', () => {
       pipesDrained: true,
       persistencePreservingClose: true,
     });
+  });
+
+  it('keeps a first correlated inference failure non-reusable and preserves its retained bytes on close', async () => {
+    let channel!: Duplex;
+    const { dirs, session } = await peer('ordinary', undefined, {
+      observeChannel: (observed) => {
+        channel = observed;
+      },
+    });
+    const emit = channel.emit.bind(channel);
+    const rewrite = createPiLineReader(
+      (line) => {
+        const frame = JSON.parse(line);
+        if (frame.event === 'turn_settled') {
+          frame.outcome = { status: 'failed', reason: 'pi-inference-failed' };
+          frame.nativeHandle = { state: 'unknown' };
+        }
+        emit('data', Buffer.from(`${JSON.stringify(frame)}\n`));
+      },
+      () => {
+        throw new Error('The controlled peer frame must remain valid.');
+      }
+    );
+    vi.spyOn(channel, 'emit').mockImplementation((event, ...args) => {
+      if (event === 'data') {
+        rewrite(Buffer.from(args[0]));
+        return true;
+      }
+      return emit(event, ...args);
+    });
+    const writes = vi.spyOn(channel, 'write');
+    const turn = await session.startTurn(turnInput(dirs));
+    expect(await turn.settled).toMatchObject({
+      status: 'failed',
+      stopReason: 'pi-inference-failed',
+      assistantText: null,
+      nativeEvidence: { nativeTerminal: true },
+    });
+    const files = await sessionJsonlFiles(dirs.stateRoot);
+    expect(files).toHaveLength(1);
+    const retained = await readFile(files[0]!);
+    await expect(
+      session.startTurn(turnInput(dirs, { turnId: 'turn-2', prompt: 'do not retry' }))
+    ).rejects.toThrow('Pi conversation is not reusable until a completed first Turn.');
+    expect(
+      writes.mock.calls.filter(([bytes]) => JSON.parse(String(bytes)).op === 'turn')
+    ).toHaveLength(1);
+    await session.close();
+    expect(session.childState()).toBe('absent');
+    expect(await readFile(files[0]!)).toEqual(retained);
   });
 
   it.each([
@@ -2504,7 +2641,7 @@ export default function (pi) {
       expect(retainedIds.filter((id) => id === compactionIds[0])).toEqual(compactionIds);
       const outcomes = [
         ['turn-3', 'length', 'pi-length', 'length'],
-        ['turn-4', 'status', 'pi-terminal-correlation-failed', 'failed'],
+        ['turn-4', 'status', 'pi-inference-failed', 'failed'],
         // This fixture completes a tool call, then settles a correlated native length message.
         ['turn-5', 'tool', 'pi-length', 'length'],
         ['turn-6', 'empty', 'pi-final-message-empty', 'failed'],
