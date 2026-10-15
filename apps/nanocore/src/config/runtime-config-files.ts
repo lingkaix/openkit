@@ -52,6 +52,7 @@ import {
 import { type ParseError, parse, printParseErrorCode } from 'jsonc-parser';
 import { z } from 'zod';
 import { AuthoredAgentConfigSchema } from '../agents/manifest.js';
+import { loadWorkspaceResourceCatalog } from '../catalog/resource-catalog.js';
 import { ensureCanonicalDirectory, writeFileAtomic } from '../storage/workspace-file-records.js';
 import { VaultBackendError } from '../vault/vault-backend.js';
 import {
@@ -580,7 +581,7 @@ export class RuntimeConfigFileService {
   }
 
   /**
-   * Validates one JSONC source document against the schema for its file kind.
+   * Validates one JSONC source document and Workspace Skill references against current catalog authority.
    *
    * @param spec Resolved file spec.
    * @param content Source content.
@@ -614,7 +615,31 @@ export class RuntimeConfigFileService {
       ];
     }
 
-    const schema = schemaForKind(spec.kind);
+    const schema =
+      spec.kind === 'workspace'
+        ? WorkspaceConfigSchema.superRefine((config, context) => {
+            const skillIds = config.workspace.assistant.resources?.skillIds ?? [];
+            if (skillIds.length === 0) return;
+            const path = ['workspace', 'assistant', 'resources', 'skillIds'];
+            try {
+              const catalog = loadWorkspaceResourceCatalog(this.dataRoot, spec.workspaceId ?? '');
+              const existing = new Set(catalog.skills.entries.map((entry) => entry.id));
+              if (skillIds.some((id) => !existing.has(id))) {
+                context.addIssue({
+                  code: 'custom',
+                  message: 'Selected Skill IDs must exist in this Workspace catalog.',
+                  path,
+                });
+              }
+            } catch {
+              context.addIssue({
+                code: 'custom',
+                message: 'Current Workspace Skill catalog is unavailable.',
+                path,
+              });
+            }
+          })
+        : schemaForKind(spec.kind);
     const result = schema.safeParse(parsed);
 
     if (result.success) {
