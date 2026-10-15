@@ -11,7 +11,10 @@ import { responsibleUserIdForActor, type TurnSchema } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { AgentManifest } from '../agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from '../agents/readiness.js';
-import { resolveAgentSetup } from '../agents/setup-resolver.js';
+import {
+  type AgentSetupResolverDependencies,
+  resolveAgentSetup,
+} from '../agents/setup-resolver.js';
 import { deriveArtifactReviewWorkerRequestId } from '../artifact-reviews.js';
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
@@ -57,7 +60,11 @@ import { WorkerGovernanceCapacityUnavailableError } from './worker-governance-ba
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 
 /** Current composition and the exact selected admission; no placement or native proof policy lives here. */
-export interface RunSchedulerDispatchLoopInput {
+export interface RunSchedulerDispatchLoopInput
+  extends Pick<
+    AgentSetupResolverDependencies,
+    'providerCredentialConfigured' | 'subscriptionAccounts'
+  > {
   agentManifests: AgentManifest[];
   coreDb: CoreDb;
   callerQueueEntryId?: string;
@@ -500,6 +507,8 @@ async function dispatchSchedulerAdmission(
         ...(entry.reasoningEffort !== undefined ? { reasoningEffort: entry.reasoningEffort } : {}),
         profileId: entry.profileRef,
         providerRegistry: input.providerRegistry,
+        providerCredentialConfigured: input.providerCredentialConfigured,
+        subscriptionAccounts: input.subscriptionAccounts,
         requestId: entry.requestId,
         sessionCompatibilityKey: prepared.sessionCompatibilityKey,
         store: input.store,
@@ -608,6 +617,8 @@ function resolveDispatchAgentSetup(
   const resolved = resolveAgentSetup(manifest, {
     gatewayConfig: input.gatewayConfig,
     providerRegistry: input.providerRegistry,
+    providerCredentialConfigured: input.providerCredentialConfigured,
+    subscriptionAccounts: input.subscriptionAccounts,
     selectedProfileId: profileId,
     requestedLogicalModelId: modelId,
     workspaceId,
