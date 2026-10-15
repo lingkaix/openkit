@@ -48,6 +48,8 @@ Actor-derived Quick Chat admission provisions a current administrator bearer's o
 - `test-support/` contains shared test fixtures only.
 - `lib/` contains the existing app-local stores and simulator; do not expand it with new general helpers, and place new behavior with its concrete owner.
 
+Setup composition in `app.ts`, conversation targets, and setup diagnostics forwards the existing credential-presence predicate and subscription-account owner to the Agent setup resolver. These live references stay separate from configuration snapshots and public responses; setup adds no Provider probe, Vault material resolution, quota gate, or cached availability state.
+
 ## Change Workflow
 
 Read [the NanoCore package guide](../README.md), the repository `AGENTS.md`, and the nearest directory README before editing. Characterize behavior before moving a route or ownership boundary, keep registration order stable, and separate semantic repairs from mechanical extraction.
