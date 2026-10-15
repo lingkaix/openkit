@@ -241,6 +241,24 @@ An image rollback changes software only; it does not reverse changes the new ima
 
 Routine NanoCore/Web updates do not restart NanoHost or erase retained roots. A healthy epoch survives bounded Core disconnects under the [execution-attempt and reconnect contract](20260703-durable_scheduler_design.md#attempt-reconnect-and-cleanup) and [NanoHost Adapter Liveness](20260629-worker_runtime_communication_model.md#nanohost-adapter-liveness). A local process may continue; inference, tool and control requests needing Core may pause or fail. Exact live continuation requires actual execution-attempt/identity/sequence proof. Longer outage or failed proof preserves the Turn's truthful lifecycle result, with effect uncertainty and any recovery requirement expressed by those owners, without inventing completion or replay. Retained files survive independently of whether an active process can resume. NanoHost upgrade/failure may replace the whole epoch but cannot delete retained work as part of that effect fence.
 
+## Preparation And Activation Identifier Names
+
+Existing preparation and activation outputs use these exact JSON names in [Core Protocol's kind-specific UUIDv5 namespaces](../core/protocol.md#ids), under the [accepted complete-name declaration](../decisions/20261015-identifier_owner_declarations.md):
+
+| Output | Prefix | Exact JSON name |
+| --- | --- | --- |
+| Authored candidate Artifact | `ar` | `["worker_environment_authored", workspaceId, threadId, requestId]` |
+| Resolved candidate Artifact | `ar` | `["worker_environment_resolved", authoredArtifactId, authoredArtifactVersion, authoredContentDigest]` |
+| Preparation Turn | `tu` | `["worker_environment", userId, threadId, requestId]` |
+| Preparation status Item | `it` | `["worker_environment_prepare", preparationTurnId]` |
+| Activation Turn | `tu` | `["worker_environment_activation", userId, homeWorkspaceId, homeThreadId, requestId]` |
+| Activation status Item | `it` | `["worker_environment_activation", userId, homeWorkspaceId, homeThreadId, requestId]` |
+| Activation result Artifact | `ar` | `["worker_environment_activation", activationTurnId]` |
+
+Every value is the exact immutable admitted or recorded owner argument. Artifact version retains number type; the authored content digest is the exact recorded candidate digest. It remains an existing distinguishing input. Fixed literals preserve distinct output purposes. The preparation and activation owners retain publication, replay/refusal, affected-group confirmation, drain/fence, replacement, retained bytes and current-source checks. No trigger or identity lifecycle is added.
+
+Repeated or restarted requests retain their existing candidate, Turn, status and result identities. Stale base or candidate, incomplete proof and unknown effect retain their existing refusals without rebuilding or reactivating through a new ID. Existing retention and termination apply. Acceptance requires producer/replay name agreement, exact version/digest distinction and unchanged build, write, interrupt and replacement effect counts.
+
 ## Observable Acceptance
 
 Retained Host association metadata ignores unknown descriptive fields at its root, attachment and target objects and preserves them during same-association metadata rewrites. Mount and attachment instructions remain exact; descriptive additions neither change scope, layout, volume or generation identity nor appear in mount or inspection projections. Required identity fields, supported format/platform/state, ordered unique targets and attachment consistency remain mandatory.
