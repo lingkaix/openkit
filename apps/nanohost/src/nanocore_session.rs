@@ -1305,6 +1305,8 @@ fn is_physical_epoch(value: &str) -> bool {
 ///
 /// Invokes the caller-owned readiness gate after admission and immediately before publication.
 /// The caller's absolute startup deadline includes time already used by connection setup.
+/// Optional operator observation uses that exact admission only after the complete ACK;
+/// physical close, cancellation and return clear it without changing runtime authority.
 ///
 /// Returns one bounded closed classification when the fixed session cannot continue.
 pub async fn run_outer_session<IO, R, D, F>(
@@ -1313,7 +1315,12 @@ pub async fn run_outer_session<IO, R, D, F>(
     context: &CredentialSelectionContext,
     presentation: &CredentialPresentationOutcome,
     reconnect_after: Option<u64>,
-    readiness: (&str, tokio::time::Instant, R),
+    readiness: (
+        &str,
+        tokio::time::Instant,
+        Option<Arc<crate::live_inspection::InspectionState>>,
+        R,
+    ),
     dispatch: D,
 ) -> Result<u64, OuterSessionFailure>
 where
@@ -1322,7 +1329,10 @@ where
     D: FnOnce(u64, h2::client::SendRequest<Bytes>) -> F,
     F: Future<Output = Result<(), OuterSessionFailure>>,
 {
-    let (physical_epoch, startup_deadline, readiness_gate) = readiness;
+    let (physical_epoch, startup_deadline, inspection, readiness_gate) = readiness;
+    let _inspection_lifetime = inspection
+        .as_ref()
+        .map(|state| crate::live_inspection::ConnectionObservation::new(Arc::clone(state)));
     if !is_physical_epoch(physical_epoch) {
         return Err(OuterSessionFailure::terminal(
             OuterSessionStage::Readiness,
@@ -1674,6 +1684,13 @@ where
         if tokio::time::Instant::now() > startup_deadline {
             return Err(startup_failure().with_reconnect_after(Some(connection_generation)));
         }
+        if let Some(inspection) = &_inspection_lifetime {
+            inspection.admit(
+                &context.identity_id,
+                &context.deployment_id,
+                connection_generation,
+            );
+        }
         let _ = startup_ready.send(());
         dispatch(connection_generation, sender)
             .await
@@ -1688,7 +1705,14 @@ where
             })?;
         Ok(connection_generation)
     };
-    let mut connection = tokio::spawn(connection);
+    let lost_inspection = inspection.clone();
+    let mut connection = tokio::spawn(async move {
+        let result = connection.await;
+        if let Some(inspection) = lost_inspection {
+            inspection.clear();
+        }
+        result
+    });
     tokio::pin!(exchange);
     let startup_timeout = async {
         if matches!(
@@ -4377,7 +4401,9 @@ mod tests {
             &context,
             &presentation,
             None,
-            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                Ok(None)
+            }),
             |_, mut sender| async move {
                 let mut cursor = 0;
                 poll_effect_command("http://nanocore:80", &mut sender, &mut cursor, false)
@@ -4438,7 +4464,7 @@ mod tests {
                 &context,
                 &presentation,
                 None,
-                (physical_epoch, test_startup_deadline(), move || {
+                (physical_epoch, test_startup_deadline(), None, move || {
                     readiness_gate_observation.store(true, Ordering::Relaxed);
                     Ok(None)
                 }),
@@ -4470,7 +4496,9 @@ mod tests {
             &context,
             &presentation,
             None,
-            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                Ok(None)
+            }),
             move |_, _| async move {
                 first_dispatch.store(true, Ordering::Relaxed);
                 Ok(())
@@ -4496,7 +4524,9 @@ mod tests {
             &context,
             &presentation,
             Some(1),
-            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                Ok(None)
+            }),
             move |_, _| async move {
                 successor_dispatch.store(true, Ordering::Relaxed);
                 Err(OuterSessionFailure::terminal(
@@ -4553,14 +4583,19 @@ mod tests {
             &context,
             &presentation,
             None,
-            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), move || {
-                gate_observation.store(true, Ordering::Relaxed);
-                let deadline = match deadline {
-                    MarkerDeadline::Within(budget) => tokio::time::Instant::now() + budget,
-                    MarkerDeadline::AlreadyElapsed(expired) => expired,
-                };
-                Ok(Some(deadline))
-            }),
+            (
+                TEST_PHYSICAL_EPOCH,
+                test_startup_deadline(),
+                None,
+                move || {
+                    gate_observation.store(true, Ordering::Relaxed);
+                    let deadline = match deadline {
+                        MarkerDeadline::Within(budget) => tokio::time::Instant::now() + budget,
+                        MarkerDeadline::AlreadyElapsed(expired) => expired,
+                    };
+                    Ok(Some(deadline))
+                },
+            ),
             move |_, _| async move {
                 std::fs::remove_file(dispatch_marker).expect("consume first-fence marker");
                 Err(OuterSessionFailure::terminal(
@@ -4656,7 +4691,9 @@ mod tests {
             &context,
             &presentation,
             reconnect_after,
-            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                Ok(None)
+            }),
             |_, mut sender| async move {
                 let mut cursor = effect_cursor_start(false);
                 poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, false)
@@ -4719,7 +4756,9 @@ mod tests {
             &context,
             &presentation,
             Some(7),
-            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                Ok(None)
+            }),
             |_, mut sender| async move {
                 let mut cursor = effect_cursor_start(true);
                 submit_effect_result(
@@ -4764,7 +4803,9 @@ mod tests {
             &context,
             &presentation,
             Some(7),
-            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                Ok(None)
+            }),
             |_, mut sender| async move {
                 let mut cursor = effect_cursor_start(false);
                 assert!(
@@ -4827,7 +4868,9 @@ mod tests {
                 &context,
                 &presentation,
                 Some(7),
-                (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
+                (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                    Ok(None)
+                }),
                 |_, mut sender| async move {
                     let mut cursor = effect_cursor_start(has_retained_result);
                     if has_retained_result {
@@ -4892,7 +4935,9 @@ mod tests {
             &context,
             &presentation,
             None,
-            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                Ok(None)
+            }),
             |_, mut sender| async move {
                 let mut cursor = 2;
                 poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, true)

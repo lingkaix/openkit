@@ -1238,6 +1238,7 @@ fn harness_bridge_is_live(
 #[allow(dead_code)]
 pub struct EpochCoordinator {
     monitor: EpochMemberMonitor,
+    inspection_server: Option<crate::live_inspection::InspectionServer>,
     runtime: Handle,
     client: NanoHostOpenShellClient,
     image_store: ImageStore,
@@ -1262,6 +1263,7 @@ struct EpochMemberMonitor {
     worker: Option<JoinHandle<()>>,
     harness_tasks: Arc<Mutex<Option<(AbortHandle, AbortHandle)>>>,
     readiness: Arc<AtomicU8>,
+    inspection: Option<Arc<crate::live_inspection::InspectionState>>,
 }
 
 /// Child-handle aggregate whose normal drop always kills and reaps the group.
@@ -1294,6 +1296,7 @@ impl EpochMemberMonitor {
             evidence,
             PathBuf::from(REBUILD_FENCE_STARTED_PATH),
             Arc::new(AtomicU8::new(ReadinessProof::Unavailable as u8)),
+            None,
         )
     }
 
@@ -1304,12 +1307,14 @@ impl EpochMemberMonitor {
         mut evidence: EpochEvidenceWriter,
         fence_started_path: PathBuf,
         readiness: Arc<AtomicU8>,
+        inspection: Option<Arc<crate::live_inspection::InspectionState>>,
     ) -> Self {
         let (fence, fence_rx) = mpsc::sync_channel(1);
         let (failure_tx, member_failure) = mpsc::sync_channel(1);
         let harness_tasks = Arc::new(Mutex::new(None));
         let watched_tasks = Arc::clone(&harness_tasks);
         let observed_readiness = Arc::clone(&readiness);
+        let observed_inspection = inspection.clone();
         let worker = thread::spawn(move || {
             let mut children = OwnedEpochChildren {
                 children,
@@ -1318,6 +1323,9 @@ impl EpochMemberMonitor {
             if let Some(fault) =
                 Self::observe_members(&mut children.children, &fence_rx, &watched_tasks)
             {
+                if let Some(inspection) = &observed_inspection {
+                    inspection.close();
+                }
                 fence_initiated(
                     &mut evidence,
                     &mut children.children,
@@ -1334,6 +1342,7 @@ impl EpochMemberMonitor {
             worker: Some(worker),
             harness_tasks,
             readiness,
+            inspection,
         }
     }
 
@@ -1461,6 +1470,9 @@ impl EpochMemberMonitor {
 
     /// Requests one export-before-fence and waits for complete sibling reap.
     fn fence(&mut self, fault: EpochFault) {
+        if let Some(inspection) = &self.inspection {
+            inspection.close();
+        }
         let _ = self.fence.send(Some(fault));
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
@@ -1475,6 +1487,9 @@ impl EpochMemberMonitor {
     /// Stops and joins every epoch member before host-side attachments are released.
     #[allow(dead_code)]
     fn stop(&mut self) {
+        if let Some(inspection) = &self.inspection {
+            inspection.close();
+        }
         if self.worker.is_some() {
             let _ = self.fence.send(None);
         }
@@ -1487,6 +1502,9 @@ impl EpochMemberMonitor {
 impl Drop for EpochMemberMonitor {
     /// Performs normal whole-group termination exactly once.
     fn drop(&mut self) {
+        if let Some(inspection) = &self.inspection {
+            inspection.close();
+        }
         if self.worker.is_some() {
             let _ = self.fence.send(None);
         }
@@ -1730,6 +1748,13 @@ impl EpochCoordinator {
         };
 
         let (runtime, private_namespaces) = runtime;
+        // The handle comes from the owned Gateway child after its health proof.
+        let inspection = children.last().and_then(|gateway| {
+            crate::live_inspection::InspectionState::new(physical_epoch.clone(), gateway.id()).ok()
+        });
+        let inspection_server = inspection.as_ref().and_then(|state| {
+            crate::live_inspection::InspectionServer::start(Arc::clone(state)).ok()
+        });
 
         Ok(Self {
             monitor: EpochMemberMonitor::start_with_namespaces(
@@ -1738,7 +1763,9 @@ impl EpochCoordinator {
                 evidence,
                 PathBuf::from(REBUILD_FENCE_STARTED_PATH),
                 readiness,
+                inspection,
             ),
+            inspection_server,
             runtime,
             client,
             image_store,
@@ -1760,6 +1787,11 @@ impl EpochCoordinator {
     /// Returns the private physical-incarnation witness retained by this coordinator.
     pub fn physical_epoch(&self) -> &str {
         &self.physical_epoch
+    }
+
+    /// Shares only the ephemeral operator observation with native connection carriage.
+    pub(crate) fn inspection_state(&self) -> Option<Arc<crate::live_inspection::InspectionState>> {
+        self.monitor.inspection.clone()
     }
 
     /// Records a completed Core acknowledgement for reports, never as readiness authority.
@@ -1820,7 +1852,9 @@ impl EpochCoordinator {
                     worker: None,
                     harness_tasks: Arc::new(Mutex::new(None)),
                     readiness: Arc::new(AtomicU8::new(ReadinessProof::Unavailable as u8)),
+                    inspection: None,
                 },
+                inspection_server: None,
                 runtime: Handle::current(),
                 client: NanoHostOpenShellClient::new(
                     "http://127.0.0.1:1".into(),
@@ -1854,6 +1888,7 @@ impl EpochCoordinator {
             evidence,
             root.join("fence-started"),
             Arc::clone(&self.monitor.readiness),
+            self.monitor.inspection.clone(),
         );
         reports
     }
@@ -2576,6 +2611,7 @@ impl EpochCoordinator {
 impl Drop for EpochCoordinator {
     /// Stops the whole epoch before releasing its exact retained storage writer hint.
     fn drop(&mut self) {
+        self.inspection_server.take();
         self.monitor.stop();
         if let Some(sandbox) = self.current_sandbox.take() {
             let _ = self.persistent_volumes.detach(&sandbox.name);
@@ -3226,6 +3262,7 @@ mod tests {
             readiness: Arc::new(super::AtomicU8::new(
                 super::ReadinessProof::Unavailable as u8,
             )),
+            inspection: None,
         }
     }
 
@@ -3489,6 +3526,7 @@ mod tests {
             EpochEvidenceWriter::new(reports.clone()).unwrap(),
             root.join("fence-started"),
             readiness,
+            None,
         );
         monitor.invalidate_startup();
         let artifacts = std::fs::read_dir(&reports)

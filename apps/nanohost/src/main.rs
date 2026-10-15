@@ -11,6 +11,7 @@ mod epoch_evidence;
 mod image_acquisition;
 mod image_store;
 mod image_store_cli;
+mod live_inspection;
 mod nanocore_session;
 mod openshell_client;
 mod openshell_policy;
@@ -951,6 +952,7 @@ async fn run_sessions(
             (
                 &physical_epoch,
                 startup_deadline,
+                coordinator.inspection_state(),
                 move || {
                     let Some(started) = readiness_fence else {
                         return Ok(None);
@@ -1313,11 +1315,21 @@ fn image_store_cli_error_message(error: image_store_cli::ImageStoreCliError) -> 
     }
 }
 
-/// Reports the version, executes local image administration, or starts the Runtime Epoch.
+/// Reports the version, performs fixed local inspection or image maintenance, or starts the Epoch.
 fn main() {
     let args = std::env::args().collect::<Vec<_>>();
     if args.get(1).map(String::as_str) == Some("--version") && args.len() == 2 {
         println!(env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    if args.get(1).map(String::as_str) == Some("inspect") && args.len() == 2 {
+        match live_inspection::cli() {
+            Ok(()) => {}
+            Err(_) => {
+                eprintln!("nanohost inspection request invalid or incomplete");
+                std::process::exit(1);
+            }
+        }
         return;
     }
     match image_store_cli::dispatch(&args[1..]) {
@@ -2529,3 +2541,6 @@ mod epoch_evidence;
 
 #[cfg(test)]
 mod image_import_tests;
+
+#[cfg(test)]
+mod live_inspection_tests;
