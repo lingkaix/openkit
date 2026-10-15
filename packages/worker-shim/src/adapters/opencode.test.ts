@@ -2,7 +2,7 @@
 
 import { type ChildProcess, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, getEventListeners } from 'node:events';
 import {
   existsSync,
   mkdirSync,
@@ -11,6 +11,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -225,6 +226,106 @@ describe('OpenCode resident adapter', () => {
     expect(session.nativeEvidence?.().pipesDrained).toBe(true);
     await expect(session.close()).rejects.toThrow(/drain|flush/);
     expect(session.nativeEvidence?.().persistencePreservingClose).toBe(false);
+  });
+
+  it('releases only bootstrap services after move drain and before the first prompt', async () => {
+    const f = timelineFixture('new');
+    const calls: string[] = [];
+    f.client.session.move = async () => {
+      calls.push('move');
+    };
+    f.client.session.wait = async () => {
+      calls.push('wait');
+    };
+    const evict = vi.spyOn(f.client.debug.location, 'evict').mockImplementation(async () => {
+      calls.push('evict');
+    });
+    const prompt = f.client.session.prompt;
+    f.client.session.prompt = async (input) => {
+      calls.push('prompt');
+      return prompt(input);
+    };
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const input = turnInput(f.layout, f.creds, 'first', 'prompt-model');
+    expect((await (await session.startTurn(input)).settled).status).toBe('completed');
+    expect(calls).toEqual(['move', 'wait', 'evict', 'prompt']);
+    expect(evict).toHaveBeenCalledWith({
+      location: { directory: join(f.layout.stateRoot, 'work') },
+    });
+    await (await session.startTurn({ ...input, turnId: 'second' })).settled;
+    expect(calls).toEqual(['move', 'wait', 'evict', 'prompt', 'prompt']);
+    expect(evict).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    false,
+    true,
+  ])('keeps active bootstrap services when the Workspace is its alias=%s', async (alias) => {
+    const f = timelineFixture('new');
+    const evict = vi.spyOn(f.client.debug.location, 'evict');
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const bootstrap = join(f.layout.stateRoot, 'work');
+    const workingDirectory = alias ? join(f.layout.stateRoot, 'work-alias') : bootstrap;
+    if (alias) symlinkSync(bootstrap, workingDirectory, 'dir');
+    const turn = await session.startTurn({
+      ...turnInput(f.layout, f.creds, 'first', 'prompt-model'),
+      workingDirectory,
+    });
+    expect((await turn.settled).status).toBe('completed');
+    expect(evict).not.toHaveBeenCalled();
+  });
+
+  it('releases native exit waiters after completed observation RPCs', async () => {
+    const f = timelineFixture('new');
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    // Promise reactions cannot be removed before exit; completed reads must not accumulate them.
+    const exitSubscriptions = vi.spyOn(session.exited, 'then');
+    const listen = vi.spyOn(AbortSignal.prototype, 'addEventListener');
+    try {
+      const turn = await session.startTurn(turnInput(f.layout, f.creds, 'first', 'prompt-model'));
+      expect((await turn.settled).status).toBe('completed');
+      expect(exitSubscriptions).not.toHaveBeenCalled();
+      for (const signal of new Set(listen.mock.contexts))
+        expect(getEventListeners(signal, 'abort')).toHaveLength(0);
+    } finally {
+      exitSubscriptions.mockRestore();
+      listen.mockRestore();
+    }
+  });
+
+  it('settles an outstanding observation RPC when native exit is observed', async () => {
+    const f = timelineFixture('new');
+    let entered!: () => void;
+    let release!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<[]>((resolve) => {
+      release = () => resolve([]);
+    });
+    f.client.permission.list = () => {
+      entered();
+      return held;
+    };
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const turn = await session.startTurn(turnInput(f.layout, f.creds, 'first', 'prompt-model'));
+    await reading;
+    try {
+      Object.assign(f.child, { exitCode: 17 });
+      f.child.emit('exit', 17, null);
+      f.child.emit('close', 17, null);
+      await expect(turn.settled).resolves.toMatchObject({
+        status: 'failed',
+        diagnostics: { native: 'OpenCode server exited during the Turn.' },
+      });
+      expect(session.childState()).toBe('absent');
+    } finally {
+      release();
+    }
   });
 
   it('round-three: interrupt settles held structural finalization with capture off', async () => {
@@ -510,7 +611,12 @@ describe('OpenCode resident adapter', () => {
     });
     const session = await f.adapter.openSession(openInput(f.layout, f.creds));
     sessions.push(session);
-    await expect(session.close()).rejects.toThrow(/drain|flush/);
+    await expect(session.close()).rejects.toThrow(
+      'OpenCode native drain or persistence flush was not proved. ' +
+        `(activeTurn=false, normalExit=true, stdoutEof=${failure === 'stream error'}, ` +
+        `stderrEof=${failure === 'stream error'}, streamError=${failure === 'stream error'}, ` +
+        'stopRequested=false, forcedStop=false)'
+    );
     expect(session.nativeEvidence?.().persistencePreservingClose).toBe(false);
   });
 
@@ -2421,7 +2527,7 @@ describe('W4 round-five proof regressions', () => {
     sessions.push(session);
     const close = session.close();
     expect(session.close()).toBe(close);
-    await expect(close).rejects.toThrow(/drain|flush/);
+    await expect(close).rejects.toThrow(/normalExit=false.*stopRequested=true, forcedStop=true/);
     expect(session.childState()).toBe('absent');
   });
 
@@ -2438,7 +2544,9 @@ describe('W4 round-five proof regressions', () => {
     sessions.push(session);
     child.emit('exit', 1, null);
     child.emit('close', 1, null);
-    await expect(session.close()).rejects.toThrow(/drain|flush/);
+    await expect(session.close()).rejects.toThrow(
+      /normalExit=false.*stopRequested=false, forcedStop=false/
+    );
   });
 
   it('R5 rejects both interruption and settlement when escalation is unproved', async () => {
@@ -3256,6 +3364,7 @@ function failingModule(method: 'create' | 'prompt') {
         return {
           agent: { get: async () => ({ data: { permissions: [] } }) },
           config: { get: async () => [] },
+          debug: { location: { evict: async () => undefined } },
           location: { reload: async () => undefined },
           model: {
             list: async () => ({
