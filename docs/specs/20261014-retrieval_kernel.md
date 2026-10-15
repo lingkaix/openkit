@@ -288,7 +288,7 @@ Each line identifies an existing owner and the accepted rule to retain or replac
 - [Work Resource Interaction](20260713-work_resource_interaction_model.md): supply canonical file identity for sidecars of unreadable Artifacts/uploads, keep readable Artifact/Material text direct, and define any missing upload identity through the Artifact/upload topic; retain exact versions, immutable origin, current audience, admission limits, and storage ownership. Arbitrary-file admission follows Work Resource Interaction. Authored description storage remains with its source owner, not new Kernel state.
 - [Deployment Host Requirements](20260909-deployment_host_requirements.md): include the target-matched supervised retrieval executable, dictionaries, and measured UTF-8 service resource requirements for amd64 and arm64; remove no existing qualification boundary and add no format extractor or conversion of resource advice into a hard minimum.
 
-Knowledge Governance, Core Permissions, Thread Visibility, the Policy Model, and Policy Enforcement Mapping remain binding and unamended. Their confidentiality, source, active-page, conflict, forgetting, effect, and evidence boundaries are preserved by the adapters. The Workspace data view remains a separate topic, not an implied mount or storage amendment.
+Knowledge Governance, Core Permissions, Thread Visibility, the Policy Model, and Policy Enforcement Mapping remain binding. The large-file amendments preserve their confidentiality, source, active-page, conflict, forgetting, effect, and evidence boundaries. Session Materialization owns the read-only Turn view; Kernel indexing alone implies no mount or storage grant.
 
 ## Open Decisions
 

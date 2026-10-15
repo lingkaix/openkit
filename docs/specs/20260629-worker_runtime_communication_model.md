@@ -245,12 +245,6 @@ Every ordered worker-emitted record must carry a monotonic worker sequence numbe
 
 NanoCore must reject token, lineage, sequence, idempotency, policy, digest, workspace path, and schema violations fail-closed with redacted diagnostics.
 
-### File, Model, And Transport Accounting
-
-[The accepted large-file decision](../decisions/20261015-large_files_and_model_context.md) defines three separate domains. Raw emissions use Turn-owned accounting. File bytes use canonical storage and bounded streaming transfer. Model inputs use [bounded Context Package projections](20260703-worker_context_package.md#bounded-model-projection), exact source reads, and model-specific token admission.
-
-Native stdout, final-result, ACP-update, encoded/decoded request, parser, and diagnostic guards remain resource controls. They are not raw LLM output meters. Tool results and native envelopes consume no raw-output capacity. Capture large tool data under its source owner before returning a bounded descriptor; failure never returns a full-body fallback. Qualify actual model-visible results rather than relying on native harness truncation.
-
 ### Workspace And Artifact Plane Projections
 
 The Workspace plane supplies workspace inputs, while the Artifact plane returns generated outputs and collected changes through backend transport rather than the control channel.
@@ -463,6 +457,13 @@ Sandbox Integration may write runtime-neutral Skill files and inert MCP supply m
 Static MCP supply alone does not grant a callable tool route. Only exact selected supply plus the matching active package and capability token admits the implemented `/capabilities/mcp/*` Integration family and NanoCore-owned policy; remote MCP and the administrator CLI are not part of this path.
 
 Dynamic supply changes create a new AEP snapshot and follow the safe-point refresh rules in the Static Supply Projection.
+
+### File, Model, And Transport Accounting
+
+[The accepted large-file decision](../decisions/20261015-large_files_and_model_context.md) defines three separate domains. Raw emissions use Turn-owned accounting. File bytes use canonical storage and bounded streaming transfer. Model inputs use [bounded Context Package projections](20260703-worker_context_package.md#bounded-model-projection), exact source reads, and model-specific token admission.
+
+Native stdout, final-result, ACP-update, encoded/decoded request, parser, and diagnostic guards remain resource controls. They are not raw LLM output meters. Tool results and native envelopes consume no raw-output capacity. Capture large tool data under its source owner before returning a bounded descriptor; failure never returns a full-body fallback. Qualify actual model-visible results rather than relying on native harness truncation.
+
 
 ## Knowledge And Context
 
