@@ -318,7 +318,7 @@ Current packages with no selected MCP server project worker capabilities as disa
 
 Persistent Skill/MCP versions, Plugin membership expansion, the declared `worker-supply` inventory, and verified native resource materialization are accepted targets but are not implemented by the current static supply shape. Their schema, resolver, fixed-file admission, and adapter changes must ship together; existing package-config and Context imports are not proof of this additional resource delivery.
 
-Current snapshot persistence redacts and reparses the package, records its digest and lineage, and supports redacted list/read diagnostics. Scheduler restart recovery verifies snapshot, scope, lease, session, admission, backend kind, and exact reference or build-input lineage before using the package for cleanup, reconnect, or closeout evidence.
+Current snapshot persistence redacts and reparses the package, records its digest and lineage, and supports redacted list/read diagnostics. Scheduler restart recovery verifies snapshot, scope, lease, session, admission, backend kind, and exact reference or build-input lineage before using the package for cleanup, reconnect, or closeout evidence. These implemented source comparisons do not establish real-host qualification.
 
 The current affected package tests, migration and database checks, typechecks, builds, linters, OpenAPI generation and validation, and NanoHost Rust tests, formatting, and Clippy checks pass. This implementation projection does not claim completion of the separate A1 gate.
 
@@ -373,7 +373,7 @@ The contract is satisfied only when all of the following are observable:
 - Exact Skill trees verify from the retained version inventory before adapter exposure, and the expected derived supply digest equals the digest reread from installed bytes. Missing, extra, tampered, or unsupported required resources prevent native launch; raw source MCP configuration, credentials, and nonstandard extensions never enter worker discovery. A new Skill selection changes the AEP and uses the existing session compatibility boundary.
 - Any material launch-input change produces a new package and bounded launch rather than mutating an existing package or session.
 - The persisted snapshot is redacted, reparsed as version 4, digest-bound, Workspace-owned, and linked to the exact package, Turn, AgentSession, Agent, runtime, and backend.
-- Complete restart evidence rejects a missing or mismatched package snapshot and requires `backend.preferred` and `runtime.image.ref` to match the durable backend session before claiming package-to-session consistency; the current path remains partial for those two comparisons.
+- Complete restart evidence rejects a missing or mismatched package snapshot. Backend kind and exact image reference or immutable build input lineage must match the durable backend session before claiming package-to-session consistency. Missing or contradictory evidence fails closed.
 - Current diagnostics distinguish the implemented setup failures and truthful broader failure categories without claiming a unified typed resolver taxonomy.
 - Deleting backend-private material or one concrete adapter does not change the AEP's NanoCore-owned authority, strict envelope, or product lineage.
 
