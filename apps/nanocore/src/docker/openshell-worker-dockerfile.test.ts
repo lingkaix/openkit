@@ -654,7 +654,11 @@ bash "$SMOKE_HELPER" "$IMAGE_ID" "openkit/$IMAGE_ID:fixture"`,
     const workflow = readFileSync(releaseWorkflowPath, 'utf8');
 
     expect(workflow).toContain("target: image.target || ''");
-    expect(workflow.match(/target: \$\{\{ matrix\.target \}\}/g)).toHaveLength(2);
+    expect(workflow.match(/target: \$\{\{ matrix\.target \}\}/g)).toHaveLength(3);
+    for (const job of ['smoke-worker-images', 'publish-container-images', 'build-app-candidate']) {
+      const block = workflow.split(`  ${job}:\n`)[1]?.split(/\n {2}[a-z0-9-]+:\n/)[0];
+      expect(block?.match(/target: \$\{\{ matrix\.target \}\}/g), job).toHaveLength(1);
+    }
   });
 
   it('keeps the worker Codex version aligned with the vendored app-server schema', () => {
