@@ -1,7 +1,6 @@
 """Exercise the real notice collector without altering repository notice bytes."""
 import hashlib
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -45,7 +44,6 @@ class ElectedNoticeTests(unittest.TestCase):
             cwd=ROOT / 'apps/retrieval-kernel',
             capture_output=True,
             text=True,
-            env=os.environ.copy(),
             check=False,
         )
 
@@ -76,6 +74,10 @@ class ElectedNoticeTests(unittest.TestCase):
         package = Path(self.htmlescape['manifest_path']).parent
         self.assertEqual(hashlib.sha256((package / 'Cargo.toml').read_bytes()).hexdigest(),
                          record['manifest_sha256'])
+        self.assertEqual({source['file'] for source in record['source_files']},
+                         {str(path.relative_to(package)) for path in (package / 'src').glob('*.rs')})
+        self.assertFalse(any(path.name.lower().startswith('notice')
+                             for path in package.rglob('*') if path.is_file()))
         for source in record['source_files']:
             self.assertEqual(hashlib.sha256((package / source['file']).read_bytes()).hexdigest(),
                              source['sha256'])

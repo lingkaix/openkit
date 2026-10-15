@@ -56,14 +56,6 @@
     "sha256": "d37249886de3136db31717f15f6ade215a36fbed1c782381e38b2bf6047e8ec4"
   },
   {
-    "crate": "lindera-analysis",
-    "version": "5.0.1",
-    "file": "lindera-analysis-5.0.1/LICENSE",
-    "url": "https://raw.githubusercontent.com/lindera/lindera/7eebfd8248f1260ed74d52ffffff7edecc91d1ab/LICENSE",
-    "revision": "7eebfd8248f1260ed74d52ffffff7edecc91d1ab",
-    "sha256": "d37249886de3136db31717f15f6ade215a36fbed1c782381e38b2bf6047e8ec4"
-  },
-  {
     "crate": "lindera-dictionary",
     "version": "5.3.0",
     "file": "lindera-dictionary-5.3.0/LICENSE",

@@ -1,56 +1,56 @@
 # Retrieval Dependency Notices
 
-This directory retains upstream license and notice files omitted from the locked crates.io archives. The engineer authorized only these read-only source-file fetches on 2026-10-15. `UPSTREAM.json` records each crate/version, exact source URL, recorded commit, and SHA-256. The image build verifies these bytes before copying them beside the notices and SPDX metadata supplied by Cargo packages.
+This directory retains omitted upstream notices and OpenKit's elected license texts for locked dependencies. `UPSTREAM.json` records exact upstream files with their crate/version, source URL, verified revision, and SHA-256. `ELECTIONS.json` records OpenKit's license election and provenance separately. `scripts/retrieval-notices.py` checks each file's path and digest before copying it, retains both provenance inventories byte for byte, and supplies Cargo's declared license metadata in `CRATES.json`.
 
-`GAPS.json` records unresolved notice obligations for the shipped Linux dependency graph. It makes no license-completeness claim. The `htmlescape` and `kanaria` gaps remain relevant to both Linux targets. They require verified notices or dependency replacement before #249 can close. The two Windows import-library crates are excluded only by the target evidence below; their presence in `Cargo.lock` is not a Linux linkage obligation.
-
-The full IPADIC notice and exact archived dictionary source are in the sibling `vendor/` directory. The executable embeds the dictionaries and needs no runtime network access. Do not rewrite upstream notice text.
+`GAPS.json` records unresolved source notice obligations. It is empty after the #249 corrections below. This is not built-image acceptance or a license-completeness claim: #249 remains open until both target images are inspected for the exact packaged license and provenance bytes. The full IPADIC notice and archived dictionary source remain in the sibling `vendor/` directory. Runtime does not fetch dictionaries or notices. Do not rewrite supplied notice text.
 
 ## #249 Linux Dependency Evidence
 
-The P08 first slice checked the locked graph on 2026-10-15 with Rust/Cargo 1.97.1. `containers/app/Dockerfile` builds the target-native executable for each Linux platform. `x86_64-unknown-linux-gnu` corresponds to `linux/amd64`; `aarch64-unknown-linux-gnu` corresponds to `linux/arm64`. This is dependency-graph evidence, not native arm64 image qualification.
+P08 checked the locked graph on 2026-10-15 with Rust/Cargo 1.97.1. `containers/app/Dockerfile` builds the target-native executable for each Linux platform. `x86_64-unknown-linux-gnu` corresponds to `linux/amd64`; `aarch64-unknown-linux-gnu` corresponds to `linux/arm64`. These are dependency-graph observations, not native image qualification.
 
-| Input | SHA-256 |
+| Current input | SHA-256 |
 | --- | --- |
-| Root `Cargo.lock` | `396967ced6f5473ecd5b164075fa8ea654d01f8bbbd62d25d6c7654c1b8ebdb0` |
+| Root `Cargo.lock` | `88be6b21f6430d1aa5bf3b730822905e37ed7514a2378a49b454265797a0947a` |
 | Root `Cargo.toml` | `37df6268b46a4fe8934dcd4acdcc9a3fc4c9701acb9bad13e41dcfdd9d18692c` |
-| `apps/retrieval-kernel/Cargo.toml` | `b6aaabe3fbc76d32b82be8334bb47dcaaf0e8f7d93bfd1ec5dfb8d83b5f75d00` |
+| `apps/retrieval-kernel/Cargo.toml` | `d04a4ba566f11591761cbdbfb6b1098c532b16aff64fe88ee18f57e2d1def5a7` |
 
-From `apps/retrieval-kernel`, run each crate query for each target through the shared command slot, with `CARGO_BUILD_JOBS=1`:
+From `apps/retrieval-kernel`, use the shared command slot and `CARGO_BUILD_JOBS=1` to run the complete normal graph for each target:
 
 ```sh
-cargo tree --locked --offline --target <target> -e normal -i <crate>@<version>
+cargo tree --locked --offline --target <target> -e normal --prefix none --format '{p}'
 ```
 
-All eight commands exited 0. The following table records their complete path conclusions. A path starts at the queried crate and ends at `retrieval-kernel 0.1.0`.
+Both commands exited 0. The amd64 graph contains 193 distinct package names; arm64 contains 192. Neither contains `kanaria`, `lindera-analysis`, `lindera-tantivy`, or either Windows import-library crate. Both contain `htmlescape 0.3.1` and `lindera 5.0.1`. Positive-control queries using the same target and `-e normal -i lindera@5.0.1` each exited 0 and showed Lindera directly under `retrieval-kernel`.
 
-| Crate query | Linux amd64 | Linux arm64 | Disposition |
+| Original gap | Linux amd64 | Linux arm64 | Source disposition |
 | --- | --- | --- | --- |
-| `htmlescape@0.3.1` | Via `tantivy 0.26.2`, directly and via `lindera-tantivy 5.0.1` | Same paths | Keep notice gap |
-| `kanaria@0.2.0` | Via `lindera-analysis 5.0.1` and `lindera-tantivy 5.0.1` | Same path | Keep notice gap |
-| `winapi-i686-pc-windows-gnu@0.4.0` | Empty stdout; `warning: nothing to print.` | Same result | Exclude from Linux notice obligation |
-| `winapi-x86_64-pc-windows-gnu@0.4.0` | Empty stdout; `warning: nothing to print.` | Same result | Exclude from Linux notice obligation |
+| `htmlescape 0.3.1` | Normal dependency through Tantivy | Same path | Elect Apache-2.0 and supply exact canonical text and provenance |
+| `kanaria 0.2.0` | Absent after the adapter replacement | Same result | Remove the unused dependency and its obligation |
+| `winapi-i686-pc-windows-gnu 0.4.0` | Absent | Absent | Exclude from Linux notice obligation |
+| `winapi-x86_64-pc-windows-gnu 0.4.0` | Absent | Absent | Exclude from Linux notice obligation |
 
-As a positive control, the same two Windows queries with `--target all` each exited 0 and returned a path through `winapi 0.3.9`, then `fs2 0.4.3` or `tantivy 0.26.2`, to `retrieval-kernel`. Thus, Cargo recognized both exact package queries; target filtering removed them on both shipped Linux targets. No dependency, lock entry, or supplied notice was removed. Recheck these conclusions when the graph or supported distribution targets change.
+The first-slice positive controls queried both exact Windows packages with `--target all -e normal -i <crate>@0.4.0`. Each exited 0 and showed a path through `winapi 0.3.9`, then `fs2 0.4.3` or `tantivy 0.26.2`, to `retrieval-kernel`. Their corresponding Linux queries exited 0 with empty stdout and `warning: nothing to print.` Thus Cargo recognized the exact packages; target filtering excluded them on both Linux targets. No Windows lock entries or supplied notices were removed. Recheck these conclusions when dependencies or distribution targets change.
 
-## Linked Crate Source Checks
+## Kanaria Removal And Tokenizer Preservation
 
-Both published archives were fetched over HTTPS and checked against their existing `Cargo.lock` package checksums. Their complete file inventories contain no file whose name begins with `license`, `copying`, `notice`, or `unlicense`, without case sensitivity. Neither archive supplies a copyright notice in its Rust source. Package author metadata is not substituted for a copyright notice.
+OpenKit now maps the existing Lindera `Segmenter` directly into Tantivy tokens. It preserves surface text, positions, position lengths, and original UTF-8 byte offsets, then applies the same OpenKit lowercase and word filters. The old `from_segmenter` path configured no Lindera analysis filters; the removed analysis layer brought in `kanaria` for an unused kana-conversion filter. Embedded IPADIC remains enabled on Lindera itself, with its existing identity and notices.
 
-| Crate | Published source URL | Archive SHA-256 |
-| --- | --- | --- |
-| `htmlescape 0.3.1` | <https://static.crates.io/crates/htmlescape/htmlescape-0.3.1.crate> | `e9025058dae765dee5070ec375f591e2ba14638c63feff74f13805a72e523163` |
-| `kanaria 0.2.0` | <https://static.crates.io/crates/kanaria/kanaria-0.2.0.crate> | `c0f9d9652540055ac4fded998a73aca97d965899077ab1212587437da44196ff` |
+A separate test author froze the old adapter's behavior before production edits. The committed `p08_` characterization tests contain exact Japanese and Chinese token fields, punctuation gaps, Unicode lowercase expansion, empty-input and stream-reuse cases, and fixed CJK retrieval order, scores, snippets, locators, coverage, and scope isolation across private publication and restart. Both tests pass before and after replacement. Existing body-word lookup and scope-isolation regressions remain in the crate suite. The Cargo-generated lock update removes nine packages, adds none, and changes no retained dependency version. `kanaria`, `lindera-analysis`, and `lindera-tantivy` are absent from the lock and Cargo metadata. The obsolete supplemental Lindera analysis notice is removed with its dependency.
 
-`htmlescape` has no `.cargo_vcs_info.json` in the published archive. Its manifest and all five files in `src/` were compared byte for byte with [upstream revision `1699b539179798e705ad8464128492a0a0092876`](https://github.com/veddan/rust-htmlescape/tree/1699b539179798e705ad8464128492a0a0092876) and matched. That revision's tree supplies no license or notice file. Its manifest declares `Apache-2.0 / MIT / MPL-2.0`, but that declaration is not the missing notice text. [Upstream PR #17](https://github.com/veddan/rust-htmlescape/pull/17), whose head is `64b1b9f4237697849a390434ea2b8c4bade05edf`, was open and unmerged when checked. It proposes license files from external templates. An unmerged contributor proposal does not establish the released crate's exact copyright notice, so no bytes from that proposal are admitted to `UPSTREAM.json`.
+Index machinery already binds the complete Cargo lock digest. This dependency removal therefore requires rebuilding old derived generations from their canonical source; it does not migrate or discard canonical data.
 
-`kanaria` records revision `c994ccf06d179851a1c7c3285c3a408ccb6279ec` in the published archive's `.cargo_vcs_info.json`. Its manifest declares MIT. The [recorded revision's LICENSE URL](https://raw.githubusercontent.com/sam-osamu/com.kanaria/c994ccf06d179851a1c7c3285c3a408ccb6279ec/LICENSE) returned HTTP 404, and authenticated inspection of the recorded repository also returned 404. This establishes that the attempted sources were unavailable, not that no notice exists elsewhere. No copyright holder, year, or license text is inferred.
+## Htmlescape Apache-2.0 Election
 
-## Proposed Dependency Replacements
+The coordinator confirmed the Apache-2.0 election on 2026-10-15 after Consultant agreement. The published manifest declares `Apache-2.0 / MIT / MPL-2.0`. OpenKit elects Apache-2.0 and ships the exact canonical [Apache License 2.0 text](https://www.apache.org/licenses/LICENSE-2.0.txt), fetched from Apache without edits. Its SHA-256 is `cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30`. The source file is `htmlescape-0.3.1/LICENSE-APACHE-2.0`; packaging places it at `elected/htmlescape-0.3.1/LICENSE-APACHE-2.0`, beside the exact root `ELECTIONS.json` provenance inventory.
 
-These are proposals for the next slice, not accepted patches or completed notice remediation. Keep both linked entries in `GAPS.json` until verified upstream bytes or a verified dependency change resolves them. P12 owns root manifest and `Cargo.lock` changes.
+`ELECTIONS.json` is OpenKit's record, not an upstream notice file. It retains the manifest's `license` and `authors` values verbatim, the manifest and archive digests, the matched upstream revision, each source file's path and digest, the canonical license URL and digest, and the explicit absence of upstream NOTICE and source attribution notices. Author metadata is not represented as a copyright notice. No copyright holder, year, or attribution line is inferred. The unedited Apache text retains its standard appendix placeholders.
 
-- For `htmlescape`, propose replacing the HTML encoder dependency upstream in Tantivy, then consume an official, unmodified Tantivy release that contains the replacement. In `tantivy 0.26.2`, the crate is an unconditional dependency and its source consumer is `src/snippet/mod.rs`, which imports `encode_minimal`. A replacement must preserve that encoder's HTML escaping behavior, carry verified notices for any new dependency, and preserve OpenKit's retrieval predicates. Disabling default features does not remove this dependency. [Core Contract Evolution](../../../docs/core/contract-evolution.md#invariants) requires official unmodified releases and forbids a dependency fork or patch for missing stock capability. No qualifying replacement release was verified in this slice; keep the gap open while the upstream replacement is pending. Coordinate any accepted version and lock update with P12. Changing the accepted search engine requires a separate owner amendment and engineer approval.
-- For `kanaria`, replace the `lindera-tantivy` adapter with a direct Tantivy tokenizer over the existing Lindera `Segmenter`. OpenKit constructs the current adapter with `from_segmenter` and adds its own lowercase and word filters; it does not configure the `lindera-analysis` kana conversion filter that imports `kanaria`. Remove `lindera-tantivy` and its `lindera-analysis` dependency only after equivalent token text, positions, offsets, Chinese/Japanese word lookup, and scope-filtered retrieval pass. Keep embedded IPADIC and its notice supply. Coordinate the lock update with P12.
+The [published htmlescape archive](https://static.crates.io/crates/htmlescape/htmlescape-0.3.1.crate) has SHA-256 `e9025058dae765dee5070ec375f591e2ba14638c63feff74f13805a72e523163`, which matches `Cargo.lock`. Its manifest and all five Rust source files match [upstream revision `1699b539179798e705ad8464128492a0a0092876`](https://github.com/veddan/rust-htmlescape/tree/1699b539179798e705ad8464128492a0a0092876) byte for byte. The verified archive and revision contain no NOTICE file. Inspection found no copyright, patent, trademark, or attribution notice in those source files, so no source notice text is omitted or invented. The archive omits `.cargo_vcs_info.json` and a license file. Upstream PR #17 was unmerged when checked; its proposed files are not the source of the shipped license. No dependency fork or patch is introduced.
 
-Before either proposal can close its gap, rerun both target graphs and verify that the old crate is absent, verify the notices of every replacement dependency, and check exact packaged notice bytes. The main package README and shared packaging test remain reserved to the main-CI-fix builder until handback. Native arm64 image proof remains a separate release qualification task.
+For the removed `kanaria 0.2.0`, the [published archive](https://static.crates.io/crates/kanaria/kanaria-0.2.0.crate) has SHA-256 `c0f9d9652540055ac4fded998a73aca97d965899077ab1212587437da44196ff` and records revision `c994ccf06d179851a1c7c3285c3a408ccb6279ec`. It supplies no license or copyright notice file, and the recorded revision's LICENSE URL returned HTTP 404. Its obligation is removed because the dependency is absent, without substituting package authors for copyright holders or guessing missing notice text.
+
+## Verification And Remaining Image Evidence
+
+The package test command runs `python3 tests/notices_test.py` before its Cargo tests. The notice tests execute the real collector against real locked Cargo metadata and isolated notice copies. They check exact elected license and provenance bytes, verbatim manifest values and source digests, and rejection of corrupt license bytes or a path outside the owned directory. Existing upstream notice and dictionary-supply checks remain strict. Focused checks use the shared slot and one worker; no full local repository gate or image matrix is part of this slice.
+
+Before #249 closes, build both target-native App images and compare the packaged `ELECTIONS.json`, canonical Apache text, remaining upstream notice inventory/files, `GAPS.json`, and IPADIC notice with the selected source bytes. Confirm that their Cargo metadata and executable supply use the corrected graph. Source collection and passing local tests do not prove those built-image bytes. The main package README and shared packaging test remain reserved to the main-CI-fix builder until handback. CI remains on hold until the coordinator announces green main; native arm64 and release qualification remain separate proof.

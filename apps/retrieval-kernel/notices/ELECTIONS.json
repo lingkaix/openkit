@@ -10,9 +10,7 @@
     "record_owner": "OpenKit license election; the supplied license text is from Apache, not an upstream crate file.",
     "manifest": {
       "license": "Apache-2.0 / MIT / MPL-2.0",
-      "authors": [
-        "Viktor Dahl <pazaconyoman@gmail.com>"
-      ]
+      "authors": ["Viktor Dahl <pazaconyoman@gmail.com>"]
     },
     "manifest_sha256": "daad7e32ff2b04d0a74c3c9364a7c209f9b5a71f60193ca3c393f8fa6cc0dd7f",
     "archive": {
