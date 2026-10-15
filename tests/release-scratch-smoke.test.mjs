@@ -536,160 +536,164 @@ test('cleanup refuses an unowned temporary directory even if the resource names 
   }
 });
 
-test('the fixture driver admits restart and rejects command failure, timeout, changed reads and cleanup failure', async () => {
-  // Controlled command observations admit the instrument. Only the hosted run proves product behavior.
-  for (const fault of [undefined, 'create', 'timeout', 'read', 'restart', 'cleanup']) {
-    const parent = mkdtempSync(join(tmpdir(), 'scratch-driver-'));
-    const directory = join(parent, 'fixture');
-    mkdirSync(directory);
-    const { context } = sample();
-    const source = commitAt('HEAD');
-    const subject = {
-      ...context.subject,
-      sha: source,
-      image: { ...context.subject.image, image: 'ghcr.io/notrucked/openkit-app' },
-    };
-    const owned = resources(directory, context.smoke);
-    writeFileSync(join(directory, 'fixture-owner.json'), JSON.stringify({ nonce: owned.nonce }));
-    writeFileSync(
-      join(directory, 'prepared.json'),
-      JSON.stringify({
-        subject,
-        control: source,
-        smoke: context.smoke,
-        imageId: `sha256:${'5'.repeat(64)}`,
-        configDigest: `sha256:${'5'.repeat(64)}`,
-        prepareStartedAt: new Date().toISOString(),
-        preparedAt: new Date().toISOString(),
-      })
-    );
-    let container = false,
-      volume = false,
-      running = true,
-      restarted = false,
-      readiness = 0;
-    const calls = [];
-    const workspace = { id: 'synthetic', name: `Cadence scratch ${owned.nonce}` };
-    const state = () => [
-      {
-        Id: 'c'.repeat(64),
-        Image: `sha256:${'5'.repeat(64)}`,
-        Mounts: [{ Destination: '/data/openkit', Name: owned.volume, Type: 'volume' }],
-        State: {
-          Running: running,
-          Pid: running ? (restarted ? 82 : 81) : 0,
-          StartedAt:
-            restarted && fault !== 'restart' ? '2026-10-16T00:03:10Z' : '2026-10-16T00:01:00Z',
-          FinishedAt: '2026-10-16T00:03:00Z',
-        },
-        NetworkSettings: { Ports: { '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '12345' }] } },
-      },
-    ];
-    const run = (program, args, options) => {
-      calls.push([program, args]);
-      assert.ok(options.env);
-      for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'DOCKER_CONFIG', 'OPENKIT_NANOCORE_TOKEN'])
-        assert.equal(options.env[key], undefined, key);
-      assert.equal(options.env.HOME, join(directory, 'home'));
-      if (program === 'docker') {
-        assert.deepEqual(args.slice(0, 2), ['--host', 'unix:///var/run/docker.sock']);
-        const a = args.slice(2);
-        if (a[1] === 'ls')
-          return a[0] === 'container'
-            ? container
-              ? owned.container
-              : ''
-            : volume
-              ? owned.volume
-              : '';
-        if (a[0] === 'volume' && a[1] === 'create') {
-          volume = true;
-          return owned.volume;
-        }
-        if (a[0] === 'run') {
-          assert.equal(a.includes('--env'), false);
-          container = true;
-          return 'c'.repeat(64);
-        }
-        if (a[1] === 'inspect')
-          return a.includes('--format') ? owned.nonce : JSON.stringify(state());
-        if (a[0] === 'stop') {
-          assert.equal(
-            JSON.parse(readFileSync(join(directory, 'prior-read.json'), 'utf8')).beforeSha256,
-            sha(canonical(workspace))
-          );
-          running = false;
-          return owned.container;
-        }
-        if (a[0] === 'start') {
-          running = true;
-          restarted = true;
-          return owned.container;
-        }
-        if (a[1] === 'rm') {
-          if (fault === 'cleanup') throw Error('Controlled cleanup failure');
-          if (a[0] === 'container') container = false;
-          else volume = false;
-          return '';
-        }
-        throw Error('Unexpected fixture Docker command');
-      }
-      assert.equal(program, process.execPath);
-      assert.equal(args[1], 'ops');
-      if (args[3] === 'workspace.create' && fault === 'create')
-        throw Error('Controlled operation failure');
-      return JSON.stringify({ ok: true, operation: args[3], data: workspace });
-    };
-    try {
-      const result = await fixture(
-        { directory, subjectRoot: process.cwd() },
+// The actual fixture is admitted only on Linux amd64; other platforms retain the portable oracle tests.
+if (process.platform === 'linux' && process.arch === 'x64') {
+  test('the fixture driver admits restart and rejects command failure, timeout, changed reads and cleanup failure', async () => {
+    // Controlled command observations admit the instrument. Only the hosted run proves product behavior.
+    for (const fault of [undefined, 'create', 'timeout', 'read', 'restart', 'cleanup']) {
+      const parent = mkdtempSync(join(tmpdir(), 'scratch-driver-'));
+      const directory = join(parent, 'fixture');
+      mkdirSync(directory);
+      const { context } = sample();
+      const source = commitAt('HEAD');
+      const subject = {
+        ...context.subject,
+        sha: source,
+        image: { ...context.subject.image, image: 'ghcr.io/notrucked/openkit-app' },
+      };
+      const owned = resources(directory, context.smoke);
+      writeFileSync(join(directory, 'fixture-owner.json'), JSON.stringify({ nonce: owned.nonce }));
+      writeFileSync(
+        join(directory, 'prepared.json'),
+        JSON.stringify({
+          subject,
+          control: source,
+          smoke: context.smoke,
+          imageId: `sha256:${'5'.repeat(64)}`,
+          configDigest: `sha256:${'5'.repeat(64)}`,
+          prepareStartedAt: new Date().toISOString(),
+          preparedAt: new Date().toISOString(),
+        })
+      );
+      let container = false,
+        volume = false,
+        running = true,
+        restarted = false,
+        readiness = 0;
+      const calls = [];
+      const workspace = { id: 'synthetic', name: `Cadence scratch ${owned.nonce}` };
+      const state = () => [
         {
-          run,
-          ready: async () => {
-            if (++readiness === 2 && fault === 'timeout') throw Error('Fixture readiness timeout');
+          Id: 'c'.repeat(64),
+          Image: `sha256:${'5'.repeat(64)}`,
+          Mounts: [{ Destination: '/data/openkit', Name: owned.volume, Type: 'volume' }],
+          State: {
+            Running: running,
+            Pid: running ? (restarted ? 82 : 81) : 0,
+            StartedAt:
+              restarted && fault !== 'restart' ? '2026-10-16T00:03:10Z' : '2026-10-16T00:01:00Z',
+            FinishedAt: '2026-10-16T00:03:00Z',
           },
-          verifySkill: () => ({ cliPath: '/controlled/published-cli' }),
-          load: async () => ({
-            verifyLocalBinding,
-            postPublicationSmoke: ({ params }, { run: execute }) => {
-              assert.equal(restarted, true);
-              assert.equal(params.reads[0].sha256, sha(canonical(workspace)));
-              execute(
-                process.execPath,
-                ['/controlled/published-cli', 'ops', 'call', 'workspace.read'],
-                {}
-              );
-              if (fault === 'read') throw Error('Controlled retained read differs');
-              return {
-                outcome: 'passed',
-                identities: { imageId: `sha256:${'5'.repeat(64)}` },
-                reads: [{ sha256: params.reads[0].sha256 }],
-                end: new Date().toISOString(),
-              };
-            },
-          }),
+          NetworkSettings: { Ports: { '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '12345' }] } },
+        },
+      ];
+      const run = (program, args, options) => {
+        calls.push([program, args]);
+        assert.ok(options.env);
+        for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'DOCKER_CONFIG', 'OPENKIT_NANOCORE_TOKEN'])
+          assert.equal(options.env[key], undefined, key);
+        assert.equal(options.env.HOME, join(directory, 'home'));
+        if (program === 'docker') {
+          assert.deepEqual(args.slice(0, 2), ['--host', 'unix:///var/run/docker.sock']);
+          const a = args.slice(2);
+          if (a[1] === 'ls')
+            return a[0] === 'container'
+              ? container
+                ? owned.container
+                : ''
+              : volume
+                ? owned.volume
+                : '';
+          if (a[0] === 'volume' && a[1] === 'create') {
+            volume = true;
+            return owned.volume;
+          }
+          if (a[0] === 'run') {
+            assert.equal(a.includes('--env'), false);
+            container = true;
+            return 'c'.repeat(64);
+          }
+          if (a[1] === 'inspect')
+            return a.includes('--format') ? owned.nonce : JSON.stringify(state());
+          if (a[0] === 'stop') {
+            assert.equal(
+              JSON.parse(readFileSync(join(directory, 'prior-read.json'), 'utf8')).beforeSha256,
+              sha(canonical(workspace))
+            );
+            running = false;
+            return owned.container;
+          }
+          if (a[0] === 'start') {
+            running = true;
+            restarted = true;
+            return owned.container;
+          }
+          if (a[1] === 'rm') {
+            if (fault === 'cleanup') throw Error('Controlled cleanup failure');
+            if (a[0] === 'container') container = false;
+            else volume = false;
+            return '';
+          }
+          throw Error('Unexpected fixture Docker command');
         }
-      );
-      assert.equal(
-        result.outcome,
-        [undefined, 'cleanup'].includes(fault) ? 'passed' : 'failed',
-        String(fault)
-      );
-      assert.equal(result.cleanup.initial.success, fault !== 'cleanup');
-      assert.equal(existsSync(directory), false);
-      assert.deepEqual(JSON.parse(readFileSync(owned.result, 'utf8')), result);
-      if (!fault) {
-        assert.equal(result.read.beforeSha256, result.read.afterSha256);
-        assert.ok(calls.some(([, args]) => args.includes('stop')));
-        assert.ok(calls.some(([, args]) => args.includes('start')));
+        assert.equal(program, process.execPath);
+        assert.equal(args[1], 'ops');
+        if (args[3] === 'workspace.create' && fault === 'create')
+          throw Error('Controlled operation failure');
+        return JSON.stringify({ ok: true, operation: args[3], data: workspace });
+      };
+      try {
+        const result = await fixture(
+          { directory, subjectRoot: process.cwd() },
+          {
+            run,
+            ready: async () => {
+              if (++readiness === 2 && fault === 'timeout')
+                throw Error('Fixture readiness timeout');
+            },
+            verifySkill: () => ({ cliPath: '/controlled/published-cli' }),
+            load: async () => ({
+              verifyLocalBinding,
+              postPublicationSmoke: ({ params }, { run: execute }) => {
+                assert.equal(restarted, true);
+                assert.equal(params.reads[0].sha256, sha(canonical(workspace)));
+                execute(
+                  process.execPath,
+                  ['/controlled/published-cli', 'ops', 'call', 'workspace.read'],
+                  {}
+                );
+                if (fault === 'read') throw Error('Controlled retained read differs');
+                return {
+                  outcome: 'passed',
+                  identities: { imageId: `sha256:${'5'.repeat(64)}` },
+                  reads: [{ sha256: params.reads[0].sha256 }],
+                  end: new Date().toISOString(),
+                };
+              },
+            }),
+          }
+        );
+        assert.equal(
+          result.outcome,
+          [undefined, 'cleanup'].includes(fault) ? 'passed' : 'failed',
+          String(fault)
+        );
+        assert.equal(result.cleanup.initial.success, fault !== 'cleanup');
+        assert.equal(existsSync(directory), false);
+        assert.deepEqual(JSON.parse(readFileSync(owned.result, 'utf8')), result);
+        if (!fault) {
+          assert.equal(result.read.beforeSha256, result.read.afterSha256);
+          assert.ok(calls.some(([, args]) => args.includes('stop')));
+          assert.ok(calls.some(([, args]) => args.includes('start')));
+        }
+        if (fault === 'cleanup')
+          assert.deepEqual(result.cleanup.initial.errors, [
+            'container-cleanup-failed',
+            'volume-cleanup-failed',
+          ]);
+      } finally {
+        rmSync(parent, { recursive: true, force: true });
       }
-      if (fault === 'cleanup')
-        assert.deepEqual(result.cleanup.initial.errors, [
-          'container-cleanup-failed',
-          'volume-cleanup-failed',
-        ]);
-    } finally {
-      rmSync(parent, { recursive: true, force: true });
     }
-  }
-});
+  });
+}
