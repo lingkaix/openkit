@@ -1018,10 +1018,15 @@ test('compares activation authority against the original grant snapshot', async 
 test('refuses a changed physical witness within the predecessor connection generation', async (t) => {
   const f = await fixture(t);
   const record = f.controls.replacement();
-  record.before.runtimeTarget.connectionGeneration =
-    record.after.runtimeTarget.connectionGeneration;
+  const generation = record.after.runtimeTarget.connectionGeneration;
+  record.before.runtimeTarget.connectionGeneration = generation;
+  record.before.runtimeTargetBefore.connectionGeneration = generation;
+  record.before.inspection.connectionGeneration = generation;
   f.controls.replacement = () => record;
-  await assert.rejects(() => run(f));
+  await assert.rejects(
+    () => run(f),
+    /NanoHost replacement does not prove the selected predecessor and current fresh Epoch/
+  );
   assert.deepEqual(effects(f), []);
 });
 
