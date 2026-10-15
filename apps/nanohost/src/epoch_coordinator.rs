@@ -1408,6 +1408,7 @@ fn read_process_cgroup(process: &File) -> Option<Vec<u8>> {
 }
 
 /// Resolves an exact unified membership to filesystem identity; unsupported namespaces stay unknown.
+#[cfg(target_os = "linux")]
 fn resolve_member_cgroup(bytes: &[u8]) -> Option<fs::Metadata> {
     let source = std::str::from_utf8(bytes).ok()?;
     let mut records = source.lines();
@@ -1475,6 +1476,12 @@ fn resolve_member_cgroup(bytes: &[u8]) -> Option<fs::Metadata> {
         directory = unsafe { File::from_raw_fd(fd) };
     }
     directory.metadata().ok()
+}
+
+/// Keeps Linux cgroup proof unavailable on other Unix development hosts.
+#[cfg(not(target_os = "linux"))]
+fn resolve_member_cgroup(_bytes: &[u8]) -> Option<fs::Metadata> {
+    None
 }
 
 impl Drop for OwnedEpochChildren {

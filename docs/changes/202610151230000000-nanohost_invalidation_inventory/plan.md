@@ -6,7 +6,7 @@ branch: rc8/p02-nanohost-transport
 ---
 # NanoHost Invalidation Member Inventory
 
-Status: implementation prepared for independent review; accepted owner behavior only. Updated: 2026-10-16. This record supplies no design authority.
+Status: implementation corrected after independent review; exact-head recheck pending. Updated: 2026-10-16. This record supplies no design authority.
 
 ## Intent Revision 1
 
@@ -30,8 +30,12 @@ Named seam: owned process/wait observations to the existing private redacted mem
 
 The independent test author first observed the real monitor and exporter omit members, producing the intended behavioral failure before production changes. The final `cargo test --locked --bin nanohost epoch_inventory_tests -- --test-threads=1` passed seven cases, zero failed or ignored, in 2.17 seconds. These cover installed-path replacement, actual exit and signal, missing process proof, exec before and during measurement, first-cause preservation and blocked export. `cargo test --locked --bin nanohost epoch_coordinator::tests:: -- --test-threads=1` passed thirty-eight with one pre-existing privileged case ignored; `cargo test --locked --bin nanohost epoch_evidence:: -- --test-threads=1` passed six. `cargo check --locked --bin nanohost`, `cargo clippy --locked --all-targets --all-features -- -D warnings`, `cargo fmt --check` and the whitespace check passed. Heavy commands used the coordinator's resource wrapper with one build worker and one test thread. A fresh direction context reread this draft, accepted owner, Git state and coordinator source, returning Continue for the bounded inventory route; that judgment does not accept the artifact.
 
-Next Action: validate this assigned record and commit the bounded slice, then obtain a fresh independent exact-head review before push for the merge train. A missing safe observation remains unavailable; it does not permit inference, a wider export deadline or a weakened fence. Partial-start reports before monitor ownership are unchanged by this slice; this delivery does not claim every remaining invalidation-evidence criterion is closed.
+The first independent review of implementation revision 3a64ffee requested one correction: the new Linux cgroup constant was not guarded on other Unix development hosts. The resolver is now Linux-only; other hosts leave cgroup proof unavailable. The same seven real-process cases passed again, zero failed or ignored, in 2.16 seconds. Clippy and formatting passed after this correction. The platform finding is established from source; no macOS compiler result is claimed. The independent test file is unchanged.
+
+Next Action: obtain the same reviewer's exact-head recheck before push for the merge train. A missing safe observation remains unavailable; it does not permit inference, a wider export deadline or a weakened fence. Partial-start reports before monitor ownership are unchanged by this slice; this delivery does not claim every remaining invalidation-evidence criterion is closed.
 
 ## Completion Evidence
 
-Record exact focused commands/results and independent review. The new temporary-directory rule applies to every check and helper. Preserve original intent revisions; keep raw output, host paths, host identifiers and credentials outside this record. No branch CI. Published-host proof stays separate. Report changed-file and owner counts, any new closed vocabulary and residual unobserved fields honestly.
+This six-file slice adds the accepted member observations to the existing private report. Its exact-head independent verdict accompanies the coordinator submission; merge-train CI remains with the coordinator. The unchanged source owner supplies every criterion, and this record adds no design decision. The private status vocabulary is running, exited, signaled and unavailable, with only observed exit codes or signals. Version proof and unavailable process or cgroup evidence remain explicit unknowns. Partial-start inventory and the other report-context fields remain follow-up work.
+
+The temporary-directory rule applies to every check and helper. Original intent revisions remain unchanged; raw output, host paths, host identifiers and credentials stay outside this record. No branch CI or installed-service effect was performed. Published-host proof stays separate.
