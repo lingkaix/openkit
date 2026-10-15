@@ -18,7 +18,7 @@ This specification owns the role-agnostic bounded runtime used by every NanoCore
 - The loop does not own or know product records, role selection, durable state, scheduling, recovery, provider configuration, capability catalogs, authorization policy, budgets, credentials, output audiences, or external-effect settlement.
 - This specification does not redefine Worker Agent execution, Worker runtime continuity, Harnesses, Sandboxes, or worker capability supply.
 - This specification owns no Sandbox pin. Ordinary Sandbox selection stays with runtime scheduling.
-- `docs/specs/20260902-agent_runtime_context_compaction.md` owns the logical-model context policy, OpenKit compactor, compaction item, and selection of one compaction authority per execution; this runtime only consumes that resolved policy and applies returned checkpoints to its transient transcript.
+- [Context Management](20260902-agent_runtime_context_compaction.md#internal-durable-rolling-context) owns the shared durable rolling context. Trusted callers assemble its admitted messages; this bounded loop owns no second durable transcript or Gateway compactor.
 
 ## Core References
 
@@ -30,9 +30,9 @@ This specification owns the role-agnostic bounded runtime used by every NanoCore
 
 ## Summary
 
-NanoCore uses one small bounded loop for internal roles instead of separate role runtimes. Quick Chat, Core Assistant, Workflow Coordinator, Knowledge Manager, and every later model-using internal role assemble different role inputs over this same loop; a short role call normally never reaches compaction, but it does not receive a separate direct Provider runtime.
+NanoCore uses one small bounded loop for internal roles instead of separate role runtimes. Quick Chat, Core Assistant, Workflow Coordinator, Knowledge Manager, and every later model-using internal role assemble different role inputs over this same loop; a short role call uses the same durable rolling context and never receives a separate direct Provider runtime.
 
-The caller assembles all role and product meaning before invocation, and the loop only performs model calls, applies an admitted transient compaction checkpoint, validates and executes supplied Tools, appends bounded feedback, observes cancellation and emergency fuses, and returns one typed runtime outcome.
+The caller assembles all role and product meaning before invocation, and the loop only performs model calls, consumes the admitted rolling-context window, validates and executes supplied Tools, appends bounded feedback, observes cancellation and emergency fuses, and returns one typed runtime outcome.
 
 The loop is expressible without importing or understanding Thread, Turn, Goal, Workspace, Worker, AgentSession, or any other product concept. Internal roles remain Core-local assemblies over this mechanism, and every durable or consequential result remains controlled by its existing owner. OpenKit owns this implementation and continues using pi-ai behind the Gateway; it does not adopt Pi Agent Core as its runtime, session or harness owner. MCP, progressive Skills and native Kernel/UI use are caller assembly under `docs/specs/20260909-internal_agent_resource_integration.md`, not additional loop primitives.
 
@@ -50,11 +50,6 @@ interface InternalAgentLoopInput {
     capabilities: readonly string[];
     modelFamilyId: string | null;
   };
-  contextManagement: {
-    type: "compaction";
-    compactThreshold: number;
-    authority: "openkit";
-  };
   limits: {
     maxModelTurns: number;
     maxToolCalls: number;
@@ -65,7 +60,7 @@ interface InternalAgentLoopInput {
 }
 ```
 
-`systemPrompt`, `messages`, `tools`, `model`, `contextManagement`, `limits`, and `signal` MUST be fully assembled by trusted callers before the loop begins. `messages` is the ordered list of assembled `AgentMessage` values supplied by that caller; `AgentMessage` is defined with the Tool contract below and is not a separately owned product entity. `model` is the caller-visible logical-model contract already selected by the trusted caller, while `contextManagement` is the immutable OpenKit-authority projection owned by the context-compaction specification. This runtime does not own the Gateway catalog, Provider configuration, concrete Provider model, account slot, private route, threshold, compaction prompt, or compaction algorithm. The optional text-increment observer is a transport projection defined below and is not loop state or product input.
+`systemPrompt`, `messages`, `tools`, `model`, `limits`, and `signal` MUST be fully assembled by trusted callers before the loop begins. `messages` is the ordered list of assembled `AgentMessage` values supplied by that caller; `AgentMessage` is defined with the Tool contract below and is not a separately owned product entity. `model` is the caller-visible logical-model contract already selected by the trusted caller, and `messages` comes from the shared durable rolling-context owner. This runtime does not own the Gateway catalog, Provider configuration, concrete Provider model, account slot, private route, threshold, compaction prompt, or compaction algorithm. The optional text-increment observer is a transport projection defined below and is not loop state or product input.
 
 `maxModelTurns` and `maxToolCalls` MUST be positive integers; `maxModelTurns` counts provider round trips and `maxToolCalls` counts environment touches through supplied Tool closures. `deadlineMs` MUST be a positive integer millisecond duration that bounds wall-clock duration. These three values are the complete in-loop fuse vector.
 
@@ -122,9 +117,9 @@ Acceptance requires all termination paths to produce one of these four outcomes 
 The loop MUST perform these steps in order:
 
 1. Initialize an in-memory transcript from the accepted messages and check abort, deadlineMs, and positive fuse capacity.
-2. Call the selected logical model through the Gateway with the assembled system prompt, transcript, model-visible Tool definitions, and pinned context policy.
-3. If the completed Gateway output begins with an admitted OpenKit Compaction Item, replace the older transient transcript with its low-authority continuation summary before appending every later output item in order; do not publish or execute the compaction item as model prose or a Tool call.
-4. If the Provider or required compaction failed or cancellation occurred, terminate with the exact typed outcome.
+2. Call the selected logical model through the Gateway with the assembled system prompt, transcript, model-visible Tool definitions, and admitted context window.
+3. Append completed model output in order while preserving text/Tool interleaving and the admitted context bounds. The loop does not request or apply a Gateway compaction checkpoint.
+4. If the Provider failed or cancellation occurred, terminate with the exact typed outcome.
 5. If a truncated provider response contains any Tool call, execute none of its Tool calls; when another model round trip remains admissible, append bounded safe error results for correction, and otherwise terminate with the applicable fuse or failure.
 6. For each complete Tool call in provider order, resolve the exact supplied Tool, strictly validate its arguments against the input schema, check cancellation/deadline and remaining Tool capacity, invoke its server-bound closure, sanitize its result or error, and append the model-visible feedback. Validation does not coerce values, insert defaults, discard unknown fields or normalize nulls. Increment the environment-touch counter immediately before invoking a closure, including a closure that subsequently refuses the call.
 7. Call the model again only when at least one Tool call was answered, including a bounded lookup/validation/truncation error eligible for correction, and another model round trip is admissible; otherwise return `quiescent` when no calls need feedback or the applicable fuse/failure. An invalid request cannot create an unbounded correction loop or be executed because a previous error described a repair.
@@ -311,7 +306,7 @@ These exclusions have no creation, update, termination, retry, or recovery lifec
 ## Acceptance Predicates
 
 - One role-agnostic loop runs distinct internal roles from assembled inputs without importing or branching on product concepts.
-- Quick Chat and every other model-using internal role use this loop, and a role remains on the same implementation whether or not its current run reaches the compaction threshold.
+- Quick Chat and every other model-using internal role use this loop, and a role remains on the same implementation regardless of conversation length.
 - `InternalAgentLoopInput`, `AgentMessage`, `AgentTool`, `InternalAgentLoopExit`, and provider projection remain NanoCore-private and are absent from protocol, App API, config schema, AEP, worker-control, and NanoHost surfaces.
 - Exactly three fuses and four typed exits cover every local termination path, and none becomes product success.
 - Truncated or incomplete Tool calls execute zero environment operations, while complete calls execute sequentially after schema validation.
@@ -323,7 +318,7 @@ These exclusions have no creation, update, termination, retry, or recovery lifec
 - Prompt assembly follows the four-part contract, deterministic owner order, refresh and pinning rules, and default exclusions.
 - Restart reconstructs a new run from current trusted owners without durable loop or toolset state and without duplicate accepted effects.
 - One execution remains pinned to its resolved profile and logical-model contract, uses logical-model fallback only before its first dispatch, permits only Gateway-private pre-commit route replacement within that contract under its routing setting and failure rules, and changes defaults only after evaluation through bounded rollout and configuration rollback.
-- One run consumes exactly one OpenKit-authority context policy, applies a returned compaction checkpoint only to transient model context, and creates no durable transcript or second compaction owner.
+- One run consumes the existing owner's durable rolling-context window and creates no second canonical transcript or Gateway compactor.
 
 ## Related Docs
 
