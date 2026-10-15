@@ -429,3 +429,103 @@ it('retains a final local authentication failure kind without an upstream status
   expect(diagnostic).not.toHaveProperty('httpStatus');
   expect(JSON.stringify(diagnostic)).not.toContain('canary');
 });
+
+it.each([
+  'responses',
+  'chat/completions',
+])('logs one safe committed %s failure frame', async (endpoint) => {
+  for (const ending of ['close', 'read-error', 'cancel'] as const) {
+    for (const code of ['gateway_provider_unavailable', 'private-code-canary']) {
+      const f = fixture();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const encoder = new TextEncoder();
+      const output = `data: ${JSON.stringify(
+        endpoint === 'responses'
+          ? { type: 'response.output_text.delta', delta: 'output-canary' }
+          : { choices: [{ delta: { content: 'output-canary' } }] }
+      )}\n\n`;
+      const failure = `data: ${JSON.stringify(
+        endpoint === 'responses'
+          ? {
+              type: 'response.failed',
+              response: { status: 'failed', error: { code, message: 'body-canary', status: 503 } },
+            }
+          : { error: { code, message: 'body-canary', status: 503 } }
+      )}\n\n`;
+      // Split the terminal frame across chunks to exercise the existing SSE observer.
+      const chunks = [output, failure.slice(0, 19), failure.slice(19), failure];
+      f.dispatch.mockResolvedValue(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            const chunk = chunks.shift();
+            if (chunk !== undefined) controller.enqueue(encoder.encode(chunk));
+            else if (ending === 'read-error') controller.error(new Error('exception-canary'));
+            else if (ending === 'close') controller.close();
+            // Keep the source open for consumer cancellation after the failure frame.
+          },
+        })
+      );
+      const response = await f.post(true, endpoint);
+      expect(response.status).toBe(200);
+      let body = '';
+      if (ending === 'cancel') {
+        const reader = response.body!.getReader();
+        while (!body.includes(failure)) {
+          const next = await reader.read();
+          expect(next.done).toBe(false);
+          body += new TextDecoder().decode(next.value);
+        }
+        await reader.cancel();
+      } else body = await response.text();
+      expect(body.startsWith(output + failure)).toBe(true);
+      if (ending === 'close') expect(body).toBe(output + failure + failure);
+      expect(f.dispatch).toHaveBeenCalledTimes(1);
+      expect(f.calls()).toMatchObject([
+        {
+          status: 'failed',
+          error_code: code === 'private-code-canary' ? 'worker_inference_stream_failed' : code,
+        },
+      ]);
+      expect(warn, `${endpoint}/${ending}/${code}`).toHaveBeenCalledTimes(1);
+      const diagnostic = JSON.parse(warn.mock.calls[0]![0]);
+      expect(diagnostic).toMatchObject({
+        code: 'worker_inference_failed',
+        message: 'Worker inference call failed.',
+        phase: 'stream-read',
+        failureKind: code === 'private-code-canary' ? 'unknown' : 'provider_unavailable',
+        outputBegan: true,
+        attempt: 0,
+        capabilityCallId: expect.any(String),
+      });
+      expect(diagnostic).not.toHaveProperty('httpStatus');
+      expect(JSON.stringify(diagnostic)).not.toContain('canary');
+      warn.mockRestore();
+    }
+  }
+});
+
+it.each([
+  'responses',
+  'chat/completions',
+])('does not log successful %s streams', async (endpoint) => {
+  const f = fixture();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  f.dispatch.mockResolvedValue(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            endpoint === 'responses'
+              ? 'data: {"type":"response.output_text.delta","delta":"ok"}\n\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n'
+              : 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
+          )
+        );
+        controller.close();
+      },
+    })
+  );
+  const response = await f.post(true, endpoint);
+  await response.text();
+  expect(warn).not.toHaveBeenCalled();
+  expect(f.calls()).toMatchObject([{ status: 'succeeded' }]);
+});

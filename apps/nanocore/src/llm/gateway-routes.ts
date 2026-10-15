@@ -1283,7 +1283,7 @@ interface GatewayTerminalStreamOptions {
   readonly heartbeatIntervalMs?: number;
   /** Request cancellation signal used to distinguish aborts from provider failures. */
   readonly signal?: AbortSignal;
-  /** Best-effort worker diagnostic at the existing stream-read failure boundary. */
+  /** Best-effort worker diagnostic for the first committed failure frame or read failure. */
   readonly onFailure?: (error: unknown) => void;
 }
 
@@ -1329,12 +1329,20 @@ function normalizeGatewayTerminalStream(
         ) {
           const code = event.error?.code ?? event.response?.error?.code;
           const fallback = options.failureCode ?? 'llm_gateway_stream_failed';
-          terminalFailureCode ??=
-            typeof code === 'string' &&
-            (Object.values(GATEWAY_FAILURE_CODES).includes(code) ||
-              isInnerStreamDiagnosticCode(code))
-              ? code
-              : fallback;
+          if (terminalFailureCode === undefined) {
+            terminalFailureCode =
+              typeof code === 'string' &&
+              (Object.values(GATEWAY_FAILURE_CODES).includes(code) ||
+                isInnerStreamDiagnosticCode(code))
+                ? code
+                : fallback;
+            // A public failure code supplies no upstream status or replay evidence.
+            const kind =
+              Object.entries(GATEWAY_FAILURE_CODES).find(
+                ([, publicCode]) => publicCode === terminalFailureCode
+              )?.[0] ?? 'unknown';
+            options.onFailure?.({ failure: { kind, settled: false } });
+          }
         }
       } catch {
         /* Non-JSON comments and DONE carry no failed outcome. */
@@ -1398,7 +1406,7 @@ function normalizeGatewayTerminalStream(
         terminal = true;
         const cancelled = isGatewayCancellation(error, options.signal);
         const envelopeFailureCode = options.failureCode ?? 'llm_gateway_stream_failed';
-        if (!cancelled) options.onFailure?.(error);
+        if (!cancelled && terminalFailureCode === undefined) options.onFailure?.(error);
         try {
           finishDurableLlmGatewayStreamCall(
             options.durableCall ?? null,
@@ -2067,7 +2075,7 @@ export function registerWorkerInferenceRoutes({
  * @param durableCall Started capability call, when storage is available.
  * @param endpoint Worker inference endpoint family.
  * @param signal Worker request cancellation signal.
- * @param onFailure Best-effort diagnostic for a committed stream-read failure.
+ * @param onFailure Best-effort diagnostic for the first committed failure frame or read failure.
  * @param codexTurnState Optional final Codex turn state returned by the provider.
  * @returns OpenAI-compatible SSE response.
  */
