@@ -1,7 +1,7 @@
 // openkit-test-platform: posix
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
@@ -314,4 +314,62 @@ test('missing repository commit and missing baseline identity cannot prove publi
   const input = evidence();
   delete input.baseline.sha;
   assert.throws(() => checkPublication(input, { now }), /publication proof exact commit/);
+});
+
+test('native publication admission requires exact rendered App job names and both successful legs', () => {
+  const native = repository();
+  const file = path.join(native.root, '.github/workflows/ci.yml');
+  writeFileSync(
+    file,
+    readFileSync(file, 'utf8') +
+      ['container-image-matrix', 'build-app-candidate', 'smoke-app-native', 'publish-app-image']
+        .map((name) => `  ${name}:\n    steps:\n      - run: node scripts/release-notes.mjs\n`)
+        .join('')
+  );
+  native.git('add', '.');
+  native.git('commit', '-m', 'synthetic native publication baseline');
+  const baseline = native.git('rev-parse', 'HEAD');
+  writeFileSync(path.join(native.root, 'README.md'), 'New reviewed candidate.\n');
+  native.git('add', '.');
+  native.git('commit', '-m', 'synthetic exact candidate');
+  const source = native.git('rev-parse', 'HEAD');
+  const input = evidence();
+  input.sha = input.review.sha = input.main.sha = input.candidate.sha = source;
+  input.baseline.sha = baseline;
+  const fingerprint = publicationInputsAt(native.root, source).sha256;
+  input.publicationInputs =
+    input.grant.publicationInputs =
+    input.baseline.publicationInputs =
+      fingerprint;
+  input.baseline.jobs.push(
+    ...[
+      'Build app candidate',
+      'Smoke App native (linux/amd64)',
+      'Smoke App native (linux/arm64)',
+    ].map((name, i) => ({ name, id: 100 + i, conclusion: 'success' }))
+  );
+  const check = (value) =>
+    actualCheck(value, { repoRoot: native.root, now: new Date('2026-10-14T00:10:00Z') });
+  assert.equal(check(input).status, 'eligible');
+  for (const name of [
+    'Build app candidate',
+    'Smoke App native (linux/amd64)',
+    'Smoke App native (linux/arm64)',
+    'Publish app image',
+  ]) {
+    for (const change of ['missing', 'skipped', 'failure', 'duplicate', 'expanded-name']) {
+      const bad = structuredClone(input);
+      const index = bad.baseline.jobs.findIndex((job) => job.name === name);
+      if (change === 'missing') bad.baseline.jobs.splice(index, 1);
+      else if (change === 'duplicate') bad.baseline.jobs.push({ ...bad.baseline.jobs[index] });
+      else if (change === 'expanded-name')
+        bad.baseline.jobs[index].name += ' (unexpected matrix suffix...)';
+      else bad.baseline.jobs[index].conclusion = change;
+      assert.throws(
+        () => check(bad),
+        /successful real-tag unchanged-publication baseline/,
+        `${name}: ${change}`
+      );
+    }
+  }
 });

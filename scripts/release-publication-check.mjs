@@ -194,7 +194,7 @@ export function checkPublication(e, { now = new Date(), repoRoot = process.cwd()
         actual.jobs['smoke-app-native']
           ? [
               ...publicationJobs,
-              'Build App candidate',
+              'Build app candidate',
               'Smoke App native (linux/amd64)',
               'Smoke App native (linux/arm64)',
             ]

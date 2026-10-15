@@ -1004,7 +1004,7 @@ jobs:
         run: bash scripts/docker/smoke-image.sh "${IMAGE_ID}"
 
   build-app-candidate:
-    name: Build App candidate
+    name: Build ${{ matrix.id }} candidate
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     needs:
       - release-preflight
@@ -1228,7 +1228,7 @@ jobs:
           if-no-files-found: error
 
   publish-app-image:
-    name: Publish app image
+    name: Publish ${{ matrix.id }} image
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     needs:
       - build-app-candidate

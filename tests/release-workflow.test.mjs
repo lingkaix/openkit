@@ -561,9 +561,9 @@ test('release notes are checked before publication and verified against the gene
 // New App jobs are frozen below; an additional normalization check proves unchanged Worker and final steps.
 const unchangedJobBaseline = {
   'container-image-matrix': 'a69e8a2973c459f0b7245dc2e48a249ff20627793611ce1ad7695fd0d2175790',
-  'build-app-candidate': '460407c16d03c5d7e417cea439c16d9e2955db7c82cfb5cdbdb260aa9b2da9f9',
+  'build-app-candidate': 'd8ab221b191190491b2680d2e77fbea52f703dafe0f657d054d5d514e9376bd9',
   'smoke-app-native': '2038f6417de2a540d8f1ae7e2cba81124fae00d9ebf63cd854b570fc8e82dc5a',
-  'publish-app-image': '114be90cfeee7b6cb98ecd80669c80e44ccea8baf9a551c3408b575252ff1b9c',
+  'publish-app-image': '5e08a75e1d96fd0c79c995303fe8f165d80c7559f9456736e845e11f8a9c1ce5',
   'test-image': 'b0504dcc37a38fb459ba4ba8fc8400d50128765479cf6a3473a8717d068dfe38',
   'pr-check': '21bf4f4ac3b3d36600ca9d88daf93ac86c613397e545f1560b37a3fa63fd2885',
   'nanohost-installer': 'eb04e2ebaa480c04d22f8eaa91b776baa238a0cdae2e31462d282cf74b10481f',
@@ -752,6 +752,8 @@ test('App publication waits for exact-manifest smoke on both native hosts', () =
   const native = workflow.jobs['smoke-app-native'];
   const publish = workflow.jobs['publish-app-image'];
   assert.ok(build, 'tag-stage App candidate build is required');
+  assert.equal(build.name, `Build ${actionExpression('matrix.id')} candidate`);
+  assert.equal(publish.name, `Publish ${actionExpression('matrix.id')} image`);
   assert.ok(native, 'native App platform gate is required');
   assert.ok(publish, 'App promotion joins the native platform gate');
   assert.equal(native['runs-on'], actionExpression('matrix.runner'));
