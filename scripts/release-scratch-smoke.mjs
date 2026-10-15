@@ -587,11 +587,11 @@ export async function fixture(
       };
     };
     const helper = await load();
-    const before = state(),
-      target = helper.verifyLocalBinding(
-        `http://127.0.0.1:${before.ports['8080/tcp'][0].HostPort}`,
-        before
-      );
+    const before = state();
+    let target = helper.verifyLocalBinding(
+      `http://127.0.0.1:${before.ports['8080/tcp'][0].HostPort}`,
+      before
+    );
     stage = 'readiness-before';
     await ready(target);
     const skill =
@@ -653,6 +653,11 @@ export async function fixture(
       'New App process was not observed'
     );
     stage = 'readiness-after';
+    // Docker can assign a new ephemeral host port on start. Rebind to this same fixture.
+    target = helper.verifyLocalBinding(
+      `http://127.0.0.1:${record.restart.after.ports['8080/tcp'][0].HostPort}`,
+      record.restart.after
+    );
     await ready(target);
     const staged = (executable, args, options = {}) => {
       if (executable === 'gh') {
@@ -839,6 +844,18 @@ export function validateResult(
     'Observed normal App restart required'
   );
   check(
+    [before, after].every(
+      (state) =>
+        Object.keys(state?.ports ?? {}).length === 1 &&
+        state.ports['8080/tcp']?.length === 1 &&
+        state.ports['8080/tcp'][0].HostIp === '127.0.0.1' &&
+        /^\d{1,5}$/.test(state.ports['8080/tcp'][0].HostPort) &&
+        Number(state.ports['8080/tcp'][0].HostPort) > 0 &&
+        Number(state.ports['8080/tcp'][0].HostPort) <= 65535
+    ),
+    'Direct loopback fixture bindings required before and after restart'
+  );
+  check(
     record.read?.operation === 'workspace.read' &&
       canonical(Object.keys(record.read.input ?? {})) === canonical(['workspaceId']) &&
       typeof record.read.input.workspaceId === 'string' &&
@@ -985,13 +1002,17 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     } else throw Error('Expected prepare, fixture, cleanup or verify');
     if (action !== 'prepare')
       check(
-        result.outcome === 'passed' &&
-          (action !== 'fixture' || result.cleanup.initial.success) &&
-          (action !== 'cleanup' || result.cleanup.final.success),
+        action === 'cleanup'
+          ? result.cleanup.final.success
+          : result.outcome === 'passed' && (action !== 'fixture' || result.cleanup.initial.success),
         'Fixture or cleanup failed; inspect selected result'
       );
     console.log(
-      JSON.stringify({ action, outcome: action === 'prepare' ? 'prepared' : result.outcome })
+      JSON.stringify({
+        action,
+        outcome:
+          action === 'prepare' ? 'prepared' : action === 'cleanup' ? 'cleaned' : result.outcome,
+      })
     );
   } catch (error) {
     console.error(error.message);

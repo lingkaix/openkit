@@ -1,5 +1,6 @@
 // openkit-test-platform: posix
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -60,6 +61,7 @@ function sample() {
     processId: 81,
     startedAt: '2026-10-16T00:01:00Z',
     finishedAt: '0001-01-01T00:00:00Z',
+    ports: { '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '12345' }] },
   };
   const record = {
     schemaVersion: 1,
@@ -228,6 +230,9 @@ test('selected result refuses wrong identities, reads, absent restart, cleanup a
     },
     (r) => {
       r.restart.after.imageId = `sha256:${'f'.repeat(64)}`;
+    },
+    (r) => {
+      r.restart.after.ports['8080/tcp'][0].HostIp = '0.0.0.0';
     },
     (r) => {
       r.cleanup.initial.success = false;
@@ -538,6 +543,55 @@ test('cleanup refuses an unowned temporary directory even if the resource names 
 });
 
 // The actual fixture is admitted only on Linux amd64; other platforms retain the portable oracle tests.
+if (process.platform !== 'win32') {
+  test('cleanup CLI reports its own success after a failed fixture and refuses a cleanup failure', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'scratch-cleanup-cli-'));
+    try {
+      const directory = join(parent, 'fixture');
+      const owned = resources(directory, { runId: 12, attempt: 2 });
+      mkdirSync(join(parent, 'bin'));
+      for (const fail of [false, true]) {
+        mkdirSync(directory);
+        writeFileSync(
+          join(directory, 'fixture-owner.json'),
+          JSON.stringify({ nonce: owned.nonce })
+        );
+        mkdirSync(join(parent, 'fixture-result'), { recursive: true });
+        writeFileSync(
+          owned.result,
+          JSON.stringify({ outcome: 'failed', failureStage: 'controlled-fixture', cleanup: {} })
+        );
+        writeFileSync(
+          join(parent, 'bin/docker'),
+          `#!${process.execPath}\nprocess.exit(${fail ? 1 : 0});\n`,
+          { mode: 0o755 }
+        );
+        const child = spawnSync(
+          process.execPath,
+          ['scripts/release-scratch-smoke.mjs', 'cleanup', '--directory', directory],
+          {
+            encoding: 'utf8',
+            env: {
+              PATH: `${join(parent, 'bin')}:${process.env.PATH}`,
+              HOME: parent,
+              TMPDIR: parent,
+              GITHUB_RUN_ID: '12',
+              GITHUB_RUN_ATTEMPT: '2',
+            },
+          }
+        );
+        assert.equal(child.status, fail ? 1 : 0, child.stderr);
+        const result = JSON.parse(readFileSync(owned.result, 'utf8'));
+        assert.equal(result.outcome, 'failed');
+        assert.equal(result.cleanup.final.success, !fail);
+        assert.equal(result.cleanup.final.temporaryRemoved, true);
+      }
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+}
+
 if (process.platform === 'linux' && process.arch === 'x64') {
   test('the fixture driver admits restart and rejects command failure, timeout, changed reads and cleanup failure', async () => {
     // Controlled command observations admit the instrument. Only the hosted run proves product behavior.
@@ -585,7 +639,11 @@ if (process.platform === 'linux' && process.arch === 'x64') {
               restarted && fault !== 'restart' ? '2026-10-16T00:03:10Z' : '2026-10-16T00:01:00Z',
             FinishedAt: '2026-10-16T00:03:00Z',
           },
-          NetworkSettings: { Ports: { '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '12345' }] } },
+          NetworkSettings: {
+            Ports: {
+              '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: restarted ? '12346' : '12345' }],
+            },
+          },
         },
       ];
       const run = (program, args, options) => {
@@ -648,7 +706,8 @@ if (process.platform === 'linux' && process.arch === 'x64') {
           { directory, subjectRoot: process.cwd() },
           {
             run,
-            ready: async () => {
+            ready: async (target) => {
+              assert.equal(target, `http://127.0.0.1:${restarted ? '12346' : '12345'}`);
               if (++readiness === 2 && fault === 'timeout')
                 throw Error('Fixture readiness timeout');
             },
