@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Execute deterministic suites once; inventory-only proves collection equivalence before recipe admission. */
 import { spawnSync } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -207,9 +207,43 @@ export function rootNodeInventory(root = process.cwd()) {
   return { files: files.sort(), host };
 }
 
+/** Prepare P29's real native producer from the same checkout before its offline script fixture runs. */
+export function prepareScriptFixtures(files, { root = process.cwd() } = {}) {
+  if (!files.includes('scripts/host-worker-update/native-inspection.test.mjs')) return;
+  if (process.platform !== 'linux') throw Error('P29 native script fixture requires Linux');
+  if (!existsSync(join(root, 'apps/nanohost/src/live_inspection.rs')))
+    throw Error('P02 live inspection producer must be present before P29 tests');
+  const pins = [
+    ...readFileSync(join(root, 'apps/nanohost/mise.toml'), 'utf8').matchAll(
+      /^rust = "(\d+\.\d+\.\d+)"$/gm
+    ),
+  ];
+  const rust = spawnSync('rustc', ['--version'], { cwd: root, encoding: 'utf8' });
+  if (
+    pins.length !== 1 ||
+    rust.error ||
+    rust.signal ||
+    rust.status !== 0 ||
+    !rust.stdout.startsWith(`rustc ${pins[0][1]} `)
+  )
+    throw Error('P29 native script fixture requires the pinned Rust compiler');
+  const fetched = spawnSync(
+    'cargo',
+    ['fetch', '--locked', '--manifest-path', join(root, 'apps/nanohost/Cargo.toml')],
+    {
+      cwd: root,
+      stdio: 'inherit',
+      timeout: 300000,
+    }
+  );
+  if (fetched.error || fetched.signal || fetched.status !== 0)
+    throw Error('P29 native script fixture requires complete locked Cargo inputs');
+}
+
 /** Run the same selected Node files in local unit and release root lanes, with the existing skip guard. */
 export function rootNodeSuite({ root = process.cwd() } = {}) {
   const { files } = rootNodeInventory(root);
+  prepareScriptFixtures(files, { root });
   const errors = guardedExecution({
     cwd: root,
     command: [process.execPath, '--test', ...files.map((file) => join(root, file))],
