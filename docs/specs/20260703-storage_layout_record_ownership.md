@@ -529,6 +529,12 @@ Private project Threads and their Item/Artifact material remain in their existin
 
 User files remain under `users/<userId>/files`. Workspace ownership and visibility do not create any Workspace storage below the user tree; all canonical Workspace data lives under `workspaces/<workspaceId>` and is resolved through Core identity and policy state.
 
+## Identifier Authority Projection
+
+The canonical local User is stored once in the existing Core users authority and resolved through [Core Identity's initialization and restart rule](../core/identity.md#implicit-local-human). Its `usr` ID is not a fixed path selector. No local-ID registry or initialization marker is added. Storage startup must distinguish proven fresh initialization from missing authority on an initialized deployment. Uncertainty fails the critical phase without replacing the User ([accepted D4 realization](../decisions/20261014-one_identifier_mechanism.md#owner-declarations)).
+
+Live Material, revision, Review, introduction and reference names remain exactly those of [Work Resource Interaction Model](20260713-work_resource_interaction_model.md), including complete ActorRef inputs where required. [Workspace Backup, Export And Import](20260704-workspace_backup_export_import.md) owns portable remint names, maps and inert-history boundaries. Storage adds no alternate ordinal, name encoding or import repair. Existing transaction, uniqueness, parent-graph, integrity, cleanup and recovery requirements remain binding; no cross-store atomicity is implied. Acceptance requires exact owner-declared names and identity reuse alongside unchanged durability and fail-closed behavior.
+
 ## Record Identity
 
 Every runtime-produced record must carry enough lineage to be verified after import:
