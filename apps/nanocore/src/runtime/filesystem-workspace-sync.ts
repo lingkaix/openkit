@@ -8,7 +8,6 @@ import {
   readdir,
   readFile,
   realpath,
-  rename,
   rm,
   rmdir,
   stat,
@@ -23,6 +22,10 @@ import {
 } from '@openkit/app-api-schemas';
 import { z } from 'zod';
 import { OperationError } from '../operation-error.js';
+import {
+  publishCanonicalPathAsync,
+  syncCanonicalDirectoryAsync,
+} from '../storage/workspace-file-records.js';
 
 const defaultIgnoredPathPrefixes = ['.git', 'node_modules'];
 const unsafeRelativePathPattern = /(^|\/)\.\.(\/|$)/;
@@ -1123,13 +1126,12 @@ async function prepareFilesystemRollback(
       await copyFile(sourcePath, backupPath);
     }
 
-    // ponytail: ready.json covers process restart; host-power-loss fsync needs a future repo-wide shared primitive.
     await writeFile(join(preparationRealPath, 'ready.json'), `${JSON.stringify(marker)}\n`, {
       encoding: 'utf8',
       flag: 'wx',
       mode: 0o600,
     });
-    await rename(preparationRealPath, rollbackRoot);
+    await publishCanonicalPathAsync(preparationRealPath, rollbackRoot);
     preparationCreated = false;
     await rm(ownerPath, { force: true });
     ownerCreated = false;
@@ -1642,7 +1644,7 @@ async function replaceFileFromSource(
     if (permissions) {
       await chmod(temporaryPath, parsePermissionsSummary(permissions));
     }
-    await rename(temporaryPath, targetPath);
+    await publishCanonicalPathAsync(temporaryPath, targetPath);
   } catch (error) {
     operationError = error;
   }
@@ -1742,6 +1744,8 @@ async function prepareWritablePathWithinRoot(
     }
     if (created) {
       await chmod(candidatePath, 0o755);
+      await syncCanonicalDirectoryAsync(candidatePath);
+      await syncCanonicalDirectoryAsync(parentPath);
     }
     const stats = await lstat(candidatePath);
     if (!stats.isDirectory() || stats.isSymbolicLink()) {

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type {
@@ -94,6 +94,7 @@ import {
   loadWorkspaceFileRecords,
   parseCanonicalWorkspaceHistory,
   parseOwnedKnowledgeEntry,
+  publishCanonicalPath,
   readCanonicalTextFile,
   readWorkspaceKnowledgePage,
   readWorkspaceTurnEvents,
@@ -1462,7 +1463,7 @@ export class FsStore {
       ensureWorkspaceLayoutRoot(stagingRoot);
       stageWorkspace?.({ workspaceId, workspaceRoot: stagingRoot });
       writeWorkspaceFileRecords(stagingRoot, records);
-      renameSync(stagingRoot, finalRoot);
+      publishCanonicalPath(stagingRoot, finalRoot);
     } catch (error) {
       rmSync(stagingRoot, { recursive: true, force: true });
       throw error;

@@ -21,6 +21,7 @@ import {
   parseDataRootBackupManifest,
 } from '@openkit/config-schema';
 import Database from 'better-sqlite3';
+import { writeFileAtomic } from './workspace-file-records.js';
 
 /** File name for the data-root backup manifest. */
 export const DATA_ROOT_BACKUP_MANIFEST_FILE = 'openkit-data-root-backup.json';
@@ -194,15 +195,7 @@ export function assertBackupMatchesPredecessor(
 
 /** Writes one storage-maintenance JSON document through a same-directory temporary file. */
 export function writeStorageJsonAtomically(path: string, value: unknown): void {
-  const temporaryPath = `${path}.tmp`;
-  mkdirSync(dirname(path), { recursive: true });
-
-  try {
-    writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`);
-    renameSync(temporaryPath, path);
-  } finally {
-    rmSync(temporaryPath, { force: true });
-  }
+  writeFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`, 0o666 & ~process.umask());
 }
 
 /**

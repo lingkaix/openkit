@@ -1,3 +1,4 @@
+// openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import {
   existsSync,
@@ -21,7 +22,7 @@ import {
   type WorkerRuntimeRawStreamManifest,
   WorkerRuntimeRawStreamManifestSchema,
 } from '@openkit/worker-protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { listWorkspaceCapabilityCalls, startCapabilityCall } from '../capability/usage-ledger.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
@@ -1301,3 +1302,207 @@ function readJsonl(text: string): Array<Record<string, unknown>> {
 function sha256(bytes: Uint8Array): string {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 }
+
+const publication = vi.hoisted(() => ({
+  events: [] as Array<{
+    op: 'sync' | 'rename';
+    path: string;
+    from?: string;
+    directory?: boolean;
+    mode?: number;
+  }>,
+  fail: undefined as ((path: string, directory: boolean) => boolean) | undefined,
+}));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    open: (async (...args: Parameters<typeof actual.open>) => {
+      const handle = await actual.open(...args);
+      const sync = handle.sync.bind(handle);
+      handle.sync = async () => {
+        const metadata = await handle.stat();
+        const path = String(args[0]);
+        const directory = metadata.isDirectory();
+        publication.events.push({ op: 'sync', path, directory, mode: metadata.mode & 0o777 });
+        if (publication.fail?.(path, directory))
+          throw new Error('Injected async publication sync failure');
+        return sync();
+      };
+      return handle;
+    }) as typeof actual.open,
+    rename: (async (
+      from: Parameters<typeof actual.rename>[0],
+      to: Parameters<typeof actual.rename>[1]
+    ) => {
+      publication.events.push({ op: 'rename', path: String(to), from: String(from) });
+      return actual.rename(from, to);
+    }) as typeof actual.rename,
+  };
+});
+
+describe('runtime provenance publication durability', () => {
+  it('syncs complete retained evidence before each rename and reads the real published bundles', async () => {
+    const fixture = createImportFixture('openkit-provenance-durability-');
+    const capture = createRuntimeCaptureFixture(
+      mkdtempSync(join(tmpdir(), 'openkit-provenance-durable-capture-')),
+      fixture.lineage
+    );
+    publication.events.length = 0;
+    try {
+      const result = await importWorkerRuntimeProvenance({
+        backend: { kind: 'openshell', placement: 'local', version: '0.0.80' },
+        capture,
+        collectedAt: '2026-07-13T00:00:01.000Z',
+        environmentPackage: fixture.environmentPackage,
+        workspaceDb: fixture.workspaceDb,
+        workspaceRoot: fixture.workspaceRoot,
+      });
+      expect(result.complete).toBe(true);
+      const publications = publication.events.filter((event) => event.op === 'rename');
+      expect(publications).toHaveLength(2);
+      for (const event of publications) {
+        const renameAt = publication.events.indexOf(event);
+        const stage = event.from as string;
+        const before = publication.events.slice(0, renameAt);
+        const rootAt = before.findLastIndex(
+          (entry) => entry.op === 'sync' && entry.directory && entry.path === stage
+        );
+        const files = before.filter(
+          (entry) => entry.op === 'sync' && !entry.directory && entry.path.startsWith(`${stage}/`)
+        );
+        const expectedFiles =
+          event.path === join(fixture.workspaceRoot, 'evidence', 'backend', result.rawBundleId)
+            ? [
+                'raw-streams.json',
+                'native-origin-index.jsonl',
+                ...capture.manifest.streams.map((stream) => `raw/${stream.streamRef}`),
+              ]
+            : ['runtime-origin-index.jsonl'];
+        expect([...new Set(files.map((file) => file.path.slice(stage.length + 1)))].sort()).toEqual(
+          expectedFiles.sort()
+        );
+        for (const file of files) expect(before.indexOf(file)).toBeLessThan(rootAt);
+        if (expectedFiles.some((path) => path.startsWith('raw/'))) {
+          const rawDirectoryAt = before.findLastIndex(
+            (entry) => entry.op === 'sync' && entry.directory && entry.path === join(stage, 'raw')
+          );
+          for (const file of files.filter((entry) => entry.path.startsWith(`${stage}/raw/`)))
+            expect(before.indexOf(file)).toBeLessThan(rawDirectoryAt);
+          expect(rawDirectoryAt).toBeLessThan(rootAt);
+        }
+        expect(
+          publication.events
+            .slice(renameAt + 1)
+            .some(
+              (entry) =>
+                entry.op === 'sync' && entry.directory && entry.path === dirname(event.path)
+            )
+        ).toBe(true);
+      }
+      const rawRoot = join(fixture.workspaceRoot, 'evidence', 'backend', result.rawBundleId);
+      expect(readFileSync(join(rawRoot, 'raw-streams.json'))).toEqual(capture.manifestBytes);
+      expect(readFileSync(join(rawRoot, 'native-origin-index.jsonl'))).toEqual(
+        capture.nativeOriginIndexBytes
+      );
+      for (const [streamRef, bytes] of capture.streams)
+        expect(readFileSync(join(rawRoot, 'raw', streamRef))).toEqual(bytes);
+      expect(
+        listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_demo').map((entry) => entry.id)
+      ).toEqual(expect.arrayContaining([result.rawBundleId, result.indexBundleId]));
+    } finally {
+      fixture.workspaceDb.sqlite.close();
+    }
+  });
+
+  it('does not register evidence after a staged-byte sync failure', async () => {
+    const fixture = createImportFixture('openkit-provenance-pre-sync-');
+    const capture = createRuntimeCaptureFixture(
+      mkdtempSync(join(tmpdir(), 'openkit-provenance-pre-capture-')),
+      fixture.lineage
+    );
+    publication.events.length = 0;
+    publication.fail = (path, directory) => !directory && path.includes('.tmp-');
+    try {
+      await expect(
+        importWorkerRuntimeProvenance({
+          backend: { kind: 'openshell', placement: 'local', version: '0.0.80' },
+          capture,
+          collectedAt: '2026-07-13T00:00:01.000Z',
+          environmentPackage: fixture.environmentPackage,
+          workspaceDb: fixture.workspaceDb,
+          workspaceRoot: fixture.workspaceRoot,
+        })
+      ).rejects.toThrow('Injected async publication sync failure');
+      expect(publication.events.some((event) => event.op === 'rename')).toBe(false);
+      expect(listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_demo')).toEqual([]);
+    } finally {
+      publication.fail = undefined;
+      fixture.workspaceDb.sqlite.close();
+    }
+  });
+
+  it('rejects a post-rename sync failure and exact replay until the visible tree is synchronized', async () => {
+    const fixture = createImportFixture('openkit-provenance-replay-sync-');
+    const capture = createRuntimeCaptureFixture(
+      mkdtempSync(join(tmpdir(), 'openkit-provenance-replay-capture-')),
+      fixture.lineage
+    );
+    const input = {
+      backend: { kind: 'openshell' as const, placement: 'local' as const, version: '0.0.80' },
+      capture,
+      collectedAt: '2026-07-13T00:00:01.000Z',
+      environmentPackage: fixture.environmentPackage,
+      workspaceDb: fixture.workspaceDb,
+      workspaceRoot: fixture.workspaceRoot,
+    };
+    publication.events.length = 0;
+    let failedParent: string | undefined;
+    publication.fail = (path, directory) => {
+      const published = publication.events.find((event) => event.op === 'rename');
+      if (!directory || !published || path !== dirname(published.path)) return false;
+      failedParent = path;
+      return true;
+    };
+    try {
+      await expect(importWorkerRuntimeProvenance(input)).rejects.toThrow(
+        'Injected async publication sync failure'
+      );
+      const firstPublication = publication.events.find((event) => event.op === 'rename');
+      expect(firstPublication).toBeDefined();
+      expect(listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_demo')).toEqual([]);
+      publication.events.length = 0;
+      publication.fail = (path, directory) => directory && path === failedParent;
+      await expect(importWorkerRuntimeProvenance(input)).rejects.toThrow(
+        'Injected async publication sync failure'
+      );
+      expect(
+        publication.events.some(
+          (event) =>
+            event.op === 'sync' &&
+            !event.directory &&
+            event.path.startsWith(`${firstPublication?.path}/`)
+        )
+      ).toBe(true);
+      expect(listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_demo')).toEqual([]);
+      publication.events.length = 0;
+      publication.fail = undefined;
+      expect((await importWorkerRuntimeProvenance(input)).complete).toBe(true);
+      expect(
+        publication.events.some(
+          (event) => event.op === 'sync' && event.directory && event.path === failedParent
+        )
+      ).toBe(true);
+      expect(
+        publication.events.some(
+          (event) => event.op === 'rename' && event.path === firstPublication?.path
+        )
+      ).toBe(false);
+      expect(listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_demo')).toHaveLength(2);
+    } finally {
+      publication.fail = undefined;
+      fixture.workspaceDb.sqlite.close();
+    }
+  });
+});

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import {
@@ -15,6 +15,11 @@ import {
   type ResourceCatalogDocument,
 } from '@openkit/config-schema';
 
+import {
+  ensureCanonicalDirectory,
+  publishCanonicalPath,
+  writeFileAtomic,
+} from '../storage/workspace-file-records.js';
 import { loadWorkspaceResourceCatalog, skillSnapshotPath } from './resource-catalog.js';
 
 /** Inventory path for the portable catalog projection. */
@@ -228,6 +233,7 @@ export function writeImportedWorkspaceCatalog(
     const target = join(catalogDir, 'skill-snapshots', payload.entryId, hex);
     const staged = `${target}.staging`;
     rmSync(staged, { force: true, recursive: true });
+    ensureCanonicalDirectory(dirname(target), 0o777);
     mkdirSync(staged, { recursive: true });
     for (const entry of payload.tree) {
       const path = join(staged, entry.path);
@@ -241,11 +247,14 @@ export function writeImportedWorkspaceCatalog(
         chmodSync(path, 0o755);
       }
     }
-    mkdirSync(dirname(target), { recursive: true });
     rmSync(target, { force: true, recursive: true });
-    renameSync(staged, target);
+    publishCanonicalPath(staged, target);
   }
-  writeFileSync(join(catalogDir, 'catalog.json'), `${JSON.stringify(catalog, null, 2)}\n`);
+  writeFileAtomic(
+    join(catalogDir, 'catalog.json'),
+    `${JSON.stringify(catalog, null, 2)}\n`,
+    0o666 & ~process.umask()
+  );
 }
 
 /** Empty portable catalog written when a Workspace has never published resources. */

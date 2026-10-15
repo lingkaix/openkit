@@ -5,6 +5,7 @@ This directory contains NanoCore's existing app-local product-state aggregate an
 ## Boundaries
 
 - `store.ts` presents one request-facing API over workspace, thread, turn, item, artifact, session, knowledge, and event state while canonical record placement and validation remain under `../storage/`. After a Turn is a sealed terminal, `updateTurn`, `createItem`, `emitTurnEvent`, and `updateItem` admit only completion of an already-decided publication or a named field-limited display-projection refresh, judged by identity and content.
+- New Workspace publication uses the storage owner's staged-tree publisher. Complete file bytes and child directory entries are synchronized before rename; the Workspace parent and distinct staging parent are synchronized before acknowledgement. A failed acknowledgement can leave a complete visible Workspace for inspection; filesystem publication and Core SQLite commit remain separate effects.
 - `DISPLAY_PROJECTION_REFRESH_FIELDS` names the existing Item level, title and summary admission; failed-start recovery reuses that list while comparing every other decided snapshot field. Missing-publication equality remains separate.
 - `store.ts` is still a broad aggregate; do not add a new record family or workflow here by default. New behavior belongs with its concrete route, runtime, policy, provider, Vault, or storage owner.
 - Process-local turn-event listeners and timers are runtime projections, not durable authorities. Canonical event history remains workspace-owned file state.

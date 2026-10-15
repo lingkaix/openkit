@@ -1,3 +1,4 @@
+// openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import {
   existsSync,
@@ -9,9 +10,9 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { FsStore } from './store.js';
 
@@ -290,6 +291,166 @@ describe('FsStore workspace persistence scope', () => {
     const restarted = new FsStore({ dataRoot });
     expect(() => restarted.getKnowledgeEntry(workspace.id, knowledge.id)).toThrow(
       `Knowledge entry not found: ${knowledge.id}`
+    );
+  });
+});
+
+const trace = vi.hoisted(() => ({
+  descriptors: new Map<number, string>(),
+  events: [] as Array<{ op: 'sync' | 'rename'; path: string; from?: string; directory?: boolean }>,
+  fail: undefined as ((path: string, directory: boolean) => boolean) | undefined,
+}));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    openSync: ((...args: Parameters<typeof actual.openSync>) => {
+      const descriptor = actual.openSync(...args);
+      trace.descriptors.set(descriptor, String(args[0]));
+      return descriptor;
+    }) as typeof actual.openSync,
+    closeSync: ((descriptor: number) => {
+      trace.descriptors.delete(descriptor);
+      return actual.closeSync(descriptor);
+    }) as typeof actual.closeSync,
+    fsyncSync: ((descriptor: number) => {
+      const path = trace.descriptors.get(descriptor) ?? '<untracked>';
+      const directory = actual.fstatSync(descriptor).isDirectory();
+      trace.events.push({ op: 'sync', path, directory });
+      if (trace.fail?.(path, directory)) throw new Error('Injected tree synchronization failure');
+      return actual.fsyncSync(descriptor);
+    }) as typeof actual.fsyncSync,
+    renameSync: ((
+      from: Parameters<typeof actual.renameSync>[0],
+      to: Parameters<typeof actual.renameSync>[1]
+    ) => {
+      trace.events.push({ op: 'rename', path: String(to), from: String(from) });
+      return actual.renameSync(from, to);
+    }) as typeof actual.renameSync,
+  };
+});
+
+const roots: string[] = [];
+afterEach(() => {
+  trace.fail = undefined;
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+/** Builds an imported Workspace with opaque staged bytes to exercise the whole-tree seam. */
+function fixture() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-tree-durability-'));
+  roots.push(dataRoot);
+  const store = new FsStore({ dataRoot });
+  const workspaceId = 'ws_durable_import';
+  const finalRoot = join(dataRoot, 'workspaces', workspaceId);
+  const timestamp = '2026-07-12T00:00:00.000Z';
+  const publish = () =>
+    store.importWorkspaceSnapshot({
+      workspace: {
+        id: workspaceId,
+        name: 'Durable import',
+        kind: 'general',
+        status: 'active',
+        counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      threads: [],
+      knowledge: [],
+      turns: [],
+      itemRevisions: [],
+      artifacts: [],
+      agentSessions: [],
+      turnEvents: [],
+      stageWorkspace: ({ workspaceRoot }) => {
+        mkdirSync(join(workspaceRoot, 'opaque', 'nested'), { recursive: true });
+        writeFileSync(
+          join(workspaceRoot, 'opaque', 'nested', 'retained.bin'),
+          Buffer.from([0, 1, 255])
+        );
+      },
+    });
+  trace.events.length = 0;
+  return { dataRoot, finalRoot, publish, workspaceId };
+}
+
+describe('Workspace directory publication durability', () => {
+  it('syncs complete nested staged bytes and both renamed parents before successful restart readback', () => {
+    const f = fixture();
+    f.publish();
+    const renameAt = trace.events.findIndex(
+      (event) => event.op === 'rename' && event.path === f.finalRoot
+    );
+    expect(renameAt).toBeGreaterThan(0);
+    const staged = trace.events[renameAt].from as string;
+    const before = trace.events.slice(0, renameAt);
+    const nestedFileAt = before.findLastIndex(
+      (event) =>
+        event.op === 'sync' &&
+        event.path === join(staged, 'opaque', 'nested', 'retained.bin') &&
+        !event.directory
+    );
+    const nestedDirectoryAt = before.findLastIndex(
+      (event) =>
+        event.op === 'sync' && event.path === join(staged, 'opaque', 'nested') && event.directory
+    );
+    const opaqueDirectoryAt = before.findLastIndex(
+      (event) => event.op === 'sync' && event.path === join(staged, 'opaque') && event.directory
+    );
+    const rootAt = before.findLastIndex(
+      (event) => event.op === 'sync' && event.path === staged && event.directory
+    );
+    expect(nestedFileAt).toBeGreaterThanOrEqual(0);
+    expect(nestedDirectoryAt).toBeGreaterThan(nestedFileAt);
+    expect(opaqueDirectoryAt).toBeGreaterThan(nestedDirectoryAt);
+    expect(rootAt).toBeGreaterThan(opaqueDirectoryAt);
+    for (const parent of [dirname(f.finalRoot), dirname(staged)]) {
+      expect(
+        trace.events
+          .slice(renameAt + 1)
+          .some((event) => event.op === 'sync' && event.path === parent && event.directory)
+      ).toBe(true);
+    }
+    expect(new FsStore({ dataRoot: f.dataRoot }).getWorkspace(f.workspaceId).name).toBe(
+      'Durable import'
+    );
+    expect(readFileSync(join(f.finalRoot, 'opaque', 'nested', 'retained.bin'))).toEqual(
+      Buffer.from([0, 1, 255])
+    );
+  });
+
+  it('leaves no published Workspace after a staged descendant synchronization failure', () => {
+    const f = fixture();
+    trace.fail = (path, directory) => !directory && path.endsWith('/opaque/nested/retained.bin');
+    expect(f.publish).toThrow('Injected tree synchronization failure');
+    expect(existsSync(f.finalRoot)).toBe(false);
+    expect(new FsStore({ dataRoot: f.dataRoot }).listWorkspaces()).toEqual([]);
+  });
+
+  it.each([
+    'destination',
+    'source',
+  ] as const)('does not acknowledge publication when the %s parent sync fails after rename', (parent) => {
+    const f = fixture();
+    trace.fail = (path, directory) => {
+      const publication = trace.events.find(
+        (event) => event.op === 'rename' && event.path === f.finalRoot
+      );
+      return (
+        directory &&
+        publication !== undefined &&
+        path ===
+          (parent === 'destination' ? dirname(f.finalRoot) : dirname(publication.from as string))
+      );
+    };
+    expect(f.publish).toThrow('Injected tree synchronization failure');
+    trace.fail = undefined;
+    expect(new FsStore({ dataRoot: f.dataRoot }).getWorkspace(f.workspaceId).name).toBe(
+      'Durable import'
+    );
+    expect(readFileSync(join(f.finalRoot, 'opaque', 'nested', 'retained.bin'))).toEqual(
+      Buffer.from([0, 1, 255])
     );
   });
 });
