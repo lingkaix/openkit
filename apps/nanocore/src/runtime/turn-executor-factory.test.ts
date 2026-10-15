@@ -12631,12 +12631,15 @@ describe('createConfiguredTurnExecutor', () => {
           ).backend,
           workerControlGateway,
           agentManifests: [setup.manifest],
+          providerCredentialResolver: (secretRef) =>
+            secretRef === 'env:OPENKIT_PI_ADMISSION_FIXTURE_KEY' ? 'pi-fixture-value' : null,
           providerRegistry: new ProviderRegistry([
             {
               id: 'agent-openrouter',
               displayName: 'Pi fixture',
               kind: 'gateway',
               models: ['openai/gpt-5.2'],
+              secretRef: 'env:OPENKIT_PI_ADMISSION_FIXTURE_KEY',
             },
           ]),
           gatewayConfig: createTestGatewayConfig(),
@@ -12683,7 +12686,7 @@ describe('createConfiguredTurnExecutor', () => {
             )
           );
         const receipt = await post();
-        expect(receipt.status, label).toBe(202);
+        expect(receipt.status, `${label}: ${await receipt.clone().text()}`).toBe(202);
         const accepted = await receipt.json();
         expect(accepted.status).toBe('pending');
         expect((await (await post()).json()).id).toBe(accepted.id);
