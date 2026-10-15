@@ -1689,7 +1689,11 @@ export class PiAiGatewayClient {
                 throw new GatewayUnsupportedFeatureError('pi-ai Chat tool namespace');
               // Stock can expose a provisional identity before toolcall_end supplies it.
               // Only a complete current callable identity can be published as a call start.
-              if (!toolCall.id || !declaredTools.has(toolCall.name)) {
+              if (
+                typeof toolCall.id !== 'string' ||
+                !toolCall.id ||
+                !declaredTools.has(toolCall.name)
+              ) {
                 pendingToolCalls.add(event.contentIndex);
                 continue;
               }
@@ -4231,7 +4235,7 @@ function createChatToolValidator(declaredTools: ReadonlySet<string>) {
         throw new GatewayUnsupportedFeatureError('pi-ai Chat tool namespace');
       identities.set(
         event.contentIndex,
-        block.id && declaredTools.has(block.name)
+        typeof block.id === 'string' && block.id && declaredTools.has(block.name)
           ? { id: splitResponsesToolCallId(block.id)[0], name: block.name }
           : undefined
       );

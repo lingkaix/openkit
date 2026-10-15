@@ -549,3 +549,22 @@ describe('Chat declaration validation through the stock completions parser', () 
     });
   }
 });
+
+it.each([
+  false,
+  true,
+])('refuses a non-string completed call identity with the typed error; stream=%s', async (stream) => {
+  const call = { ...fauxToolCall('lookup', {}), id: 42 } as unknown as ToolCall;
+  const message = fauxAssistantMessage([call], { stopReason: 'toolUse' });
+  const subject = fixture(message, [
+    { type: 'start', partial: fauxAssistantMessage([]) },
+    { type: 'toolcall_start', contentIndex: 0, partial: message },
+    { type: 'toolcall_end', contentIndex: 0, toolCall: call, partial: message },
+    { type: 'done', reason: 'toolUse', message },
+  ]);
+  await expectRefusal(
+    subject,
+    { model: 'physical', messages: [], tools: [declaration], stream },
+    stream
+  );
+});
