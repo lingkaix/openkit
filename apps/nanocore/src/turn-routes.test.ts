@@ -844,6 +844,7 @@ describe('generic turn routes', () => {
       manifest
     );
     const requestId = '00000000-0000-4000-8000-000000000399';
+    const itemsBefore = fixture.store.listThreadItems('ws_demo', 'th_demo');
     try {
       const response = await fixture.app.request(
         ...operationRequest(
@@ -862,8 +863,10 @@ describe('generic turn routes', () => {
           }
         )
       );
-      const preAcceptance = failure === 'configuration';
+      const preAcceptance =
+        failure === 'configuration' || failure === 'manifest' || failure === 'shim';
       if (preAcceptance) {
+        expect(response.status).toBe(409);
         expect(ApiErrorSchema.parse(await response.json()).code).toBe('agent_not_ready');
       } else {
         expect(response.status).toBe(202);
@@ -920,8 +923,9 @@ describe('generic turn routes', () => {
         ).toEqual([]);
         expect(fixture.store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
         expect(fixture.store.listCommandRequests()).toEqual([]);
+        expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toEqual(itemsBefore);
       }
-      expect(prepare).toHaveBeenCalledTimes(failure === 'configuration' ? 0 : 1);
+      expect(prepare).toHaveBeenCalledTimes(preAcceptance ? 0 : 1);
       expect(executor.startCalls).toBe(0);
       const snapshot = createInMemoryRuntimeConfigSnapshot({
         agentManifests: [manifest],
@@ -942,7 +946,7 @@ describe('generic turn routes', () => {
       try {
         const result = await service.runOnce();
         expect(result?.terminalResult).toEqual({ status: 'queued', reason: 'no-queued-entry' });
-        expect(prepare).toHaveBeenCalledTimes(failure === 'configuration' ? 0 : 1);
+        expect(prepare).toHaveBeenCalledTimes(preAcceptance ? 0 : 1);
         expect(readAdmission()).toEqual(admissions);
         expect(executor.startCalls).toBe(0);
       } finally {
