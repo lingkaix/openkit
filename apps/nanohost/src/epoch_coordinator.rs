@@ -26,7 +26,8 @@ use tokio::task::AbortHandle;
 use tokio::time::{sleep, timeout};
 
 use crate::epoch_evidence::{
-    EXPORT_TIMEOUT, EpochEvidenceWriter, EpochInvalidationTrigger, record_fence_started,
+    EXPORT_TIMEOUT, EpochEvidenceWriter, EpochInvalidationTrigger, REBUILD_FENCE_STARTED_PATH,
+    record_fence_started, record_fence_started_at,
 };
 use crate::image_acquisition::{
     AcquisitionTrigger, BuildDefinition, BuildPlan, EMPTY_BUILD_CONTEXT_DIGEST,
@@ -1246,7 +1247,12 @@ impl EpochMemberMonitor {
     /// Starts the one monitor that owns every member handle during long effects.
     #[allow(dead_code)]
     fn start(children: Vec<Child>, evidence: EpochEvidenceWriter) -> Self {
-        Self::start_with_namespaces(children, None, evidence)
+        Self::start_with_namespaces(
+            children,
+            None,
+            evidence,
+            PathBuf::from(REBUILD_FENCE_STARTED_PATH),
+        )
     }
 
     /// Starts the monitor while retaining the proved private namespace descriptors.
@@ -1254,6 +1260,7 @@ impl EpochMemberMonitor {
         children: Vec<Child>,
         private_namespaces: Option<PrivateNamespaceDescriptors>,
         mut evidence: EpochEvidenceWriter,
+        fence_started_path: PathBuf,
     ) -> Self {
         let (fence, fence_rx) = mpsc::sync_channel(1);
         let (failure_tx, member_failure) = mpsc::sync_channel(1);
@@ -1267,7 +1274,12 @@ impl EpochMemberMonitor {
             if let Some(fault) =
                 Self::observe_members(&mut children.children, &fence_rx, &watched_tasks)
             {
-                fence_initiated(&mut evidence, &mut children.children, &fault);
+                fence_initiated(
+                    &mut evidence,
+                    &mut children.children,
+                    &fault,
+                    fence_started_path,
+                );
                 let _ = failure_tx.send(fault);
             }
         });
@@ -1669,6 +1681,7 @@ impl EpochCoordinator {
                 children,
                 Some(private_namespaces),
                 evidence,
+                PathBuf::from(REBUILD_FENCE_STARTED_PATH),
             ),
             runtime,
             client,
@@ -1772,6 +1785,20 @@ impl EpochCoordinator {
         let (sender, receiver) = mpsc::sync_channel(1);
         self.monitor.member_failure = receiver;
         sender
+    }
+
+    /// Uses the production invalidation monitor with only fixture-owned report and marker paths.
+    #[cfg(test)]
+    pub(crate) fn fixture_invalidation_reports(&mut self, root: &Path) -> PathBuf {
+        let reports = root.join("reports");
+        let evidence = EpochEvidenceWriter::new(reports.clone()).expect("fixture evidence root");
+        self.monitor = EpochMemberMonitor::start_with_namespaces(
+            Vec::new(),
+            None,
+            evidence,
+            root.join("fence-started"),
+        );
+        reports
     }
 
     /// Proves live-epoch identity before the storage owner opens worker-controlled children.
@@ -2494,7 +2521,12 @@ impl Drop for EpochCoordinator {
 }
 
 /// Starts exactly one bounded invalidation export before fencing owned children.
-fn fence_initiated(evidence: &mut EpochEvidenceWriter, children: &mut [Child], fault: &EpochFault) {
+fn fence_initiated(
+    evidence: &mut EpochEvidenceWriter,
+    children: &mut [Child],
+    fault: &EpochFault,
+    fence_started_path: PathBuf,
+) {
     let mut writer = evidence.clone();
     let fault = fault.clone();
     let (completed_tx, completed_rx) = mpsc::sync_channel(1);
@@ -2502,7 +2534,7 @@ fn fence_initiated(evidence: &mut EpochEvidenceWriter, children: &mut [Child], f
     let worker = catch_unwind(AssertUnwindSafe(|| {
         thread::spawn(move || {
             let started = Instant::now();
-            let _ = record_fence_started(fence_started);
+            let _ = record_fence_started_at(&fence_started_path, fence_started);
             let fields = invalidation_report_fields(&fault);
             let field_refs = fields
                 .iter()
@@ -5255,17 +5287,19 @@ mod tests {
             matches!(
                 (
                     worker,
-                    worker_body.and_then(|body| body.find("record_fence_started(")),
+                    worker_body.and_then(|body| body.find("record_fence_started(").or_else(|| body.find("record_fence_started_at("))),
                     worker_body.and_then(|body| body.find("export_invalidation(")),
                     boundary.find("recv_timeout(EXPORT_TIMEOUT)"),
                     boundary.find("terminate_children("),
                 ),
                 (Some(worker), Some(marker), Some(export), Some(hard), Some(fence))
                     if !boundary[..worker].contains("record_fence_started(")
+                        && !boundary[..worker].contains("record_fence_started_at(")
                         && marker < export
                         && worker + export < hard
                         && hard < fence
                         && !boundary[hard..fence].contains("record_fence_started(")
+                        && !boundary[hard..fence].contains("record_fence_started_at(")
                         && !boundary[hard..fence].contains("export_invalidation(")
                         && !boundary[hard..fence].contains(".join(")
             )

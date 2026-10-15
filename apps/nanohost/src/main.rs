@@ -914,6 +914,14 @@ async fn run_sessions(
             .await;
             match connected {
                 Ok(io) => break (io, startup_deadline),
+                Err("nanohost NanoCore rendezvous timed out")
+                    if initial_startup_deadline.is_some() =>
+                {
+                    coordinator.invalidate_startup();
+                    return Err(
+                        terminal_connect("outer-session startup hard bound exceeded").into(),
+                    );
+                }
                 Err(_reason) if reconnect_after.is_some() => {
                     // Core unavailability cannot invalidate an already-admitted healthy epoch.
                     tokio::select! {
@@ -1434,6 +1442,93 @@ mod tests {
         let mut outside_policy = storage;
         outside_policy.targets[0].target = "/data".into();
         assert!(!storage_targets_allowed(&policy, &outside_policy));
+    }
+
+    /// Exercises the actual TCP timeout arm and production invalidation export without host effects.
+    #[tokio::test]
+    async fn tcp_startup_deadline_exports_epoch_creation_failure() {
+        use crate::credential_slots::SlotPairPaths;
+        use crate::nanocore_session::{TlsTrustMaterial, prepare_verified_session_transport};
+        use tokio::net::{TcpSocket, TcpStream};
+
+        struct FixtureRoot(std::path::PathBuf);
+        impl Drop for FixtureRoot {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root = FixtureRoot(std::env::temp_dir().join(format!(
+            "nanohost-tcp-deadline-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        )));
+        let socket = TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        // Linux admits one queued connection with backlog zero; retain it and never accept.
+        let listener = socket.listen(0).unwrap();
+        let address = listener.local_addr().unwrap();
+        let _queued = TcpStream::connect(address).await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), TcpStream::connect(address))
+                .await
+                .is_err(),
+            "fixture must prove a pending TCP connection before paused time starts"
+        );
+        let url = format!("https://{address}");
+        let inputs = super::NanoHostSessionInputs {
+            transport: prepare_verified_session_transport(&url, &TlsTrustMaterial::Platform)
+                .unwrap(),
+            rendezvous_url: url,
+            slot_paths: SlotPairPaths {
+                slot_a_secret: root.0.join("absent-a"),
+                slot_a_companion: root.0.join("absent-a-metadata"),
+                slot_b_secret: root.0.join("absent-b"),
+                slot_b_companion: root.0.join("absent-b-metadata"),
+            },
+            selection_context: super::CredentialSelectionContext {
+                identity_id: "fixture-host".into(),
+                deployment_id: "fixture-deployment".into(),
+            },
+        };
+        let (mut coordinator, _) =
+            crate::epoch_coordinator::EpochCoordinator::collection_fixture(&root.0);
+        let reports = coordinator.fixture_invalidation_reports(&root.0);
+        tokio::time::pause();
+        let started = tokio::time::Instant::now();
+        let failure = super::run_sessions(
+            inputs,
+            coordinator,
+            None,
+            started + super::STARTUP_READINESS_HARD_LIMIT,
+        )
+        .await
+        .expect_err("queued listener must expire TCP startup");
+        let elapsed = tokio::time::Instant::now() - started;
+        // Tokio rounds the absolute deadline to its next millisecond timer tick.
+        assert!(
+            elapsed >= super::STARTUP_READINESS_HARD_LIMIT
+                && elapsed <= super::STARTUP_READINESS_HARD_LIMIT + Duration::from_millis(1)
+        );
+        let reports = std::fs::read_dir(reports)
+            .unwrap()
+            .map(|entry| {
+                serde_json::from_slice::<serde_json::Value>(
+                    &std::fs::read(entry.unwrap().path()).unwrap(),
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reports.len(),
+            1,
+            "TCP deadline must export the startup invalidation report"
+        );
+        assert_eq!(reports[0]["trigger"], "epoch-creation-failure");
+        assert_eq!(reports[0]["complete"], true);
+        assert!(root.0.join("fence-started").is_file());
+        assert!(
+            matches!(failure, super::NanoHostRunFailure::OuterSession(ref failure)
+            if failure.reason() == "outer-session startup hard bound exceeded")
+        );
     }
 
     /// Drives production admission, reconnect, readiness, and member supervision over loopback.
