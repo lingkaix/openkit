@@ -192,6 +192,9 @@ export const AuthoredAgentMcpEntrySchema = z
 /** One authored Agent profile that may refine the base manifest. */
 export const AuthoredAgentProfileSchema = z
   .object({
+    // Profiles refine behavior; runtime and Sandbox authority belong to the composed setup.
+    runtime: z.never().optional(),
+    sandbox: z.never().optional(),
     id: z.string().min(1),
     instructionsRef: z.string().min(1).optional(),
     preferredLogicalModelId: z.string().min(1).optional(),
