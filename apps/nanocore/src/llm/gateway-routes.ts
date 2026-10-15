@@ -1283,6 +1283,8 @@ interface GatewayTerminalStreamOptions {
   readonly heartbeatIntervalMs?: number;
   /** Request cancellation signal used to distinguish aborts from provider failures. */
   readonly signal?: AbortSignal;
+  /** Best-effort worker diagnostic at the existing stream-read failure boundary. */
+  readonly onFailure?: (error: unknown) => void;
 }
 
 /**
@@ -1396,6 +1398,7 @@ function normalizeGatewayTerminalStream(
         terminal = true;
         const cancelled = isGatewayCancellation(error, options.signal);
         const envelopeFailureCode = options.failureCode ?? 'llm_gateway_stream_failed';
+        if (!cancelled) options.onFailure?.(error);
         try {
           finishDurableLlmGatewayStreamCall(
             options.durableCall ?? null,
@@ -1712,6 +1715,7 @@ export function registerWorkerInferenceRoutes({
     c: Context<{ Variables: AuthVariables }>,
     endpoint: WorkerInferenceEndpoint
   ): Promise<Response> {
+    const startedAt = performance.now();
     try {
       const workerInferenceTokenHashAuthentication = {
         tokenFamily: 'inference',
@@ -1792,6 +1796,46 @@ export function registerWorkerInferenceRoutes({
         runtimeCacheLineageRef: null,
         runtimeOriginRef,
       });
+      // Diagnostics follow the last attempt only; routing and closeout remain their existing owners.
+      let phase: 'selection' | 'dispatch' | 'stream-prepare' = 'selection';
+      let correlation: { corr: string; attempt: number } | undefined;
+      let activeExecution: GatewayAttemptContext | undefined;
+      let observedFailure: PiAiFailure | undefined;
+      /** Emits a fixed projection without exception text, private codes, or synthetic HTTP status. */
+      function reportFailure(
+        error: unknown,
+        failurePhase: 'selection' | 'dispatch' | 'stream-prepare' | 'stream-read' = phase
+      ): void {
+        try {
+          const failure = (error as { failure?: PiAiFailure } | null)?.failure ?? observedFailure;
+          const kind = failure?.kind;
+          const status = failure?.status;
+          console.warn(
+            JSON.stringify({
+              code: 'worker_inference_failed',
+              message: 'Worker inference call failed.',
+              phase: failurePhase,
+              failureKind: kind && Object.hasOwn(GATEWAY_FAILURE_CODES, kind) ? kind : 'unknown',
+              ...(typeof status === 'number' &&
+              Number.isInteger(status) &&
+              status >= 100 &&
+              status <= 599
+                ? { httpStatus: status }
+                : {}),
+              elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
+              outputBegan: activeExecution?.outputBegan ?? false,
+              requestId: durableCall.call.context.requestId,
+              capabilityCallId: durableCall.call.id,
+              workspaceId: environmentPackage.scope.workspaceId,
+              threadId: environmentPackage.scope.threadId,
+              turnId: environmentPackage.scope.turnId,
+              ...correlation,
+            })
+          );
+        } catch {
+          // Optional logging cannot replace the original failure or prevent durable closeout.
+        }
+      }
       try {
         if (!logicalModel) {
           throw new WorkerInferenceRouteError(
@@ -1824,6 +1868,12 @@ export function registerWorkerInferenceRoutes({
           ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
           resolveGatewayProvider,
           signal: c.req.raw.signal,
+          onAttemptStart: (context) => {
+            correlation = context;
+            phase = 'selection';
+            activeExecution = undefined;
+            observedFailure = undefined;
+          },
           attempt: async ({
             provider,
             providerModel,
@@ -1833,87 +1883,132 @@ export function registerWorkerInferenceRoutes({
             execution,
             effectiveEffort,
           }) => {
-            const cache = resolveWorkerPromptCacheKey({
-              accountSlotId: provider.accountSlotId ?? null,
-              model: providerModel,
-              ...(runtimeHint?.nativeCacheLineageId
-                ? { nativeCacheLineageId: runtimeHint.nativeCacheLineageId }
-                : {}),
-              providerId: provider.id,
-              runtimeFamily:
-                runtimeHint?.runtimeFamily ?? environmentPackage.control.adapter.targetRuntime,
-              subscriptionProviderId: provider.subscriptionProviderId ?? null,
-              workspaceId: environmentPackage.scope.workspaceId,
-            });
-            const requestBody = withGatewayEffort(
-              { ...sanitized, prompt_cache_key: cache.promptCacheKey },
-              endpoint,
-              effectiveEffort
-            );
-            durableCall.workspaceDb.sqlite
-              .prepare(
-                'UPDATE capability_calls SET runtime_cache_lineage_ref = ?, summary = ? WHERE call_id = ?'
-              )
-              .run(
-                cache.runtimeCacheLineageRef,
-                cache.degraded
-                  ? `Worker ${endpoint} inference gateway call with request-scoped cache isolation.`
-                  : `Worker ${endpoint} inference gateway call.`,
-                durableCall.call.id
-              );
-            let responseTurnState: string | undefined;
-            const requestTurnState = c.req.header('x-codex-turn-state');
-            const dispatchContext = {
-              capture: captureForCall(durableCall, corr, attempt),
-              onUsage: (usage: unknown) =>
-                execution.addUsageRecordIds(
-                  recordLlmGatewayUsage({
-                    durableCall,
-                    model: logicalModel.id,
-                    provider,
-                    usage,
-                  })
-                ),
-              ...(subscriptionModels ? { models: subscriptionModels } : {}),
-              transport: {
-                deadline: execution.deadline,
-                ...(execution.onProviderHandoff
-                  ? { onProviderHandoff: execution.onProviderHandoff }
-                  : {}),
-                ...(requestTurnState ? { codexTurnState: requestTurnState } : {}),
-                onCodexTurnState: (value: string) => {
-                  responseTurnState = value;
-                },
-                signal: c.req.raw.signal,
-              },
-            };
-
-            if (endpoint === 'chat_completions') {
-              const chatInput = input as z.infer<typeof GatewayChatCompletionRequestSchema>;
-              const request: OpenAICompatibleChatCompletionRequest = {
-                ...requestBody,
-                messages: chatInput.messages.map((message): OpenAICompatibleChatMessage => {
-                  const { tool_call_id: toolCallId, ...rest } = message;
-                  return toolCallId ? { ...rest, tool_call_id: toolCallId } : rest;
-                }),
+            activeExecution = execution;
+            phase = 'dispatch';
+            try {
+              const cache = resolveWorkerPromptCacheKey({
+                accountSlotId: provider.accountSlotId ?? null,
                 model: providerModel,
-                stream: chatInput.stream ?? false,
+                ...(runtimeHint?.nativeCacheLineageId
+                  ? { nativeCacheLineageId: runtimeHint.nativeCacheLineageId }
+                  : {}),
+                providerId: provider.id,
+                runtimeFamily:
+                  runtimeHint?.runtimeFamily ?? environmentPackage.control.adapter.targetRuntime,
+                subscriptionProviderId: provider.subscriptionProviderId ?? null,
+                workspaceId: environmentPackage.scope.workspaceId,
+              });
+              const requestBody = withGatewayEffort(
+                { ...sanitized, prompt_cache_key: cache.promptCacheKey },
+                endpoint,
+                effectiveEffort
+              );
+              durableCall.workspaceDb.sqlite
+                .prepare(
+                  'UPDATE capability_calls SET runtime_cache_lineage_ref = ?, summary = ? WHERE call_id = ?'
+                )
+                .run(
+                  cache.runtimeCacheLineageRef,
+                  cache.degraded
+                    ? `Worker ${endpoint} inference gateway call with request-scoped cache isolation.`
+                    : `Worker ${endpoint} inference gateway call.`,
+                  durableCall.call.id
+                );
+              let responseTurnState: string | undefined;
+              const requestTurnState = c.req.header('x-codex-turn-state');
+              const dispatchContext = {
+                capture: captureForCall(durableCall, corr, attempt),
+                onUsage: (usage: unknown) =>
+                  execution.addUsageRecordIds(
+                    recordLlmGatewayUsage({
+                      durableCall,
+                      model: logicalModel.id,
+                      provider,
+                      usage,
+                    })
+                  ),
+                ...(subscriptionModels ? { models: subscriptionModels } : {}),
+                transport: {
+                  deadline: execution.deadline,
+                  ...(execution.onProviderHandoff
+                    ? { onProviderHandoff: execution.onProviderHandoff }
+                    : {}),
+                  ...(requestTurnState ? { codexTurnState: requestTurnState } : {}),
+                  onCodexTurnState: (value: string) => {
+                    responseTurnState = value;
+                  },
+                  signal: c.req.raw.signal,
+                },
+              };
+
+              if (endpoint === 'chat_completions') {
+                const chatInput = input as z.infer<typeof GatewayChatCompletionRequestSchema>;
+                const request: OpenAICompatibleChatCompletionRequest = {
+                  ...requestBody,
+                  messages: chatInput.messages.map((message): OpenAICompatibleChatMessage => {
+                    const { tool_call_id: toolCallId, ...rest } = message;
+                    return toolCallId ? { ...rest, tool_call_id: toolCallId } : rest;
+                  }),
+                  model: providerModel,
+                  stream: chatInput.stream ?? false,
+                };
+                if (request.stream) {
+                  const stream = await llmGatewayDispatcher.createChatCompletionStream(
+                    provider,
+                    { ...request, stream: true },
+                    dispatchContext
+                  );
+                  phase = 'stream-prepare';
+                  return workerInferenceStreamResponse(
+                    rewriteGatewayStreamModel(
+                      await execution.prepareStream(stream),
+                      logicalModel.id
+                    ),
+                    durableCall,
+                    endpoint,
+                    c.req.raw.signal,
+                    (error) => reportFailure(error, 'stream-read'),
+                    responseTurnState
+                  );
+                }
+                const response = await llmGatewayDispatcher.createChatCompletion(
+                  provider,
+                  { ...request, stream: false },
+                  dispatchContext
+                );
+                const workerResponse = Response.json(
+                  { ...response, model: logicalModel.id },
+                  responseTurnState
+                    ? { headers: { 'x-codex-turn-state': responseTurnState } }
+                    : undefined
+                );
+                return workerResponse;
+              }
+
+              const responsesInput = input as z.infer<typeof GatewayResponsesRequestSchema>;
+              const request: OpenAICompatibleResponsesRequest = {
+                ...requestBody,
+                input: responsesInput.input,
+                model: providerModel,
+                stream: responsesInput.stream ?? false,
               };
               if (request.stream) {
-                const stream = await llmGatewayDispatcher.createChatCompletionStream(
+                const stream = await llmGatewayDispatcher.createResponsesStream(
                   provider,
                   { ...request, stream: true },
                   dispatchContext
                 );
+                phase = 'stream-prepare';
                 return workerInferenceStreamResponse(
                   rewriteGatewayStreamModel(await execution.prepareStream(stream), logicalModel.id),
                   durableCall,
                   endpoint,
                   c.req.raw.signal,
+                  (error) => reportFailure(error, 'stream-read'),
                   responseTurnState
                 );
               }
-              const response = await llmGatewayDispatcher.createChatCompletion(
+              const response = await llmGatewayDispatcher.createResponses(
                 provider,
                 { ...request, stream: false },
                 dispatchContext
@@ -1925,46 +2020,16 @@ export function registerWorkerInferenceRoutes({
                   : undefined
               );
               return workerResponse;
+            } catch (error) {
+              observedFailure = (error as { failure?: PiAiFailure } | null)?.failure;
+              throw error;
             }
-
-            const responsesInput = input as z.infer<typeof GatewayResponsesRequestSchema>;
-            const request: OpenAICompatibleResponsesRequest = {
-              ...requestBody,
-              input: responsesInput.input,
-              model: providerModel,
-              stream: responsesInput.stream ?? false,
-            };
-            if (request.stream) {
-              const stream = await llmGatewayDispatcher.createResponsesStream(
-                provider,
-                { ...request, stream: true },
-                dispatchContext
-              );
-              return workerInferenceStreamResponse(
-                rewriteGatewayStreamModel(await execution.prepareStream(stream), logicalModel.id),
-                durableCall,
-                endpoint,
-                c.req.raw.signal,
-                responseTurnState
-              );
-            }
-            const response = await llmGatewayDispatcher.createResponses(
-              provider,
-              { ...request, stream: false },
-              dispatchContext
-            );
-            const workerResponse = Response.json(
-              { ...response, model: logicalModel.id },
-              responseTurnState
-                ? { headers: { 'x-codex-turn-state': responseTurnState } }
-                : undefined
-            );
-            return workerResponse;
           },
         });
         if (!input.stream) finishDurableLlmGatewayCall(durableCall, 'succeeded');
         return result;
       } catch (error) {
+        if (!isGatewayCancellation(error, c.req.raw.signal)) reportFailure(error);
         const cancelled = finishDurableLlmGatewayFailure(
           durableCall,
           error,
@@ -2000,6 +2065,7 @@ export function registerWorkerInferenceRoutes({
  * @param durableCall Started capability call, when storage is available.
  * @param endpoint Worker inference endpoint family.
  * @param signal Worker request cancellation signal.
+ * @param onFailure Best-effort diagnostic for a committed stream-read failure.
  * @param codexTurnState Optional final Codex turn state returned by the provider.
  * @returns OpenAI-compatible SSE response.
  */
@@ -2008,6 +2074,7 @@ function workerInferenceStreamResponse(
   durableCall: DurableLlmGatewayCall | null,
   endpoint: WorkerInferenceEndpoint,
   signal: AbortSignal,
+  onFailure: (error: unknown) => void,
   codexTurnState?: string
 ): Response {
   return new Response(
@@ -2018,6 +2085,7 @@ function workerInferenceStreamResponse(
       failureMessage: 'Worker inference stream failed.',
       heartbeatIntervalMs: WORKER_INFERENCE_HEARTBEAT_INTERVAL_MS,
       signal,
+      onFailure,
     }),
     {
       headers: {
