@@ -80,6 +80,9 @@
     "@openkit/nanocore#test": {
       "dependsOn": ["^build", "^test", "@openkit/retrieval-kernel#build"],
       "outputs": ["coverage/**"]
+    },
+    "@openkit/nanocore#build": {
+      "dependsOn": ["^build", "@openkit/retrieval-kernel#build"]
     }
   }
 }

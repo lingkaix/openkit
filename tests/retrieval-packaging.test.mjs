@@ -53,3 +53,18 @@ test('every vendored missing-crate notice has exact revision and byte provenance
   }
   assert.ok(records.some((record) => record.crate === 'jieba-rs' && record.version === '0.11.0'));
 });
+
+// Runtime supply must be selected before NanoCore can serve Tasks from a clean checkout.
+test('NanoCore build orders the kernel executable before its runtime consumer', () => {
+  const result = spawnSync(
+    join(root, 'node_modules/.bin/turbo'),
+    ['run', 'build', '--filter=@openkit/nanocore', '--dry=json'],
+    { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const { tasks } = JSON.parse(result.stdout.slice(result.stdout.indexOf('{')));
+  const kernel = tasks.find((task) => task.taskId === '@openkit/retrieval-kernel#build');
+  const nanocore = tasks.find((task) => task.taskId === '@openkit/nanocore#build');
+  assert.ok(kernel, 'NanoCore build must supply the retrieval kernel executable');
+  assert.ok(nanocore?.dependencies.includes(kernel.taskId), 'kernel must precede NanoCore build');
+});
