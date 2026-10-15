@@ -29,6 +29,10 @@ Source: the coordinator relayed two engineer rulings for rc.7 admission. Record 
 
 Source: the coordinator relayed the Grok review's required correction to the malformed fresh-branch source identity. Resolve the full identity directly from Git and mechanically check all hexadecimal references in this record and the rc.7 notes. Commit the correction separately. Base main-push CI failed; its correction is being built on `v010/r2-main-ci-fix`. Do not rebase until the coordinator confirms that correction on main. Then include the landed correction in the notes and refresh issue reconciliation, including #249. No push, tag or publication is authorized.
 
+### Intent Revision 5 — 2026-10-15
+
+Source: the coordinator authorized preparation before main turns green. Rebase onto the exact CI-fix candidate `b6d632d96a08dad4a6cffb58f350758789c71fc9`, which is intended to become main by fast-forward only after full CI run 38718755932 succeeds. Include the three CI corrections in notes and this record, refresh reconciliation with #249, and retain the hexadecimal-reference guard. Obtain a fresh `gpt-6.1-sol` review in its own detached worktree of the exact new head, covering the increment since `9af5b3d8`. The reviewer writes the requested external verdict. Push only the preparation branch. Start no branch CI, push no main ref, create no tag and publish no release.
+
 ## Engineer Rulings — 2026-10-15
 
 The coordinator supplied these engineer selections on 2026-10-15. Chinese quotations are retained verbatim as requested; the English translations preserve their scope.
@@ -83,21 +87,21 @@ Disposition: prereleases may ship with these four gaps disclosed. All four must 
 | --- | --- |
 | Tag and channel | `v0.1.0-rc.7`, non-draft prerelease; no GHCR `latest` or GitHub Latest assignment |
 | Previous release | `v0.1.0-rc.6`, exact source `0aa3f9a24e4cd0fdbec36b8d5f72d374a0086b3c` |
-| Fresh branch | `release/v0.1.0-rc.7-prep`; created from `c2fc03985de30a0de60e31edb1afa75fb6b2d730`, then rebased onto confirmed main `06b0d27c57b341b335942fc485bed9acc4783c0b` |
-| Base CI | Main-push run [38697916406](https://github.com/lingkaix/openkit/actions/runs/38697916406) completed `failure` in L0–L2 and L5 smoke. The coordinator identifies the protocol coverage guard and R2 Worker MCP smoke HTTP 409. Correction is pending on `v010/r2-main-ci-fix`; no final-P gate has passed |
+| Fresh branch | `release/v0.1.0-rc.7-prep`; created from `c2fc03985de30a0de60e31edb1afa75fb6b2d730`, then rebased onto confirmed main `06b0d27c57b341b335942fc485bed9acc4783c0b` and now the authorized CI-fix candidate `b6d632d96a08dad4a6cffb58f350758789c71fc9` |
+| Base CI | Main-push run [38697916406](https://github.com/lingkaix/openkit/actions/runs/38697916406) completed `failure` in L0–L2 and L5 smoke. The coordinator identifies the protocol coverage guard and R2 Worker MCP smoke HTTP 409. The correction candidate `b6d632d96a08dad4a6cffb58f350758789c71fc9` is now included. Full [run 38718755932](https://github.com/lingkaix/openkit/actions/runs/38718755932) is in progress at the rebase observation; main fast-forward still depends on its success. No final-P gate has passed |
 | Tested commit T | No successful final-P candidate run is claimed. Update T from completed actual candidate evidence before final admission |
 | Publishing commit P | Final preparation HEAD, exact SHA supplied in the handoff. It requires independent review, main membership and successful candidate CI on exactly P |
 | Preparation diff | Release notes, this record and minimum four-attachment status projections. No product implementation, publication job or invoked script changes |
 | Controlled assets | Three catalog release images; operations archive with reviewed helper; target-native NanoHost archives for amd64 and arm64; `SHA256SUMS`. Exactly four portable attachments; manifest delivery remains conditional on the rehearsed #225 path |
 | Checklist identity | Release Management `7b266ae721211cf2c13b0af0b6897e911218b3cf`; Release Cookbook `39f1feeb4e1b99e3c24d1a68750d1e07035d33ec`; Test Strategy `3874ba2855230dd4a5b783c6452c287a07a70d31`. These Git blob identities freeze the governing checklist for this preparation |
 | Visibility posture | Public GitHub repository; only `worker-common` is required to support anonymous GHCR inspection. No visibility change is authorized |
-| Grant | Standing prerelease grant first covers rc.6 and includes rc.7 while all owner predicates hold. This preparer commits locally; the coordinator admits and tags |
+| Grant | Standing prerelease grant first covers rc.6 and includes rc.7 while all owner predicates hold. The latest coordinator instruction permits this preparer to push only the preparation branch; the coordinator admits and tags |
 | Publication proof | The three publication job blocks and nine invoked script inputs match rc.6. Successful rc.6 tag run is the baseline below. No new scratch rehearsal is required for that unchanged proved mechanism |
 | Known host limits | #248 is fixed in source, pending published-asset positive readiness. #242 remains unverified on that host path. Neither issue is closed here |
 | Risk dispositions | The 2026-10-15 engineer rulings admit #223 as a disclosed non-blocker for every prerelease before first stable `v0.1.0`, without another rc question. The four disclosed notice gaps are permitted in prereleases and tracked by #249. Both issues block first stable and stay unlabeled |
 | Manual gates | Catalog stories remain post-tag at release-cycle/change cadence. Worker qualification runs after the deployment update, separately from L6. No live result is claimed |
-| Production boundary | No contact with staging or production. No push, tag, release, label, visibility or credential change by this preparer |
-| Next action | Await the coordinator's confirmation that the CI correction has landed on main. Until then, keep this branch unchanged by rebase. After confirmation, rebase, describe the landed correction, refresh reconciliation including #249, and repeat focused checks and publication comparison |
+| Production boundary | Only the preparation-branch push is authorized. No staging/production contact, main push, workflow dispatch, tag, release, label, visibility or credential change is authorized. The CI workflow push filter admits main and release tags only |
+| Next action | Finish local checks, freeze the exact head for detached independent review, and push only the preparation branch. The coordinator waits for the base gate and fast-forward, then obtains final-P main membership, exact-P candidate CI and admission before tagging |
 
 ## Included Work Since rc.6
 
@@ -105,6 +109,8 @@ Disposition: prereleases may ship with these four gaps disclosed. All four must 
 - Retrieval Kernel R2 comprises fifteen commits from `5df73d02` through `cb3c6b7d`. They replace lexical JSON retrieval, supervise the kernel service and package its target-native executable and verified dictionary. They add trusted query context, qualified pins/citations, write-once query-owned traces, the S39 pre-Turn reference and S51 owner/remint rules. [The R2 record](../202610150000000000-retrieval_kernel_r2/plan.md) retains detailed evidence and excluded work. Historical notebook reconstruction, arbitrary-file upload and Assistant history Tool admission are not supplied by this release.
 - `bbc901dc`, `d2bbdce7` and `0d6eee79` record and refine the [shared-conversation decision](../../decisions/20261015-shared_conversation_and_single_agent_threads.md). The coordinator named `0d6eee79` as its final source. `c2fc0398` updates the [core-experience plan](../202610140256550000-v0_1_0_core_experience/plan.md). These are design and planning changes; #247 remains after `v0.1.0` and adds no shared-conversation feature here.
 - `3a80b6d7` and `06b0d27c` implement #248: `h2` ALPN in both verified trust branches, one absolute 120-second startup bound through TCP/TLS/HTTP2/admission, and startup invalidation with `epoch-creation-failure` on initial TCP expiry. They preserve certificate verification and provide no plaintext fallback. Published-artifact host readiness is still unverified.
+
+- CI corrections `9f7ae7bcf9c45d0eb195296f6766cb2955cdb90d`, `8e8183348e52a9f56c640e1247e56e05a28a117f` and `b6d632d96a08dad4a6cffb58f350758789c71fc9` restore qualified-reference coverage, add the Retrieval Kernel as a direct NanoCore build prerequisite, and supply exact dictionary inputs in image fixtures. The protocol correction adds boundary cases without changing production parsers or coverage thresholds. Missing kernel supply caused the built L5 Task Knowledge HTTP 409; the build dependency restores the required executable without a retrieval fallback. Dictionary fixtures now copy binary bytes unchanged and verify each input affects the test-image tag. [The CI-fix record](../202610150800000000-r2_main_ci_fix/plan.md) retains its failed and corrected probes. Its complete remote run is still a separate gate.
 
 ## Publication-Path Proof
 
@@ -141,7 +147,7 @@ R2 changes the App Dockerfile, its smoke test and retrieval build supply. These 
 
 ## Known Issues, Dispositions And Disclosure
 
-The refreshed read-only backlog contains 111 open issues and no issue carrying `release-blocker`. Its issue-number set equals the rc.6 record's 108 rows, minus closed #245, plus #246, #247, #248 and new #249. The earlier rc.7 snapshot had 110 rows; #249 is the only addition and no issue was removed. Carry unchanged owner/disposition/disclosure rows from the [rc.6 reconciliation](../202610131730000000-v0_1_0_rc_6_prerelease/plan.md#initial-release-blocker-reconciliation), with these current deltas. Label absence does not establish admission.
+The post-rebase read-only backlog contains 98 open issues and no issue carrying `release-blocker`. Relative to the rc.6 record's 108 rows, remove closed #245 and the thirteen subsequently closed issues #116, #204, #212, #222, #230, #231, #232, #233, #234, #238, #239, #243 and #244; add open #246, #247, #248 and #249. The earlier 110/111-row snapshots remain historical. Direct issue reads confirm all thirteen subsequent closures. #249 is open and unlabeled, as is #223. Carry unchanged owner/disposition/disclosure rows from the [rc.6 reconciliation](../202610131730000000-v0_1_0_rc_6_prerelease/plan.md#initial-release-blocker-reconciliation), with these current deltas. Label absence does not establish admission.
 
 | Finding | Owner or receiver | Current disposition and disclosure |
 | --- | --- | --- |
@@ -154,7 +160,7 @@ The refreshed read-only backlog contains 111 open issues and no issue carrying `
 | #223 | [Work Data Retention](../../specs/20260921-work_data_retention_format.md), engineer ruling above | Disclosed non-blocker for all prereleases before first stable `v0.1.0`; later rc admissions need no new ruling. Still a first-stable blocker, open and unlabeled. The notes carry the defect and disposition |
 | #120 | NanoHost R001 runtime gate and Release Management | Stable/readiness hold stays open. Hosted distribution qualification and source transport regressions do not replace the exact-product runtime proof |
 | #195 | Release installation guide | Existing incomplete release-only first-install procedure remains disclosed. No host operation or guide-completion claim |
-| #222 | [Knowledge Store](../../specs/20260703-knowledge_store_implementation.md), Retrieval Kernel | R2 changes the search path and has embedded-CJK regressions. Keep broader open issue status; do not turn these tests into a published-host or complete-answer acceptance claim |
+| #222 | [Knowledge Store](../../specs/20260703-knowledge_store_implementation.md), Retrieval Kernel | Now closed after R2. Embedded-CJK matching remains listed under changes; remove the stale open-known-issue sentence. This supplies no separate live-host or R001 pass |
 | #158 | [Workspace Backup](../../specs/20260704-workspace_backup_export_import.md) | V2 export/import exists. Whole-deployment recovery and complete historical closure remain incomplete; missing required closure fails closed. Notes no longer claim all re-import is absent |
 
 The remaining stable prerequisites #225 and #240 stay outside routine prerelease closeout. #241 manifest attachment delivery remains planned with #225 and needs its own publication-path rehearsal. No stable publication is authorized.
@@ -216,20 +222,32 @@ Three unique 64-hex SHA-256 digests are also listed separately. They are content
 | Digest, short prefix | Meaning | Mechanical source check |
 | --- | --- | --- |
 | `9029285e` | Publication-input aggregate from publicationInputsAt | Recomputed from the named source or retained archive bytes |
-| `93889bfd` | Retained local operations archive SHA-256 | Recomputed from the named source or retained archive bytes |
+| `dd46f0c1` | Refreshed retained local operations archive SHA-256 | Recomputed from the named source or retained archive bytes |
 | `254a0126` | Reviewed helper file SHA-256 | Recomputed from the named source or retained archive bytes |
 
-The final guard exits 0 with no malformed or unexplained references. Its full report retains every value and source location. This existence/provenance check does not replace review of what a reference means. All broader preparation checks remain recorded above; final-P main membership, successful exact-P candidate CI and admission remain pending.
+The correction-time guard exited 0 with no malformed or unexplained references; its counts describe that earlier snapshot. Its full report retains every value and source location. This existence/provenance check does not replace review of what a reference means. All broader preparation checks remain recorded above; final-P main membership, successful exact-P candidate CI and admission remain pending.
 
 ### Committed Operations Archive Probe
 
-Preparation candidate `d62f527228f2b2a2839f820dd026764be3ee6dc8` produced `openkit-ops-skill-v0.1.0-rc.7.tar.gz`. `sha256sum -c SHA256SUMS` printed `openkit-ops-skill-v0.1.0-rc.7.tar.gz: OK`. The archive SHA-256 is `93889bfd1e46592391fb321dd97bc90551a41c71c62a8d78155528ec07fda098`. The existing shared operations verifier passed after extraction outside the checkout, including packaged CLI discovery. Archived helper bytes equal the selected Git source; helper SHA-256 is `254a012630fb6283927c7c92d2f1c723624d4d4fba4068d139eb01da1eea4a74`.
+Rebased preparation candidate `e25a2fedf83d26e3abe2ebe235238f75c76952ac` produced `openkit-ops-skill-v0.1.0-rc.7.tar.gz`. `sha256sum -c SHA256SUMS` printed `openkit-ops-skill-v0.1.0-rc.7.tar.gz: OK`. The archive SHA-256 is `dd46f0c13083285702bbadb6bd1c6abb09d8fc6ec201281e46845f89b17a0f03`. The existing shared operations verifier passed after extraction outside the checkout, including packaged CLI discovery. Archived helper bytes equal the selected Git source; helper SHA-256 is `254a012630fb6283927c7c92d2f1c723624d4d4fba4068d139eb01da1eea4a74`.
 
-The subsequent record-only commit retains this result and changes no archive payload input. The handoff verifies both publication-input equality and the operations tree, repository license and helper Git identities at final preparation HEAD. This local probe does not qualify future published archives; tag-time packaging and download verification remain required on exact P.
+This integration commit retains the refreshed result and changes no archive payload input. Repacking on a reachable rebased commit replaces the earlier local archive probe; the earlier candidate and receipt remain local historical evidence. The handoff verifies both publication-input equality and the operations tree, repository license and helper Git identities at final preparation HEAD. This local probe does not qualify future published archives; tag-time packaging and download verification remain required on exact P.
+
+### CI-Fix Integration Verification — 2026-10-15
+
+After the authorized rebase, documentation checks printed `Validated documentation model (486 documents).`, `Validated spec lifecycle metadata.`, `Documentation index is current.` and `Validated story schema (10 stories).` The notes check printed `Release notes input passed for v0.1.0-rc.7.` The local preflight printed `Release preflight passed for 0.1.0-rc.7.` and `Release images: app, worker-common, worker-runtimes`. All exited 0.
+
+The focused root selection adds `tests/test-execution-environment.test.mjs` to the seven suites above. Its first run reported `tests 212`, `pass 211`, `fail 1`, `skipped 0`: the image toolchain smoke could not resolve the app-local Rust version from the repository root. A direct probe confirmed that setup error. Exporting `MISE_RUST_VERSION` from the existing NanoHost `mise.toml` made the accepted pin available without changing repository files. The identical eight-suite command then reported `tests 212`, `pass 212`, `fail 0`, `skipped 0`, exit 0. Logs are retained privately; the failed run is not counted as passing evidence.
+
+The unchanged skip-guarded command `node scripts/validate-test-governance.mjs --run -- pnpm --filter @openkit/protocol test:coverage` passed: `Test Files 12 passed (12)`, `Tests 256 passed (256)`, and branch coverage `94.77% (127/134)`. The coverage threshold and test assertions were not changed by preparation.
+
+`pnpm check:repo` exited 0, including all repository documentation, governance and catalog checks. Biome reported `Checked 1407 files`, `Found 1 warning.` and `Found 27 infos.`; no fixes were applied. These diagnostics are retained rather than suppressed. `git diff --check` exited 0.
+
+The refreshed identity guard found 23 unique 40-hex values across 27 occurrences: seven commit objects, twelve other Git objects and the same four explicitly classified nonlocal values above. It found three recognized SHA-256 content digests and zero malformed or unexplained references. The three publication job blocks and nine invoked inputs still equal the successful rc.6 baseline, and the final preparation payload inputs equal the refreshed operations archive probe. No new scratch rehearsal is required for this unchanged publication mechanism. The coordinator-selected base CI is still in progress at this verification observation; it supplies no final-P qualification.
 
 ## Final-P And Admission Handoff
 
-After independent review, land the chosen exact P in main and wait for its successful main-push release gate. A green run on `06b0d27c` cannot be reused across commits for a later preparation P. L0–L2 and L3 tag reuse stays per job and exact commit only.
+After independent review, land the chosen exact P in main and wait for its successful main-push release gate. The failed `06b0d27c` run supplies no passing evidence. Even if CI-fix run 38718755932 passes, it cannot qualify a different preparation P across commits. L0–L2 and L3 tag reuse stays per job and exact commit only.
 
 The coordinator then refreshes the applicable unrevoked grant, reviewed exact P/main membership, successful required candidate jobs, unchanged publication proof, unused rc.7 tag/release/source-revision image identities, Latest state, complete current issue triage, applicable strict-risk dispositions and fixed prerelease flags. Keep that evidence private and bounded by its declared validity. Run the existing offline mechanical admission from exact P. Only the coordinator creates and pushes the real tag after it passes.
 
@@ -237,6 +255,6 @@ Catalog stories and Worker qualification remain post-publication. Published rc.7
 
 ## Change Surface And Status
 
-The preparation adds notes and this record, plus three minimum status-line corrections in the release owner/cookbook. The four-attachment criterion and delayed-manifest condition do not change. No code, package version, workflow, new registry or durable state is added. Independent review and final publication remain pending.
+The preparation adds notes and this record, plus three minimum status-line corrections in the release owner/cookbook. The four-attachment criterion and delayed-manifest condition do not change. The preparation-authored diff adds no code, package version, workflow, registry or durable state. The increment since `9af5b3d8` also includes the three coordinator-selected CI-fix commits through the rebase. Independent review and final publication remain pending at this record's freeze; the external verdict and handoff bind review to the exact resulting head.
 
 The first dependency install failed because shared `/tmp` exhausted inodes. Moving only this task's fresh worktree to the disk filesystem and retrying the frozen install corrected setup. No other task data or retained release evidence was removed. Disposable test files use task-owned disk-backed temporary storage. No setup failure is counted as a passing check.
