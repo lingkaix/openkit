@@ -15,6 +15,7 @@ The TypeScript and Zod schemas in this package are the machine-readable source o
 ## Commands
 
 - `pnpm --filter @openkit/protocol test`
+- `pnpm --filter @openkit/protocol test:coverage`
 - `pnpm --filter @openkit/protocol typecheck`
 - `pnpm --filter @openkit/protocol build`
 
