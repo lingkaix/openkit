@@ -1,3 +1,5 @@
+// openkit-test-platform: posix
+// The temporary repository resolves esbuild through a POSIX directory symlink to installed dependencies.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
