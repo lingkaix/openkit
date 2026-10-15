@@ -11,6 +11,7 @@ import { FsStore } from '../lib/store.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
+import { createVaultReference } from '../vault/vault-references.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { PiAiGatewayClient } from './pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from './provider-dispatcher.js';
@@ -62,6 +63,16 @@ function fixture(
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
+  if (options.customStock) {
+    // Availability uses non-secret metadata; the injected resolver supplies dispatch material.
+    createVaultReference(coreDb, {
+      referenceId: 'provider_openai_compatible_custom',
+      ownerScope: 'server',
+      displayName: 'Custom stock Gateway fixture',
+      secretKind: 'provider-api-key',
+      backendKind: 'encrypted-file',
+    });
+  }
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: workspace.id });
   cleanup.push(() => {
     coreDb.sqlite.close();
