@@ -1,8 +1,10 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ListAuthorizedWorkspacesResponseSchema } from '@openkit/app-api-schemas';
-import { WorkspaceRecordSchema } from '@openkit/protocol';
+import {
+  ListAuthorizedWorkspacesResponseSchema,
+  WorkspaceReadResponseSchema,
+} from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
@@ -97,7 +99,12 @@ describe('workspace routes', () => {
     const directResponse = await app.request(
       ...operationRequest('workspace.read', { workspaceId: workspace.id })
     );
-    const directBody = WorkspaceRecordSchema.parse(await directResponse.json());
+    const directBody = WorkspaceReadResponseSchema.parse(await directResponse.json());
+    expect(directBody).toMatchObject({
+      ownerUserId: 'user_local',
+      membershipStatus: 'active',
+      accessCause: 'membership',
+    });
 
     expect(store.getWorkspace(workspace.id).counts.threadCount).toBe(3);
     expect(listResponse.status).toBe(200);

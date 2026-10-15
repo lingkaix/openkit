@@ -26,6 +26,8 @@ function makeClient(): CoreClient {
         items: [].map((workspace) => ({
           workspace,
           effectiveRole: 'owner',
+          membershipStatus: 'active',
+          accessCause: 'membership',
           membershipRevision: 1,
           ownerUserId: 'user_local',
           registryRevision: 1,

@@ -119,6 +119,7 @@ export function MembersScreen() {
   const workspaceId = owner.selectedWorkspaceId;
   const workspace = owner.effectiveWorkspace;
   const selectedWorkspace = selfLeave.selectedWorkspace;
+  const membershipRevision = selectedWorkspace?.membershipRevision ?? null;
 
   /** Submits one exact live email and scrubs the field after either settlement. */
   function createInvitation(event: FormEvent<HTMLFormElement>) {
@@ -149,14 +150,17 @@ export function MembersScreen() {
                   Current Workspace role: {workspace.effectiveRole}
                 </p>
               </div>
-              {selfLeave.canLeave && selectedWorkspace && selfLeave.selectedWorkspaceId ? (
+              {selfLeave.canLeave &&
+              selectedWorkspace &&
+              membershipRevision !== null &&
+              selfLeave.selectedWorkspaceId ? (
                 <LeaveConfirmation
                   errorMessage={selfLeave.leave.error?.message}
                   pending={selfLeave.leave.isPending}
                   workspaceName={selectedWorkspace.workspace.name}
                   onConfirm={() =>
                     selfLeave.leave.mutate({
-                      expectedRevision: selectedWorkspace.membershipRevision,
+                      expectedRevision: membershipRevision,
                       workspaceId: selectedWorkspace.workspace.id,
                     })
                   }

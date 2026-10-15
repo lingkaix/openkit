@@ -25,7 +25,10 @@ import {
 } from './runtime/idempotent-command.js';
 import type { CoreDb } from './storage/db.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { readAuthorizedWorkspaces } from './workspace-sharing-operations.js';
+import {
+  readAuthorizedWorkspaceRelation,
+  readAuthorizedWorkspaces,
+} from './workspace-sharing-operations.js';
 
 /** Existing persistence and receipt owners used by Workspace commands. */
 interface WorkspaceCommandDependencies {
@@ -175,14 +178,26 @@ export function createWorkspaceOperationImplementations(
         publicOperationActor(context),
         administrator(context)
       ),
-    'workspace.read': (input, context) =>
-      readWorkspace(
-        dependencies.store!,
-        dependencies.coreDb,
-        input.workspaceId,
-        publicOperationActor(context).userId,
-        administrator(context)
-      ),
+    'workspace.read': (input, context) => {
+      const actor = publicOperationActor(context);
+      const relation = readAuthorizedWorkspaceRelation(
+        dependencies.coreDb!,
+        actor,
+        input.workspaceId
+      );
+      return {
+        ...readWorkspace(
+          dependencies.store!,
+          dependencies.coreDb,
+          input.workspaceId,
+          actor.userId,
+          administrator(context)
+        ),
+        ownerUserId: relation.ownerUserId,
+        membershipStatus: relation.membershipStatus,
+        accessCause: relation.accessCause,
+      };
+    },
     'workspace.update': (input, context) =>
       updateWorkspace(
         input,

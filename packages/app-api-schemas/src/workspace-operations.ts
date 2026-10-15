@@ -8,7 +8,10 @@ import {
 import { z } from 'zod';
 import { WorkspaceDashboardResponseSchema } from './dashboard.js';
 import type { OperationDefinition } from './operation-contract.js';
-import { ListAuthorizedWorkspacesResponseSchema } from './workspace-sharing.js';
+import {
+  ListAuthorizedWorkspacesResponseSchema,
+  WorkspaceReadResponseSchema,
+} from './workspace-sharing.js';
 
 /** Credentials already used by the public Workspace, Thread and Turn families. */
 const publicCredentials = [
@@ -41,7 +44,7 @@ export const WORKSPACE_OPERATION_DEFINITIONS = {
     successStatus: 200,
     description: 'Read one Workspace with viewer-visible counts.',
     inputSchema: z.object(workspaceSelector).strict(),
-    outputSchema: WorkspaceRecordSchema,
+    outputSchema: WorkspaceReadResponseSchema,
     credentials: publicCredentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'workspace' },

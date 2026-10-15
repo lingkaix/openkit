@@ -12,6 +12,7 @@ import { createAccessTokenOperationImplementations } from './auth/access-token-o
 import { createNanoHostOperationImplementations } from './auth/nanohost-operations.js';
 import type { NanoHostTransportSessionAuthority } from './auth/nanohost-transport-session.js';
 import { createAutomationOperationImplementations } from './automation-operations.js';
+import { createCallerOperationImplementations } from './caller-operation-implementations.js';
 import { createCatalogOperationImplementations } from './catalog/catalog-operations.js';
 import type { CoreMode } from './config/mode.js';
 import type { RuntimeConfigManager } from './config/runtime-config.js';
@@ -134,6 +135,7 @@ export interface OperationInvocationDependencies {
 /** Supplies only executable bindings, with no repeated declarative contract facts. */
 export function createOperationImplementations(dependencies: OperationInvocationDependencies) {
   return composeOperationTables(
+    createCallerOperationImplementations(dependencies),
     createMaterialOperationImplementations({
       coreDb: dependencies.coreDb,
       store: dependencies.store!,
