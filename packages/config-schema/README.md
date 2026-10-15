@@ -86,6 +86,8 @@ Provider `modelMetadata` and deployment extension entries admit strict `reasonin
 
 Agent `models.reasoningEffort` and the selected profile’s scalar `reasoningEffort` are optional canonical preferences. AEP `llm.reasoningEffort` records only the admitted Turn value, while each route’s optional `reasoningEffortLevels` preserves resolver controls, including an empty list. Retained configurations and packages need neither field and acquire no invented defaults.
 
+Agent profiles reject `runtime` and `sandbox` declarations instead of discarding them as descriptive metadata. Profiles refine behavior; the composed Agent setup owns runtime and Sandbox authority. Descriptive profile additions remain tolerated. [Agent Manifest And AEP Resolution](../../docs/specs/20260703-agent_manifest_aep_resolution.md#manifest-shape) owns this boundary.
+
 `@openkit/config-schema/mcp-credentials` exposes the shared credential binding and sink schemas without the Node-only catalog digest implementation. The existing Workspace MCP update-binding App API reuses that entry for optional credential replacement; omitted bindings remain unchanged.
 
 The shared MCP credential binding admits optional closed `presentation: "raw" | "bearer"`; omission stays absent so retained raw records and effective digests do not gain a default. Canonical bindings and effective entries share the schema. Bearer requires a case-insensitive Authorization header sink and the effective HTTP transport. Effective HTTP endpoints preserve an authored URL query string while rejecting URL credentials and fragments. See [MCP Catalog Management](../../docs/specs/20260907-mcp_catalog_management.md) and [Worker MCP Tool Supply](../../docs/specs/20260704-worker_mcp_tool_supply.md).
