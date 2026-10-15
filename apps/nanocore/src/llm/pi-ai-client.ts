@@ -1913,13 +1913,20 @@ function applyCodexTransport(
     if (transport.codexTurnState)
       options.headers = { 'x-codex-turn-state': transport.codexTurnState };
     options.onResponse = (response, responseModel) => {
-      if (
-        response.status >= 200 &&
-        response.status < 300 &&
-        modelsAreEqual(selectedModel, responseModel)
-      ) {
+      if (!modelsAreEqual(selectedModel, responseModel)) return;
+      if (response.status >= 200 && response.status < 300) {
         const turnState = response.headers['x-codex-turn-state'];
         if (turnState) transport.onCodexTurnState?.(turnState);
+      } else if (
+        Number.isInteger(response.status) &&
+        response.status >= 400 &&
+        response.status <= 599
+      ) {
+        try {
+          transport.onProviderHttpRejection?.(response.status);
+        } catch {
+          // Optional diagnostics cannot change stock inference or routing-bearing failure metadata.
+        }
       }
     };
   }
