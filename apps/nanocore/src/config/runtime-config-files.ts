@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import {
-  chmodSync,
   cpSync,
   existsSync,
   lstatSync,
@@ -9,7 +8,6 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
-  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -43,6 +41,7 @@ import {
   ModelCatalogSchema,
   OpenKitConfigSchema,
   ProviderProfileSchema,
+  parseResourceCatalogDocument,
   parseWorkspaceDataSourceCatalog,
   requireCredentialFreeHttpsGitLocator,
   UserConfigSchema,
@@ -54,6 +53,12 @@ import {
 import { type ParseError, parse, printParseErrorCode } from 'jsonc-parser';
 import { z } from 'zod';
 import { AuthoredAgentConfigSchema } from '../agents/manifest.js';
+import {
+  assertCanonicalDirectory,
+  ensureCanonicalDirectory,
+  readCanonicalTextFile,
+  writeFileAtomic,
+} from '../storage/workspace-file-records.js';
 import { VaultBackendError } from '../vault/vault-backend.js';
 import {
   diffRuntimeConfig,
@@ -192,7 +197,7 @@ export class RuntimeConfigFileService {
   }
 
   /**
-   * Reads one supported runtime config file.
+   * Reads one supported runtime config file with a revision bound to the returned content.
    *
    * @param id Runtime config file id.
    * @returns Runtime config file content response.
@@ -212,9 +217,10 @@ export class RuntimeConfigFileService {
       this.assertInsideConfigRoot(spec.absolutePath);
     }
 
+    const content = readFileSync(spec.absolutePath, 'utf8');
     return RuntimeConfigFileReadResponseSchema.parse({
-      file: this.summaryForSpec(spec),
-      content: readFileSync(spec.absolutePath, 'utf8'),
+      file: this.summaryForSpec(spec, content),
+      content,
     });
   }
 
@@ -564,24 +570,26 @@ export class RuntimeConfigFileService {
    * Returns a summary for one resolved file spec.
    *
    * @param spec Resolved file spec.
+   * @param content Already-read content whose revision must match a detail response.
    * @returns Runtime config file summary.
    */
-  private summaryForSpec(spec: RuntimeConfigFileSpec): RuntimeConfigFileSummary {
+  private summaryForSpec(spec: RuntimeConfigFileSpec, content?: string): RuntimeConfigFileSummary {
     const exists = existsSync(spec.absolutePath);
     const stat = exists ? statSync(spec.absolutePath) : null;
+    const source = content ?? (exists ? readFileSync(spec.absolutePath, 'utf8') : undefined);
 
     return {
       id: spec.relativePath,
       kind: spec.kind,
       path: spec.relativePath,
       exists,
-      revision: exists ? contentRevision(readFileSync(spec.absolutePath, 'utf8')) : null,
+      revision: source !== undefined ? contentRevision(source) : null,
       updatedAt: stat ? stat.mtime.toISOString() : null,
     };
   }
 
   /**
-   * Validates one JSONC source document against the schema for its file kind.
+   * Validates one JSONC source document and Workspace Skill references against current catalog authority.
    *
    * @param spec Resolved file spec.
    * @param content Source content.
@@ -615,7 +623,44 @@ export class RuntimeConfigFileService {
       ];
     }
 
-    const schema = schemaForKind(spec.kind);
+    const schema =
+      spec.kind === 'workspace'
+        ? WorkspaceConfigSchema.superRefine((config, context) => {
+            const skillIds = config.workspace.assistant.resources?.skillIds ?? [];
+            if (skillIds.length === 0) return;
+            const path = ['workspace', 'assistant', 'resources', 'skillIds'];
+            try {
+              // Catalog path helpers also provision directories; draft validation must only read.
+              const workspaceRoot = join(this.dataRoot, 'workspaces', spec.workspaceId ?? '');
+              const catalogRoot = join(workspaceRoot, 'catalog');
+              for (const directory of [
+                this.dataRoot,
+                dirname(workspaceRoot),
+                workspaceRoot,
+                catalogRoot,
+              ]) {
+                assertCanonicalDirectory(directory);
+              }
+              const catalog = parseResourceCatalogDocument(
+                JSON.parse(readCanonicalTextFile(join(catalogRoot, 'catalog.json')))
+              );
+              const existing = new Set(catalog.skills.entries.map((entry) => entry.id));
+              if (skillIds.some((id) => !existing.has(id))) {
+                context.addIssue({
+                  code: 'custom',
+                  message: 'Selected Skill IDs must exist in this Workspace catalog.',
+                  path,
+                });
+              }
+            } catch {
+              context.addIssue({
+                code: 'custom',
+                message: 'Current Workspace Skill catalog is unavailable.',
+                path,
+              });
+            }
+          })
+        : schemaForKind(spec.kind);
     const result = schema.safeParse(parsed);
 
     if (result.success) {
@@ -812,7 +857,7 @@ export class RuntimeConfigFileService {
    * @param content Source content to write.
    */
   private writeFileAtomically(spec: RuntimeConfigFileSpec, content: string): void {
-    mkdirSync(dirname(spec.absolutePath), { recursive: true });
+    ensureCanonicalDirectory(dirname(spec.absolutePath), 0o777);
     if (isWorkspaceScopedKind(spec.kind)) {
       this.assertInsideWorkspaceConfigRoot(
         spec.workspaceId ?? '',
@@ -831,15 +876,7 @@ export class RuntimeConfigFileService {
         preservedMode = current.mode & 0o777;
       }
     }
-    const tempPath = join(
-      dirname(spec.absolutePath),
-      `.${basename(spec.absolutePath)}.${Date.now()}.tmp`
-    );
-    writeFileSync(tempPath, content);
-    if (preservedMode !== undefined) {
-      chmodSync(tempPath, preservedMode);
-    }
-    renameSync(tempPath, spec.absolutePath);
+    writeFileAtomic(spec.absolutePath, content, preservedMode ?? 0o666 & ~process.umask());
   }
 
   /**

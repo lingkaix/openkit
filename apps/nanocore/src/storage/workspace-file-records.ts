@@ -3,6 +3,7 @@ import {
   closeSync,
   constants,
   existsSync,
+  fchmodSync,
   fstatSync,
   fsyncSync,
   lstatSync,
@@ -16,6 +17,7 @@ import {
   writeFileSync,
   writeSync,
 } from 'node:fs';
+import * as fsPromises from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -2286,8 +2288,7 @@ function publishNewRecordDirectory(
     mkdirSync(stagingRoot, { mode: 0o700 });
     assertCanonicalDirectory(stagingRoot);
     writeContents(stagingRoot);
-    renameSync(stagingRoot, destination);
-    syncCanonicalDirectory(dirname(destination));
+    publishCanonicalPath(stagingRoot, destination);
   } catch (error) {
     rmSync(stagingRoot, { recursive: true, force: true });
     throw error;
@@ -2413,7 +2414,7 @@ function writeStagedThreadDirectory(
 }
 
 /**
- * Writes thread and turn metadata while preserving append-only item and event logs.
+ * Writes changed canonical Thread bytes and Turn metadata while preserving append-only logs.
  *
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.
@@ -2438,9 +2439,12 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
       continue;
     }
     ensureCanonicalDirectory(threadRoot);
+    // Preparing turnsRoot also commits threadRoot after an unacknowledged file rename.
     ensureCanonicalDirectory(turnsRoot);
     const threadPath = join(threadRoot, 'thread.json');
-    const previous = existsSync(threadPath) ? readJson(threadPath) : undefined;
+    const previousBytes = existsSync(threadPath) ? readCanonicalFile(threadPath) : undefined;
+    const previous =
+      previousBytes === undefined ? undefined : JSON.parse(previousBytes.toString('utf8'));
     removeStaleDirectories(turnsRoot, expectedTurnIds);
 
     for (const turn of threadTurns) {
@@ -2453,7 +2457,10 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
         writeTurnDirectory(stage, turn, records);
       });
     }
-    writeJsonAtomic(threadPath, projectCanonicalThreadRecord(thread, previous));
+    const nextBytes = Buffer.from(
+      `${JSON.stringify(projectCanonicalThreadRecord(thread, previous), null, 2)}\n`
+    );
+    if (!previousBytes?.equals(nextBytes)) writeFileAtomic(threadPath, nextBytes);
   }
 }
 
@@ -2989,9 +2996,10 @@ export function appendCanonicalTextFile(path: string, content: string): void {
  *
  * @param path Target file path.
  * @param content Complete file content.
+ * @param mode Exact replacement mode when supplied; otherwise the private writer default.
  */
-export function writeFileAtomic(path: string, content: string | Uint8Array): void {
-  mkdirSync(dirname(path), { recursive: true });
+export function writeFileAtomic(path: string, content: string | Uint8Array, mode?: number): void {
+  ensureCanonicalDirectory(dirname(path), 0o777);
   const existingMetadata = lstatSync(path, { throwIfNoEntry: false });
   if (existingMetadata) {
     assertCanonicalRegularFile(path);
@@ -3002,10 +3010,11 @@ export function writeFileAtomic(path: string, content: string | Uint8Array): voi
     const descriptor = openSync(
       temporaryPath,
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-      0o600
+      mode ?? 0o600
     );
     try {
       writeFileSync(descriptor, content);
+      if (mode !== undefined) fchmodSync(descriptor, mode);
       fsyncSync(descriptor);
     } finally {
       closeSync(descriptor);
@@ -3166,12 +3175,13 @@ export function assertCanonicalDirectory(path: string): void {
 }
 
 /**
- * Creates one canonical directory only after rejecting an existing redirect.
+ * Creates a canonical directory and any missing parents without an existing redirect.
  *
- * @param path Canonical directory path with an already verified parent.
+ * @param path Canonical directory path beneath the caller's validated boundary.
+ * @param mode Creation permissions, subject to the process umask.
  * @throws Error when the existing or created path is not a real directory.
  */
-export function ensureCanonicalDirectory(path: string): void {
+export function ensureCanonicalDirectory(path: string, mode = 0o700): void {
   const metadata = lstatSync(path, { throwIfNoEntry: false });
 
   if (metadata) {
@@ -3180,7 +3190,10 @@ export function ensureCanonicalDirectory(path: string): void {
     return;
   }
 
-  mkdirSync(path, { mode: 0o700 });
+  // A visible parent can remain after its creation was not durably acknowledged.
+  ensureCanonicalDirectory(dirname(path), mode);
+  assertCanonicalDirectory(dirname(path));
+  mkdirSync(path, { mode });
   assertCanonicalDirectory(path);
   syncCanonicalDirectory(dirname(path));
 }
@@ -3194,6 +3207,104 @@ export function syncCanonicalDirectory(path: string): void {
   } finally {
     closeSync(descriptor);
   }
+}
+
+/** Synchronizes complete staged bytes and child entries before their containing tree is published. */
+export function syncCanonicalTree(path: string): void {
+  const metadata = lstatSync(path);
+  if (metadata.isDirectory()) {
+    for (const entry of readdirSync(path)) syncCanonicalTree(join(path, entry));
+    syncCanonicalDirectory(path);
+    return;
+  }
+  assertCanonicalRegularFile(path);
+  const descriptor = openSync(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+  );
+  try {
+    if (!fstatSync(descriptor).isFile())
+      throw new Error(`Canonical path must be a regular file: ${path}.`);
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+/** Publishes a complete staged file or tree and commits both sides of a cross-parent rename. */
+export function publishCanonicalPath(staged: string, destination: string): void {
+  syncCanonicalTree(staged);
+  renameSync(staged, destination);
+  syncCanonicalDirectory(dirname(destination));
+  if (dirname(staged) !== dirname(destination)) syncCanonicalDirectory(dirname(staged));
+}
+
+/** Synchronizes one directory without blocking asynchronous file collection or following a link. */
+export async function syncCanonicalDirectoryAsync(path: string): Promise<void> {
+  const descriptor = await fsPromises.open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    if (!(await descriptor.stat()).isDirectory())
+      throw new Error(`Canonical path must be a directory: ${path}.`);
+    await descriptor.sync();
+  } finally {
+    await descriptor.close();
+  }
+}
+
+/** Creates missing asynchronous publication parents and commits their entries before use. */
+export async function ensureCanonicalDirectoryAsync(path: string): Promise<void> {
+  const metadata = await fsPromises.lstat(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (!metadata) {
+    // Commit each parent before creating children so a failed retry has one entry to verify.
+    await ensureCanonicalDirectoryAsync(dirname(path));
+    try {
+      await fsPromises.mkdir(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+  }
+  const current = metadata ?? (await fsPromises.lstat(path));
+  if (!current.isDirectory() || current.isSymbolicLink())
+    throw new Error(`Canonical path must be a directory: ${path}.`);
+  await syncCanonicalDirectoryAsync(dirname(path));
+}
+
+/** Synchronizes a complete asynchronous staging tree, with child entries committed before their parents. */
+export async function syncCanonicalTreeAsync(path: string): Promise<void> {
+  const metadata = await fsPromises.lstat(path);
+  if (metadata.isDirectory()) {
+    for (const entry of await fsPromises.readdir(path))
+      await syncCanonicalTreeAsync(join(path, entry));
+    await syncCanonicalDirectoryAsync(path);
+    return;
+  }
+  if (!metadata.isFile() || metadata.isSymbolicLink())
+    throw new Error(`Canonical path must be a regular file: ${path}.`);
+  const descriptor = await fsPromises.open(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+  );
+  try {
+    if (!(await descriptor.stat()).isFile())
+      throw new Error(`Canonical path must be a regular file: ${path}.`);
+    await descriptor.sync();
+  } finally {
+    await descriptor.close();
+  }
+}
+
+/** Publishes staged asynchronous bytes and commits the destination and any distinct source parent. */
+export async function publishCanonicalPathAsync(
+  staged: string,
+  destination: string
+): Promise<void> {
+  await syncCanonicalTreeAsync(staged);
+  await fsPromises.rename(staged, destination);
+  await syncCanonicalDirectoryAsync(dirname(destination));
+  if (dirname(staged) !== dirname(destination)) await syncCanonicalDirectoryAsync(dirname(staged));
 }
 
 /**

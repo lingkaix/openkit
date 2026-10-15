@@ -16,7 +16,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   type AuthInteraction,
   fauxAssistantMessage,
@@ -66,6 +66,53 @@ import {
   type ProviderSubscriptionAccountSnapshot,
   type ProviderSubscriptionPairHandle,
 } from './provider-subscription-accounts.js';
+
+const durability = vi.hoisted(() => ({
+  paths: new Map<number, string>(),
+  events: [] as Array<{
+    op: 'sync' | 'rename';
+    path: string;
+    from?: string;
+    directory?: boolean;
+    mode?: number;
+  }>,
+  fail: undefined as ((path: string, directory: boolean) => boolean) | undefined,
+}));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    openSync: ((...args: Parameters<typeof actual.openSync>) => {
+      const descriptor = actual.openSync(...args);
+      durability.paths.set(descriptor, String(args[0]));
+      return descriptor;
+    }) as typeof actual.openSync,
+    closeSync: ((descriptor: number) => {
+      durability.paths.delete(descriptor);
+      return actual.closeSync(descriptor);
+    }) as typeof actual.closeSync,
+    fsyncSync: ((descriptor: number) => {
+      const path = durability.paths.get(descriptor) ?? '<untracked>';
+      const directory = actual.fstatSync(descriptor).isDirectory();
+      durability.events.push({
+        op: 'sync',
+        path,
+        directory,
+        mode: actual.fstatSync(descriptor).mode & 0o777,
+      });
+      if (durability.fail?.(path, directory)) throw new Error('Injected publication sync failure');
+      return actual.fsyncSync(descriptor);
+    }) as typeof actual.fsyncSync,
+    renameSync: ((
+      from: Parameters<typeof actual.renameSync>[0],
+      to: Parameters<typeof actual.renameSync>[1]
+    ) => {
+      durability.events.push({ op: 'rename', from: String(from), path: String(to) });
+      return actual.renameSync(from, to);
+    }) as typeof actual.renameSync,
+  };
+});
 
 const DEFAULT_TIME = '2026-07-23T00:00:00.000Z';
 const PERSISTENCE_ERROR = {
@@ -5176,4 +5223,114 @@ describe('subscription auth attribution isolation', () => {
       expect(await fixture.manager.getStatus(pair)).not.toHaveProperty('inferenceObservation');
     });
   }
+});
+
+describe('subscription account publication durability', () => {
+  it('syncs account authority before rename and its exact parent after rename, then reopens the manager', async () => {
+    const fixture = createFixture();
+    const pair = accountPair('durable_slot');
+    durability.events.length = 0;
+    await fixture.manager.createAccount({ ...pair, displayName: 'Durable account' });
+    const path = accountPath(fixture.dataRoot, pair);
+    const renameAt = durability.events.findIndex(
+      (event) => event.op === 'rename' && event.path === path
+    );
+    expect(renameAt).toBeGreaterThan(0);
+    const staged = durability.events[renameAt].from;
+    expect(
+      durability.events
+        .slice(0, renameAt)
+        .some(
+          (event) =>
+            event.op === 'sync' && !event.directory && event.path === staged && event.mode === 0o600
+        )
+    ).toBe(true);
+    expect(
+      durability.events
+        .slice(renameAt + 1)
+        .some((event) => event.op === 'sync' && event.directory && event.path === dirname(path))
+    ).toBe(true);
+    expect(
+      durability.events.some(
+        (event) => event.op === 'sync' && event.directory && event.path === dirname(dirname(path))
+      )
+    ).toBe(true);
+    expect(lstatSync(path).mode & 0o777).toBe(0o600);
+    expect(await fixture.createManager().listAccounts(pair.subscriptionProviderId)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ ...pair, displayName: 'Durable account' })])
+    );
+  });
+
+  it.each([
+    'before',
+    'after',
+  ] as const)('rejects success when synchronization fails %s the account rename', async (boundary) => {
+    const fixture = createFixture();
+    const pair = accountPair('durable_slot');
+    await fixture.manager.createAccount({ ...pair, displayName: 'Prior name' });
+    const path = accountPath(fixture.dataRoot, pair);
+    durability.events.length = 0;
+    durability.fail = (candidate, directory) =>
+      boundary === 'before'
+        ? !directory && dirname(candidate) === dirname(path)
+        : directory &&
+          candidate === dirname(path) &&
+          durability.events.some((event) => event.op === 'rename' && event.path === path);
+    try {
+      await expect(
+        fixture.manager.updateAccount(pair, { displayName: 'Replacement name' })
+      ).rejects.toMatchObject(PERSISTENCE_ERROR);
+      durability.fail = undefined;
+      expect(await fixture.createManager().listAccounts(pair.subscriptionProviderId)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            ...pair,
+            displayName: boundary === 'before' ? 'Prior name' : 'Replacement name',
+          }),
+        ])
+      );
+    } finally {
+      durability.fail = undefined;
+    }
+  });
+});
+
+describe('uncommitted ancestor account recovery', () => {
+  it('retries a failed managed-ancestor synchronization before account authority can be published', async () => {
+    const fixture = createFixture();
+    const pair = accountPair('ancestor_retry');
+    const parent = join(fixture.dataRoot, 'server', 'files');
+    const managedRoot = join(parent, 'provider-subscriptions');
+    const path = accountPath(fixture.dataRoot, pair);
+    durability.events.length = 0;
+    durability.fail = (candidate, directory) => directory && candidate === parent;
+    try {
+      await expect(
+        fixture.manager.createAccount({ ...pair, displayName: 'Retained account' })
+      ).rejects.toMatchObject(PERSISTENCE_ERROR);
+      expect(existsSync(managedRoot)).toBe(true);
+      expect(existsSync(path)).toBe(false);
+      durability.events.length = 0;
+      await expect(
+        fixture.createManager().createAccount({ ...pair, displayName: 'Retained account' })
+      ).rejects.toMatchObject(PERSISTENCE_ERROR);
+      expect(existsSync(path)).toBe(false);
+      durability.events.length = 0;
+      durability.fail = undefined;
+      await fixture.createManager().createAccount({ ...pair, displayName: 'Retained account' });
+      expect(await fixture.createManager().listAccounts(pair.subscriptionProviderId)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ ...pair, displayName: 'Retained account' }),
+        ])
+      );
+      expect(lstatSync(path).mode & 0o777).toBe(0o600);
+      expect(
+        durability.events.some(
+          (event) => event.op === 'sync' && event.directory && event.path === parent
+        )
+      ).toBe(true);
+    } finally {
+      durability.fail = undefined;
+    }
+  });
 });
