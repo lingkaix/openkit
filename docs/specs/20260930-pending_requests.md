@@ -3,7 +3,7 @@ status: Accepted
 implementation: Not Started
 kind: concept
 date: "2026-09-30"
-updated: "2026-10-02"
+updated: "2026-10-15"
 ---
 # Pending Requests
 
@@ -154,6 +154,8 @@ Execution after a grant, for an approval that governs an agent's captured call, 
 2. **Re-evaluation, grant, and claim in one step.** One synchronous step of NanoCore's single writer, with no suspension inside it, evaluates against the captured binding the state that another command can change: the request is `pending`; the Thread is not archived or deleted; the current Workspace membership and authority of the responsible user and of the requesting Agent; the Thread's current supply for that server and tool; the current schema snapshot; current policy; and the Vault grants behind the values resolved in the first step. In the same step, the compare-and-set on the request records the grant with its actor and time, and either sets the claim to `claimed` with the execution `CapabilityCall` id when every check passed, or records `denied-not-executed` with its reason and leaves the claim `unclaimed` when one failed. A failed Thread, membership, or Agent check is an invalidating event, which ends the request as End defines instead of granting it.
 3. **Execution.** The gateway executes the captured call exactly as bound, with the ordinary timeout and result bounds.
 4. **Disposition.** The claim moves to `finished` with `approved-executed` (the call succeeded), `execution-error` (it failed and its outcome is known), or `outcome-unknown` (contact may have happened and the outcome cannot be established). The execution `CapabilityCall` is recorded as `succeeded`, `failed`, or `unknown`, with its upstream-contact knowledge. Usage follows the ordinary rule: none when upstream is proved not contacted.
+
+For MCP schema re-evaluation in point 2, a `tracking` entry compares the requested tool name and complete retained `inputSchema` between the captured and current snapshots. A missing tool or changed input schema yields `denied-not-executed` without a claim or upstream contact. Other-tool changes and description-only changes do not refuse the call. A `pinned` entry retains whole-snapshot refusal. The catalog revision, eligibility, authority, Policy, credential, and claim checks remain unchanged. This uses the retained snapshots without a new durable field ([accepted #117 ruling](https://github.com/lingkaix/openkit/issues/117#issuecomment-6117121174)); [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) owns upstream execution.
 
 The step in point 2 is the linearization point for authority. A revocation, withdrawal, archive, or response that commits before it is seen by it; one that commits after it finds the request already granted and claimed, and the call proceeds under the authority current at its claim. A `pending` request therefore moves to exactly one of: granted and claimed, granted and not executed, denied, answered, granted as a command-intent approval, or ended. A claimed request can no longer end, and an ended request can no longer be claimed.
 
