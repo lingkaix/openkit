@@ -317,6 +317,26 @@ Start editing Task A on a new shared Thread using `task.start` with `workerStora
 
 Web uses **Settings → Vault backend → Workspace secrets** for the same lifecycle, with a password field cleared on submission and redacted inventory. Existing Workspace Vault remains an evidence view. Revocation retains reference and grant history and does not make an ID reusable. A failed or interrupted mutation requires inventory inspection before a fresh request; the system does not automatically repair Core/backend disagreement.
 
+## Discover Administrator CLI Operations
+
+Start with local help: `openkit --help`, `openkit help ops search`, or `openkit ops call --help`. Help returns the normal JSON envelope with `command: help` and exit status 0. Help, search and describe require no endpoint or credential and make no network request.
+
+`openkit ops search <query>` returns only operation ids and one-line summaries. Search matches ids, capability groups, summary text and bounded discovery terms. Use `update` or `upgrade` to find the App update operations, `preflight` to find `app-update.preflight`, and `connection` or `version` to find `diagnostics.app`. These are discovery terms, not operation ids or call aliases.
+
+`openkit ops describe <operation-id>` returns the operation summary, mutation flag, sensitivity and required-access metadata, and a compact input contract. It lists required fields, value kinds and scalar constraints, preserves each flat input alternative, and leaves nested product structures compact. Defaulted input fields remain optional. Add `--schema` to describe for the full shared JSON input schema, or to search for full shared JSON input/output schemas.
+
+Use this read-only discovery sequence before an App update:
+
+```text
+openkit ops search update
+openkit ops describe app-update.preflight
+printf '%s' '{}' | openkit ops call app-update.preflight --input -
+openkit ops describe app-update.prepare
+openkit ops describe app-update.start
+```
+
+Call only the canonical operation id with `openkit ops call <operation-id> --input -`. Supply one strict flat JSON object on stdin: path scope, query and body fields share the top level, without `params`, `query` or `body` wrappers. Nested product values remain valid when the shared schema requires them. Discovery does not authorize a mutation, replace exact approval, or run the update sequence for you; retain the existing update preparation, consent and status procedure.
+
 ## Administrator CLI Secret And Archive Delivery
 
 Use `scripts/openkit` relative to the installed package with Node.js 24. Confirm the exact deployment, Workspace, intended effect and current administrator authority; run doctor, search and describe before a bounded `ops call <id> --input -`. One-time-secret operations are unavailable over MCP. For token.create or token.rotate, supply the complete described stdin JSON and an explicit safe non-reserved named destination. Secure storage preflight must pass before issuance; the endpoint administration credential remains unchanged. Success exposes redacted records and storage metadata only. On delivery failure after issuance or unknown transport outcome, inspect token inventory before a new explicit request; issuance and local storage are separate effects and cannot be rolled back by the CLI. Bootstrap consumes secret stdin with first-owner display name, email and password, uses no ordinary bearer, and stores the returned administrator credential in the endpoint sink. Never replay bootstrap on an initialized deployment.
