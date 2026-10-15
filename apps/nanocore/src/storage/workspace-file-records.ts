@@ -2414,7 +2414,7 @@ function writeStagedThreadDirectory(
 }
 
 /**
- * Writes thread and turn metadata while preserving append-only item and event logs.
+ * Writes changed canonical Thread bytes and Turn metadata while preserving append-only logs.
  *
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.
@@ -2439,9 +2439,11 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
       continue;
     }
     ensureCanonicalDirectory(threadRoot);
+    // Preparing turnsRoot also commits threadRoot after an unacknowledged file rename.
     ensureCanonicalDirectory(turnsRoot);
     const threadPath = join(threadRoot, 'thread.json');
-    const previous = existsSync(threadPath) ? readJson(threadPath) : undefined;
+    const previousBytes = existsSync(threadPath) ? readCanonicalTextFile(threadPath) : undefined;
+    const previous = previousBytes === undefined ? undefined : JSON.parse(previousBytes);
     removeStaleDirectories(turnsRoot, expectedTurnIds);
 
     for (const turn of threadTurns) {
@@ -2454,7 +2456,8 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
         writeTurnDirectory(stage, turn, records);
       });
     }
-    writeJsonAtomic(threadPath, projectCanonicalThreadRecord(thread, previous));
+    const nextBytes = `${JSON.stringify(projectCanonicalThreadRecord(thread, previous), null, 2)}\n`;
+    if (nextBytes !== previousBytes) writeFileAtomic(threadPath, nextBytes);
   }
 }
 
