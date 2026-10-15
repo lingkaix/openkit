@@ -500,14 +500,15 @@ test('release notes are checked before publication and verified against the gene
   assert.doesNotMatch(workflowBytes, /R001 exact-product no-host-reboot runtime gate remains open/);
 });
 
-// Unchanged jobs are pinned to reviewed main 23f3e2dc; cadence changes are checked separately below.
+// Baselines retain reviewed job bytes; the test-image and installer conditions exclude only registry refresh.
+// Other cadence changes are checked separately below.
 // release-preflight, publish-container-images, github-release, and verify-release were re-recorded for the release-notes generator.
 // verify-release was re-recorded again when the published-body comparison moved into scripts/release-notes.mjs.
 // publish-container-images was re-recorded when the App release build gained identity build arguments.
 const unchangedJobBaseline = {
-  'test-image': 'b0504dcc37a38fb459ba4ba8fc8400d50128765479cf6a3473a8717d068dfe38',
+  'test-image': '0d81160a9862d26aa5c5174e1ecfd58cc0dadeebda8cad23bec0db370661871b',
   'pr-check': '21bf4f4ac3b3d36600ca9d88daf93ac86c613397e545f1560b37a3fa63fd2885',
-  'nanohost-installer': 'eb04e2ebaa480c04d22f8eaa91b776baa238a0cdae2e31462d282cf74b10481f',
+  'nanohost-installer': 'f35f045c1d0c11bcd897038d29e53341cbfd12ab3ed4570aadf0875896b44be2',
   'release-preflight': 'b25f38ec37f6cb1e8524a84f981f8cc21f243c5bd5e8ce7d568c550a65b70ab8',
   'workspace-portability-source':
     'e33d1577679a0bba824a60d2ab8a2bf24e2f1a47608e872c824951efa70c6ace',
@@ -680,7 +681,7 @@ function jobRuns(id, event, ref, gate = '') {
       'startsWith',
       'always',
       'needs',
-      `return (${workflow.jobs[id].if.replace(/needs\.([a-z0-9-]+)/g, "needs['$1']")});`
+      `return (${(workflow.jobs[id].if ?? 'true').replace(/needs\.([a-z0-9-]+)/g, "needs['$1']")});`
     )(
       { event_name: event, ref },
       { gate },
@@ -781,4 +782,27 @@ test('registry admission runs after complete gates with read-only package author
   assert.equal(retain.with.name, 'registry-admission-$' + '{{ github.run_attempt }}');
   assert.equal(retain.with['if-no-files-found'], 'error');
   assert.ok(!job.steps.some((s) => s.uses?.startsWith('docker/build-push-action@')));
+});
+
+test('registry-only refresh runs exactly the read-only observation job and preserves all existing bootstrap gates', () => {
+  const selected = Object.keys(workflow.jobs).filter((id) =>
+    jobRuns(id, 'workflow_dispatch', 'refs/heads/candidate', 'registry-admission')
+  );
+  assert.deepEqual(selected, ['candidate-registry']);
+  for (const id of ['test-image', 'nanohost-installer']) {
+    for (const [event, ref] of [
+      ['pull_request', 'refs/pull/1/merge'],
+      ['push', 'refs/heads/main'],
+      ['push', 'refs/tags/v0.1.0-rc.8'],
+    ])
+      assert.equal(jobRuns(id, event, ref), true, `${id}: ${event} ${ref}`);
+    for (const gate of workflow.on.workflow_dispatch.inputs.gate.options.filter(
+      (g) => g !== 'registry-admission'
+    ))
+      assert.equal(
+        jobRuns(id, 'workflow_dispatch', 'refs/heads/candidate', gate),
+        true,
+        `${id}: ${gate}`
+      );
+  }
 });

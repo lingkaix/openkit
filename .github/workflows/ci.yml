@@ -62,6 +62,7 @@ jobs:
   # See the Test Execution Environment decision in docs/toolchain.md.
   test-image:
     name: Test execution image
+    if: github.event_name != 'workflow_dispatch' || inputs.gate != 'registry-admission'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -185,7 +186,7 @@ jobs:
 
   nanohost-installer:
     name: NanoHost installer fixed-path gate
-    if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'pull_request' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.gate != 'registry-admission')
     runs-on: ubuntu-latest
     permissions:
       contents: read
