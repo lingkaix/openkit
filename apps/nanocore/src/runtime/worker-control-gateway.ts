@@ -248,7 +248,7 @@ export interface WorkerControlGatewayOptions {
   runHeartbeatTransaction?: <T>(operation: () => T) => T;
   /** Optional transaction boundary for atomic final-status acceptance. */
   runFinalStatusTransaction?: <T>(operation: () => T) => T;
-  /** Optional binding resolver that narrowly admits exact final-status replay. */
+  /** Optional binding resolver for cancellation-only first finals and exact final-status replay. */
   resolveFinalStatusTokenBinding?: WorkerControlFinalStatusTokenBindingResolver;
   /** Optional Core-state hook called inside final-status acceptance. */
   onFinalStatusAccepted?: WorkerControlFinalStatusAcceptedHook;
@@ -340,6 +340,8 @@ export type WorkerControlFinalStatusTokenBindingResolution =
       readonly status: 'accepted';
       /** True when only an exact already-accepted final status may replay. */
       readonly replayOnly: boolean;
+      /** Restricts a first final to cancellation or interruption with the canonical aborted StopReason. */
+      readonly cancellationOnly?: true;
     }
   | {
       /** Binding cannot authorize this final-status request. */
@@ -352,7 +354,7 @@ export type WorkerControlFinalStatusTokenBindingResolution =
         | 'reconnect-required';
     };
 
-/** Resolves live acceptance or narrow releasing replay for final status. */
+/** Resolves live acceptance, a cancellation-only first final, or exact final-status replay. */
 export type WorkerControlFinalStatusTokenBindingResolver = (
   input: WorkerControlTokenBindingInput
 ) => WorkerControlFinalStatusTokenBindingResolution;
@@ -1204,6 +1206,20 @@ export class WorkerControlGateway {
 
         if (resolution.status === 'rejected') {
           this.throwTokenBindingRejection(resolution.reason);
+        }
+
+        if (
+          resolution.cancellationOnly &&
+          !(
+            (terminalData.status === 'cancelled' || terminalData.status === 'interrupted') &&
+            terminalData.stopReason === 'aborted'
+          )
+        ) {
+          throw new WorkerControlGatewayError(
+            'worker_control_lease_not_live',
+            'A closing cancelled Turn accepts only a cancellation or interruption final with aborted StopReason.',
+            403
+          );
         }
 
         replayOnly = resolution.replayOnly;

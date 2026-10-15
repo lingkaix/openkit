@@ -18,7 +18,11 @@ import {
   readWorkObservationTurnBinding,
   type WorkObservationDraft,
 } from '../storage/work-observations.js';
-import { resolveNanoHostAttemptTokenBinding } from './nanohost-attempt-records.js';
+import {
+  type NanoHostExecutionAttemptRecord,
+  requireNanoHostExecutionAttempt,
+  resolveNanoHostAttemptTokenBinding,
+} from './nanohost-attempt-records.js';
 import type {
   WorkerControlAcceptedRecordRecorder,
   WorkerControlAcceptedRecordRecorderInput,
@@ -510,7 +514,33 @@ function sameWorkerControlLineage(
 }
 
 /**
- * Resolves live or cancellation-owned terminal evidence, or exact replay during release grace.
+ * Checks current cancellation and native authority for a first final without restoring effect authority.
+ *
+ * @param attempt Exact native attempt whose token and lineage are checked by the caller.
+ * @param timestamp Current time for the unchanged submission and native liveness deadlines.
+ * @returns Whether the cancellation-owned first-final opportunity remains available.
+ */
+export function hasPendingWorkerCancellationFinal(
+  attempt: NanoHostExecutionAttemptRecord,
+  timestamp: string
+): boolean {
+  const workerDeadline = attempt.lastAcceptedHeartbeatAt
+    ? attempt.heartbeatDeadline
+    : attempt.startupDeadline;
+  const now = Date.parse(timestamp);
+  return (
+    attempt.phase === 'closing' &&
+    attempt.terminalCause === 'turn-cancelled' &&
+    attempt.recoveryState === null &&
+    attempt.fenceRef === null &&
+    Boolean(attempt.workerControlTokenHash) &&
+    Date.parse(attempt.deadline ?? '') > now &&
+    Date.parse(workerDeadline) > now
+  );
+}
+
+/**
+ * Resolves live or cancellation-only first terminal evidence, or exact replay during release grace.
  *
  * @param coreDb Server-scope Core database.
  * @param input Sandbox binding and worker lineage.
@@ -541,8 +571,7 @@ export function resolveWorkerControlFinalStatusTokenBinding(
 
   const row = coreDb.sqlite
     .prepare(
-      `SELECT attempt_id AS attemptId, deadline AS expiresAt, phase,
-              terminal_cause AS terminalCause,
+      `SELECT attempt_id AS attemptId, deadline AS expiresAt,
               EXISTS (
                 SELECT 1 FROM worker_control_records
                  WHERE worker_control_records.workspace_id = scheduler_execution_attempts.workspace_id
@@ -574,8 +603,6 @@ export function resolveWorkerControlFinalStatusTokenBinding(
     | {
         expiresAt: string | null;
         attemptId: string;
-        phase: string;
-        terminalCause: string | null;
         finalStatusRecorded: number;
       }
     | undefined;
@@ -592,9 +619,13 @@ export function resolveWorkerControlFinalStatusTokenBinding(
   }
 
   if (row.finalStatusRecorded) return { replayOnly: true, status: 'accepted' };
-  // The live resolver already authenticated the exact token and binding before refusing effects.
-  // Only cancellation retains a first terminal report; cleanup and closed attempts permit replay.
-  if (row.phase === 'closing' && row.terminalCause === 'turn-cancelled')
-    return { replayOnly: false, status: 'accepted' };
+  // The live resolver authenticated the token and binding before refusing effects; the first-final exception still requires current native authority.
+  if (
+    hasPendingWorkerCancellationFinal(
+      requireNanoHostExecutionAttempt(coreDb, row.attemptId),
+      timestamp
+    )
+  )
+    return { cancellationOnly: true, replayOnly: false, status: 'accepted' };
   return live;
 }
