@@ -54,3 +54,5 @@ Run `git diff --check` before finishing.
 If `actionlint` is available locally, run it against workflow files.
 
 The final prerelease registry-admission job has read-only package access. It retains exact-source index and immutable-identity observations for local admission through repository artifacts. An explicit registry-only dispatch refreshes those observations without rebuilding the successful candidate. See the [release cookbook](../../docs/cookbooks/release.md#cadence-commands) for its bounded window and required evidence.
+
+`release-scratch-smoke.yml` is a separate scratch-only dispatch workflow for the published amd64 App retained-read fixture. It verifies control C separately from subject P, isolates job-token preparation from the token-free fixture, and uploads one selected result after attempt-owned cleanup. See the [release cookbook](../../docs/cookbooks/release.md#hosted-scratch-fixture) for dispatch, local API verification and the explicit evidence limits. It runs no real prerelease or deployment gate.
