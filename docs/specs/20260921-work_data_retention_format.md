@@ -437,6 +437,20 @@ Missing evidence stays unknown.
 
 The Chat-owned result row excludes clarification and approval request Items. [Pending Requests](20260930-pending_requests.md#deliver) alone names those Items with `[requestId, "request"]`, using the original durable `userInputRequestId` or `approvalRequestId`, respectively. The existing request association supplies that id on replay; the Assistant Turn and `resultKind` supply no second name.
 
+**Transcript and simulator projections.** Existing role-owned projections use these additional exact JSON names under the [accepted complete-name declaration](../decisions/20261015-identifier_owner_declarations.md):
+
+| Existing output | Prefix | Exact JSON name |
+| --- | --- | --- |
+| Worker transcript Item | `it` | `["worker", producingTurnId, sequence]` |
+| Simulator assistant Item | `it` | `["assistant", producingTurnId]` |
+| Simulator reasoning Item | `it` | `["reasoning", producingTurnId]` |
+| Simulator command Item | `it` | `["command", producingTurnId]` |
+| Simulator simple result Artifact | `ar` | `producingTurnId` as a JSON string |
+
+`producingTurnId` is the admitted canonical Turn. `sequence` is the exact numeric recorded Worker event sequence. Timestamps and native Tool IDs supply no substitute input. Simulator initiating Task user Items use the existing `["task-user", downstreamTurnId]` row. Product-backed input and approval request Items use only the Pending Requests `[requestId, "request"]` name. Worker-submitted Material candidates use Work Resource Interaction Model's exact `[packageSnapshotId, producingTurnId, submissionRequestId]` Artifact name.
+
+These names encode existing one-role-per-Turn or sequence-owned projections. They add no simulation entity or lifecycle authority. Store publication, original content bytes, sequence, timestamps, request association, terminality, retention and provenance remain with their existing owners. A derived string cannot create an AgentSession or prove readiness. Acceptance requires exact source/projection names after reopen, distinct numeric sequences and roles, one product request Item per request, unchanged content and no replacement effects after partial publication.
+
 **Exclusions.** Consumers MUST NOT parse a timestamp out of the id (`docs/core/core-concepts.md`, `Identifier Semantics`). Id order is never the correctness criterion; after a prefilter the implementation MUST recheck authoritative `ts` / `turn.json` timestamps. This repository currently has a generator (`apps/nanocore/src/runtime/session-id.ts`, `generateUuidV7`) and no UUIDv7 timestamp parser, so a "must consume only via helper" rule is not yet an executable invariant; until a unique helper plus a failing test exists, the two consumption rules are a review obligation, not a storage invariant. New UUIDv7 allocation MUST NOT replace existing request-derived Item identities.
 
 **Lifecycle.** Allocate at create. Remint on portable import for in-package owner ids.
