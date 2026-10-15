@@ -1,12 +1,12 @@
 ---
 type: change-plan
-status: in-progress
+status: implemented
 date: "2026-10-15"
 branch: rc8/p02-nanohost-transport
 ---
 # NanoHost Invalidation Member Inventory
 
-Status: implementation corrected after independent review; exact-head recheck pending. Updated: 2026-10-16. This record supplies no design authority.
+Status: bounded implementation reviewed and focused verification complete; merge-train CI pending. Updated: 2026-10-16. This record supplies no design authority.
 
 ## Intent Revision 1
 
@@ -32,7 +32,9 @@ The independent test author first observed the real monitor and exporter omit me
 
 The first independent review of implementation revision 3a64ffee requested one correction: the new Linux cgroup constant was not guarded on other Unix development hosts. The resolver is now Linux-only; other hosts leave cgroup proof unavailable. The same seven real-process cases passed again, zero failed or ignored, in 2.16 seconds. Clippy and formatting passed after this correction. The platform finding is established from source; no macOS compiler result is claimed. The independent test file is unchanged.
 
-Next Action: obtain the same reviewer's exact-head recheck before push for the merge train. A missing safe observation remains unavailable; it does not permit inference, a wider export deadline or a weakened fence. Partial-start reports before monitor ownership are unchanged by this slice; this delivery does not claim every remaining invalidation-evidence criterion is closed.
+The same reviewer approved corrected implementation revision 5f91aa3e with no actionable findings. This closeout changes only the record; the final external exact-head verdict accompanies the coordinator submission. No producer report substitutes for that independent judgment.
+
+Next Action: submit the approved head to the coordinator's merge train. A missing safe observation remains unavailable; it does not permit inference, a wider export deadline or a weakened fence. Partial-start reports before monitor ownership are unchanged by this slice; this delivery does not claim every remaining invalidation-evidence criterion is closed.
 
 ## Completion Evidence
 
