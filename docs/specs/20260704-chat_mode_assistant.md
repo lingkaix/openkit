@@ -337,6 +337,8 @@ NanoCore looks up that command identity before resolving a current mutable proje
 
 For the #144 selected-Skills family, reuse of the original admission preserves the selected resources only and does not authorize replay of completed, interrupted or unknown inference effects under the same command.
 
+The reason is recorded in [Assistant Inference Request Lineage](../decisions/20261015-assistant_inference_request_lineage.md).
+
 Derived Thread, Turn, and Item outputs use their kind prefixes plus canonical lowercase UUIDv5 text under [Core Protocol](../core/protocol.md#ids). Each exact name is the UTF-8 RFC 8785 JSON Canonicalization Scheme output for the JSON value below. Arrays preserve the listed order, and JCS canonicalizes nested objects. Each kind uses its fixed OpenKit namespace. The output-encoding decision is recorded in [One Identifier Mechanism](../decisions/20261014-one_identifier_mechanism.md).
 
 `commandScope` is exactly `{ "command": "conversation.submit", "actor": actor, "workspaceId": workspaceId, "threadId": originatingThreadId, "requestId": requestId }`. `actor` is the complete immutable authenticated `ActorRef` in the closed shapes of [Core Identity](../core/identity.md#core-concepts); identifiers and `requestId` are the exact admitted strings. This is the immutable identity scope defined by [Unified Conversation Composer](20260831-unified_conversation_composer.md#structured-submission). User text, target selection, model preference, effort, storage choice, and Artifact references remain in the separate canonical input hash; they are not added to the identity scope.

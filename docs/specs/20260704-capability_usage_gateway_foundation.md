@@ -125,6 +125,8 @@ Rules:
 
 For the #144 selected-Skills family on command-initiated Assistant Turns admitted by conversation.submit, each logical inference invocation has a null per-invocation request ID and a fresh CapabilityCall under the existing allocation rules. The original command request ID remains command lineage through the admitted Turn and command receipt authority. Trusted command context carries that ID separately to audit; it is not the CapabilityCall start idempotency key. CapabilityCall and UsageRecord retain their existing Workspace, Thread, Turn and call links. This rule does not change internal Assistant MCP request lineage.
 
+The reason is recorded in [Assistant Inference Request Lineage](../decisions/20261015-assistant_inference_request_lineage.md).
+
 - The context actor is transient enforcement input. Durable CapabilityCall and RuntimeEvidence records retain their existing AEP, Turn, AgentSession, request, and audit links instead of copying another `ActorRef`; the linked UsageRecord stores only the exact derived responsible-user id required by the audit and usage specification.
 - The context MUST NOT carry prompt text, tool arguments, tool results, secrets, bearer tokens, or raw prompt cache keys.
 - Producer adapters may add feature-local diagnostic ids, but the recorder stores only stable OpenKit ids and redacted summaries.
@@ -148,6 +150,8 @@ Rules:
 - Any immutable-attribution contradiction on an existing key MUST fail closed before upstream contact, create no new record, change no durable state, and use the existing public failure vocabulary rather than adding a record type, lifecycle state, or public error code.
 
 A null per-invocation request ID supplies no request-key replay protection. The command owner must reject duplicate or uncertain execution before invocation. Exact command replay returns the original result without Provider contact; retained environment evidence does not authorize another invocation. A closed call is never reopened.
+
+The reason is recorded in [Assistant Inference Request Lineage](../decisions/20261015-assistant_inference_request_lineage.md).
 
 - Usage recording MUST also be retry-safe for equivalent measurements linked to the same capability call.
 - If usage recording fails after upstream success, the call MUST finish with a diagnostic status that surfaces ledger-write failure; the system MUST NOT silently report a fully accounted success.
