@@ -1833,12 +1833,7 @@ export class ProviderSubscriptionAccountManager {
     ];
 
     for (const directory of managed) {
-      const stat = lstatOrNull(directory);
-      if (!stat) {
-        ensureCanonicalDirectory(directory, 0o777);
-      } else if (!stat.isDirectory() || stat.isSymbolicLink()) {
-        throw persistenceError();
-      }
+      ensureCanonicalDirectory(directory, 0o777);
     }
   }
 
