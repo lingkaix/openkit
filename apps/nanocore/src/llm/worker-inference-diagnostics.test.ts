@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { AuthVariables } from '../auth/middleware.js';
 import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
+import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { WorkerControlGateway } from '../runtime/worker-control-gateway.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -13,6 +14,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { registerWorkerInferenceRoutes } from './gateway-routes.js';
+import { OpenAICompatibleProviderError } from './openai-compatible-client.js';
 import type {
   LLMGatewayDispatchContext,
   LLMGatewayProviderDispatcher,
@@ -83,6 +85,19 @@ function fixture(configured = true) {
     },
   ]);
   const dispatch = vi.fn();
+  const resolveGatewayProvider = vi.fn(
+    (): ResolvedLLMProviderConfig => ({
+      id: 'provider',
+      displayName: 'Provider',
+      backend: 'pi-ai',
+      adapterId: 'ollama',
+      apiKey: null,
+      baseUrl: null,
+      models: ['native-model'],
+      requiresApiKey: false,
+      gatewayCapabilities: { responses: 'native', chatCompletions: 'native' },
+    })
+  );
   const app = new Hono<{ Variables: AuthVariables }>();
   registerWorkerInferenceRoutes({
     app,
@@ -93,17 +108,7 @@ function fixture(configured = true) {
       createResponsesStream: dispatch,
       createChatCompletionStream: dispatch,
     } as unknown as LLMGatewayProviderDispatcher,
-    resolveGatewayProvider: () => ({
-      id: 'provider',
-      displayName: 'Provider',
-      backend: 'pi-ai',
-      adapterId: 'ollama',
-      apiKey: null,
-      baseUrl: null,
-      models: ['native-model'],
-      requiresApiKey: false,
-      gatewayCapabilities: { responses: 'native', chatCompletions: 'native' },
-    }),
+    resolveGatewayProvider,
     runtimeConfig: () =>
       ({
         providerRegistry: configured ? providerRegistry : new ProviderRegistry([]),
@@ -128,6 +133,7 @@ function fixture(configured = true) {
   });
   return {
     dispatch,
+    resolveGatewayProvider,
     environmentPackage,
     turn,
     post: (stream: boolean, endpoint = 'responses') =>
@@ -388,6 +394,36 @@ it.each([
   expect(diagnostic).toMatchObject({
     phase: 'stream-prepare',
     failureKind: 'unknown',
+    outputBegan: false,
+  });
+  expect(diagnostic).not.toHaveProperty('httpStatus');
+  expect(JSON.stringify(diagnostic)).not.toContain('canary');
+});
+
+it('retains a final local authentication failure kind without an upstream status', async () => {
+  const f = fixture();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  f.resolveGatewayProvider.mockImplementation(() => {
+    throw new OpenAICompatibleProviderError({
+      code: 'gateway_provider_authentication_failed',
+      message: 'credential-canary',
+      status: 401,
+      type: 'provider_error',
+    });
+  });
+  const response = await f.post(false);
+  expect(response.status).toBe(503);
+  expect(await response.json()).toMatchObject({
+    error: { code: 'gateway_logical_model_unavailable', cause: 'auth_rejected' },
+  });
+  expect(f.dispatch).not.toHaveBeenCalled();
+  expect(f.resolveGatewayProvider).toHaveBeenCalledTimes(1);
+  expect(warn).toHaveBeenCalledTimes(1);
+  const diagnostic = JSON.parse(warn.mock.calls[0]![0]);
+  expect(diagnostic).toMatchObject({
+    phase: 'selection',
+    failureKind: 'auth_rejected',
+    attempt: 0,
     outputBegan: false,
   });
   expect(diagnostic).not.toHaveProperty('httpStatus');

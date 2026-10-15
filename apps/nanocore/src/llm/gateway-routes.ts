@@ -1808,7 +1808,9 @@ export function registerWorkerInferenceRoutes({
       ): void {
         try {
           const failure = (error as { failure?: PiAiFailure } | null)?.failure ?? observedFailure;
-          const kind = failure?.kind;
+          const kind =
+            failure?.kind ??
+            (error instanceof LogicalModelRoutesExhaustedError ? error.cause : undefined);
           const status = failure?.status;
           console.warn(
             JSON.stringify({
