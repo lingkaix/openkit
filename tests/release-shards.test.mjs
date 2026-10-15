@@ -115,10 +115,8 @@ test('root shard executes nested script tests exactly once without taking the fu
     const observed = (name) =>
       `import {appendFileSync} from 'node:fs'; appendFileSync('executed', '${name}\\n');\n`;
     writeFileSync(join(root, 'tests/root.test.mjs'), observed('root'));
-    writeFileSync(
-      join(root, 'scripts/host-worker-update/update-worker-environment.test.mjs'),
-      observed('worker')
-    );
+    for (const file of ['update-worker-environment', 'host-observation', 'archive-attribution'])
+      writeFileSync(join(root, `scripts/host-worker-update/${file}.test.mjs`), observed(file));
     writeFileSync(join(root, 'scripts/new/deeper/future.test.mjs'), observed('future'));
     writeFileSync(
       join(root, 'scripts/docker/app-admin-recovery-smoke.test.mjs'),
@@ -136,9 +134,11 @@ test('root shard executes nested script tests exactly once without taking the fu
     delete process.env.NODE_TEST_CONTEXT;
     rootSuite({ root });
     assert.deepEqual(readFileSync(join(root, 'executed'), 'utf8').trim().split('\n').sort(), [
+      'archive-attribution',
       'future',
+      'host-observation',
       'root',
-      'worker',
+      'update-worker-environment',
     ]);
     writeFileSync(
       join(root, 'scripts/release-tests.mjs'),
