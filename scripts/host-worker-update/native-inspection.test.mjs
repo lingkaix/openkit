@@ -168,7 +168,10 @@ async function fixture(t, mode) {
   await fs.writeFile(path.join(directory, 'machine-id'), machine);
   await fs.writeFile(path.join(directory, 'unit'), unit);
   await fs.writeFile(path.join(directory, 'systemd.txt'), properties.text);
-  const child = spawn(executable, [directory, mode], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(executable, [directory, mode], {
+    detached: true,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
   const closed = once(child, 'close');
   const lines = createInterface({ input: child.stdout });
   let stderr = '';
@@ -177,7 +180,14 @@ async function fixture(t, mode) {
   });
   t.after(async () => {
     child.stdin.end();
-    const timer = setTimeout(() => child.kill('SIGKILL'), 2000);
+    // This session contains only our coordinator and its fixture Gateway child.
+    const timer = setTimeout(() => {
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch (error) {
+        if (error.code !== 'ESRCH') throw error;
+      }
+    }, 2000);
     try {
       await closed;
     } finally {
