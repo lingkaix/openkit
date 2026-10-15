@@ -63,7 +63,7 @@ These are conceptual record families, not a complete field list.
 
 ### Implicit Local Human
 
-The implicit local human is one ordinary canonical User in the existing Core users authority. A fresh local deployment allocates its `usr` UUIDv7 once under the existing single-writer initialization and User transaction boundary. Local actor, ownership, personal-Workspace and recovery consumers resolve that recorded User. A fixed textual singleton or separate lookup registry supplies no identity authority ([accepted D4 realization](../decisions/20261014-one_identifier_mechanism.md#owner-declarations)).
+The implicit local human is one ordinary canonical User in the existing Core users authority. A fresh local deployment allocates its `usr` UUIDv7 once under the existing single-writer initialization and User transaction boundary. Local actor, ownership, personal-Workspace and recovery consumers resolve that recorded User. A fixed textual singleton or separate lookup registry supplies no identity authority ([accepted D4 realization](../decisions/20261015-identifier_owner_declarations.md)).
 
 Restart requires exactly one consistent recorded local User and reuses its ID. Updates, disabled state and retained history preserve that identity under the existing User lifecycle. Missing or ambiguous local authority on an initialized deployment fails the critical local-identity phase before recovery. Startup must not mint a replacement or select an unrelated User.
 
