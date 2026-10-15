@@ -165,12 +165,15 @@ Derived Artifact, Turn, Item, Material, Material revision, and Artifact Review o
 | --- | --- | --- |
 | Imported Artifact | `ar` | `[actor, workspaceId, "artifact.import", requestId]` |
 | Worker-submitted Artifact | `ar` | `[packageSnapshotId, producingTurnId, submissionRequestId]` |
+| Workspace Changes backing Artifact | `ar` | `["workspace_changes", producingTurnId, workspaceReviewId]` |
 | Artifact introduction Turn | `tu` | `[actor, workspaceId, threadId, "artifact.introduce", requestId]` |
 | Artifact communication or introduction Item | `it` | `[artifactId, communicatingTurnId]` |
 | Material creation | `mat` | `["material.create", actor, workspaceId, requestId]` |
 | Material revision, including accepted Review apply | `mrev` | `["material.save", actor, workspaceId, materialId, requestId]` |
 | Version-keyed Artifact Review | `arev` | `[workspaceId, artifactId, artifactVersion]` |
 | Review refinement or redo Turn | `tu` | `[workspaceId, artifactId, artifactVersion, decisionRequestId]` |
+
+The Workspace Changes row names the existing backing Artifact from its recorded producing Turn and Workspace Sync Review. The literal preserves the existing purpose distinction ([accepted complete-name declaration](../decisions/20261015-identifier_owner_declarations.md)). It changes no catalog visibility, Workspace Review authority, publication, version, source digest, provenance, reference Item, retention or recovery rule. Exact publication reuses its ID. Missing, contradictory or stale source authority retains the existing refusal without a replacement Artifact or effect. Acceptance requires stable names after reopen, distinct producing-Turn/Review pairs and no duplicate backing Artifact or reference publication.
 
 `actor` is the complete immutable authenticated `ActorRef` admitted for the command, using the closed shapes in [Core Identity](../core/identity.md#core-concepts): `{ "kind": "user", "id": userId }`, or `{ "kind": kind, "id": actorId, "responsibleUserId": responsibleUserId }` for `kind` exactly `agent`, `automation`, `integration`, or `system`. The non-human responsible-user value is the recorded string or JSON `null`. JCS canonicalizes that nested object. Every identifier and request value is the exact immutable string admitted by its existing owner. `artifactVersion` is the exact positive integer of the reviewed version. `packageSnapshotId` names the authenticated frozen package, and `producingTurnId` names its admitted Turn. `communicatingTurnId` is the Turn that owns the reference Item; introduction uses its reserved introduction Turn. Review apply uses the deciding actor and Review decision request as the existing Material save input.
 
