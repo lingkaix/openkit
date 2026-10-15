@@ -1,5 +1,6 @@
 export * from './action-center.js';
 export * from './administration.js';
+export * from './administrator-cleanup.js';
 export * from './agent-environment.js';
 export { AGENT_OPERATION_DEFINITIONS } from './agent-operations.js';
 export * from './agents.js';
