@@ -25,6 +25,10 @@ Source: the coordinator confirmed #248 on main as `3a80b6d7` and `06b0d27c`. Reb
 
 Source: the coordinator relayed two engineer rulings for rc.7 admission. Record the original questions, selected answers and option text verbatim, with faithful English translations. Apply the #223 disposition to every prerelease before the first `v0.1.0` stable release. Permit prereleases with the four disclosed notice gaps; track their first-stable closure in #249. Keep both issues unlabeled. Commit this increment separately for the ongoing independent Grok review; do not amend or publish.
 
+### Intent Revision 4 — 2026-10-15
+
+Source: the coordinator relayed the Grok review's required correction to the malformed fresh-branch source identity. Resolve the full identity directly from Git and mechanically check all hexadecimal references in this record and the rc.7 notes. Commit the correction separately. Base main-push CI failed; its correction is being built on `v010/r2-main-ci-fix`. Do not rebase until the coordinator confirms that correction on main. Then include the landed correction in the notes and refresh issue reconciliation, including #249. No push, tag or publication is authorized.
+
 ## Engineer Rulings — 2026-10-15
 
 The coordinator supplied these engineer selections on 2026-10-15. Chinese quotations are retained verbatim as requested; the English translations preserve their scope.
@@ -79,8 +83,8 @@ Disposition: prereleases may ship with these four gaps disclosed. All four must 
 | --- | --- |
 | Tag and channel | `v0.1.0-rc.7`, non-draft prerelease; no GHCR `latest` or GitHub Latest assignment |
 | Previous release | `v0.1.0-rc.6`, exact source `0aa3f9a24e4cd0fdbec36b8d5f72d374a0086b3c` |
-| Fresh branch | `release/v0.1.0-rc.7-prep`; created from `c2fc03985de30a0de60e31edb1e904e6186974b4f`, then rebased onto confirmed main `06b0d27c57b341b335942fc485bed9acc4783c0b` |
-| Base CI | Main-push run [38697916406](https://github.com/lingkaix/openkit/actions/runs/38697916406) was reported in progress by the coordinator; the later API read reports `pending`. It does not establish final P |
+| Fresh branch | `release/v0.1.0-rc.7-prep`; created from `c2fc03985de30a0de60e31edb1afa75fb6b2d730`, then rebased onto confirmed main `06b0d27c57b341b335942fc485bed9acc4783c0b` |
+| Base CI | Main-push run [38697916406](https://github.com/lingkaix/openkit/actions/runs/38697916406) completed `failure` in L0–L2 and L5 smoke. The coordinator identifies the protocol coverage guard and R2 Worker MCP smoke HTTP 409. Correction is pending on `v010/r2-main-ci-fix`; no final-P gate has passed |
 | Tested commit T | No successful final-P candidate run is claimed. Update T from completed actual candidate evidence before final admission |
 | Publishing commit P | Final preparation HEAD, exact SHA supplied in the handoff. It requires independent review, main membership and successful candidate CI on exactly P |
 | Preparation diff | Release notes, this record and minimum four-attachment status projections. No product implementation, publication job or invoked script changes |
@@ -93,7 +97,7 @@ Disposition: prereleases may ship with these four gaps disclosed. All four must 
 | Risk dispositions | The 2026-10-15 engineer rulings admit #223 as a disclosed non-blocker for every prerelease before first stable `v0.1.0`, without another rc question. The four disclosed notice gaps are permitted in prereleases and tracked by #249. Both issues block first stable and stay unlabeled |
 | Manual gates | Catalog stories remain post-tag at release-cycle/change cadence. Worker qualification runs after the deployment update, separately from L6. No live result is claimed |
 | Production boundary | No contact with staging or production. No push, tag, release, label, visibility or credential change by this preparer |
-| Next action | Verify this preparation, commit it and hand it to the coordinator for review and exact-P main CI. Recheck publication inputs after any further landing or amendment |
+| Next action | Await the coordinator's confirmation that the CI correction has landed on main. Until then, keep this branch unchanged by rebase. After confirmation, rebase, describe the landed correction, refresh reconciliation including #249, and repeat focused checks and publication comparison |
 
 ## Included Work Since rc.6
 
@@ -187,6 +191,35 @@ Local checks do not establish candidate CI, main membership or final publication
 All six Chinese question, selected-answer and option quotations were compared with the supplied strings and match exactly. Their English translations were checked for scope and the distinction between a disclosed prerelease non-blocker and a first-stable blocker. The live issue refresh shows 111 open issues, with #249 as the only addition; #223 and #249 are open and unlabeled.
 
 The seven focused root suites were rerun unchanged after this increment: `tests 193`, `pass 193`, `fail 0`, `skipped 0`, exit 0. Documentation model validation again reported 485 documents; lifecycle, generated-index and ten-story checks passed. The rc.7 notes check and local release preflight passed with the exact result lines above. Focused Biome checked zero Markdown files, and `git diff --check` exited 0. Incremental independent review and exact-P candidate CI remain separate pending gates.
+
+### Review Correction And Mechanical Identity Guard — 2026-10-15
+
+The review found a malformed 41-character branch-source reference. The correction uses the exact output of `git rev-parse --verify c2fc0398^{commit}`. No full repository commit identity was typed for this correction. The task-local guard scans both this record and the rc.7 notes, extracts maximal hexadecimal tokens of at least 40 characters, and rejects unsupported lengths. This also catches a malformed token that a word-bounded 40-character regex alone would miss.
+
+Run the retained task probe from the preparation checkout:
+
+```bash
+node temp/changes/202610150713000000-v0_1_0_rc_7_prerelease/verify-record-identities.mjs /tmp/rc7-record-identities-audit.json
+```
+
+The before-fix probe exited 1 on the malformed token. After correction, the guard found 20 unique 40-hex values across 21 occurrences. Four resolve through `git cat-file -e <id>^{commit}`. Twelve resolve through `git cat-file -e <id>^{object}` and have type `blob`. The four values below do not resolve in this repository and are listed explicitly. The guard checks their recorded provenance instead of creating objects to make existence checks pass.
+
+| Recorded identity, short prefix | Why no local Git object exists | Mechanical source check |
+| --- | --- | --- |
+| `5b904b9a`: `publish-container-images` publication block | Git blob identity computed for a YAML block, not stored as a separate object | Recomputed by `publicationInputsAt` from actual Git source bytes |
+| `734976e1`: `github-release` publication block | Git blob identity computed for a YAML block, not stored as a separate object | Recomputed by `publicationInputsAt` from actual Git source bytes |
+| `c6030d22`: `verify-release` publication block | Git blob identity computed for a YAML block, not stored as a separate object | Recomputed by `publicationInputsAt` from actual Git source bytes |
+| `c994ccf0`: `kanaria 0.2.0` upstream revision | Recorded upstream revision, outside this repository | Matched to the revision in Git-owned `apps/retrieval-kernel/notices/GAPS.json` |
+
+Three unique 64-hex SHA-256 digests are also listed separately. They are content digests, not Git object names:
+
+| Digest, short prefix | Meaning | Mechanical source check |
+| --- | --- | --- |
+| `9029285e` | Publication-input aggregate from publicationInputsAt | Recomputed from the named source or retained archive bytes |
+| `93889bfd` | Retained local operations archive SHA-256 | Recomputed from the named source or retained archive bytes |
+| `254a0126` | Reviewed helper file SHA-256 | Recomputed from the named source or retained archive bytes |
+
+The final guard exits 0 with no malformed or unexplained references. Its full report retains every value and source location. This existence/provenance check does not replace review of what a reference means. All broader preparation checks remain recorded above; final-P main membership, successful exact-P candidate CI and admission remain pending.
 
 ### Committed Operations Archive Probe
 
