@@ -1244,6 +1244,116 @@ describe('Pi controlled channel faults', () => {
     await session.close();
   });
 
+  it.each([
+    ['off', 'interrupt'],
+    ['on', 'interrupt'],
+    ['off', 'recovery'],
+    ['on', 'recovery'],
+  ] as const)('keeps native terminal and interrupt progress under capture backlog pressure with content %s during %s', async (value, disposition) => {
+    let channel!: Duplex;
+    const { dirs, session } = await peer('ordinary', undefined, {
+      observeChannel: (observed) => {
+        channel = observed;
+      },
+    });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const accepted: RuntimeObservation[] = [];
+    const toolBodies: string[] = [];
+    let blocked = false;
+    const write = channel.write.bind(channel);
+    vi.spyOn(channel, 'write').mockImplementation(((bytes: unknown) => {
+      const request = JSON.parse(String(bytes));
+      if (request.op === 'turn') {
+        for (let index = 0; index < 4_096; index += 1)
+          channel.emit(
+            'data',
+            Buffer.from(
+              `${JSON.stringify({
+                event: 'native',
+                turnId: request.turnId,
+                data: {
+                  type: 'tool_execution_start',
+                  toolCallId: `pressure-${index}`,
+                  toolName: 'echo',
+                  args: { text: `value-${index}` },
+                },
+              })}\n`
+            )
+          );
+      }
+      return write(bytes as string);
+    }) as typeof channel.write);
+    const input = turnInput(dirs);
+    const turn = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        captureCoverage: { scope: 'server', value },
+        emit: async (record, body) => {
+          if (!blocked && record.fact.kind === 'tool') {
+            blocked = true;
+            entered.resolve();
+            await release.promise;
+          }
+          accepted.push(record);
+          if (body && record.fact.kind === 'tool') toolBodies.push(Buffer.from(body).toString());
+        },
+      },
+    });
+    try {
+      await entered.promise;
+      // Inspection crosses the same private channel while capture publication is stalled.
+      await expect(session.nativeHandle()).resolves.toMatchObject({ state: 'ready' });
+      const before = accepted.slice();
+      if (disposition === 'recovery') release.resolve();
+      else await turn.interrupt(new LifecycleDeadline(100, 30));
+      expect(await turn.settled).toMatchObject({
+        assistantText: 'answer',
+        status: 'completed',
+        nativeEvidence: { nativeTerminal: true },
+        diagnostics: { runtimeCapture: 'incomplete' },
+      });
+      if (disposition === 'interrupt') {
+        expect(accepted).toEqual(before);
+        release.resolve();
+        await waitFor(() => accepted.length === before.length + 1);
+        expect(accepted.slice(before.length).map((record) => record.fact)).toEqual([
+          expect.objectContaining({ kind: 'tool', phase: 'started' }),
+        ]);
+      } else {
+        expect(accepted.map((record) => record.fact)).toContainEqual(
+          expect.objectContaining({
+            kind: 'coverage',
+            family: 'primary-content',
+            coverage: 'unavailable',
+            reason: 'limit-exceeded',
+          })
+        );
+        expect(accepted.map((record) => record.fact)).toContainEqual(
+          expect.objectContaining({ kind: 'origin', phase: 'completed' })
+        );
+        const tools = accepted.filter((record) => record.fact.kind === 'tool');
+        expect(tools.length).toBeGreaterThan(1);
+        expect(tools.length).toBeLessThan(4_096);
+        if (value === 'off') expect(toolBodies).toEqual([]);
+        else {
+          expect(toolBodies.length).toBeGreaterThan(1);
+          expect(toolBodies).toEqual(
+            Array.from({ length: toolBodies.length }, (_, index) =>
+              JSON.stringify({ text: `value-${index}` })
+            )
+          );
+        }
+      }
+      expect(accepted.slice(0, before.length)).toEqual(before);
+      await session.close();
+      expect(session.childState()).toBe('absent');
+    } finally {
+      release.resolve();
+    }
+  });
+
   it('landing bounds a short join without another interrupt or signal owner', async () => {
     const { dirs, session } = await peer('interrupt-silent', undefined, { requestTimeoutMs: 400 });
     const turn = await session.startTurn(turnInput(dirs));
