@@ -18,6 +18,15 @@ import {
 
 const INTERFACE_VERSION = packageMetadata.version;
 const DEFAULT_ENDPOINT = 'http://127.0.0.1:3000';
+const COMMAND_USAGE = Object.freeze({
+  '': 'openkit --help',
+  help: 'openkit help [command]',
+  doctor: 'openkit doctor',
+  ops: 'openkit ops <search|describe|call>',
+  'ops search': 'openkit ops search <query> [--schema]',
+  'ops describe': 'openkit ops describe <operation-id> [--schema]',
+  'ops call': 'openkit ops call <operation-id> --input -',
+});
 
 /** Typed local failure projected through the CLI error envelope. */
 class CliFailure extends Error {
@@ -98,6 +107,10 @@ export async function run(argv, env = process.env) {
  * @returns {Promise<unknown>} Command result data.
  */
 async function dispatch(argv, env, state) {
+  if (argv[0] === 'help' || argv.at(-1) === '--help') {
+    state.command = 'help';
+    return help(argv[0] === 'help' ? argv.slice(1) : argv.slice(0, -1));
+  }
   if (argv.length === 1 && argv[0] === 'doctor') {
     state.command = 'doctor';
     return doctor(env, state);
@@ -107,11 +120,19 @@ async function dispatch(argv, env, state) {
   }
   if (argv[1] === 'search' && argv.length >= 3) {
     state.command = 'ops.search';
-    return searchOperations(argv.slice(2).join(' '));
+    const schema = argv.at(-1) === '--schema';
+    const query = argv.slice(2, schema ? -1 : undefined);
+    if (query.length === 0 || query.some((part) => part.startsWith('--'))) {
+      throw usageFailure();
+    }
+    return searchOperations(query.join(' '), { schema });
   }
-  if (argv[1] === 'describe' && argv.length === 3) {
+  if (
+    argv[1] === 'describe' &&
+    (argv.length === 3 || (argv.length === 4 && argv[3] === '--schema'))
+  ) {
     state.command = 'ops.describe';
-    const description = describeOperation(argv[2]);
+    const description = describeOperation(argv[2], { schema: argv.length === 4 });
     if (!description) {
       throw new CliFailure('operation_not_found', `Unknown operation: ${argv[2]}`, 2);
     }
@@ -123,6 +144,41 @@ async function dispatch(argv, env, state) {
     return callOperation(argv[2], env, state);
   }
   throw usageFailure();
+}
+
+/**
+ * Returns local command guidance without resolving credentials or opening a connection.
+ *
+ * @param {string[]} command Accepted command family, or empty for root help.
+ * @returns {Record<string, unknown>} JSON help data.
+ */
+function help(command) {
+  const topic = command.join(' ');
+  if (!Object.hasOwn(COMMAND_USAGE, topic)) {
+    throw usageFailure();
+  }
+  return {
+    topic: topic || 'openkit',
+    usage: COMMAND_USAGE[topic],
+    commands: Object.values(COMMAND_USAGE),
+    input:
+      'Pass one strict flat JSON object on stdin. Put path, query and body fields at the top level; do not add params, query or body wrappers. Shared nested product values remain valid.',
+    examples: [
+      { command: 'openkit ops call workspace.list --input -', stdin: {} },
+      {
+        command: 'openkit ops call app-update.status --input -',
+        stdin: { requestId: '019957ff-2000-7000-8000-000000000001' },
+      },
+    ],
+    update: [
+      { command: 'openkit ops search update' },
+      { command: 'openkit ops describe app-update.preflight' },
+      { command: 'openkit ops call app-update.preflight --input -', stdin: {} },
+      { command: 'openkit ops describe app-update.prepare' },
+      { command: 'openkit ops describe app-update.start' },
+    ],
+    schemas: 'Add --schema to search or describe for full shared JSON schemas.',
+  };
 }
 
 /**
@@ -402,6 +458,9 @@ function collectSensitiveStrings(value) {
  * @returns {string} Stable command name.
  */
 function commandName(argv) {
+  if (argv[0] === 'help' || argv.at(-1) === '--help') {
+    return 'help';
+  }
   if (argv[0] === 'doctor') {
     return 'doctor';
   }
@@ -417,11 +476,7 @@ function commandName(argv) {
  * @returns {CliFailure} Usage error.
  */
 function usageFailure() {
-  return new CliFailure(
-    'invalid_usage',
-    'Usage: openkit doctor | openkit ops search <query> | openkit ops describe <operation-id> | openkit ops call <operation-id> --input -',
-    2
-  );
+  return new CliFailure('invalid_usage', `Usage: ${Object.values(COMMAND_USAGE).join(' | ')}`, 2);
 }
 
 if (process.argv[1]) {

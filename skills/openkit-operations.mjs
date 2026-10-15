@@ -471,37 +471,124 @@ export const operationExclusions = [
 ];
 
 /**
- * Searches operation identity, capability group, and summary with native substring matching.
+ * Searches definition metadata and bounded discovery terms without creating dispatch aliases.
  *
  * @param {string} query Search query.
- * @returns {Array<Record<string, unknown>>} Concise operation metadata without handlers or schemas.
+ * @param {{schema?: boolean}} [options] Explicit full-schema opt-in.
+ * @returns {Array<Record<string, unknown>>} Identity and summary, with JSON schemas only when requested.
  */
-export function searchOperations(query) {
-  const normalized = query.trim().toLowerCase();
+export function searchOperations(query, { schema = false } = {}) {
+  const normalized = query.trim().toLowerCase().replace(/\s+/g, ' ');
   if (!normalized) {
     return [];
   }
   return operationCatalog
-    .filter((operation) =>
-      `${operation.id} ${operation.group} ${operation.summary}`.toLowerCase().includes(normalized)
+    .filter(
+      (operation) =>
+        `${operation.id} ${operation.group} ${operation.summary}`
+          .toLowerCase()
+          .includes(normalized) ||
+        (Object.hasOwn(DISCOVERY_ALIASES, normalized) &&
+          DISCOVERY_ALIASES[normalized].some(
+            (target) => operation.id === target || operation.group === target
+          ))
     )
-    .map(publicMetadata);
+    .map((operation) => ({
+      id: operation.id,
+      summary: operation.summary.replace(/\s+/g, ' ').trim(),
+      ...(schema
+        ? {
+            inputSchema: z.toJSONSchema(operation.inputSchema, { target: 'draft-7', io: 'input' }),
+            ...(operation.outputSchema
+              ? { outputSchema: z.toJSONSchema(operation.outputSchema, { target: 'draft-7' }) }
+              : {}),
+          }
+        : {}),
+    }));
+}
+
+// These terms select existing definition rows only. Invocation still requires their canonical ids.
+const DISCOVERY_ALIASES = Object.freeze({
+  update: ['app-update'],
+  upgrade: ['app-update'],
+  'app update': ['app-update'],
+  preflight: ['app-update.preflight'],
+  'update preflight': ['app-update.preflight'],
+  connection: ['diagnostics.app'],
+  version: ['diagnostics.app'],
+  caller: ['caller.read'],
+  'caller identity': ['caller.read'],
+  identity: ['caller.read'],
+  whoami: ['caller.read'],
+  'who am i': ['caller.read'],
+});
+
+/**
+ * Describes one operation with a shallow input contract or the explicit full JSON schema.
+ *
+ * @param {string} id Stable operation id.
+ * @param {{schema?: boolean}} [options] Explicit full-schema opt-in.
+ * @returns {Record<string, unknown> | null} Public operation description, or null when unknown.
+ */
+export function describeOperation(id, { schema = false } = {}) {
+  const operation = operationCatalog.find((candidate) => candidate.id === id);
+  if (!operation) return null;
+  const inputSchema = z.toJSONSchema(operation.inputSchema, { target: 'draft-7', io: 'input' });
+  return {
+    ...publicMetadata(operation),
+    inputSchema: schema
+      ? inputSchema
+      : {
+          ...compactValueContract(inputSchema),
+          properties: Object.fromEntries(
+            Object.entries(inputSchema.properties ?? {}).map(([name, property]) => [
+              name,
+              compactValueContract(property),
+            ])
+          ),
+          ...(inputSchema.required ? { required: inputSchema.required } : {}),
+          additionalProperties: inputSchema.additionalProperties,
+        },
+  };
 }
 
 /**
- * Describes one operation with a machine-readable JSON input schema.
+ * Keeps value kinds and scalar constraints without expanding nested product structures.
+ * This is discovery guidance; the complete shared schema remains the validation authority.
  *
- * @param {string} id Stable operation id.
- * @returns {Record<string, unknown> | null} Public operation description, or null when unknown.
+ * @param {Record<string, unknown>} schema Shared JSON schema node.
+ * @returns {Record<string, unknown>} Compact field guidance.
  */
-export function describeOperation(id) {
-  const operation = operationCatalog.find((candidate) => candidate.id === id);
-  return operation
-    ? {
-        ...publicMetadata(operation),
-        inputSchema: z.toJSONSchema(operation.inputSchema, { target: 'draft-7' }),
-      }
-    : null;
+function compactValueContract(schema) {
+  const contract = {};
+  for (const key of [
+    'type',
+    'enum',
+    'const',
+    'description',
+    'format',
+    'pattern',
+    'minimum',
+    'maximum',
+    'exclusiveMinimum',
+    'exclusiveMaximum',
+    'multipleOf',
+    'minLength',
+    'maxLength',
+    'minItems',
+    'maxItems',
+    'uniqueItems',
+    'minProperties',
+    'maxProperties',
+  ]) {
+    if (Object.hasOwn(schema, key)) contract[key] = schema[key];
+  }
+  for (const key of ['anyOf', 'oneOf', 'allOf']) {
+    if (Array.isArray(schema[key])) {
+      contract[key] = schema[key].map(compactValueContract);
+    }
+  }
+  return contract;
 }
 
 /**
@@ -511,6 +598,11 @@ export function describeOperation(id) {
  * @returns {Record<string, unknown>} Public operation metadata.
  */
 function publicMetadata(operation) {
-  const { handler: _handler, inputSchema: _inputSchema, ...metadata } = operation;
+  const {
+    handler: _handler,
+    inputSchema: _inputSchema,
+    outputSchema: _outputSchema,
+    ...metadata
+  } = operation;
   return metadata;
 }
