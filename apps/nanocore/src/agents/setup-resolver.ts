@@ -6,8 +6,10 @@ import type {
   WorkspaceConfig,
 } from '@openkit/config-schema';
 import { ReasoningEffortSchema } from '@openkit/protocol';
+import { planLogicalModel } from '../llm/gateway-execution.js';
 import { type ResolvedLogicalModel, resolveLogicalModelCatalog } from '../llm/logical-models.js';
-import type { ProviderRegistry } from '../providers/registry.js';
+import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
+import type { ProviderCredentialConfigured, ProviderRegistry } from '../providers/registry.js';
 import type { AgentManifest } from './manifest.js';
 
 /** Blocking setup resolution diagnostic. */
@@ -19,6 +21,8 @@ export interface AgentSetupDiagnostic {
     | 'agent_setup.missing_credential_binding'
     | 'agent_setup.logical_model_not_allowed'
     | 'agent_setup.logical_model_not_found'
+    | 'agent_setup.missing_control_binary'
+    | 'agent_setup.unsupported_resources'
     | 'agent_setup.unsupported_required_feature';
   message: string;
   severity: 'error';
@@ -58,6 +62,12 @@ export interface AgentSetupResolveResult {
 export interface AgentSetupResolverDependencies {
   providerRegistry: ProviderRegistry;
   gatewayConfig: GatewayConfig;
+  /** Current network-free subscription supply when its live owner is available. */
+  subscriptionAccounts?:
+    | Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>
+    | undefined;
+  /** Current API-key presence without resolving Vault material. */
+  providerCredentialConfigured?: ProviderCredentialConfigured | undefined;
   workspaceConfig?: WorkspaceConfig;
   userConfig?: UserConfig;
   workspaceId?: string;
@@ -78,6 +88,28 @@ export function resolveAgentSetup(
     dependencies,
     diagnostics
   );
+
+  // No Worker backend enforces these limits; match the AEP refusal before reporting readiness.
+  if (config.resources && Object.keys(config.resources).length > 0) {
+    diagnostics.push({
+      agentId: config.id,
+      code: 'agent_setup.unsupported_resources',
+      message: `Agent ${config.id} declares resource limits that the Worker cannot enforce; leave resources empty or absent.`,
+      severity: 'error',
+    });
+  }
+
+  // AEP construction requires both fixed control paths, regardless of the native adapter.
+  for (const name of ['node', 'openkit-worker-shim'] as const) {
+    if (!config.runtime.binaries.some((binary) => binary.path === `/usr/local/bin/${name}`)) {
+      diagnostics.push({
+        agentId: config.id,
+        code: 'agent_setup.missing_control_binary',
+        message: `Agent ${config.id} must declare the required Worker control binary: ${name}.`,
+        severity: 'error',
+      });
+    }
+  }
 
   const workspaceBinding = dependencies.workspaceConfig?.workspace.agents.find(
     (binding) => binding.agentId === config.id
@@ -123,8 +155,13 @@ export function resolveAgentSetup(
   try {
     catalog = resolveLogicalModelCatalog(
       dependencies.gatewayConfig,
-      dependencies.providerRegistry
-    ).filter((model) => model.routes.some((member) => member.available));
+      dependencies.providerRegistry,
+      dependencies.subscriptionAccounts,
+      dependencies.providerCredentialConfigured
+    ).filter((model) =>
+      // Setup adds no capability requirement, but dormant backups cannot establish readiness.
+      planLogicalModel(model, [], () => true).some((selection) => selection.selected)
+    );
   } catch {
     diagnostics.push({
       agentId: config.id,

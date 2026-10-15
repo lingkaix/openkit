@@ -4,6 +4,8 @@
 
 `@openkit/config-schema` is the shared source of truth for OpenKit authored config schemas, policy metadata, JSON Schema catalog entries, workspace root materialization helpers, and session workspace layout planning schemas.
 
+Workspace `assistant.resources` optionally selects an exact `skillIds` list. IDs must be non-empty and unique; omission and an empty list select no Skills. This closed selection contains no inline implementation, credential, path or version pointer. Same-Workspace catalog-reference validation and current bounded-run admission remain with their existing configuration and Assistant owners; structural schema acceptance does not prove availability or authorize execution.
+
 `ResourceCatalogDocumentSchema` remains the exact producer assertion. `ResourceCatalogDocumentReaderSchema` and `parseResourceCatalogDocument` preserve same-owner descriptive catalog history; `ResourceCatalogDocumentViewSchema` selects its known-field projection. Executable declarations and credential binding/sink sections stay exact in both directions, and retained MCP version admission checks the admitted declaration and package-root digest against the existing configuration digest. `parseWorkspaceMcpServerCatalog` discards descriptive catalog framing additions while its complete effect-facing server entries remain exact.
 
 Provider profiles retain string model IDs and may add a per-ID `modelMetadata` map using the models.dev operational field names. Its known-field validation and native-ID membership checks feed the existing configuration validation and generated JSON Schema; the Gateway and backend owners define inheritance and actual runtime use.
@@ -85,6 +87,8 @@ Authored `runtime.environment` uses the worker-protocol protected-name predicate
 Provider `modelMetadata` and deployment extension entries admit strict `reasoning_options` arrays containing `{ type: "toggle" }` or `{ type: "effort", values: string[] }`. Missing effort values, nonstring values, unknown option types and extra fields fail validation. Catalog values such as `default` remain metadata strings; NanoCore filters them against the Core enum when deriving levels. Empty option and value arrays remain explicit replacements.
 
 Agent `models.reasoningEffort` and the selected profile’s scalar `reasoningEffort` are optional canonical preferences. AEP `llm.reasoningEffort` records only the admitted Turn value, while each route’s optional `reasoningEffortLevels` preserves resolver controls, including an empty list. Retained configurations and packages need neither field and acquire no invented defaults.
+
+Agent profiles reject `runtime` and `sandbox` declarations instead of discarding them as descriptive metadata. Profiles refine behavior; the composed Agent setup owns runtime and Sandbox authority. Descriptive profile additions remain tolerated. [Agent Manifest And AEP Resolution](../../docs/specs/20260703-agent_manifest_aep_resolution.md#manifest-shape) owns this boundary.
 
 `@openkit/config-schema/mcp-credentials` exposes the shared credential binding and sink schemas without the Node-only catalog digest implementation. The existing Workspace MCP update-binding App API reuses that entry for optional credential replacement; omitted bindings remain unchanged.
 

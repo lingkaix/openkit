@@ -177,6 +177,7 @@ export function createWorkerEnvironmentActivation(
         execute: async () => {
           const turnIdentity = activationTurnIdentity(context.actor, home, request);
           requireNoPartialActivation(dependencies.store, home, turnIdentity, request);
+          requireNoUnrelatedRunningTurn(dependencies.store, home, turnIdentity.turnId);
 
           dependencies.requireCurrentAdministrator(context.actor);
           const currentCandidate = requireExactResolvedCandidate(
@@ -231,6 +232,8 @@ export function createWorkerEnvironmentActivation(
           }
           dependencies.requireCurrentAdministrator(context.actor);
           requireCurrentCandidateAudiences(dependencies, context.actor, request);
+          // Inspection yields to other administration work; recheck before admitting image defaults.
+          requireNoUnrelatedRunningTurn(dependencies.store, home, turnIdentity.turnId);
           prepareAgentConfigurationUpdate(
             configFiles,
             request.configuration,

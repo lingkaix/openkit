@@ -6,7 +6,10 @@ This directory owns authored agent definitions and the resolution path from conf
 
 - Keep manifest shape, selection, readiness, setup resolution, transport selection, resolved setup evidence, catalog projection, and catalog routes here.
 - Workspace-visible Agent catalog entries are a live read of current `runtimeConfig().agentManifests`. Missing authored role is `kind: null`. Missing authored readiness stays `health.unknown` with `checkedAt: null` and does not hide supply. Launch `computeReadiness` defaults stay launch-only.
-- Setup composition uses currently available Gateway supply; retained configured logical IDs with no available member cannot enter a new executable setup or an `all` expansion.
+- Setup composition uses the existing Gateway planner to check current supply. With `routing.autoFailover: false`, only the primary can establish readiness; enabled failover permits an available backup. Retained configured logical IDs without eligible supply cannot enter a new executable setup or an `all` expansion.
+- Live callers supply `subscriptionAccounts` and `providerCredentialConfigured` through `AgentSetupResolverDependencies`. Setup delegates those checks to the existing Gateway resolver on each resolution; missing supply blocks dependent models, and later restoration or revocation changes only later setups. Omitting the hooks retains configuration-only resolution for boot and tests.
+- Setup resolution requires declarations for `/usr/local/bin/node` and `/usr/local/bin/openkit-worker-shim` before it can return a ready setup. Missing paths return `agent_setup.missing_control_binary` without exposing other authored paths. Image contents and host availability still require their existing proof.
+- Non-empty authored `resources` blocks setup with `agent_setup.unsupported_resources` because no Worker backend enforces those limits. Authored values remain loadable; empty or absent values pass this check. AEP preparation retains its own refusal before Sandbox effects.
 - `../config/` loads authored files, `../providers/` owns configured provider instances, and `../runtime/` executes the resolved setup.
 - Application-internal coordinators and Quick Chat agents belong to `../internal-agents/`, not this directory.
 - Storage schemas and migrations remain under `../storage/` even when agent setup evidence is recorded here.

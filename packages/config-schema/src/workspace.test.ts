@@ -23,6 +23,73 @@ function createWorkspaceRoot(): string {
 }
 
 describe('workspace config schema', () => {
+  it('preserves exact Assistant Skill IDs alongside retained repository inspection settings', () => {
+    const assistant = {
+      resources: { skillIds: ['skill-review', 'skill-research'] },
+      repositoryInspection: { enabled: false, excludedPaths: ['private'] },
+    };
+    const parsed = WorkspaceConfigSchema.parse({
+      schemaVersion: 1,
+      workspace: { name: 'Selected Skills', assistant },
+    });
+
+    expect(parsed.workspace.assistant).toEqual(assistant);
+  });
+
+  it.each([
+    undefined,
+    {},
+    { resources: { skillIds: [] } },
+  ])('admits empty or omitted Assistant resource selection: %j', (assistant) => {
+    const parsed = WorkspaceConfigSchema.parse({
+      workspace: { name: 'No selected Skills', ...(assistant ? { assistant } : {}) },
+    });
+
+    expect(parsed.workspace.assistant).toMatchObject({
+      repositoryInspection: { enabled: true, excludedPaths: [] },
+    });
+    expect(parsed.workspace.assistant).toMatchObject(assistant ?? {});
+    expect(parsed.workspace.assistant).not.toHaveProperty('resources.skillIds.0');
+  });
+
+  it.each([
+    { skillIds: ['skill-review', 'skill-review'] },
+    { skillIds: [''] },
+    { skillIds: [1] },
+    { skillIds: [{ id: 'skill-review' }] },
+    { skillIds: 'all' },
+    { skillIds: null },
+    {},
+    null,
+  ])('rejects malformed or duplicate Assistant Skill selections: %j', (resources) => {
+    expect(
+      WorkspaceConfigSchema.safeParse({
+        workspace: { name: 'Invalid selection', assistant: { resources } },
+      }).success
+    ).toBe(false);
+  });
+
+  it.each([
+    { implementation: 'return true;' },
+    { credentialRef: 'vault:private' },
+    { path: '/host/skills/review' },
+    { activeVersion: 'latest' },
+    { allInstalled: true },
+    { tools: ['administration.configuration.read'] },
+    { userId: 'user_other' },
+    { mcp: [{ serverId: 'server_other' }] },
+    { command: 'sh' },
+  ])('rejects inline execution and authority fields in Assistant resources: %j', (extra) => {
+    expect(
+      WorkspaceConfigSchema.safeParse({
+        workspace: {
+          name: 'Invalid resource authority',
+          assistant: { resources: { skillIds: ['skill-review'], ...extra } },
+        },
+      }).success
+    ).toBe(false);
+  });
+
   it('loads retained authored inspection settings and host-dir roots after host retirement', () => {
     const parsed = WorkspaceConfigSchema.parse({
       schemaVersion: 1,
