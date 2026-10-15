@@ -2302,6 +2302,12 @@ export function createConversationService({
     workspaceId: string
   ) => WorkerCoordinatorCandidate[];
 }) {
+  const setupProviderSupply = {
+    providerCredentialConfigured,
+    ...(providerSubscriptionAccountManager
+      ? { subscriptionAccounts: providerSubscriptionAccountManager }
+      : {}),
+  };
   // App-local handoff execution ownership survives the admission response until closeout settles.
   const activeTaskCloseouts = new Map<string, Promise<void>>();
   // These process-local handles stop admitted model work; the Turn remains the durable owner.
@@ -2432,6 +2438,7 @@ export function createConversationService({
       const manifest = snapshot.agentManifests.find((entry) => entry.id === candidate.agentId);
       if (!manifest) continue;
       const setup = resolveAgentSetup(manifest, {
+        ...setupProviderSupply,
         gatewayConfig: snapshot.gatewayConfig,
         providerRegistry: snapshot.providerRegistry,
         workspaceId,
@@ -2462,6 +2469,7 @@ export function createConversationService({
       const manifest = snapshot.agentManifests.find((entry) => entry.id === session.agentId);
       if (!manifest) continue;
       const setup = resolveAgentSetup(manifest, {
+        ...setupProviderSupply,
         gatewayConfig: snapshot.gatewayConfig,
         providerRegistry: snapshot.providerRegistry,
         workspaceId,
@@ -2488,6 +2496,7 @@ export function createConversationService({
     const defaultManifest = snapshot.agentManifests.find((entry) => entry.id === defaultAgentId);
     const defaultSetup = defaultManifest
       ? resolveAgentSetup(defaultManifest, {
+          ...setupProviderSupply,
           gatewayConfig: snapshot.gatewayConfig,
           providerRegistry: snapshot.providerRegistry,
           workspaceId,

@@ -2,10 +2,14 @@ import type { RuntimeConfigStatus, SetupDiagnosticsResponse } from '@openkit/app
 import type { GatewayConfig } from '@openkit/config-schema';
 import type { AgentManifest } from '../agents/manifest.js';
 import { type AgentReadinessStatus, computeReadiness } from '../agents/readiness.js';
-import { resolveAgentSetup } from '../agents/setup-resolver.js';
+import {
+  type AgentSetupResolverDependencies,
+  resolveAgentSetup,
+} from '../agents/setup-resolver.js';
 import type { CoreMode } from '../config/mode.js';
 import type { OpenKitConfig } from '../config/openkit-config.js';
-import type { ProviderRegistry } from '../providers/registry.js';
+import type { resolveLogicalModelCatalog } from '../llm/logical-models.js';
+import type { ProviderCredentialConfigured, ProviderRegistry } from '../providers/registry.js';
 
 type SetupDiagnosticsAgentStatus =
   SetupDiagnosticsResponse['agents'][number]['readiness']['status'];
@@ -27,6 +31,10 @@ interface CreateSetupDiagnosticsInput {
   gatewayConfig: GatewayConfig;
   /** Provider registry. */
   providerRegistry: ProviderRegistry;
+  /** Current API-key presence without resolving Vault material. */
+  providerCredentialConfigured?: ProviderCredentialConfigured | undefined;
+  /** Current network-free subscription supply from its existing live owner. */
+  subscriptionAccounts?: Parameters<typeof resolveLogicalModelCatalog>[2];
   /** Agent manifests available for setup and readiness checks. */
   agentManifests: AgentManifest[];
   /** Runtime config reload status. */
@@ -42,6 +50,12 @@ interface CreateSetupDiagnosticsInput {
 export function createSetupDiagnostics(
   input: CreateSetupDiagnosticsInput
 ): SetupDiagnosticsResponse {
+  const setupDependencies = {
+    gatewayConfig: input.gatewayConfig,
+    providerRegistry: input.providerRegistry,
+    providerCredentialConfigured: input.providerCredentialConfigured,
+    subscriptionAccounts: input.subscriptionAccounts,
+  };
   return {
     service: 'nanocore',
     server: {
@@ -59,7 +73,7 @@ export function createSetupDiagnostics(
       vendor: typeof provider.vendor === 'string' ? provider.vendor : provider.kind,
     })),
     agents: input.agentManifests.map((manifest) =>
-      summarizeAgentSetup(manifest, input.gatewayConfig, input.providerRegistry)
+      summarizeAgentSetup(manifest, setupDependencies)
     ),
     runtimeConfig: input.runtimeConfig,
   };
@@ -100,16 +114,15 @@ function providerSecretMarker(
  * Summarizes one agent setup.
  *
  * @param manifest Agent manifest.
- * @param providerRegistry Provider registry.
+ * @param dependencies Current configuration and live Gateway supply owners.
  * @returns Agent setup diagnostics summary.
  */
 function summarizeAgentSetup(
   manifest: AgentManifest,
-  gatewayConfig: GatewayConfig,
-  providerRegistry: ProviderRegistry
+  dependencies: AgentSetupResolverDependencies
 ): SetupDiagnosticsAgent {
   const readiness = computeReadiness(manifest);
-  const setupResult = resolveAgentSetup(manifest, { gatewayConfig, providerRegistry });
+  const setupResult = resolveAgentSetup(manifest, dependencies);
   const setupStatus = setupResult.diagnostics.length > 0 ? 'blocked' : 'ready';
   const readinessStatus =
     setupStatus === 'blocked' ? 'blocked' : normalizeReadinessStatus(readiness.status);

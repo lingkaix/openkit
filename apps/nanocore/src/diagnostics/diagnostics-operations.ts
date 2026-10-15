@@ -111,13 +111,22 @@ export function createDiagnosticsOperationImplementations(
       };
     },
     'diagnostics.setup': () => {
-      const { dataRoot, runtimeConfig, mode, runtimeConfigManager } = services!;
+      const {
+        dataRoot,
+        runtimeConfig,
+        mode,
+        runtimeConfigManager,
+        providerCredentialConfigured,
+        providerSubscriptionAccountManager,
+      } = services!;
       return createSetupDiagnostics({
         dataRoot,
         gatewayConfig: runtimeConfig().gatewayConfig,
         mode,
         openKitConfig: runtimeConfig().openKitConfig,
         providerRegistry: runtimeConfig().providerRegistry,
+        providerCredentialConfigured,
+        subscriptionAccounts: providerSubscriptionAccountManager,
         agentManifests: runtimeConfig().agentManifests,
         runtimeConfig: runtimeConfigManager.status(),
       });

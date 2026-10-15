@@ -733,6 +733,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           vaultBackend: () => vaultUnlockState.backend(),
         })
       : null);
+  const setupProviderSupply = {
+    providerCredentialConfigured,
+    ...(providerSubscriptionAccountManager
+      ? { subscriptionAccounts: providerSubscriptionAccountManager }
+      : {}),
+  };
   const llmGatewayDispatcher =
     options.llmGatewayDispatcher ??
     new LLMGatewayProviderDispatcher({
@@ -753,10 +759,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     createRuntimeConfigManager({
       dataRoot,
       captureCoverage: sharedStore,
-      providerCredentialConfigured,
-      ...(providerSubscriptionAccountManager
-        ? { subscriptionAccounts: providerSubscriptionAccountManager }
-        : {}),
+      ...setupProviderSupply,
       ...(!dataRoot || hasInlineRuntimeConfigInput
         ? {
             initialSnapshot: createInMemoryRuntimeConfigSnapshot({
@@ -1700,6 +1703,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       )?.config;
       const setup = manifest
         ? resolveAgentSetup(manifest, {
+            ...setupProviderSupply,
             gatewayConfig: snapshot.gatewayConfig,
             providerRegistry: snapshot.providerRegistry,
             workspaceId: record.workspaceId,
