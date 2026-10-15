@@ -1,0 +1,800 @@
+{
+  "schemaVersion": 1,
+  "scope": "fixture-integrity-only",
+  "authorityCommit": "254648075222463bccbee7f7ef9db71c5c38d7bd",
+  "limits": {
+    "fileBytes": 1000000000,
+    "submissionBytes": 1000000000,
+    "expandedBytes": 4000000000,
+    "archiveEntries": 100000,
+    "rawTurnBytes": 16777216,
+    "previewBytes": 2048,
+    "previewLines": 50,
+    "readBytes": 51200,
+    "readLines": 2000
+  },
+  "originals": [
+    {
+      "id": "empty",
+      "patternHex": "",
+      "repeats": 0,
+      "size": 0,
+      "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "validUtf8": true
+    },
+    {
+      "id": "binary-invalid-utf8",
+      "patternHex": "00ffc328800a",
+      "repeats": 1,
+      "size": 6,
+      "sha256": "sha256:39948221138e963424a7cdbd1659e745f52303800b3954b845a13ca723c0133e",
+      "validUtf8": false
+    },
+    {
+      "id": "cjk-single-line",
+      "patternHex": "e7958c",
+      "repeats": 18000,
+      "size": 54000,
+      "sha256": "sha256:62a9ea7505442f5389256c015ca203dd6f97200dd1d15798835af2a17b7e5bc9",
+      "validUtf8": true
+    },
+    {
+      "id": "huge-single-line",
+      "patternHex": "78",
+      "repeats": 120000,
+      "size": 120000,
+      "sha256": "sha256:8d07e6cc2b317afddd43027a1e78d9e35944643918163eb194ae4017955b03ff",
+      "validUtf8": true
+    },
+    {
+      "id": "line-boundaries",
+      "patternHex": "780a",
+      "repeats": 2001,
+      "size": 4002,
+      "sha256": "sha256:bc530969d22627a984fb58a1bf51e5fb940a7da7da16ad791158d62efff3c9fe",
+      "validUtf8": true
+    }
+  ],
+  "streamRecipes": [
+    {
+      "id": "file-999999999",
+      "size": 999999999,
+      "patternHex": "00",
+      "maxChunkBytes": 65536
+    },
+    {
+      "id": "file-1000000000",
+      "size": 1000000000,
+      "patternHex": "00",
+      "maxChunkBytes": 65536
+    },
+    {
+      "id": "file-1000000001",
+      "size": 1000000001,
+      "patternHex": "00",
+      "maxChunkBytes": 65536
+    }
+  ],
+  "fileCases": [
+    {
+      "id": "single-below",
+      "fileRecipes": ["file-999999999"],
+      "combinedBytes": 999999999,
+      "withinSubmissionLimit": true
+    },
+    {
+      "id": "single-at",
+      "fileRecipes": ["file-1000000000"],
+      "combinedBytes": 1000000000,
+      "withinSubmissionLimit": true
+    },
+    {
+      "id": "single-above",
+      "fileRecipes": ["file-1000000001"],
+      "combinedBytes": 1000000001,
+      "withinSubmissionLimit": false
+    },
+    {
+      "id": "combined-at",
+      "fileSizes": [400000000, 600000000],
+      "combinedBytes": 1000000000,
+      "withinSubmissionLimit": true
+    },
+    {
+      "id": "combined-above",
+      "fileSizes": [400000000, 600000001],
+      "combinedBytes": 1000000001,
+      "withinSubmissionLimit": false
+    }
+  ],
+  "archiveRecipes": [
+    {
+      "id": "expanded-3999999999",
+      "entries": [
+        {
+          "count": 4,
+          "eachBytes": 999999999
+        },
+        {
+          "count": 1,
+          "eachBytes": 3
+        }
+      ],
+      "actualExpandedBytes": 3999999999,
+      "actualEntries": 5,
+      "withinExpandedLimit": true,
+      "withinEntryLimit": true
+    },
+    {
+      "id": "expanded-4000000000",
+      "entries": [
+        {
+          "count": 4,
+          "eachBytes": 999999999
+        },
+        {
+          "count": 1,
+          "eachBytes": 4
+        }
+      ],
+      "actualExpandedBytes": 4000000000,
+      "actualEntries": 5,
+      "withinExpandedLimit": true,
+      "withinEntryLimit": true
+    },
+    {
+      "id": "expanded-4000000001",
+      "entries": [
+        {
+          "count": 4,
+          "eachBytes": 999999999
+        },
+        {
+          "count": 1,
+          "eachBytes": 5
+        }
+      ],
+      "actualExpandedBytes": 4000000001,
+      "actualEntries": 5,
+      "withinExpandedLimit": false,
+      "withinEntryLimit": true
+    },
+    {
+      "id": "entries-99999",
+      "entries": [
+        {
+          "count": 99999,
+          "eachBytes": 0
+        }
+      ],
+      "actualExpandedBytes": 0,
+      "actualEntries": 99999,
+      "withinExpandedLimit": true,
+      "withinEntryLimit": true
+    },
+    {
+      "id": "entries-100000",
+      "entries": [
+        {
+          "count": 100000,
+          "eachBytes": 0
+        }
+      ],
+      "actualExpandedBytes": 0,
+      "actualEntries": 100000,
+      "withinExpandedLimit": true,
+      "withinEntryLimit": true
+    },
+    {
+      "id": "entries-100001",
+      "entries": [
+        {
+          "count": 100001,
+          "eachBytes": 0
+        }
+      ],
+      "actualExpandedBytes": 0,
+      "actualEntries": 100001,
+      "withinExpandedLimit": true,
+      "withinEntryLimit": false
+    },
+    {
+      "id": "explicit-nested-shared",
+      "entries": [
+        {
+          "count": 1,
+          "eachBytes": 2000000000,
+          "depth": 0
+        },
+        {
+          "count": 1,
+          "eachBytes": 2000000001,
+          "depth": 1
+        }
+      ],
+      "actualExpandedBytes": 4000000001,
+      "actualEntries": 2,
+      "withinExpandedLimit": false,
+      "withinEntryLimit": true
+    }
+  ],
+  "archives": [
+    {
+      "id": "valid-empty",
+      "base64": "UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA==",
+      "size": 22,
+      "sha256": "sha256:8739c76e681f900923b900c9df0ef75cf421d39cabb54650c4b9ad19b6a76d85",
+      "expected": "valid",
+      "completeEndRecord": true,
+      "entries": []
+    },
+    {
+      "id": "valid-file",
+      "base64": "UEsDBBQAAAAAAAAAIVAmOfTLCQAAAAkAAAAIAAAAbm90ZS50eHQxMjM0NTY3ODlQSwECFAMUAAAAAAAAACFQJjn0ywkAAAAJAAAACAAAAAAAAAAAAAAApIEAAAAAbm90ZS50eHRQSwUGAAAAAAEAAQA2AAAALwAAAAAA",
+      "size": 123,
+      "sha256": "sha256:537853f1b6f6c248c79ca42e5951b2902388a09005126d1ebf57eab7f566d40b",
+      "expected": "valid",
+      "completeEndRecord": true,
+      "entries": [
+        {
+          "name": "note.txt",
+          "localOffset": 0,
+          "centralOffset": 47,
+          "dataOffset": 38,
+          "compressedSize": 9,
+          "declaredSize": 9,
+          "actualSize": 9,
+          "declaredCrc32": 3421780262,
+          "actualCrc32": 3421780262,
+          "unixMode": 33188,
+          "method": 0,
+          "bodySha256": "sha256:15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225"
+        }
+      ]
+    },
+    {
+      "id": "nested",
+      "base64": "UEsDBBQAAAAAAAAAIVA1LphreAAAAHgAAAAJAAAAaW5uZXIuemlwUEsDBBQAAAAAAAAAIVCMTQLQBgAAAAYAAAAIAAAAbm90ZS50eHRpbm5lcgpQSwECFAMUAAAAAAAAACFQjE0C0AYAAAAGAAAACAAAAAAAAAAAAAAApIEAAAAAbm90ZS50eHRQSwUGAAAAAAEAAQA2AAAALAAAAAAAUEsBAhQDFAAAAAAAAAAhUDUumGt4AAAAeAAAAAkAAAAAAAAAAAAAAKSBAAAAAGlubmVyLnppcFBLBQYAAAAAAQABADcAAACfAAAAAAA=",
+      "size": 236,
+      "sha256": "sha256:8b076ce1d410e2a2c09511cc40136e9116d6e81b3a00c9a1ffd1ce6d2c1b23cf",
+      "expected": "no-automatic-recursion",
+      "completeEndRecord": true,
+      "entries": [
+        {
+          "name": "inner.zip",
+          "localOffset": 0,
+          "centralOffset": 159,
+          "dataOffset": 39,
+          "compressedSize": 120,
+          "declaredSize": 120,
+          "actualSize": 120,
+          "declaredCrc32": 1805135413,
+          "actualCrc32": 1805135413,
+          "unixMode": 33188,
+          "method": 0,
+          "bodySha256": "sha256:158f175bb8cbaa22c3d4907802bba177a9d8ca85cc92ef284316c09ad7f435e4"
+        }
+      ]
+    },
+    {
+      "id": "traversal",
+      "base64": "UEsDBBQAAAAAAAAAIVCDFtyMAQAAAAEAAAAKAAAALi4vb3V0c2lkZXhQSwECFAMUAAAAAAAAACFQgxbcjAEAAAABAAAACgAAAAAAAAAAAAAApIEAAAAALi4vb3V0c2lkZVBLBQYAAAAAAQABADgAAAApAAAAAAA=",
+      "size": 119,
+      "sha256": "sha256:6ea6dfef34251c80b9a06735648bd5a7c3d464d7a06d423ebf242564f59f0433",
+      "expected": "unsafe-path",
+      "completeEndRecord": true,
+      "entries": [
+        {
+          "name": "../outside",
+          "localOffset": 0,
+          "centralOffset": 41,
+          "dataOffset": 40,
+          "compressedSize": 1,
+          "declaredSize": 1,
+          "actualSize": 1,
+          "declaredCrc32": 2363233923,
+          "actualCrc32": 2363233923,
+          "unixMode": 33188,
+          "method": 0,
+          "bodySha256": "sha256:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+        }
+      ]
+    },
+    {
+      "id": "absolute",
+      "base64": "UEsDBBQAAAAAAAAAIVCDFtyMAQAAAAEAAAAIAAAAL291dHNpZGV4UEsBAhQDFAAAAAAAAAAhUIMW3IwBAAAAAQAAAAgAAAAAAAAAAAAAAKSBAAAAAC9vdXRzaWRlUEsFBgAAAAABAAEANgAAACcAAAAAAA==",
+      "size": 115,
+      "sha256": "sha256:598f1342cf25091c9b91032d32be272b3eaf6977b85bd597f7a984aeca50127c",
+      "expected": "unsafe-path",
+      "completeEndRecord": true,
+      "entries": [
+        {
+          "name": "/outside",
+          "localOffset": 0,
+          "centralOffset": 39,
+          "dataOffset": 38,
+          "compressedSize": 1,
+          "declaredSize": 1,
+          "actualSize": 1,
+          "declaredCrc32": 2363233923,
+          "actualCrc32": 2363233923,
+          "unixMode": 33188,
+          "method": 0,
+          "bodySha256": "sha256:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+        }
+      ]
+    },
+    {
+      "id": "windows-absolute",
+      "base64": "UEsDBBQAAAAAAAAAIVCDFtyMAQAAAAEAAAAKAAAAQzpcb3V0c2lkZXhQSwECFAMUAAAAAAAAACFQgxbcjAEAAAABAAAACgAAAAAAAAAAAAAApIEAAAAAQzpcb3V0c2lkZVBLBQYAAAAAAQABADgAAAApAAAAAAA=",
+      "size": 119,
+      "sha256": "sha256:b55d8788d03cd0f6733f4d34a93e3792a16e174a46541079c7c889c3d5e86971",
+      "expected": "unsafe-path",
+      "completeEndRecord": true,
+      "entries": [
+        {
+          "name": "C:\\outside",
+          "localOffset": 0,
+          "centralOffset": 41,
+          "dataOffset": 40,
+          "compressedSize": 1,
+          "declaredSize": 1,
+          "actualSize": 1,
+          "declaredCrc32": 2363233923,
+          "actualCrc32": 2363233923,
+          "unixMode": 33188,
+          "method": 0,
+          "bodySha256": "sha256:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+        }
+      ]
+    },
+    {
+      "id": "link",
+      "base64": "UEsDBBQAAAAAAAAAIVAGUP3wCgAAAAoAAAAIAAAAc2hvcnRjdXQuLi9vdXRzaWRlUEsBAhQDFAAAAAAAAAAhUAZQ/fAKAAAACgAAAAgAAAAAAAAAAAAAAP+hAAAAAHNob3J0Y3V0UEsFBgAAAAABAAEANgAAADAAAAAAAA==",
+      "size": 124,
+      "sha256": "sha256:a58b4203bfb5bd77bf40ee3b98bb172b2b9ee87467805f6cc7b1729da49470ff",
+      "expected": "link",
+      "completeEndRecord": true,
+      "entries": [
+        {
+          "name": "shortcut",
+          "localOffset": 0,
+          "centralOffset": 48,
+          "dataOffset": 38,
+          "compressedSize": 10,
+          "declaredSize": 10,
+          "actualSize": 10,
+          "declaredCrc32": 4043132934,
+          "actualCrc32": 4043132934,
+          "unixMode": 41471,
+          "method": 0,
+          "bodySha256": "sha256:62ca1d92c4a3fc44a5fa30d1ddc593be1a9945ca21c0821af53d4f2b604075e7"
+        }
+      ]
+    },
+    {
+      "id": "special",
+      "base64": "UEsDBBQAAAAAAAAAIVAAAAAAAAAAAAAAAAAEAAAAcGlwZVBLAQIUAxQAAAAAAAAAIVAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAACkEQAAAABwaXBlUEsFBgAAAAABAAEAMgAAACIAAAAAAA==",
+      "size": 106,
+      "sha256": "sha256:7aefad377c8e2be23b6cbb34fbed786aabfcfa26896d79e89afc4f0c8a21093f",
+      "expected": "special-file",
+      "completeEndRecord": true,
+      "entries": [
+        {
+          "name": "pipe",
+          "localOffset": 0,
+          "centralOffset": 34,
+          "dataOffset": 34,
+          "compressedSize": 0,
+          "declaredSize": 0,
+          "actualSize": 0,
+          "declaredCrc32": 0,
+          "actualCrc32": 0,
+          "unixMode": 4516,
+          "method": 0,
+          "bodySha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ]
+    },
+    {
+      "id": "normalized-collision",
+      "base64": "UEsDBBQAAAAAAAAAIVBDvrfoAQAAAAEAAAAHAAAAYS9iLnR4dGFQSwMEFAAAAAAAAAAhUPnvvnEBAAAAAQAAAAkAAABhLy4vYi50eHRiUEsBAhQDFAAAAAAAAAAhUEO+t+gBAAAAAQAAAAcAAAAAAAAAAAAAAKSBAAAAAGEvYi50eHRQSwECFAMUAAAAAAAAACFQ+e++cQEAAAABAAAACQAAAAAAAAAAAAAApIEmAAAAYS8uL2IudHh0UEsFBgAAAAACAAIAbAAAAE4AAAAAAA==",
+      "size": 208,
+      "sha256": "sha256:a81157d32490eba5945984412ec8832d716e66a60a96a23e25066c2dd18cc140",
+      "expected": "normalized-collision",
+      "completeEndRecord": true,
+      "entries": [
+        {
+          "name": "a/b.txt",
+          "localOffset": 0,
+          "centralOffset": 78,
+          "dataOffset": 37,
+          "compressedSize": 1,
+          "declaredSize": 1,
+          "actualSize": 1,
+          "declaredCrc32": 3904355907,
+          "actualCrc32": 3904355907,
+          "unixMode": 33188,
+          "method": 0,
+          "bodySha256": "sha256:ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
+        },
+        {
+          "name": "a/./b.txt",
+          "localOffset": 38,
+          "centralOffset": 131,
+          "dataOffset": 77,
+          "compressedSize": 1,
+          "declaredSize": 1,
+          "actualSize": 1,
+          "declaredCrc32": 1908338681,
+          "actualCrc32": 1908338681,
+          "unixMode": 33188,
+          "method": 0,
+          "bodySha256": "sha256:3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d"
+        }
+      ]
+    },
+    {
+      "id": "compressed",
+      "base64": "UEsDBBQAAAAIAAAAIVARABzHFAAAAAAQAAAIAAAAemVyby5iaW7twQENAAAAwqD3T20PBxQAAADwblBLAQIUAxQAAAAIAAAAIVARABzHFAAAAAAQAAAIAAAAAAAAAAAAAACkgQAAAAB6ZXJvLmJpblBLBQYAAAAAAQABADYAAAA6AAAAAAA=",
+      "size": 134,
+      "sha256": "sha256:f01b7d0ab7aa3372de74ced2b393b75c613bcf2d64f332aa0ac0c128d6c14b10",
+      "expected": "valid",
+      "completeEndRecord": true,
+      "entries": [
+        {
+          "name": "zero.bin",
+          "localOffset": 0,
+          "centralOffset": 58,
+          "dataOffset": 38,
+          "compressedSize": 20,
+          "declaredSize": 4096,
+          "actualSize": 4096,
+          "declaredCrc32": 3340501009,
+          "actualCrc32": 3340501009,
+          "unixMode": 33188,
+          "method": 8,
+          "bodySha256": "sha256:ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7"
+        }
+      ]
+    },
+    {
+      "id": "truncated",
+      "base64": "UEsDBBQAAAAAAAAAIVAmOfTLCQAAAAkAAAAIAAAAbm90ZS50eHQxMjM0NTY3ODlQSwECFAMUAAAAAAAAACFQJjn0ywkAAAAJAAAACAAAAAAAAAAAAAAApIEAAAAAbm90ZS50eHRQSwUGAAAAAAEAAQA2AAA=",
+      "size": 116,
+      "sha256": "sha256:4165c3bcb0f3d74e6ce1d95f5dc20c5ce6934682c1d88951d4be06d8d16ace5b",
+      "expected": "parser-failure",
+      "completeEndRecord": false,
+      "entries": [
+        {
+          "name": "note.txt",
+          "localOffset": 0,
+          "centralOffset": 47,
+          "dataOffset": 38,
+          "compressedSize": 9,
+          "declaredSize": 9,
+          "actualSize": 9,
+          "declaredCrc32": 3421780262,
+          "actualCrc32": 3421780262,
+          "unixMode": 33188,
+          "method": 0,
+          "bodySha256": "sha256:15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225"
+        }
+      ]
+    },
+    {
+      "id": "bad-crc",
+      "base64": "UEsDBBQAAAAAAAAAIVAAAAAACQAAAAkAAAAIAAAAbm90ZS50eHQxMjM0NTY3ODlQSwECFAMUAAAAAAAAACFQAAAAAAkAAAAJAAAACAAAAAAAAAAAAAAApIEAAAAAbm90ZS50eHRQSwUGAAAAAAEAAQA2AAAALwAAAAAA",
+      "size": 123,
+      "sha256": "sha256:da13699988a9e3a2a74f6619014e35d41ad7de1dcee4f0a791e2262ba32b3a10",
+      "expected": "parser-failure",
+      "completeEndRecord": true,
+      "entries": [
+        {
+          "name": "note.txt",
+          "localOffset": 0,
+          "centralOffset": 47,
+          "dataOffset": 38,
+          "compressedSize": 9,
+          "declaredSize": 9,
+          "actualSize": 9,
+          "declaredCrc32": 0,
+          "actualCrc32": 3421780262,
+          "unixMode": 33188,
+          "method": 0,
+          "bodySha256": "sha256:15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225"
+        }
+      ]
+    },
+    {
+      "id": "forged-size",
+      "base64": "UEsDBBQAAAAAAAAAIVAmOfTLCQAAAAEAAAAIAAAAbm90ZS50eHQxMjM0NTY3ODlQSwECFAMUAAAAAAAAACFQJjn0ywkAAAABAAAACAAAAAAAAAAAAAAApIEAAAAAbm90ZS50eHRQSwUGAAAAAAEAAQA2AAAALwAAAAAA",
+      "size": 123,
+      "sha256": "sha256:ec13100152abea8efcb10322c81fd911f5a1fc69496363d022893d3763a1353d",
+      "expected": "parser-failure",
+      "completeEndRecord": true,
+      "entries": [
+        {
+          "name": "note.txt",
+          "localOffset": 0,
+          "centralOffset": 47,
+          "dataOffset": 38,
+          "compressedSize": 9,
+          "declaredSize": 1,
+          "actualSize": 9,
+          "declaredCrc32": 3421780262,
+          "actualCrc32": 3421780262,
+          "unixMode": 33188,
+          "method": 0,
+          "bodySha256": "sha256:15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225"
+        }
+      ]
+    }
+  ],
+  "scenarios": {
+    "rawOutput": {
+      "events": [
+        {
+          "id": "child-text",
+          "kind": "emission",
+          "trustedAttempt": "attempt-a",
+          "contentPart": "text",
+          "start": 0,
+          "end": 3,
+          "text": "界",
+          "expectedAdditionalBytes": 3,
+          "expectedAggregateBytes": 3
+        },
+        {
+          "id": "child-arguments",
+          "kind": "emission",
+          "trustedAttempt": "attempt-a",
+          "contentPart": "arguments",
+          "start": 0,
+          "end": 10,
+          "text": "{ \"x\": 1 }",
+          "expectedAdditionalBytes": 10,
+          "expectedAggregateBytes": 13
+        },
+        {
+          "id": "duplicate-snapshot",
+          "kind": "snapshot",
+          "trustedAttempt": "attempt-a",
+          "contentPart": "text",
+          "start": 0,
+          "end": 3,
+          "text": "界",
+          "expectedAdditionalBytes": 0,
+          "expectedAggregateBytes": 13
+        },
+        {
+          "id": "reconnect-replay",
+          "kind": "replay",
+          "trustedAttempt": "attempt-a",
+          "contentPart": "arguments",
+          "start": 0,
+          "end": 10,
+          "text": "{ \"x\": 1 }",
+          "expectedAdditionalBytes": 0,
+          "expectedAggregateBytes": 13
+        },
+        {
+          "id": "new-attempt-equal-text",
+          "kind": "emission",
+          "trustedAttempt": "attempt-b",
+          "contentPart": "text",
+          "start": 0,
+          "end": 3,
+          "text": "界",
+          "expectedAdditionalBytes": 3,
+          "expectedAggregateBytes": 16
+        },
+        {
+          "id": "failed-before-retry-discard",
+          "kind": "emission",
+          "trustedAttempt": "attempt-c",
+          "contentPart": "text",
+          "start": 0,
+          "end": 2,
+          "text": "xx",
+          "expectedAdditionalBytes": 2,
+          "expectedAggregateBytes": 18
+        },
+        {
+          "id": "mechanical-forward",
+          "kind": "forward",
+          "trustedAttempt": "attempt-a",
+          "contentPart": "text",
+          "start": 0,
+          "end": 3,
+          "text": "界",
+          "expectedAdditionalBytes": 0,
+          "expectedAggregateBytes": 18
+        },
+        {
+          "id": "parent-summary",
+          "kind": "emission",
+          "trustedAttempt": "attempt-parent",
+          "contentPart": "text",
+          "start": 0,
+          "end": 2,
+          "text": "ok",
+          "expectedAdditionalBytes": 2,
+          "expectedAggregateBytes": 20
+        },
+        {
+          "id": "stored-exposed-reasoning",
+          "kind": "emission",
+          "trustedAttempt": "attempt-parent",
+          "contentPart": "reasoning",
+          "start": 0,
+          "end": 3,
+          "text": "why",
+          "expectedAdditionalBytes": 3,
+          "expectedAggregateBytes": 23
+        }
+      ],
+      "expectedFinalBytes": 23,
+      "additionalObservations": [
+        "Trusted attempt, content-part identity and stream position decide replay; text and digest equality do not.",
+        "Persist aggregate and deduplication evidence through restart; missing or contradictory recovery evidence fails closed.",
+        "Uploads, tool results and program-produced files add zero raw bytes. Generated code and file bodies in tool arguments count before conversion.",
+        "Do not acquire hidden reasoning. Observe failed attempt bytes before retry buffering discards them."
+      ],
+      "parallel": {
+        "initialBytes": 16777211,
+        "concurrentEmissions": [
+          {
+            "child": "left",
+            "bytes": 3
+          },
+          {
+            "child": "right",
+            "bytes": 3
+          }
+        ],
+        "observedTotalBytes": 16777217,
+        "maximumChildrenWithinLimit": 1,
+        "observations": [
+          "Real atomic Turn storage must serialize the contenders; either child can win.",
+          "No incomplete over-limit tool arguments execute. Proved stop reports budget_exhausted; uncertain stop remains fenced.",
+          "A duplicate snapshot or same-attempt reconnect cannot reset or charge the aggregate twice."
+        ]
+      }
+    },
+    "context": {
+      "rangeUnit": "zero-based UTF-8 byte offsets, half-open",
+      "cases": [
+        {
+          "original": "cjk-single-line",
+          "revision": "fixture-revision-1",
+          "representation": "canonical-utf8",
+          "preview": [0, 2046],
+          "reads": [[0, 51198], [51198, 54000]]
+        },
+        {
+          "original": "huge-single-line",
+          "revision": "fixture-revision-1",
+          "representation": "canonical-utf8",
+          "preview": [0, 2048],
+          "reads": [[0, 51200], [51200, 102400], [102400, 120000]]
+        },
+        {
+          "original": "line-boundaries",
+          "revision": "fixture-revision-1",
+          "representation": "canonical-utf8",
+          "preview": [0, 100],
+          "reads": [[0, 4000], [4000, 4002]]
+        }
+      ],
+      "observations": [
+        "Every continuation advances and binds source revision, representation, digest and exact range; report omitted ranges and coverage.",
+        "A changed revision or representation cannot silently replace the pinned source.",
+        "Invalid UTF-8 cannot receive replacement bytes under the original digest.",
+        "Serialized envelopes, aggregate responses and full requests need independent bounds. Model-specific token admission includes instructions, history, schemas, media and output reserve; bytes/4 is not a hard oracle."
+      ]
+    },
+    "privacy": {
+      "privateSource": {
+        "title": "PRIVATE-NAME-6f2a",
+        "body": "PRIVATE-BODY-c18d",
+        "digest": "sha256:1e6daedd6dd078d6b7083901e7184f099cd75b19f007615c38cee68e19b9555d",
+        "snippet": "PRIVATE-SNIPPET-54ab",
+        "count": 731
+      },
+      "destination": "shared Worker audience without private-source permission",
+      "observations": [
+        "Exclude private bytes, names, digests, snippets, counts and diagnostics before generation access and ranking.",
+        "Personal Memory is unavailable to Workers. A Workspace scope is not Workspace-wide permission.",
+        "After revocation a running Turn retains its admitted read-only snapshot, but subsequent search, range read, download, history and export recheck current source access and destination disclosure.",
+        "A later Turn cannot inherit the revoked snapshot through an old mount."
+      ],
+      "searchComparison": {
+        "query": "fixture",
+        "withoutHiddenSource": {
+          "visibleSourceIds": ["public-fixture-1"],
+          "visibleCount": 1
+        },
+        "withHiddenSource": {
+          "visibleSourceIds": ["public-fixture-1"],
+          "visibleCount": 1
+        },
+        "expectedPrivateGenerationInputs": [],
+        "expectedPrivateRankingInputs": []
+      },
+      "forbiddenModelVisibleMarkers": [
+        "PRIVATE-NAME-6f2a",
+        "PRIVATE-BODY-c18d",
+        "sha256:1e6daedd6dd078d6b7083901e7184f099cd75b19f007615c38cee68e19b9555d",
+        "PRIVATE-SNIPPET-54ab",
+        "731"
+      ],
+      "revocation": {
+        "initialSnapshot": {
+          "source": "private-fixture-1",
+          "authorized": true,
+          "readOnly": true,
+          "digestVerified": true
+        },
+        "afterRevocation": {
+          "runningTurnRetainsAdmittedLocalSnapshot": true,
+          "subsequentOperations": ["search", "range-read", "download", "history", "export"],
+          "expectedAccess": "denied",
+          "nextTurnOldMountAccess": "denied"
+        }
+      }
+    },
+    "failure": {
+      "archives": ["truncated", "bad-crc", "forged-size"],
+      "malformedArguments": "{ \"file\": \"unterminated",
+      "observations": [
+        "Saving, retrieval or parser failure returns a bounded unavailable/error descriptor.",
+        "Do not return the full body as fallback or claim a usable handle when saving failed.",
+        "Preserve original archive bytes after failed extraction; publish no partial accepted version.",
+        "An unsupported or incomplete body representation cannot prove complete body absence."
+      ]
+    },
+    "reserve": {
+      "capacityBytes": 10000000000,
+      "serverReserveBytes": 1000000000,
+      "existingInflightBytes": 2000000000,
+      "contenders": [
+        {
+          "id": "left",
+          "stagingBytes": 1000000000,
+          "extractionBytes": 2000000000,
+          "derivativeBytes": 500000000,
+          "publicationOverlapBytes": 500000000
+        },
+        {
+          "id": "right",
+          "stagingBytes": 1000000000,
+          "extractionBytes": 2000000000,
+          "derivativeBytes": 500000000,
+          "publicationOverlapBytes": 500000000
+        }
+      ],
+      "expectedFootprintEach": 4000000000,
+      "expectedRequiredAlone": 7000000000,
+      "expectedRequiredTogether": 11000000000,
+      "maximumSimultaneousAdmissions": 1,
+      "observations": [
+        "Either contender fits alone, but both cannot reserve against one capacity and server reserve.",
+        "Real admission must include existing in-flight reservations and concurrent staging, extraction, derivatives and publication overlap.",
+        "Preserve accepted originals on storage exhaustion; release only on completion or proved cleanup."
+      ]
+    }
+  },
+  "workerFileCases": [
+    {
+      "id": "two-independent-worker-files",
+      "fileSizes": [1000000000, 1000000000],
+      "expectedPerFileAdmission": [true, true],
+      "combinedBytes": 2000000000,
+      "observations": [
+        "Each file is within its individual capacity; no cumulative Turn file quota applies.",
+        "Storage, current authorization and publication barriers still apply independently."
+      ]
+    }
+  ]
+}
