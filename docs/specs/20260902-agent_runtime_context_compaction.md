@@ -243,6 +243,20 @@ Migration to the shared loop preserves existing timeout, cancellation, usage, re
 
 Acceptance requires distinct internal roles to use the same mechanism, continuity across restart, bounded model input, private/shared audience isolation, and reconstruction after a correction or source revocation. Losing Provider state must not lose authoritative work. No internal-role execution calls the Gateway compactor, waits for it to exist, or silently discards required constraints or unresolved Tool effects.
 
+### Window Boundary And Persistence
+
+The exact private loop input is [InternalAgentLoopInput](20260813-internal_agent_runtime.md#runtime-input-and-ownership-boundary). Its `messages` field carries the assembled window as the existing ordered `AgentMessage` union. The former `contextManagement` field is removed without a replacement compaction field. Actor, source range, durable identity, and audience remain server-bound facts of the existing role owner, not model arguments or new loop fields.
+
+At admission to each bounded run, that owner reconstructs one window through an exact committed input boundary. It selects a bounded recent range plus required constraints, decisions, pending work, and admitted source context. It may use an existing source-attributed summary only while its canonical range and authority remain valid. Window selection preserves order, complete Tool call/result pairing, and untrusted-source boundaries. If required material cannot fit, admission fails explicitly rather than silently dropping it.
+
+The budget comes from the selected logical model's current physical context and known output reserve through the existing Gateway metadata/fitting owner. Count the fixed prompt, Tool definitions, and message content together. This adds no authored threshold, retained-tail option, fourth fuse, or per-role compactor. Each later Provider dispatch still satisfies that same physical bound. If appended observations cannot fit, the run returns `failed` with a safe context-boundary code; it neither silently truncates nor continues through the Gateway compactor.
+
+The durable role owner accepts initiating input through its existing Turn/command boundary before dispatch. It persists accepted output and Tool effect evidence only through their existing owners. A transient loop result cannot commit work by itself. There is no separately persisted loop transcript or context checkpoint. The next admitted run reconstructs and replaces its window from those committed records; it never makes a failed or cancelled transient response canonical merely to retain context.
+
+Reconstruction, each source read, and publication use current permission and output-audience checks. Cached context cannot restore revoked authority. A source change, deletion, audience change, or incompatible role configuration invalidates affected retained material before reuse. Restart reconstructs through the same exact committed boundary. Missing or contradictory input/effect evidence returns its existing typed failure or `recovery_required`; it never replays a Tool to discover whether it committed. Provider-owned continuation state is not required.
+
+Acceptance covers reconstruction by two distinct durable role owners into the same private input shape, exact committed boundaries, complete Tool pairing, budget failure before dispatch, and a new window after committed input advances. Crash before canonical acceptance retains no invented output; crash after acceptance reconstructs it without another effect. Revocation between runs or before a later read/publication withholds affected material.
+
 ## Worker Runtime Policy
 
 Worker native implementations remain valuable because they understand their own session tree, reasoning state, Tool representation, overflow recovery, and retained-tail semantics. OpenKit therefore does not translate Pi summaries into OpenCode checkpoints, feed a Codex opaque Provider item to another route, or require every Harness to use the OpenKit summarization prompt.
