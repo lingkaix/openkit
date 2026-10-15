@@ -1740,6 +1740,62 @@ for (const [label, executable] of [
     assert.deepEqual(entry.outputSchema, expectedOutput);
   });
 
+  test(`${label} CLI compact discovery preserves both flat credential input alternatives`, async () => {
+    const id = 'credential.store';
+    const result = await runCli(['ops', 'describe', id], {}, '{}', [], undefined, executable);
+    assert.equal(result.code, 0, result.stdout + result.stderr);
+    const compact = JSON.parse(result.stdout).data.inputSchema;
+    const variants = compact.anyOf ?? compact.oneOf;
+    assert.equal(variants?.length, 2);
+    const required = variants.map((variant) => [...(variant.required ?? [])].sort());
+    assert.deepEqual(
+      required.sort((left, right) => left.length - right.length),
+      [['token'], ['expiresAt', 'kind', 'ownerUserId', 'requestId', 'token', 'tokenId']]
+    );
+    for (const variant of variants) {
+      assert.equal(variant.type, 'object');
+      assert.equal(variant.additionalProperties, false);
+      assert.equal(variant.properties.token.type, 'string');
+      assert.equal(variant.properties.token.pattern, '^okt_[A-Za-z0-9_-]+$');
+      for (const property of Object.values(variant.properties)) {
+        for (const nested of ['properties', 'required', 'items', '$defs', 'definitions'])
+          assert.equal(Object.hasOwn(property, nested), false);
+      }
+    }
+    const recovery = variants.find((variant) => variant.properties.kind);
+    assert.equal(recovery.properties.kind.const, 'openkit-admin-recovery');
+    assert.equal(recovery.properties.requestId.type, 'string');
+    assert.equal(recovery.properties.requestId.format, 'uuid');
+    assert.equal(recovery.properties.tokenId.format, 'uuid');
+    assert.equal(recovery.properties.ownerUserId.minLength, 1);
+    assert.equal(recovery.properties.expiresAt.format, 'date-time');
+
+    const { operationCatalog } = await operations();
+    const credential = operationCatalog.find((entry) => entry.id === id);
+    const full = await runCli(
+      ['ops', 'describe', id, '--schema'],
+      {},
+      '{}',
+      [],
+      undefined,
+      executable
+    );
+    assert.equal(full.code, 0, full.stdout + full.stderr);
+    assert.deepEqual(
+      JSON.parse(full.stdout).data.inputSchema,
+      z.toJSONSchema(credential.inputSchema, { target: 'draft-7', io: 'input' })
+    );
+    assert.equal(credential.inputSchema.safeParse({ token: 'okt_fixture' }).success, true);
+    assert.equal(
+      credential.inputSchema.safeParse({ token: 'okt_fixture', body: {} }).success,
+      false
+    );
+    assert.equal(
+      credential.inputSchema.safeParse({ body: { token: 'okt_fixture' } }).success,
+      false
+    );
+  });
+
   test(`${label} CLI bounded discovery aliases retain canonical operation identities`, async () => {
     for (const [query, expected] of [
       [
