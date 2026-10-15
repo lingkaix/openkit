@@ -36,7 +36,7 @@ import {
 
 // Inject histogram readings so sibling test load cannot choose the diagnostic oracle.
 // Keep real sample arrival to exercise deferred reset and one-shot carry.
-const delaySource = vi.hoisted(() => ({ nextSampleMs: 10 }));
+const delaySource = vi.hoisted(() => ({ nextSampleMs: 10, resetCount: 0 }));
 vi.mock('node:perf_hooks', async (original) => {
   const actual = await original<typeof import('node:perf_hooks')>();
   const native = actual.monitorEventLoopDelay({ resolution: 10 });
@@ -64,6 +64,7 @@ vi.mock('node:perf_hooks', async (original) => {
       native.reset();
       sampledCount = 0;
       maximumMs = 0;
+      delaySource.resetCount += 1;
     },
   };
   return { ...actual, monitorEventLoopDelay: () => histogram };
@@ -71,10 +72,13 @@ vi.mock('node:perf_hooks', async (original) => {
 const delayHistogram = monitorEventLoopDelay({ resolution: 10 });
 delayHistogram.enable();
 
-/** Joins an actual sampler observation, with a bounded failure rather than a fixed sleep. */
-async function nextDelaySample(previousCount: number): Promise<void> {
+/** Joins a native sample, optionally after the response window resets, with a bounded failure. */
+async function nextDelaySample(previousCount: number, afterReset?: number): Promise<void> {
   const deadline = performance.now() + 2000;
-  while (delayHistogram.count <= previousCount) {
+  while (
+    (afterReset !== undefined && delaySource.resetCount <= afterReset) ||
+    delayHistogram.count <= previousCount
+  ) {
     if (performance.now() >= deadline) throw new Error('Event-loop delay sampler did not run.');
     await nextLoop();
   }
@@ -120,7 +124,13 @@ describe('Harness delivery localization through real Core and shim owners', () =
       scenario === 'timed-cancel-ended-command'
         ? vi.spyOn(performance, 'now').mockImplementation(() => coreClock)
         : undefined;
-    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const responseDelayResets: number[] = [];
+    const log = vi.spyOn(console, 'error').mockImplementation((line) => {
+      if (sampledDelay && JSON.parse(String(line)).event === 'worker.harness.response') {
+        // Capture this response's window before its deferred reset can run.
+        responseDelayResets.push(delaySource.resetCount);
+      }
+    });
     const write = process.stdout.write.bind(process.stdout);
     const stdout = vi
       .spyOn(process.stdout, 'write')
@@ -527,7 +537,9 @@ describe('Harness delivery localization through real Core and shim owners', () =
             agentSessionRuntimeBindingId: 'diag-session-binding',
           },
         });
-        await nextDelaySample(delayHistogram.count);
+        // A sample in the old window can be cleared before the next response. Join both boundaries.
+        expect(responseDelayResets).toHaveLength(1);
+        await nextDelaySample(0, responseDelayResets[0]);
         expect((await post('/worker-control/harness/poll', '{"schemaVersion":2}')).status).toBe(
           200
         );
@@ -578,7 +590,8 @@ describe('Harness delivery localization through real Core and shim owners', () =
               agentSessionRuntimeBindingId: 'diag-session-binding',
             },
           });
-          await nextDelaySample(delayHistogram.count);
+          expect(responseDelayResets).toHaveLength(2);
+          await nextDelaySample(0, responseDelayResets[1]);
           expect((await post('/worker-control/harness/poll', '{"schemaVersion":2}')).status).toBe(
             200
           );
