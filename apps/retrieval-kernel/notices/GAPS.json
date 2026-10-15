@@ -2,22 +2,13 @@
   {
     "crate": "htmlescape",
     "version": "0.3.1",
-    "reason": "No recorded upstream revision; no release tag was verified."
+    "revision": "1699b539179798e705ad8464128492a0a0092876",
+    "reason": "The checksum-verified published archive supplies no license or copyright notice file. Upstream license-text PR #17 is unmerged. Retain this Linux dependency gap until verified notices or the replacement proposed in README.md are accepted."
   },
   {
     "crate": "kanaria",
     "version": "0.2.0",
     "revision": "c994ccf06d179851a1c7c3285c3a408ccb6279ec",
-    "reason": "No matching upstream license file was obtainable."
-  },
-  {
-    "crate": "winapi-i686-pc-windows-gnu",
-    "version": "0.4.0",
-    "reason": "No recorded upstream revision; no release tag was verified."
-  },
-  {
-    "crate": "winapi-x86_64-pc-windows-gnu",
-    "version": "0.4.0",
-    "reason": "No recorded upstream revision; no release tag was verified."
+    "reason": "The checksum-verified published archive supplies no license or copyright notice file. LICENSE at the recorded upstream revision returns HTTP 404. Retain this Linux dependency gap until verified notices or the replacement proposed in README.md are accepted."
   }
 ]
