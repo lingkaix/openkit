@@ -7,7 +7,7 @@ decider: Engineer
 
 ## Decision
 
-On 2026-10-15, the engineer accepted the coordinator's proposal for shared conversations and one agent per Chat Mode Thread. [Work Model](../core/work-model.md), [Chat Mode And Core Assistant](../specs/20260704-chat_mode_assistant.md), and [Thread Visibility And Explicit Sharing](../specs/20260909-thread_visibility_and_sharing.md) are the relevant existing owners. This record preserves the accepted design. The feature work package will amend the owners listed below.
+On 2026-10-15, the engineer accepted the coordinator's proposal for shared conversations and one agent per Chat Mode Thread. [Work Model](../core/work-model.md), [Chat Mode And Core Assistant](../specs/20260704-chat_mode_assistant.md), and [Thread Visibility And Explicit Sharing](../specs/20260909-thread_visibility_and_sharing.md) are the relevant existing owners. This record preserves the accepted design. The feature work package will amend the Core documents and specifications listed below.
 
 1. Audience and work contract are independent axes. The audience is a private Assistant Timeline, a shared conversation Thread, or a shared work Thread. The work contract is Chat, Task, or Goal Mode. More users change only the audience and create no new mode. A shared conversation is Chat Mode with a Workspace-shared audience.
 2. A team Workspace is any Workspace whose kind is not `personal`. Ruling 1 in the core-experience plan makes `personal` the only special Workspace kind. This decision adds no Workspace kind. A shared conversation Thread is a Workspace-shared conversation Thread in a team Workspace. Members of a team Workspace can create one directly, without a share snapshot. A personal Workspace cannot add members and cannot provide this shared conversation.
@@ -19,7 +19,7 @@ On 2026-10-15, the engineer accepted the coordinator's proposal for shared conve
 8. Each shared conversation Thread has its own rolling context window. That window never includes a private Timeline window.
 9. A member can share selected private Timeline material into a shared conversation through the existing `thread.share` snapshot. A member can also hand off from a shared conversation to Task or Goal.
 10. No Worker or other agent joins a Chat Mode Thread as a participant. Addressing a Worker from a conversation requires a Task handoff with confirmation. The handoff creates a linked Task execution Thread. The conversation shows its state and result through ordinary Items. A multi-agent outcome uses Goal Mode under the Coordinator and an approved Plan. Talking to an existing Worker occurs only in the execution Thread that owns its AgentSession. Task and Goal execution Threads are already Workspace-shared. Several members can therefore work with one Worker there.
-11. Implementation waits until after v0.1.0 and after the private Assistant Timeline lands. Retrieval Kernel R2 and Chat Mode work can proceed before this feature. R2 already limits Memory recall to the private Timeline. R2's private-Timeline trace rule applies to v0.1.0, which has no shared conversation. The feature work package will narrow that trace rule to private Assistant conversations only.
+11. Implementation waits until after v0.1.0 and after the private Assistant Timeline lands. Retrieval Kernel R2 and Chat Mode work can proceed before this feature. R2 already limits Memory recall to the private Timeline. R2's private-Timeline trace rule applies to v0.1.0, which has no shared conversation. This record states the later trace rule for shared conversations. The private-Timeline trace sentence in the query-context decision applies to private Assistant conversations. A shared-conversation Assistant trace follows point 4 of this record. The feature work package will narrow the trace sentences in the Personal Memory and Retrieval Kernel specifications to private Assistant conversations only.
 
 ## Reason
 
@@ -54,7 +54,7 @@ Revisit when: a measured product need requires an agent other than the Core Assi
 
 ## Affected Owners
 
-Amend these owners when the feature work package starts:
+Amend these Core documents and specifications when the feature work package starts. Keep the query-context decision unchanged as a cross-reference:
 
 - [Core Concepts](../core/core-concepts.md): amend the personal-conversation privacy sentence to state that conversations are private by default; a shared conversation Thread has a Workspace-shared audience.
 - [Architecture](../core/architecture.md): amend the Core Assistant's private-reply sentence to state that replies are private by default; a shared conversation Thread has a Workspace-shared audience. Distinguish the shared Workspace role from the requesting user's Personal Assistant.
@@ -63,5 +63,6 @@ Amend these owners when the feature work package starts:
 - [Thread Visibility And Explicit Sharing](../specs/20260909-thread_visibility_and_sharing.md): direct shared conversation creation in team Workspaces, audience, and snapshot sharing.
 - [Unified Conversation Composer](../specs/20260831-unified_conversation_composer.md): shared conversation creation, addressing the Assistant, and Worker handoffs.
 - [Core Permissions](../core/permissions.md): the whole-audience output rule and current Actor authority.
-- Query Context, Sources, References And Acts (docs/decisions/20261015-context_sources_references_query_acts.md on branch `v010/retrieval-kernel-r2`): narrow the private-Timeline trace sentence to private Assistant conversations only. State the shared query's trace owner and audience from point 4.
+- Query Context, Sources, References And Acts (docs/decisions/20261015-context_sources_references_query_acts.md on branch `v010/retrieval-kernel-r2`): cross-reference only; do not edit this accepted decision record. Its private-Timeline trace sentence applies to private Assistant conversations. This record states the later shared-conversation trace rule in point 4.
 - [Personal Memory And Knowledge Learning](../specs/20260909-personal_memory_and_knowledge_learning.md), in its R2 version on branch `v010/retrieval-kernel-r2`: narrow the private-Timeline trace sentence to private Assistant conversations only. State the shared query's trace owner and audience from point 4.
+- [Retrieval Kernel](../specs/20261014-retrieval_kernel.md), in its R2 version on branch `v010/retrieval-kernel-r2`: narrow the private-Timeline trace sentence to private Assistant conversations only. State the shared query's trace owner and audience from point 4.
