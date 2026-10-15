@@ -30,7 +30,7 @@ import type {
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
 import { WORKER_ADAPTERS } from '../adapter-registry.js';
-import { WorkerControlError } from '../control-client.js';
+import { WorkerControlError, type WorkerControlFetch } from '../control-client.js';
 import { WorkerHarness } from '../harness.js';
 import type { SandboxIntegrationClient } from '../integration-client.js';
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
@@ -50,6 +50,8 @@ import {
   type SyntheticInference,
   startSyntheticInference,
 } from '../test-support/synthetic-inference.js';
+import { WorkerTranscriptWriter } from '../transcript.js';
+import { runResidentTurn } from '../turn.js';
 import { TurnTimeline } from '../turn-timeline.js';
 import {
   boundOpenCodeDiagnostic,
@@ -138,6 +140,317 @@ describe('OpenCode resident adapter', () => {
     });
     return { adapter, child, client, layout, creds, environment: () => environment };
   }
+
+  it.each([
+    {
+      capture: 'off' as const,
+      code: 'worker_control_lease_not_live',
+      status: 403,
+      owned: true,
+      admitted: true,
+    },
+    {
+      capture: 'on' as const,
+      code: 'worker_control_lease_not_live',
+      status: 403,
+      owned: true,
+      admitted: true,
+    },
+    {
+      capture: 'on' as const,
+      code: 'worker_control_lease_not_live',
+      status: 403,
+      owned: false,
+      admitted: false,
+    },
+    {
+      capture: 'on' as const,
+      code: 'worker_control_lease_not_live',
+      status: 401,
+      owned: true,
+      admitted: false,
+    },
+    {
+      capture: 'on' as const,
+      code: 'worker_control_revoked',
+      status: 403,
+      owned: true,
+      admitted: false,
+    },
+  ])('composes OpenCode publication refusal $code/$status with capture=$capture and owned=$owned', async (testCase) => {
+    const f = timelineFixture('new');
+    const controller = new AbortController();
+    let prompted = false;
+    let nativeInterrupted = false;
+    let releasePublication!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releasePublication = resolve;
+    });
+    let enteredPublication!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enteredPublication = resolve;
+    });
+    let readyAccepted!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      readyAccepted = resolve;
+    });
+    let observedInterrupt!: () => void;
+    const interruption = new Promise<void>((resolve) => {
+      observedInterrupt = resolve;
+    });
+    f.client.session.prompt = async () => {
+      prompted = true;
+      return { id: 'user-1' };
+    };
+    f.client.session.get = async () => {
+      if (prompted) await ready;
+      return {
+        id: 'sess-1',
+        model: { id: 'prompt-model', providerID: OPENCODE_PROVIDER_ID },
+        time: { idle: nativeInterrupted ? Number.MAX_SAFE_INTEGER : 0 },
+        ...(nativeInterrupted ? { outcome: 'interrupted' } : {}),
+      };
+    };
+    f.client.message.list = async () =>
+      ({
+        cursor: {},
+        data: !prompted
+          ? []
+          : [
+              { id: 'user-1', type: 'user' },
+              {
+                id: 'answer-1',
+                type: 'assistant',
+                content: [{ type: 'text', text: 'Partial native evidence.' }],
+                ...(nativeInterrupted ? { finish: 'error' } : {}),
+              },
+              ...(nativeInterrupted
+                ? [{ id: 'idle-1', type: 'idle', outcome: 'interrupted' }]
+                : []),
+            ],
+      }) as never;
+    const nativeInterrupt = vi.spyOn(f.client.session, 'interrupt').mockImplementation(async () => {
+      nativeInterrupted = true;
+      observedInterrupt();
+      return { interrupted: true } as never;
+    });
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    let nativeSettlement: Promise<WorkerAdapterResult> | undefined;
+    const startTurn = session.startTurn.bind(session);
+    vi.spyOn(session, 'startTurn').mockImplementation(async (input) => {
+      const turn = await startTurn(input);
+      nativeSettlement = turn.settled;
+      return turn;
+    });
+    const publication = vi.spyOn(WorkerTranscriptWriter.prototype, 'writeObservation');
+    const lineage = {
+      agentSessionId: 'as-opencode',
+      packageSnapshotId: 'pkg-composed',
+      requestId: 'req-composed',
+      threadId: 'th-composed',
+      turnId: 'tu-composed',
+      workspaceId: 'ws-composed',
+    };
+    const packagePath = join(f.layout.root, 'composed-package.json');
+    const sessionDir = join(f.layout.root, 'composed-capture');
+    const eventPath = join(sessionDir, 'events.jsonl');
+    writeFileSync(
+      packagePath,
+      JSON.stringify({
+        control: {
+          adapter: { kind: 'openkit-worker-shim', targetRuntime: 'opencode' },
+          mode: 'sandbox-integration',
+          bindings: {
+            capabilities: {
+              pathPrefix: '/capabilities/',
+              tokenRef: 'runtime://openkit/capability-token',
+            },
+            inference: { pathPrefix: '/inference/', tokenRef: 'runtime://openkit/inference-token' },
+            workerControl: {
+              pathPrefix: '/worker-control/',
+              tokenRef: 'runtime://openkit/worker-control-token',
+            },
+          },
+        },
+        extensions: { openkit: { turnInput: 'Collect the addressed Turn.' } },
+        llm: {
+          mode: 'gateway',
+          preferredLogicalModelId: 'prompt-model',
+          routes: [
+            {
+              ...acceptedRoute(f.creds, 'prompt-model'),
+              endpoint: { kind: 'openai-compatible', upstream: { kind: 'nanocore-gateway' } },
+            },
+          ],
+        },
+        observability: { captureCoverage: { scope: 'server', value: testCase.capture } },
+        runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: f.layout.work } },
+        scope: lineage,
+      })
+    );
+    const requests: Array<{ url: string; body: string }> = [];
+    const accepted: unknown[] = [];
+    const finals: Array<{ sequence: number; body: Record<string, unknown> }> = [];
+    const sealedAtFinal: string[] = [];
+    let refusedSequence: number | undefined;
+    const fetch: WorkerControlFetch = async (url, init) => {
+      requests.push({ url, body: init.body });
+      const body = JSON.parse(init.body);
+      if (url.endsWith('/events/append')) {
+        const record = body.record;
+        if (
+          record.event.type === 'observation.recorded' &&
+          record.event.data.fact.kind === 'assistant'
+        ) {
+          refusedSequence ??= record.sequence;
+          enteredPublication();
+          return {
+            ok: false,
+            status: testCase.status,
+            text: async () => {
+              await release;
+              return JSON.stringify({ code: testCase.code });
+            },
+          };
+        }
+        accepted.push(record);
+        if (record.event.type === 'worker.ready') readyAccepted();
+      }
+      if (url.endsWith('/final-status')) {
+        finals.push(body);
+        sealedAtFinal.push(readFileSync(eventPath, 'utf8'));
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ accepted: true, diagnostics: [], schemaVersion: 2 }),
+      };
+    };
+    const result = runResidentTurn({
+      adapterId: 'opencode',
+      credentialValues: [],
+      environment: {},
+      fetch,
+      integration: {
+        ready: Promise.resolve(),
+        bindTurnRouteTokens() {},
+        clearTurnRouteTokens() {},
+        drainTurn: async () => 0,
+      } as unknown as SandboxIntegrationClient,
+      lineage,
+      nativeEnvironment: null,
+      onStarted() {},
+      packagePath,
+      resident: session,
+      runtimeEnvironmentNames: new Set(),
+      sessionDir,
+      signal: controller.signal,
+      tokens: {
+        capabilityToken: 'composed-capability',
+        controlToken: 'composed-control',
+        inferenceToken: 'composed-inference',
+      },
+      turnDirectory: join(f.layout.root, 'composed-turn'),
+    }).then(
+      (result) => ({ result }),
+      (error: unknown) => ({ error })
+    );
+    try {
+      await nativeTestBound(
+        Promise.race([
+          entered,
+          result.then((outcome) => {
+            throw new Error(
+              `The Turn ended before publication entry: ${'error' in outcome && outcome.error instanceof Error ? outcome.error.message : JSON.stringify(outcome)}`
+            );
+          }),
+        ]),
+        1_000,
+        'The real writer publication did not enter HTTP.'
+      );
+      const prefix = structuredClone(accepted);
+      const enteredRequests = requests.length;
+      if (testCase.owned) {
+        controller.abort();
+        await nativeTestBound(interruption, 1_000, 'The addressed native interrupt did not enter.');
+      }
+      releasePublication();
+      const outcome = await nativeTestBound(result, 2_000, 'The composed Turn did not settle.');
+      const acknowledgements = await Promise.all(
+        publication.mock.results.map((call) =>
+          Promise.resolve(call.value).then(
+            () => null,
+            (error: unknown) => error
+          )
+        )
+      );
+      expect(acknowledgements).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: testCase.code, status: testCase.status }),
+        ])
+      );
+      expect(
+        acknowledgements.some(
+          (error) =>
+            error instanceof WorkerControlError &&
+            error.code === testCase.code &&
+            error.status === testCase.status
+        )
+      ).toBe(true);
+      expect(accepted).toEqual(prefix);
+      expect(
+        requests.filter(
+          (request) =>
+            request.url.endsWith('/events/append') &&
+            JSON.parse(request.body).record.sequence === refusedSequence
+        )
+      ).toHaveLength(1);
+      if (testCase.admitted) {
+        expect(outcome).toMatchObject({
+          result: { status: 'interrupted', nativeEvidence: { nativeTerminal: true } },
+        });
+        await expect(nativeSettlement).resolves.toMatchObject({
+          status: 'interrupted',
+          interruptRequested: true,
+        });
+        expect(nativeInterrupt).toHaveBeenCalledTimes(1);
+        expect(requests.slice(enteredRequests).map((request) => request.url)).toEqual([
+          '/worker-control/final-status',
+        ]);
+        const records = readFileSync(eventPath, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line));
+        const terminal = records.at(-1)!;
+        expect(terminal.event.data).toMatchObject({ status: 'interrupted', stopReason: 'aborted' });
+        expect(
+          Object.values((terminal.event.data.diagnostics ?? {}) as Record<string, string>).some(
+            (value) => /\bincomplete\b/i.test(value)
+          )
+        ).toBe(true);
+        expect(finals).toEqual([
+          {
+            operation: 'final_status',
+            schemaVersion: 2,
+            lineage,
+            sequence: terminal.sequence,
+            body: terminal.event.data,
+          },
+        ]);
+        expect(sealedAtFinal).toEqual([readFileSync(eventPath, 'utf8')]);
+      } else {
+        if ('result' in outcome) expect(outcome.result.status).toBe('failed');
+        else expect(outcome.error).toBeInstanceOf(Error);
+        expect(finals.filter((final) => final.body.status === 'interrupted')).toEqual([]);
+      }
+    } finally {
+      readyAccepted();
+      releasePublication();
+      await result;
+      publication.mockRestore();
+    }
+  });
 
   describe('owned collector stop boundary', () => {
     const retainedCases = (['off', 'on'] as const).flatMap((capture) =>
