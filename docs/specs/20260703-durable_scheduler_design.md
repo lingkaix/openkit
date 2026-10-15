@@ -90,6 +90,12 @@ Delete worker pools, placement plans, capacity records, target health and probat
 - Busy is `not_accepted` only when nothing was reserved or submitted. Close that no-effect attempt and leave the same admission and pending Turn queued. A later eligible submission uses a new attempt identity after the predecessor is closed, never a replacement Turn.
 - Accepted pending work is observed through its current attempt and is not submitted again from the ready queue. Once any operation may have occurred, inspect the same identity; a lost reply, timeout, or missing observation never authorizes resubmission.
 
+### Admission Turn Identifier Name
+
+An accepted upper-level `reservedTurnId` passes through unchanged; scheduler admission never derives another Turn for that reservation. The existing fallback Turn uses `tu` UUIDv5 with exact JSON name `[canonicalActorRefJson, workspaceId, threadId, requestId, reservedTurnIdOrNull]`. `canonicalActorRefJson` is the exact admitted serialized canonical Trigger ActorRef string passed to admission. Preserve its string type; do not parse it into a different name value. The remaining values are the original immutable admission arguments. On the fallback branch, the final value is JSON `null`. [Core Protocol](../core/protocol.md#ids) supplies canonical name bytes under the [accepted complete-name declaration](../decisions/20261015-identifier_owner_declarations.md).
+
+Queue identity remains excluded and owner-defined. Admission trigger, input hash, capacity, dispatch eligibility and receipt publication remain unchanged. Exact permitted replay retains the recorded Turn and admission. Partial, conflicting or unknown owner proof retains `recovery_required` without replacement work. This adds no record, field, lifecycle or cross-store atomicity. Acceptance requires reserved-ID pass-through, stable fallback names after reopen and unchanged lineage and refusal predicates.
+
 ## Attempt, Reconnect, And Cleanup
 
 The attempt has exactly three phases. Backend readiness and native progress are observations, not additional attempt phases.
