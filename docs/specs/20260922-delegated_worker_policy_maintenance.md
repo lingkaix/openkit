@@ -1,5 +1,5 @@
 ---
-status: Draft
+status: Accepted
 implementation: Not Started
 kind: concept
 date: 2026-09-22
@@ -8,7 +8,7 @@ date: 2026-09-22
 
 ## Owns
 
-The proposed bounded class of non-secret worker sandbox/network configuration that an internal operator may inspect, compare, validate and apply under a responsible administrator's delegated maintenance authority; candidate admission, revision binding, revocation, partial outcomes and acceptance of those operations.
+The bounded class of non-secret worker sandbox/network configuration that an internal operator may inspect, compare, validate and apply under a responsible administrator's delegated maintenance authority; candidate admission, revision binding, revocation, partial outcomes and acceptance of those operations.
 
 ## Does Not Own
 
@@ -20,7 +20,7 @@ General Permissions, a new grant store, the internal agent loop, policy language
 
 ## Summary
 
-Simon accepted bounded delegated worker policy maintenance on 2026-09-22: an internal operator may choose and apply ordinary non-secret corrections within explicit administrator-defined workload/resource limits without per-candidate human confirmation. This Draft preserves that accepted governing boundary while leaving finite operation admission for later acceptance and Slice 5 implementation. It does not currently enable write Tools or override active administration contracts.
+Simon accepted bounded delegated worker policy maintenance on 2026-09-22: an internal operator may choose and apply ordinary non-secret corrections within explicit administrator-defined workload/resource limits without per-candidate human confirmation. On 2026-10-15, [D06 accepted the first finite apply scope](../decisions/20261015-cleanup_pinning_and_delegated_apply_rulings.md): registered Worker network-policy Git-read corrections only. This owner and the administration owners admit that exact exception. Implementation remains Not Started; acceptance is not a claim that a Tool already exists.
 
 ## Goals / Non-goals
 
@@ -32,7 +32,7 @@ A Git smart-HTTP refusal can arise from a sandbox policy mismatch or an upstream
 
 ## Decision
 
-Represent maintenance authority in existing Permissions/Policy assignments and evaluation context. Do not create a delegation-token service, grant database, maintenance journal or second configuration writer. Accepted administration contracts continue to govern executable operations until their narrow amendments and this contract are accepted together.
+Represent maintenance authority in existing Permissions/Policy assignments and evaluation context. Do not create a delegation-token service, grant database, maintenance journal or second configuration writer. The administration owners apply the finite exception below; every other configuration effect keeps its existing human-confirmed boundary.
 
 ## Contract / Expected Behavior
 
@@ -41,6 +41,20 @@ Represent maintenance authority in existing Permissions/Policy assignments and e
 Delegation names target Agent/Workspace scope, permitted workload purposes, endpoint/port/protocol and method/resource limits, eligible actions, validity and revocation conditions. It permits independently selecting a correction inside that ceiling, never changing the ceiling itself. Current responsible-administrator authority is rechecked for each effect; local/server identity remains owned by Permissions. Source access and destination audience are independently enforced.
 
 The operator MUST NOT change its own authority, Vault grants, TLS verification, containment boundaries, resource audiences, arbitrary service control or other reserved effects. Git-read path repair cannot authorize push, unrestricted egress or injecting credentials into credential-free materialization. A template difference is not drift without a known intended baseline, and a template update cannot expand delegation.
+
+### First Registered Target And Action
+
+The first delegated application is limited to correcting Git smart-HTTP read rules in the network policy of an existing registered Worker Agent configuration. The exact source identity and affected resource scope come from the existing configuration registry. No caller selects a host path. A Server-owned Agent change is evaluated against its Server scope and all affected scope restrictions; a single Workspace reference cannot authorize a broader effect. Other target families and Worker changes remain outside delegated application.
+
+Reuse the administration configuration capabilities: `administration.configuration.read` inspects the registered Agent source and revision; `administration.schema.read` exposes the allowed change shape; `administration.configuration.propose` takes the registered Agent identity, expected source revision, exact proposed network-rule correction and originating failure reference, validates it and publishes the existing immutable candidate Artifact with its before/after semantic comparison. Comparison and validation are steps of this existing proposal owner, not new writers, stores or independent execution lifecycles. The admitted change shape can alter only `sandbox.network` Git-read rules; no other Agent field or credential binding can change. The candidate retains its exact source scope, revision, normalized change, failure lineage and permitted Git-read purpose.
+
+Admit `administration.configuration.apply` as one additional fixed Tool in the private administration entry only for this candidate class. Its model input contains a command request identity and the exact existing candidate reference (Artifact identity, version and digest); it contains no caller-supplied actor, authorization decision, delegation ceiling or raw replacement file. It invokes the existing configuration application command and revision-protected file owner. App API and administrator CLI projections use that same semantic command. Existing Provider and Gateway candidates still require their exact human confirmation and cannot be applied through this delegated Tool. An inadmissible candidate returns a safe refusal without a write.
+
+The effect context is server-derived and binds the responsible currently authorized administrator, authenticated credential restrictions, internal entry and Thread/Turn, registered source identity and full affected scope, operation `administration.configuration.apply`, purpose `git-read`, exact candidate reference and base revision, originating failure, current Policy assignments and decision snapshot, and the current time. Existing Permissions/Policy must explicitly allow this actor, target, purpose, rule endpoints, ports, protocols, methods, paths, action and validity interval within the administrator-defined ceiling. Current administrator status, ordinary `api.call`, a template match, or model prose alone cannot supply that delegation. Missing, expired, revoked, conflicting or unevaluable mandatory facts fail closed. The Tool cannot write its own authority. No new delegation grant store, token, maintenance journal or generic policy language is admitted.
+
+Recheck that context, exact candidate and source revision immediately before the existing command dispatches a mutation. This bounded Policy allow replaces per-candidate human confirmation only for the admitted Git-read correction. It cannot authorize Git push, unrestricted egress, TLS bypass, credential injection, containment or audience changes, service control, or changes to the operator's own Tools or authority. Configuration validation also checks the complete resulting source, preserving every unrelated authored field and existing denied route. A correction must not turn a Git read grant into a broader write grant.
+
+This is the finite [D06 ruling](../decisions/20261015-cleanup_pinning_and_delegated_apply_rulings.md), not general configuration or host authority.
 
 ### Candidate And Application Lifecycle
 
@@ -52,13 +66,19 @@ Persistence and reload are separate outcomes. A persisted candidate whose reload
 
 No running AEP, process environment or historical failed Turn is rewritten. Verify loaded configuration, then permit only a fresh authorized Task after existing cleanup/storage admission accepts it. The new Task proves its own in-sandbox materialization and cannot retroactively establish the original failure's cause. Retained bytes survive.
 
+### Executable Policy Assignment Dependency
+
+Implementation of delegated application depends on the existing Permissions/Policy assignment owner providing an executable assignment and evaluation path for this exact actor, registered target, full affected scope, `git-read` purpose, action, rule bounds, and validity/revocation conditions. That mechanism is not implemented or defined by this amendment. Until the owning mechanism can produce the exact current allow, delegated apply fails closed. Administrator status, ordinary `api.call`, a template comparison, model prose, and a parallel grant store are not substitutes.
+
+P12 owns shared schema/operation composition, P01 owns configuration persistence, and the administration caller owner owns its entry assembly. Register the bounded Worker candidate branch and its full-source validation in those existing owners before enabling the Tool. Existing Provider/Gateway candidates retain human confirmation. This named dependency blocks delegated execution only; diagnosis and candidate preparation may proceed through their current contracts.
+
 ## Proposed Design
 
 Admit finite inspect, compare, validate and apply capabilities into the existing private administration entry, using shared Core implementations for App API, administrator CLI and internal Tool projections. The existing configuration target registry, optimistic revisions, reload semantics, Policy evaluation, command ledger and audit/evidence records remain unique owners. No maintenance runner or new durable lifecycle is proposed.
 
 ## Current Implementation Projection
 
-No delegated maintenance apply Tool is implemented. The first delivery adds failure projection only. Existing Chat Mode Assistant and Internal Agent Resource Integration administration gates remain effective; this Draft is not execution authority.
+No delegated maintenance apply Tool is implemented. The accepted target above now admits its finite Git-read projection; current code still provides diagnosis and candidate preparation. Other administration application remains human-confirmed.
 
 ## Alternatives Considered
 
@@ -70,11 +90,13 @@ Routine authorized corrections can become autonomous after operation admission, 
 
 ## Rollout / Migration Plan
 
-Slice 5 is later. Before implementation, accept this Draft's finite operation contract and amend only its explicit bounded exception in Chat Mode Assistant and Internal Agent Resource Integration together. Do not introduce backward compatibility or write Tools in the first failure-projection PR.
+Implement only the accepted finite Git-read action with the matching Chat Mode and Internal Agent Resource Integration boundaries. Reuse existing configuration, Policy, receipt, and Audit owners. Retain all unrelated administrator-confirmed operations and add no compatibility path.
 
 ## Testing Strategy / Acceptance Criteria
 
 An authorized correction of nested Git smart-HTTP paths must persist the exact candidate, expose reload status, and let a new Task materialize its requested commit under sandbox policy. Unauthorized endpoints, push methods, TLS bypass, self-expansion, revoked/expired authority and changed revisions must reject before mutation. Tests must distinguish persisted/reload-failed, lost response, restart inspection and new-request retry. Secret canaries must not appear in evidence, APIs, model input or telemetry. A real sandbox observation, not a host fetch or compiler-derived expected value, decides enforcement acceptance.
+
+Acceptance includes valid delegated Git read, an otherwise identical candidate without delegation, revoked and expired delegation, out-of-scope target, stale source, changed candidate, a Provider/Gateway candidate sent to the delegated Tool, unrelated-field changes, Git push or widened egress, credential/TLS changes, separate persistence and reload failure, exact receipt replay, changed-input conflict and unknown-result inspection without another write. Real Sandbox qualification remains required for enforcement claims; configuration or unit tests alone do not establish a historical cause or working network access.
 
 ## Risks & Mitigations
 
@@ -82,11 +104,11 @@ Adversarial diagnostics cannot expand Tools or permissions. Closed normalized ev
 
 ## Open Questions
 
-- [Blocking] The finite inspect/compare/validate/apply operation signatures and their exact Policy evaluation context must be settled with the existing configuration and administration owners before acceptance and Slice 5 implementation. Simon's acceptance of the delegation ceiling is settled, not an open question.
+None for the accepted Git-read scope. Other delegated targets and actions are outside this contract.
 
 ## Deferred / Future Work
 
-Slice 5 implements admitted delegated maintenance after contract acceptance. Full enforcement correlation and product recovery journey remain separate slices. NanoHost/NanoCore whole-service recovery is explicitly deferred and is not an availability promise of this specification.
+Implementation supplies only the admitted Git-read maintenance scope. Full enforcement correlation and product recovery journey remain separate slices. NanoHost/NanoCore whole-service recovery is explicitly deferred and is not an availability promise of this specification.
 
 ## Links
 

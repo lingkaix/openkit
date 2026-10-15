@@ -19,6 +19,12 @@ NanoHost startup and Worker-image availability are separate checks. The accepted
 
 From `v0.1.0`, use the accepted carry-forward or explicit data-retirement owner instead. These steps execute no reset by themselves and define no new command, account store, or recovery service.
 
+## Pin A Reusable Worker In A Workspace
+
+The conversation target catalog offers Workspace-pinned Agents or the Workspace default. General Agent inventory is broader; direct Task selection can still name any currently eligible Agent. A pin grants no permission, readiness, credential, runtime, or Task. This boundary follows [Unified Conversation Composer](https://github.com/lingkaix/openkit/blob/main/docs/specs/20260831-unified_conversation_composer.md#workspace-pin-prerequisite).
+
+A currently authorized technical administrator uses the existing `runtime.file-list` and `runtime.file-read` operations to identify the registered Workspace source and current revision. Preserve unrelated Agent bindings. Add the stable Agent identity and optional declared profile to the existing authored bindings, validate with `runtime.validate`, and submit through `runtime.file-update` against that exact revision. Use `runtime.reload` where supported. Report the persisted revision and reload outcome separately, then read the catalog again. Failed reload, stale revision, removed authority, and unavailable supply retain their existing refusal; never claim the pin is available from persistence alone. A member without configuration authority requests this administrator action. No dedicated Web pin control is implied by this procedure.
+
 ## Inspect A Running Deployment
 
 Doctor distinguishes service availability, product-work readiness, update readiness and maintenance safety. Configured transport still requires helper preparation. Execution-host readiness includes observation age and is not a live probe; `freshEmpty` is not deployment-wide idleness. A completed index rebuild remains informational. Unknown evidence stays unknown.

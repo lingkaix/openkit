@@ -40,7 +40,7 @@ AgentSessions materialize resolved supply into live or resumable runtime continu
 
 ## Scope
 
-Agent supply is projected into a workspace-visible catalog by default. Workspace launch bindings and default selections do not filter that inventory.
+Agent supply is projected into a workspace-visible catalog by default. Workspace launch bindings and default selections do not filter that inventory. The reusable conversation-target projection separately uses Workspace pins or the selected default; an eligible unpinned Agent remains selectable by an exact Task request. The [pinning ruling](../decisions/20261015-cleanup_pinning_and_delegated_apply_rulings.md) links its owning specification.
 
 A workspace may include:
 
