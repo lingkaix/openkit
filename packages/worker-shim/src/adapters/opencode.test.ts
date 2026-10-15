@@ -30,11 +30,16 @@ import type {
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
 import { WORKER_ADAPTERS } from '../adapter-registry.js';
+import { WorkerControlError } from '../control-client.js';
 import { WorkerHarness } from '../harness.js';
 import type { SandboxIntegrationClient } from '../integration-client.js';
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
 import { nativeStartupAdmission } from '../native-startup.js';
-import { type RuntimeObservation, RuntimeSemanticCapture } from '../runtime-capture.js';
+import {
+  RuntimeCaptureStoppedError,
+  type RuntimeObservation,
+  RuntimeSemanticCapture,
+} from '../runtime-capture.js';
 import {
   type SyntheticCapability,
   startSyntheticCapability,
@@ -133,6 +138,292 @@ describe('OpenCode resident adapter', () => {
     });
     return { adapter, child, client, layout, creds, environment: () => environment };
   }
+
+  describe('owned collector stop boundary', () => {
+    const retainedCases = (['off', 'on'] as const).flatMap((capture) =>
+      (['assistant', 'origin'] as const).flatMap((boundary) =>
+        (['interrupted', 'failed'] as const).map((native) => ({ capture, boundary, native }))
+      )
+    );
+
+    /** Keeps native correlation and collector rejection separate at the existing SDK-shaped boundary. */
+    async function startBoundary(options: {
+      capture: 'off' | 'on';
+      boundary: 'assistant' | 'origin';
+      native: 'interrupted' | 'failed' | 'completed' | 'length';
+      fault: Error;
+      abortAtSink: boolean;
+      requestedBeforeCorrelation?: boolean;
+      malformed?: 'duplicate idle' | 'wrong prompt';
+    }) {
+      const f = timelineFixture('new');
+      const controller = new AbortController();
+      const prompt = f.client.session.prompt;
+      let prompted = false;
+      f.client.session.prompt = async (input) => {
+        const result = await prompt(input);
+        prompted = true;
+        return result;
+      };
+      let releaseCorrelation!: () => void;
+      const correlate = new Promise<void>((resolve) => {
+        releaseCorrelation = resolve;
+      });
+      let enteredCorrelation!: () => void;
+      const correlating = new Promise<void>((resolve) => {
+        enteredCorrelation = resolve;
+      });
+      const get = f.client.session.get;
+      f.client.session.get = async (...args) => {
+        const info = await get(...args);
+        if (prompted && options.requestedBeforeCorrelation) {
+          enteredCorrelation();
+          await correlate;
+        }
+        return {
+          ...info,
+          outcome:
+            options.native === 'completed' || options.native === 'length'
+              ? 'succeeded'
+              : options.native,
+        };
+      };
+      const list = f.client.message.list;
+      f.client.message.list = async (...args) => {
+        const response = await list(...args);
+        let data = response.data.map((row) =>
+          row.type === 'assistant'
+            ? {
+                ...row,
+                finish:
+                  options.native === 'completed'
+                    ? 'stop'
+                    : options.native === 'length'
+                      ? 'length'
+                      : 'error',
+              }
+            : row.type === 'idle'
+              ? {
+                  ...row,
+                  outcome:
+                    options.native === 'completed' || options.native === 'length'
+                      ? 'succeeded'
+                      : options.native,
+                }
+              : row
+        );
+        if (prompted && options.malformed) {
+          controller.abort();
+          data =
+            options.malformed === 'duplicate idle'
+              ? [...data, { ...data.at(-1), id: 'unrelated-idle' }]
+              : data.map((row) => (row.type === 'user' ? { ...row, id: 'wrong-prompt' } : row));
+        }
+        return { ...response, data } as never;
+      };
+      const nativeInterrupt = vi
+        .spyOn(f.client.session, 'interrupt')
+        .mockResolvedValue({ interrupted: true } as never);
+      const killed = vi.spyOn(f.child, 'kill');
+      const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+      sessions.push(session);
+      const accepted: RuntimeObservation[] = [];
+      const rejected: RuntimeObservation[] = [];
+      let firstRefusedCall = -1;
+      let collectorCallsAtRefusal = -1;
+      const collector = vi.spyOn(RuntimeSemanticCapture.prototype, 'emit');
+      const emit = vi.fn(async (record: RuntimeObservation) => {
+        const selected =
+          record.fact.kind === options.boundary &&
+          (options.boundary === 'assistant' || record.fact.phase !== 'started');
+        if (selected) {
+          if (options.abortAtSink) controller.abort();
+          if (firstRefusedCall < 0) {
+            firstRefusedCall = emit.mock.calls.length - 1;
+            collectorCallsAtRefusal = collector.mock.calls.length;
+          }
+          rejected.push(record);
+          throw options.fault;
+        }
+        accepted.push(record);
+      });
+      const input = turnInput(f.layout, f.creds, 'collector-boundary', 'prompt-model');
+      const turn = await session.startTurn({
+        ...input,
+        signal: controller.signal,
+        runtimeCapture: {
+          ...input.runtimeCapture,
+          captureCoverage: { scope: 'server', value: options.capture },
+          emit,
+        },
+      });
+      let interrupt: Promise<void> | undefined;
+      if (options.requestedBeforeCorrelation) {
+        await nativeTestBound(correlating, 1_000, 'Native correlation did not enter.');
+        controller.abort();
+        interrupt = turn.interrupt();
+        releaseCorrelation();
+      }
+      const outcome = await nativeTestBound(
+        turn.settled.then(
+          (result) => ({ result }),
+          (error: unknown) => ({ error })
+        ),
+        1_000,
+        'Collector stop did not settle through the existing native boundary.'
+      );
+      await interrupt?.catch(() => undefined);
+      const collectorCallCount = collector.mock.calls.length;
+      collector.mockRestore();
+      return {
+        ...f,
+        controller,
+        session,
+        nativeInterrupt,
+        killed,
+        emit,
+        accepted,
+        rejected,
+        firstRefusedCall,
+        collectorCallsAtRefusal,
+        collectorCallCount,
+        outcome,
+      };
+    }
+
+    it.each(
+      retainedCases
+    )('retains correlated $native at $boundary with capture=$capture after the owned stop', async (testCase) => {
+      const fault = new RuntimeCaptureStoppedError();
+      const f = await startBoundary({ ...testCase, fault, abortAtSink: true });
+      expect(f.controller.signal.aborted).toBe(true);
+      expect(f.outcome).toMatchObject({
+        result: {
+          status: testCase.native,
+          interruptRequested: false,
+          nativeEvidence: { nativeTerminal: true },
+        },
+      });
+      expect(f.rejected).toHaveLength(1);
+      await expect(f.emit.mock.results[f.firstRefusedCall]!.value).rejects.toBe(fault);
+      expect(f.emit).toHaveBeenCalledTimes(f.firstRefusedCall + 1);
+      expect(f.collectorCallCount).toBe(f.collectorCallsAtRefusal);
+      expect(f.accepted).not.toContain(f.rejected[0]);
+      expect(f.nativeInterrupt).not.toHaveBeenCalled();
+      expect(f.killed).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'off',
+      'on',
+    ] as const)('retains an interruption requested before correlation with capture=%s', async (capture) => {
+      const fault = new RuntimeCaptureStoppedError();
+      const f = await startBoundary({
+        capture,
+        boundary: 'assistant',
+        native: 'interrupted',
+        fault,
+        abortAtSink: false,
+        requestedBeforeCorrelation: true,
+      });
+      expect(f.outcome).toMatchObject({
+        result: {
+          status: 'interrupted',
+          interruptRequested: true,
+          nativeEvidence: { nativeTerminal: true },
+        },
+      });
+      expect(f.nativeInterrupt).toHaveBeenCalledTimes(1);
+      expect(f.rejected).toHaveLength(1);
+      await expect(f.emit.mock.results[f.firstRefusedCall]!.value).rejects.toBe(fault);
+      expect(f.emit).toHaveBeenCalledTimes(f.firstRefusedCall + 1);
+      expect(f.collectorCallCount).toBe(f.collectorCallsAtRefusal);
+      expect(f.killed).not.toHaveBeenCalled();
+    });
+
+    const refusedCases = (['off', 'on'] as const).flatMap((capture) => [
+      {
+        capture,
+        failure: 'unowned marker',
+        fault: new RuntimeCaptureStoppedError(),
+        abortAtSink: false,
+      },
+      {
+        capture,
+        failure: 'unknown error',
+        fault: new Error('Unrelated collector failure.'),
+        abortAtSink: true,
+      },
+      {
+        capture,
+        failure: 'same message and name',
+        fault: Object.assign(new Error(new RuntimeCaptureStoppedError().message), {
+          name: new RuntimeCaptureStoppedError().name,
+        }),
+        abortAtSink: true,
+      },
+      {
+        capture,
+        failure: 'revoked control authority',
+        fault: new WorkerControlError('worker_control_revoked', 403, null),
+        abortAtSink: true,
+      },
+    ]);
+    it.each(refusedCases)('fails closed for $failure with capture=$capture', async ({
+      capture,
+      fault,
+      abortAtSink,
+    }) => {
+      const f = await startBoundary({
+        capture,
+        fault,
+        abortAtSink,
+        boundary: 'assistant',
+        native: 'interrupted',
+      });
+      if ('result' in f.outcome) {
+        expect(f.outcome.result).toMatchObject({ status: 'failed', assistantText: null });
+      } else expect(f.outcome.error).toBeInstanceOf(Error);
+      expect(f.rejected.length).toBeGreaterThan(0);
+      await expect(f.emit.mock.results[f.firstRefusedCall]!.value).rejects.toBe(fault);
+      expect(f.session.childState()).toBe('absent');
+    });
+
+    it.each(
+      (['off', 'on'] as const).flatMap((capture) =>
+        (['assistant', 'origin'] as const).flatMap((boundary) =>
+          (['completed', 'length'] as const).map((native) => ({ capture, boundary, native }))
+        )
+      )
+    )('fails closed for native $native with lost observations at $boundary and capture=$capture', async (testCase) => {
+      const fault = new RuntimeCaptureStoppedError();
+      const f = await startBoundary({ ...testCase, fault, abortAtSink: true });
+      if ('result' in f.outcome)
+        expect(f.outcome.result).toMatchObject({ status: 'failed', assistantText: null });
+      else expect(f.outcome.error).toBeInstanceOf(Error);
+      expect(f.rejected.length).toBeGreaterThan(0);
+      await expect(f.emit.mock.results[f.firstRefusedCall]!.value).rejects.toBe(fault);
+    });
+
+    it.each([
+      'duplicate idle',
+      'wrong prompt',
+    ] as const)('does not replace malformed %s evidence with cancellation', async (malformed) => {
+      const f = await startBoundary({
+        capture: 'on',
+        boundary: 'origin',
+        native: 'interrupted',
+        fault: new RuntimeCaptureStoppedError(),
+        abortAtSink: false,
+        malformed,
+      });
+      expect(f.controller.signal.aborted).toBe(true);
+      if ('result' in f.outcome)
+        expect(f.outcome.result).toMatchObject({ status: 'failed', assistantText: null });
+      else expect(f.outcome.error).toBeInstanceOf(Error);
+      expect(f.session.childState()).toBe('absent');
+    });
+  });
 
   it.each([
     'interrupt',

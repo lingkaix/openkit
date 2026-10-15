@@ -25,6 +25,7 @@ import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js'
 import { nativeStartupAdmission } from '../native-startup.js';
 import { validateTurnReasoningEffort } from '../reasoning-effort.js';
 import {
+  RuntimeCaptureStoppedError,
   type RuntimeFact,
   RuntimeSemanticCapture,
   runtimeOriginRef,
@@ -610,6 +611,7 @@ async function supervise(
         let promptId = '';
         let promptAttempted = false;
         let captureAbandoned = false;
+        let ownedCaptureStop: RuntimeCaptureStoppedError | null = null;
         // Native HTTP authentication is adapter-private, so the shared input cannot enumerate it.
         const capture = new RuntimeSemanticCapture({
           ...turn.runtimeCapture,
@@ -621,7 +623,15 @@ async function supervise(
                 record.fact.coverage === 'unavailable' &&
                 record.fact.reason === 'collector-failed')
             )
-              await turn.runtimeCapture.emit(record, body);
+              try {
+                await turn.runtimeCapture.emit(record, body);
+              } catch (error) {
+                if (error instanceof RuntimeCaptureStoppedError && turn.signal?.aborted) {
+                  ownedCaptureStop = error;
+                  captureAbandoned = true;
+                }
+                throw error;
+              }
           },
           credentialValues: [
             ...turn.runtimeCapture.credentialValues,
@@ -955,8 +965,8 @@ async function supervise(
             ]).finally(() => nativeExit.signal.removeEventListener('abort', onExit));
           },
           observed: observeMessages,
+          captureStopped: (error) => ownedCaptureStop !== null && error === ownedCaptureStop,
           published: async (messages) => {
-            if (captureAbandoned) return;
             nativeTerminal = true;
             const outcome = messages.at(-1)?.outcome;
             nativePhase =
@@ -971,30 +981,45 @@ async function supervise(
                 recordLifecycleFact?.({ label: 'native_event' });
               }
             }
+            if (captureAbandoned) return;
             await observeMessages(messages);
           },
         }).then(async (result) => {
-          await capture.emit(sourceRef, {
-            kind: 'origin',
-            runtimeOriginRef: originRef,
-            phase: nativePhase,
-          });
-          await capture.flushCompleted();
-          if (!nativeTerminal || nativePhase === 'interrupted') await capture.interrupt();
-          if (!nativeTerminal)
-            await capture.emit(sourceRef, {
-              kind: 'coverage',
-              runtimeOriginRef: originRef,
-              family: 'primary-content',
-              coverage: 'unavailable',
-              reason: 'collector-failed',
-            });
-          await capture.emit(sourceRef, {
-            kind: 'coverage',
-            runtimeOriginRef: originRef,
-            family: 'primary-content',
-            coverage: 'ended',
-          });
+          try {
+            if (!ownedCaptureStop) {
+              await capture.emit(sourceRef, {
+                kind: 'origin',
+                runtimeOriginRef: originRef,
+                phase: nativePhase,
+              });
+              await capture.flushCompleted();
+              if (!nativeTerminal || nativePhase === 'interrupted') await capture.interrupt();
+              if (!nativeTerminal)
+                await capture.emit(sourceRef, {
+                  kind: 'coverage',
+                  runtimeOriginRef: originRef,
+                  family: 'primary-content',
+                  coverage: 'unavailable',
+                  reason: 'collector-failed',
+                });
+              await capture.emit(sourceRef, {
+                kind: 'coverage',
+                runtimeOriginRef: originRef,
+                family: 'primary-content',
+                coverage: 'ended',
+              });
+            }
+          } catch (error) {
+            if (!ownedCaptureStop || error !== ownedCaptureStop) throw error;
+          }
+          if (ownedCaptureStop) {
+            // Required observation loss cannot become successful work. The cancellation final only reports an already non-successful native result.
+            if (result.status === 'completed' || result.status === 'length') throw ownedCaptureStop;
+            result = {
+              ...result,
+              diagnostics: { ...result.diagnostics, runtimeCapture: 'incomplete' },
+            };
+          }
           collected = true;
           result = {
             ...result,
@@ -1640,6 +1665,7 @@ async function settleTurn(options: {
   interruptRequested: () => boolean;
   rpc: NativeRpc;
   observed: (messages: NativeMessage[]) => Promise<void>;
+  captureStopped: (error: unknown) => boolean;
   published: (messages: NativeMessage[]) => Promise<void>;
 }): Promise<WorkerAdapterResult> {
   const finish = (result: WorkerAdapterResult) =>
@@ -1679,7 +1705,12 @@ async function settleTurn(options: {
         break;
       }
       // Reuse the native poll owner so structural facts survive a later terminal or host loss.
-      await options.observed(await listMessages(options.client, options.sessionId, options.rpc));
+      const observed = await listMessages(options.client, options.sessionId, options.rpc);
+      try {
+        await options.observed(observed);
+      } catch (error) {
+        if (!options.captureStopped(error)) throw error;
+      }
       // Four read RPCs per poll must leave CPU time for twenty resident bindings to prepare.
       await delay(1_000);
     }
@@ -1690,7 +1721,11 @@ async function settleTurn(options: {
       ...interpretMessages(messages, options.promptId, options.secrets, outcome),
       interruptRequested: options.interruptRequested(),
     };
-    await options.published(all);
+    try {
+      await options.published(all);
+    } catch (error) {
+      if (!options.captureStopped(error)) throw error;
+    }
     return finish(result);
   } catch (error) {
     return lostEvidence(errorText(error));

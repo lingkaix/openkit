@@ -20,9 +20,14 @@ import type {
   WorkerResidentSession,
   WorkerResidentTurn,
 } from './adapter-registry.js';
-import { WorkerControlClient, type WorkerControlFetch } from './control-client.js';
+import {
+  WorkerControlClient,
+  WorkerControlError,
+  type WorkerControlFetch,
+} from './control-client.js';
 import type { SandboxIntegrationClient } from './integration-client.js';
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from './lifecycle-deadline.js';
+import { RuntimeCaptureStoppedError } from './runtime-capture.js';
 import { type WorkerTerminalOutcomeInput, WorkerTranscriptWriter } from './transcript.js';
 import { TurnTimeline } from './turn-timeline.js';
 import {
@@ -230,6 +235,7 @@ async function runResidentTurnImplementation(
   let controlSession: WorkerControlClient | null = null;
   const controlAbortController = new AbortController();
   const heartbeatAbortController = new AbortController();
+  const cancelledLiveOutput = new RuntimeCaptureStoppedError();
   const writer = new WorkerTranscriptWriter({
     recordLifecycleFact: timeline.record,
     appendEvent: async (record) => {
@@ -250,14 +256,19 @@ async function runResidentTurnImplementation(
   /** Stops scheduling and joins the current request before final status revokes its lease. */
   const stopHeartbeats = async (): Promise<void> => {
     heartbeatAbortController.abort();
-    await heartbeat;
-    await heartbeatDelivery.request;
+    const results = await Promise.allSettled([heartbeat, heartbeatDelivery.request]);
+    for (const result of results)
+      if (result.status === 'rejected' && result.reason !== cancelledLiveOutput)
+        throw result.reason;
   };
   let terminalPublication: Promise<void> | null = null;
   let terminalOutcomeAttempted = false;
   let workerControlReady = false;
   let residentTurn: WorkerResidentTurn | null = null;
   let interrupted = options.signal.aborted;
+  /** Only this Turn's owned cancellation can retain final publication after an ordinary closing refusal. */
+  const isCancellationDeliveryFailure = (error: unknown): boolean =>
+    interrupted && (error === cancelledLiveOutput || isClosingControlRefusal(error));
   if (interrupted) timeline.record({ label: 'interrupt' });
   const interruptReason = new Error('Harness turn.interrupt');
   /** The one native stop of the started Turn; its result is shared by every stop request. */
@@ -279,6 +290,10 @@ async function runResidentTurnImplementation(
   const onInterrupt = () => {
     if (!interrupted) timeline.record({ label: 'interrupt' });
     interrupted = true;
+    if (workerControlReady) {
+      writer.stopLiveEvents(cancelledLiveOutput);
+      heartbeatAbortController.abort();
+    }
     if (residentTurn) {
       void stopStartedTurn(residentTurn).then((stopped) => {
         if (!stopped) failUnprovedStop(new Error('Resident native interrupt was not proved.'));
@@ -341,15 +356,19 @@ async function runResidentTurnImplementation(
       () => (residentTurn ? 'running' : 'starting')
     );
     // Live rejection stops the same control owner immediately, including pending delivery.
-    const heartbeatFailure = heartbeat.then(
-      () => {
-        throw new Error('Worker control stopped before final status acceptance.');
-      },
-      (error: unknown) => {
-        controlAbortController.abort(error);
-        throw error;
-      }
-    );
+    const heartbeatFailure = new Promise<never>((_resolve, reject) => {
+      void heartbeat!.then(
+        () => {
+          if (!heartbeatAbortController.signal.aborted)
+            reject(new Error('Worker control stopped before final status acceptance.'));
+        },
+        (error: unknown) => {
+          if (isCancellationDeliveryFailure(error)) return;
+          controlAbortController.abort(error);
+          reject(error);
+        }
+      );
+    });
     heartbeatFailure.catch(() => undefined);
 
     progress.stage = 'native_spawn';
@@ -410,11 +429,19 @@ async function runResidentTurnImplementation(
     // A resident host that ends on its own fails the Turn; it is not an interrupt, and the ended
     // host is the proof that its native work stopped.
     const hostEndedError = new Error('Resident host ended during the Turn.');
+    let cancelledAppendFailure: unknown;
     try {
-      await writer.writeAndAppendEvent({
-        data: { adapter: options.adapterId, status: 'turn.started' },
-        type: 'worker.ready',
-      });
+      if (!interrupted) {
+        try {
+          await writer.writeAndAppendEvent({
+            data: { adapter: options.adapterId, status: 'turn.started' },
+            type: 'worker.ready',
+          });
+        } catch (error) {
+          if (!isCancellationDeliveryFailure(error)) throw error;
+          if (error !== cancelledLiveOutput) cancelledAppendFailure = error;
+        }
+      }
       const hostEnded = () => {
         timeline.record({ label: 'host_exit' });
         timeline.record({ label: 'native_stop', reason: 'proved' });
@@ -430,6 +457,11 @@ async function runResidentTurnImplementation(
         throw outcome.error;
       }
       adapterResult = outcome.result;
+      if (
+        cancelledAppendFailure !== undefined &&
+        !(adapterResult.status === 'interrupted' && adapterResult.interruptRequested === true)
+      )
+        throw cancelledAppendFailure;
     } catch (error) {
       // An unproved stop leaves native work that may still run; the Harness must fence it.
       if (error !== hostEndedError && !(await stopStartedTurn(startedTurn))) {
@@ -438,14 +470,26 @@ async function runResidentTurnImplementation(
       throw error;
     }
 
-    // Lease heartbeats continue through settlement, loopback drain, and output sealing.
-    await Promise.race([
-      writer.writeAndAppendEvent({
-        data: { adapter: options.adapterId, status: 'turn.settled' },
-        type: 'worker.heartbeat',
-      }),
-      heartbeatFailure,
-    ]);
+    // Ordinary completion keeps lease heartbeats through sealing; owned cancellation already stopped new emissions.
+    if (!interrupted) {
+      try {
+        await Promise.race([
+          writer.writeAndAppendEvent({
+            data: { adapter: options.adapterId, status: 'turn.settled' },
+            type: 'worker.heartbeat',
+          }),
+          heartbeatFailure,
+        ]);
+      } catch (error) {
+        const requestedInterruption =
+          adapterResult.status === 'interrupted' && adapterResult.interruptRequested === true;
+        if (
+          !isCancellationDeliveryFailure(error) ||
+          (error !== cancelledLiveOutput && !requestedInterruption)
+        )
+          throw error;
+      }
+    }
     // Turn barrier: loopback requests still in flight are drained, then cut, before collection.
     await Promise.race([
       options.integration.drainTurn(options.lineage.agentSessionId).then(
@@ -519,7 +563,8 @@ async function runResidentTurnImplementation(
       terminalInput,
       timeline,
       controlAbortController.signal,
-      stopHeartbeats
+      stopHeartbeats,
+      interrupted ? cancelledLiveOutput : undefined
     );
     // Publication joins heartbeat failure itself; an orderly schedule stop is not a race loser.
     await terminalPublication;
@@ -543,7 +588,8 @@ async function runResidentTurnImplementation(
         { status: 'interrupted', stopReason: 'aborted' },
         timeline,
         controlAbortController.signal,
-        stopHeartbeats
+        stopHeartbeats,
+        cancelledLiveOutput
       );
       await terminalPublication;
       return { status: 'interrupted' };
@@ -795,7 +841,7 @@ export function describeWorkerStartupFailure(
 }
 
 /**
- * Persists one terminal transcript record and reports its exact final sequence only after all preceding live acknowledgements; failed live delivery retains local evidence without publication.
+ * Seals one terminal and reports its exact sequence after live acknowledgement, or records incomplete cancellation output under the accepted first-final exception.
  *
  * @param writer Durable worker transcript writer.
  * @param client Existing session coordinator, or null when live publication is unavailable.
@@ -803,6 +849,7 @@ export function describeWorkerStartupFailure(
  * @param timeline Shared recorder frozen synchronously before terminal transcript sealing.
  * @param signal Existing control-delivery cancellation; no fresh publication authority or retry budget is created.
  * @param stopHeartbeats Joins the live heartbeat owner after output acknowledgement and before terminal submission.
+ * @param cancellationReason Exact local ordinary-output suppression reason for this Turn's owned cancellation.
  */
 async function writeAndReportTerminalOutcome(
   writer: WorkerTranscriptWriter,
@@ -810,8 +857,28 @@ async function writeAndReportTerminalOutcome(
   input: WorkerTerminalOutcomeInput,
   timeline: TurnTimeline,
   signal?: AbortSignal,
-  stopHeartbeats?: () => Promise<void>
+  stopHeartbeats?: () => Promise<void>,
+  cancellationReason?: Error
 ): Promise<void> {
+  const cancellationFinal =
+    cancellationReason !== undefined &&
+    input.status === 'interrupted' &&
+    input.stopReason === 'aborted';
+  let cancellationDelivery: PromiseSettledResult<unknown>[] | undefined;
+  if (client && cancellationReason) {
+    writer.stopLiveEvents(cancellationReason);
+    // An entered ordinary request keeps its own acknowledgement; cancellation grants no accepted output.
+    cancellationDelivery = await Promise.allSettled([writer.drainLiveEvents(), stopHeartbeats?.()]);
+    if (writer.liveEventsIncomplete)
+      input = {
+        ...input,
+        diagnostics: {
+          ...input.diagnostics,
+          transcript: 'incomplete',
+          runtimeCapture: 'incomplete',
+        },
+      };
+  }
   let snapshot: string | undefined;
   try {
     timeline.freeze();
@@ -827,13 +894,32 @@ async function writeAndReportTerminalOutcome(
   );
   if (!client) return;
   // Sealing prevents new events from extending the barrier on normal and exceptional closeout.
-  await writer.drainLiveEvents();
-  // Core can revoke the lease before returning the final-status response. Cancellation alone cannot fence a request already in flight, so join it without aborting control delivery.
-  await stopHeartbeats?.();
+  if (cancellationDelivery) {
+    for (const result of cancellationDelivery)
+      if (
+        result.status === 'rejected' &&
+        result.reason !== cancellationReason &&
+        !(cancellationFinal && isClosingControlRefusal(result.reason))
+      )
+        throw result.reason;
+  } else {
+    await writer.drainLiveEvents();
+    // Core can revoke the lease before returning final status. Join the entered heartbeat without aborting its delivery.
+    await stopHeartbeats?.();
+  }
   signal?.throwIfAborted();
   const terminalData = WorkerCanonicalTerminalEventDataSchema.parse(record.event.data);
 
   await client.recordFinalStatus({ ...terminalData, sequence: record.sequence }, signal);
+}
+
+/** Only the typed closing-lease refusal can leave an owned cancellation's separate final operation available. */
+function isClosingControlRefusal(error: unknown): boolean {
+  return (
+    error instanceof WorkerControlError &&
+    error.status === 403 &&
+    error.code === 'worker_control_lease_not_live'
+  );
 }
 
 /**

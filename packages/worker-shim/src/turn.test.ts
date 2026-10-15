@@ -552,6 +552,7 @@ async function captureBoundaryResident(
   const client = {
     agent: { get: async () => ({ data: { permissions: [] } }) },
     config: { get: async () => [] },
+    debug: { location: { evict: async () => undefined } },
     location: { reload: async () => undefined },
     model: {
       list: async () => ({
