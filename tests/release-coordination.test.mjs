@@ -220,7 +220,9 @@ test('preparation imports existing authored issue rows and generates the two-sec
 test('preparation validates real commit objects and refuses a hand-typed nonexistent SHA', () => {
   const head = commitAt('HEAD');
   assert.equal(validateShaReferences({ sha: head }), 1);
+  assert.equal(validateShaReferences({ sha: head.toUpperCase() }), 1);
   assert.throws(() => validateShaReferences({ sha: 'f'.repeat(40) }));
+  assert.throws(() => validateShaReferences({ sha: 'F'.repeat(40) }));
 });
 
 test('observation subprocesses stop at the declared deadline without exposing raw output', () => {

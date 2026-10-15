@@ -61,10 +61,10 @@ export function commitAt(ref, { cwd = process.cwd() } = {}) {
 export function validateShaReferences(value, { cwd = process.cwd() } = {}) {
   const references = [
     ...new Set(
-      (typeof value === 'string' ? value : canonical(value)).match(/\b[a-f0-9]{7,40}\b/g) ?? []
+      (typeof value === 'string' ? value : canonical(value)).match(/\b[a-f0-9]{7,40}\b/gi) ?? []
     ),
-  ].filter((v) => /[a-f]/.test(v) || v.length === 40);
-  for (const ref of references) commitAt(ref, { cwd });
+  ].filter((v) => /[a-f]/i.test(v) || v.length === 40);
+  for (const ref of references) commitAt(ref.toLowerCase(), { cwd });
   return references.length;
 }
 
