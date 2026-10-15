@@ -1,5 +1,9 @@
 import { ProposeAdministrationConfigurationRequestSchema } from '@openkit/app-api-schemas';
-import { AuthoredAgentConfigSchema, getConfigSchemaCatalog } from '@openkit/config-schema';
+import {
+  type AuthoredAgentConfig,
+  AuthoredAgentConfigSchema,
+  getConfigSchemaCatalog,
+} from '@openkit/config-schema';
 import { z } from 'zod';
 
 import type { createAdministrationConfiguration } from '../config/administration-configuration.js';
@@ -31,7 +35,7 @@ export function createAdministrationConfigurationTools(
     {
       name: 'administration.configuration.read',
       description:
-        'List or read current Agent, Provider or Gateway configuration. Provider/Gateway reads return editable catalog fields and the exact revision; use targetId gateway for Gateway.',
+        'List or read current Agent, Provider or Gateway configuration. Agent detail includes its current network rules and exact source revision. Provider/Gateway reads return editable catalog fields and the exact revision; use targetId gateway for Gateway.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -114,10 +118,12 @@ function readAgentConfiguration(
       }),
     });
   }
-  const manifest = snapshot.agentManifests.find((candidate) => candidate.id === args.agentId);
-  if (!manifest) return configurationFailure('configuration_target_not_found');
-  const source = findAgentSource(files, manifest.id);
+  if (!snapshot.agentManifests.some((candidate) => candidate.id === args.agentId))
+    return configurationFailure('configuration_target_not_found');
+  const source = findAgentSource(files, args.agentId);
   if (!source) return configurationFailure('configuration_target_not_found');
+  // Inspection describes authored bytes at this revision, not the last loaded snapshot.
+  const manifest = source.manifest;
 
   return configurationResult({
     targetFamily: 'agent',
@@ -137,6 +143,7 @@ function readAgentConfiguration(
       models: manifest.models,
       runtime: manifest.runtime,
       readiness: manifest.readiness ?? null,
+      sandbox: { network: manifest.sandbox?.network ?? [] },
     },
     excludedFields: [
       'credential declarations',
@@ -148,11 +155,20 @@ function readAgentConfiguration(
   });
 }
 
+/** One validated registered source, with revision and fields from the same read. */
+interface AgentConfigurationSource {
+  readonly fileId: string;
+  readonly revision: string;
+  readonly manifest: AuthoredAgentConfig;
+}
+
+/** Finds one unambiguous registered Agent identity without accepting caller-selected paths. */
 function findAgentSource(
   files: Pick<RuntimeConfigFileService, 'listFiles' | 'readFile'>,
   agentId: string
-): { readonly fileId: string; readonly revision: string } | null {
+): AgentConfigurationSource | null {
   try {
+    let match: AgentConfigurationSource | null = null;
     for (const file of files.listFiles().files) {
       if (file.kind !== 'agent') continue;
       const source = files.readFile(file.id);
@@ -164,13 +180,14 @@ function findAgentSource(
         source.file.kind === 'agent' &&
         typeof source.file.revision === 'string'
       ) {
-        return { fileId: source.file.id, revision: source.file.revision };
+        if (match) return null;
+        match = { fileId: source.file.id, revision: source.file.revision, manifest: parsed.data };
       }
     }
+    return match;
   } catch {
     return null;
   }
-  return null;
 }
 
 /** Maps private owner failures without exposing raw validator input or configuration. */
