@@ -129,14 +129,14 @@ This checkpoint records facts and pending gates. It is not authority.
 | Controlled assets | Three catalog release images; operations archive including the reviewed helper; two target-native NanoHost archives; `SHA256SUMS`. Four GitHub attachments; no release manifest attachment until the rehearsed #225 delivery path admits it |
 | Authorization | Standing prerelease grant covers rc.6. The 2026-10-15 standing scratch grant permits the required rehearsal only in `notrucked/openkit`. This preparer has no permission to push or tag `lingkaix/openkit` |
 | Tested commit T | `8acc9e3c09092762c50de19b1e904e6186974b4f`; main-push [run 38659540662](https://github.com/lingkaix/openkit/actions/runs/38659540662), attempt 1, completed success; all candidate jobs succeeded. Root suite: 879/879 |
-| Publishing commit P | P-candidate is the local preparation commit carrying this checkpoint and reviewed notes. The final release-prep HEAD may advance to record rehearsal evidence; exact SHA is reported in the handoff. It still requires independent review, main membership and successful candidate CI on exactly P |
+| Publishing commit P | P-candidate is `17172ec1b6c76ce253d7f85928b6699ebbdf4d4a`. Commit `83155bfa393bd794c5f1108a4e051f85b2e6597b` records the later #223 ruling and notes. Final P is release-prep HEAD after this rehearsal record; its exact SHA is reported in the handoff. Independent review, main membership and successful candidate CI on exactly P remain required |
 | T-to-P comparison | Preparation changes documentation and notes only. This is not permission to reuse T across commits; final P needs its own main-push gate |
-| Publication-path proof | rc.5 real-tag baseline is successful run 38396894772 at `2f07da54f647342868e416a658b55b6dd6c40957`. All three job blocks match. The operations packager changed and newly invokes the reviewed helper. Scratch rehearsal is required and authorized; see the per-input comparison below |
+| Publication-path proof | rc.5 real-tag baseline is successful run 38396894772 at `2f07da54f647342868e416a658b55b6dd6c40957`. All three job blocks match. The operations packager changed and newly invokes the reviewed helper. Successful scratch run 38669130155 now proves those inputs at `82fd9775b3ba657a1480e191e86e2925028bf791`; final P keeps all three job blocks and nine invoked script inputs byte-identical |
 | Blocker reconciliation | [All 108 open issues reconciled](#initial-release-blocker-reconciliation). The engineer accepted #223 as a disclosed rc.6 non-blocker on 2026-10-15; it remains a first-stable blocker and is not labelled. No applicable rc.6 blocker is identified in this snapshot. Refresh issue and label state before admission |
 | Manual gates | L4 is not required by the deterministic prerelease gate. Catalog stories remain post-tag, with their independent Actor and Judge; stories 1/2 follow release-cycle/change cadence. No rc.6 story or Worker-qualification pass is claimed |
 | Deployment update | First rc.6 update on staging `a1` uses the authorized manual operator path; its old App has no new preflight. Production `a2` is excluded. No host update or Provider workload is performed here |
 | Stable prerequisites | R001 #120 stays open. #223 remains a first-stable blocker; #225 and #240 are required before the first stable release. #241 attachment delivery is planned with #225. No stable release is authorized |
-| Publication state | Not published. Exact rc.6 tag and image identities must remain unused. Real repository releases, tags, image digests and absence of `latest` are retained before/after the scratch rehearsal |
+| Publication state | rc.6 is not published. Only scratch `v0.0.0-scratch.3` is published. The real repository before/after baselines are equal, including releases, tags, image digests and absent `latest`; refresh unused rc.6 identities before admission |
 
 ## Work Packages Since rc.5 And Since 67bf536b — Rewritable
 
@@ -244,7 +244,36 @@ The existing `publicationInputsAt` reader in `scripts/release-publication-check.
 
 Baseline aggregate: `09969191926f22385e68061b7e47b59f4c7f010c338aa5b275ae87dbdbbeffb8`. rc.6 aggregate: `9029285e5b35bf435c3f5afb0fe90600151b8f00c5f27caa433b49bba5cbd1e4`. The two changed inputs include the archive/helper binding that WP2 accepted. Matching job text alone does not supply proof. The initial stop was correct; the 2026-10-15 engineer ruling now authorizes the required scratch execution in `notrucked/openkit`.
 
-The next unused scratch tag observed is `v0.0.0-scratch.3`; `.1` and `.2` exist. Recheck before pushing it. Prepare a scratch merge commit from P-candidate plus scratch notes, preserving the three job blocks and all nine script inputs exactly. Capture the real repository's release/tag/image baseline before the scratch write and compare it after. A failed, skipped or unknown publication job leaves proof pending. The result and helper-byte verification will be recorded here after execution; no success is claimed yet.
+### Completed Scratch Rehearsal — 2026-10-15
+
+Remote inspection found `.1` and `.2` and no `.3` before the write. Scratch commit `82fd9775b3ba657a1480e191e86e2925028bf791` joins P-candidate `17172ec1b6c76ce253d7f85928b6699ebbdf4d4a` with prior scratch main `a522edccc8f97b47d69efef3ee65af1eff54608d`, preserving P-candidate's tree and adding only `release-notes/v0.0.0-scratch.3.md`. The scratch notes initially copied the rc.6 notes. The preparer pushed this commit to scratch main and the unused scratch tag atomically, only in `notrucked/openkit`. Remote tag inspection confirms `.3` points to exactly this scratch commit.
+
+[Scratch run 38669130155](https://github.com/notrucked/openkit/actions/runs/38669130155), attempt 1, completed `success` on that tag and commit. It was created at `2026-10-15T02:05:12Z` and completed at `2026-10-15T03:32:46Z`. All five required publication jobs executed and succeeded:
+
+| Publication job | Job ID | Result | Completed at (UTC) |
+| --- | --- | --- | --- |
+| Publish app image | `116222165989` | `success` | `2026-10-15T03:25:35Z` |
+| Publish worker-common image | `116222165828` | `success` | `2026-10-15T03:18:13Z` |
+| Publish worker-runtimes image | `116222165951` | `success` | `2026-10-15T03:30:46Z` |
+| Publish GitHub Release | `116231661188` | `success` | `2026-10-15T03:31:05Z` |
+| Verify published release | `116231753212` | `success` | `2026-10-15T03:32:46Z` |
+
+Portable packaging, native NanoHost qualification on both architectures, preflight, L0–L2, L3, smoke, portability and the installer gate also passed. The companion [scratch main-push run 38669129903](https://github.com/notrucked/openkit/actions/runs/38669129903) completed `success` on the same scratch commit. Neither scratch run is candidate-CI evidence for final real P. The tag run took 87 minutes 34 seconds: L0–L2 took 47 minutes 25 seconds; the longest image job, Worker runtimes, took 34 minutes 18 seconds. These are measured rehearsal durations, not a promise for a later run.
+
+The [scratch release](https://github.com/notrucked/openkit/releases/tag/v0.0.0-scratch.3), ID `413389776`, was published at `2026-10-15T03:31:03Z`, with `draft=false`, `prerelease=true` and exactly four assets:
+
+| Asset | Bytes | SHA-256 |
+| --- | --- | --- |
+| `openkit-nanohost-v0.0.0-scratch.3-linux-amd64.tar.gz` | 35105053 | `ed5085eeb3b6feee2bedbcad86ab388769004757aa98b3da25ebe94c819333f7` |
+| `openkit-nanohost-v0.0.0-scratch.3-linux-arm64.tar.gz` | 33076851 | `01d5d615a7e760b19f8ddf6cd39bb9479a7894a0282226394388bb239c209c34` |
+| `openkit-ops-skill-v0.0.0-scratch.3.tar.gz` | 227311 | `e7602852671067477ff2ff5faecdde2617a993ed605a6fb55339a3a6e0ad81c8` |
+| `SHA256SUMS` | 346 | `07770d82754d7ea5dc157c9b4b9eef16c1ad349f5a78c55d0dc7df9af65aa3b0` |
+
+A separate local download matched all four GitHub asset sizes and digests. `sha256sum -c SHA256SUMS` printed `OK` for the operations, amd64 NanoHost and arm64 NanoHost archives. The existing `verifyOperationsSkillArchive` passed outside the source checkout, including packaged CLI discovery. The archived `scripts/docker/app-update-helper.py` equals the reviewed helper at P-candidate byte for byte: Git blob `56d8023549062c278b50404a4053a667404176ee`, SHA-256 `254a012630fb6283927c7c92d2f1c723624d4d4fba4068d139eb01da1eea4a74`. Local verification completed at `2026-10-15T03:33:00.142Z`.
+
+The real `lingkaix/openkit` before-baseline at `2026-10-15T02:04:24.262Z` and after-baseline at `2026-10-15T03:33:52.641Z` are equal by complete normalized-state comparison, not counts alone. Both hash to SHA-256 `31fb4ce833be70ec483f248bce437d3317e225190a109ba081aadd3564c6c221`. They include four releases with draft/prerelease flags, bodies and asset identities, names, sizes, digests, timestamps, types and labels; five tags with commit identities; and twelve tags in each of the three release image repositories with index and platform digests. All three image repositories lack `latest`. GitHub reads and anonymous registry reads supplied these observations. The scratch rehearsal wrote no real release, tag or image. The local receipts are `rc6-real-before.json`, `rc6-real-after.json`, `rc6-scratch-run.json`, `rc6-scratch-release.json` and `rc6-scratch-local-verification.json`, retained under `/tmp`.
+
+The existing Git-object reader confirms all three publication job blocks and all nine invoked script inputs match between P-candidate, scratch and the #223 follow-up commit. Their aggregate remains `9029285e5b35bf435c3f5afb0fe90600151b8f00c5f27caa433b49bba5cbd1e4`. Recording this result advances P with a change to this record only. The #223 follow-up also changes the release-notes disclosure; neither change edits publication implementation inputs. Final P's exact SHA and the repeated Git-object equality result are supplied in the handoff.
 
 ## Manual-Gate Disposition And Known Issues
 
@@ -387,12 +416,22 @@ Issues with merged fixes remain OPEN until their primary closes them or obtains 
 
 Focused root execution of `tests/release-manifest.test.mjs`, `tests/release-notes.test.mjs`, `tests/release-publication-check.test.mjs`, `tests/release-workflow.test.mjs`, `tests/release-preflight.test.mjs` and `tests/package-release-assets.test.mjs` reported `tests 191`, `pass 191`, `fail 0`, `skipped 0`, exit 0. Biome received the changed Markdown paths and reported `Checked 0 files`; this is not a lint claim. The documentation validators are the deciding checks for this Markdown-only slice. `git diff --check` exited 0 with no output.
 
-The `release-blocker` label was created with the owner policy description. No issue was labelled. Automatic approval review rejected the initial #223 label attempt while its strict-risk disposition was pending; the later engineer ruling admits it as a disclosed rc.6 non-blocker and explicitly leaves it unlabelled. Real admission is not claimed. The complete mechanical check still needs a passing scratch baseline, independent review of final P, P contained in main, successful candidate CI on exact P, refreshed unused identities and current blocker triage.
+The `release-blocker` label was created with the owner policy description. No issue was labelled. Automatic approval review rejected the initial #223 label attempt while its strict-risk disposition was pending; the later engineer ruling admits it as a disclosed rc.6 non-blocker and explicitly leaves it unlabelled. Real admission is not claimed. The scratch publication baseline is proved. The complete mechanical check still needs independent review of final P, P contained in main, successful candidate CI on exact P, refreshed unused identities and current blocker triage.
+
+### Rehearsal Closeout And Remaining Admission — 2026-10-15
+
+The local six-suite release regression was rerun after the #223 ruling and the rehearsal record. The exact result remains `tests 191`, `pass 191`, `fail 0`, `skipped 0`. The documentation model, lifecycle, generated index, story schema, release-notes check, local preflight and whitespace check also pass with the exact result lines above. Biome reports `Checked 0 files` for this Markdown-only diff and supplies no Markdown lint evidence.
+
+Before the rehearsal, the mechanical admission probe refused with `Release Management: publication refused: actual repository publication inputs differ from approved baseline`. With the observed successful scratch baseline and actual Git bytes, the probe at `83155bfa393bd794c5f1108a4e051f85b2e6597b` instead refused with `Release Management: publication refused: reviewed P`. The probe declares a short validity window for its local observation only; it adds no owner freshness cap. It supplies no invented review or candidate result and does not claim that predicates after the refusal have passed.
+
+The read-only backlog refresh still contains 108 open issues, with no new or closed issue relative to the reconciliation. No issue has `release-blocker`, and #223 remains open with no label. The engineer's dated disposition above resolves the rc.6 strict-risk question; the defect and first-stable blocker remain.
+
+Remaining sequence: independently review final P and its notes; land the reviewed commit in main; wait for successful candidate CI and all required jobs on exactly P; refresh the grant, issue triage, unused tag/image identities and declared evidence validity, then pass mechanical admission using this scratch baseline; only then create and push `v0.1.0-rc.6` under the standing prerelease grant. If landing changes the commit or publication inputs, bind review and CI to the resulting exact P and re-evaluate publication proof. This preparer stops before a real push or tag. The release cycle remains in progress because real publication, deployment update, catalog stories and Worker qualification have not occurred.
 
 ### Historical Initial Preparation
 
 
-These checks ran on the current preparation tree. Historical preparation results below remain evidence for their earlier tree; the current results are recorded separately.
+The following checks and writer statements belong to the initial preparation tree. Current preparation and rehearsal results are recorded above.
 
 `node scripts/validate-spec-lifecycle.mjs` printed `Validated spec lifecycle metadata.` and exited 0.
 
