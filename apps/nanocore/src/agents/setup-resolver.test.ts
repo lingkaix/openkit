@@ -1,5 +1,5 @@
 import type { GatewayConfig, UserConfig, WorkspaceConfig } from '@openkit/config-schema';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { ProviderRegistry } from '../providers/registry.js';
 import type { AuthoredAgentConfig } from './manifest.js';
@@ -73,6 +73,118 @@ function gatewayConfig(): GatewayConfig {
 }
 
 describe('resolveAgentSetup', () => {
+  it.each([
+    'api-key',
+    'subscription',
+  ])('rechecks live %s supply on restoration and revocation', (kind) => {
+    const baseProvider = providerRegistry().list()[0]!;
+    const providers =
+      kind === 'api-key'
+        ? providerRegistry()
+        : new ProviderRegistry([
+            {
+              ...baseProvider,
+              kind: 'oauth',
+              vendor: 'openai-codex',
+              baseUrl: undefined,
+              secretRef: undefined,
+              extensions: {
+                openkit: { subscriptionAccount: { accountSlotId: 'private-slot-fixture' } },
+              },
+            },
+          ]);
+    let available = false;
+    const keyCheck = vi.fn(() => available);
+    const accountCheck = vi.fn(() => (available ? null : 'subscription_account_logged_out'));
+    const dependencies = {
+      gatewayConfig: gatewayConfig(),
+      providerRegistry: providers,
+      providerCredentialConfigured: keyCheck,
+      subscriptionAccounts: { gatewayUnavailableReason: accountCheck },
+    };
+
+    const unavailable = resolveAgentSetup(agentConfig(), dependencies);
+    expect(unavailable.setup).toBeNull();
+    expect(unavailable.diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'agent_setup.logical_model_not_allowed' })
+    );
+    expect(JSON.stringify(unavailable.diagnostics)).not.toContain('private-slot-fixture');
+    expect(JSON.stringify(unavailable.diagnostics)).not.toContain(baseProvider.secretRef);
+    expect(keyCheck).toHaveBeenCalledTimes(kind === 'api-key' ? 1 : 0);
+    expect(accountCheck).toHaveBeenCalledTimes(kind === 'subscription' ? 1 : 0);
+
+    available = true;
+    const restored = resolveAgentSetup(agentConfig(), dependencies);
+    expect(restored.diagnostics).toEqual([]);
+    expect(restored.setup?.logicalModels.preferredLogicalModelId).toBe('reasoning');
+    expect(restored.setup?.logicalModels.allowed[0]?.routes[0]?.available).toBe(true);
+
+    available = false;
+    const revoked = resolveAgentSetup(agentConfig(), dependencies);
+    expect(revoked.setup).toBeNull();
+    expect(keyCheck).toHaveBeenCalledTimes(kind === 'api-key' ? 3 : 0);
+    expect(accountCheck).toHaveBeenCalledTimes(kind === 'subscription' ? 3 : 0);
+    if (kind === 'api-key') expect(keyCheck).toHaveBeenLastCalledWith(baseProvider.secretRef);
+    else
+      expect(accountCheck).toHaveBeenLastCalledWith({
+        subscriptionProviderId: 'openai-codex',
+        accountSlotId: 'private-slot-fixture',
+      });
+    expect(restored.setup?.logicalModels.allowed[0]?.routes[0]?.available).toBe(true);
+
+    const failInspection = () => {
+      throw new Error('private-owner-failure-fixture');
+    };
+    keyCheck.mockImplementation(failInspection);
+    accountCheck.mockImplementation(failInspection);
+    const failed = resolveAgentSetup(agentConfig(), dependencies);
+    expect(failed.setup).toBeNull();
+    expect(failed.diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'agent_setup.logical_model_not_found' })
+    );
+    expect(JSON.stringify(failed.diagnostics)).not.toContain('private-owner-failure-fixture');
+  });
+
+  it.each([false, true])('applies failover=%s after live credential checks', (autoFailover) => {
+    const baseProvider = providerRegistry().list()[0]!;
+    const providers = new ProviderRegistry([
+      baseProvider,
+      { ...baseProvider, id: 'keyless-backup', kind: 'custom', secretRef: undefined },
+    ]);
+    const gateway = gatewayConfig();
+    const model = gateway.logicalModels[0]!;
+    const keyCheck = vi.fn(() => false);
+    const result = resolveAgentSetup(agentConfig(), {
+      gatewayConfig: {
+        ...gateway,
+        logicalModels: [
+          {
+            ...model,
+            routing: { autoFailover },
+            routes: [
+              model.routes[0]!,
+              { ...model.routes[0]!, id: 'backup', providerProfileId: 'keyless-backup' },
+            ],
+          },
+        ],
+      },
+      providerRegistry: providers,
+      providerCredentialConfigured: keyCheck,
+    });
+
+    expect(keyCheck).toHaveBeenCalledTimes(1);
+    if (autoFailover) {
+      expect(result.diagnostics).toEqual([]);
+      expect(result.setup?.logicalModels.allowed[0]?.routes).toEqual([
+        expect.objectContaining({
+          available: false,
+          unavailableReason: 'provider_api_key_missing',
+        }),
+        expect.objectContaining({ available: true, unavailableReason: null }),
+      ]);
+    } else expect(result.setup).toBeNull();
+  });
+
   it.each([
     false,
     true,
