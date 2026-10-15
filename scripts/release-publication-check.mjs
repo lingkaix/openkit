@@ -73,7 +73,22 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
   const jobs = {},
     files = {},
     pending = new Set();
-  for (const name of ['publish-container-images', 'github-release', 'verify-release']) {
+  const publicationJobIds = ['publish-container-images', 'github-release', 'verify-release'];
+  // Historical baselines retain their own job set. Native App publications must
+  // include the complete producer/consumer closure; a partial split refuses proof.
+  if (
+    ['build-app-candidate', 'smoke-app-native', 'publish-app-image'].some((name) =>
+      blocks.has(name)
+    )
+  ) {
+    publicationJobIds.push(
+      'container-image-matrix',
+      'build-app-candidate',
+      'smoke-app-native',
+      'publish-app-image'
+    );
+  }
+  for (const name of publicationJobIds) {
     const block = blocks.get(name);
     requireFact(typeof block === 'string', `publication job missing: ${name}`);
     jobs[name] = git(['hash-object', '--stdin'], block).trim();
@@ -174,7 +189,17 @@ export function checkPublication(e, { now = new Date(), repoRoot = process.cwd()
   requireFact(
     /^v\d+\.\d+\.\d+(?:-[a-z0-9.]+)?$/.test(e.baseline?.tag ?? '') &&
       e.baseline.publicationInputs === e.publicationInputs &&
-      successfulJobs(e.baseline, publicationJobs),
+      successfulJobs(
+        e.baseline,
+        actual.jobs['smoke-app-native']
+          ? [
+              ...publicationJobs,
+              'Build App candidate',
+              'Smoke App native (linux/amd64)',
+              'Smoke App native (linux/arm64)',
+            ]
+          : publicationJobs
+      ),
     'successful real-tag unchanged-publication baseline'
   );
   const identities = e.identities;

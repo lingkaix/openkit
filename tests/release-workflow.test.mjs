@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { parse } from 'yaml';
+import { publicationInputsAt } from '../scripts/release-publication-check.mjs';
 
 const workflowBytes = readFileSync(join(process.cwd(), '.github', 'workflows', 'ci.yml'), 'utf8');
 const workflow = parse(workflowBytes);
@@ -39,7 +40,7 @@ test('release workflow serializes tag releases and pins third-party actions', ()
 });
 
 test('release workflow passes release identity build args to the App image only', () => {
-  const job = workflow.jobs['publish-container-images'];
+  const job = workflow.jobs['build-app-candidate'];
   const identity = step(job, 'Pass App release identity build arguments');
   const candidate = step(job, 'Build digest-only release candidate');
   const workerBuild = step(workflow.jobs['smoke-worker-images'], 'Build worker image');
@@ -201,6 +202,20 @@ test('manual release gate derives a nonpublishing worker image smoke matrix', ()
     });
     assert.equal(result.status, 0, result.stderr);
     const output = readFileSync(outputFile, 'utf8');
+    const app = JSON.parse(output.match(/^app-matrix=(.+)$/m)?.[1] ?? '{}');
+    const workers = JSON.parse(output.match(/^worker-publication-matrix=(.+)$/m)?.[1] ?? '{}');
+    assert.deepEqual(
+      app.include.map((image) => image.id),
+      ['app']
+    );
+    assert.deepEqual(
+      workers.include.map((image) => image.id),
+      ['worker-common', 'worker-runtimes']
+    );
+    assert.equal(
+      workflow.jobs['publish-container-images'].strategy.matrix,
+      actionExpression('fromJSON(needs.container-image-matrix.outputs.worker-publication-matrix)')
+    );
     const matrix = JSON.parse(output.match(/^worker-matrix=(.+)$/m)?.[1] ?? '{}');
     assert.deepEqual(
       matrix.include.map(({ id, platform }) => `${id}:${platform}`),
@@ -271,10 +286,16 @@ test('release workflow publishes and independently verifies the portable release
     'package-release-assets',
     'qualify-nanohost',
     'publish-container-images',
+    'publish-app-image',
   ]);
   assert.deepEqual(githubRelease.permissions, { contents: 'write' });
   assert.ok(step(githubRelease, 'Create immutable GitHub Release'));
-  assert.deepEqual(verify.needs, ['test-image', 'github-release', 'publish-container-images']);
+  assert.deepEqual(verify.needs, [
+    'test-image',
+    'github-release',
+    'publish-container-images',
+    'publish-app-image',
+  ]);
   assert.deepEqual(verify.permissions, { contents: 'read', packages: 'read' });
   assert.equal(download.env.GH_TOKEN, actionExpression('secrets.GITHUB_TOKEN'));
   assert.equal(download.env.TEST_IMAGE, actionExpression('needs.test-image.outputs.image'));
@@ -536,8 +557,13 @@ test('release notes are checked before publication and verified against the gene
 // Unchanged jobs are pinned to reviewed main 23f3e2dc; cadence changes are checked separately below.
 // release-preflight, publish-container-images, github-release, and verify-release were re-recorded for the release-notes generator.
 // verify-release was re-recorded again when the published-body comparison moved into scripts/release-notes.mjs.
-// publish-container-images was re-recorded when the App release build gained identity build arguments.
+// The App split re-records only the Worker matrix expression and final App dependency edges.
+// New App jobs are frozen below; an additional normalization check proves unchanged Worker and final steps.
 const unchangedJobBaseline = {
+  'container-image-matrix': 'a69e8a2973c459f0b7245dc2e48a249ff20627793611ce1ad7695fd0d2175790',
+  'build-app-candidate': '460407c16d03c5d7e417cea439c16d9e2955db7c82cfb5cdbdb260aa9b2da9f9',
+  'smoke-app-native': '2038f6417de2a540d8f1ae7e2cba81124fae00d9ebf63cd854b570fc8e82dc5a',
+  'publish-app-image': '114be90cfeee7b6cb98ecd80669c80e44ccea8baf9a551c3408b575252ff1b9c',
   'test-image': 'b0504dcc37a38fb459ba4ba8fc8400d50128765479cf6a3473a8717d068dfe38',
   'pr-check': '21bf4f4ac3b3d36600ca9d88daf93ac86c613397e545f1560b37a3fa63fd2885',
   'nanohost-installer': 'eb04e2ebaa480c04d22f8eaa91b776baa238a0cdae2e31462d282cf74b10481f',
@@ -552,12 +578,12 @@ const unchangedJobBaseline = {
   'build-nanohost-arm64': 'd0b7cdb6291ef8eedacddda56ad81b8f602398ce35acd2ef3eb32a4ae9c9cf32',
   'package-release-assets': '9bb6035b4d43646481b89f1a40651ec23203e343a29a9506d209e5f551de4eea',
   'qualify-nanohost': '9c42422c9716a0ad27688e745ac4ca1716671c9709349dfdca2fd01abe619474',
-  'publish-container-images': 'd354fc4bdb01687274e33f475445833d56a1970f18fc3e8c585c4b4b8086c38a',
-  'github-release': '342e687fc7bcb4773a791cc7d8925fb4bab7306f4cabade9513ac69238407cfd',
-  'verify-release': '20c614ff0f1300b403789cfb9145f5ca26fdfa2f5482d7a3089f0682681b5c9f',
+  'publish-container-images': 'c93cf3366e69528e1d77e878b411baa17afcb71c81ab65028e5b742e2a67e959',
+  'github-release': 'a958b120359eb1021bca3cc1f339f3eed559fdd35b1bce29e40f8ddbb480e766',
+  'verify-release': '40b71518d310e49c1a68ab3bc801f1500d3e813f0f2410017db67329b85896b9',
 };
 
-test('publication, packaging and all other jobs remain byte-identical to the recorded main baseline', () => {
+test('publication, packaging and all other jobs match the frozen complete job graph', () => {
   const blocks = new Map(
     [
       ...workflowBytes
@@ -569,13 +595,9 @@ test('publication, packaging and all other jobs remain byte-identical to the rec
     Object.keys(workflow.jobs)
       .filter(
         (name) =>
-          ![
-            'l0-l2',
-            'nano-core-e2e',
-            'app-image-admin-recovery',
-            'container-image-matrix',
-            'smoke-worker-images',
-          ].includes(name)
+          !['l0-l2', 'nano-core-e2e', 'app-image-admin-recovery', 'smoke-worker-images'].includes(
+            name
+          )
       )
       .sort(),
     Object.keys(unchangedJobBaseline).sort()
@@ -696,6 +718,9 @@ test('every main push runs the complete nonpublishing candidate gate without pub
   }
   for (const id of [
     'publish-container-images',
+    'build-app-candidate',
+    'smoke-app-native',
+    'publish-app-image',
     'github-release',
     'verify-release',
     'release-preflight',
@@ -720,4 +745,180 @@ test('L0-L2 uses the admitted single coverage execution while keeping native and
   assert.match(scripts['verify:l0-l2'], /pnpm run test:ci/u);
   assert.doesNotMatch(scripts['verify:l0-l2'], /test:unit|test:coverage/u);
   assert.match(scripts['test:ci'], /release-tests\.mjs/u);
+});
+
+test('App publication waits for exact-manifest smoke on both native hosts', () => {
+  const build = workflow.jobs['build-app-candidate'];
+  const native = workflow.jobs['smoke-app-native'];
+  const publish = workflow.jobs['publish-app-image'];
+  assert.ok(build, 'tag-stage App candidate build is required');
+  assert.ok(native, 'native App platform gate is required');
+  assert.ok(publish, 'App promotion joins the native platform gate');
+  assert.equal(native['runs-on'], actionExpression('matrix.runner'));
+  assert.deepEqual(native.strategy.matrix.include, [
+    { platform: 'linux/amd64', runner: 'ubuntu-24.04', architecture: 'X64' },
+    { platform: 'linux/arm64', runner: 'ubuntu-24.04-arm', architecture: 'ARM64' },
+  ]);
+  assert.equal(native.strategy['fail-fast'], false);
+  assert.ok(publish.needs.includes('smoke-app-native'));
+  assert.ok(!native.steps.some((entry) => entry.uses?.startsWith('docker/setup-qemu-action@')));
+});
+
+test('native App evidence refuses missing, skipped, failed and mismatched platforms', async () => {
+  const { verifyNativeEvidence, verifyNativeHost } = await import(
+    '../scripts/release-app-native.mjs'
+  );
+  const candidate = {
+    repository: 'example/openkit',
+    source: 'a'.repeat(40),
+    tag: 'v0.1.0-rc.8',
+    runId: '123',
+    attempt: '1',
+    image: 'ghcr.io/example/openkit-app',
+    digest: `sha256:${'b'.repeat(64)}`,
+    platforms: ['amd64', 'arm64'].map((arch, i) => ({
+      platform: `linux/${arch}`,
+      digest: `sha256:${String(i + 1).repeat(64)}`,
+    })),
+  };
+  const host = (architecture) => ({
+    system: 'Linux',
+    kernel: architecture === 'amd64' ? 'x86_64' : 'aarch64',
+    node: architecture === 'amd64' ? 'x64' : 'arm64',
+    runner: architecture === 'amd64' ? 'X64' : 'ARM64',
+    docker: `linux/${architecture}`,
+    endpoint: 'unix:///var/run/docker.sock',
+  });
+  const good = candidate.platforms.map((entry) => ({
+    ...candidate,
+    ...entry,
+    indexDigest: candidate.digest,
+    host: host(entry.platform.split('/')[1]),
+    conclusion: 'success',
+    negativeFixture: 'address-space-assertion',
+    inheritedAddressSpace: 'unlimited',
+  }));
+  assert.doesNotThrow(() => verifyNativeEvidence(candidate, good));
+  assert.throws(() => verifyNativeHost('linux/arm64', host('amd64')), /native host/);
+  for (const key of ['kernel', 'node', 'runner', 'docker', 'endpoint']) {
+    const changed = { ...host('arm64'), [key]: host('amd64')[key] };
+    if (key === 'endpoint') changed.endpoint = 'tcp://remote:2375';
+    assert.throws(() => verifyNativeHost('linux/arm64', changed), /native host/, key);
+  }
+  for (const conclusion of ['skipped', 'failure', 'cancelled', undefined]) {
+    assert.throws(
+      () => verifyNativeEvidence(candidate, [good[0], { ...good[1], conclusion }]),
+      /native evidence/
+    );
+  }
+  assert.throws(() => verifyNativeEvidence(candidate, good.slice(0, 1)), /native evidence/);
+  assert.throws(() => verifyNativeEvidence(candidate, [good[0], good[0]]), /native evidence/);
+  for (const field of [
+    'source',
+    'tag',
+    'runId',
+    'attempt',
+    'repository',
+    'image',
+    'indexDigest',
+    'digest',
+    'negativeFixture',
+    'inheritedAddressSpace',
+  ]) {
+    assert.throws(
+      () => verifyNativeEvidence(candidate, [good[0], { ...good[1], [field]: 'wrong' }]),
+      /native evidence/,
+      field
+    );
+  }
+});
+
+test('Worker publication and final verification keep every existing step byte', () => {
+  const blocks = new Map(
+    [
+      ...workflowBytes
+        .slice(workflowBytes.indexOf('jobs:\n') + 6)
+        .matchAll(/^ {2}([a-z0-9-]+):\n(.*?)(?=^ {2}[a-z0-9-]+:\n|(?![\s\S]))/gms),
+    ].map((match) => [match[1], match[2]])
+  );
+  const old = {
+    'publish-container-images': 'd354fc4bdb01687274e33f475445833d56a1970f18fc3e8c585c4b4b8086c38a',
+    'github-release': '342e687fc7bcb4773a791cc7d8925fb4bab7306f4cabade9513ac69238407cfd',
+    'verify-release': '20c614ff0f1300b403789cfb9145f5ca26fdfa2f5482d7a3089f0682681b5c9f',
+  };
+  for (const [name, digest] of Object.entries(old)) {
+    const normalized = blocks
+      .get(name)
+      .replace('outputs.worker-publication-matrix)', 'outputs.matrix)')
+      .replace('      - publish-app-image\n', '');
+    assert.equal(createHash('sha256').update(normalized).digest('hex'), digest, name);
+  }
+});
+
+test('publication proof covers every App producer, consumer and native fixture byte', () => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-native-publication-'));
+  try {
+    const git = (args, input) => {
+      const r = spawnSync('git', args, { cwd: root, input, encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout.trim();
+    };
+    git(['init', '--initial-branch=main']);
+    for (const directory of ['.github/workflows', 'scripts', 'containers'])
+      mkdirSync(join(root, directory), { recursive: true });
+    for (const file of [
+      'scripts/release-app-native.mjs',
+      'scripts/release-app-no-as-limit.c',
+      'containers/images.json',
+    ])
+      writeFileSync(join(root, file), readFileSync(file));
+    const jobs = [
+      'publish-container-images',
+      'github-release',
+      'verify-release',
+      'container-image-matrix',
+      'build-app-candidate',
+      'smoke-app-native',
+      'publish-app-image',
+    ];
+    writeFileSync(
+      join(root, '.github/workflows/ci.yml'),
+      'jobs:\n' +
+        jobs
+          .map(
+            (name) => `  ${name}:\n    steps:\n      - run: node scripts/release-app-native.mjs\n`
+          )
+          .join('')
+    );
+    const snapshot = () => {
+      git(['add', '.']);
+      return git(
+        ['hash-object', '-t', 'commit', '-w', '--stdin'],
+        `tree ${git(['write-tree'])}\nauthor Fixture <fixture.invalid> 0 +0000\ncommitter Fixture <fixture.invalid> 0 +0000\n\nFixture\n`
+      );
+    };
+    const before = publicationInputsAt(root, snapshot());
+    assert.deepEqual(Object.keys(before.jobs).sort(), jobs.sort());
+    assert.deepEqual(
+      Object.keys(before.files).sort(),
+      [
+        'containers/images.json',
+        'scripts/release-app-native.mjs',
+        'scripts/release-app-no-as-limit.c',
+      ].sort()
+    );
+    writeFileSync(join(root, 'scripts/release-app-no-as-limit.c'), 'fixture changed\n');
+    assert.notEqual(publicationInputsAt(root, snapshot()).sha256, before.sha256);
+    const path = join(root, '.github/workflows/ci.yml');
+    writeFileSync(
+      path,
+      readFileSync(path, 'utf8').replace('  smoke-app-native:\n', '  missing-native:\n')
+    );
+    assert.throws(
+      () => publicationInputsAt(root, snapshot()),
+      /publication job missing: smoke-app-native/
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

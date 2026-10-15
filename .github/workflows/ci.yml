@@ -922,6 +922,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
+      app-matrix: ${{ steps.matrix.outputs.app-matrix }}
+      worker-publication-matrix: ${{ steps.matrix.outputs.worker-publication-matrix }}
       worker-matrix: ${{ steps.matrix.outputs.worker-matrix }}
     steps:
       - name: Checkout
@@ -953,6 +955,8 @@ jobs:
             throw new Error('containers/images.json does not declare release images.');
           }
           process.stdout.write(`matrix=${JSON.stringify({ include: images })}\n`);
+          process.stdout.write(`app-matrix=${JSON.stringify({ include: images.filter((image) => image.id === 'app') })}\n`);
+          process.stdout.write(`worker-publication-matrix=${JSON.stringify({ include: images.filter((image) => image.kind === 'worker') })}\n`);
           const workerImages = images
             .filter((image) => image.kind === 'worker')
             .flatMap((image) => image.platforms.split(',').map((platform) => ({
@@ -999,6 +1003,480 @@ jobs:
           IMAGE_ID: ${{ matrix.id }}
         run: bash scripts/docker/smoke-image.sh "${IMAGE_ID}"
 
+  build-app-candidate:
+    name: Build App candidate
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs:
+      - release-preflight
+      - l0-l2
+      - nano-core-e2e
+      - smoke
+      - workspace-portability-target
+      - container-image-matrix
+      - qualify-nanohost
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.container-image-matrix.outputs.app-matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute deterministic image identity
+        id: image
+        env:
+          IMAGE_ID: ${{ matrix.id }}
+          IMAGE_KIND: ${{ matrix.kind }}
+          IMAGE_REPOSITORY: ${{ matrix.repository }}
+          WORKER_CONTRACT: ${{ matrix.workerContract }}
+          WORKER_RUNTIMES: ${{ matrix.runtimes }}
+        run: |
+          created="$(git show -s --format=%cI "${GITHUB_SHA}")"
+          CREATED="${created}" node <<'NODE' >> "${GITHUB_OUTPUT}"
+          const owner = process.env.GITHUB_REPOSITORY_OWNER.toLowerCase();
+          const repository = process.env.IMAGE_REPOSITORY;
+          const version = process.env.GITHUB_REF_NAME.replace(/^v/, '');
+          const image = `ghcr.io/${owner}/${repository}`;
+          const shortSha = process.env.GITHUB_SHA.slice(0, 12);
+          const tags = [
+            `${image}:${process.env.GITHUB_REF_NAME}`,
+            `${image}:${version}`,
+            `${image}:sha-${shortSha}`,
+          ];
+          const prerelease = version.includes('-');
+          if (!prerelease) {
+            tags.push(`${image}:latest`);
+          }
+          const labels = [
+            `org.opencontainers.image.title=${repository}`,
+            `org.opencontainers.image.description=OpenKit ${process.env.IMAGE_ID} release image`,
+            `org.opencontainers.image.source=${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}`,
+            `org.opencontainers.image.revision=${process.env.GITHUB_SHA}`,
+            `org.opencontainers.image.version=${version}`,
+            `org.opencontainers.image.created=${process.env.CREATED}`,
+            'org.opencontainers.image.licenses=Apache-2.0',
+            `org.openkit.image.id=${process.env.IMAGE_ID}`,
+            `org.openkit.image.kind=${process.env.IMAGE_KIND}`,
+          ];
+          if (process.env.WORKER_RUNTIMES) {
+            labels.push(`org.openkit.worker.runtimes=${process.env.WORKER_RUNTIMES}`);
+          }
+          if (process.env.WORKER_CONTRACT) {
+            labels.push(`org.openkit.worker.contract=${process.env.WORKER_CONTRACT}`);
+          }
+          process.stdout.write(`image=${image}\n`);
+          process.stdout.write(`version=${version}\n`);
+          process.stdout.write(`prerelease=${prerelease}\n`);
+          process.stdout.write(`version_tag=${tags[0]}\n`);
+          process.stdout.write(`version_without_v_tag=${tags[1]}\n`);
+          process.stdout.write(`sha_tag=${tags[2]}\n`);
+          process.stdout.write(`latest_tag=${image}:latest\n`);
+          process.stdout.write('tags<<EOF\n');
+          process.stdout.write(`${tags.join('\n')}\n`);
+          process.stdout.write('EOF\n');
+          process.stdout.write('labels<<EOF\n');
+          process.stdout.write(`${labels.join('\n')}\n`);
+          process.stdout.write('EOF\n');
+          NODE
+
+      - name: Inspect existing immutable identity
+        id: existing
+        env:
+          LATEST_TAG: ${{ steps.image.outputs.latest_tag }}
+          SHA_TAG: ${{ steps.image.outputs.sha_tag }}
+          VERSION_TAG: ${{ steps.image.outputs.version_tag }}
+          VERSION_WITHOUT_V_TAG: ${{ steps.image.outputs.version_without_v_tag }}
+        run: |
+          node scripts/release-image-state.mjs \
+            --version-tag "${VERSION_TAG}" \
+            --version-without-v-tag "${VERSION_WITHOUT_V_TAG}" \
+            --sha-tag "${SHA_TAG}" \
+            --latest-tag "${LATEST_TAG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Pass App release identity build arguments
+        id: release-identity
+        if: matrix.id == 'app'
+        run: |
+          {
+            echo 'args<<EOF'
+            echo "OPENKIT_RELEASE_TAG=${GITHUB_REF_NAME}"
+            echo "OPENKIT_SOURCE_COMMIT=${GITHUB_SHA}"
+            echo 'EOF'
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Build digest-only release candidate
+        id: candidate
+        if: steps.existing.outputs.present == 'false'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          platforms: ${{ matrix.platforms }}
+          build-args: ${{ steps.release-identity.outputs.args }}
+          labels: ${{ steps.image.outputs.labels }}
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          outputs: type=image,name=${{ steps.image.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Resolve candidate digest
+        id: release
+        env:
+          BUILT_DIGEST: ${{ steps.candidate.outputs.digest }}
+          EXISTING_DIGEST: ${{ steps.existing.outputs.digest }}
+          PRESENT: ${{ steps.existing.outputs.present }}
+        run: |
+          if [ "${PRESENT}" = "true" ]; then
+            digest="${EXISTING_DIGEST}"
+            reused=true
+          else
+            digest="${BUILT_DIGEST}"
+            reused=false
+          fi
+          case "${digest}" in
+            sha256:*) ;;
+            *) echo "Release candidate did not resolve to an OCI digest." >&2; exit 1 ;;
+          esac
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          echo "reused=${reused}" >> "${GITHUB_OUTPUT}"
+
+      - name: Record App index and exact platform manifests
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          DIGEST: ${{ steps.release.outputs.digest }}
+          REUSED: ${{ steps.release.outputs.reused }}
+          LATEST_BEFORE: ${{ steps.existing.outputs.latest_before }}
+          SMOKE_COMMAND: ${{ matrix.smokeCommand }}
+        run: node scripts/release-app-native.mjs record app-candidate.json
+
+      - name: Retain current-attempt App candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: app-candidate-${{ github.run_attempt }}
+          path: app-candidate.json
+          if-no-files-found: error
+
+  smoke-app-native:
+    name: Smoke App native (${{ matrix.platform }})
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: build-app-candidate
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            architecture: X64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            architecture: ARM64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download current-attempt App candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: app-candidate-${{ github.run_attempt }}
+          path: app-evidence
+
+      - name: Check native host and smoke exact App manifest
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: node scripts/release-app-native.mjs smoke app-evidence/app-candidate.json "${PLATFORM}" "app-evidence/${PLATFORM#linux/}.json"
+
+      - name: Retain current-attempt native App observation
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: app-native-${{ matrix.architecture }}-${{ github.run_attempt }}
+          path: app-evidence/${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}.json
+          if-no-files-found: error
+
+  publish-app-image:
+    name: Publish app image
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs:
+      - build-app-candidate
+      - smoke-app-native
+      - release-preflight
+      - l0-l2
+      - nano-core-e2e
+      - smoke
+      - workspace-portability-target
+      - container-image-matrix
+      - qualify-nanohost
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.container-image-matrix.outputs.app-matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute deterministic image identity
+        id: image
+        env:
+          IMAGE_ID: ${{ matrix.id }}
+          IMAGE_KIND: ${{ matrix.kind }}
+          IMAGE_REPOSITORY: ${{ matrix.repository }}
+          WORKER_CONTRACT: ${{ matrix.workerContract }}
+          WORKER_RUNTIMES: ${{ matrix.runtimes }}
+        run: |
+          created="$(git show -s --format=%cI "${GITHUB_SHA}")"
+          CREATED="${created}" node <<'NODE' >> "${GITHUB_OUTPUT}"
+          const owner = process.env.GITHUB_REPOSITORY_OWNER.toLowerCase();
+          const repository = process.env.IMAGE_REPOSITORY;
+          const version = process.env.GITHUB_REF_NAME.replace(/^v/, '');
+          const image = `ghcr.io/${owner}/${repository}`;
+          const shortSha = process.env.GITHUB_SHA.slice(0, 12);
+          const tags = [
+            `${image}:${process.env.GITHUB_REF_NAME}`,
+            `${image}:${version}`,
+            `${image}:sha-${shortSha}`,
+          ];
+          const prerelease = version.includes('-');
+          if (!prerelease) {
+            tags.push(`${image}:latest`);
+          }
+          const labels = [
+            `org.opencontainers.image.title=${repository}`,
+            `org.opencontainers.image.description=OpenKit ${process.env.IMAGE_ID} release image`,
+            `org.opencontainers.image.source=${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}`,
+            `org.opencontainers.image.revision=${process.env.GITHUB_SHA}`,
+            `org.opencontainers.image.version=${version}`,
+            `org.opencontainers.image.created=${process.env.CREATED}`,
+            'org.opencontainers.image.licenses=Apache-2.0',
+            `org.openkit.image.id=${process.env.IMAGE_ID}`,
+            `org.openkit.image.kind=${process.env.IMAGE_KIND}`,
+          ];
+          if (process.env.WORKER_RUNTIMES) {
+            labels.push(`org.openkit.worker.runtimes=${process.env.WORKER_RUNTIMES}`);
+          }
+          if (process.env.WORKER_CONTRACT) {
+            labels.push(`org.openkit.worker.contract=${process.env.WORKER_CONTRACT}`);
+          }
+          process.stdout.write(`image=${image}\n`);
+          process.stdout.write(`version=${version}\n`);
+          process.stdout.write(`prerelease=${prerelease}\n`);
+          process.stdout.write(`version_tag=${tags[0]}\n`);
+          process.stdout.write(`version_without_v_tag=${tags[1]}\n`);
+          process.stdout.write(`sha_tag=${tags[2]}\n`);
+          process.stdout.write(`latest_tag=${image}:latest\n`);
+          process.stdout.write('tags<<EOF\n');
+          process.stdout.write(`${tags.join('\n')}\n`);
+          process.stdout.write('EOF\n');
+          process.stdout.write('labels<<EOF\n');
+          process.stdout.write(`${labels.join('\n')}\n`);
+          process.stdout.write('EOF\n');
+          NODE
+
+      - name: Inspect existing immutable identity
+        id: existing
+        env:
+          LATEST_TAG: ${{ steps.image.outputs.latest_tag }}
+          SHA_TAG: ${{ steps.image.outputs.sha_tag }}
+          VERSION_TAG: ${{ steps.image.outputs.version_tag }}
+          VERSION_WITHOUT_V_TAG: ${{ steps.image.outputs.version_without_v_tag }}
+        run: |
+          node scripts/release-image-state.mjs \
+            --version-tag "${VERSION_TAG}" \
+            --version-without-v-tag "${VERSION_WITHOUT_V_TAG}" \
+            --sha-tag "${SHA_TAG}" \
+            --latest-tag "${LATEST_TAG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Download current-attempt App candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: app-candidate-${{ github.run_attempt }}
+          path: app-evidence
+
+      - name: Download current-attempt native observations
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: app-native-*-${{ github.run_attempt }}
+          merge-multiple: true
+          path: app-evidence
+
+      - name: Admit both native manifests of the unchanged index
+        id: release
+        env:
+          PRESENT: ${{ steps.existing.outputs.present }}
+          EXISTING_DIGEST: ${{ steps.existing.outputs.digest }}
+          LATEST_BEFORE: ${{ steps.existing.outputs.latest_before }}
+        run: node scripts/release-app-native.mjs join app-evidence/app-candidate.json app-evidence >> "${GITHUB_OUTPUT}"
+
+      - name: Promote the smoked digest
+        if: steps.existing.outputs.present == 'false'
+        env:
+          DIGEST: ${{ steps.release.outputs.digest }}
+          IMAGE: ${{ steps.image.outputs.image }}
+          PRERELEASE: ${{ steps.image.outputs.prerelease }}
+          SHA_TAG: ${{ steps.image.outputs.sha_tag }}
+          VERSION_TAG: ${{ steps.image.outputs.version_tag }}
+          VERSION_WITHOUT_V_TAG: ${{ steps.image.outputs.version_without_v_tag }}
+        run: |
+          tags=(--tag "${VERSION_TAG}" --tag "${VERSION_WITHOUT_V_TAG}" --tag "${SHA_TAG}")
+          if [ "${PRERELEASE}" = "false" ]; then
+            tags+=(--tag "${IMAGE}:latest")
+          fi
+          docker buildx imagetools create "${tags[@]}" "${IMAGE}@${DIGEST}"
+
+      - name: Verify promoted identity
+        env:
+          DIGEST: ${{ steps.release.outputs.digest }}
+          LATEST_BEFORE: ${{ steps.existing.outputs.latest_before }}
+          LATEST_TAG: ${{ steps.image.outputs.latest_tag }}
+          PRERELEASE: ${{ steps.image.outputs.prerelease }}
+          SHA_TAG: ${{ steps.image.outputs.sha_tag }}
+          VERSION_TAG: ${{ steps.image.outputs.version_tag }}
+          VERSION_WITHOUT_V_TAG: ${{ steps.image.outputs.version_without_v_tag }}
+        run: |
+          node scripts/release-image-state.mjs \
+            --version-tag "${VERSION_TAG}" \
+            --version-without-v-tag "${VERSION_WITHOUT_V_TAG}" \
+            --sha-tag "${SHA_TAG}" \
+            --latest-tag "${LATEST_TAG}" > release-image-state-after.txt
+          grep -Fx "present=true" release-image-state-after.txt
+          grep -Fx "digest=${DIGEST}" release-image-state-after.txt
+          latest_after="$(sed -n 's/^latest_before=//p' release-image-state-after.txt)"
+          if [ "${PRERELEASE}" = "true" ]; then
+            [ "${latest_after}" = "${LATEST_BEFORE}" ] || { echo "Prerelease changed latest." >&2; exit 1; }
+          else
+            [ "${latest_after}" = "${DIGEST}" ] || { echo "Stable release did not promote latest." >&2; exit 1; }
+          fi
+
+      - name: Write image release record
+        env:
+          ANONYMOUS_PULL: ${{ matrix.anonymousPull }}
+          DIGEST: ${{ steps.release.outputs.digest }}
+          IMAGE: ${{ steps.image.outputs.image }}
+          IMAGE_ID: ${{ matrix.id }}
+          IMAGE_TAGS: ${{ steps.image.outputs.tags }}
+          PLATFORMS: ${{ matrix.platforms }}
+          PRERELEASE: ${{ steps.image.outputs.prerelease }}
+          REUSED: ${{ steps.release.outputs.reused }}
+        run: |
+          mkdir -p release-records
+          node <<'NODE'
+          const { execFileSync } = require('node:child_process');
+          const fs = require('node:fs');
+          const image = process.env.IMAGE;
+          const digest = process.env.DIGEST;
+          const imageId = process.env.IMAGE_ID;
+          const raw = execFileSync(
+            'docker',
+            ['buildx', 'imagetools', 'inspect', '--raw', `${image}@${digest}`],
+            { encoding: 'utf8' },
+          );
+          const index = JSON.parse(raw);
+          const manifests = Array.isArray(index.manifests) ? index.manifests : [];
+          const platforms = process.env.PLATFORMS.split(',').filter(Boolean).map((platform) => {
+            const separator = platform.indexOf('/');
+            const os = platform.slice(0, separator);
+            const architecture = platform.slice(separator + 1);
+            const matches = manifests.filter(
+              (item) =>
+                item?.platform?.os === os &&
+                item?.platform?.architecture === architecture &&
+                typeof item.digest === 'string',
+            );
+            if (matches.length !== 1) {
+              throw new Error(`Index for ${imageId} has ${matches.length} manifests for ${platform}.`);
+            }
+            return { platform, digest: matches[0].digest };
+          });
+          platforms.sort((left, right) => left.platform.localeCompare(right.platform));
+          const tags = process.env.IMAGE_TAGS.split('\n').filter(Boolean);
+          const lines = [
+            `### ${imageId}`,
+            '',
+            `- Image: \`${image}\``,
+            `- Digest: \`${digest}\``,
+            ...platforms.map(
+              (entry) => `- Platform manifest \`${entry.platform}\`: \`${entry.digest}\``,
+            ),
+            `- Reused immutable release identity: \`${process.env.REUSED}\``,
+            '- Tags:',
+            ...tags.map((tag) => `  - \`${tag}\``),
+          ];
+          fs.writeFileSync(`release-records/${imageId}.md`, `${lines.join('\n')}\n`);
+          fs.writeFileSync(
+            `release-records/${imageId}.json`,
+            `${JSON.stringify(
+              {
+                id: imageId,
+                image,
+                digest,
+                anonymousPull: process.env.ANONYMOUS_PULL === 'true',
+                prerelease: process.env.PRERELEASE === 'true',
+                reused: process.env.REUSED === 'true',
+                tags,
+                platforms,
+              },
+              null,
+              2,
+            )}\n`,
+          );
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, fs.readFileSync(`release-records/${imageId}.md`));
+          NODE
+
+      - name: Upload image release record
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-image-${{ matrix.id }}
+          path: release-records/
+          if-no-files-found: error
+
   publish-container-images:
     name: Publish ${{ matrix.id }} image
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
@@ -1016,7 +1494,7 @@ jobs:
       packages: write
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.container-image-matrix.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.container-image-matrix.outputs.worker-publication-matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -1308,6 +1786,7 @@ jobs:
       - package-release-assets
       - qualify-nanohost
       - publish-container-images
+      - publish-app-image
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1376,6 +1855,7 @@ jobs:
       - test-image
       - github-release
       - publish-container-images
+      - publish-app-image
     runs-on: ubuntu-latest
     permissions:
       contents: read
