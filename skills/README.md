@@ -8,6 +8,10 @@ The authoring sources remain openkit-cli.mjs, openkit-operations.mjs and openkit
 
 The generator embeds the root `package.json` metadata imported by the CLI. Rebuild the bundle after root manifest changes, including repository command changes.
 
+Use `openkit --help`, `openkit help [command]`, or a command's `--help` for local JSON guidance. Help shows the supported commands, strict flat stdin examples, and the update discovery sequence. Help, search and describe require no endpoint or credential and make no network request.
+
+`openkit ops search <query>` returns only operation ids and one-line summaries. Bounded discovery terms such as `update`, `upgrade`, `preflight`, `connection`, and `version` select existing definitions. `openkit ops describe <operation-id>` adds mutation, sensitivity and required-access metadata plus a compact input contract with required fields, value kinds and scalar constraints. Flat input alternatives retain their own fields and requiredness; nested product structures stay compact. Add `--schema` to search for full shared JSON input/output schemas, or to describe for the full shared JSON input schema. Defaulted input fields remain optional. Discovery aliases never change an operation id or create a call path; invoke the canonical id with `openkit ops call <operation-id> --input -` and one strict flat JSON object on stdin.
+
 Use a currently usable administrator credential for online administration. NanoCore owns authority, private audience, restricted Material delivery, human decisions, workflow, audit and durable state. Credentials remain in endpoint/named keychain or explicitly permitted encrypted fallback storage; retirement changes no storage identity or retained data. Stable network audit labels remain openkit-cli and agent-skill. Ordinary session-only bearer refusals and administrator eligibility follow credential owners. No cookie jar, arbitrary route, SSH, generic shell, daemon or host control is part of this CLI.
 
 ## Maintenance And Packaging
