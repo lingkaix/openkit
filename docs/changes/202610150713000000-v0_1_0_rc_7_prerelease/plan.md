@@ -129,6 +129,12 @@ Focused Biome printed `Checked 0 files`; it supplies no Markdown lint evidence. 
 
 Local checks do not establish candidate CI, main membership or final publication admission.
 
+### Committed Operations Archive Probe
+
+Preparation candidate `d62f527228f2b2a2839f820dd026764be3ee6dc8` produced `openkit-ops-skill-v0.1.0-rc.7.tar.gz`. `sha256sum -c SHA256SUMS` printed `openkit-ops-skill-v0.1.0-rc.7.tar.gz: OK`. The archive SHA-256 is `93889bfd1e46592391fb321dd97bc90551a41c71c62a8d78155528ec07fda098`. The existing shared operations verifier passed after extraction outside the checkout, including packaged CLI discovery. Archived helper bytes equal the selected Git source; helper SHA-256 is `254a012630fb6283927c7c92d2f1c723624d4d4fba4068d139eb01da1eea4a74`.
+
+The subsequent record-only commit retains this result and changes no archive payload input. The handoff verifies both publication-input equality and the operations tree, repository license and helper Git identities at final preparation HEAD. This local probe does not qualify future published archives; tag-time packaging and download verification remain required on exact P.
+
 ## Final-P And Admission Handoff
 
 After independent review, land the chosen exact P in main and wait for its successful main-push release gate. A green run on `06b0d27c` cannot be reused across commits for a later preparation P. L0–L2 and L3 tag reuse stays per job and exact commit only.
