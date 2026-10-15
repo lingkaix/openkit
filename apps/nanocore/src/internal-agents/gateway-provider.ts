@@ -160,6 +160,8 @@ export function createInternalAgentGatewayProvider(
               : Math.min(limits.context, options.logicalModel.contract?.context ?? limits.context),
             maxOutputTokens
           );
+          // A late callback from a settled member cannot replace a later attempt's diagnostics.
+          let observedHttpRejection: number | undefined;
           const response = await options.dispatcher
             .createResponses(
               provider,
@@ -205,6 +207,10 @@ export function createInternalAgentGatewayProvider(
                     failurePhase = 'transport';
                     execution.onProviderHandoff?.();
                   },
+                  onProviderHttpRejection: (status) => {
+                    if (Number.isInteger(status) && status >= 400 && status <= 599)
+                      observedHttpRejection = status;
+                  },
                 },
               }
             )
@@ -217,7 +223,7 @@ export function createInternalAgentGatewayProvider(
                 status >= 100 &&
                 status <= 599
                   ? status
-                  : undefined;
+                  : observedHttpRejection;
               // pi-ai 0.99.2 flattens this local serializer rejection into terminal text after stock handoff.
               // Recognize only its fixed signature for diagnostics; never use it for routing or emit the Tool name, schema or exception text.
               if (
