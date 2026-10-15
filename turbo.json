@@ -32,6 +32,18 @@
       "inputs": ["$TURBO_DEFAULT$", "pnpm-lock.yaml", "tsconfig.base.json"],
       "outputs": ["coverage/**"]
     },
+    "@openkit/nanohost#test": {
+      "dependsOn": ["@openkit/nanocore#build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/apps/nanocore/src/**",
+        "$TURBO_ROOT$/apps/nanocore/package.json",
+        "$TURBO_ROOT$/apps/nanocore/tsconfig.json",
+        "$TURBO_ROOT$/pnpm-lock.yaml",
+        "$TURBO_ROOT$/tsconfig.base.json"
+      ],
+      "outputs": []
+    },
     "typecheck": {
       "dependsOn": ["^build", "^typecheck"],
       "inputs": ["$TURBO_DEFAULT$", "pnpm-lock.yaml", "tsconfig.base.json"],

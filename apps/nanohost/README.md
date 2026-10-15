@@ -118,6 +118,12 @@ Nested peer reset or connection closure cancels an outer readiness, upload, head
 
 ## Commands
 
+The native TLS transport offers only `h2` with both trust sources. Fresh roots, connection startup, TLS/HTTP2 admission, and the complete readiness acknowledgement share the Epoch owner's 120-second deadline, capped by any remaining rebuild deadline. A ready session has no startup timer. Each successor connection attempt gets one deadline, while an outage preserves the already admitted healthy Epoch.
+
+`src/nanocore_tls_tests.rs` runs a real verified TLS connection against the production NanoCore admission and readiness routes through Node's native secure HTTP/2 listener. It checks ordinary and fragmented writes, both offered ALPN lists, and silent-peer startup expiry. Run Cargo tests with the repository's pinned Node on PATH after `pnpm install --frozen-lockfile` and dependency package builds (`pnpm exec turbo run build --filter='@openkit/nanocore^...'`). The fixture uses OpenSSL to generate attempt-local certificates and keys, starts its own Node child, and removes its temporary database and TLS material at teardown. It starts no installed service or runtime backend.
+
+The root Turbo test task builds NanoCore first and includes its source and configuration in the NanoHost test inputs. This orders workspace package builds and invalidates cached Rust test results when the native peer or its production routes change.
+
 For authorized host-local image maintenance, use `/usr/lib/openkit/nanohost image import <archive> <expected-digest>`, `image remove <digest>`, `image list`, or `image capacity [<bytes>]`. These commands use the fixed private Image Store without loading service credentials, opening a network connection or starting the service/epoch. Capacity is a positive integer byte count; removal requires an exact digest and may make future Agent admissions unavailable until its image is supplied again. A busy store fails the current command; inspect and issue a fresh authorized request after the active transaction completes.
 
 From the repository root:

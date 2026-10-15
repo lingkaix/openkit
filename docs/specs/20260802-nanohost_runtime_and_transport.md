@@ -630,6 +630,8 @@ The private `sandboxIntegrationBindingRef` is opaque non-secret routing metadata
 
 Every non-loopback NanoCore endpoint, including an endpoint reached over a container bridge or from a remote execution host, MUST use server-authenticated TLS. The NanoHost validates the NanoCore certificate through normal platform trust or an explicitly configured non-secret CA reference. Certificate pinning is not supported by the V1 execution-host projection.
 
+For HTTPS, the NanoHost MUST offer only `h2` through ALPN with either trust source. TLS and HTTP/2 admission and readiness remain subject to the existing startup and readiness hard bounds; a failed or stalled negotiation grants no readiness and permits no verification bypass or plaintext fallback.
+
 The deployment MAY use an upstream TLS terminator only when the deployment declares that boundary and the NanoHost validates the external endpoint presented by that terminator. Trust termination MUST NOT silently move to an undeclared internal plaintext hop visible to the NanoHost.
 
 Exact same-host loopback MAY use plaintext HTTP/2 under the existing local trust rules. Container bridge, host LAN, overlay, tunnel, and remote-host addresses are non-loopback even when privately routed and therefore require TLS.

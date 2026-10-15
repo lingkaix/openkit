@@ -58,6 +58,9 @@ compile_error!("NanoHost supports only linux/amd64 and linux/arm64 Supervisor im
 /// Maximum time allowed for each dependency readiness proof.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Fresh roots through complete readiness share the transport specification's hard bound.
+pub const STARTUP_READINESS_HARD_LIMIT: Duration = Duration::from_secs(120);
+
 /// Enters one retained Linux network namespace.
 unsafe fn setns_network(fd: i32) -> i32 {
     #[cfg(target_os = "linux")]

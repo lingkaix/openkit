@@ -31,7 +31,7 @@ use std::time::{Duration, Instant, SystemTime};
 use credential_slots::{CredentialSelectionContext, SlotPairPaths};
 use epoch_coordinator::{
     DockerImageBackend, EpochCoordinator, EpochFault, EpochPlan, RuntimeBackend, RuntimeEffectKind,
-    configured_backend, resolve_epoch_nameservers,
+    STARTUP_READINESS_HARD_LIMIT, configured_backend, resolve_epoch_nameservers,
 };
 use epoch_evidence::{
     AbsentEpochTrigger, EVIDENCE_ROOT, EpochEvidenceWriter, EpochInvalidationTrigger,
@@ -804,6 +804,15 @@ async fn run() -> Result<(), NanoHostRunFailure> {
             return Err("nanohost image store unavailable".into());
         }
     });
+    let mut startup_deadline = tokio::time::Instant::now() + STARTUP_READINESS_HARD_LIMIT;
+    if let Some(started) = fence_started {
+        let remaining = SystemTime::now()
+            .duration_since(started)
+            .ok()
+            .and_then(|elapsed| REBUILD_HARD_LIMIT.checked_sub(elapsed))
+            .ok_or("epoch rebuild hard bound exceeded")?;
+        startup_deadline = startup_deadline.min(tokio::time::Instant::now() + remaining);
+    }
     let plan = match EpochPlan::fresh(
         Path::new("/var/lib/openkit/nanohost"),
         Path::new("/run/openkit/nanohost"),
@@ -843,7 +852,7 @@ async fn run() -> Result<(), NanoHostRunFailure> {
         &mut persistent_volumes,
     )
     .map_err(|_| "nanohost epoch startup failed")?;
-    run_sessions(session_inputs, coordinator, fence_started).await
+    run_sessions(session_inputs, coordinator, fence_started, startup_deadline).await
 }
 
 /// Copies one observed member failure onto the fixed member-failure cause.
@@ -867,10 +876,12 @@ async fn run_sessions(
     session_inputs: NanoHostSessionInputs,
     mut coordinator: EpochCoordinator,
     mut fence_started: Option<SystemTime>,
+    initial_startup_deadline: tokio::time::Instant,
 ) -> Result<(), NanoHostRunFailure> {
     let selection_context = session_inputs.selection_context.clone();
     let route_projection = coordinator.outer_route_projection();
     let mut reconnect_after = None;
+    let mut initial_startup_deadline = Some(initial_startup_deadline);
     let mut pending_result: Option<(PolledEffectCommand, ExecutedEffectResult)> = None;
     loop {
         let presentation = nanocore_session::select_and_present_credential(
@@ -886,14 +897,23 @@ async fn run_sessions(
             )
             .with_reconnect_after(reconnect_after)
         };
-        let io = loop {
+        let (io, startup_deadline) = loop {
+            // Outage retries preserve a healthy Epoch; each successor attempt gets one budget.
+            let startup_deadline = initial_startup_deadline
+                .unwrap_or_else(|| tokio::time::Instant::now() + STARTUP_READINESS_HARD_LIMIT);
+            if initial_startup_deadline.is_some() && tokio::time::Instant::now() >= startup_deadline
+            {
+                coordinator.invalidate_startup();
+                return Err(terminal_connect("outer-session startup hard bound exceeded").into());
+            }
             let connected = nanocore_session::connect_verified_session_transport(
                 &session_inputs.rendezvous_url,
                 &session_inputs.transport,
+                startup_deadline,
             )
             .await;
             match connected {
-                Ok(io) => break io,
+                Ok(io) => break (io, startup_deadline),
                 Err(_reason) if reconnect_after.is_some() => {
                     // Core unavailability cannot invalidate an already-admitted healthy epoch.
                     tokio::select! {
@@ -922,6 +942,7 @@ async fn run_sessions(
             reconnect_after,
             (
                 &physical_epoch,
+                startup_deadline,
                 move || {
                     let Some(started) = readiness_fence else {
                         return Ok(None);
@@ -958,6 +979,7 @@ async fn run_sessions(
                 };
                 if readiness_commit.is_ok() {
                     fence_started = None;
+                    initial_startup_deadline = None;
                 }
                 let coordinator = &mut coordinator;
                 let pending_result = &mut pending_result;
@@ -1258,6 +1280,7 @@ async fn run_sessions(
                     if matches!(
                         failure.reason(),
                         "epoch rebuild hard bound exceeded"
+                            | "outer-session startup hard bound exceeded"
                             | "epoch rebuild marker could not be consumed"
                     ) {
                         coordinator.invalidate_startup();
@@ -1547,7 +1570,12 @@ mod tests {
             }
         }
 
-        let host = super::run_sessions(inputs, coordinator, None);
+        let host = super::run_sessions(
+            inputs,
+            coordinator,
+            None,
+            tokio::time::Instant::now() + super::STARTUP_READINESS_HARD_LIMIT,
+        );
         tokio::pin!(host);
         let (socket, _) = tokio::select! {
             result = &mut host => panic!("Host ended before admission: {}", result.unwrap_err()),

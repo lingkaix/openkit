@@ -772,13 +772,16 @@ where
 pub async fn connect_verified_session_transport(
     rendezvous_url: &str,
     transport: &VerifiedSessionTransport,
+    startup_deadline: tokio::time::Instant,
 ) -> Result<VerifiedSessionIo, &'static str> {
     let (host, port) = parse_rendezvous_origin(rendezvous_url)
         .map(|(_, host, port)| (host, port))
         .ok_or("nanohost rendezvous origin invalid")?;
-    let socket = TcpStream::connect((host.as_str(), port))
-        .await
-        .map_err(|_| "nanohost NanoCore rendezvous failed")?;
+    let socket =
+        tokio::time::timeout_at(startup_deadline, TcpStream::connect((host.as_str(), port)))
+            .await
+            .map_err(|_| "nanohost NanoCore rendezvous timed out")?
+            .map_err(|_| "nanohost NanoCore rendezvous failed")?;
     if !transport.requires_server_authenticated_tls() {
         return Ok(VerifiedSessionIo::Plain(socket));
     }
@@ -889,13 +892,14 @@ fn build_verified_tls_client_config(
         TlsTrustMaterial::Platform => {
             let mut roots = RootCertStore::empty();
             roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-            let config = ClientConfig::builder_with_provider(
+            let mut config = ClientConfig::builder_with_provider(
                 rustls::crypto::ring::default_provider().into(),
             )
             .with_safe_default_protocol_versions()
             .map_err(|_| VerifiedTransportReject::UntrustedTlsMaterial)?
             .with_root_certificates(roots)
             .with_no_client_auth();
+            config.alpn_protocols = vec![b"h2".to_vec()];
             Ok(Arc::new(config))
         }
         TlsTrustMaterial::ConfiguredRef { reference } => {
@@ -910,13 +914,14 @@ fn build_verified_tls_client_config(
             if roots.is_empty() {
                 return Err(VerifiedTransportReject::UntrustedTlsMaterial);
             }
-            let config = ClientConfig::builder_with_provider(
+            let mut config = ClientConfig::builder_with_provider(
                 rustls::crypto::ring::default_provider().into(),
             )
             .with_safe_default_protocol_versions()
             .map_err(|_| VerifiedTransportReject::UntrustedTlsMaterial)?
             .with_root_certificates(roots)
             .with_no_client_auth();
+            config.alpn_protocols = vec![b"h2".to_vec()];
             Ok(Arc::new(config))
         }
     }
@@ -1299,6 +1304,7 @@ fn is_physical_epoch(value: &str) -> bool {
 /// # Errors
 ///
 /// Invokes the caller-owned readiness gate after admission and immediately before publication.
+/// The caller's absolute startup deadline includes time already used by connection setup.
 ///
 /// Returns one bounded closed classification when the fixed session cannot continue.
 pub async fn run_outer_session<IO, R, D, F>(
@@ -1307,7 +1313,7 @@ pub async fn run_outer_session<IO, R, D, F>(
     context: &CredentialSelectionContext,
     presentation: &CredentialPresentationOutcome,
     reconnect_after: Option<u64>,
-    readiness: (&str, R),
+    readiness: (&str, tokio::time::Instant, R),
     dispatch: D,
 ) -> Result<u64, OuterSessionFailure>
 where
@@ -1316,7 +1322,7 @@ where
     D: FnOnce(u64, h2::client::SendRequest<Bytes>) -> F,
     F: Future<Output = Result<(), OuterSessionFailure>>,
 {
-    let (physical_epoch, readiness_gate) = readiness;
+    let (physical_epoch, startup_deadline, readiness_gate) = readiness;
     if !is_physical_epoch(physical_epoch) {
         return Err(OuterSessionFailure::terminal(
             OuterSessionStage::Readiness,
@@ -1340,6 +1346,23 @@ where
             ));
         }
     };
+    let startup_failure = || {
+        let failure = OuterSessionFailure::terminal(
+            OuterSessionStage::Connect,
+            OuterSessionOperation::None,
+            None,
+            "outer-session startup hard bound exceeded",
+        );
+        if reconnect_after.is_some() {
+            OuterSessionFailure {
+                disposition: OuterSessionDisposition::Reconnect,
+                ..failure
+            }
+            .with_reconnect_after(reconnect_after)
+        } else {
+            failure
+        }
+    };
     let mut builder = h2::client::Builder::new();
     let file_data = 1_u32;
     let control_readiness = 1_u32;
@@ -1350,17 +1373,21 @@ where
         .initial_window_size(PER_STREAM_RECEIVE_WINDOW_BYTES as u32)
         .max_send_buffer_size(PER_STREAM_RECEIVE_WINDOW_BYTES)
         .max_concurrent_streams(OUTER_MAX_CONCURRENT_STREAMS);
-    let (sender, connection) = builder.handshake(io).await.map_err(|_| {
-        OuterSessionFailure::terminal(
-            OuterSessionStage::Connect,
-            OuterSessionOperation::None,
-            None,
-            "outer-session HTTP/2 handshake failed",
-        )
-        .with_reconnect_after(reconnect_after)
-    })?;
+    let (sender, connection) = tokio::time::timeout_at(startup_deadline, builder.handshake(io))
+        .await
+        .map_err(|_| startup_failure())?
+        .map_err(|_| {
+            OuterSessionFailure::terminal(
+                OuterSessionStage::Connect,
+                OuterSessionOperation::None,
+                None,
+                "outer-session HTTP/2 handshake failed",
+            )
+            .with_reconnect_after(reconnect_after)
+        })?;
     let admitted_generation = Arc::new(AtomicU64::new(0));
     let exchange_generation = Arc::clone(&admitted_generation);
+    let (startup_ready, startup_observation) = tokio::sync::oneshot::channel();
     let exchange = async move {
         let mut sender = sender.ready().await.map_err(|_| {
             OuterSessionFailure::reconnect(
@@ -1643,6 +1670,11 @@ where
             readiness_exchange.await?;
         }
 
+        // The startup deadline ends only after the complete readiness acknowledgement.
+        if tokio::time::Instant::now() > startup_deadline {
+            return Err(startup_failure().with_reconnect_after(Some(connection_generation)));
+        }
+        let _ = startup_ready.send(());
         dispatch(connection_generation, sender)
             .await
             .map_err(|mut failure| {
@@ -1658,11 +1690,24 @@ where
     };
     let mut connection = tokio::spawn(connection);
     tokio::pin!(exchange);
+    let startup_timeout = async {
+        if matches!(
+            tokio::time::timeout_at(startup_deadline, startup_observation).await,
+            Ok(Ok(()))
+        ) {
+            std::future::pending::<()>().await;
+        }
+    };
     tokio::select! {
         biased;
         result = &mut exchange => {
             connection.abort();
             result
+        },
+        () = startup_timeout => {
+            connection.abort();
+            let generation = admitted_generation.load(Ordering::Acquire);
+            Err(startup_failure().with_reconnect_after((generation != 0).then_some(generation).or(reconnect_after)))
         },
         _ = &mut connection => {
             let generation = admitted_generation.load(Ordering::Acquire);
@@ -2808,6 +2853,10 @@ impl OuterSessionState {
         self.cancelled = true;
     }
 }
+
+#[cfg(test)]
+#[path = "nanocore_tls_tests.rs"]
+mod native_tls_tests;
 
 #[cfg(test)]
 mod tests {
@@ -4328,7 +4377,7 @@ mod tests {
             &context,
             &presentation,
             None,
-            (TEST_PHYSICAL_EPOCH, || Ok(None)),
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
             |_, mut sender| async move {
                 let mut cursor = 0;
                 poll_effect_command("http://nanocore:80", &mut sender, &mut cursor, false)
@@ -4347,7 +4396,14 @@ mod tests {
         server.await.expect("scripted server");
     }
 
-    fn test_outer_credentials() -> (CredentialSelectionContext, CredentialPresentationOutcome) {
+    /// Returns the accepted startup budget for tests that start their own connection.
+    pub(super) fn test_startup_deadline() -> tokio::time::Instant {
+        tokio::time::Instant::now() + std::time::Duration::from_secs(120)
+    }
+
+    /// Supplies inert credentials or a replaceable secret for the real admission fixture.
+    pub(super) fn test_outer_credentials()
+    -> (CredentialSelectionContext, CredentialPresentationOutcome) {
         let context = CredentialSelectionContext {
             identity_id: "nanohost-a".to_string(),
             deployment_id: "deployment-a".to_string(),
@@ -4382,7 +4438,7 @@ mod tests {
                 &context,
                 &presentation,
                 None,
-                (physical_epoch, move || {
+                (physical_epoch, test_startup_deadline(), move || {
                     readiness_gate_observation.store(true, Ordering::Relaxed);
                     Ok(None)
                 }),
@@ -4414,7 +4470,7 @@ mod tests {
             &context,
             &presentation,
             None,
-            (TEST_PHYSICAL_EPOCH, || Ok(None)),
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
             move |_, _| async move {
                 first_dispatch.store(true, Ordering::Relaxed);
                 Ok(())
@@ -4440,7 +4496,7 @@ mod tests {
             &context,
             &presentation,
             Some(1),
-            (TEST_PHYSICAL_EPOCH, || Ok(None)),
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
             move |_, _| async move {
                 successor_dispatch.store(true, Ordering::Relaxed);
                 Err(OuterSessionFailure::terminal(
@@ -4497,7 +4553,7 @@ mod tests {
             &context,
             &presentation,
             None,
-            (TEST_PHYSICAL_EPOCH, move || {
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), move || {
                 gate_observation.store(true, Ordering::Relaxed);
                 let deadline = match deadline {
                     MarkerDeadline::Within(budget) => tokio::time::Instant::now() + budget,
@@ -4600,7 +4656,7 @@ mod tests {
             &context,
             &presentation,
             reconnect_after,
-            (TEST_PHYSICAL_EPOCH, || Ok(None)),
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
             |_, mut sender| async move {
                 let mut cursor = effect_cursor_start(false);
                 poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, false)
@@ -4663,7 +4719,7 @@ mod tests {
             &context,
             &presentation,
             Some(7),
-            (TEST_PHYSICAL_EPOCH, || Ok(None)),
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
             |_, mut sender| async move {
                 let mut cursor = effect_cursor_start(true);
                 submit_effect_result(
@@ -4708,7 +4764,7 @@ mod tests {
             &context,
             &presentation,
             Some(7),
-            (TEST_PHYSICAL_EPOCH, || Ok(None)),
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
             |_, mut sender| async move {
                 let mut cursor = effect_cursor_start(false);
                 assert!(
@@ -4771,7 +4827,7 @@ mod tests {
                 &context,
                 &presentation,
                 Some(7),
-                (TEST_PHYSICAL_EPOCH, || Ok(None)),
+                (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
                 |_, mut sender| async move {
                     let mut cursor = effect_cursor_start(has_retained_result);
                     if has_retained_result {
@@ -4836,7 +4892,7 @@ mod tests {
             &context,
             &presentation,
             None,
-            (TEST_PHYSICAL_EPOCH, || Ok(None)),
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
             |_, mut sender| async move {
                 let mut cursor = 2;
                 poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, true)
