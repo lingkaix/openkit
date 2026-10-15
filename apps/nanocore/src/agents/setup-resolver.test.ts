@@ -19,6 +19,7 @@ function agentConfig(overrides: Partial<AuthoredAgentConfig> = {}): AuthoredAgen
       adapter: 'codex-app-server',
       binaries: [
         { id: 'openkit-worker-shim', path: '/usr/local/bin/openkit-worker-shim' },
+        { id: 'node', path: '/usr/local/bin/node' },
         { id: 'codex', path: '/usr/local/bin/codex' },
       ],
       image: {
@@ -73,6 +74,60 @@ function gatewayConfig(): GatewayConfig {
 
 describe('resolveAgentSetup', () => {
   it.each([
+    '/usr/local/bin/node',
+    '/usr/local/bin/openkit-worker-shim',
+  ])('blocks setup before AEP construction when control binary %s is absent', (path) => {
+    const manifest = agentConfig();
+    const result = resolveAgentSetup(
+      {
+        ...manifest,
+        runtime: {
+          ...manifest.runtime,
+          binaries: manifest.runtime.binaries.filter((binary) => binary.path !== path),
+        },
+      },
+      { gatewayConfig: gatewayConfig(), providerRegistry: providerRegistry() }
+    );
+
+    expect(result.setup).toBeNull();
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        agentId: manifest.id,
+        code: 'agent_setup.missing_control_binary',
+        severity: 'error',
+      }),
+    ]);
+  });
+
+  it('does not accept a control binary id at a different path or expose that path', () => {
+    const manifest = agentConfig();
+    const untrustedPath = '/private/worker/custom-node';
+    const result = resolveAgentSetup(
+      {
+        ...manifest,
+        runtime: {
+          ...manifest.runtime,
+          binaries: manifest.runtime.binaries.map((binary) =>
+            binary.id === 'node' ? { ...binary, path: untrustedPath } : binary
+          ),
+        },
+      },
+      { gatewayConfig: gatewayConfig(), providerRegistry: providerRegistry() }
+    );
+
+    expect(result.setup).toBeNull();
+    expect(result.diagnostics).toEqual([
+      {
+        agentId: manifest.id,
+        code: 'agent_setup.missing_control_binary',
+        message: `Agent ${manifest.id} must declare the required Worker control binary: node.`,
+        severity: 'error',
+      },
+    ]);
+    expect(JSON.stringify(result.diagnostics)).not.toContain(untrustedPath);
+  });
+
+  it.each([
     'explicit',
     'all',
   ])('refuses an unavailable preferred model with an %s allowlist', (kind) => {
@@ -121,6 +176,7 @@ describe('resolveAgentSetup', () => {
         adapter: 'future-adapter',
         binaries: [
           { id: 'openkit-worker-shim', path: '/usr/local/bin/openkit-worker-shim' },
+          { id: 'node', path: '/usr/local/bin/node' },
           { id: 'future-runtime', path: '/opt/future/bin/runtime' },
         ],
         image: {
