@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 import { ACCESS_TOKEN_OPERATION_DEFINITIONS } from './access-token-operations.js';
 import { ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS } from './administration-operations.js';
+import { ADMINISTRATOR_CLEANUP_OPERATION_DEFINITIONS } from './administrator-cleanup-operations.js';
 import { AGENT_OPERATION_DEFINITIONS } from './agent-operations.js';
 import { APP_SEARCH_OPERATION_DEFINITIONS } from './app-search-operations.js';
 import { APP_UPDATE_OPERATION_DEFINITIONS } from './app-update-operations.js';
@@ -84,6 +85,7 @@ export { WORKSPACE_OPERATION_DEFINITIONS } from './workspace-operations.js';
 export const ADMINISTRATION_OPERATION_DEFINITIONS = composeOperationTables(
   WORKER_ENVIRONMENT_OPERATION_DEFINITIONS,
   ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS,
+  ADMINISTRATOR_CLEANUP_OPERATION_DEFINITIONS,
   APP_UPDATE_OPERATION_DEFINITIONS,
   DIAGNOSTICS_OPERATION_DEFINITIONS,
   NANOHOST_OPERATION_DEFINITIONS,

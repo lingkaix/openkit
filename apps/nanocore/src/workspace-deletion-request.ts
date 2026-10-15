@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  type BigIntStats,
   chmodSync,
   closeSync,
   existsSync,
@@ -143,6 +144,67 @@ export function listAllWorkspaceDeletionRequests(
   return readdirSync(root)
     .sort()
     .flatMap((workspaceId) => listWorkspaceDeletionRequests(dataRoot, workspaceId));
+}
+
+/**
+ * Visits a bounded prefix of canonical deletion requests in durable path order.
+ *
+ * Directory names are the existing owner's index, not discovered Workspace content. Record
+ * reads stop at the admitted ceiling or when the consumer refuses an item. Directory and file
+ * identity checks report concurrent replacement without retrying or advancing deletion.
+ *
+ * @param dataRoot Existing deployment storage root.
+ * @param maxEntries Maximum strict request records to read.
+ * @param accept Admits an observation, returning false to stop before later records.
+ * @returns Coverage of this read, without a guessed total.
+ */
+export function visitWorkspaceDeletionRequests(
+  dataRoot: string,
+  maxEntries: number,
+  accept: (record: WorkspaceDeletionRequestRecord) => boolean
+): { limited: boolean; changed: boolean } {
+  if (!Number.isSafeInteger(maxEntries) || maxEntries < 0) {
+    throw new RangeError('Deletion observation requires a nonnegative record ceiling.');
+  }
+  const root = join(dataRoot, 'server', 'exports', 'workspace-deletions');
+  let before: BigIntStats;
+  try {
+    before = lstatSync(root, { bigint: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { limited: false, changed: false };
+    }
+    throw error;
+  }
+  assertCanonicalDirectory(root);
+  let visited = 0;
+  let changed = false;
+  for (const workspaceId of readdirSync(root).sort()) {
+    const workspaceRoot = workspaceDeletionWorkspaceRoot(dataRoot, workspaceId);
+    assertCanonicalDirectory(workspaceRoot);
+    const workspaceBefore = lstatSync(workspaceRoot, { bigint: true });
+    for (const requestId of readdirSync(workspaceRoot).sort()) {
+      if (visited === maxEntries) return { limited: true, changed };
+      const requestPath = workspaceDeletionRequestPath(dataRoot, workspaceId, requestId);
+      const requestBefore = lstatSync(requestPath, { bigint: true });
+      const record = readWorkspaceDeletionRequest(dataRoot, workspaceId, requestId);
+      const requestAfter = lstatSync(requestPath, { bigint: true });
+      visited += 1;
+      if (fileIdentity(requestBefore) !== fileIdentity(requestAfter)) {
+        return { limited: false, changed: true };
+      }
+      if (!accept(record)) return { limited: true, changed };
+    }
+    changed ||=
+      fileIdentity(workspaceBefore) !== fileIdentity(lstatSync(workspaceRoot, { bigint: true }));
+  }
+  changed ||= fileIdentity(before) !== fileIdentity(lstatSync(root, { bigint: true }));
+  return { limited: false, changed };
+}
+
+/** Captures record/index replacement without interpreting a filesystem time as cleanup proof. */
+function fileIdentity(stat: BigIntStats): string {
+  return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
 }
 
 /** Reads one exact strict Workspace deletion request. */

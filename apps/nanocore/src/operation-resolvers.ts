@@ -5,6 +5,7 @@ import type {
 } from '@openkit/app-api-schemas';
 import { operationUsesBootstrapSecret } from '@openkit/app-api-schemas';
 import { responsibleUserIdForActor } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import {
   authorizedWorkspaceSet,
   authorizeWorkspace,
@@ -202,6 +203,13 @@ export function admitOperation(
             'deployment_admin_required',
             'Current deployment administrator authority is required.',
             403,
+            { cause: error }
+          );
+        if (error instanceof Database.SqliteError || !coreDb?.sqlite.open)
+          throw new OperationError(
+            'operation_storage_unavailable',
+            'Operation authority storage is unavailable.',
+            503,
             { cause: error }
           );
         throw error;

@@ -2,6 +2,7 @@ import { composeOperationTables } from '@openkit/app-api-schemas';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { createAdministrationOperationImplementations } from './administration/administration-operations.js';
+import { createAdministratorCleanupOperationImplementations } from './administrator-cleanup-operations.js';
 import { createAgentOperationImplementations } from './agents/agent-operations.js';
 import { createWorkerOperationImplementations } from './agents/workspace-workers.js';
 import { createAppSearchOperationImplementations } from './app-search-operation-implementations.js';
@@ -153,6 +154,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createAppSearchOperationImplementations(dependencies),
     createEnvironmentOperationImplementations(dependencies),
     createGovernanceOperationImplementations(dependencies),
+    createAdministratorCleanupOperationImplementations(dependencies),
     createWorkerEnvironmentOperationImplementations(
       dependencies.workerEnvironmentServices ?? { operations: null }
     ),
