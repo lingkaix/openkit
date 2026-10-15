@@ -40,9 +40,23 @@
 		}
 	}
 
-	handle {
+	# Keep unsupported API paths out of the SPA without changing Gateway reachability (#209).
+	@unsupported_api path /v1 /v1/* /api /internal /mcp/*
+	handle @unsupported_api {
+		header Content-Type application/json
+		respond `{"error":{"type":"invalid_request_error","code":"not_found","message":"API route not found."}}` 404
+	}
+
+	@web_read method GET HEAD
+	handle @web_read {
 		root * /srv/web
 		try_files {path} /index.html
 		file_server
+	}
+
+	handle {
+		header Content-Type application/json
+		header Allow "GET, HEAD"
+		respond `{"error":{"type":"invalid_request_error","code":"method_not_allowed","message":"Method not allowed."}}` 405
 	}
 }
