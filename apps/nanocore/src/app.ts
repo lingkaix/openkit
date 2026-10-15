@@ -654,7 +654,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     options.providerCredentialResolver?.(secretRef) ?? resolveEnvSecretRef(secretRef);
   const providerCredentialConfigured = createProviderCredentialConfigured({
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
-    fallback: providerCredentialResolverFallback,
+    // Managed Vault presence comes only from metadata; an injected resolver may release material.
+    fallback: (secretRef) =>
+      secretRef.startsWith('vault://') ? null : providerCredentialResolverFallback(secretRef),
   });
   const providerCredentialResolver =
     options.coreDb && vaultUnlockState
