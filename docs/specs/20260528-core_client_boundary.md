@@ -85,7 +85,6 @@ The public client is grouped by boundary:
 - `client.capabilities`: `refresh`, `snapshot`, `supports`, and `require` helpers over `/api/meta`.
 - `client.operations`: Canonical Agent inventory, detail and health refresh operations, plus `diagnostics.app` and `diagnostics.setup` with empty logical input objects.
 - `client.operations['attention.list']`: unified Human Attention read-model operation.
-- `client.repositories`: workspace repository resource list, diagnostics, and default repository setup routes.
 
 Deprecated flat aliases are removed.
 
@@ -93,7 +92,7 @@ There is no `getMeta`, `createMemoryEntry`, `updateMemoryEntry`, `respondToAppro
 
 ## App API Schema Package
 
-`@openkit/app-api-schemas` exports schema families for dashboards, diagnostics, setup diagnostics, runtime config, provider-subscription accounts, auth responses, automations, quick chat, search, turn feedback, repository resources, workspace synchronization, Goal reads and Goal operations, Agent Catalog, Action Center, and the unified conversation target catalog and submission.
+`@openkit/app-api-schemas` exports schema families for dashboards, diagnostics, setup diagnostics, runtime config, provider-subscription accounts, auth responses, automations, quick chat, search, turn feedback, workspace synchronization, Goal reads and Goal operations, Agent Catalog, Action Center, and the unified conversation target catalog and submission.
 
 `@openkit/app-api-schemas` is runtime-neutral and browser-safe: no module reachable from its entry may import Node built-ins or use Node globals. The built-graph regression enforces this invariant. The reason is recorded in [App API Schemas Browser-Safe Subpaths](../decisions/20261001-app_api_schemas_browser_safe_subpaths.md).
 
@@ -140,18 +139,13 @@ Question response mutations use the definition-derived operation path at `POST /
 
 The client exposes `client.operations['attention.list']({ workspaceId })`.
 
-## Workspace Repository Slice
+## Workspace Source And Hosting Boundaries
 
-NanoCore exposes:
+[Workspace Data Source Catalog](20260704-workspace_data_source_catalog.md) owns registered repository inputs and source selection. [Hosting Goes Through The Gateway MCP](../decisions/20261002-hosting_through_gateway_mcp.md) retires the Workspace host repository resource and its setup surface. The client adds no repository setup API or host-repository reader. Source and configuration operations follow their existing definition and runtime-configuration owners.
 
-- `GET /api/app/workspaces/:workspaceId/repositories`
-- `GET /api/app/workspaces/:workspaceId/repositories/diagnostics`
-- `PUT /api/app/workspaces/:workspaceId/repositories/default`
+Platform-managed hosting calls follow the selected vendor MCP's Gateway path under its authentication, authorization, approval, and audit owners. The Core Client does not introduce first-party Git operations or a replacement repository namespace. Worker-local Git and optional user-space native push retain their existing owners.
 
-This slice is a redacted App API projection for workspace repository resources.
-It must not expose raw host paths or adapter-native runtime config through Web-facing payloads.
-
-The client exposes `client.repositories.list(workspaceId)`, `client.repositories.diagnostics(workspaceId)`, and `client.repositories.setDefault(workspaceId, input)`.
+Any source summary exposed to Web must remain redacted. It must not expose raw host paths or adapter-native runtime configuration. Historical archive readers retain their separately owned shapes; reading an archive does not restore the removed resource, route, or client surface.
 
 ## Workspace Synchronization And Goal Mode Slices
 
@@ -194,6 +188,8 @@ After `ProtocolValidationError`, the failed subscription exposes no private curs
 Turn feedback submissions use the strict shared `SubmitTurnFeedbackRequestSchema`: NanoCore and `@openkit/core-client` reject unknown request fields, while the generated OpenAPI projection documents the same closed object shape. NanoCore derives retained feedback validation from `TurnFeedbackResponseSchema`, validates its known fields and owning Turn strictly, admits and preserves safe descriptive additions on disk updates, and emits only the known response fields without defining a second public schema.
 
 ## Current Implementation Projection
+
+The former `client.repositories` namespace and Workspace repository list, diagnostics, and default-setup routes are absent. `packages/core-client/src/client.ts` exposes no repository sub-client, and the current operation definitions add no replacement first-party repository API. The retained `workspace-archive-history` schema and Workspace import parsing remain historical portability readers, not repository administration surfaces.
 
 `diagnostics.app` and `diagnostics.setup` derive their JSON routes, OpenAPI, Core Client and CLI projections from `diagnostics-operations.ts`, with exact native joins beside the diagnostics owners. Their former routes and named App methods are absent. Connection metadata, health, raw diagnostics and OpenAPI serving remain support bindings outside operation discovery; metadata and the capability helpers retain their existing Core Client plumbing. The three definition-owned archive operations retain only the existing stream methods and routes, with Web and administrator CLI local-file transfer coverage and remote MCP refusal before processing.
 
