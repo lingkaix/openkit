@@ -98,7 +98,7 @@ For an accepted Task Mode `worker_turn`, `requiredUserAction=none` and the prela
 
 Worker selection consumes only the caller-supplied candidate id, display name, `codex` or `opencode` runtime label, `ready`, `blocked`, or `unknown` readiness, and optional redacted reasons. V1 may use prompt hints to prefer a runtime and otherwise selects only a ready candidate.
 
-When `task.start` supplies an exact `agentId`, the caller restricts the eligible candidates to that Agent. Workflow Coordinator selects it only when it is eligible and ready, and never substitutes another candidate. A missing, ineligible, or unready selection produces `blocked` with no worker payload; Task admission maps this to `409 task_mode_not_delegated` before effects. Omission keeps ordinary selection ([accepted #133 ruling](https://github.com/lingkaix/openkit/issues/133#issuecomment-6117121388)).
+When `task.start` supplies an exact `agentId`, the caller restricts the eligible candidates to that Agent. Workflow Coordinator selects it only when it is eligible and ready, and never substitutes another candidate. A missing, ineligible, or unready selection produces `blocked` with no worker payload; Task admission maps this to `409 task_mode_not_delegated` before effects. Omission keeps ordinary selection ([accepted #133 decision](../decisions/20261012-exact_task_agent_selection.md)).
 
 If no eligible candidate is ready, the decision is `blocked` and has no worker payload. The selected worker summary may be product-visible; adapter-native launch payloads remain internal to the owning runtime contracts. Runtime-family inference and the closed V1 runtime label set are audited by the Worker Agent Adapter Boundary plan, not expanded here.
 
