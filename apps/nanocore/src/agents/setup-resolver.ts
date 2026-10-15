@@ -6,6 +6,7 @@ import type {
   WorkspaceConfig,
 } from '@openkit/config-schema';
 import { ReasoningEffortSchema } from '@openkit/protocol';
+import { planLogicalModel } from '../llm/gateway-execution.js';
 import { type ResolvedLogicalModel, resolveLogicalModelCatalog } from '../llm/logical-models.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { AgentManifest } from './manifest.js';
@@ -137,7 +138,10 @@ export function resolveAgentSetup(
     catalog = resolveLogicalModelCatalog(
       dependencies.gatewayConfig,
       dependencies.providerRegistry
-    ).filter((model) => model.routes.some((member) => member.available));
+    ).filter((model) =>
+      // Setup adds no capability requirement, but dormant backups cannot establish readiness.
+      planLogicalModel(model, [], () => true).some((selection) => selection.selected)
+    );
   } catch {
     diagnostics.push({
       agentId: config.id,
