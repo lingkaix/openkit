@@ -788,6 +788,8 @@ function makeClient(
         .fn()
         .mockResolvedValueOnce({
           items: [WORKSPACE_A].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -801,6 +803,8 @@ function makeClient(
             | undefined) ??
             vi.fn().mockResolvedValue({
               items: [WORKSPACE_A].map((workspace) => ({
+                membershipStatus: 'active' as const,
+                accessCause: 'membership' as const,
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
@@ -1570,6 +1574,8 @@ describe('Overview / Action Center (board 07)', () => {
 
           'workspace.list': vi.fn().mockResolvedValue({
             items: [{ ...WORKSPACE_A, id: workspaceId }].map((workspace) => ({
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
               workspace,
               effectiveRole: 'owner',
               membershipRevision: 1,
@@ -1765,6 +1771,8 @@ describe('Overview / Action Center (board 07)', () => {
 
           'workspace.list': vi.fn().mockResolvedValue({
             items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
               workspace,
               effectiveRole: 'owner',
               membershipRevision: 1,
@@ -1823,6 +1831,8 @@ describe('Overview / Action Center (board 07)', () => {
 
           'workspace.list': vi.fn().mockResolvedValue({
             items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
               workspace,
               effectiveRole: 'owner',
               membershipRevision: 1,
@@ -2547,6 +2557,8 @@ describe('Agents roster continued', () => {
         'agent.list': list,
         'workspace.list': vi.fn().mockResolvedValue({
           items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -2744,6 +2756,8 @@ describe('Agents roster continued', () => {
           'agent.health-refresh': refreshHealth,
           'workspace.list': vi.fn().mockResolvedValue({
             items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
               workspace,
               effectiveRole: 'owner',
               membershipRevision: 1,
@@ -2877,6 +2891,8 @@ describe('Agents actual Workers', () => {
           'worker.list': listWorkspaceWorkers,
           'workspace.list': vi.fn().mockResolvedValue({
             items: [].map((workspace) => ({
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
               workspace,
               effectiveRole: 'owner',
               membershipRevision: 1,
@@ -3120,6 +3136,8 @@ describe('Agents actual Workers', () => {
           'agent.list': vi.fn().mockResolvedValue({ items: [AGENT_READY] }),
           'workspace.list': vi.fn().mockResolvedValue({
             items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
               workspace,
               effectiveRole: 'owner',
               membershipRevision: 1,
@@ -4013,6 +4031,8 @@ describe('Knowledge (board 14)', () => {
 
           'workspace.list': vi.fn().mockResolvedValue({
             items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
               workspace,
               effectiveRole: 'owner',
               membershipRevision: 1,
@@ -4591,6 +4611,8 @@ describe('Knowledge (board 14)', () => {
         operations: {
           'workspace.list': vi.fn().mockResolvedValue({
             items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
               workspace,
               effectiveRole: 'owner',
               membershipRevision: 1,
@@ -5202,6 +5224,8 @@ describe('Knowledge (board 14)', () => {
         operations: {
           'workspace.list': vi.fn().mockResolvedValue({
             items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
               workspace,
               effectiveRole: 'owner',
               membershipRevision: 1,
@@ -5250,6 +5274,8 @@ describe('Knowledge (board 14)', () => {
         operations: {
           'workspace.list': vi.fn().mockResolvedValue({
             items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
               workspace,
               effectiveRole: 'owner',
               membershipRevision: 1,
@@ -5316,6 +5342,8 @@ describe('Knowledge (board 14)', () => {
         operations: {
           'workspace.list': vi.fn().mockResolvedValue({
             items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
               workspace,
               effectiveRole: 'owner',
               membershipRevision: 1,
@@ -5426,6 +5454,8 @@ describe('Knowledge (board 14)', () => {
         operations: {
           'workspace.list': vi.fn().mockResolvedValue({
             items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
               workspace,
               effectiveRole: 'owner',
               membershipRevision: 1,
@@ -5530,6 +5560,8 @@ describe('Knowledge (board 14)', () => {
 
           'workspace.list': vi.fn().mockResolvedValue({
             items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
               workspace,
               effectiveRole: 'owner',
               membershipRevision: 1,
@@ -5603,6 +5635,8 @@ describe('Knowledge (board 14)', () => {
           'workspace.list': vi.fn().mockResolvedValue({
             items: (mode === 'switch' ? [WORKSPACE_A, WORKSPACE_B] : [WORKSPACE_A]).map(
               (workspace) => ({
+                membershipStatus: 'active' as const,
+                accessCause: 'membership' as const,
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
@@ -6004,6 +6038,8 @@ describe('First run (board 18)', () => {
       operations: {
         'workspace.list': vi.fn().mockResolvedValue({
           items: [].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -6028,6 +6064,8 @@ describe('First run (board 18)', () => {
       operations: {
         'workspace.list': vi.fn().mockResolvedValue({
           items: [].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,

@@ -49,6 +49,8 @@ function renderCurrentWorkspace(
     operations: {
       'workspace.list': async () => ({
         items: items.map((workspace) => ({
+          membershipStatus: 'active' as const,
+          accessCause: 'membership' as const,
           workspace,
           effectiveRole: 'owner',
           membershipRevision: 1,
@@ -170,6 +172,8 @@ describe('workspace switcher persistence', () => {
       operations: {
         'workspace.list': async () => ({
           items: items.map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -205,30 +209,25 @@ describe('workspace switcher persistence', () => {
     });
   });
 
-  it('defaults to the signed-in Quick Chat when administrator eligibility lists other owners', async () => {
-    let resolveSession!: (session: { user: { id: string } }) => void;
-    const session = new Promise<{ user: { id: string } }>((resolve) => {
-      resolveSession = resolve;
-    });
-    const getSession = vi.fn().mockReturnValue(session);
+  it('defaults to the caller Quick Chat without a session lookup when administrator access lists other owners', async () => {
+    const getSession = vi.fn().mockRejectedValue(new Error('Session discovery is unavailable.'));
     const client = {
-      core: {},
-      auth: {
-        email: {
-          getSession,
-        },
-      },
+      auth: { email: { getSession } },
       operations: {
         'workspace.list': async () => ({
           items: [
             {
+              membershipStatus: null,
+              accessCause: 'administrator',
               workspace: USER_A_QUICK_CHAT,
-              effectiveRole: 'owner',
-              membershipRevision: 1,
+              effectiveRole: null,
+              membershipRevision: null,
               ownerUserId: 'user_a',
               registryRevision: 1,
             },
             {
+              membershipStatus: 'active',
+              accessCause: 'administrator',
               workspace: USER_B_QUICK_CHAT,
               effectiveRole: 'owner',
               membershipRevision: 1,
@@ -236,56 +235,6 @@ describe('workspace switcher persistence', () => {
               registryRevision: 1,
             },
           ],
-        }),
-      },
-    } as unknown as CoreClient;
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-    render(
-      <QueryClientProvider client={queryClient}>
-        <CoreClientProvider client={client}>
-          <CurrentWorkspaceProbe />
-        </CoreClientProvider>
-      </QueryClientProvider>
-    );
-    await waitFor(() => expect(getSession).toHaveBeenCalledTimes(1));
-    expect(screen.getByLabelText('Current workspace')).toBeEmptyDOMElement();
-    expect(useWorkspaceStore.getState().selectionUserKey).toBeNull();
-    await act(async () => resolveSession({ user: { id: 'user_b' } }));
-    await waitFor(() => {
-      expect(screen.getByLabelText('Current workspace')).toHaveTextContent(USER_B_QUICK_CHAT.id);
-    });
-    expect(useWorkspaceStore.getState().selectionUserKey).toBe(USER_B_QUICK_CHAT.id);
-  });
-
-  it.each([
-    'resolved',
-    'failed',
-  ] as const)('does not restore another identity selection while ambiguous session discovery is pending or %s', async (outcome) => {
-    useWorkspaceStore.getState().bindSelectionUserKey(USER_A_QUICK_CHAT.id);
-    useWorkspaceStore.getState().setCurrentWorkspaceId(USER_A_QUICK_CHAT.id);
-    await rehydratePersistedSelection();
-
-    let resolveSession!: (session: { user: { id: string } }) => void;
-    let rejectSession!: (error: Error) => void;
-    const getSession = vi.fn().mockReturnValue(
-      new Promise<{ user: { id: string } }>((resolve, reject) => {
-        resolveSession = resolve;
-        rejectSession = reject;
-      })
-    );
-    const client = {
-      auth: { email: { getSession } },
-      operations: {
-        'workspace.list': async () => ({
-          items: [USER_A_QUICK_CHAT, USER_B_QUICK_CHAT].map((workspace, index) => ({
-            workspace,
-            effectiveRole: 'owner',
-            membershipRevision: 1,
-            ownerUserId: index === 0 ? 'user_a' : 'user_b',
-            registryRevision: 1,
-          })),
         }),
       },
     } as unknown as CoreClient;
@@ -297,26 +246,57 @@ describe('workspace switcher persistence', () => {
         </CoreClientProvider>
       </QueryClientProvider>
     );
-
-    await waitFor(() => expect(getSession).toHaveBeenCalledTimes(1));
-    expect(queryClient.getQueryState(chatKeys.workspaces)?.status).toBe('success');
-    expect(queryClient.getQueryState(chatKeys.sessionUser)?.status).toBe('pending');
-    expect(screen.getByLabelText('Current workspace')).toBeEmptyDOMElement();
-
-    await act(async () => {
-      if (outcome === 'resolved') resolveSession({ user: { id: 'user_b' } });
-      else rejectSession(new Error('Session discovery failed.'));
-    });
     await waitFor(() => {
-      expect(queryClient.getQueryState(chatKeys.sessionUser)?.status).toBe(
-        outcome === 'resolved' ? 'success' : 'error'
-      );
-      if (outcome === 'resolved') {
-        expect(screen.getByLabelText('Current workspace')).toHaveTextContent(USER_B_QUICK_CHAT.id);
-        expect(useWorkspaceStore.getState().currentWorkspaceId).toBeNull();
-      } else {
-        expect(screen.getByLabelText('Current workspace')).toBeEmptyDOMElement();
-      }
+      expect(screen.getByLabelText('Current workspace')).toHaveTextContent(USER_B_QUICK_CHAT.id);
+      expect(useWorkspaceStore.getState().selectionUserKey).toBe(USER_B_QUICK_CHAT.id);
+    });
+    expect(getSession).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    null,
+    'removed',
+  ] as const)('does not restore another identity selection before discovery or from its %s membership', async (membershipStatus) => {
+    useWorkspaceStore.getState().bindSelectionUserKey(USER_A_QUICK_CHAT.id);
+    useWorkspaceStore.getState().setCurrentWorkspaceId(USER_A_QUICK_CHAT.id);
+    await rehydratePersistedSelection();
+
+    const result = {
+      items: [USER_A_QUICK_CHAT, USER_B_QUICK_CHAT].map((workspace, index) => ({
+        membershipStatus: index === 0 ? membershipStatus : 'active',
+        accessCause: 'administrator',
+        workspace,
+        effectiveRole: index === 0 ? null : 'owner',
+        membershipRevision: index === 0 && membershipStatus === null ? null : 1,
+        ownerUserId: index === 0 ? 'user_a' : 'user_b',
+        registryRevision: 1,
+      })),
+    };
+    let finishDiscovery!: (value: typeof result) => void;
+    const listWorkspaces = vi.fn().mockReturnValue(
+      new Promise<typeof result>((resolve) => {
+        finishDiscovery = resolve;
+      })
+    );
+    const client = {
+      operations: { 'workspace.list': listWorkspaces },
+    } as unknown as CoreClient;
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <CoreClientProvider client={client}>
+          <CurrentWorkspaceProbe />
+        </CoreClientProvider>
+      </QueryClientProvider>
+    );
+
+    await waitFor(() => expect(listWorkspaces).toHaveBeenCalledTimes(1));
+    expect(screen.getByLabelText('Current workspace')).toBeEmptyDOMElement();
+    await act(async () => finishDiscovery(result));
+    await waitFor(() => {
+      expect(screen.getByLabelText('Current workspace')).toHaveTextContent(USER_B_QUICK_CHAT.id);
+      expect(useWorkspaceStore.getState().currentWorkspaceId).toBeNull();
+      expect(useWorkspaceStore.getState().selectionUserKey).toBe(USER_B_QUICK_CHAT.id);
     });
   });
 

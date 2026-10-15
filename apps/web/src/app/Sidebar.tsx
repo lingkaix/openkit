@@ -7,10 +7,8 @@ import {
   conversationThreadPath,
   useConversationNavigation,
   useCurrentWorkspaceId,
-  useSignedInUserId,
   useWorkspaceSummaries,
   useWorkspaces,
-  workspaceAdmissionIsAmbiguous,
   workspaceBelongsToCaller,
 } from '../screens/chat/data';
 import { AppSearch } from '../screens/operations';
@@ -136,8 +134,6 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
   const navigate = useNavigate();
   const workspaces = useWorkspaces();
   const summaries = useWorkspaceSummaries();
-  const ambiguous = summaries.isSuccess && workspaceAdmissionIsAmbiguous(summaries.data);
-  const sessionUser = useSignedInUserId(ambiguous);
   const workspaceId = useCurrentWorkspaceId();
   const setWorkspaceId = useWorkspaceStore((state) => state.setCurrentWorkspaceId);
   const workspace = workspaces.data?.find((candidate) => candidate.id === workspaceId) ?? null;
@@ -194,7 +190,7 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
           label={workspace?.name ?? 'Select workspace'}
           selectedKey={workspaceId}
           items={(summaries.data ?? [])
-            .filter((item) => workspaceBelongsToCaller(item, sessionUser.data ?? null, ambiguous))
+            .filter((item) => workspaceBelongsToCaller(item))
             .map((item) => ({
               id: item.workspace.id,
               label: item.workspace.name,

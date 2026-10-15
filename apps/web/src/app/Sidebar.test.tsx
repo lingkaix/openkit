@@ -127,6 +127,8 @@ describe('conversation navigation sidebar', () => {
 
         'workspace.list': async () => ({
           items: [{ id: 'ws1', name: 'Workspace', kind: 'general' }].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -232,6 +234,8 @@ describe('conversation navigation sidebar', () => {
 
         'workspace.list': async () => ({
           items: [{ id: 'ws/1', name: 'Encoded workspace', kind: 'general' }].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -276,6 +280,8 @@ describe('conversation navigation sidebar', () => {
             { id: 'ws1', name: 'Market research', kind: 'general' },
             { id: 'ws2', name: 'Ops workspace', kind: 'general' },
           ].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -326,6 +332,8 @@ describe('conversation navigation sidebar', () => {
         'workspace.list': async () => ({
           items: [
             {
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
               workspace: { id: 'ws_mine', name: 'My notes', kind: 'general' },
               effectiveRole: 'owner',
               membershipRevision: 1,
@@ -333,6 +341,8 @@ describe('conversation navigation sidebar', () => {
               registryRevision: 1,
             },
             {
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
               workspace: { id: 'ws_quick', name: 'My quick chat', kind: 'quick-chat' },
               effectiveRole: 'owner',
               membershipRevision: 2,
@@ -340,13 +350,17 @@ describe('conversation navigation sidebar', () => {
               registryRevision: 1,
             },
             {
+              membershipStatus: null,
+              accessCause: 'administrator' as const,
               workspace: { id: 'ws_theirs', name: 'Someone else', kind: 'quick-chat' },
-              effectiveRole: 'owner',
-              membershipRevision: 1,
+              effectiveRole: null,
+              membershipRevision: null,
               ownerUserId: 'user_other',
               registryRevision: 1,
             },
             {
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
               workspace: { id: 'ws_viewer', name: 'Read together', kind: 'general' },
               effectiveRole: 'viewer',
               membershipRevision: 1,
@@ -354,6 +368,8 @@ describe('conversation navigation sidebar', () => {
               registryRevision: 1,
             },
             {
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
               workspace: { id: 'ws_shared', name: 'Shared notes', kind: 'general' },
               effectiveRole: 'editor',
               membershipRevision: 3,

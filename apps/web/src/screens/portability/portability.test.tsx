@@ -470,6 +470,8 @@ function makeClient(
         .fn()
         .mockResolvedValueOnce({
           items: [WORKSPACE].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -483,6 +485,8 @@ function makeClient(
             | undefined) ??
             vi.fn().mockResolvedValue({
               items: [WORKSPACE].map((workspace) => ({
+                membershipStatus: 'active' as const,
+                accessCause: 'membership' as const,
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
@@ -848,6 +852,8 @@ describe('Portability', () => {
       .mockRejectedValueOnce(new Error('workspace-private failure'))
       .mockResolvedValue({
         items: [WORKSPACE].map((workspace) => ({
+          membershipStatus: 'active' as const,
+          accessCause: 'membership' as const,
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
@@ -926,6 +932,8 @@ describe('Portability', () => {
       .fn()
       .mockResolvedValueOnce({
         items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+          membershipStatus: 'active' as const,
+          accessCause: 'membership' as const,
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
@@ -936,6 +944,8 @@ describe('Portability', () => {
       .mockRejectedValueOnce(new Error('workspace-private failure'))
       .mockResolvedValue({
         items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+          membershipStatus: 'active' as const,
+          accessCause: 'membership' as const,
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
@@ -975,6 +985,8 @@ describe('Portability', () => {
       .fn()
       .mockResolvedValueOnce({
         items: [WORKSPACE].map((workspace) => ({
+          membershipStatus: 'active' as const,
+          accessCause: 'membership' as const,
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
@@ -1090,6 +1102,8 @@ describe('Portability', () => {
     const user = userEvent.setup();
     const listWorkspaces = vi.fn().mockResolvedValue({
       items: [WORKSPACE_B].map((workspace) => ({
+        membershipStatus: 'active' as const,
+        accessCause: 'membership' as const,
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
@@ -1194,6 +1208,8 @@ describe('Portability', () => {
     const user = userEvent.setup();
     const listWorkspaces = vi.fn().mockResolvedValue({
       items: [WORKSPACE].map((workspace) => ({
+        membershipStatus: 'active' as const,
+        accessCause: 'membership' as const,
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
@@ -1536,6 +1552,8 @@ describe('Portability', () => {
     const pending = createDeferred<unknown>();
     const listWorkspaces = vi.fn().mockResolvedValue({
       items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+        membershipStatus: 'active' as const,
+        accessCause: 'membership' as const,
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
@@ -1676,6 +1694,8 @@ describe('Portability', () => {
     const user = userEvent.setup();
     const listWorkspaces = vi.fn().mockResolvedValue({
       items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+        membershipStatus: 'active' as const,
+        accessCause: 'membership' as const,
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
@@ -1726,6 +1746,8 @@ describe('Portability', () => {
     const user = userEvent.setup();
     const listWorkspaces = vi.fn().mockResolvedValue({
       items: [QUICK_CHAT_WORKSPACE].map((workspace) => ({
+        membershipStatus: 'active' as const,
+        accessCause: 'membership' as const,
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
@@ -1759,6 +1781,8 @@ describe('Portability', () => {
     const user = userEvent.setup();
     const listWorkspaces = vi.fn().mockResolvedValue({
       items: [].map((workspace) => ({
+        membershipStatus: 'active' as const,
+        accessCause: 'membership' as const,
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
@@ -1795,6 +1819,8 @@ describe('Portability', () => {
       .fn()
       .mockResolvedValueOnce({
         items: [WORKSPACE].map((workspace) => ({
+          membershipStatus: 'active' as const,
+          accessCause: 'membership' as const,
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
@@ -2005,6 +2031,8 @@ describe('Portability', () => {
     const user = userEvent.setup();
     const listWorkspaces = vi.fn().mockResolvedValue({
       items: [...items].map((workspace) => ({
+        membershipStatus: 'active' as const,
+        accessCause: 'membership' as const,
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
@@ -2313,6 +2341,8 @@ describe('Portability', () => {
       .fn()
       .mockResolvedValueOnce({
         items: [WORKSPACE].map((workspace) => ({
+          membershipStatus: 'active' as const,
+          accessCause: 'membership' as const,
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
@@ -2428,6 +2458,8 @@ describe('Portability', () => {
       .fn()
       .mockResolvedValueOnce({
         items: [].map((workspace) => ({
+          membershipStatus: 'active' as const,
+          accessCause: 'membership' as const,
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
@@ -2437,6 +2469,8 @@ describe('Portability', () => {
       })
       .mockResolvedValue({
         items: [{ ...IMPORTED_WORKSPACE, id: EXPORTED_ABSENT_ID }].map((workspace) => ({
+          membershipStatus: 'active' as const,
+          accessCause: 'membership' as const,
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
@@ -2564,6 +2598,8 @@ describe('Portability', () => {
     const user = userEvent.setup();
     const listWorkspaces = vi.fn().mockResolvedValue({
       items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+        membershipStatus: 'active' as const,
+        accessCause: 'membership' as const,
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,

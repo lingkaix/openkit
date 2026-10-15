@@ -55,6 +55,8 @@ function makeClient(
         .fn()
         .mockResolvedValueOnce({
           items: workspaces.map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -65,6 +67,8 @@ function makeClient(
         .mockImplementation(
           vi.fn().mockResolvedValue({
             items: workspaces.map((workspace) => ({
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
               workspace,
               effectiveRole: 'owner',
               membershipRevision: 1,

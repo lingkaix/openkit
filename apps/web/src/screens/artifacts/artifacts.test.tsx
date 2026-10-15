@@ -389,6 +389,8 @@ function makeClient(
         .fn()
         .mockResolvedValueOnce({
           items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -402,6 +404,8 @@ function makeClient(
             | undefined) ??
             vi.fn().mockResolvedValue({
               items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+                membershipStatus: 'active' as const,
+                accessCause: 'membership' as const,
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
@@ -1268,6 +1272,8 @@ describe('Artifacts', () => {
       .fn()
       .mockResolvedValueOnce({
         items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+          membershipStatus: 'active' as const,
+          accessCause: 'membership' as const,
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
@@ -1277,6 +1283,8 @@ describe('Artifacts', () => {
       })
       .mockResolvedValueOnce({
         items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+          membershipStatus: 'active' as const,
+          accessCause: 'membership' as const,
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
@@ -1837,6 +1845,8 @@ describe('Artifacts', () => {
       createDeferred<ReturnType<typeof ListArtifactsResponseSchema.parse>>();
     const listWorkspaces = vi.fn().mockResolvedValue({
       items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+        membershipStatus: 'active' as const,
+        accessCause: 'membership' as const,
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
