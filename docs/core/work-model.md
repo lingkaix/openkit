@@ -146,7 +146,7 @@ When exact continuation cannot be proved, preserving an interrupted attempt and 
 ## Invariants
 
 - Product projections MUST preserve canonical identity, order, lineage, and owning authority; they MUST NOT independently accept, apply, recover, or terminalize work.
-- Quick Chat MUST remain an owner-only lightweight Workspace and MUST NOT silently become a project or worker-execution boundary.
+- A personal Workspace remains owner-only and cannot add members. Ordinary work capability follows its existing owners without the former Quick Chat restrictions.
 - Chat Mode MUST NOT hide worker execution; entry into Task Mode or Goal Mode MUST be explicit in Thread history.
 - Task Mode MUST remain bounded delegated work. Goal Mode MUST remain one durable outcome whose completion is a human decision.
 - Parallel worker activity MUST appear as linked execution narratives rather than several agents writing inside one Thread.
