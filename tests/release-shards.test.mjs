@@ -109,6 +109,7 @@ if (process.platform === 'linux') {
     const root = mkdtempSync(join(tmpdir(), 'openkit-root-inventory-'));
     const previousPath = process.env.PATH;
     const previousContext = process.env.NODE_TEST_CONTEXT;
+    const previousProducer = process.env.P29_TEST_PRODUCER_ROOT;
     const hostCondition = parse(readFileSync('.github/workflows/ci.yml', 'utf8')).jobs[
       'app-image-admin-recovery'
     ].if;
@@ -187,6 +188,10 @@ if (process.platform === 'linux') {
         [`fetch --locked --manifest-path ${join(root, 'apps/nanohost/Cargo.toml')}`]
       );
       const execution = readFileSync(join(root, 'executed'), 'utf8');
+      process.env.P29_TEST_PRODUCER_ROOT = join(root, 'foreign-producer');
+      assert.throws(() => rootNodeSuite({ root }), /same-checkout.*override/);
+      assert.equal(readFileSync(join(root, 'executed'), 'utf8'), execution);
+      delete process.env.P29_TEST_PRODUCER_ROOT;
       unlinkSync(join(root, 'apps/nanohost/src/live_inspection.rs'));
       assert.throws(() => rootNodeSuite({ root }), /P02.*producer/);
       assert.equal(readFileSync(join(root, 'executed'), 'utf8'), execution);
@@ -254,6 +259,8 @@ if (process.platform === 'linux') {
       assert.throws(() => rootNodeInventory(root), /Missing or duplicate/);
     } finally {
       process.env.PATH = previousPath;
+      if (previousProducer === undefined) delete process.env.P29_TEST_PRODUCER_ROOT;
+      else process.env.P29_TEST_PRODUCER_ROOT = previousProducer;
       if (previousContext === undefined) delete process.env.NODE_TEST_CONTEXT;
       else process.env.NODE_TEST_CONTEXT = previousContext;
       rmSync(root, { recursive: true, force: true });

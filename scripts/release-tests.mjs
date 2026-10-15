@@ -211,6 +211,8 @@ export function rootNodeInventory(root = process.cwd()) {
 export function prepareScriptFixtures(files, { root = process.cwd() } = {}) {
   if (!files.includes('scripts/host-worker-update/native-inspection.test.mjs')) return;
   if (process.platform !== 'linux') throw Error('P29 native script fixture requires Linux');
+  if (process.env.P29_TEST_PRODUCER_ROOT !== undefined)
+    throw Error('P29 same-checkout native producer override is forbidden in the root lane');
   if (!existsSync(join(root, 'apps/nanohost/src/live_inspection.rs')))
     throw Error('P02 live inspection producer must be present before P29 tests');
   const pins = [
