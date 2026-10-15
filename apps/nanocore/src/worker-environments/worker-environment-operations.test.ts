@@ -10,7 +10,9 @@ import { FsStore } from '../lib/store.js';
 import type { WorkerEnvironmentRuntimeEffects } from '../runtime/worker-environment-runtime-effects.js';
 import {
   activateWorkerStorageAttachment,
+  admitWorkerStorageContributor,
   createWorkerStorageBinding,
+  getWorkerStorageBinding,
   releaseWorkerStorageAttachment,
   reserveWorkerStorageAttachment,
   type WorkerStorageBinding,
@@ -147,6 +149,64 @@ function createFixture(effectOverride: Partial<WorkerEnvironmentRuntimeEffects> 
     store,
     threadId: thread.id,
     workspaceId: workspace.id,
+  };
+}
+
+/** Adds another active member without changing the current administrator's credential. */
+function addOtherMember(fixture: Fixture): void {
+  const now = Date.now();
+  fixture.coreDb.sqlite
+    .prepare(
+      `INSERT INTO users (
+        id, display_name, email, email_verified, created_at, updated_at, kind, status
+      ) VALUES ('user_other', 'Other Member', 'other@example.com', false, ?, ?, 'human', 'active')`
+    )
+    .run(now, now);
+  fixture.coreDb.sqlite
+    .prepare(
+      `INSERT INTO workspace_members (
+        workspace_id, user_id, status, access_level, invitation_id,
+        joined_at, removed_at, revision, created_at, updated_at
+      ) VALUES (?, 'user_other', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+    )
+    .run(fixture.workspaceId, NOW, NOW, NOW);
+}
+
+/** Prepares a live shared attachment so another authorized caller can contribute during inspection. */
+function prepareConcurrentContributor(fixture: Fixture): () => void {
+  addOtherMember(fixture);
+  const reserved = reserveWorkerStorageAttachment(fixture.coreDb, {
+    agentSessionId: 'session_status',
+    authorizeContributor: () => true,
+    expectedRevision: fixture.binding.revision,
+    layout: LAYOUT,
+    purpose: 'work',
+    responsibleUserId: 'user_local',
+    runtimeTargetId: 'target_1',
+    storageRef: fixture.binding.storageRef,
+    threadId: fixture.threadId,
+    workspaceId: fixture.workspaceId,
+  });
+  fixture.binding = activateWorkerStorageAttachment(fixture.coreDb, {
+    attachmentGeneration: reserved.attachmentGeneration,
+    expectedRevision: reserved.revision,
+    sandboxBindingRef: 'sandbox_status',
+    storageRef: reserved.storageRef,
+    targets: reserved.targets,
+  });
+  const thread = fixture.store.createThread(fixture.workspaceId, 'Other shared work');
+  return () => {
+    // This models another authorized caller's admission, not the status caller's authority.
+    admitWorkerStorageContributor(fixture.coreDb, {
+      authorizeContributor: () => true,
+      expectedRevision: fixture.binding.revision,
+      layout: LAYOUT,
+      purpose: 'work',
+      responsibleUserId: 'user_other',
+      storageRef: fixture.binding.storageRef,
+      threadId: thread.id,
+      workspaceId: fixture.workspaceId,
+    });
   };
 }
 
@@ -504,6 +564,179 @@ describe('Worker environment operations', () => {
       )
     ).rejects.toThrow('Current administrator authority is required.');
     expect(authorizeAtEffect?.()).toBe(false);
+  });
+
+  it.each([
+    'dispatch',
+    'publication',
+  ] as const)('refuses status %s when concurrent admission adds a contributor outside the caller audience', async (boundary) => {
+    let addContributor: () => void;
+    let authorizedAtDispatch: boolean | undefined;
+    let changesAfterAdmission: unknown;
+    const hostInspection = vi.fn();
+    const purgeStorage = vi.fn();
+    const fixture = createFixture({
+      inspectStorage: async ({ authorize, binding }) => {
+        expect(authorize()).toBe(true);
+        if (boundary === 'dispatch') addContributor();
+        authorizedAtDispatch = authorize();
+        if (!authorizedAtDispatch) {
+          changesAfterAdmission = fixture.coreDb.sqlite.prepare('SELECT total_changes()').get();
+          throw new Error('Worker environment operation is not authorized.');
+        }
+        hostInspection();
+        // Complete a read-only observation before another caller changes source admission.
+        await Promise.resolve();
+        if (boundary === 'publication') addContributor();
+        changesAfterAdmission = fixture.coreDb.sqlite.prepare('SELECT total_changes()').get();
+        return {
+          attachment: null,
+          capacity: { availableBytes: 512, totalBytes: 1024 },
+          layoutDigest: binding.layoutDigest,
+          scopeDigest: binding.scopeDigest,
+          state: 'available',
+          storageRef: binding.storageRef,
+          targets: binding.targets,
+        };
+      },
+      purgeStorage,
+    });
+    addContributor = prepareConcurrentContributor(fixture);
+
+    const result = await fixture.operations
+      .status(
+        { actor: fixture.actor, workspaceId: fixture.workspaceId },
+        { storageRef: fixture.binding.storageRef }
+      )
+      .then(
+        (status) => ({ status }),
+        (error: unknown) => ({ error })
+      );
+
+    expect(authorizedAtDispatch).toBe(boundary === 'publication');
+    expect(hostInspection).toHaveBeenCalledTimes(boundary === 'publication' ? 1 : 0);
+    expect(result).toMatchObject({
+      error:
+        boundary === 'publication'
+          ? {
+              code: 'not_found',
+              message: 'Worker environment was not found.',
+              name: 'WorkerEnvironmentOperationError',
+            }
+          : { message: 'Worker environment operation is not authorized.' },
+    });
+    expect(result).not.toHaveProperty('status');
+    expect(purgeStorage).not.toHaveBeenCalled();
+    expect(fixture.coreDb.sqlite.prepare('SELECT total_changes()').get()).toEqual(
+      changesAfterAdmission
+    );
+    expect(
+      getWorkerStorageBinding(fixture.coreDb, { storageRef: fixture.binding.storageRef })
+    ).toMatchObject({ state: 'attached', revision: fixture.binding.revision + 1 });
+  });
+
+  it.each([
+    'session',
+    'token',
+  ] as const)('refuses status publication after the %s administrator credential is revoked during inspection', async (kind) => {
+    const purgeStorage = vi.fn();
+    let changesAfterRevocation: unknown;
+    const fixture = createFixture({
+      inspectStorage: async ({ authorize, binding }) => {
+        expect(authorize()).toBe(true);
+        await Promise.resolve();
+        fixture.coreDb.sqlite
+          .prepare('UPDATE openkit_access_tokens SET status = ?, revoked_at = ? WHERE token_id = ?')
+          .run('revoked', NOW, 'token_admin_local');
+        changesAfterRevocation = fixture.coreDb.sqlite.prepare('SELECT total_changes()').get();
+        return {
+          attachment: null,
+          capacity: { availableBytes: 512, totalBytes: 1024 },
+          layoutDigest: binding.layoutDigest,
+          scopeDigest: binding.scopeDigest,
+          state: 'available',
+          storageRef: binding.storageRef,
+          targets: binding.targets,
+        };
+      },
+      purgeStorage,
+    });
+    const actor: Actor =
+      kind === 'session'
+        ? fixture.actor
+        : {
+            kind: 'token',
+            tokenId: 'token_admin_local',
+            tokenScope: 'server-admin',
+            userId: 'user_local',
+          };
+
+    const result = await fixture.operations
+      .status(
+        { actor, workspaceId: fixture.workspaceId },
+        { storageRef: fixture.binding.storageRef }
+      )
+      .then(
+        (status) => ({ status }),
+        (error: unknown) => ({ error })
+      );
+
+    expect(result).toMatchObject({
+      error: {
+        code: 'workspace_access_denied',
+        message: 'Workspace access denied.',
+        name: 'WorkerEnvironmentOperationError',
+      },
+    });
+    expect(result).not.toHaveProperty('status');
+    expect(purgeStorage).not.toHaveBeenCalled();
+    expect(fixture.coreDb.sqlite.prepare('SELECT total_changes()').get()).toEqual(
+      changesAfterRevocation
+    );
+    expect(
+      getWorkerStorageBinding(fixture.coreDb, { storageRef: fixture.binding.storageRef })
+    ).toEqual(fixture.binding);
+  });
+
+  it('keeps administrator status eligibility and unknown-state redaction after membership loss', async () => {
+    const rawSandboxId = 'unknown-native-sandbox-sentinel';
+    const fixture = createFixture({
+      inspectStorage: async ({ authorize, binding }) => {
+        fixture.coreDb.sqlite
+          .prepare(
+            `UPDATE workspace_members SET status = ?, removed_at = ? WHERE workspace_id = ? AND user_id = 'user_local'`
+          )
+          .run('removed', NOW, fixture.workspaceId);
+        await Promise.resolve();
+        expect(authorize()).toBe(true);
+        return {
+          attachment: { generation: binding.attachmentGeneration, sandboxId: rawSandboxId },
+          capacity: { availableBytes: 0, totalBytes: 1024 },
+          layoutDigest: binding.layoutDigest,
+          scopeDigest: binding.scopeDigest,
+          state: 'unknown',
+          storageRef: binding.storageRef,
+          targets: binding.targets,
+        };
+      },
+    });
+    addOtherMember(fixture);
+    fixture.coreDb.sqlite
+      .prepare(`UPDATE workspace_registry SET owner_user_id = 'user_other' WHERE workspace_id = ?`)
+      .run(fixture.workspaceId);
+
+    const status = await fixture.operations.status(
+      { actor: fixture.actor, workspaceId: fixture.workspaceId },
+      { storageRef: fixture.binding.storageRef }
+    );
+
+    expect(status.storage).toMatchObject({
+      attachment: { generation: fixture.binding.attachmentGeneration },
+      state: 'unknown',
+      storageRef: fixture.binding.storageRef,
+    });
+    expect(JSON.stringify(status)).not.toContain(rawSandboxId);
+    expect(JSON.stringify(status)).not.toContain('sandboxId');
   });
 
   it('projects storage status without exposing the native Sandbox identity', async () => {
