@@ -58,6 +58,10 @@ Each AgentSession has at most one active Turn. The Thread single-flight rule ind
 
 Core's durable AgentSession record is the unique authority for AgentSession identity, Workspace and Thread binding, lifecycle status, and current-or-historical selection. Runtime, scheduler, Harness, Sandbox, transport, and adapter records are projections or dependent authorities for their own concerns; none may create a second current AgentSession or infer continuity from co-location.
 
+Simulator and diagnostic read projections may use a canonical AgentSession ID only when it names the allocating owner's existing record. A Thread-derived or Turn-derived fallback does not create that record or prove current readiness. Missing or contradictory authority uses the existing unavailable or fail-closed contract. A read must not invent ready authority, create a replacement record, or reinterpret a native session handle as Core identity ([identifier declaration boundary](../decisions/20261014-one_identifier_mechanism.md#owner-declarations)).
+
+A simulator fixture may admit an ordinary canonical AgentSession record before its consumers run. This adds no production derivation or simulator-specific identity kind. Historical import remains under [Workspace Backup, Export And Import](../specs/20260704-workspace_backup_export_import.md), without target runtime authority. A later target execution uses ordinary AgentSession admission and continuity rules. Projections have no separate update, termination, retry or recovery lifecycle. Acceptance requires stored identity reuse, unavailable results for missing authority, inert imported history, and opaque native identifiers.
+
 ## Retained Native Conversation
 
 A Thread's retained native conversation is the runtime-maintained conversation state, including messages, compaction state, and other native context, kept in the retained work environment across AgentSessions. The native runtime remains the authority for its content and compaction.
