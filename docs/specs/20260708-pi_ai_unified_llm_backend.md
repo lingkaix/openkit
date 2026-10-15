@@ -101,6 +101,14 @@ OpenKit owns public validation, input mappings, output projections, selected-mem
 
 The member's [per-format capability declaration](20260526-llm_gateway_responses_api.md#provider-endpoint-capabilities) decides eligibility; it does not select a public-format conversion chain. Native handling is selected by the exact upstream API capability of the resolved model and member, never merely by a subscription or Provider name. Codex subscription inference still uses stock pi-ai's native Codex Responses adapter. Credential, account-slot, and transport plumbing retain their existing owners.
 
+### New Chat Tool Call Declaration Parity
+
+Every newly produced Chat tool call must match a callable declaration admitted for that exact request, in non-streaming final output and streamed output alike. Validate the completed callable identity and arguments through the same declaration contract as Responses. Complete historical Tool call/result context remains non-executable; it neither declares a Tool nor widens the current callable set ([#127 ruling](../decisions/20261015-worker_failure_final_and_chat_call_rulings.md)).
+
+Streaming may collect incomplete call fragments, but cannot treat them as a validated executable call or claim successful completion before completed-identity validation. A completed undeclared or malformed call fails the response through the existing typed error and streaming terminal contract. The Gateway executes no Tool, repairs no declaration, and introduces no retry or public-format fallback. Current native search activation rules retain their own declaration owner.
+
+Acceptance covers declared calls, absent or unknown declarations, a historical-but-undeclared callable, conflicting identities, malformed arguments, and identity available only at stream completion. Final and streaming projections make the same admission decision, with zero executable dispatch for refused output. Existing declared history and non-call text remain unchanged.
+
 ### Reasoning Input And Output
 
 Readable assistant Chat `reasoning_content` input maps to a stock thinking block alongside assistant text and function calls. Readable, non-redacted thinking projects into Chat `message.reasoning_content` for non-streaming output and `delta.reasoning_content` for streaming output. Text and tool output remain separate. Stream projection reconciles completed thinking with already emitted content without duplication, including thinking available only at completion; opaque-only or redacted blocks never become readable reasoning or placeholder text.

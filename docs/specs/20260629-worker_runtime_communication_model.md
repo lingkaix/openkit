@@ -245,6 +245,8 @@ Every ordered worker-emitted record must carry a monotonic worker sequence numbe
 
 NanoCore must reject token, lineage, sequence, idempotency, policy, digest, workspace path, and schema violations fail-closed with redacted diagnostics.
 
+A closing lineage has only the [cancellation-only first-final exception](20260703-worker_control_protocol.md#cancellation-only-first-final-on-closing-lineage) and exact accepted-final replay. Core must already hold the exact cancellation and binding/token authority. An ordinary append refusal does not erase that one final opportunity. This permits no new ordinary output or success on closing lineage; sealing, monotonic sequence checks, fingerprint conflicts, revocation, and restart replay remain unchanged ([#179 ruling](../decisions/20261015-worker_failure_final_and_chat_call_rulings.md)).
+
 ### Workspace And Artifact Plane Projections
 
 The Workspace plane supplies workspace inputs, while the Artifact plane returns generated outputs and collected changes through backend transport rather than the control channel.
