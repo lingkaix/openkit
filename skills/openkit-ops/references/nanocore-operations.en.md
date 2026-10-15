@@ -33,6 +33,33 @@ With the bundled administrator CLI installed, run its `scripts/openkit doctor`, 
 
 Observe product-work readiness and its individual reasons rather than treating every degraded state as failure or success. Retain the actual boot and deployed image/source identity. Current optional telemetry consists of explicit HTTP response-handoff spans and process diagnostics; it does not trace a complete Worker task. Use retained product records to establish that outcome. Inspect deployment-owned rotated logs or Collector files through authorized host tools only for the missing diagnostic question, without dumping credentials, full configuration or unrelated transcripts.
 
+## Update Through HTTPS Only
+
+Use this runbook when the caller has only the deployment's HTTPS address and an authorized administrator credential. It projects [App Update Delivery](https://github.com/lingkaix/openkit/blob/main/docs/specs/20260910-app_update_delivery.md) and [Agent Operator Skill](https://github.com/lingkaix/openkit/blob/main/docs/specs/20260910-agent_operator_skill.md). The caller uses Web or the installed administrator CLI; NanoCore uses its already configured restricted helper transport. The caller needs no SSH, Docker, root access, or host shell for these remote steps.
+
+Before starting, an authorized host operator must already have installed and verified the target release's helper and established its compatibility and recovery assessment. Obtain the non-secret helper checksum and target-binding evidence. If that work is missing, stop for [helper preparation](#replace-the-installed-helper) under separate host authorization. This HTTPS procedure cannot install or replace the helper.
+
+1. Select the exact HTTPS deployment and installed operations package. Use Node.js 24 and the existing protected credential procedure in [deployment modes](nanocore-deployment-modes.en.md#administrator-cli-and-remote-mcp-access). Keep normal TLS verification. Run local help, search and describe before any call. Discovery grants no update authority.
+2. Select one published target release and verify its source commit, immutable App digest, and checksum-covered helper bytes. Read authenticated App Diagnostics for the current release, image and boot identity. Apply the [image matching rules](#update-nanocore-and-web); do not guess the current image from a tag. Retain selected authorized Workspace content reads for comparison after replacement. Where available, `caller.read` can record non-secret identity and counts for one explicitly selected owned Workspace; counts alone do not prove retained content equality.
+3. Describe `app-update.preflight`, `app-update.prepare`, `app-update.start`, and `app-update.status`. Call preflight with `{}`. Continue only with `state: idle` and every work count zero. Retain its observation time. Counts overlap, and preflight creates no admission barrier. Follow the existing maintenance window and final-recheck rules in [Update NanoCore And Web](#update-nanocore-and-web).
+4. An authorized administrator prepares the exact published source and observed current-image binding. Save the returned `requestId` before start. Present the complete `approvalSummary`, including interruption, preflight observations, deployment bindings and recovery limitations. Match `helperSha256` and `preparedHelperSha256` to the verified target helper checksum. A missing or contradictory field stops this attempt.
+5. Obtain exact administrator consent for that prepared receipt and interruption. Use the administrator's Web action or authorized direct caller. Agent-mediated delivery requires its existing exact operation approval binding; the current unsupported adapter is a stop. Do not switch delivery modes to bypass it or invent approval. The separately scoped standing test grant keeps its existing procedure and limits.
+6. Recheck idle preflight and submit the authorized start once for the saved receipt. After a disconnect, read `app-update.status` with that same ID when HTTPS returns. A local abort or lost response does not cancel the host job. Do not prepare or start another update to resolve an unknown start. If HTTPS does not return, retain the ID and hand off receipt inspection under separate host authorization.
+7. Read the terminal receipt and all applicable verification predicates. Through public HTTPS reads, verify the exact target App/Web identities, a new boot, current readiness and selected retained Workspace content. NanoHost must retain its identity and reconnect as its owner requires; App, NanoHost and Worker results remain separate. Report completion only when the receipt and public observations agree. A handoff, healthy API or restored previous App is not a successful target update.
+
+Stop at these boundaries and retain the exact non-secret observation:
+
+| Observation | Next action |
+| --- | --- |
+| Expired/revoked credential, missing administrator authority, or failed TLS verification | Stop remote effects. Resolve access through its existing owner; do not disable TLS or replay bootstrap. |
+| Missing/disabled helper, unsupported required operation, unknown current image, or missing helper/compatibility evidence | Hand off to an authorized operator. Host installation, configuration and image inspection are outside this runbook. |
+| Busy work or `app_update_work_active` | Keep the App running and resolve the maintenance window. Any later attempt needs fresh observations and its existing authority. |
+| `app_update_preflight_unsupported` | Stop and ask for the existing first-upgrade decision. Do not replace preflight with per-Workspace counts. |
+| Expired, conflicting, corrupt or missing receipt; failed, unknown or `recovery_required` outcome | Preserve the saved ID and inspect the existing result. Do not replay start, remove receipts, reset data or infer rollback compatibility. |
+| NanoHost not ready, failed restoration, unavailable status, or failed retained-data/readiness verification | Stop and hand off the specific recovery need under separate host authorization. Do not restart NanoHost, edit host files or restore a database through this HTTPS path. |
+
+For separately authorized host replacement or recovery, continue with [Update NanoCore And Web](#update-nanocore-and-web) and its linked procedures. This runbook executes no update or host handoff by itself.
+
 ## Update NanoCore And Web
 
 Coordinate a maintenance window and inspect active work. A second deployment is optional. Update a persistent deployment only to a published release. For a release, acquire and verify its published immutable image digest. Run the selected image's `openkit-app-smoke` before replacing the active container; a local rebuild is not the published release artifact.
