@@ -278,7 +278,9 @@ jobs:
             mkdir -p temp/ci-shards
             PROOF="${proof}" node --input-type=module <<'NODE'
           import { writeFileSync } from 'node:fs';
-          writeFileSync(`temp/ci-shards/${process.env.SHARD_ID}.json`, JSON.stringify({id: process.env.SHARD_ID, conclusion: 'success', reuse: process.env.PROOF}));
+          import { rootNodeInventory } from './scripts/release-tests.mjs';
+          const files = process.env.SHARD_ID === 'root' ? rootNodeInventory().files : undefined;
+          writeFileSync(`temp/ci-shards/${process.env.SHARD_ID}.json`, JSON.stringify({id: process.env.SHARD_ID, conclusion: 'success', reuse: process.env.PROOF, files}));
           NODE
           else
             echo "reused=false" >> "${GITHUB_OUTPUT}"

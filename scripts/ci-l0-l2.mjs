@@ -8,6 +8,7 @@ import {
   coveredSuite,
   packageSuite,
   prepareCoverage,
+  rootNodeInventory,
   rootSuite,
   testOwners,
 } from './release-tests.mjs';
@@ -42,6 +43,14 @@ export function requireShardResults(results, expected = shardPlan().map((s) => s
     )
   )
     throw Error('Incomplete successful L0-L2 shard set');
+  if (expected.includes('root')) {
+    const files = results.find((r) => r.id === 'root').files;
+    if (
+      !Array.isArray(files) ||
+      JSON.stringify(files.slice().sort()) !== JSON.stringify(rootNodeInventory().files)
+    )
+      throw Error('Incomplete exactly-once root and script Node test inventory');
+  }
 }
 
 /** Preserve command errors and signals while exposing deciding output. */
@@ -80,8 +89,9 @@ export function runShard(id, { root = process.cwd(), inventoryOnly = false } = {
     for (const owner of owners) packageSuite(owner, { root });
   } else {
     if (inventoryOnly) throw Error('Inventory admission selects coverage shards only');
-    rootSuite({ root });
+    const files = rootSuite({ root });
     command(['python3', '-I', '-B', 'scripts/docker/app-update-helper.test.py'], root);
+    return { files };
   }
 }
 
@@ -94,12 +104,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       const files = readdirSync(args[1]).filter((f) => f.endsWith('.json'));
       requireShardResults(files.map((f) => JSON.parse(readFileSync(join(args[1], f), 'utf8'))));
     } else if (args[0] === '--run' && args.length === 2) {
-      runShard(args[1]);
+      const details = runShard(args[1]);
       const directory = resolve('temp/ci-shards');
       mkdirSync(directory, { recursive: true });
       writeFileSync(
         join(directory, `${args[1]}.json`),
-        JSON.stringify({ id: args[1], conclusion: 'success' })
+        JSON.stringify({ id: args[1], conclusion: 'success', ...details })
       );
     } else {
       throw Error('Usage: node scripts/ci-l0-l2.mjs --matrix | --run ID | --join DIRECTORY');

@@ -2,7 +2,7 @@
 /** Execute deterministic suites once; inventory-only proves collection equivalence before recipe admission. */
 import { spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 /** Reuse the existing skip guard while streaming deciding test output to CI. */
@@ -152,6 +152,72 @@ export function prepareCoverage(owners, { root = process.cwd() } = {}) {
   if (owners.some((o) => o.name === '@openkit/nanocore'))
     command(['pnpm', '--filter', '@openkit/retrieval-kernel', 'build']);
 }
+/** Derive every root and recursive script Node test owner from files and the existing full host lane. */
+export function rootNodeInventory(root = process.cwd()) {
+  // This projection admits the existing main/manual host gate. A changed expression needs a proved contract update.
+  const fullHostCondition = `(github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","release-gate","full"]'), inputs.gate))`;
+  const testFile = /\.(?:test|spec)\.[cm]?[jt]sx?$/u;
+  const ignored = new Set(['.git', '.turbo', 'coverage', 'dist', 'node_modules', 'temp']);
+  const files = readdirSync(join(root, 'tests'), { withFileTypes: true })
+    .filter((entry) => entry.isFile() && testFile.test(entry.name))
+    .map((entry) => `tests/${entry.name}`);
+  const scripts = [];
+  const walk = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory() && !ignored.has(entry.name)) walk(path);
+      else if (testFile.test(entry.name)) {
+        if (!entry.isFile()) throw Error('Node test inventory requires regular files');
+        scripts.push(relative(root, path).split('\\').join('/'));
+      }
+    }
+  };
+  walk(join(root, 'scripts'));
+  const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8');
+  const jobs = [
+    ...workflow.matchAll(/^ {2}([a-z0-9-]+):\n(.*?)(?=^ {2}[a-z0-9-]+:\n|(?![\s\S]))/gms),
+  ];
+  const host = [];
+  for (const file of scripts.sort()) {
+    const owners = jobs.flatMap((job) =>
+      [
+        ...job[2].matchAll(
+          /^\s+(?:-\s+)?run: bash scripts\/test-env\.sh host node --test ([^\r\n]+)/gm
+        ),
+      ].flatMap((match) =>
+        match[1]
+          .trim()
+          .split(/\s+/u)
+          .filter((argument) => argument === file)
+          .map(() => job)
+      )
+    );
+    const containerSubject = readFileSync(join(root, file), 'utf8')
+      .split(/\r?\n/u)
+      .includes('// openkit-test-container-subject');
+    if (containerSubject || owners.length) {
+      // A host subject must have one explicit full-gate invocation. Never run it again inside the root container.
+      const condition = owners[0]?.[2].match(/^ {4}if: (.*)$/m)?.[1] ?? '';
+      if (!containerSubject || owners.length !== 1 || condition !== fullHostCondition)
+        throw Error(`Missing or duplicate full-gate script test owner: ${file}`);
+      host.push({ file, job: owners[0][1] });
+    } else files.push(file);
+  }
+  if (new Set(files).size !== files.length) throw Error('Duplicate root Node test ownership');
+  return { files: files.sort(), host };
+}
+
+/** Run the same selected Node files in local unit and release root lanes, with the existing skip guard. */
+export function rootNodeSuite({ root = process.cwd() } = {}) {
+  const { files } = rootNodeInventory(root);
+  const errors = guardedExecution({
+    cwd: root,
+    command: [process.execPath, '--test', ...files.map((file) => join(root, file))],
+  });
+  if (errors.length) throw Error(`Root tests: ${errors.join('; ')}`);
+  return files;
+}
+
 /** Execute the root suite with its generated-CLI equality check and existing skip guard. */
 export function rootSuite({ root = process.cwd() } = {}) {
   const command = (args) => {
@@ -173,18 +239,7 @@ export function rootSuite({ root = process.cwd() } = {}) {
     '--outfile=skills/openkit-ops/scripts/openkit',
   ]);
   command(['git', 'diff', '--exit-code', '--', 'skills/openkit-ops/scripts/openkit']);
-  const errors = guardedExecution({
-    cwd: root,
-    command: [
-      process.execPath,
-      '--test',
-      ...readdirSync(join(root, 'tests'))
-        .filter((n) => n.endsWith('.test.mjs'))
-        .sort()
-        .map((n) => join(root, 'tests', n)),
-    ],
-  });
-  if (errors.length) throw Error(`Root tests: ${errors.join('; ')}`);
+  return rootNodeSuite({ root });
 }
 /** Run distinct native/catalog tests and root tests without losing the previous unit gate's build checks. */
 export function releaseTests({ root = process.cwd(), inventoryOnly = false } = {}) {
@@ -202,9 +257,16 @@ export function releaseTests({ root = process.cwd(), inventoryOnly = false } = {
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
-    if (process.argv.slice(2).some((a) => a !== '--inventory-only'))
-      throw Error('Usage: node scripts/release-tests.mjs [--inventory-only]');
-    releaseTests({ inventoryOnly: process.argv.includes('--inventory-only') });
+    const args = process.argv.slice(2);
+    if (args.length === 1 && args[0] === '--root-node') rootNodeSuite();
+    else if (args.length === 1 && args[0] === '--node-inventory')
+      console.log(JSON.stringify(rootNodeInventory()));
+    else if (!args.length || (args.length === 1 && args[0] === '--inventory-only'))
+      releaseTests({ inventoryOnly: args.includes('--inventory-only') });
+    else
+      throw Error(
+        'Usage: node scripts/release-tests.mjs [--inventory-only | --root-node | --node-inventory]'
+      );
   } catch (error) {
     console.error(error.message);
     process.exitCode = 1;

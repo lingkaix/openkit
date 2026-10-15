@@ -532,7 +532,7 @@ const candidateJobBaseline = {
 
 const shardJobBaseline = {
   'l0-l2-plan': '3403258929b8dd4591044849751e483d55299489e41bb9e50a3c61fd0359631c',
-  'l0-l2-shards': '778e4d456fa047a1c782af520ccf9972226ef0c56b01094c5ec7b004847155f6',
+  'l0-l2-shards': '24a9881c67ec645ccdc157b400814d6f90f475f999f1080dde01efac520aa886',
   'l0-l2': '3425b1ab09142a2a670502a5ae6d9d271b67a10fcdb0d86b29bec30fb6d43bfc',
 };
 
