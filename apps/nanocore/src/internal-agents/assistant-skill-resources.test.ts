@@ -186,7 +186,10 @@ describe('Assistant selected Skill assembly', () => {
     // An unselected installed catalog is not an implicit resource selection or required read.
     fs.writeFileSync(catalogDocumentPath(f.dataRoot, f.workspaceId), '{broken unselected catalog');
 
-    const assembled = await assembleAssistantSkillResources({ ...f, skillIds });
+    const assembled = await assembleAssistantSkillResources({
+      ...f,
+      ...(skillIds === undefined ? {} : { skillIds }),
+    });
 
     expect(assembled.index).toEqual([]);
     expect(assembled.admission).toEqual({ catalogRevision: null, skills: [] });

@@ -390,20 +390,34 @@ function fromResponses(
   aliasToCanonical: ReadonlyMap<string, string>,
   canonicalToAlias: ReadonlyMap<string, string>
 ): AgentAssistantMessage {
-  if (!Array.isArray(response.output)) {
-    throw new Error('Gateway returned an invalid internal Agent response.');
+  if (!response || !Array.isArray(response.output)) {
+    throw new InternalAgentProviderError(
+      'provider_response_invalid',
+      'Gateway returned an invalid internal Agent response.'
+    );
   }
   const content: AgentAssistantMessage['content'][number][] = [];
   let truncated = response.status === 'incomplete';
   for (const output of response.output) {
+    if (!output || typeof output !== 'object')
+      throw new InternalAgentProviderError(
+        'provider_response_invalid',
+        'Gateway returned an invalid internal Agent response.'
+      );
     if (output.type === 'message') {
       if (!Array.isArray(output.content)) {
-        throw new Error('Gateway returned invalid message content.');
+        throw new InternalAgentProviderError(
+          'provider_response_invalid',
+          'Gateway returned invalid message content.'
+        );
       }
       for (const rawPart of output.content) {
         const part = record(rawPart);
         if (part?.type !== 'output_text' || typeof part.text !== 'string') {
-          throw new Error('Gateway returned unsupported message content.');
+          throw new InternalAgentProviderError(
+            'provider_response_invalid',
+            'Gateway returned unsupported message content.'
+          );
         }
         content.push({ type: 'text', text: part.text });
       }
@@ -418,7 +432,10 @@ function fromResponses(
         !output.name ||
         typeof output.arguments !== 'string'
       ) {
-        throw new Error('Gateway returned invalid Tool calls.');
+        throw new InternalAgentProviderError(
+          'provider_response_invalid',
+          'Gateway returned invalid Tool calls.'
+        );
       }
       const name =
         aliasToCanonical.get(output.name) ??
@@ -429,7 +446,10 @@ function fromResponses(
       try {
         args = JSON.parse(output.arguments);
       } catch {
-        throw new Error('Gateway returned invalid Tool arguments.');
+        throw new InternalAgentProviderError(
+          'provider_response_invalid',
+          'Gateway returned invalid Tool arguments.'
+        );
       }
       content.push({
         type: 'toolCall',
@@ -446,7 +466,11 @@ function fromResponses(
       );
     }
   }
-  if (content.length === 0) throw new Error('Gateway returned empty internal Agent content.');
+  if (content.length === 0)
+    throw new InternalAgentProviderError(
+      'provider_response_invalid',
+      'Gateway returned empty internal Agent content.'
+    );
   return { role: 'assistant', content, truncated };
 }
 

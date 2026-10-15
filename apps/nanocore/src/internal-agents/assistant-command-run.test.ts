@@ -793,6 +793,10 @@ describe('ordinary Assistant results and cancellation', () => {
 
   it.each([
     'empty',
+    'no-output',
+    'reasoning-only',
+    'compaction',
+    'malformed-output',
     'truncated',
     'needs-feedback',
   ] as const)('rejects %s output through the existing invalid-response failure', async (condition) => {
@@ -802,7 +806,26 @@ describe('ordinary Assistant results and cancellation', () => {
         ? skillCall(f)
         : condition === 'truncated'
           ? { ...response(), status: 'incomplete' }
-          : response('   ')
+          : condition === 'no-output'
+            ? { ...response(), output: [] }
+            : condition === 'reasoning-only'
+              ? {
+                  ...response(),
+                  output: [{ type: 'reasoning', id: 'reasoning-only', summary: [] }],
+                }
+              : condition === 'compaction'
+                ? {
+                    ...response(),
+                    output: [
+                      { type: 'compaction', id: 'checkpoint', encrypted_content: 'unusable' },
+                    ],
+                  }
+                : condition === 'malformed-output'
+                  ? ({
+                      ...response(),
+                      output: [null],
+                    } as unknown as OpenAICompatibleResponsesResponse)
+                  : response('   ')
     );
 
     await expectEntryFailure(

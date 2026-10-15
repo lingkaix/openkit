@@ -19,6 +19,7 @@ import {
   type AgentMessage,
   type AgentTool,
   type InternalAgentLoopInput,
+  InternalAgentProviderError,
   runInternalAgentLoop,
 } from './internal-agent-loop.js';
 import { redactInternalAgentText } from './redaction.js';
@@ -219,7 +220,15 @@ export async function runAssistantCommand(
           'Provider call timed out.',
           504
         );
-      if (exit.kind === 'failed' && state.failure) throw state.failure.error;
+      if (exit.kind === 'failed' && state.failure) {
+        const error = state.failure.error;
+        // Only the private projection's typed invalid-content outcome becomes an entry error.
+        if (
+          !(error instanceof InternalAgentProviderError) ||
+          error.code !== 'provider_response_invalid'
+        )
+          throw error;
+      }
       const final = exit.messages.at(-1);
       const content =
         final?.role === 'assistant'

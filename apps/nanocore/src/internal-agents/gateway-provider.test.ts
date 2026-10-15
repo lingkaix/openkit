@@ -128,6 +128,7 @@ describe('internal Agent Gateway provider', () => {
       }),
       resolveGatewayProvider: () => ({
         id: 'provider',
+        displayName: 'Provider',
         adapterId: 'provider',
         apiKey: 'credential-canary',
         baseUrl: null,
@@ -276,6 +277,7 @@ describe('internal Agent Gateway provider', () => {
       },
       resolveGatewayProvider: () => ({
         id: 'provider',
+        displayName: 'Provider',
         adapterId: stock.id,
         apiKey: 'credential-canary',
         baseUrl: null,
@@ -1047,6 +1049,7 @@ describe('internal Agent Gateway provider', () => {
             }),
             resolveGatewayProvider: () => ({
               id: 'provider',
+              displayName: 'Provider',
               adapterId: stock.id,
               apiKey: 'synthetic',
               baseUrl: null,
@@ -1229,7 +1232,11 @@ describe('internal Agent Gateway provider', () => {
       models: [{ id: 'gpt-5.6-sol' }],
     });
     const pairModels = createModels();
-    pairModels.setProvider({ ...faux.provider, baseUrl: openaiCodexProvider().baseUrl });
+    const baseUrl = openaiCodexProvider().baseUrl;
+    pairModels.setProvider({
+      ...faux.provider,
+      ...(baseUrl === undefined ? {} : { baseUrl }),
+    });
     pairModels.checkAuth = async () => ({}) as never;
     faux.setResponses([fauxAssistantMessage('Codex admitted.')]);
     const provider = createInternalAgentGatewayProvider({
@@ -1306,6 +1313,7 @@ describe('internal Agent Gateway provider', () => {
           {
             role: 'tool',
             callId: 'call_image',
+            isError: false,
             content: [{ type: 'image', mimeType: 'image/png', data: 'private-image-bytes' }],
           },
         ],
