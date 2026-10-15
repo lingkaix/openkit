@@ -3,9 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import type { WorkerCanonicalEventRecord } from '@openkit/worker-protocol';
+import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import { ensureLocalUser } from '../auth/identity.js';
+import type { AuthVariables } from '../auth/middleware.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -52,6 +54,7 @@ import {
   getWorkerControlAcceptedFinalStatus,
   resolveWorkerControlFinalStatusTokenBinding,
 } from './worker-control-records.js';
+import { registerWorkerControlRoutes } from './worker-control-routes.js';
 
 const NOW = '2026-07-13T00:00:06.000Z';
 const ATTEMPT_ID = 'attempt_cancellation';
@@ -288,6 +291,17 @@ function recoveryPorts() {
   return { input, cleanupBackendSession, prepareBackendCleanup };
 }
 
+/** Composes the real HTTP parsers and bearer selection with the current durable gateway. */
+function workerControlHttp(fixture: Fixture) {
+  const app = new Hono<{ Variables: AuthVariables }>();
+  registerWorkerControlRoutes({
+    app,
+    coreDb: fixture.coreDb,
+    workerControlGateway: fixture.gateway,
+  });
+  return app;
+}
+
 /** Observes every pre-existing bound without introducing a cancellation grace deadline. */
 function nativeDeadlines(fixture: Fixture) {
   const attempt = requireNanoHostExecutionAttempt(fixture.coreDb, ATTEMPT_ID);
@@ -356,7 +370,11 @@ function expectOrdinaryEffectsRefused(fixture: Fixture) {
 }
 
 /** Verifies one immutable final row and the matching canonical terminal event. */
-function expectOneFinal(fixture: Fixture, status: 'cancelled' | 'interrupted') {
+function expectOneFinal(
+  fixture: Fixture,
+  status: 'cancelled' | 'interrupted',
+  diagnostics?: Readonly<Record<string, string>>
+) {
   const rows = fixture.coreDb.sqlite
     .prepare("SELECT * FROM worker_control_records WHERE operation = 'final_status'")
     .all();
@@ -373,6 +391,7 @@ function expectOneFinal(fixture: Fixture, status: 'cancelled' | 'interrupted') {
   });
   expect(JSON.parse((rows[0] as { record_json: string }).record_json)).toEqual({
     acceptedAt: NOW,
+    ...(diagnostics ? { diagnostics } : {}),
     evidenceManifestDigests: finalInput(fixture, status).evidenceManifestDigests,
     sequence: 8,
     status,
@@ -933,6 +952,100 @@ describe('Core cancellation-only final admission', () => {
       });
       expect(nativeDeadlines(fixture)).toEqual(deadlines);
       expect(fixture.productState().canonical).toEqual(canonical);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it('accepts the P03 cancellation envelope after HTTP append refusal and preserves incomplete evidence through exact replay', async () => {
+    const fixture = createFixture();
+    try {
+      fixture.close();
+      let app = workerControlHttp(fixture);
+      const diagnostics = { transcript: 'incomplete', runtimeCapture: 'incomplete' };
+      const { authorization, lineage, sequence, status, stopReason, evidenceManifestDigests } =
+        finalInput(fixture, 'interrupted');
+      // P03 keeps this existing operation and wire body when a refused capture suffix is retained locally.
+      const envelope = {
+        schemaVersion: 2,
+        operation: 'final_status',
+        lineage,
+        sequence,
+        body: { status, stopReason, evidenceManifestDigests, diagnostics },
+      };
+      const post = (path: string, payload: unknown) =>
+        app.request(`/api/worker-control/${path}`, {
+          method: 'POST',
+          headers: { authorization, 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      const product = fixture.productState();
+      const before = fixture.durableState();
+      const refused = await post('events/append', { lineage, record: ordinaryEvent(lineage, 7) });
+      expect(refused.status).toBe(403);
+      expect(await refused.json()).toMatchObject({ code: 'worker_control_lease_not_live' });
+      expect(fixture.durableState()).toEqual(before);
+      expect(fixture.productState()).toEqual(product);
+      const response = await post('final-status', envelope);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        accepted: true,
+        diagnostics: [],
+        nextExpectedSequence: 9,
+        schemaVersion: 2,
+      });
+      expectOneFinal(fixture, 'interrupted', diagnostics);
+      expect(getWorkerControlAcceptedFinalStatus(fixture.coreDb, lineage)).toMatchObject({
+        diagnostics,
+      });
+      expect(fixture.productState()).toEqual(product);
+      const accepted = fixture.durableState();
+      fixture.restart();
+      app = workerControlHttp(fixture);
+      expect((await post('final-status', envelope)).status).toBe(200);
+      expect(fixture.durableState()).toEqual(accepted);
+      const changed = await post('final-status', {
+        ...envelope,
+        body: {
+          ...envelope.body,
+          diagnostics: { transcript: 'complete', runtimeCapture: 'incomplete' },
+        },
+      });
+      expect(changed.status).toBe(409);
+      expect(await changed.json()).toMatchObject({ code: 'worker_control_sequence_conflict' });
+      expect(fixture.durableState()).toEqual(accepted);
+      expect(fixture.productState()).toEqual(product);
+      expect((await post('final-status', envelope)).status).toBe(200);
+      expect(fixture.durableState()).toEqual(accepted);
+      // The external release proof is supplied separately; HTTP final acceptance did not close the attempt.
+      closeSchedulerExecutionAttemptWithFence(fixture.coreDb, {
+        correlation: schedulerExecutionCorrelation(
+          requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID)
+        ),
+        fenceRef: 'fence:http-cancellation-release',
+        proof: {
+          terminalHandoff: true,
+          output: true,
+          evidence: true,
+          outsideWorkspaceCollection: true,
+          integrationDrain: true,
+          routesRevoked: true,
+        },
+      });
+      fixture.restart();
+      app = workerControlHttp(fixture);
+      const closed = fixture.durableState();
+      const closedProduct = fixture.productState();
+      expect((await post('final-status', envelope)).status).toBe(200);
+      expect(fixture.durableState()).toEqual(closed);
+      expectOneFinal(fixture, 'interrupted', diagnostics);
+      const sealedAppend = await post('events/append', {
+        lineage,
+        record: ordinaryEvent(lineage, 9),
+      });
+      expect(sealedAppend.status).toBe(403);
+      expect(fixture.durableState()).toEqual(closed);
+      expect(fixture.productState()).toEqual(closedProduct);
     } finally {
       fixture.dispose();
     }
