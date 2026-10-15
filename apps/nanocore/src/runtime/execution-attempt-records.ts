@@ -72,6 +72,17 @@ export function listSchedulerExecutionAttemptsForTurn(
     .map((row) => AttemptSchema.parse(row));
 }
 
+/** Lists every retained owner of one Turn id so exclusion checks cannot hide conflicting scope. */
+export function listSchedulerExecutionAttemptsByTurnId(
+  coreDb: CoreDb,
+  turnId: string
+): SchedulerExecutionAttemptRecord[] {
+  return coreDb.sqlite
+    .prepare(`${attemptSelect} WHERE turn_id = ? ORDER BY rowid`)
+    .all(turnId)
+    .map((row) => AttemptSchema.parse(row));
+}
+
 /** Closed busy refusals contain no execution and cannot compete with the later original-Turn attempt. */
 export function isSchedulerExecutionBusyRefusal(attempt: SchedulerExecutionAttemptRecord): boolean {
   return (

@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
+import type Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../app.js';
 import { ensureLocalUser } from '../auth/identity.js';
@@ -428,6 +429,396 @@ function observeExecutionAttempts(
         .all() as Record<string, unknown>[])
     : [];
 }
+
+/** Existing failed-start fixture used to measure and challenge the retained recovery proof. */
+type FailedStartFixture = Awaited<ReturnType<typeof createFailedStartFixture>>;
+
+/** Counts actual Core statement invocations, including calls through cached prepared statements. */
+function countRecoverySqlExecutions(coreDb: ReturnType<typeof openCoreDb>) {
+  const statement = coreDb.sqlite.prepare('SELECT 1');
+  const prototype = Object.getPrototypeOf(statement) as Database.Statement;
+  const counts = { executions: 0, reads: 0 };
+  const restore: Array<() => void> = [];
+  for (const method of ['get', 'all', 'iterate', 'run'] as const) {
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, method)!;
+    const original = prototype[method];
+    Object.defineProperty(prototype, method, {
+      ...descriptor,
+      value: function (this: Database.Statement, ...parameters: unknown[]) {
+        if (this.database === coreDb.sqlite) {
+          counts.executions++;
+          if (/^\s*(SELECT|WITH|EXPLAIN)\b/i.test(this.source)) counts.reads++;
+        }
+        return Reflect.apply(original, this, parameters);
+      },
+    });
+    restore.push(() => Object.defineProperty(prototype, method, descriptor));
+  }
+  return {
+    counts,
+    restore: () => {
+      for (const undo of restore.reverse()) undo();
+    },
+  };
+}
+
+/** Records one safe busy refusal through its owners, then copies that exact history shape in one transaction. */
+function seedRecoveryBusyHistory(f: FailedStartFixture, count: number): string | null {
+  if (count === 0) return null;
+  const attemptId = `lease_${f.turnId.slice('turn_'.length)}`;
+  const firstId = `busy_${f.turnId}_0`;
+  f.coreDb.sqlite
+    .prepare("UPDATE scheduler_admission_entries SET status = 'queued' WHERE turn_id = ?")
+    .run(f.turnId);
+  const entry = requireSchedulerExecutionAttemptAdmissionContext(f.coreDb, attemptId);
+  attempts.createSchedulerExecutionAttempt(f.coreDb, {
+    entry,
+    attemptId: firstId,
+    preparationInput: { admission: entry },
+    now: () => '2026-07-05T00:00:00.000Z',
+  });
+  attempts.bindSchedulerExecutionAttemptSession(f.coreDb, {
+    attemptId: firstId,
+    agentSessionId: `as_${firstId}`,
+  });
+  attempts.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+    attemptId: firstId,
+    noOutstandingEffects: true,
+    cause: 'backend-busy',
+  });
+  const columns = f.coreDb.sqlite.pragma('table_info(scheduler_execution_attempts)') as Array<{
+    name: string;
+  }>;
+  const select = columns
+    .map(({ name }) => (name === 'attempt_id' || name === 'agent_session_id' ? '?' : name))
+    .join(', ');
+  const copy = f.coreDb.sqlite.prepare(`INSERT INTO scheduler_execution_attempts
+    (${columns.map(({ name }) => name).join(', ')}) SELECT ${select}
+    FROM scheduler_execution_attempts WHERE attempt_id = ?`);
+  f.coreDb.sqlite.transaction(() => {
+    for (let index = 1; index < count; index++) {
+      const id = `busy_${f.turnId}_${index}`;
+      copy.run(id, `as_${id}`, firstId);
+    }
+  })();
+  return firstId;
+}
+
+/** Freezes the already-decided product outcome before repeated maintenance revalidates its proof. */
+function terminalizeRecoveryCostFixture(f: FailedStartFixture): void {
+  const suffix = f.turnId.slice('turn_'.length);
+  f.coreDb.sqlite
+    .prepare(
+      "UPDATE scheduler_execution_attempts SET disposition = 'not_accepted', operation_id = NULL, deadline = NULL WHERE attempt_id = ?"
+    )
+    .run(`lease_${suffix}`);
+  terminalizeGovernedWorkerTurn({
+    store: f.store,
+    turnId: f.turnId,
+    agentSessionId: f.agentSessionId,
+    requestId: `request_${suffix}`,
+    completedAt: '2026-07-05T00:00:08.000Z',
+    outcome: 'failed',
+    errorCode: 'worker_governance_turn_failed',
+    message: 'NanoHost one-Sandbox capacity is occupied or unproved.',
+  });
+}
+
+/** Includes every generic and native attempt byte while keeping large-history failure output bounded. */
+function recoveryProofSnapshot(f: FailedStartFixture) {
+  return {
+    turn: f.store.getTurnById(f.turnId),
+    session: f.store.getAgentSession(f.agentSessionId),
+    events: f.store.getTurnEvents(f.turnId),
+    attempts: createHash('sha256')
+      .update(JSON.stringify(observeExecutionAttempts(f.coreDb)))
+      .digest('hex'),
+    backends: f.coreDb.sqlite.prepare('SELECT * FROM worker_backend_sessions ORDER BY rowid').all(),
+    bindings: f.coreDb.sqlite
+      .prepare('SELECT * FROM agent_session_runtime_bindings ORDER BY rowid')
+      .all(),
+  };
+}
+
+/** Observes all existing effect ports without replacing the native or generic proof owner. */
+function recoveryCostInput(f: FailedStartFixture) {
+  const effects = {
+    cleanupBackendSession: vi.fn(async () => {
+      throw new Error('Recovery must not replay backend cleanup.');
+    }),
+    prepareBackendCleanup: vi.fn(),
+    restoreBackendSession: vi.fn(async () => {}),
+    reconcileAcceptedFinalStatus: vi.fn(async () => {}),
+  };
+  const backendSpies = (['submit', 'inspect', 'cancel', 'release'] as const).map((method) =>
+    vi.spyOn(f.input.executionBackend, method)
+  );
+  const input = testRecoveryInput(f.coreDb, { ...f.input, ...effects });
+  return {
+    input,
+    assertNoEffects: () => {
+      for (const effect of [...Object.values(effects), ...backendSpies])
+        expect(effect).not.toHaveBeenCalled();
+      expect(f.input.projectRecoveredTurn).not.toHaveBeenCalled();
+      expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
+    },
+    restore: () => {
+      for (const spy of backendSpies) spy.mockRestore();
+    },
+  };
+}
+
+/** Adds retained runtime proof with independently chosen Session, Turn, and Attempt associations. */
+function recordRecoverySiblingBinding(
+  f: FailedStartFixture,
+  siblingId: string,
+  match: 'session' | 'turn' | 'attempt' | 'unrelated',
+  state: string
+) {
+  const timestamp = f.input.now();
+  f.coreDb.sqlite
+    .prepare(`INSERT INTO sandbox_runtime_records
+    (sandbox_runtime_id, runtime_target_id, origin_physical_epoch, sandbox_binding_ref,
+     sandbox_integration_binding_ref, sandbox_compatibility_key, image_digest, environment_class,
+     max_open_sessions, max_harnesses, max_active_turns, lifecycle_state, health_state, drain_state,
+     cleanup_state, created_at, updated_at)
+    VALUES ('sandbox_cost', 'runtime-target-test', ?, 'sandbox-cost', 'integration-cost', ?, ?, 'test',
+      2, 2, 1, 'open', 'ready', 'accepting', 'unknown', ?, ?)`)
+    .run('a'.repeat(64), 'a'.repeat(64), 'a'.repeat(64), timestamp, timestamp);
+  f.coreDb.sqlite
+    .prepare(`INSERT INTO harness_instance_records
+    (harness_instance_id, sandbox_runtime_id, harness_binding_ref, harness_compatibility_key,
+     runtime_family, adapter_id, adapter_version, protocol_version, capabilities_json, max_open_sessions,
+     max_active_turns, open_session_count, active_turn_count, lifecycle_state, drain_state, next_sequence,
+     operation_state, created_at, updated_at)
+    VALUES ('harness_cost', 'sandbox_cost', 'harness-cost', ?, 'codex', 'codex', 'test', 1, '[]',
+      2, 1, 1, 1, 'open', 'accepting', 1, 'idle', ?, ?)`)
+    .run('a'.repeat(64), timestamp, timestamp);
+  f.coreDb.sqlite
+    .prepare(`INSERT INTO agent_session_runtime_bindings
+    (agent_session_runtime_binding_id, harness_instance_id, agent_session_id, workspace_id, thread_id,
+     agent_session_compatibility_key, effective_setup_generation, native_handle_state, lifecycle_state,
+     current_turn_id, current_attempt_id, next_turn_sequence, cleanup_state, created_at, updated_at, image_digest)
+    VALUES ('binding_cost', 'harness_cost', ?, 'ws_demo', 'th_binding_cost', ?, 1, ?, ?, ?, ?, 1, 'unknown', ?, ?, ?)`)
+    .run(
+      match === 'session' ? `as_${siblingId}` : 'as_unrelated_binding',
+      'a'.repeat(64),
+      state === 'malformed' ? '' : 'absent',
+      state === 'malformed' ? 'closed' : state,
+      match === 'turn' ? f.turnId : 'turn_unrelated_binding',
+      match === 'attempt' ? siblingId : 'attempt_unrelated_binding',
+      timestamp,
+      timestamp,
+      'a'.repeat(64)
+    );
+}
+
+describe('failed-start busy-history proof cost (#164)', () => {
+  it('counts executions of already prepared SQLite reads', () => {
+    const coreDb = createMigratedCoreDb();
+    const cached = coreDb.sqlite.prepare('SELECT 1');
+    const counter = countRecoverySqlExecutions(coreDb);
+    try {
+      cached.get();
+      cached.get();
+      cached.all();
+      Array.from(cached.iterate());
+      cached.run();
+      expect(counter.counts).toEqual({ executions: 5, reads: 5 });
+    } finally {
+      counter.restore();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('bounds executed SQL reads across 0, 378 and 37800 settled siblings on repeated passes', async () => {
+    const measurements: Array<{
+      siblings: number;
+      pass: number;
+      elapsedMs: number;
+      executions: number;
+      reads: number;
+    }> = [];
+    for (const siblings of [0, 378, 37800]) {
+      const f = await createFailedStartFixture(`cost_${siblings}`);
+      terminalizeRecoveryCostFixture(f);
+      seedRecoveryBusyHistory(f, siblings);
+      const before = recoveryProofSnapshot(f);
+      const recovery = recoveryCostInput(f);
+      const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        for (let pass = 1; pass <= 2; pass++) {
+          const counter = countRecoverySqlExecutions(f.coreDb);
+          const startedAt = performance.now();
+          try {
+            await runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery.input);
+          } finally {
+            const elapsedMs = performance.now() - startedAt;
+            counter.restore();
+            const observation = { siblings, pass, elapsedMs, ...counter.counts };
+            measurements.push(observation);
+            console.info('failed_start_busy_history_cost', JSON.stringify(observation));
+          }
+          expect(recoveryProofSnapshot(f)).toEqual(before);
+          recovery.assertNoEffects();
+        }
+        const uninstrumentedStart = performance.now();
+        await runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery.input);
+        console.info(
+          'failed_start_busy_history_elapsed',
+          JSON.stringify({
+            siblings,
+            pass: 3,
+            instrumented: false,
+            elapsedMs: performance.now() - uninstrumentedStart,
+          })
+        );
+        expect(recoveryProofSnapshot(f)).toEqual(before);
+        recovery.assertNoEffects();
+        expect(log).not.toHaveBeenCalled();
+      } finally {
+        log.mockRestore();
+        recovery.restore();
+        f.coreDb.sqlite.close();
+      }
+    }
+    // Permit one fixed set of the five existing proof reads beyond the no-history work.
+    // The bound is independent of sibling count and cannot be met by caching prepare().
+    for (const observation of measurements) {
+      const fixed = measurements.find(
+        (entry) => entry.siblings === 0 && entry.pass === observation.pass
+      )!;
+      expect(observation.reads, JSON.stringify(observation)).toBeLessThanOrEqual(fixed.reads + 5);
+    }
+  });
+
+  it.each([
+    ['phase-open', 'phase', 'open'],
+    ['phase-closing', 'phase', 'closing'],
+    ['accepted', 'disposition', 'accepted'],
+    ['unknown', 'disposition', 'unknown'],
+    ['operation', 'operation_id', 'unproved-operation'],
+    ['empty-operation', 'operation_id', ''],
+    ['other-terminal', 'terminal_cause', 'execution-failed'],
+    ['missing-terminal', 'terminal_cause', null],
+    ['invalid-deadline', 'deadline', 'invalid'],
+    ['invalid-created-at', 'created_at', 'invalid'],
+    ['empty-binding', 'binding_ref', ''],
+    ['empty-backend', 'backend_id', ''],
+    ['heartbeat', 'last_accepted_heartbeat_at', '2026-07-05T00:00:00.000Z'],
+    ['sequence-zero', 'last_worker_sequence', 0],
+    ['process-key', 'worker_process_key_hash', 'a'.repeat(64)],
+    ['control-token', 'worker_control_token_hash', 'a'.repeat(64)],
+    ['inference-token', 'worker_inference_token_hash', 'b'.repeat(64)],
+    ['capability-token', 'worker_capability_token_hash', 'c'.repeat(64)],
+    ['empty-heartbeat', 'last_accepted_heartbeat_at', ''],
+    ['empty-process-key', 'worker_process_key_hash', ''],
+    ['empty-token', 'worker_control_token_hash', ''],
+  ] as const)('preserves refusal and terminal history for sibling %s', async (name, column, value) => {
+    const f = await createFailedStartFixture(`cost_conflict_${name}`);
+    terminalizeRecoveryCostFixture(f);
+    const siblingId = seedRecoveryBusyHistory(f, 3)!;
+    f.coreDb.sqlite
+      .prepare(`UPDATE scheduler_execution_attempts SET ${column} = ? WHERE attempt_id = ?`)
+      .run(value, siblingId);
+    const before = recoveryProofSnapshot(f);
+    const recovery = recoveryCostInput(f);
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (let pass = 0; pass < 2; pass++) {
+        await expect(
+          runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery.input)
+        ).rejects.toThrow();
+        expect(recoveryProofSnapshot(f)).toEqual(before);
+        recovery.assertNoEffects();
+      }
+    } finally {
+      log.mockRestore();
+      recovery.restore();
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    ['session', 'active'],
+    ['session', 'closed'],
+    ['session', 'unknown'],
+    ['session', 'malformed'],
+    ['turn', 'active'],
+    ['turn', 'closed'],
+    ['turn', 'unknown'],
+    ['attempt', 'active'],
+    ['attempt', 'closed'],
+    ['attempt', 'unknown'],
+    ['unrelated', 'closed'],
+  ] as const)('checks sibling binding by %s with state %s without replay', async (match, state) => {
+    const f = await createFailedStartFixture(`cost_binding_${match}_${state}`);
+    terminalizeRecoveryCostFixture(f);
+    const siblingId = seedRecoveryBusyHistory(f, 3)!;
+    recordRecoverySiblingBinding(f, siblingId, match, state);
+    const before = recoveryProofSnapshot(f);
+    const recovery = recoveryCostInput(f);
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (let pass = 0; pass < 2; pass++) {
+        const result = runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery.input);
+        if (match === 'unrelated') await expect(result).resolves.toBeUndefined();
+        else await expect(result).rejects.toThrow();
+        expect(recoveryProofSnapshot(f)).toEqual(before);
+        recovery.assertNoEffects();
+      }
+    } finally {
+      log.mockRestore();
+      recovery.restore();
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'cleaned',
+    'unknown',
+    'malformed',
+  ] as const)('refuses a sibling backend association with %s proof', async (proof) => {
+    const f = await createFailedStartFixture(`cost_backend_${proof}`);
+    terminalizeRecoveryCostFixture(f);
+    const siblingId = seedRecoveryBusyHistory(f, 3)!;
+    const columns = f.coreDb.sqlite.pragma('table_info(worker_backend_sessions)') as Array<{
+      name: string;
+    }>;
+    const replacements: Record<string, string> = {
+      attempt_id: siblingId,
+      agent_session_id: `as_${siblingId}`,
+      package_snapshot_id: 'package_sibling_backend',
+      staging_directory_ref: 'server/runtime/worker-backend-sessions/sibling',
+      backend_session_id: testNanoHostBackendSessionId('sibling'),
+      sandbox_binding_ref: 'sibling-backend-binding',
+      ...(proof === 'unknown' ? { state: 'unknown' } : {}),
+      ...(proof === 'malformed' ? { backend_lineage_json: 'invalid-json' } : {}),
+    };
+    const keys = columns.filter(({ name }) => name in replacements).map(({ name }) => name);
+    f.coreDb.sqlite
+      .prepare(`INSERT INTO worker_backend_sessions (${columns.map(({ name }) => name).join(', ')})
+      SELECT ${columns.map(({ name }) => (name in replacements ? '?' : name)).join(', ')}
+      FROM worker_backend_sessions WHERE attempt_id = ?`)
+      .run(...keys.map((name) => replacements[name]), `lease_${f.turnId.slice('turn_'.length)}`);
+    const before = recoveryProofSnapshot(f);
+    const recovery = recoveryCostInput(f);
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (let pass = 0; pass < 2; pass++) {
+        await expect(
+          runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery.input)
+        ).rejects.toThrow();
+        expect(recoveryProofSnapshot(f)).toEqual(before);
+        recovery.assertNoEffects();
+      }
+    } finally {
+      log.mockRestore();
+      recovery.restore();
+      f.coreDb.sqlite.close();
+    }
+  });
+});
 
 describe('terminal failed-start product recovery', () => {
   it.each([
