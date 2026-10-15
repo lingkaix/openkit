@@ -45,6 +45,39 @@ function validAgentConfig() {
 }
 
 describe('AuthoredAgentConfigSchema', () => {
+  it.each(['runtime', 'sandbox'] as const)('refuses profile-owned %s authority', (field) => {
+    const config = validAgentConfig();
+    const result = AuthoredAgentConfigSchema.safeParse({
+      ...config,
+      profiles: [{ id: 'review', [field]: config[field] }],
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toContainEqual(
+        expect.objectContaining({ path: ['profiles', 0, field] })
+      );
+    }
+  });
+
+  it('keeps profile behavior while ignoring descriptive additions', () => {
+    const profile = {
+      id: 'review',
+      instructionsRef: 'instructions:review',
+      preferredLogicalModelId: 'reasoning',
+      reasoningEffort: 'high',
+      allowedLogicalModelIds: ['reasoning'],
+      skills: [{ id: 'review-skill' }],
+      mcp: [{ id: 'review-tools' }],
+    };
+    expect(
+      AuthoredAgentConfigSchema.parse({
+        ...validAgentConfig(),
+        profiles: [{ ...profile, description: 'Review behavior.' }],
+      }).profiles
+    ).toEqual([profile]);
+  });
+
   it('projects encoded-slash authority only on the qualifying closed editor schema and manifest shape', () => {
     const schema = getConfigSchemaCatalog().find((entry) => entry.kind === 'agent')!.schema as {
       properties: {

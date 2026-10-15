@@ -709,6 +709,18 @@ describe('descriptive configuration extension loading', () => {
     { kind: 'agent', location: ['sandbox'], field: 'futureRule', value: true },
     { kind: 'agent', location: ['sandbox', 'backend'], field: 'futureRule', value: true },
     { kind: 'agent', location: ['workspace'], field: 'futureRule', value: true },
+    {
+      kind: 'agent',
+      location: ['profiles', 0],
+      field: 'runtime',
+      value: { adapter: 'other-runtime' },
+    },
+    {
+      kind: 'agent',
+      location: ['profiles', 0],
+      field: 'sandbox',
+      value: { network: [] },
+    },
     { kind: 'agent', location: ['profiles', 0, 'mcp', 0], field: 'futureRule', value: true },
     { kind: 'agent', location: ['profiles', 0, 'skills', 0], field: 'futureRule', value: true },
     {
