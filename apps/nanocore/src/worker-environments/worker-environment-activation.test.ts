@@ -293,6 +293,68 @@ function reloadResult(status: 'applied' | 'failed') {
 
 describe('Worker environment activation', () => {
   it.each([
+    'before-inspection',
+    'during-inspection',
+  ] as const)('refuses a Thread that becomes busy %s without admitting defaults or changing configuration', async (phase) => {
+    const fixture = createBaseFixture();
+    const pair = candidatePair(fixture, [], null);
+    const config = configurationService();
+    let otherTurn: ReturnType<FsStore['createTurn']> | undefined;
+    const occupyThread = () => {
+      otherTurn = fixture.store.createTurn(
+        fixture.administrationWorkspaceId,
+        fixture.administrationThreadId,
+        'Other administration work',
+        { kind: 'user', id: ACTOR.userId }
+      );
+    };
+    if (phase === 'before-inspection') occupyThread();
+    const inspectImage = vi.fn(async () => {
+      if (phase === 'during-inspection') occupyThread();
+      return {
+        imageDigest: IMAGE_DIGEST,
+        layout: LAYOUT,
+        layoutDigest: `sha256:${'f'.repeat(64)}`,
+        environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
+      };
+    });
+    const reloadRuntimeConfig = vi.fn(() => reloadResult('applied'));
+    const replaceResidentWork = vi.fn();
+    const activation = createWorkerEnvironmentActivation({
+      runtimeEffects: { inspectImage },
+      configFilesForActor: () => config.files,
+      coreDb: fixture.coreDb,
+      now: () => NOW,
+      preparation: { readResolved: () => pair },
+      reloadRuntimeConfig,
+      replaceResidentWork,
+      requireCurrentAdministrator: vi.fn(),
+      store: fixture.store,
+    });
+
+    await expect(
+      activation.activate({ actor: ACTOR }, activationRequest(pair))
+    ).rejects.toMatchObject({
+      code: 'thread_busy',
+    });
+    expect(inspectImage).toHaveBeenCalledTimes(phase === 'before-inspection' ? 0 : 1);
+    expect(
+      fixture.coreDb.sqlite
+        .prepare('SELECT native_environment_json AS environment FROM worker_image_settlements')
+        .get()
+    ).toEqual({ environment: null });
+    expect(config.updateFile).not.toHaveBeenCalled();
+    expect(reloadRuntimeConfig).not.toHaveBeenCalled();
+    expect(replaceResidentWork).not.toHaveBeenCalled();
+    const turns = fixture.store.listThreadTurns(
+      fixture.administrationWorkspaceId,
+      fixture.administrationThreadId
+    );
+    expect(turns).toEqual([otherTurn]);
+    expect(turns[0]?.status).toBe('running');
+  });
+
+  it.each([
     ['mutable reference tag', DECLARATION],
     ['build declaration', BUILD_DECLARATION],
   ] as const)('pins resolved B after a %s by exact SHA CAS and replays the immutable result Artifact', async (_kind, declaration) => {
@@ -321,6 +383,12 @@ describe('Worker environment activation', () => {
     });
 
     const first = await activation.activate({ actor: ACTOR }, request);
+    fixture.store.createTurn(
+      fixture.administrationWorkspaceId,
+      fixture.administrationThreadId,
+      'Later administration work',
+      { kind: 'user', id: ACTOR.userId }
+    );
     const replay = await activation.activate({ actor: ACTOR }, request);
 
     expect(first).toEqual(replay);
