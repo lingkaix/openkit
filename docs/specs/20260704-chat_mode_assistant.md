@@ -1,6 +1,6 @@
 ---
 status: Accepted
-updated: "2026-10-06"
+updated: "2026-10-15"
 implementation: Partial
 kind: concept
 ---
@@ -105,7 +105,7 @@ The ordinary Assistant and Administration entry paths use the centralized fixed 
 The ordinary conversational entry path has this complete Core Tool set in stable order. Separately selected Gateway vendor MCP repository read tools are admitted by the repository-inspection rule below and do not replace or reorder the Core set. MCP implementations of Core capabilities remain subject to the reviewed-adapter rules in `20260909-internal_agent_resource_integration.md`.
 
 1. `workspace.state.read`: bounded Workspace/work-state read for the exact selected resource.
-2. `thread.history.read`: bounded Thread history beyond the initially admitted range or summary.
+2. `thread.history.read`: bounded authorized Item search through the conversation-history adapter, including eligible past Threads in the current Workspace.
 3. `knowledge.search`: governed current-scope Knowledge/Memory query through Knowledge Manager.
 4. `workspace.create`: create the empty project Workspace required by an accepted handoff.
 5. `task.start`: explicit Task handoff through its mode owner.
@@ -141,13 +141,27 @@ The Tool set is reconstructed from the server-resolved entry path and its curren
 
 Acceptance is observable when two ordinary conversational Turns with different messages and the same resolved entry configuration expose the same ordered Tool definitions, a no-Tool answer still exposes that set while calling none of it, a refused present Tool returns a typed Tool result, and a request for another entry path creates a proposed new Thread without mutating the current Turn's set.
 
+### Assistant history Tool
+
+`thread.history.read` retains its Core Tool identity and binds its effect to the [Retrieval Kernel conversation-history adapter](20261014-retrieval_kernel.md#source-adapter-registry). It searches retained user-visible Items beyond the active context window, including eligible past Threads in the current Workspace. It creates no second history store or operation identity ([accepted binding](../decisions/20261015-assistant_history_tool_binding.md)).
+
+Eligible Threads are those the addressing User can read now under current Thread visibility. That User's private Assistant Timeline is eligible for that User only. Another User's private Timeline is never eligible. This Tool admits no administrator override and no cross-Workspace reach. Trusted assembly binds the User, Workspace, querying Thread, and Turn; model input cannot replace those bindings.
+
+Source and output-audience checks run at query time and again when the result is shown. A readable source does not authorize disclosure to a broader audience. Revocation, deletion, changed source revisions, or changed audience must withhold affected content and references. Missing or contradictory authority fails closed; cached index eligibility never authorizes a result.
+
+Results are bounded in count and bytes. Each hit carries qualified Workspace, Thread, Turn, and Item references plus the source revision or digest. The adapter retains its exclusions for hidden reasoning, credentials, raw Provider payloads, and unadmitted diagnostics. Neither snippets nor qualified references may reveal an ineligible source. Incomplete or stale results retain the Retrieval Kernel's completeness and uncertainty semantics; an empty incomplete result cannot prove absence.
+
+A query inside a Turn publishes one write-once, content-free trace on that querying Turn under the accepted Retrieval Kernel trace rule. The trace retains qualified references and selection evidence, never query text, source text, snippets, or matched terms. Trace access rechecks current containing-record and source audiences. This Tool adds no durable record beyond that trace and the existing owned Items. A missing required trace cannot be hidden by omitting known Turn lineage. Restart rebuilds derived search state from canonical Items and current visibility; retry never reuses a prior read as authority.
+
+Acceptance covers retrieval from another eligible past Thread and outside the context window, current-User private Timeline access, denial of another User's Timeline, and no administrator or cross-Workspace bypass. It also covers count/byte bounds, qualified references, one immutable content-free trace per Turn query, and revocation between query and display. Hidden reasoning, credentials, raw Provider payloads, and unadmitted diagnostics remain absent from results and traces.
+
 ### Assistant Information Sources
 
 The Assistant has exactly five semantic information-source classes:
 
 | Source class | Included material | Freshness and persistence rule |
 | --- | --- | --- |
-| Active Thread history | Durable conversation, accepted user corrections, and decision context from the current Thread. | Use the smallest relevant Item range or a governed source-attributed summary. Durable Thread Items remain truth; a summary is replaced when its source range, authorization, correction, deletion, or retention state makes it stale. |
+| Thread history | Durable conversation, accepted user corrections, and decision context from the active Thread; eligible past-Thread Items are retrieved only through the history Tool. | Use the smallest relevant Item range or a governed source-attributed summary. Durable Thread Items remain truth; a summary is replaced when its source range, authorization, correction, deletion, or retention state makes it stale. |
 | Governed Knowledge | Reviewed or directly user-authored reusable understanding eligible for the request and audience. | Query on demand through the Knowledge owner with source, version, scope, freshness, sensitivity, conflict, and exclusion evidence. It is never loaded merely because the Thread belongs to a Workspace. |
 | External observation | Current information obtained from an explicitly admitted observation capability. | Retrieve on demand with source identity, observation time, bounds, and provenance. It is untrusted observation, is not promoted into Knowledge automatically, and supplies no instruction or effect authority. |
 | Operational context | Current actor-authorized Workspace, Thread, Task, Goal, Worker, readiness, attention, and product-state projections. | Query current read models on demand and retain the observation time and uncertainty. Do not copy complete operational state into a prompt or durable Knowledge. |
