@@ -31,7 +31,7 @@ Existing derivation inputs let retries find the same result after a failure. Rep
 
 [Core Concepts](../core/core-concepts.md#identifier-semantics) owns identifier opacity and points to Core Protocol for the shared format. Storage Layout owns persistence, and Multi-User Workspace System owns identity and membership semantics. The shared format changes none of those allocation or lifecycle responsibilities.
 
-## Owner Declarations
+### Owner Declarations
 
 The coordinator's P14/coordinator-decisions.md adopts the independent Consultant conditions in P14/consultant.md, both dated 2026-10-15 in the backlog-20261015 working record. D1 permits declarations only for producers whose accepted owners already supply the derivation and its complete inputs, trigger and retry/recovery semantics. Deterministic code alone is insufficient. D3 permits complete JSON names and discriminators for active owner-backed producers. D4 resolves the implicit local human through one generated canonical User in the existing identity authority. These are accepted under the engineer's delegated acceptance when coordinator and Consultant agree.
 
