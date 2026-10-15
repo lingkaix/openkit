@@ -2544,3 +2544,6 @@ mod image_import_tests;
 
 #[cfg(test)]
 mod live_inspection_tests;
+
+#[cfg(test)]
+mod epoch_inventory_tests;

@@ -1278,6 +1278,205 @@ struct PrivateNamespaceDescriptors {
     mount: Arc<OwnedFd>,
 }
 
+/// Incarnation-bound private report inputs; no path, command line or output is retained.
+struct MemberInventory {
+    role: MemberFailureSubject,
+    pid: u32,
+    process: Option<File>,
+    status: serde_json::Value,
+}
+
+impl MemberInventory {
+    /// Pins procfs while the unreaped child handle still prevents PID reuse.
+    fn pin(index: usize, child: &mut Child) -> Self {
+        let process = (|| {
+            if child.try_wait().ok()?.is_some() {
+                return None;
+            }
+            let process = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(format!("/proc/{}", child.id()))
+                .ok()?;
+            if child.try_wait().ok()?.is_some() {
+                return None;
+            }
+            Some(process)
+        })();
+        Self {
+            role: MEMBER_ROLE_BY_START_INDEX
+                .get(index)
+                .copied()
+                .unwrap_or(MemberFailureSubject::Unknown),
+            pid: child.id(),
+            process,
+            status: serde_json::json!({"state": "unavailable"}),
+        }
+    }
+
+    /// Keeps actual pre-fence wait observations distinct from later group termination.
+    fn observe_status(&mut self, child: &mut Child) {
+        self.status = match child.try_wait() {
+            Ok(None) => serde_json::json!({"state": "running"}),
+            Ok(Some(status)) => match observation_from_exit_status(status) {
+                MemberObservation::ExitCode(code) => {
+                    serde_json::json!({"state": "exited", "code": code})
+                }
+                MemberObservation::Signal(signal) => {
+                    serde_json::json!({"state": "signaled", "signal": signal})
+                }
+                _ => serde_json::json!({"state": "unavailable"}),
+            },
+            Err(_) => serde_json::json!({"state": "unavailable"}),
+        };
+    }
+
+    /// Measures only the pinned process in the bounded export worker, never a reused PID.
+    fn report(
+        self,
+        #[cfg(test)] before_recheck: Option<&(dyn Fn() + Send + Sync)>,
+    ) -> serde_json::Value {
+        let mut binary = serde_json::json!("unavailable");
+        let mut cgroup = serde_json::json!("unavailable");
+        if let Some(process) = self.process {
+            let measured = (|| {
+                let image = open_process_entry(&process, c"exe")?;
+                let before = image.metadata().ok()?;
+                if !before.is_file() {
+                    return None;
+                }
+                #[cfg(test)]
+                if let Some(hook) = before_recheck {
+                    hook();
+                }
+                let membership = read_process_cgroup(&process);
+                let group = membership
+                    .as_ref()
+                    .and_then(|bytes| resolve_member_cgroup(bytes));
+                let after = open_process_entry(&process, c"exe")?.metadata().ok()?;
+                let unchanged = |left: &fs::Metadata, right: &fs::Metadata| {
+                    left.dev() == right.dev()
+                        && left.ino() == right.ino()
+                        && left.len() == right.len()
+                        && left.ctime() == right.ctime()
+                        && left.ctime_nsec() == right.ctime_nsec()
+                };
+                if !unchanged(&before, &after) || !unchanged(&before, &image.metadata().ok()?) {
+                    return None;
+                }
+                let group = group.filter(|_| membership == read_process_cgroup(&process));
+                Some((before, group))
+            })();
+            if let Some((image, group)) = measured {
+                binary = serde_json::json!({
+                    "device": image.dev(), "inode": image.ino(), "size": image.len(),
+                });
+                if let Some(group) = group {
+                    cgroup = serde_json::json!({"device": group.dev(), "inode": group.ino()});
+                }
+            }
+        }
+        serde_json::json!({
+            "role": self.role.token(), "pid": self.pid, "binary": binary,
+            "version": "unavailable", "cgroup": cgroup, "status": self.status,
+        })
+    }
+}
+
+/// Opens a fixed virtual process entry relative to the retained incarnation, including its exe link.
+fn open_process_entry(process: &File, entry: &std::ffi::CStr) -> Option<File> {
+    // SAFETY: the directory remains owned, the entry is a fixed NUL-terminated name,
+    // and a successful call transfers one new descriptor into File ownership.
+    let fd = unsafe {
+        libc::openat(
+            process.as_raw_fd(),
+            entry.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC,
+        )
+    };
+    (fd >= 0).then(|| unsafe { File::from_raw_fd(fd) })
+}
+
+/// Reads only a bounded kernel cgroup membership projection, with no retained path text.
+fn read_process_cgroup(process: &File) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    open_process_entry(process, c"cgroup")?
+        .take(8193)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() <= 8192).then_some(bytes)
+}
+
+/// Resolves an exact unified membership to filesystem identity; unsupported namespaces stay unknown.
+fn resolve_member_cgroup(bytes: &[u8]) -> Option<fs::Metadata> {
+    let source = std::str::from_utf8(bytes).ok()?;
+    let mut records = source.lines();
+    let path = records.next()?.strip_prefix("0::/")?;
+    if records.next().is_some() {
+        return None;
+    }
+    // A subtree mount cannot resolve a hierarchy-absolute membership by simple joining.
+    // Require the exact unified hierarchy root rather than guess a namespace translation.
+    let mut mounts = String::new();
+    File::open("/proc/self/mountinfo")
+        .ok()?
+        .take(262145)
+        .read_to_string(&mut mounts)
+        .ok()?;
+    if mounts.len() > 262144 {
+        return None;
+    }
+    let matching_mounts = mounts
+        .lines()
+        .filter(|line| {
+            let Some((mount, filesystem)) = line.split_once(" - ") else {
+                return false;
+            };
+            let fields = mount.split_ascii_whitespace().collect::<Vec<_>>();
+            fields.get(3) == Some(&"/")
+                && fields.get(4) == Some(&"/sys/fs/cgroup")
+                && filesystem.split_ascii_whitespace().next() == Some("cgroup2")
+        })
+        .count();
+    if matching_mounts != 1 {
+        return None;
+    }
+    let mut directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open("/sys/fs/cgroup")
+        .ok()?;
+    let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: the descriptor and output allocation remain valid during fstatfs.
+    // A successful return initializes the output; only then is the second condition evaluated.
+    if unsafe { libc::fstatfs(directory.as_raw_fd(), filesystem.as_mut_ptr()) } != 0
+        || unsafe { filesystem.assume_init() }.f_type != libc::CGROUP2_SUPER_MAGIC
+    {
+        return None;
+    }
+    for component in path.split('/').filter(|component| !component.is_empty()) {
+        if component == "." || component == ".." {
+            return None;
+        }
+        let component = CString::new(component).ok()?;
+        // SAFETY: the retained parent descriptor and component live through openat;
+        // no symlink can redirect a component outside the observed hierarchy.
+        let fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                component.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return None;
+        }
+        // SAFETY: a successful openat transfers one new owned descriptor.
+        directory = unsafe { File::from_raw_fd(fd) };
+    }
+    directory.metadata().ok()
+}
+
 impl Drop for OwnedEpochChildren {
     /// Performs normal fail-stop teardown without creating invalidation evidence.
     fn drop(&mut self) {
@@ -1302,13 +1501,18 @@ impl EpochMemberMonitor {
 
     /// Starts the monitor while retaining the proved private namespace descriptors.
     fn start_with_namespaces(
-        children: Vec<Child>,
+        mut children: Vec<Child>,
         private_namespaces: Option<PrivateNamespaceDescriptors>,
         mut evidence: EpochEvidenceWriter,
         fence_started_path: PathBuf,
         readiness: Arc<AtomicU8>,
         inspection: Option<Arc<crate::live_inspection::InspectionState>>,
     ) -> Self {
+        let inventory = children
+            .iter_mut()
+            .enumerate()
+            .map(|(index, child)| MemberInventory::pin(index, child))
+            .collect();
         let (fence, fence_rx) = mpsc::sync_channel(1);
         let (failure_tx, member_failure) = mpsc::sync_channel(1);
         let harness_tasks = Arc::new(Mutex::new(None));
@@ -1332,6 +1536,7 @@ impl EpochMemberMonitor {
                     &fault,
                     fence_started_path,
                     &observed_readiness,
+                    inventory,
                 );
                 let _ = failure_tx.send(fault);
             }
@@ -1510,6 +1715,48 @@ impl Drop for EpochMemberMonitor {
         }
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
+        }
+    }
+}
+
+/// Gives contract tests their own paths and children while retaining the actual monitor and fence.
+#[cfg(test)]
+pub(crate) struct InventoryMonitorFixture(EpochMemberMonitor);
+
+#[cfg(test)]
+impl InventoryMonitorFixture {
+    /// Starts fixed-order owned children with a private evidence root and optional blocked export.
+    pub(crate) fn start(
+        children: Vec<Child>,
+        root: &Path,
+        before_export: Option<Arc<dyn Fn() + Send + Sync>>,
+        inventory_recheck: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Self {
+        let mut evidence = EpochEvidenceWriter::new(root.join("reports")).unwrap();
+        evidence.inventory_recheck = inventory_recheck;
+        if let Some(hook) = before_export {
+            evidence.before_export(hook);
+        }
+        Self(EpochMemberMonitor::start_with_namespaces(
+            children,
+            None,
+            evidence,
+            root.join("fence-started"),
+            Arc::new(AtomicU8::new(ReadinessProof::Unavailable as u8)),
+            None,
+        ))
+    }
+
+    /// Requests the existing explicit fault and waits for all owned children to be reaped.
+    pub(crate) fn fence(&mut self) {
+        self.0.fence(EpochFault::IdentityMismatch);
+    }
+
+    /// Waits for the production monitor's first cause after its complete fence.
+    pub(crate) fn failure(&self, limit: Duration) -> Option<String> {
+        match self.0.member_failure.recv_timeout(limit).ok()? {
+            EpochFault::MemberExited(Some(failure)) => Some(failure.report_value()),
+            _ => None,
         }
     }
 }
@@ -2626,7 +2873,11 @@ fn fence_initiated(
     fault: &EpochFault,
     fence_started_path: PathBuf,
     readiness: &AtomicU8,
+    mut inventory: Vec<MemberInventory>,
 ) {
+    for (member, child) in inventory.iter_mut().zip(children.iter_mut()) {
+        member.observe_status(child);
+    }
     let mut writer = evidence.clone();
     let fault = fault.clone();
     let readiness = ReadinessProof::report_value(readiness);
@@ -2638,6 +2889,15 @@ fn fence_initiated(
             let _ = record_fence_started_at(&fence_started_path, fence_started);
             let mut fields = invalidation_report_fields(&fault);
             fields.push(("readiness", readiness));
+            let mut members = Vec::with_capacity(inventory.len());
+            for member in inventory {
+                #[cfg(test)]
+                let value = member.report(writer.inventory_recheck.as_deref());
+                #[cfg(not(test))]
+                let value = member.report();
+                members.push(value);
+            }
+            fields.push(("members", serde_json::Value::Array(members).to_string()));
             let field_refs = fields
                 .iter()
                 .map(|(name, value)| (*name, value.as_str()))
