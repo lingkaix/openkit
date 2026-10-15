@@ -584,8 +584,9 @@ describe.each([
     expect(input).toHaveValue('');
     expect(screen.getByRole('dialog', { name: 'Attachments' })).toBeInTheDocument();
     const alert = within(screen.getByRole('dialog', { name: 'Attachments' })).getByRole('alert');
-    expect(alert).toHaveTextContent("Couldn't import this file.");
-    expect(alert).toHaveTextContent('Select a text file to try again.');
+    expect(alert).toHaveTextContent("Couldn't confirm the file import.");
+    expect(alert).toHaveTextContent('The file may already exist.');
+    expect(alert).toHaveTextContent('Select the same file to try again.');
     expect(alert).not.toHaveTextContent('Read unavailable');
     expect(alert).not.toHaveTextContent('Import unavailable');
     await user.keyboard('{Escape}');
@@ -671,12 +672,13 @@ describe.each([
 
     await user.upload(fileInput, file);
     await waitFor(() => expect(trigger).toBeEnabled());
-    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't import this file.");
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't confirm the file import.");
     expect(importWorkspaceArtifact).not.toHaveBeenCalled();
     await user.upload(fileInput, file);
     await waitFor(() => expect(importWorkspaceArtifact).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(trigger).toBeEnabled());
-    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't import this file.");
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't confirm the file import.");
+    expect(screen.getByRole('alert')).toHaveTextContent('The file may already exist.');
     expect(screen.getByRole('alert')).not.toHaveTextContent(/Private.*failure details/);
     expect(message).toHaveValue('Keep this draft');
 

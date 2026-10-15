@@ -385,7 +385,7 @@ export function Composer({
               {onImportFile ? (
                 <>
                   {importFailed ? (
-                    <ErrorBanner message="Couldn't import this file. Select a text file to try again." />
+                    <ErrorBanner message="Couldn't confirm the file import. The file may already exist. Select the same file to try again." />
                   ) : null}
                   <input
                     ref={fileInputRef}
