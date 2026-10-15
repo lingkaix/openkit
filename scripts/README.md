@@ -26,7 +26,7 @@ See [Deployment Host Requirements](../docs/specs/20260909-deployment_host_requir
 
 `release-record.mjs` generates offline manifests, reviewed drafts and private compact closeout projections. It imports the existing exported notes functions; `release-notes.mjs` remains byte-identical to the proved publication baseline. `tests/release-manifest.test.mjs` checks its raw bytes against the pinned SHA-256 from baseline commit `23f3e2dc`, without requiring Git history in CI. `release-safety.mjs` owns shared credential-safe evidence, canonical identities and single-shot effect retention for the scripts and qualification kit. The kit pins that script-side dependency as part of its instrument digest.
 
-`release-publication-check.mjs EVIDENCE.json` reads the current repository's immutable Git objects at exact P and `baseline.sha`. The publication proof includes the three publication job blocks, invoked scripts and their static relative-import/literal-file dependencies. Missing or changed repository inputs refuse even if every supplied hash agrees. Its returned proof retains per-input blob identities and the aggregate fingerprint.
+`release-publication-check.mjs EVIDENCE.json` reads the current repository's immutable Git objects at exact P and `baseline.sha`. The publication proof includes every publication job block and, for native App publication, the matrix producer, App builder, both native smoke legs and App promotion. It follows invoked scripts and their static relative-import/literal-file dependencies, including the native missing-setter fixture. Missing or changed repository inputs refuse even if every supplied hash agrees. Its returned proof retains per-input blob identities and the aggregate fingerprint.
 
 ## Retrieval Build Supply
 
