@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -13,9 +14,11 @@ import {
 } from '../scripts/release-record.mjs';
 
 test('the invoked release-notes file is byte-identical to the proved baseline', () => {
-  const baseline = spawnSync('git', ['show', '23f3e2dc:scripts/release-notes.mjs']);
-  assert.equal(baseline.status, 0);
-  assert.deepEqual(readFileSync('scripts/release-notes.mjs'), baseline.stdout);
+  // Pin the raw blob bytes at proved baseline 23f3e2dc73676c61173005c0772fee6db6bdf09c; shallow CI has no baseline object.
+  assert.equal(
+    createHash('sha256').update(readFileSync('scripts/release-notes.mjs')).digest('hex'),
+    '0e044491d24cf00e888866a744d944069bef3bcb895ceaf5dd02b90d0b93aa9f'
+  );
 });
 
 /** Exact synthetic image/checksum/assessment inputs from the existing producers. */
