@@ -22,6 +22,16 @@ export interface RuntimeCaptureInput {
   /** Resolves after Core accepts metadata and each restricted chunk, not after local buffering. */
   readonly emit: (record: RuntimeObservation, body?: Uint8Array) => Promise<void>;
 }
+
+/** Exact supervisor-owned publication stop; it proves neither receipt nor a native terminal outcome. */
+export class RuntimeCaptureStoppedError extends Error {
+  /** Identifies local cancellation suppression without parsing diagnostic text. */
+  public constructor() {
+    super('Worker ordinary output stopped for owned cancellation.');
+    this.name = 'RuntimeCaptureStoppedError';
+  }
+}
+
 /** Existing semantic frame admission ceiling; overflow is a gap, not a prefix. */
 export const RUNTIME_FRAME_MAX_BYTES = WORKER_OBSERVATION_CONTENT_MAX_BYTES;
 /** Maximum decoded body fragment carried by the existing worker append route. */

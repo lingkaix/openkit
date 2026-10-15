@@ -1956,6 +1956,17 @@ describe('Worker Harness resident AgentSessions', () => {
     const heartbeats: number[] = [];
     const attempts: string[] = [];
     const acceptedEvents: number[] = [];
+    const acceptedRecords: unknown[] = [];
+    const postCancellationEffects: string[] = [];
+    const finalRequests: Array<{
+      operation: string;
+      schemaVersion: number;
+      lineage: unknown;
+      sequence: number;
+      body: Record<string, unknown>;
+    }> = [];
+    const sealedAtFinal: string[] = [];
+    let cancellationStarted = false;
     let lastAcceptedAt = Date.now();
     let retrySequence: number | undefined;
     let timeoutReason: unknown;
@@ -1970,6 +1981,13 @@ describe('Worker Harness resident AgentSessions', () => {
     });
     vi.spyOn(integration.client, 'workerControlFetch').mockImplementation((async (url, init) => {
       const body = JSON.parse(init.body);
+      if (cancellationStarted && !url.endsWith('/final-status')) {
+        postCancellationEffects.push(url);
+      }
+      if (url.endsWith('/final-status')) {
+        finalRequests.push(body);
+        sealedAtFinal.push(readFileSync(join(f.capturePath('turn-1'), 'events.jsonl'), 'utf8'));
+      }
       if (url.endsWith('/heartbeat')) {
         expect(Date.now() - lastAcceptedAt).toBeLessThan(2500);
         expect(body.sequence).toBe(heartbeats.length);
@@ -1999,9 +2017,19 @@ describe('Worker Harness resident AgentSessions', () => {
           attempts.push(init.body);
           retried.resolve();
         }
-        acceptedEvents.push(record.sequence);
       }
-      return fetch(url, init);
+      const response = await fetch(url, init);
+      return {
+        ...response,
+        text: async () => {
+          const text = await response.text();
+          if (url.endsWith('/events/append')) {
+            acceptedEvents.push(body.record.sequence);
+            acceptedRecords.push(body.record);
+          }
+          return text;
+        },
+      };
     }) satisfies WorkerControlFetch);
     const f = harnessFixture({ integration });
     f.fake.script.push({ kind: 'hold' });
@@ -2027,6 +2055,7 @@ describe('Worker Harness resident AgentSessions', () => {
     } finally {
       // Also release the unanswered base-code counterfactual after its deciding assertion failed.
       await clock.advance(10_250);
+      cancellationStarted = true;
       await f.send('turn.interrupt', {
         ...f.selector('as-a'),
         turnId: 'turn-1',
@@ -2043,13 +2072,38 @@ describe('Worker Harness resident AgentSessions', () => {
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line));
-    expect(
-      events
-        .filter((record) => record.event.type !== 'turn.failed')
-        .map((record) => record.sequence)
-    ).toEqual(acceptedEvents);
+    const ordinary = events.filter((record) => record.event.type !== 'turn.failed');
+    // P11 cancellation seals ordinary admission. Queued local evidence cannot become accepted output during cleanup.
+    expect(ordinary.slice(0, acceptedRecords.length)).toEqual(acceptedRecords);
+    const unaccepted = ordinary.slice(acceptedRecords.length);
+    expect(unaccepted.length).toBeGreaterThan(0);
+    expect(unaccepted.every((record) => record.sequence > acceptedEvents.at(-1)!)).toBe(true);
+    expect(unaccepted.some((record) => acceptedEvents.includes(record.sequence))).toBe(false);
+    expect(postCancellationEffects).toEqual([]);
     expect(new Set(acceptedEvents).size).toBe(acceptedEvents.length);
-    expect(integration.finalStatuses.at(-1)?.body.status).toBe('interrupted');
+    const terminal = events.at(-1)!;
+    expect(events.filter((record) => record.event.type === 'turn.failed')).toEqual([terminal]);
+    expect(terminal.event.data).toMatchObject({ status: 'interrupted', stopReason: 'aborted' });
+    expect(terminal.sequence).toBe(ordinary.at(-1)!.sequence + 1);
+    expect(terminal.event.data).toHaveProperty('diagnostics');
+    expect(
+      Object.values((terminal.event.data.diagnostics ?? {}) as Record<string, string>).some(
+        (value) => /\bincomplete\b/i.test(value)
+      )
+    ).toBe(true);
+    expect(finalRequests).toEqual([
+      {
+        operation: 'final_status',
+        schemaVersion: 2,
+        lineage: terminal.lineage,
+        sequence: terminal.sequence,
+        body: terminal.event.data,
+      },
+    ]);
+    expect(integration.finalStatuses).toEqual(finalRequests);
+    expect(sealedAtFinal).toEqual([
+      readFileSync(join(f.capturePath('turn-1'), 'events.jsonl'), 'utf8'),
+    ]);
   });
 
   it('stops lease heartbeats when authority is rejected during Integration drain', async () => {

@@ -70,6 +70,8 @@ export class WorkerTranscriptWriter {
   private liveQueue: Promise<void> = Promise.resolve();
   private readonly appendEvent: ((record: WorkerCanonicalEventRecord) => Promise<void>) | null;
   private eventsSealed = false;
+  private liveStopReason: Error | null = null;
+  private liveIncomplete = false;
   private readonly lineage: WorkerLineage;
   private readonly sessionDir: string;
   private sequence = 0;
@@ -88,12 +90,23 @@ export class WorkerTranscriptWriter {
   }
 
   /**
-   * Reports whether terminal outcome writing has sealed the event transcript.
+   * Reports whether cancellation or terminal writing has sealed ordinary event admission.
    *
-   * @returns True after terminal outcome writing starts.
+   * @returns True after ordinary event admission ends.
    */
   public get eventTranscriptSealed(): boolean {
     return this.eventsSealed;
+  }
+
+  /** Whether live output was refused or suppressed; local bytes never establish remote acceptance. */
+  public get liveEventsIncomplete(): boolean {
+    return this.liveIncomplete;
+  }
+
+  /** Seals ordinary admission and prevents new live effects while retaining an entered effect's actual result. */
+  public stopLiveEvents(reason: Error): void {
+    this.eventsSealed = true;
+    this.liveStopReason ??= reason;
   }
 
   /**
@@ -105,6 +118,7 @@ export class WorkerTranscriptWriter {
    */
   public async writeAndAppendEvent(input: WorkerEventInput): Promise<WorkerCanonicalEventRecord> {
     if (this.eventsSealed) {
+      this.requireLiveAdmission();
       throw new Error('Worker transcript events are sealed after the terminal outcome.');
     }
     const record = WorkerCanonicalEventRecordEmissionSchema.parse({
@@ -117,7 +131,7 @@ export class WorkerTranscriptWriter {
     const appended = this.appendJsonl('events.jsonl', record);
     await this.enqueueLive(async () => {
       await appended;
-      await this.appendEvent?.(record);
+      await this.appendLive(record);
     });
     return record;
   }
@@ -125,6 +139,7 @@ export class WorkerTranscriptWriter {
   /** Publishes metadata first, then restricted chunks without writing chunk bytes to the ordinary transcript. */
   public async writeObservation(input: RuntimeObservation, body?: Uint8Array): Promise<void> {
     if (this.eventsSealed || !this.appendEvent) {
+      this.requireLiveAdmission();
       throw new Error('Runtime observations require unsealed live worker control.');
     }
     if (input.content.state === 'expected' && body !== undefined) {
@@ -149,7 +164,7 @@ export class WorkerTranscriptWriter {
     const appended = this.appendJsonl('events.jsonl', record);
     await this.enqueueLive(async () => {
       await appended;
-      await this.appendEvent?.(record);
+      await this.appendLive(record);
       for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
         const byteOffset = chunkIndex * RUNTIME_CONTENT_CHUNK_BYTES;
         const chunk = WorkerCanonicalEventRecordEmissionSchema.parse({
@@ -170,9 +185,22 @@ export class WorkerTranscriptWriter {
             },
           },
         });
-        await this.appendEvent?.(chunk);
+        await this.appendLive(chunk);
       }
     });
+  }
+
+  /** Checks cancellation at each effect boundary, including between restricted content chunks. */
+  private async appendLive(record: WorkerCanonicalEventRecord): Promise<void> {
+    this.requireLiveAdmission();
+    await this.appendEvent?.(record);
+  }
+
+  /** Retains the caller-owned suppression identity without treating an unpublished record as accepted. */
+  private requireLiveAdmission(): void {
+    if (!this.liveStopReason) return;
+    this.liveIncomplete = true;
+    throw this.liveStopReason;
   }
 
   /** Serializes live acceptance as well as local append, including concurrent child sources and heartbeats. */
@@ -187,11 +215,13 @@ export class WorkerTranscriptWriter {
           label: 'transcript_delivered',
           durationMs: performance.now() - enqueuedAt,
         }),
-      () =>
+      () => {
+        this.liveIncomplete = true;
         this.recordLifecycleFact?.({
           label: 'transcript_failed',
           durationMs: performance.now() - enqueuedAt,
-        })
+        });
+      }
     );
     return this.liveQueue;
   }
