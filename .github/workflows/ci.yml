@@ -23,6 +23,12 @@ on:
           - release-gate
           - full
 
+      candidate_tag:
+        description: Intended prerelease with a committed unused notes input; empty selects the sole pending input
+        required: false
+        default: ''
+        type: string
+
 permissions:
   contents: read
 
@@ -1012,10 +1018,127 @@ jobs:
           process.stdout.write(`worker-matrix=${JSON.stringify({ include: workerImages })}\n`);
           NODE
 
+  candidate-plan:
+    name: Prerelease candidate inputs
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["release-gate","full"]'), inputs.gate))
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.plan.outputs.enabled }}
+      tag: ${{ steps.plan.outputs.tag }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Select the committed intended prerelease
+        id: plan
+        env:
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+        run: node scripts/release-candidate.mjs select --tag "${CANDIDATE_TAG}" >> "${GITHUB_OUTPUT}"
+
+  candidate-images:
+    name: ${{ matrix.jobName }}
+    if: needs.candidate-plan.outputs.enabled == 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["release-gate","full"]'), inputs.gate)))
+    needs: candidate-plan
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.candidate-plan.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compute the exact-P intended image identity
+        id: image
+        env:
+          IMAGE_ID: ${{ matrix.id }}
+          CANDIDATE_TAG: ${{ needs.candidate-plan.outputs.tag }}
+        run: node scripts/release-candidate.mjs identity --id "${IMAGE_ID}" --tag "${CANDIDATE_TAG}" >> "${GITHUB_OUTPUT}"
+      - name: Build one native digest-only candidate
+        id: candidate
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          platforms: ${{ matrix.platform }}
+          build-args: ${{ steps.image.outputs.args }}
+          labels: ${{ steps.image.outputs.labels }}
+          provenance: false
+          cache-from: type=gha,scope=release-candidate-${{ matrix.id }}-${{ matrix.architecture }}
+          cache-to: type=gha,mode=max,scope=release-candidate-${{ matrix.id }}-${{ matrix.architecture }}
+          outputs: type=image,name=${{ steps.image.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+      - name: Smoke and record the exact registry platform digest
+        env:
+          IMAGE_ID: ${{ matrix.id }}
+          CANDIDATE_TAG: ${{ needs.candidate-plan.outputs.tag }}
+          PLATFORM: ${{ matrix.platform }}
+          DIGEST: ${{ steps.candidate.outputs.digest }}
+        run: node scripts/release-candidate.mjs platform --id "${IMAGE_ID}" --tag "${CANDIDATE_TAG}" --platform "${PLATFORM}" --digest "${DIGEST}" --directory temp/candidate-platforms
+      - name: Retain exact-P platform observations
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: candidate-platform-${{ matrix.id }}-${{ matrix.architecture }}-${{ github.run_attempt }}
+          path: temp/candidate-platforms/
+          if-no-files-found: error
+          retention-days: 14
+
+  candidate-index:
+    name: Candidate index (${{ matrix.id }})
+    if: needs.candidate-plan.outputs.enabled == 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["release-gate","full"]'), inputs.gate)))
+    needs: [candidate-plan, candidate-images, container-image-matrix]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.container-image-matrix.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download this attempt's platform observations
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: candidate-platform-${{ matrix.id }}-*-${{ github.run_attempt }}
+          merge-multiple: true
+          path: temp/candidate-platforms
+      - name: Assemble an index under a candidate-only reference
+        env:
+          IMAGE_ID: ${{ matrix.id }}
+          CANDIDATE_TAG: ${{ needs.candidate-plan.outputs.tag }}
+        run: node scripts/release-candidate.mjs index --id "${IMAGE_ID}" --tag "${CANDIDATE_TAG}" --directory temp/candidate-platforms
+      - name: Retain the immutable candidate index record
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: candidate-${{ matrix.id }}-${{ github.run_attempt }}
+          path: temp/candidate-platforms/${{ matrix.id }}.json
+          if-no-files-found: error
+          retention-days: 14
+
   smoke-worker-images:
     name: Smoke ${{ matrix.id }} (${{ matrix.platform }})
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["release-gate","full"]'), inputs.gate))
-    needs: container-image-matrix
+    if: ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["release-gate","full"]'), inputs.gate))) && needs.candidate-plan.outputs.enabled != 'true'
+    needs: [container-image-matrix, candidate-plan]
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -1063,6 +1186,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      actions: read
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.container-image-matrix.outputs.matrix) }}
@@ -1071,9 +1195,6 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -1156,68 +1277,21 @@ jobs:
             --sha-tag "${SHA_TAG}" \
             --latest-tag "${LATEST_TAG}" >> "${GITHUB_OUTPUT}"
 
-      - name: Pass App release identity build arguments
-        id: release-identity
-        if: matrix.id == 'app'
-        run: |
-          {
-            echo 'args<<EOF'
-            echo "OPENKIT_RELEASE_TAG=${GITHUB_REF_NAME}"
-            echo "OPENKIT_SOURCE_COMMIT=${GITHUB_SHA}"
-            echo 'EOF'
-          } >> "${GITHUB_OUTPUT}"
-
-      - name: Build digest-only release candidate
-        id: candidate
-        if: steps.existing.outputs.present == 'false'
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          target: ${{ matrix.target }}
-          platforms: ${{ matrix.platforms }}
-          build-args: ${{ steps.release-identity.outputs.args }}
-          labels: ${{ steps.image.outputs.labels }}
-          provenance: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          outputs: type=image,name=${{ steps.image.outputs.image }},push-by-digest=true,name-canonical=true,push=true
-
-      - name: Resolve candidate digest
+      - name: Resolve the proved exact-P candidate digest
         id: release
         env:
-          BUILT_DIGEST: ${{ steps.candidate.outputs.digest }}
+          IMAGE_ID: ${{ matrix.id }}
           EXISTING_DIGEST: ${{ steps.existing.outputs.digest }}
           PRESENT: ${{ steps.existing.outputs.present }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ "${PRESENT}" = "true" ]; then
-            digest="${EXISTING_DIGEST}"
-            reused=true
+            echo "digest=${EXISTING_DIGEST}" >> "${GITHUB_OUTPUT}"
+            echo "reused=true" >> "${GITHUB_OUTPUT}"
           else
-            digest="${BUILT_DIGEST}"
-            reused=false
+            node scripts/release-candidate.mjs fetch --id "${IMAGE_ID}" --tag "${GITHUB_REF_NAME}" --directory "temp/candidate-${IMAGE_ID}" >> "${GITHUB_OUTPUT}"
+            echo "reused=false" >> "${GITHUB_OUTPUT}"
           fi
-          case "${digest}" in
-            sha256:*) ;;
-            *) echo "Release candidate did not resolve to an OCI digest." >&2; exit 1 ;;
-          esac
-          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
-          echo "reused=${reused}" >> "${GITHUB_OUTPUT}"
-
-      - name: Smoke every candidate platform
-        if: steps.existing.outputs.present == 'false'
-        env:
-          DIGEST: ${{ steps.release.outputs.digest }}
-          IMAGE: ${{ steps.image.outputs.image }}
-          PLATFORMS: ${{ matrix.platforms }}
-          SMOKE_COMMAND: ${{ matrix.smokeCommand }}
-        run: |
-          IFS=',' read -ra platforms <<< "${PLATFORMS}"
-          # The classic image store holds only one platform per index-digest reference.
-          for platform in "${platforms[@]}"; do
-            docker run --rm --platform "${platform}" "${IMAGE}@${DIGEST}" "${SMOKE_COMMAND}"
-            docker image rm "${IMAGE}@${DIGEST}"
-          done
 
       - name: Promote the smoked digest
         if: steps.existing.outputs.present == 'false'

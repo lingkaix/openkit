@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { parse } from 'yaml';
+import { candidateMatrix } from '../scripts/release-candidate.mjs';
 
 const workflowBytes = readFileSync(join(process.cwd(), '.github', 'workflows', 'ci.yml'), 'utf8');
 const workflow = parse(workflowBytes);
@@ -38,44 +39,51 @@ test('release workflow serializes tag releases and pins third-party actions', ()
   }
 });
 
-test('release workflow passes release identity build args to the App image only', () => {
-  const job = workflow.jobs['publish-container-images'];
-  const identity = step(job, 'Pass App release identity build arguments');
-  const candidate = step(job, 'Build digest-only release candidate');
+test('release identity build arguments belong only to candidate App builds', () => {
+  const job = workflow.jobs['candidate-images'];
+  const identity = step(job, 'Compute the exact-P intended image identity');
+  const candidate = step(job, 'Build one native digest-only candidate');
   const workerBuild = step(workflow.jobs['smoke-worker-images'], 'Build worker image');
-
-  assert.equal(identity.if, "matrix.id == 'app'");
-  assert.match(identity.run, /OPENKIT_RELEASE_TAG=\$\{GITHUB_REF_NAME\}/u);
-  assert.match(identity.run, /OPENKIT_SOURCE_COMMIT=\$\{GITHUB_SHA\}/u);
-  assert.equal(
-    candidate.with['build-args'],
-    actionExpression('steps.release-identity.outputs.args')
-  );
+  assert.match(identity.run, /release-candidate\.mjs identity/u);
+  assert.equal(identity.env.CANDIDATE_TAG, actionExpression('needs.candidate-plan.outputs.tag'));
+  assert.equal(candidate.with['build-args'], actionExpression('steps.image.outputs.args'));
   assert.equal(workerBuild.with['build-args'], undefined);
   assert.ok(job.steps.indexOf(identity) < job.steps.indexOf(candidate));
+  assert.ok(
+    !workflow.jobs['publish-container-images'].steps.some((s) =>
+      s.uses?.startsWith('docker/build-push-action@')
+    )
+  );
 });
 
-test('release workflow smokes one digest on every platform before tag promotion', () => {
+test('tag publication promotes the proved candidate digest without rebuilding or moving Latest early', () => {
   const job = workflow.jobs['publish-container-images'];
   const existing = step(job, 'Inspect existing immutable identity');
-  const candidate = step(job, 'Build digest-only release candidate');
-  const smoke = step(job, 'Smoke every candidate platform');
+  const candidateJob = workflow.jobs['candidate-images'];
+  const candidate = step(candidateJob, 'Build one native digest-only candidate');
+  const smoke = step(candidateJob, 'Smoke and record the exact registry platform digest');
+  const resolve = step(job, 'Resolve the proved exact-P candidate digest');
   const promote = step(job, 'Promote the smoked digest');
   const verify = step(job, 'Verify promoted identity');
   const anonymous = step(job, 'Verify public worker base anonymous pull');
   const record = step(job, 'Write image release record');
-
   assert.equal(candidate.with.provenance, false);
   assert.match(candidate.with.outputs, /push-by-digest=true/);
   assert.equal(candidate.with.tags, undefined);
-  assert.equal(candidate.if, "steps.existing.outputs.present == 'false'");
-  assert.equal(smoke.if, "steps.existing.outputs.present == 'false'");
+  assert.match(candidateJob.if, /needs\.candidate-plan\.outputs\.enabled == 'true'/u);
   assert.deepEqual(smoke.env, {
-    DIGEST: actionExpression('steps.release.outputs.digest'),
-    IMAGE: actionExpression('steps.image.outputs.image'),
-    PLATFORMS: actionExpression('matrix.platforms'),
-    SMOKE_COMMAND: actionExpression('matrix.smokeCommand'),
+    IMAGE_ID: actionExpression('matrix.id'),
+    CANDIDATE_TAG: actionExpression('needs.candidate-plan.outputs.tag'),
+    PLATFORM: actionExpression('matrix.platform'),
+    DIGEST: actionExpression('steps.candidate.outputs.digest'),
   });
+  assert.match(smoke.run, /release-candidate\.mjs platform/u);
+  assert.ok(candidateJob.steps.indexOf(candidate) < candidateJob.steps.indexOf(smoke));
+  assert.match(resolve.run, /release-candidate\.mjs fetch/u);
+  assert.match(resolve.run, /PRESENT.*true/u);
+  assert.match(resolve.run, /digest=\$\{EXISTING_DIGEST\}/u);
+  assert.ok(job.steps.indexOf(existing) < job.steps.indexOf(resolve));
+  assert.ok(job.steps.indexOf(resolve) < job.steps.indexOf(promote));
   assert.equal(promote.if, "steps.existing.outputs.present == 'false'");
   assert.equal(promote.env.DIGEST, actionExpression('steps.release.outputs.digest'));
   assert.equal(promote.env.IMAGE, actionExpression('steps.image.outputs.image'));
@@ -87,7 +95,6 @@ test('release workflow smokes one digest on every platform before tag promotion'
     VERSION_TAG: actionExpression('steps.image.outputs.version_tag'),
     VERSION_WITHOUT_V_TAG: actionExpression('steps.image.outputs.version_without_v_tag'),
   });
-  assert.ok(job.steps.indexOf(smoke) < job.steps.indexOf(promote));
   assert.ok(job.steps.indexOf(promote) < job.steps.indexOf(verify));
   assert.equal(anonymous.if, 'matrix.anonymousPull');
   assert.deepEqual(anonymous.env, {
@@ -96,90 +103,45 @@ test('release workflow smokes one digest on every platform before tag promotion'
   });
   assert.ok(job.steps.indexOf(verify) < job.steps.indexOf(anonymous));
   assert.equal(record.env.ANONYMOUS_PULL, actionExpression('matrix.anonymousPull'));
+  assert.match(promote.run, /imagetools create.*\$\{IMAGE\}@\$\{DIGEST\}/u);
 });
 
-test('candidate smoke runs every platform once against the same digest in a classic image store', () => {
-  const { result, runs } = runCandidateSmoke();
-  assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(runs, [
-    'run linux/amd64 ghcr.io/example/image@sha256:candidate candidate-smoke',
-    'run linux/arm64 ghcr.io/example/image@sha256:candidate candidate-smoke',
-  ]);
+test('candidate matrix smokes each catalog platform exactly once on a native runner', () => {
+  const catalog = JSON.parse(readFileSync('containers/images.json', 'utf8')).images.filter(
+    (i) => i.release
+  );
+  const matrix = candidateMatrix(catalog);
+  const expected = catalog.flatMap((i) => i.platforms.map((p) => `${i.id}:${p}`)).sort();
+  assert.deepEqual(matrix.include.map((i) => `${i.id}:${i.platform}`).sort(), expected);
+  assert.equal(new Set(matrix.include.map((i) => i.jobName)).size, expected.length);
+  for (const i of matrix.include)
+    assert.equal(i.runner, i.platform === 'linux/arm64' ? 'ubuntu-24.04-arm' : 'ubuntu-24.04');
+  assert.equal(workflow.jobs['candidate-images']['runs-on'], actionExpression('matrix.runner'));
 });
 
-test('candidate smoke fails the step when a platform smoke fails', () => {
-  const { result, runs } = runCandidateSmoke('linux/amd64');
-  assert.equal(result.status, 42, result.stderr);
-  assert.match(result.stderr, /smoke failed for linux\/amd64/u);
-  assert.deepEqual(runs, [
-    'run linux/amd64 ghcr.io/example/image@sha256:candidate candidate-smoke',
-  ]);
+test('any candidate platform failure prevents index assembly and tag promotion has no rebuild fallback', () => {
+  const job = workflow.jobs['candidate-index'];
+  assert.equal(workflow.jobs['candidate-images'].strategy['fail-fast'], false);
+  assert.deepEqual(job.needs, ['candidate-plan', 'candidate-images', 'container-image-matrix']);
+  assert.doesNotMatch(job.if, /always\(\)|failure\(\)/u);
+  assert.equal(
+    step(job, "Download this attempt's platform observations").with.pattern,
+    'candidate-platform-$' + '{{ matrix.id }}-*-$' + '{{ github.run_attempt }}'
+  );
+  assert.equal(
+    step(job, 'Retain the immutable candidate index record').with['if-no-files-found'],
+    'error'
+  );
+  assert.equal(
+    step(job, 'Retain the immutable candidate index record').with.name,
+    'candidate-$' + '{{ matrix.id }}-$' + '{{ github.run_attempt }}'
+  );
+  assert.ok(
+    !workflow.jobs['publish-container-images'].steps.some((s) =>
+      s.uses?.startsWith('docker/build-push-action@')
+    )
+  );
 });
-
-/** Executes the workflow body with a per-reference, single-platform Docker store double. */
-function runCandidateSmoke(failPlatform = '') {
-  const directory = mkdtempSync(join(tmpdir(), 'openkit-candidate-smoke-'));
-  const stateFile = join(directory, 'state.json');
-  const logFile = join(directory, 'runs.log');
-  try {
-    writeFileSync(stateFile, '{}');
-    writeFileSync(logFile, '');
-    writeFileSync(
-      join(directory, 'docker'),
-      `#!${process.execPath}
-const { appendFileSync, readFileSync, writeFileSync } = require('node:fs');
-const args = process.argv.slice(2);
-const state = JSON.parse(readFileSync(process.env.DOCKER_STATE, 'utf8'));
-if (args.length === 6 && args[0] === 'run' && args[1] === '--rm' && args[2] === '--platform') {
-  const [, , , platform, reference, command] = args;
-  if (Object.hasOwn(state, reference) && state[reference] !== platform) {
-    console.error('docker: cannot overwrite digest ' + reference.split('@')[1]);
-    process.exit(125);
-  }
-  state[reference] = platform;
-  writeFileSync(process.env.DOCKER_STATE, JSON.stringify(state));
-  appendFileSync(process.env.DOCKER_LOG, 'run ' + platform + ' ' + reference + ' ' + command + '\\n');
-  if (platform === process.env.FAIL_PLATFORM) {
-    console.error('smoke failed for ' + platform);
-    process.exit(42);
-  }
-} else if ((args.length === 3 && args[0] === 'image' && args[1] === 'rm') ||
-           (args.length === 2 && args[0] === 'rmi')) {
-  const reference = args.at(-1);
-  if (!Object.hasOwn(state, reference)) {
-    console.error('docker: no such image: ' + reference);
-    process.exit(1);
-  }
-  delete state[reference];
-  writeFileSync(process.env.DOCKER_STATE, JSON.stringify(state));
-} else {
-  console.error('unsupported docker arguments: ' + JSON.stringify(args));
-  process.exit(1);
-}
-`,
-      { mode: 0o755 }
-    );
-    const smoke = step(workflow.jobs['publish-container-images'], 'Smoke every candidate platform');
-    const result = spawnSync('bash', ['-e', '-c', smoke.run], {
-      cwd: process.cwd(),
-      env: {
-        ...process.env,
-        PATH: `${directory}:${process.env.PATH}`,
-        IMAGE: 'ghcr.io/example/image',
-        DIGEST: 'sha256:candidate',
-        PLATFORMS: 'linux/amd64,linux/arm64',
-        SMOKE_COMMAND: 'candidate-smoke',
-        DOCKER_STATE: stateFile,
-        DOCKER_LOG: logFile,
-        FAIL_PLATFORM: failPlatform,
-      },
-      encoding: 'utf8',
-    });
-    return { result, runs: readFileSync(logFile, 'utf8').trim().split('\n') };
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
-}
 
 test('manual release gate derives a nonpublishing worker image smoke matrix', () => {
   const matrixJob = workflow.jobs['container-image-matrix'];
@@ -231,7 +193,7 @@ test('manual release gate derives a nonpublishing worker image smoke matrix', ()
   assert.ok(smokeJob, 'missing manual worker image smoke job');
   assert.match(smokeJob.if, /workflow_dispatch.*release-gate/u);
   assert.deepEqual(smokeJob.permissions, { contents: 'read' });
-  assert.equal(smokeJob.needs, 'container-image-matrix');
+  assert.deepEqual(smokeJob.needs, ['container-image-matrix', 'candidate-plan']);
   assert.deepEqual(
     smokeJob.strategy.matrix,
     actionExpression('fromJSON(needs.container-image-matrix.outputs.worker-matrix)')
@@ -557,9 +519,15 @@ const unchangedJobBaseline = {
   'build-nanohost-arm64': 'd0b7cdb6291ef8eedacddda56ad81b8f602398ce35acd2ef3eb32a4ae9c9cf32',
   'package-release-assets': '9bb6035b4d43646481b89f1a40651ec23203e343a29a9506d209e5f551de4eea',
   'qualify-nanohost': '9c42422c9716a0ad27688e745ac4ca1716671c9709349dfdca2fd01abe619474',
-  'publish-container-images': 'd354fc4bdb01687274e33f475445833d56a1970f18fc3e8c585c4b4b8086c38a',
+  'publish-container-images': 'b57d664fa2429d70e32d736f2bbd8045e08b95b145895600371d4eadbd366386',
   'github-release': '342e687fc7bcb4773a791cc7d8925fb4bab7306f4cabade9513ac69238407cfd',
   'verify-release': '20c614ff0f1300b403789cfb9145f5ca26fdfa2f5482d7a3089f0682681b5c9f',
+};
+
+const candidateJobBaseline = {
+  'candidate-plan': 'c043add46eb7d92273ec28af77bb7b896c333cdede70a3b71a123e006b86d033',
+  'candidate-images': 'a0740482ba092070384eaadcc824d002b6ab9e593a3bf4d4f028ff8b4da81c7a',
+  'candidate-index': '205763b1d946f852ef1cf2ae51b98bcd6adbba4b127c00bfc32f2e2ce410e89f',
 };
 
 const shardJobBaseline = {
@@ -568,7 +536,7 @@ const shardJobBaseline = {
   'l0-l2': '3425b1ab09142a2a670502a5ae6d9d271b67a10fcdb0d86b29bec30fb6d43bfc',
 };
 
-test('publication, packaging and all other jobs remain byte-identical to the recorded main baseline', () => {
+test('publication and complete job graphs match their frozen implementation baselines', () => {
   const blocks = new Map(
     [
       ...workflowBytes
@@ -588,9 +556,13 @@ test('publication, packaging and all other jobs remain byte-identical to the rec
           ].includes(name)
       )
       .sort(),
-    Object.keys({ ...unchangedJobBaseline, ...shardJobBaseline }).sort()
+    Object.keys({ ...unchangedJobBaseline, ...shardJobBaseline, ...candidateJobBaseline }).sort()
   );
-  for (const [name, digest] of Object.entries({ ...unchangedJobBaseline, ...shardJobBaseline })) {
+  for (const [name, digest] of Object.entries({
+    ...unchangedJobBaseline,
+    ...shardJobBaseline,
+    ...candidateJobBaseline,
+  })) {
     assert.equal(createHash('sha256').update(blocks.get(name)).digest('hex'), digest, name);
   }
 });
@@ -599,7 +571,11 @@ test('only complete L0-L2 shards and NanoCore e2e can read exact-commit reuse ev
   const selected = ['l0-l2-shards', 'nano-core-e2e'];
   for (const [name, job] of Object.entries(workflow.jobs)) {
     if (!selected.includes(name)) {
-      assert.equal(job.permissions?.actions, undefined, name);
+      assert.equal(
+        job.permissions?.actions,
+        name === 'publish-container-images' ? 'read' : undefined,
+        name
+      );
       assert.ok(!job.steps?.some((entry) => entry.id === 'reuse'), name);
       continue;
     }
@@ -702,14 +678,16 @@ function jobRuns(id, event, ref, gate = '') {
       'fromJSON',
       'startsWith',
       'always',
-      `return (${workflow.jobs[id].if});`
+      'needs',
+      `return (${workflow.jobs[id].if.replace(/needs\.([a-z0-9-]+)/g, "needs['$1']")});`
     )(
       { event_name: event, ref },
       { gate },
       (values, value) => values.includes(value),
       JSON.parse,
       (value, prefix) => value.startsWith(prefix),
-      () => true
+      () => true,
+      { 'candidate-plan': { outputs: { enabled: 'false' } } }
     )
   );
 }

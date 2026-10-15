@@ -162,7 +162,7 @@ Classify an adverse observation as a new product defect, a known defect, accepte
 
 Retain failed and incomplete evidence. A later run does not erase the earlier outcome. Complete retained observations may be re-adjudicated after an evidence-tool correction under Persistent Deployment Acceptance. Missing observations cannot be reconstructed into a pass. Missing, stale, or conflicting evidence leaves the result unproved. Model memory and a producer summary are insufficient. Record the exact deployed artifact identities for the components exercised. A version label alone is insufficient. Relevant configuration changes or operator repairs end the evidence attribution window under Persistent Deployment Acceptance.
 
-The prerelease tag workflow builds the published bytes once. Exact-digest smoke and asset verification still verify those bytes. Those bytes are not claimed to be identical to any earlier unpublished deployment.
+The prerelease candidate workflow builds the published image bytes once, and the tag workflow promotes those exact digests. Exact-digest smoke and asset verification still verify those bytes. Those bytes are not claimed to be identical to any earlier unpublished deployment.
 
 ### Compact Release Record
 
@@ -184,7 +184,17 @@ An exact-head pre-merge check dispatches the complete release gate before an ord
 
 In a tag run, each complete L0-L2 shard and `L3 NanoCore e2e` first looks for a completed main-push release-gate run or qualifying `workflow_dispatch` run of the same workflow on exactly the tagged commit in which that same job succeeded in its latest attempt. When found, the tag job records the supporting run and skips its tests; otherwise it runs its tests as before. Reuse admits only `workflow_dispatch` runs or `push` runs whose branch is `main`, from the same workflow and exact tagged commit. Tag pushes, other branches, pull requests, and other events supply no reuse evidence. Reuse is decided separately for each job and establishes no other job's result. An unrelated job failure does not invalidate the selected successful job; the full successful candidate gate remains a separate pre-tag requirement.
 
-On a tag that builds release artifacts, every other tag job still runs: preflight and `main` membership, L5 smoke, portability, the installer gate, NanoHost builds and qualification, packaging, image build, per-platform exact-digest smoke, promotion, anonymous `worker-common` inspection, GitHub Release creation and upload, and published-release download verification. A stable promotion runs promotion of the already-published digests, the release pointers, GitHub Release creation, and published-release verification.
+On a prerelease tag, every other required tag job still runs: preflight and `main` membership, L5 smoke, portability, the installer gate, NanoHost builds and qualification, packaging, promotion, anonymous `worker-common` inspection, GitHub Release creation and upload, and published-release download verification. Image construction and per-platform exact-digest smoke run once in candidate CI under the candidate-image rule below; their proved digests replace tag-stage rebuilding. A stable promotion runs promotion of the already-published digests, the release pointers, GitHub Release creation, and published-release verification.
+
+### Prerelease Candidate Images
+
+Candidate images are projections of one exact source commit, intended prerelease tag and observed CI attempt; they are not a release registry, published release or deployment input. Select the intended tag from a committed unused two-section notes input before freezing P. An explicit dispatch may select one such input. With no pending input, ordinary main validation runs without candidate image publication. Before selecting P, generate and review notes; editing notes after selection creates a new P.
+
+Build each catalog platform natively once, push its digest, smoke the registry digest, and record matching OCI source/revision/version and App identity. Worker candidate jobs retain the existing four platform smoke observation names and replace the ordinary diagnostic builds in that run. Assemble exactly those manifests into an index under a candidate-only reference. The record binds the repository, tag, P, run, latest attempt, publication-input fingerprint, complete platform set, index/platform digests, metadata and successful exact-P smoke. A completed successful exact-P candidate run must include every image's successful index job in addition to all prior candidate gates.
+
+The tag job accepts an artifact only from the same repository and workflow, a successful completed exact-P run and its still-current attempt. It validates every binding, checks the registry index contains exactly the recorded platform digests, and promotes the recorded index unchanged. The build/smoke record proves metadata and App bytes through that immutable digest. A changed P invalidates earlier evidence even if its tree is unchanged. Missing, expired, partial, failed or contradictory evidence refuses promotion and requires inspection or a new candidate run; there is no tag-stage rebuild fallback. Fourteen-day CI artifact retention is availability, not a freshness waiver. An uncertain registry operation is inspected before any retry.
+
+No exact-version, version-without-v, source-revision, GHCR Latest or GitHub Latest identity moves before the authorized tag push. Pre-tag admission still proves unused release identities or the admitted exact immutable retry. Tag preflight, main membership, NanoHost qualification, portable packaging, immutable reuse, Latest invariants, anonymous pull and published downloads remain required. Stable rules and blockers are unchanged. Publication proof covers candidate construction, smoke, index assembly and their script, catalog, Dockerfile and smoke-input closure as well as the tag publication jobs. The existing scratch grant rehearses that entire changed path before real publication.
 
 ### Publication-Path Proof
 
@@ -244,9 +254,9 @@ The workflow uses only the job-scoped GitHub permissions required to read source
 
 ### Candidate, Promotion, And Idempotency
 
-On a tag that builds release artifacts, each release image build first pushes only a digest-addressed candidate with no release tag.
+For a prerelease, each candidate platform build first pushes only a digest-addressed candidate with no release tag before the tag workflow. Index assembly may assign only its unambiguous candidate-only reference.
 
-On a tag that builds release artifacts, the workflow MUST smoke that exact candidate digest on every platform declared by the image catalog before assigning any release tag to it.
+For a prerelease, candidate CI MUST smoke every exact platform digest and the tag workflow MUST verify that proof under Prerelease Candidate Images before assigning a release tag.
 
 On a tag that builds release artifacts, promotion assigns all required release tags to the already-smoked digest without rebuilding it.
 
@@ -254,7 +264,7 @@ Published OCI metadata MUST be derived from the source commit and release inputs
 
 Release runs are serialized across tags so two stable releases cannot race on `latest`.
 
-On a tag that builds release artifacts, absence of the exact-version, version-without-`v`, and source-revision tags admits candidate build and promotion.
+For a prerelease, absence of the exact-version, version-without-`v`, and source-revision tags admits promotion of the proved exact-P candidate. Candidate construction alone admits no release identity.
 
 On a tag that builds release artifacts, presence of all three immutable tags at the same digest admits idempotent reuse and MUST NOT rebuild, retag, or mutate the image.
 
@@ -270,7 +280,7 @@ A build or smoke failure before promotion may leave untagged registry content, b
 
 A matrix or network failure after some images are promoted is a partial publication: no GitHub Release is created, already promoted tags remain immutable, and the release change record records the observed digests and failed boundary.
 
-Retry of a partial publication uses the same tag only when every existing immutable tag set proves the expected same digest; it reuses those images and builds only entirely absent image identities.
+Retry of a partial publication uses the same tag only when every existing immutable tag set proves the expected same digest; it reuses those images and promotes only entirely absent image identities from proved exact-P candidates.
 
 A stable same-tag rerun is admitted only while every `latest` tag still resolves to that stable release's recorded digest; a superseded stable tag or a stable publication that did not complete `latest` fails closed and requires a new stable tag on a new commit rather than moving `latest` backward.
 
@@ -302,7 +312,7 @@ Issue [#193](https://github.com/lingkaix/openkit/issues/193) is closed as supers
 
 The operations-only Skill composition, executable preflight, packaging and local verification are implemented. The machine-readable manifest producer is offline-tested; publication and downloaded-manifest verification remain unimplemented because the reviewed publication jobs still upload and require exactly four attachments. Adding the manifest requires changing those jobs and a new publication-path proof. The bounded App composition checks preparation summaries and exact helper identities; its live identity adapter, complete component update sequence and first preflight-less upgrade remain unresolved. This local change does not demonstrate release publication or live-client acceptance.
 
-The `.github/workflows/ci.yml` workflow implements the nonpublishing release gate on every main push, tag preflight, L0-L3, L5, a catalog-derived image matrix, GHCR publication, anonymous `worker-common` inspection, and GitHub Release creation. The tag-only reuse steps in its `l0-l2` and `nano-core-e2e` jobs use `scripts/release-ci-reuse.mjs` for exact-commit candidate evidence reuse. Tag run 38093270321 on `v0.1.0-rc.3` completed successfully. That run reused candidate CI for the L0-L2 and L3 jobs. The tag workflow builds release images on every tag push, so stable promotion without a rebuild is not implemented and must be implemented before any stable release. The runner does not build an image or replace a container. The runner runs the Worker qualification groups.
+The `.github/workflows/ci.yml` workflow implements the nonpublishing release gate on every main push, tag preflight, L0-L3, L5, a catalog-derived image matrix, GHCR publication, anonymous `worker-common` inspection, and GitHub Release creation. The tag-only reuse steps in its `l0-l2` and `nano-core-e2e` jobs use `scripts/release-ci-reuse.mjs` for exact-commit candidate evidence reuse. Tag run 38093270321 on `v0.1.0-rc.3` completed successfully. That run reused candidate CI for the L0-L2 and L3 jobs. Prerelease candidate CI builds and smokes native platform digests before the tag, and the tag promotes their proved index without rebuilding. Stable promotion remains separate, unimplemented and required before any stable release. The runner does not build an image or replace a container. The runner runs the Worker qualification groups.
 
 The current implementation removes package-version coupling, makes tag parsing lowercase-only, pins every release image base, packages the complete operations Skill including the administrator executable, separates digest candidates from tag promotion, serializes releases, preserves same-tag image identity, applies GitHub prerelease semantics, and performs post-publication verification.
 

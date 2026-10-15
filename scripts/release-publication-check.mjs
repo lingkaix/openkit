@@ -6,7 +6,7 @@ import { posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { canonical, sha } from './release-safety.mjs';
 
-const candidateJobs = [
+export const candidateJobs = [
   'L0-L2 static, unit, contract',
   'L3 NanoCore e2e',
   'L5 smoke',
@@ -19,7 +19,7 @@ const candidateJobs = [
   'Smoke worker-runtimes (linux/amd64)',
   'Smoke worker-runtimes (linux/arm64)',
 ];
-const publicationJobs = [
+export const publicationJobs = [
   'Publish app image',
   'Publish worker-common image',
   'Publish worker-runtimes image',
@@ -73,12 +73,42 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
   const jobs = {},
     files = {},
     pending = new Set();
-  for (const name of ['publish-container-images', 'github-release', 'verify-release']) {
+  const movedJobs = ['candidate-plan', 'candidate-images', 'candidate-index'];
+  const hasMovedWork = movedJobs.some((name) => blocks.has(name));
+  let candidateImageIds;
+  for (const name of [
+    'publish-container-images',
+    'github-release',
+    'verify-release',
+    ...(hasMovedWork ? [...movedJobs, 'container-image-matrix'] : []),
+  ]) {
     const block = blocks.get(name);
     requireFact(typeof block === 'string', `publication job missing: ${name}`);
     jobs[name] = git(['hash-object', '--stdin'], block).trim();
     for (const match of block.matchAll(/\bscripts\/[a-zA-Z0-9_./-]+\.(?:mjs|sh|py)\b/g))
       pending.add(match[0]);
+  }
+  if (hasMovedWork) {
+    pending.add('containers/images.json');
+    pending.add('.dockerignore');
+    pending.add('Caddyfile');
+    const images = JSON.parse(read('containers/images.json').bytes).images.filter((i) => i.release);
+    requireFact(images.length > 0, 'candidate image catalog');
+    candidateImageIds = images.map((i) => i.id);
+    const directories = new Set(
+      images.flatMap((i) => [posix.dirname(i.dockerfile), posix.dirname(i.smoke)])
+    );
+    for (const directory of directories) {
+      for (const file of git(['ls-tree', '-r', '--name-only', sourceCommit, '--', directory])
+        .trim()
+        .split('\n'))
+        if (file) pending.add(file);
+    }
+    // These are image-construction programs, not the product source bundled by COPY . . .
+    for (const file of git(['ls-tree', '-r', '--name-only', sourceCommit, '--', 'scripts'])
+      .trim()
+      .split('\n'))
+      if (/^scripts\/retrieval-[^/]+\.(?:py|sh)$/.test(file)) pending.add(file);
   }
   requireFact(pending.size > 0, 'publication jobs have no admitted script inputs');
   // Current publication scripts use relative static imports and literal URL file reads.
@@ -90,6 +120,8 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
     );
     const { blob, bytes } = read(file);
     files[file] = blob;
+    for (const match of bytes.matchAll(/\bscripts\/[a-zA-Z0-9_./-]+\.(?:mjs|sh|py)\b/g))
+      pending.add(match[0]);
     if (!/\.(?:mjs|js)$/.test(file)) continue;
     for (const match of bytes.matchAll(
       /(?:\bfrom\s*|\bimport\s*(?:\(\s*)?|\bnew URL\(\s*)['"](\.[^'"]+)['"]/g
@@ -99,7 +131,11 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
     }
   }
   const inputs = { jobs, files };
-  return { ...inputs, sha256: sha(canonical(inputs)) };
+  return {
+    ...inputs,
+    ...(candidateImageIds ? { candidateImageIds } : {}),
+    sha256: sha(canonical(inputs)),
+  };
 }
 /** Skipped or unnamed jobs cannot supply the required real-run proof. */
 function successfulJobs(run, names) {
@@ -168,7 +204,10 @@ export function checkPublication(e, { now = new Date(), repoRoot = process.cwd()
       c.attempt > 0 &&
       ((c.event === 'push' && c.ref === 'refs/heads/main' && c.gate === 'release-gate') ||
         (c.event === 'workflow_dispatch' && ['release-gate', 'full'].includes(c.gate))) &&
-      successfulJobs(c, candidateJobs),
+      successfulJobs(c, [
+        ...candidateJobs,
+        ...(actual.candidateImageIds ?? []).map((id) => `Candidate index (${id})`),
+      ]),
     'successful exact-P candidate run and jobs'
   );
   requireFact(

@@ -11,7 +11,7 @@ import {
 } from '../scripts/release-publication-check.mjs';
 
 /** Actual local Git objects let false, missing and changed byte claims fail independently of fixtures. */
-function repository() {
+function repository({ moved = false } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'release-publication-git-'));
   after(() => rmSync(root, { recursive: true, force: true }));
   const env = {
@@ -32,7 +32,14 @@ function repository() {
   writeFileSync(
     path.join(root, '.github/workflows/ci.yml'),
     'jobs:\n' +
-      ['publish-container-images', 'github-release', 'verify-release']
+      [
+        'publish-container-images',
+        'github-release',
+        'verify-release',
+        ...(moved
+          ? ['candidate-plan', 'candidate-images', 'candidate-index', 'container-image-matrix']
+          : []),
+      ]
         .map((n) => `  ${n}:\n    steps:\n      - run: node scripts/release-notes.mjs\n`)
         .join('')
   );
@@ -41,6 +48,33 @@ function repository() {
     "import './publication-helper.mjs';\n"
   );
   writeFileSync(path.join(root, 'scripts/publication-helper.mjs'), 'export const fixture = 1;\n');
+  if (moved) {
+    mkdirSync(path.join(root, 'containers/fixture'), { recursive: true });
+    writeFileSync(
+      path.join(root, 'containers/images.json'),
+      JSON.stringify({
+        images: [
+          {
+            id: 'fixture',
+            release: true,
+            dockerfile: 'containers/fixture/Dockerfile',
+            smoke: 'containers/fixture/smoke.sh',
+          },
+        ],
+      })
+    );
+    writeFileSync(path.join(root, 'containers/fixture/Dockerfile'), 'FROM scratch\n');
+    writeFileSync(path.join(root, 'containers/fixture/smoke.sh'), 'exit 0\n');
+    writeFileSync(path.join(root, '.dockerignore'), 'temp\n');
+    writeFileSync(path.join(root, 'Caddyfile'), ':80\n');
+    writeFileSync(path.join(root, 'scripts/retrieval-fixture.sh'), 'exit 0\n');
+    mkdirSync(path.join(root, 'scripts/docker'));
+    writeFileSync(
+      path.join(root, 'scripts/publication-helper.mjs'),
+      "export const smoke = 'scripts/docker/smoke-image.sh';\n"
+    );
+    writeFileSync(path.join(root, 'scripts/docker/smoke-image.sh'), 'exit 0\n');
+  }
   git('add', '.');
   git('commit', '-m', 'synthetic proved baseline');
   const baseline = git('rev-parse', 'HEAD');
@@ -50,6 +84,81 @@ function repository() {
   const head = git('rev-parse', 'HEAD');
   return { root, baseline, head, git };
 }
+
+test('publication proof includes every moved job and image-construction input', () => {
+  const r = repository({ moved: true });
+  const proof = publicationInputsAt(r.root, r.head);
+  for (const name of [
+    'candidate-plan',
+    'candidate-images',
+    'candidate-index',
+    'container-image-matrix',
+  ])
+    assert.ok(proof.jobs[name]);
+  for (const file of [
+    'containers/images.json',
+    'containers/fixture/Dockerfile',
+    'containers/fixture/smoke.sh',
+    '.dockerignore',
+    'Caddyfile',
+    'scripts/retrieval-fixture.sh',
+    'scripts/docker/smoke-image.sh',
+  ])
+    assert.ok(proof.files[file]);
+  assert.deepEqual(proof.candidateImageIds, ['fixture']);
+  for (const file of [
+    'Caddyfile',
+    'scripts/docker/smoke-image.sh',
+    'containers/fixture/smoke.sh',
+    'scripts/retrieval-fixture.sh',
+    '.github/workflows/ci.yml',
+  ]) {
+    writeFileSync(
+      path.join(r.root, file),
+      `${r.git('show', `${r.head}:${file}`)}\n# changed construction input\n`
+    );
+    r.git('add', file);
+    r.git('commit', '-m', 'change candidate construction');
+    assert.notEqual(publicationInputsAt(r.root, r.git('rev-parse', 'HEAD')).sha256, proof.sha256);
+  }
+});
+
+test('changing the candidate matrix producer invalidates publication proof', () => {
+  const r = repository({ moved: true });
+  const before = publicationInputsAt(r.root, r.head);
+  const workflow = r.git('show', `${r.head}:.github/workflows/ci.yml`);
+  writeFileSync(
+    path.join(r.root, '.github/workflows/ci.yml'),
+    workflow.replace(
+      '  container-image-matrix:\n',
+      '  container-image-matrix:\n    name: changed matrix\n'
+    )
+  );
+  r.git('add', '.');
+  r.git('commit', '-m', 'change candidate matrix producer');
+  assert.notEqual(publicationInputsAt(r.root, r.git('rev-parse', 'HEAD')).sha256, before.sha256);
+});
+
+test('offline admission refuses a missing candidate index even when every prior gate passed', () => {
+  const r = repository({ moved: true });
+  const input = evidence();
+  const proof = publicationInputsAt(r.root, r.head);
+  input.sha = input.review.sha = input.main.sha = input.candidate.sha = r.head;
+  input.baseline.sha = r.baseline;
+  input.publicationInputs =
+    input.grant.publicationInputs =
+    input.baseline.publicationInputs =
+      proof.sha256;
+  assert.throws(
+    () => actualCheck(input, { repoRoot: r.root, now: new Date('2026-10-14T00:10:00Z') }),
+    /candidate run and jobs/
+  );
+  input.candidate.jobs.push({ name: 'Candidate index (fixture)', id: 999, conclusion: 'success' });
+  assert.equal(
+    actualCheck(input, { repoRoot: r.root, now: new Date('2026-10-14T00:10:00Z') }).status,
+    'eligible'
+  );
+});
 const repo = repository(),
   sha = repo.head,
   hash = 'b'.repeat(64),

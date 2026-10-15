@@ -82,7 +82,7 @@ for image in $(node -e "const m=require('./containers/images.json'); console.log
 done
 ```
 
-The tag workflow remains authoritative for both declared platforms because it smokes the exact pushed digest for `linux/amd64` and `linux/arm64` before promotion. Candidate Worker-image smoke builds and executes on matching native standard hosted amd64 and arm64 runners, with separate BuildKit cache scopes.
+The tag workflow verifies candidate evidence for exact `linux/amd64` and `linux/arm64` registry digests before promoting their unchanged index. Candidate Worker-image smoke builds and executes on matching native standard hosted amd64 and arm64 runners, with separate BuildKit cache scopes.
 
 8. Run L4 Web e2e when the release decision requires that additional confidence. Before the tag, run deterministic CI only. After publication, run the bounded deployment update and qualification. Run stories 1 and 2 at release-cycle/change cadence. Run any other catalog story that the release cycle still needs. [Catalog Stories](../specs/20260829-release_management.md#catalog-stories) owns that rule. Follow [Post-Tag Catalog Stories](#post-tag-catalog-stories). Worker qualification is separate.
 
@@ -104,13 +104,15 @@ git merge-base --is-ancestor HEAD origin/main
 pnpm release:preflight -- --tag "${OPENKIT_RELEASE_TAG}"
 ```
 
-10. For the pre-release execution-authority replacement, complete the separately authorized [fresh-root cutover](persistent-live-acceptance.md#pre-release-execution-authority-cutover) before the tag when that cutover is still required. Before the tag, complete deterministic CI, candidate CI, and publication-path proof. The catalog stories are not a pre-tag gate, and a story run on an unpublished candidate is not release evidence. The tag workflow builds the prerelease once. Stories run on those published bytes. Apply the [Release Exit Criterion](../specs/20260829-release_management.md#release-exit-criterion) after the tag.
+10. For the pre-release execution-authority replacement, complete the separately authorized [fresh-root cutover](persistent-live-acceptance.md#pre-release-execution-authority-cutover) before the tag when that cutover is still required. Before the tag, complete deterministic CI, candidate CI, and publication-path proof. The catalog stories are not a pre-tag gate, and a story run on an unpublished candidate is not release evidence. Candidate CI builds and smokes the prerelease images once; the tag promotes the same digests. Stories run on those published bytes. Apply the [Release Exit Criterion](../specs/20260829-release_management.md#release-exit-criterion) after the tag.
 
 ### Candidate CI
 
-Use the main-push release gate, or dispatch `gate=release-gate` or `gate=full`, on the exact commit you will tag. Retain its successful completed run and job evidence. A run on another commit does not establish this commit. Each L0-L2 and NanoCore e2e tag job reuses only its own successful latest-attempt job in a completed same-workflow candidate run on the exact tagged commit, records the supporting run, and otherwise runs its tests as before.
+Use the main-push release gate, or dispatch `gate=release-gate` or `gate=full`, on the exact commit you will tag. Retain its successful completed run and job evidence. A run on another commit does not establish this commit. Each complete L0-L2 shard and the NanoCore e2e tag job reuses only its own successful latest-attempt job in a completed same-workflow candidate run on the exact tagged commit, records the supporting run, and otherwise runs its tests as before.
 
 L0-L2 now runs complete package coverage suites in parallel with separate static/build, native and root shards. Its aggregate retains the existing candidate job name and refuses any incomplete shard set. Each coverage shard compares collected file identities with its actual execution report and requires every selected file exactly once. The unchanged coverage thresholds and skip guard still decide success. Build caches are partitioned by runner architecture, shard, toolchain and lock inputs; tests still execute on each new P. Use `node scripts/ci-l0-l2.mjs --matrix` to inspect ownership. Use `node scripts/ci-l0-l2.mjs --run <id>` for one focused shard.
+
+Commit the reviewed `release-notes/<tag>.md` before selecting P. The sole pending unused prerelease notes input selects image construction, or dispatch `gate=release-gate` with `candidate_tag=<tag>` to choose it explicitly. Native platform jobs push only digest-addressed images and smoke those exact bytes; the index uses only a `candidate-` reference. Retain each image's attempt-bound index artifact. The tag refuses a missing artifact, wrong source/tag, changed P, failed smoke, incomplete platforms or changed publication inputs; it never rebuilds. Run a fresh candidate gate if evidence expires. Ordinary main CI needs no pending release input.
 
 ### Publication-Path Proof Before Tagging
 
