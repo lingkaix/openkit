@@ -78,6 +78,8 @@ Knowledge Manager may prepare source-traceable material and draft proposals. It 
 
 ### Operation families
 
+Read operations inherit S61's trusted query context, narrowing-only source selection and qualified page references. Knowledge Manager cannot supply a different Actor, User or querying Thread, merge Memory with Knowledge, or rerank separate source results. Citations and trace results retain the Core Protocol scope-qualified reference. This is the consumer projection of [Query Context, Sources, References And Acts](../decisions/20261015-context_sources_references_query_acts.md), not another retrieval owner.
+
 `answer`:
 
 - answers a bounded knowledge question for Assistant or user-facing knowledge lookup through the single governed retrieval owner
@@ -87,7 +89,7 @@ Knowledge Manager may prepare source-traceable material and draft proposals. It 
 `prepare-context-material`:
 
 - invokes the same governed retrieval owner used by `answer` and cannot add, remove, reorder, rerank, summarize, or otherwise change its dispositions
-- for `task-mode`, returns exactly `{ retrievalTraceId }`; S39 resolves that S61 row and separately rereads and validates canonical page bytes
+- for `task-mode`, returns exactly `{ retrievalTraceRef }`; `retrievalTraceRef` is the Core Protocol `{scopeId,objectId}` reference to the querying Thread/Turn's S61 evidence; S39 resolves it with current access and separately rereads and validates canonical page bytes
 - for `app-api`, may additionally return bounded excerpts from selected `public` or `internal` pages only; excluded, `restricted`, denied, missing, or unreadable candidates expose no content or source metadata beyond S61's product-safe exclusion tuple
 - does not assemble the final worker prompt
 - creates no standalone selection trace, materialization, or delivery record
@@ -152,7 +154,7 @@ The caller table constrains routes that already exist; it does not authorize imp
 
 ### Output and audit
 
-Every result includes operation id, operation kind, exact semantic caller, and resolved owner scope (or ordered allowed scopes for retrieval); Workspace lineage is included only when applicable. `answer` additionally owns its answer or insufficient-evidence outcome, citations, confidence, and uncertainty; App API `prepare-context-material` owns its bounded selected and excluded projections plus the S61 retrieval trace reference, while Task Mode receives only that trace reference; `draft-proposal` owns the pending proposal, source lineage, validation result, and confidence; `suggest-repair` owns its outcome and bounded suggestions; and `health-check` owns its outcome, summary, checks, and embedded repair suggestions.
+Every result includes operation id, operation kind, exact semantic caller, and resolved owner scope (one context-admitted source for retrieval); Workspace lineage is included only when applicable. `answer` additionally owns its answer or insufficient-evidence outcome, citations, confidence, and uncertainty; App API `prepare-context-material` owns its bounded selected and excluded projections plus the S61 retrieval trace reference, while Task Mode receives only that trace reference; `draft-proposal` owns the pending proposal, source lineage, validation result, and confidence; `suggest-repair` owns its outcome and bounded suggestions; and `health-check` owns its outcome, summary, checks, and embedded repair suggestions.
 
 Outputs must not contain secret values, raw vault material, unrestricted file contents, unadmitted cross-scope knowledge, or content or source metadata from excluded, `restricted`, denied, missing, or unreadable candidates.
 
@@ -162,7 +164,7 @@ An `answer` or `prepare-context-material` result may reference the one governed 
 
 Each deterministic call and each optional semantic Turn is request-scoped and terminates with one schema-valid result or the owning typed failure. Neither creates a Knowledge Manager session, run, checkpoint, pending row, retry queue, or recovery record; the semantic Turn's ordinary Thread and Turn records belong to the shared internal Agent runtime and conversation owners rather than a Knowledge-specific lifecycle.
 
-`answer` returns a cited answer or `insufficient-evidence` and never mutates knowledge. App API `prepare-context-material` may return bounded selected and excluded projections plus the existing S61 retrieval trace reference, while Task Mode returns exactly `{ retrievalTraceId }`; neither form assembles or materializes worker context. `draft-proposal` may create only a pending fixed-base notebook-change Knowledge Proposal through the existing proposal store and review flow, with its fixed base/candidate commits and sources durable before success. `suggest-repair` and `health-check` return reports and do not apply repairs, schedule work, or write knowledge.
+`answer` returns a cited answer or `insufficient-evidence` and never mutates knowledge. App API `prepare-context-material` may return bounded selected and excluded projections plus the existing S61 retrieval trace reference, while Task Mode returns exactly `{ retrievalTraceRef }`; neither form assembles or materializes worker context. `draft-proposal` may create only a pending fixed-base notebook-change Knowledge Proposal through the existing proposal store and review flow, with its fixed base/candidate commits and sources durable before success. `suggest-repair` and `health-check` return reports and do not apply repairs, schedule work, or write knowledge.
 
 Authorization keeps the existing authentication mapping, invalid request bodies return `invalid_request` with HTTP 400, a missing addressed resource returns the existing typed not-found response with HTTP 404, and a conflicting proposal request id returns `idempotency_key_conflict` with HTTP 409. When S61's deterministic owner-scope-plus-request proposal exists but the matching proposal-draft receipt is absent, the proposal route returns `recovery_required` with HTTP 409 and performs no additional mutation. Other operation failures return HTTP 500 with `knowledge_manager_answer_failed`, `knowledge_manager_context_failed`, `knowledge_manager_proposal_draft_failed`, `knowledge_manager_repair_suggest_failed`, or `knowledge_manager_health_check_failed` at their owning route. Every public error is a closed typed envelope with bounded, redacted details; caught exception messages, stack traces, local paths, query text, source bytes, credentials, and secret-like values MUST NOT be copied into a response. A failed call must not claim a proposal, repair, health action, context delivery, or worker availability that its owning durable record does not prove. Proposal drafting alone is a business mutation and MUST use its request id to return the same pending proposal on replay. Each answer, context preparation, repair suggestion, or health check is a distinct invocation; its usage or trace evidence is not retry state and does not authorize resumption.
 
@@ -183,6 +185,8 @@ Keep existing deterministic operations and one S61 retrieval owner. Optional sem
 Use the same selected Retrieval Kernel tokenizer for the query, canonical title, and body as for indexing. Retain the deterministic sufficiency rule: two distinct query terms in a page, or a one-term query in its title. A one-term body-only match remains `insufficient-evidence`; a sufficient result retains its exact citation. No second tokenizer or selector belongs to Knowledge Manager.
 
 ## Current Implementation Projection
+
+The Phase A qualified-reference and query-act amendments await Consultant review and Phase B implementation. Current code still returns the plain `retrievalTraceId` and uses Workspace-owned trace storage; that implementation fact does not retain the retired target shape.
 
 NanoCore exposes the five deterministic Knowledge Manager operations through the Knowledge definition table, native invocation, derived JSON routes and OpenAPI, `client.operations`, the bundled CLI and remote MCP. Public and trusted Task preparation enter the same definition and admission, preserving public metadata and Task’s exact trace-only view. Answer and context preparation delegate to S61's governed retrieval owner; context preparation returns that owner's trace reference and exposes no standalone worker-context materialization or delivery surface.
 

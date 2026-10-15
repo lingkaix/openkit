@@ -59,6 +59,8 @@ Timeline coverage remains partial when a collection gap follows observed runtime
 
 ## Verification
 
+The 2026-10-15 context/source/reference/query-act direction is a documentation-only Phase A for Consultant review. The revised [Knowledge retrieval contract](../../../../docs/specs/20260703-knowledge_store_implementation.md#retrieval-pipeline) separates Memory and Knowledge, scopes pins, and assigns trace evidence to the querying Thread/Turn. Current code still uses plain pin ids and Workspace JSONL traces; it does not implement that Phase A contract yet. Phase B waits for the coordinator's go. This guide's implementation inventory is not permission to retain the old contract after that cutover or to add a compatibility reader, new ledger or private Memory union.
+
 Run focused layout, migration, database, canonical reload, index rebuild, export, import, integrity failure, and backup tests for the changed owner, followed by the package gates in the [NanoCore source guide](../README.md).
 
 ## Related Design
