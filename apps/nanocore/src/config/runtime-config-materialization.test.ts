@@ -25,6 +25,7 @@ import { createRuntimeConfigManager, loadRuntimeConfig } from './runtime-config.
 import { RuntimeConfigFileService } from './runtime-config-files.js';
 
 const durability = vi.hoisted(() => ({
+  mkdirFailurePath: undefined as string | undefined,
   paths: new Map<number, string>(),
   events: [] as Array<{
     op: 'sync' | 'rename';
@@ -40,6 +41,13 @@ vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
     ...actual,
+    mkdirSync: ((...args: Parameters<typeof actual.mkdirSync>) => {
+      if (String(args[0]) === durability.mkdirFailurePath)
+        throw Object.assign(new Error('Injected unrelated layout mkdir failure'), {
+          code: 'EACCES',
+        });
+      return actual.mkdirSync(...args);
+    }) as typeof actual.mkdirSync,
     openSync: ((...args: Parameters<typeof actual.openSync>) => {
       const descriptor = actual.openSync(...args);
       durability.paths.set(descriptor, String(args[0]));
@@ -75,6 +83,7 @@ const MESSAGE =
   'Only credential-free remote Git sources can be materialized into a work slot in this release. Folder and other source kinds are not supported yet. Work without a source input still runs.';
 const roots: string[] = [];
 afterEach(() => {
+  durability.mkdirFailurePath = undefined;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -735,5 +744,59 @@ describe('Workspace Assistant Skill selection configuration', () => {
       expect.objectContaining({ code: 'config_revision_conflict', status: 409 })
     );
     expect(readFileSync(f.path, 'utf8')).toBe(newer);
+  });
+});
+
+describe('Workspace Assistant Skill read-only validation', () => {
+  it('validates a real selected Skill without repairing an unrelated missing Workspace subtree', () => {
+    const f = assistantSelectionFixture('update');
+    const unrelated = join(f.dataRoot, 'workspaces', 'ws_demo', 'light-apps');
+    const catalogPath = join(f.dataRoot, 'workspaces', 'ws_demo', 'catalog', 'catalog.json');
+    const catalogBefore = readFileSync(catalogPath);
+    rmSync(unrelated, { recursive: true });
+    const result = f.files.validate({
+      files: [{ id: f.id, content: assistantSelectionContent(['local-guidance']) }],
+      mode: 'safe',
+    });
+    expect(result.valid).toBe(true);
+    expect(existsSync(unrelated)).toBe(false);
+    expect(readFileSync(f.path, 'utf8')).toBe(f.previous);
+    expect(readFileSync(catalogPath)).toEqual(catalogBefore);
+  });
+
+  it.each([
+    'create',
+    'update',
+  ] as const)('does not repair an unrelated Workspace subtree while refusing an invalid %s selection', (mode) => {
+    const f = assistantSelectionFixture(mode);
+    const unrelated = join(f.dataRoot, 'workspaces', 'ws_demo', 'light-apps');
+    const catalogPath = join(f.dataRoot, 'workspaces', 'ws_demo', 'catalog', 'catalog.json');
+    const catalogBefore = readFileSync(catalogPath);
+    rmSync(unrelated, { recursive: true });
+    expect(() => f.write(assistantSelectionContent(['missing-guidance']))).toThrowError(
+      expect.objectContaining({ code: 'config_file_invalid', status: 400 })
+    );
+    expect(existsSync(unrelated)).toBe(false);
+    if (mode === 'create') expect(existsSync(f.path)).toBe(false);
+    else expect(readFileSync(f.path, 'utf8')).toBe(f.previous);
+    expect(readFileSync(catalogPath)).toEqual(catalogBefore);
+  });
+
+  it('does not reject a valid Skill because an unrelated layout mkdir would fail', () => {
+    const f = assistantSelectionFixture('update');
+    const unrelated = join(f.dataRoot, 'workspaces', 'ws_demo', 'light-apps');
+    rmSync(unrelated, { recursive: true });
+    durability.mkdirFailurePath = unrelated;
+    try {
+      const result = f.files.validate({
+        files: [{ id: f.id, content: assistantSelectionContent(['local-guidance']) }],
+        mode: 'safe',
+      });
+      expect(result.valid).toBe(true);
+      expect(existsSync(unrelated)).toBe(false);
+      expect(readFileSync(f.path, 'utf8')).toBe(f.previous);
+    } finally {
+      durability.mkdirFailurePath = undefined;
+    }
   });
 });

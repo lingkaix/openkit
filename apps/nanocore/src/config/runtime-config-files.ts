@@ -41,6 +41,7 @@ import {
   ModelCatalogSchema,
   OpenKitConfigSchema,
   ProviderProfileSchema,
+  parseResourceCatalogDocument,
   parseWorkspaceDataSourceCatalog,
   requireCredentialFreeHttpsGitLocator,
   UserConfigSchema,
@@ -52,7 +53,6 @@ import {
 import { type ParseError, parse, printParseErrorCode } from 'jsonc-parser';
 import { z } from 'zod';
 import { AuthoredAgentConfigSchema } from '../agents/manifest.js';
-import { loadWorkspaceResourceCatalog } from '../catalog/resource-catalog.js';
 import { ensureCanonicalDirectory, writeFileAtomic } from '../storage/workspace-file-records.js';
 import { VaultBackendError } from '../vault/vault-backend.js';
 import {
@@ -622,7 +622,17 @@ export class RuntimeConfigFileService {
             if (skillIds.length === 0) return;
             const path = ['workspace', 'assistant', 'resources', 'skillIds'];
             try {
-              const catalog = loadWorkspaceResourceCatalog(this.dataRoot, spec.workspaceId ?? '');
+              // Catalog path helpers also provision directories; draft validation must only read.
+              const catalogPath = join(
+                this.dataRoot,
+                'workspaces',
+                spec.workspaceId ?? '',
+                'catalog',
+                'catalog.json'
+              );
+              const catalog = parseResourceCatalogDocument(
+                JSON.parse(readFileSync(catalogPath, 'utf8'))
+              );
               const existing = new Set(catalog.skills.entries.map((entry) => entry.id));
               if (skillIds.some((id) => !existing.has(id))) {
                 context.addIssue({
