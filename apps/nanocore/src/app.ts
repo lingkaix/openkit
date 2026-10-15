@@ -81,7 +81,11 @@ import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
-import { createConversationService, createTaskStartOperation } from './mode-entry-routes.js';
+import {
+  createConversationService,
+  createTaskStartOperation,
+  type WorkerCoordinatorCandidateRequest,
+} from './mode-entry-routes.js';
 import { APP_OPENAPI_DOCUMENT } from './openapi.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
@@ -132,7 +136,10 @@ import {
   registerNanoHostSessionEffectRoutes,
   registerNanoHostSessionSemanticRoutes,
 } from './runtime/nanohost-session-dispatch.js';
-import { TurnStartValidationError } from './runtime/orchestrator.js';
+import {
+  assertAgentManifestSupportsModel,
+  TurnStartValidationError,
+} from './runtime/orchestrator.js';
 import { installPendingRequestAdmission } from './runtime/pending-request-flow.js';
 import { cancelOwnedQueuedAdmission, startProductTurn } from './runtime/product-turn-start.js';
 import { createCoordinatorTaskTool } from './runtime/task-admission.js';
@@ -1108,15 +1115,24 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
    *
    * @param store Store that owns the workspace read models.
    * @param workspaceId Workspace whose worker candidates should be projected.
-   * @param userId Initiating User whose current setup preferences apply.
+   * @param request Initiating User and explicit Agent/model selection.
    * @returns Deterministically ordered opaque worker candidates.
    */
   function currentWorkerCoordinatorCandidates(
     store: FsStore,
     workspaceId: string,
-    userId?: string
+    request: WorkerCoordinatorCandidateRequest
   ): WorkerCoordinatorCandidate[] {
     const snapshot = runtimeConfig();
+    const { userId, agentId, modelId } = request;
+    const manifests = snapshot.agentManifests.filter(
+      (manifest) => agentId === undefined || manifest.id === agentId
+    );
+    // Keep the existing typed model-override refusal before the setup eligibility gate.
+    const selected = agentId === undefined ? undefined : manifests[0];
+    if (selected && isAgentLaunchable(computeReadiness(selected))) {
+      assertAgentManifestSupportsModel(selected, modelId);
+    }
     const workspaceConfig = snapshot.workspaceConfigs.find(
       (entry) => entry.workspaceId === workspaceId
     )?.config;
@@ -1124,10 +1140,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     return workerCoordinatorCandidates(
       store,
       workspaceId,
-      snapshot.agentManifests,
+      manifests,
       resolveDefaultAgentId(snapshot, workspaceId, userId),
       {
         ...setupProviderSupply,
+        ...(modelId === undefined ? {} : { requestedLogicalModelId: modelId }),
         gatewayConfig: snapshot.gatewayConfig,
         providerRegistry: snapshot.providerRegistry,
         workspaceId,
