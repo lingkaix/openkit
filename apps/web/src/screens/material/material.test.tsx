@@ -210,12 +210,16 @@ function materialPath(materialId: string | null = MATERIAL_ID): string {
 }
 
 /** Render the registered Material route with isolated server state and client transport. */
-function renderMaterial(client: CoreClient, materialId: string | null = MATERIAL_ID): void {
+function renderMaterial(
+  client: CoreClient,
+  materialId: string | null = MATERIAL_ID,
+  initialPath = materialPath(materialId)
+): void {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = (children: ReactNode) => (
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
-        <MemoryRouter initialEntries={[materialPath(materialId)]}>{children}</MemoryRouter>
+        <MemoryRouter initialEntries={[initialPath]}>{children}</MemoryRouter>
       </CoreClientProvider>
     </QueryClientProvider>
   );
@@ -225,6 +229,64 @@ function renderMaterial(client: CoreClient, materialId: string | null = MATERIAL
 beforeEach(() => {
   localStorage.clear();
   useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_ID });
+});
+
+describe('Material route identity', () => {
+  it.each([
+    'plain',
+    '/?#%',
+    '%2F%3F%23%25',
+  ])('preserves owner identifiers when selecting a Material with %s identifiers', async (suffix) => {
+    const user = userEvent.setup();
+    const workspaceId = `ws_${suffix}`;
+    const threadId = `th_${suffix}`;
+    const materialId = `mat_${suffix}`;
+    const material = { ...MATERIAL, workspaceId, materialId };
+    const readMaterial = vi.fn().mockResolvedValue({ material });
+    const client = makeClient({
+      operations: {
+        'workspace.list': vi.fn().mockResolvedValue({
+          items: [
+            {
+              workspace: { id: workspaceId, name: 'Exact Workspace' },
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'user_local',
+              registryRevision: 1,
+            },
+          ],
+        }),
+        'material.list': vi.fn().mockResolvedValue({ materials: [material] }),
+        'material.read': readMaterial,
+        'material.revision-list': vi
+          .fn()
+          .mockResolvedValue({ revisions: [{ ...REVISION_2_SUMMARY, workspaceId, materialId }] }),
+        'material.revision-read': vi.fn().mockResolvedValue({
+          revision: {
+            ...REVISION_2,
+            workspaceId,
+            materialId,
+          },
+        }),
+        'material.thread-read': vi.fn().mockResolvedValue({ material: null }),
+      },
+    });
+    renderMaterial(
+      client,
+      null,
+      `/materials/${encodeURIComponent(workspaceId)}/${encodeURIComponent(threadId)}`
+    );
+    await user.click(await screen.findByRole('button', { name: new RegExp(material.title) }));
+    await user.click(await screen.findByRole('button', { name: /^bind material$/i }));
+
+    expect(readMaterial.mock.calls).toEqual([[{ workspaceId, materialId }]]);
+    expect(client.operations['material.bind']).toHaveBeenCalledWith({
+      workspaceId,
+      threadId,
+      materialId,
+      expectedBindingState: 'not_bound',
+    });
+  });
 });
 
 describe('S19-F Material Workspace discovery barrier', () => {

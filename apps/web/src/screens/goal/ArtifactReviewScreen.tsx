@@ -1,7 +1,8 @@
 import { ApiCallError } from '@openkit/core-client';
 import { useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
+import { useSurfaceParams } from '../../app/route-params';
 import {
   ArtifactRow,
   Button,
@@ -28,7 +29,11 @@ import {
  * responses never advance local state, and disconnected writes remain visible but disabled.
  */
 export function ArtifactReviewScreen() {
-  const { workspaceId: routeWorkspaceId = '', threadId = '', artifactId = '' } = useParams();
+  const {
+    workspaceId: routeWorkspaceId = '',
+    threadId = '',
+    artifactId = '',
+  } = useSurfaceParams('artifact-review');
   const workspaceId = useCurrentWorkspaceId(routeWorkspaceId);
   const artifact = useArtifact(workspaceId, artifactId);
   const reviews = useArtifactReviews(workspaceId, artifactId);
@@ -155,7 +160,7 @@ export function ArtifactReviewScreen() {
       <div className="min-w-0 flex-1 overflow-y-auto px-6 py-6">
         <div className="mx-auto mb-4 max-w-[760px]">
           <Link
-            to={`/goals/${routeWorkspaceId}/${threadId}?lens=plan`}
+            to={`/goals/${encodeURIComponent(routeWorkspaceId)}/${encodeURIComponent(threadId)}?lens=plan`}
             className="text-xs font-medium text-accent hover:underline"
           >
             ← Back to goal

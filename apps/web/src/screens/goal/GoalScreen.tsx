@@ -1,8 +1,9 @@
 import type { GoalCard, GoalRecord } from '@openkit/app-api-schemas';
 import { ApiCallError } from '@openkit/core-client';
 import { useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
+import { useSurfaceParams } from '../../app/route-params';
 import { Button, ErrorBanner, Skeleton, StatusChip, TextField } from '../../primitives';
 import { useCurrentWorkspaceId, useGoalCommand, useGoalView } from './data';
 
@@ -85,7 +86,7 @@ function CardEditor({
 }
 /** One Goal journey projects current intent, proposed versus active bytes, shared decisions and ordinary Tasks. */
 export function GoalScreen() {
-  const { workspaceId: routeWorkspaceId = '', threadId = '' } = useParams();
+  const { workspaceId: routeWorkspaceId = '', threadId = '' } = useSurfaceParams('goal');
   const workspaceId = useCurrentWorkspaceId(routeWorkspaceId);
   const navigate = useNavigate();
   const view = useGoalView(workspaceId, threadId);
