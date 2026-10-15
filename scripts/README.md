@@ -6,7 +6,7 @@ Root `package.json` owns the command surface and `docs/toolchain.md` owns setup 
 
 ## Release Inputs And Verification
 
-`release-ci-reuse.mjs --repository <owner/repo> --workflow ci.yml --sha <full sha> --job <exact job name>` reads GitHub Actions with the job-scoped `GITHUB_TOKEN` and reports the run, latest attempt, and successful job identity for one completed exact-commit workflow-dispatch run or main-push release-gate run. Reuse remains per job, never across commits or from another branch. It paginates runs and attempt jobs, rechecks the selected attempt, and exits 1 when no job qualifies or 2 on usage/API errors. The tag-only L0-L2 and NanoCore e2e steps use either failure result to run their normal tests; fixtures inject HTTP responses without network access.
+`release-ci-reuse.mjs --repository <owner/repo> --workflow ci.yml --sha <full sha> --job <exact job name>` reads GitHub Actions with the job-scoped `GITHUB_TOKEN` and reports the run, latest attempt, and successful job identity for one completed exact-commit workflow-dispatch run or main-push release-gate run. Reuse remains per job, never across commits or from another branch. It paginates runs and attempt jobs, rechecks the selected attempt, and exits 1 when no job qualifies or 2 on usage/API errors. Complete L0-L2 shard steps can reuse exact-source evidence on main and tag pushes; NanoCore e2e reuses it on tag pushes. Either failure result runs the normal tests, and the host aggregate requires every successful shard. Fixtures inject HTTP responses without network access. See the [release cookbook](../docs/cookbooks/release.md#cadence-commands) for preparation, admission, pre-merge and local smoke commands.
 
 `release-notes.mjs` checks `release-notes/<tag>.md` and the tag workflow fails before image promotion when that file is missing or malformed. The verify job compares the published release body through `--compare-body`.
 
@@ -26,7 +26,7 @@ See [Deployment Host Requirements](../docs/specs/20260909-deployment_host_requir
 
 `release-record.mjs` generates offline manifests, reviewed drafts and private compact closeout projections. It imports the existing exported notes functions; `release-notes.mjs` remains byte-identical to the proved publication baseline. `tests/release-manifest.test.mjs` checks its raw bytes against the pinned SHA-256 from baseline commit `23f3e2dc`, without requiring Git history in CI. `release-safety.mjs` owns shared credential-safe evidence, canonical identities and single-shot effect retention for the scripts and qualification kit. The kit pins that script-side dependency as part of its instrument digest.
 
-`release-publication-check.mjs EVIDENCE.json` reads the current repository's immutable Git objects at exact P and `baseline.sha`. The publication proof includes the three publication job blocks, invoked scripts and their static relative-import/literal-file dependencies. Missing or changed repository inputs refuse even if every supplied hash agrees. Its returned proof retains per-input blob identities and the aggregate fingerprint.
+`release-publication-check.mjs EVIDENCE.json` reads the current repository's immutable Git objects at exact P and `baseline.sha`. The publication proof includes the publication job blocks, moved candidate jobs and matrix, invoked scripts, and their static relative-import/literal-file dependency closure. Missing or changed repository inputs refuse even if every supplied hash agrees. Its returned proof retains per-input blob identities and the aggregate fingerprint.
 
 ## Retrieval Build Supply
 
