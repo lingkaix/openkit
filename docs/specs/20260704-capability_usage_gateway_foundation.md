@@ -147,6 +147,14 @@ Rules:
 - If usage recording fails after upstream success, the call MUST finish with a diagnostic status that surfaces ledger-write failure; the system MUST NOT silently report a fully accounted success.
 - Public response bodies MUST NOT depend on usage write timing except where fail-closed policy explicitly requires ledger durability before returning success.
 
+### Call And Usage Identity
+
+The recorder's independent default call and usage IDs use shared `cap` and `use` UUIDv7 allocation once per new row. Caller-supplied derived IDs require the exact UUIDv5 name declared by their accepted allocating owner: [Pending Requests](20260930-pending_requests.md), [Worker Agent Capability](20260703-worker_agent_capability.md), [Worker Turn Reliability](20260531-worker_turn_reliability_envelope.md), or [Workspace export accounting](20260704-workspace_backup_export_import.md). [Core Protocol](../core/protocol.md#ids) owns kind admission and canonical name bytes. Registering a kind does not authorize another deterministic producer ([accepted declaration boundary](../decisions/20261014-one_identifier_mechanism.md#owner-declarations)).
+
+A transient random import-accounting suffix supplies no deterministic allocating authority. Its new call and usage rows use independent UUIDv7 at existing staged admission, with existing record reuse and foreign-key attribution. No new correlation record or import ledger is added.
+
+Identity encoding changes neither the complete start lookup key above nor its immutable-attribution comparison and exclusions. An ID match does not prove attribution equality. Exact permitted replay returns the recorded owner without another upstream contact. Equivalent measurements remain retry-safe; distinct independent measurements are not collapsed by UUID shape. Allocation failure precedes recording a new row or contacting an effect. Existing unknown-result, retention and termination rules remain binding. Acceptance covers independent defaults, each owner-declared derivation, conflicting attribution, measurement deduplication and unchanged unknown-result handling.
+
 ### Usage rows
 
 LLM usage rows:
