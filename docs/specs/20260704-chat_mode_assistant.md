@@ -284,6 +284,22 @@ Management acceptance requires an ordinary member to be denied system and techni
 
 The concrete conversational management integration is Partial. The private entry supports Agent inspection and Worker-image preparation plus updates to existing Provider catalog metadata and Gateway logical-model bindings. Catalog proposals publish immutable private Artifact previews; the separate human-confirmed application command rechecks current administrator authority, exact candidate/source identities and dependencies, and reports persistence separately from reload and restart requirements. Target creation, credential or endpoint changes, broader Workspace configuration and the remaining R035 setup scope are not implemented by this slice.
 
+#### Administration Identifier Names
+
+The existing administration entry uses these exact JSON names in [Core Protocol's kind-specific UUIDv5 namespaces](../core/protocol.md#ids), under the [accepted complete-name declaration](../decisions/20261015-identifier_owner_declarations.md):
+
+| Output | Prefix | Exact JSON name |
+| --- | --- | --- |
+| Request-owned administration Thread | `th` | `["administration", userId, requestId]` |
+| Administration Turn | `tu` | `["administration", userId, threadId, requestId]` |
+| Initiating administration user Item | `it` | `["administration_user", turnId]` |
+| Administration answer Item | `it` | `["administration_answer", turnId]` |
+| Administration refusal Item | `it` | `["administration_refused", turnId]` |
+
+`userId` is the exact authenticated human admitted for administration. `threadId` is the Thread selected by the existing entry; subsequent requests retain it. `requestId` and `turnId` are the exact admitted or recorded values. Purpose literals preserve existing output-role distinctions. Replay uses the same allocating owner and complete name; consumers must not infer authority or replay state by parsing the UUID.
+
+Names change no entry admission, personal audience, per-call authority, refusal, receipt or partial-owner semantics. Ordinary Chat command, handoff, user, result and pending-outcome names remain the accepted tables below. Full ActorRef and frozen scope requirements remain binding. Pending Requests owns its single request Item. Thread, Turn and Item owners retain lifecycle and retention. Acceptance requires exact replay after restart, distinct administration roles, and no duplicate ordinary private Timeline or additional Tool.
+
 ### Routing outcomes
 
 The Assistant must produce exactly one routing outcome:
