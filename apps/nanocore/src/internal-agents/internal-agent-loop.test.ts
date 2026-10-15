@@ -263,9 +263,32 @@ describe('internal Agent loop', () => {
     expect(call).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['quiescent', 'failed', 'limit_reached'] as const)(
-    'ignores saved text callbacks after a %s exit',
-    async (kind) => {
+  it('observes a dependency rejection when invocation synchronously cancels the run', async () => {
+    const controller = new AbortController();
+    const initial = input();
+    let calls = 0;
+    // A mock wrapper can observe rejections itself and hide the loop's missing handler.
+    const call = () => {
+      calls += 1;
+      controller.abort();
+      return Promise.reject(new Error('Cancelled dependency failed.'));
+    };
+
+    const result = await runInternalAgentLoop({ ...initial, signal: controller.signal }, call);
+    // Give the runner a turn to detect an unobserved dependency rejection.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(result).toEqual({ kind: 'aborted', messages: initial.messages });
+    expect(calls).toBe(1);
+  });
+
+  it.each([
+    'quiescent',
+    'failed',
+    'limit_reached',
+  ] as const)('ignores saved text callbacks after a %s exit', async (kind) => {
+    vi.useFakeTimers();
+    try {
       let emit!: NonNullable<InternalAgentProviderRequest['onTextIncrement']>;
       const onTextIncrement = vi.fn();
       const call = vi.fn(async (request: InternalAgentProviderRequest) => {
@@ -291,36 +314,36 @@ describe('internal Agent loop', () => {
       expect(result.kind).toBe(kind);
       expect(call).toHaveBeenCalledTimes(1);
       expect(onTextIncrement.mock.calls).toEqual([['Before exit.']]);
-    }
-  );
-
-  it('keeps the first cancellation cause when a deadline precedes caller cancellation', async () => {
-    vi.useFakeTimers();
-    try {
-      const controller = new AbortController();
-      const initial = input();
-      const call = vi.fn(() => new Promise<never>(() => undefined));
-      const running = runInternalAgentLoop(
-        {
-          ...initial,
-          signal: controller.signal,
-          limits: { ...initial.limits, deadlineMs: 10 },
-        },
-        call
-      );
-      vi.advanceTimersByTime(10);
-      controller.abort();
-
-      expect(await running).toEqual({
-        kind: 'limit_reached',
-        limit: 'deadline',
-        messages: initial.messages,
-      });
-      expect(call).toHaveBeenCalledTimes(1);
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('keeps the first cancellation cause when a deadline precedes caller cancellation', async () => {
+    const controller = new AbortController();
+    const initial = input();
+    const call = vi.fn((request: InternalAgentProviderRequest) => {
+      request.signal.addEventListener('abort', () => controller.abort(), { once: true });
+      return new Promise<never>(() => undefined);
+    });
+
+    const result = await runInternalAgentLoop(
+      {
+        ...initial,
+        signal: controller.signal,
+        limits: { ...initial.limits, deadlineMs: 10 },
+      },
+      call
+    );
+
+    expect(controller.signal.aborted).toBe(true);
+    expect(result).toEqual({
+      kind: 'limit_reached',
+      limit: 'deadline',
+      messages: initial.messages,
+    });
+    expect(call).toHaveBeenCalledTimes(1);
   });
 
   it('redacts model-visible tool text and ignores observer failures', async () => {
