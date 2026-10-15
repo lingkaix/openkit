@@ -226,8 +226,11 @@ These kinds retain their owning derivations and use the same text form as any in
 | Material revision | `mrev` | `c027bad1-40fa-5b1e-a480-421753232801` |
 | Artifact Review | `arev` | `59bffd58-b464-5c91-917f-a066bc9ce605` |
 | Knowledge Review | `kr` | `5e78300b-9458-5519-b104-d47e32923804` |
+| CapabilityCall | `cap` | `b447467a-3e9c-5e36-b988-7b4961a0d817` |
 
 Core MUST assign the IDs of Core-owned durable records according to their owning schema and accepted specification.
+
+The `cap` derived-kind admission covers the accepted Pending Request execution-call derivation only. Its allocating owner declares the complete immutable name. Independent CapabilityCall allocation remains UUIDv7. The [accepted declaration boundary](../decisions/20261015-identifier_owner_declarations.md) requires owner-backed derivation authority for every producer; kind registration never authorizes another deterministic-looking call ID. A UUID validates shape, not current attribution, claim, permission or effect status. Existing record failure, retry, retention and recovery rules remain binding. Acceptance requires stable complete-name encoding across reopen, correct kind admission, unchanged contact counts and refusal before effects on malformed or wrong-kind input.
 
 Clients and channel adapters MUST assign `requestId` values for mutating commands.
 
