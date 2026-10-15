@@ -37,6 +37,14 @@ Use model-specific token budgets independently of byte caps. Include instruction
 
 Return a bounded unavailable/error descriptor when saving, processing, or retrieval fails. Do not promise an unavailable handle or fall back to a full body. Search completeness applies only to the named searchable representation. A metadata-only match cannot prove absence in an unsupported body.
 
+### Qualified File References
+
+The Artifact, Material, and Turn-input forms extend Core Protocol's previously closed reference grammar. This is a delegated contract extension under the engineer's #190 direction, coordinator adoption, and independent Consultant agreement. It preserves the scope-qualified pair and R2's governing ownership model; it does not describe an unchanged grammar. Existing page and retrieval-trace forms cannot identify these file objects without misleading overloading.
+
+Implementation applies existing per-kind validators to scope components and Artifact/Material `objectId` values. Owner-permitted UUIDv5 derivations remain valid; retrieval adds no identifier rule. Input ordinals are composite-key selectors within the admitted Turn inventory, not independent entity identifiers. Preserve their admitted ordering and never renumber retained inputs. Versions and digests remain separate evidence.
+
+Import rewrites Workspace qualification even when an object id remains unchanged. Preserve input ordinals and exact original payload bytes, and recompute dependent representation, package, inventory, and export digests after reference rewriting. Import creates target historical evidence; it neither mutates source write-once traces nor confers execution authority. Resolution checks actual ownership, immutable origin and audience, current access, and destination disclosure. A Workspace scope is not Workspace-wide permission. Core Protocol, the import owner, and the source owners retain these responsibilities.
+
 ### Per-Turn Snapshot And Disclosure
 
 Eagerly materialize only selected, currently authorized bytes into a digest-verified, read-only Turn snapshot through existing materialization owners. Keep writable work, scratch, and outputs separate. Do not add lazy hydration or a new source store. Large bytes use the data plane rather than the Task request.
@@ -55,7 +63,7 @@ User-supplied native harness configuration is allowed within existing Sandbox ad
 
 The engineer's #190 ruling excludes uploads and non-LLM file production from the Worker output ceiling. It also rejects repeatedly placing entire large inputs into model context because of cost, latency, context use, and compaction effects on work quality. The engineer accepted the recommended decisions-zh.md options except the named overrides and delegated other design details to the coordinator with independent Astra Consultant agreement.
 
-Sources: `/home/simonx/AI/temp/backlog-20261015/engineer-rulings-20261015.md` (#190, expanded delegation, and user-supplied context-mode clarification); `/home/simonx/AI/temp/research/2026-10-15-large-context/synthesis.md` (design synthesis and owner map); `/home/simonx/AI/temp/research/2026-10-15-large-context/consultant.md` (independent review, six governing corrections, and blockers). The engineer directed this owner change; it is not an agent-initiated challenge. Acceptance of the design does not qualify runtime enforcement or measured defaults.
+Sources: `/home/simonx/AI/temp/backlog-20261015/engineer-rulings-20261015.md` (#190, expanded delegation, and user-supplied context-mode clarification); `/home/simonx/AI/temp/research/2026-10-15-large-context/synthesis.md` (design synthesis and owner map); `/home/simonx/AI/temp/research/2026-10-15-large-context/consultant.md` (independent review, six governing corrections, and blockers). The independent amendment review at `3dbddeda77589d56c06ca720e02dcf68ad14bbb0` confirms design agreement and the reference implementation obligations: `/home/simonx/AI/temp/research/2026-10-15-large-context/consultant-amendments.md`, points 1 and 2. The engineer directed this owner change; it is not an agent-initiated challenge. Acceptance of the design does not qualify runtime enforcement or measured defaults.
 
 ## Rejected Alternatives
 
