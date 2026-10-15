@@ -2108,12 +2108,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     if (errors.length === 0 && backendLifecycle?.session?.state === 'cleaned')
       await this.releaseTerminalAttempt(store, context.attemptId!, environmentPackage!);
     if (errors.length > 0) {
+      // Later passive cleanup preserves this diagnostic as the first cleanup attempt's history.
       const error =
         errors.length === 1
           ? errors[0]
           : new AggregateError(
               errors,
-              `Worker execution and backend cleanup failed${
+              `Worker execution failed and the first backend cleanup attempt failed${
                 primaryError instanceof Error ? `: ${primaryError.message}` : '.'
               }`
             );

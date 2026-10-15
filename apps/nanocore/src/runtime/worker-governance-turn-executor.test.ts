@@ -6535,11 +6535,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       enforcement: 'unavailable',
       evidence: { availability: 'partial', outputTruncated: false },
     } as const;
-    vi.spyOn(backend, 'submit').mockRejectedValue(
-      Object.assign(new Error('Repository access returned HTTP 403; attribution unavailable.'), {
-        explanation,
-      })
+    const primaryError = Object.assign(
+      new Error('Repository access returned HTTP 403; attribution unavailable.'),
+      { explanation }
     );
+    vi.spyOn(backend, 'submit').mockRejectedValue(primaryError);
     backend.failTeardown = cleanupFails;
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
@@ -6549,25 +6549,24 @@ describe('WorkerGovernanceTurnExecutor', () => {
       now: () => '2026-06-16T00:00:00.000Z',
     });
     try {
-      await expect(
-        startWithExecutorAttempt(
-          coreDb,
-          executor,
-          store,
-          turn,
-          'as_fetch_failure',
-          '2026-06-15T23:59:59.000Z',
-          'Observe failed fetch',
-          {
-            agentSetup: createTestAgentSetup(),
-            requestId: '00000000-0000-4000-8000-000000000205',
-            triggerActor: turn.triggerActor,
-            workspaceRoots: [],
-          }
-        )
-      ).rejects.toThrow(
+      const execution = startWithExecutorAttempt(
+        coreDb,
+        executor,
+        store,
+        turn,
+        'as_fetch_failure',
+        '2026-06-15T23:59:59.000Z',
+        'Observe failed fetch',
+        {
+          agentSetup: createTestAgentSetup(),
+          requestId: '00000000-0000-4000-8000-000000000205',
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [],
+        }
+      );
+      await expect(execution).rejects.toThrow(
         cleanupFails
-          ? 'Worker execution and backend cleanup failed'
+          ? 'Worker execution failed and the first backend cleanup attempt failed'
           : 'Repository access returned HTTP 403'
       );
       expect(store.getTurnById(turn.id)).toMatchObject({
@@ -6585,6 +6584,64 @@ describe('WorkerGovernanceTurnExecutor', () => {
         ])
       );
       expect(backend.calls.filter((call) => call === 'cleanupSession')).toHaveLength(1);
+      if (cleanupFails) {
+        await expect(execution).rejects.toMatchObject({
+          errors: [primaryError, expect.objectContaining({ message: 'teardown failed' })],
+        });
+        const originalTurn = structuredClone(store.getTurnById(turn.id));
+        const originalSession = structuredClone(store.getAgentSession('as_fetch_failure'));
+        const originalEvents = structuredClone(store.getTurnEvents(turn.id));
+        expect(originalTurn.error).toMatchObject({ code: 'worker_governance_turn_failed' });
+        expect(originalSession.message).toBe(originalTurn.error?.message);
+        expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)?.state).toBe('cleanup-failed');
+        backend.failTeardown = false;
+        const reloaded = createDemoStore({ dataRoot: coreDb.dataRoot });
+        const recovery = {
+          executionBackend: backend,
+          store: reloaded,
+          now: () => '2026-06-16T00:01:00.000Z',
+          cleanupBackendSession: () => backend.cleanupSession(),
+          prepareBackendCleanup: () => {},
+          restoreBackendSession: async () => {},
+          reconcileAcceptedFinalStatus: async () => {
+            throw new Error('Failed fetch has no accepted final status.');
+          },
+          projectRecoveredTurn: async () => {
+            const result = terminalizeGovernedWorkerTurn({
+              store: reloaded,
+              turnId: turn.id,
+              agentSessionId: 'as_fetch_failure',
+              requestId: '00000000-0000-4000-8000-000000000205',
+              completedAt: '2026-06-16T00:01:00.000Z',
+              outcome: 'interrupted',
+              errorCode: 'worker_governance_restart_recovery',
+              message: 'Worker execution was interrupted during scheduler recovery.',
+            });
+            return { status: result.status };
+          },
+        };
+        await runNanoHostAttemptRecoveryMaintenance(coreDb, recovery);
+        await runNanoHostAttemptRecoveryMaintenance(coreDb, recovery);
+        expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)).toMatchObject({
+          state: 'cleaned',
+          workspaceHandoffState: 'complete',
+        });
+        expect(backend.calls.filter((call) => call === 'cleanupSession')).toHaveLength(2);
+        expect(reloaded.getTurnById(turn.id)).toEqual(originalTurn);
+        expect(reloaded.getAgentSession('as_fetch_failure')).toEqual(originalSession);
+        expect(reloaded.getTurnEvents(turn.id)).toEqual(originalEvents);
+        expect(originalEvents).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              event: 'turn.completed',
+              data: expect.objectContaining({ stopReason: 'error' }),
+            }),
+          ])
+        );
+        expect(originalTurn.error?.message).toBe(
+          `Worker execution failed and the first backend cleanup attempt failed: ${primaryError.message}`
+        );
+      }
     } finally {
       coreDb.sqlite.close();
     }
