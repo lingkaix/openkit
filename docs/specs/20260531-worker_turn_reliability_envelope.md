@@ -169,6 +169,20 @@ After a stream starts, the caller should see a well-formed terminal record, neve
 
 NanoCore's LLM Gateway wraps Chat Completions and Responses SSE streams at the route boundary. If a provider or bridge stream throws after the public response commits under [the Gateway owner](20260526-llm_gateway_responses_api.md#commit-boundary-and-retry), the wrapper appends a redacted OpenAI-compatible SSE error payload with `stopReason: "error"` and then emits `[DONE]`.
 
+### Worker Raw-Output Accounting
+
+The [large-file decision](../decisions/20261015-large_files_and_model_context.md) separates raw model output from file and context capacity. The current Worker ceiling is 16,777,216 bytes per Turn. Count UTF-8 bytes of emitted content fields: intermediate/final text, generated tool-call argument text, and stored exposed reasoning. Exclude transport framing, escaping overhead, duplicate final snapshots, tool results, uploads, and program-produced file bytes. Do not acquire hidden reasoning for metering.
+
+Meter before truncation or conversion to a file. A generated file body in arguments consumes capacity when emitted; its disk copy adds no charge. Generated code that produces a large file consumes only its emitted code/arguments. A newly generated parent summary counts; mechanical forwarding of child output does not.
+
+One atomic aggregate covers the primary, concurrent children, and all observed provider attempts in this Turn. Deduplicate only by trusted attempt, emission/content-part identity, and stream position. Identical text in a new attempt counts again. Observe failed-attempt output before Gateway retry buffering can discard it. Unobserved billed generation belongs to cost accounting.
+
+Persist aggregate and deduplication evidence through the existing Turn execution/recovery authority before acknowledging accounted progress. Adoption, reconnect, retry, and restart cannot reset the counter or count replay twice. Missing or contradictory recovery evidence fails closed under the existing recovery rules. This adds no separate accounting lifecycle or repair runner.
+
+At exhaustion, prevent further substantive work and execution of incomplete over-limit tool arguments. After proved stop, use existing `budget_exhausted`, not native `length` or successful completion. Uncertain stop retains existing failure/fencing rules. Preserve files already accepted by their own publication barriers. File storage, capture, parser, transport, context, and time limits remain independent.
+
+Qualification must observe every supported inference and child route, concurrent counter races, new attempts, duplicate snapshots, retry-buffer discard, and restart. An unobservable route cannot claim enforcement; block its dependent execution until it can meet this contract. Resource or privacy failure blocks the affected path rather than unrelated work.
+
 ### Direct Internal Core Role Calls
 
 A provider-backed Internal Core Role call MUST be owned by one concrete role assembly over the shared bounded internal Agent runtime rather than a second runner or registry. The role assembly owns its fixed system instruction, bounded input projection, output schema, Tool set, and timeout.

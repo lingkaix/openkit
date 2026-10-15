@@ -56,6 +56,10 @@ The Assistant may answer directly only when the request fits its limited role bo
 
 Core Assistant is presented as the current user's Personal Assistant. Private continuity and user Memory personalize interaction; they do not create a per-user runtime process, agent supply entry or authorization identity. `20260909-thread_visibility_and_sharing.md` owns private conversation and shared Task/Goal disclosure; `20260909-personal_memory_and_knowledge_learning.md` owns User Memory and scoped Knowledge retrieval. The five existing information-source classes remain unchanged: Memory is governed reusable context, and raw personal conversation remains Thread history. Selected Workspace resources are read on demand under current user and output-audience authority.
 
+### Bounded Source Context
+
+Assistant input and Tool observations follow [Internal Agent Runtime's bounded model projection](20260813-internal_agent_runtime.md#minimal-tool-contract). Large files remain with their source owners; the Assistant receives descriptors, previews, and exact requested ranges. Current source and output-audience checks apply to all metadata and excerpts before model use. Failed storage or retrieval returns a bounded unavailable descriptor, never the full body. This grants no new Tool, shell, host reader, or broader history effect.
+
 ## Goals / Non-goals
 
 ### Goals

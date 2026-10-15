@@ -202,6 +202,12 @@ The shared qualification cases in [Codex Worker Adapter](20260716-codex_worker_a
 
 Required image smoke covers the selected OpenCode version, the generic shim entrypoint, non-root user, and absence of `/etc/opencode` or the proved equivalent.
 
+## Bounded Context And Output Domains
+
+Native result and diagnostic guards are parser/capture limits, not the [Turn raw-output meter](20260531-worker_turn_reliability_envelope.md#worker-raw-output-accounting). Exclude Tool results and native envelopes from that meter.
+
+Use supported V2 `tool_output.max_lines` and `max_bytes` controls and `media.image` resizing; do not copy V1 configuration keys. Qualify general/MCP and producer-owned truncation paths, image omissions, spill retrieval, and cleanup. OpenKit reads obey [Context Package](20260703-worker_context_package.md#bounded-model-projection) before native handling. Native compaction remains separate.
+
 ## Implementation Evidence And Limit
 
 The live-steer mapping above is accepted design, not qualification by the implementation evidence below. Live-steer support remains unqualified and disabled until its declared-pin checks pass.

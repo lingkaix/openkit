@@ -279,6 +279,12 @@ The following qualification cases apply to this runtime on its accepted interfac
 - Where a load operation exists, it does not restore a pending RPC. There is no transparent recovery of in-flight work.
 - Workspace collection does not claim stability while a relevant writer remains active. This adapter does not treat process exit as the collection gate. Collection is owned by [Workspace Synchronization](20260703-workspace_synchronization.md).
 
+## Bounded Context And Output Domains
+
+Native final-result and diagnostic guards are parser/capture limits, not raw-output accounting. [Worker Turn Reliability](20260531-worker_turn_reliability_envelope.md#worker-raw-output-accounting) meters generated content before final trimming or collection, including children and observed attempts. Tool-result bodies and envelopes are not emissions.
+
+Supply finite native `tool_output_token_limit` and per-MCP-tool `output_token_limit` only where the selected pin supports them. Qualify function-tool and code-mode results separately. OpenKit-supplied reads remain bounded under [Context Package](20260703-worker_context_package.md#bounded-model-projection) before native handling. Native configuration is a second layer, not an OpenKit bound or a reason to patch the native context manager.
+
 ## Implementation Evidence And Limit
 
 The live-steer mapping above is accepted design, not qualification by the implementation evidence below. Live-steer support remains unqualified and disabled until its declared-pin checks pass.

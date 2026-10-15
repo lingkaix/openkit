@@ -184,6 +184,10 @@ Keep existing deterministic operations and one S61 retrieval owner. Optional sem
 
 Use the same selected Retrieval Kernel tokenizer for the query, canonical title, and body as for indexing. Retain the deterministic sufficiency rule: two distinct query terms in a page, or a one-term query in its title. A one-term body-only match remains `insufficient-evidence`; a sufficient result retains its exact citation. No second tokenizer or selector belongs to Knowledge Manager.
 
+## Bounded Source And Knowledge Context
+
+Knowledge Manager reads and model input follow [Internal Agent Runtime](20260813-internal_agent_runtime.md#minimal-tool-contract) and [Context Package](20260703-worker_context_package.md#bounded-model-projection). Preserve original source/page digests and separately identify delivered excerpts or descriptors. Retrieve exact ranges on demand under current source and destination authority. A selection trace remains selection evidence; only the immutable Context Package proves Worker delivery. Source-owned PDF text-layer and explicit bounded vision processors do not publish Knowledge. Missing, unsupported, or failed processing returns bounded truthful coverage, never a full-body fallback or complete absence claim.
+
 ## Current Implementation Projection
 
 The coordinator and Consultant accepted the qualified-reference and query-act amendments under the engineer's delegation; Phase B implements them. Current results use qualified page references and `retrievalTraceRef` when querying lineage exists. Threadless direct User calls return their existing outcome without a trace or reference; no plain trace-id result or Workspace trace ledger remains.

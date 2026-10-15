@@ -203,6 +203,12 @@ Required tests cover:
 
 The shared qualification cases in [Codex Worker Adapter](20260716-codex_worker_adapter.md#tests) apply on native ACP. The SDK wire and a third-party ACP bridge are not alternate passing interfaces. One runtime's pass does not qualify another.
 
+## Bounded Context And Output Domains
+
+The 16 MiB native-byte/session-update guard and diagnostic prefixes remain parser/capture limits. They do not meter the [Turn raw-output aggregate](20260531-worker_turn_reliability_envelope.md#worker-raw-output-accounting); Tool results and native envelopes consume no raw-output capacity.
+
+Use native spill storage and a finite `spill-policy.maxInlineTokens` only when the effective admitted ACP profile supports that plugin. Source availability of a plugin is not proof of activation. Qualify spill retrieval, image offload, cancellation, and save failure. OpenKit must bound its own projections under [Context Package](20260703-worker_context_package.md#bounded-model-projection), including save-failure behavior that could otherwise remain inline. Do not replace the native context manager.
+
 ## Implementation Evidence And Limit
 
 The implementation evidence below does not qualify live steer; the current ACP pin explicitly remains unsupported under the refusal boundary above.

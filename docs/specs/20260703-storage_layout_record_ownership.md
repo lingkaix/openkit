@@ -442,6 +442,18 @@ Publish and verify bounded snapshot bytes before one compare-and-set catalog rev
 
 Catalog storage and versioned resource delivery are accepted targets and are not implemented by the current static Skill metadata and mutable MCP configuration. Their lifecycle owners are `docs/specs/20260711-skill_catalog_versioning_pinning.md`, `docs/specs/20260907-mcp_catalog_management.md`, and `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`.
 
+## Artifact File Payloads And Derived Media
+
+The existing Artifact record owns each arbitrary-byte original by Artifact id and version. Store file-backed payloads at `artifacts/<artifactId>/versions/<version>/payload` within that Artifact's existing scope. This is a version-owned file, not a new object registry or cross-scope deduplication service. Retained inline text keeps its original bytes and digest; changing representation cannot lose retained data. Artifact/upload semantics follow [Work Resource Interaction](20260713-work_resource_interaction_model.md#file-admission-publication-and-download).
+
+Conversation file inputs remain owned by the receiving Turn at `threads/<threadId>/turns/<turnId>/inputs/<ordinal>/payload`. The zero-based ordinal follows the admitted ordered input inventory, whose metadata binds name, media type, size, and original digest. This is Turn-owned data, not a separate upload record. Publish verified inputs through existing Turn acceptance before model access; failed or uncertain acceptance follows the existing command recovery owner. Client drafts never enter this tree.
+
+Stage streams privately in the same ownership domain. Measure actual size/digest, verify and fsync payload bytes, and atomically place the immutable file before exposing its version reference. The existing Artifact/Item/Review and receipt owner still governs acknowledgement and fail-closed partial publication. Orphan staging never proves acceptance. A referenced missing/corrupt payload returns unavailable or `recovery_required`, never reconstructed text or another version. Retry does not recapture an uncertain effect.
+
+The adapter-side sidecar cache retains PDF text-layer and explicit vision derivatives in its existing scoped cache location. Its identity binds original digest, processor version/configuration, representation digest, locators, and coverage. Derived files remain separate from originals and user-authored descriptions. Rebuild cannot mutate or replace originals. Deletion, retention, holds, backup, and export use the original owner's audience and reference rules. Current-access revocation precedes cache cleanup.
+
+One configurable server reserve protects headroom in addition to the worst-case current writes and existing in-flight reservations. Those reservations cover concurrent staging, extraction, derivatives, and publication overlap. Restart accounts for occupied staging before new admission. Disk pressure refuses new work rather than evicting retained originals. Record measured defaults before release. Exact byte continuity and scope isolation must survive derivative/index rebuilds and portable export/import.
+
 ## Source Copy Versus Reference Policy
 
 Workspace `sources/` should preserve enough evidence for replay, citation, and review without turning OpenKit into every external system's storage backend.
