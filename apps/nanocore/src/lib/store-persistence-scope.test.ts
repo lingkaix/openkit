@@ -3,15 +3,17 @@ import { createHash } from 'node:crypto';
 import {
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -303,7 +305,12 @@ describe('FsStore workspace persistence scope', () => {
 const trace = vi.hoisted(() => ({
   beforeRename: undefined as ((from: string, to: string) => void) | undefined,
   descriptors: new Map<number, string>(),
-  events: [] as Array<{ op: 'sync' | 'rename'; path: string; from?: string; directory?: boolean }>,
+  events: [] as Array<{
+    op: 'write' | 'sync' | 'rename';
+    path: string;
+    from?: string;
+    directory?: boolean;
+  }>,
   fail: undefined as ((path: string, directory: boolean) => boolean) | undefined,
 }));
 
@@ -311,6 +318,14 @@ vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
     ...actual,
+    writeFileSync: ((...args: Parameters<typeof actual.writeFileSync>) => {
+      const path =
+        typeof args[0] === 'number'
+          ? (trace.descriptors.get(args[0]) ?? '<untracked>')
+          : String(args[0]);
+      trace.events.push({ op: 'write', path });
+      return actual.writeFileSync(...args);
+    }) as typeof actual.writeFileSync,
     openSync: ((...args: Parameters<typeof actual.openSync>) => {
       const descriptor = actual.openSync(...args);
       trace.descriptors.set(descriptor, String(args[0]));
@@ -592,5 +607,190 @@ describe('fresh Workspace database publication', () => {
     } finally {
       fault.mockRestore();
     }
+  });
+});
+
+/** Creates multiple Threads and settles existing canonical formatting before measuring writes. */
+function threadPublicationFixture(count = 3) {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-publication-count-'));
+  roots.push(dataRoot);
+  const store = new FsStore({ dataRoot });
+  const workspace = store.createWorkspace('Thread publication');
+  const threads = Array.from({ length: count }, (_, index) =>
+    store.createThread(workspace.id, `Thread ${index}`)
+  );
+  store.updateWorkspace(workspace.id, { name: 'Settled Thread publication' });
+  const paths = threads.map((thread) =>
+    join(dataRoot, 'workspaces', workspace.id, 'threads', thread.id, 'thread.json')
+  );
+  trace.events.length = 0;
+  return { dataRoot, store, workspace, threads, paths };
+}
+
+/** Lists only canonical Thread file replacements, excluding unrelated record publication. */
+function threadReplacements(): string[] {
+  return trace.events
+    .filter((event) => event.op === 'rename' && basename(event.path) === 'thread.json')
+    .map((event) => event.path);
+}
+
+describe('unchanged canonical Thread publication', () => {
+  it('performs no Thread file writes or file fsyncs for an unrelated mutation across eight Threads', () => {
+    const f = threadPublicationFixture(8);
+    const before = f.paths.map((path) => readFileSync(path));
+    f.store.updateWorkspace(f.workspace.id, { name: 'Workspace-only change' });
+    expect(threadReplacements()).toEqual([]);
+    const threadFileOperations = trace.events.filter(
+      (event) =>
+        !event.directory &&
+        (event.op === 'write' || event.op === 'sync') &&
+        (basename(event.path) === 'thread.json' || basename(event.path).startsWith('.thread.json.'))
+    );
+    expect(threadFileOperations).toEqual([]);
+    for (const [index, path] of f.paths.entries())
+      expect(readFileSync(path)).toEqual(before[index]);
+    expect(new FsStore({ dataRoot: f.dataRoot }).getWorkspace(f.workspace.id).name).toBe(
+      'Workspace-only change'
+    );
+  });
+
+  it('publishes only the changed Thread and preserves descriptive envelope content through reopen', () => {
+    const f = threadPublicationFixture(4);
+    const target = f.threads[1];
+    const path = f.paths[1];
+    const envelope = JSON.parse(readFileSync(path, 'utf8'));
+    envelope.futureNote = 'retained annotation';
+    envelope.extensions['example.thread-note'] = { description: 'retained open extension' };
+    writeFileSync(path, `${JSON.stringify(envelope, null, 2)}\n`);
+    const otherBytes = f.paths.map((candidate) => readFileSync(candidate));
+    trace.events.length = 0;
+    f.store.updateThread(f.workspace.id, target.id, { name: 'Changed Thread' });
+    expect(threadReplacements()).toEqual([path]);
+    const renameAt = trace.events.findIndex(
+      (event) => event.op === 'rename' && event.path === path
+    );
+    const temporary = trace.events[renameAt].from;
+    expect(
+      trace.events
+        .slice(0, renameAt)
+        .some((event) => event.op === 'sync' && !event.directory && event.path === temporary)
+    ).toBe(true);
+    expect(
+      trace.events
+        .slice(renameAt + 1)
+        .some((event) => event.op === 'sync' && event.directory && event.path === dirname(path))
+    ).toBe(true);
+    for (const [index, candidate] of f.paths.entries())
+      if (index !== 1) expect(readFileSync(candidate)).toEqual(otherBytes[index]);
+    const reopened = new FsStore({ dataRoot: f.dataRoot });
+    const thread = reopened.getThread(f.workspace.id, target.id);
+    expect(thread.name).toBe('Changed Thread');
+    const retained = JSON.parse(readFileSync(path, 'utf8'));
+    expect(retained.futureNote).toBe(envelope.futureNote);
+    expect(retained.extensions).toEqual(envelope.extensions);
+    expect(retained.lineage).toEqual({ workspaceId: f.workspace.id, threadId: target.id });
+    expect(retained.requiredFeatures).toEqual(envelope.requiredFeatures);
+    expect(retained.contentDigest).not.toBe(envelope.contentDigest);
+    expect(retained.contentDigest).toBe(
+      `sha256:${createHash('sha256').update(JSON.stringify(thread)).digest('hex')}`
+    );
+  });
+
+  it('publishes differing canonical bytes even when the known Thread core is unchanged', () => {
+    const f = threadPublicationFixture();
+    const path = f.paths[1];
+    const canonical = readFileSync(path, 'utf8');
+    const compact = `${JSON.stringify(JSON.parse(canonical))}\n`;
+    expect(compact).not.toBe(canonical);
+    writeFileSync(path, compact);
+    trace.events.length = 0;
+    f.store.updateWorkspace(f.workspace.id, { name: 'Normalize retained bytes' });
+    expect(threadReplacements()).toEqual([path]);
+    expect(readFileSync(path, 'utf8')).toBe(canonical);
+  });
+
+  it('keeps prior readable Thread authority when changed file synchronization fails', () => {
+    const f = threadPublicationFixture();
+    const path = f.paths[1];
+    const before = readFileSync(path);
+    trace.fail = (candidate, directory) =>
+      !directory &&
+      dirname(candidate) === dirname(path) &&
+      basename(candidate).startsWith('.thread.json.');
+    expect(() =>
+      f.store.updateThread(f.workspace.id, f.threads[1].id, { name: 'Uncommitted Thread' })
+    ).toThrow('Injected tree synchronization failure');
+    trace.fail = undefined;
+    expect(readFileSync(path)).toEqual(before);
+    expect(
+      new FsStore({ dataRoot: f.dataRoot }).getThread(f.workspace.id, f.threads[1].id).name
+    ).toBe('Thread 1');
+  });
+
+  it('rejects a symlinked Thread file even when its target contains byte-equivalent canonical content', () => {
+    const f = threadPublicationFixture();
+    const path = f.paths[1];
+    const before = readFileSync(path);
+    const outside = join(f.dataRoot, 'outside-thread.json');
+    writeFileSync(outside, before);
+    rmSync(path);
+    symlinkSync(outside, path, 'file');
+    expect(() =>
+      f.store.updateWorkspace(f.workspace.id, { name: 'Reject redirected unchanged bytes' })
+    ).toThrow();
+    expect(readFileSync(outside)).toEqual(before);
+    expect(lstatSync(path).isSymbolicLink()).toBe(true);
+  });
+
+  it('does not skip unsupported required semantics on an otherwise unchanged Thread', () => {
+    const f = threadPublicationFixture();
+    const path = f.paths[1];
+    const envelope = JSON.parse(readFileSync(path, 'utf8'));
+    envelope.requiredFeatures.push('example.unsupported-thread-feature');
+    const bytes = `${JSON.stringify(envelope, null, 2)}\n`;
+    writeFileSync(path, bytes);
+    expect(() =>
+      f.store.updateWorkspace(f.workspace.id, { name: 'Reject unsupported semantics' })
+    ).toThrow();
+    expect(readFileSync(path, 'utf8')).toBe(bytes);
+  });
+
+  it('retries a failed Thread parent commit before acknowledging an unchanged-byte persistence', () => {
+    const f = threadPublicationFixture();
+    const path = f.paths[1];
+    const threadRoot = dirname(path);
+    trace.fail = (candidate, directory) =>
+      directory &&
+      candidate === threadRoot &&
+      trace.events.some((event) => event.op === 'rename' && event.path === path);
+    expect(() =>
+      f.store.updateThread(f.workspace.id, f.threads[1].id, { name: 'Visible pending commit' })
+    ).toThrow('Injected tree synchronization failure');
+    const visibleBytes = readFileSync(path);
+    expect(JSON.parse(visibleBytes.toString('utf8')).name).toBe('Visible pending commit');
+    trace.events.length = 0;
+    trace.fail = (candidate, directory) => directory && candidate === threadRoot;
+    expect(() =>
+      f.store.updateWorkspace(f.workspace.id, { name: 'Retry unchanged Thread commit' })
+    ).toThrow('Injected tree synchronization failure');
+    expect(
+      trace.events.some(
+        (event) => event.op === 'sync' && event.directory && event.path === threadRoot
+      )
+    ).toBe(true);
+    expect(threadReplacements()).toEqual([]);
+    trace.events.length = 0;
+    trace.fail = undefined;
+    f.store.updateWorkspace(f.workspace.id, { name: 'Accepted unchanged Thread commit' });
+    expect(threadReplacements()).toEqual([]);
+    expect(
+      trace.events.some(
+        (event) => event.op === 'sync' && event.directory && event.path === threadRoot
+      )
+    ).toBe(true);
+    expect(readFileSync(path)).toEqual(visibleBytes);
+    expect(
+      new FsStore({ dataRoot: f.dataRoot }).getThread(f.workspace.id, f.threads[1].id).name
+    ).toBe('Visible pending commit');
   });
 });
