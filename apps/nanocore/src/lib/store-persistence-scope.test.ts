@@ -1,6 +1,7 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -12,8 +13,12 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { listRecoverableWorkerCheckpoints } from '../runtime/worker-checkpoints.js';
+import { listExistingWorkspaceDatabaseScopes, openBootVerifiedWorkspaceDb } from '../storage/db.js';
+import { listAppliedNativeMigrationIds } from '../storage/migrate.js';
 import { FsStore } from './store.js';
 
 /**
@@ -296,6 +301,7 @@ describe('FsStore workspace persistence scope', () => {
 });
 
 const trace = vi.hoisted(() => ({
+  beforeRename: undefined as ((from: string, to: string) => void) | undefined,
   descriptors: new Map<number, string>(),
   events: [] as Array<{ op: 'sync' | 'rename'; path: string; from?: string; directory?: boolean }>,
   fail: undefined as ((path: string, directory: boolean) => boolean) | undefined,
@@ -325,6 +331,7 @@ vi.mock('node:fs', async (importOriginal) => {
       from: Parameters<typeof actual.renameSync>[0],
       to: Parameters<typeof actual.renameSync>[1]
     ) => {
+      trace.beforeRename?.(String(from), String(to));
       trace.events.push({ op: 'rename', path: String(to), from: String(from) });
       return actual.renameSync(from, to);
     }) as typeof actual.renameSync,
@@ -333,6 +340,7 @@ vi.mock('node:fs', async (importOriginal) => {
 
 const roots: string[] = [];
 afterEach(() => {
+  trace.beforeRename = undefined;
   trace.fail = undefined;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -452,5 +460,134 @@ describe('Workspace directory publication durability', () => {
     expect(readFileSync(join(f.finalRoot, 'opaque', 'nested', 'retained.bin'))).toEqual(
       Buffer.from([0, 1, 255])
     );
+  });
+});
+
+/** Creates a fresh Workspace through either public creation path. */
+function freshWorkspaceDatabaseFixture(kind: 'general' | 'quick-chat') {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-fresh-workspace-db-'));
+  roots.push(dataRoot);
+  const store = new FsStore({ dataRoot });
+  const create = () =>
+    kind === 'general'
+      ? store.createWorkspace('Ready for maintenance')
+      : store.ensureQuickChatWorkspace('user_local');
+  return { dataRoot, store, create };
+}
+
+/** Checks integrity and every migration required by the packaged Workspace journal. */
+function expectCompleteWorkspaceJournal(sqlite: Database.Database): void {
+  const journal = JSON.parse(
+    readFileSync(join(process.cwd(), 'drizzle', 'workspace', 'meta', '_journal.json'), 'utf8')
+  ) as { entries: Array<{ tag: string }> };
+  expect(journal.entries.length).toBeGreaterThan(0);
+  expect(sqlite.pragma('quick_check', { simple: true })).toBe('ok');
+  expect(listAppliedNativeMigrationIds(sqlite, 'workspace')).toEqual(
+    journal.entries.map(({ tag }) => `workspace_${tag}`)
+  );
+}
+
+describe('fresh Workspace database publication', () => {
+  it.each([
+    'general',
+    'quick-chat',
+  ] as const)('publishes %s with a migrated database ready for existing-only maintenance and reopen', (kind) => {
+    const f = freshWorkspaceDatabaseFixture(kind);
+    const workspace = f.create();
+    expect(workspace.kind).toBe(kind);
+    expect(listExistingWorkspaceDatabaseScopes(f.dataRoot)).toEqual([
+      { workspaceId: workspace.id },
+    ]);
+    const db = openBootVerifiedWorkspaceDb(f.dataRoot, workspace.id);
+    try {
+      expectCompleteWorkspaceJournal(db.sqlite);
+      expect(listRecoverableWorkerCheckpoints(db)).toEqual([]);
+    } finally {
+      db.sqlite.close();
+    }
+    expect(new FsStore({ dataRoot: f.dataRoot }).getWorkspace(workspace.id).kind).toBe(kind);
+    const reopened = openBootVerifiedWorkspaceDb(f.dataRoot, workspace.id);
+    try {
+      expectCompleteWorkspaceJournal(reopened.sqlite);
+      expect(listRecoverableWorkerCheckpoints(reopened)).toEqual([]);
+    } finally {
+      reopened.sqlite.close();
+    }
+  });
+
+  it.each([
+    'general',
+    'quick-chat',
+  ] as const)('completes the %s database in staging before the canonical rename', (kind) => {
+    const f = freshWorkspaceDatabaseFixture(kind);
+    let inspected = 0;
+    trace.beforeRename = (from, to) => {
+      if (
+        dirname(from) !== join(f.dataRoot, 'workspaces', '.staging') ||
+        dirname(to) !== join(f.dataRoot, 'workspaces')
+      )
+        return;
+      inspected += 1;
+      expect(listExistingWorkspaceDatabaseScopes(f.dataRoot)).toEqual([]);
+      expect(existsSync(join(from, 'workspace-record.json'))).toBe(true);
+      const stagedDatabase = join(from, 'db', 'workspace.sqlite');
+      expect(existsSync(stagedDatabase)).toBe(true);
+      // Reading only the main file proves schema readiness does not depend on a live WAL sidecar.
+      const snapshot = join(f.dataRoot, 'before-publication.sqlite');
+      copyFileSync(stagedDatabase, snapshot);
+      const sqlite = new Database(snapshot, { fileMustExist: true, readonly: true });
+      try {
+        expectCompleteWorkspaceJournal(sqlite);
+      } finally {
+        sqlite.close();
+      }
+    };
+    const workspace = f.create();
+    expect(inspected).toBe(1);
+    expect(listExistingWorkspaceDatabaseScopes(f.dataRoot)).toEqual([
+      { workspaceId: workspace.id },
+    ]);
+    const db = openBootVerifiedWorkspaceDb(f.dataRoot, workspace.id);
+    try {
+      expect(listRecoverableWorkerCheckpoints(db)).toEqual([]);
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
+  it.each([
+    'general',
+    'quick-chat',
+  ] as const)('does not publish %s when a staged Workspace migration fails', (kind) => {
+    const f = freshWorkspaceDatabaseFixture(kind);
+    const originalPrepare = Database.prototype.prepare;
+    let faults = 0;
+    const fault = vi.spyOn(Database.prototype, 'prepare').mockImplementation(function (
+      this: Database.Database,
+      source: string
+    ) {
+      if (
+        this.name.includes('/workspaces/.staging/') &&
+        /CREATE TABLE\s+`worker_turn_checkpoints`/.test(source)
+      ) {
+        faults += 1;
+        throw new Error('Injected Workspace migration failure');
+      }
+      return originalPrepare.call(this, source);
+    } as typeof originalPrepare);
+    trace.events.length = 0;
+    try {
+      expect(f.create).toThrow(expect.objectContaining({ code: 'migration_failed' }));
+      expect(faults).toBe(1);
+      expect(f.store.listWorkspaces()).toEqual([]);
+      expect(listExistingWorkspaceDatabaseScopes(f.dataRoot)).toEqual([]);
+      expect(
+        trace.events.some(
+          (event) => event.op === 'rename' && dirname(event.path) === join(f.dataRoot, 'workspaces')
+        )
+      ).toBe(false);
+    } finally {
+      fault.mockRestore();
+    }
   });
 });
