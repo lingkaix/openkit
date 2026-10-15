@@ -165,7 +165,7 @@ assert.match(head.headers.get('content-type'), /^text\/html\b/);
 assert.equal(await head.text(), '');
 
 // The public proxy must reject these paths without exposing the Gateway listener.
-for (const path of ['/v1', '/v1/models', '/v1/responses', '/v1/chat/completions', '/v1/unknown', '/api', '/internal', '/mcp/unknown']) {
+for (const path of ['/v1', '/v1/models', '/v1/responses', '/v1/chat/completions', '/v1/unknown', '/v1?model=proxy-smoke', '/v1/models?limit=1', '/v1/responses?stream=true', '/v1/chat/completions?stream=true', '/v1/unknown?probe=1', '/api', '/internal', '/mcp/unknown']) {
   for (const method of ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD']) {
     const response = await request(path, method);
     assert.equal(response.status, 404, `${method} ${path}`);
