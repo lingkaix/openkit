@@ -5624,6 +5624,8 @@ describe('WP5 Workspace sharing schemas', () => {
     updatedAt: timestamp,
   } as const;
   const authorizedWorkspace = {
+    membershipStatus: 'active',
+    accessCause: 'membership',
     workspace,
     ownerUserId: 'user_owner',
     effectiveRole: 'owner',
