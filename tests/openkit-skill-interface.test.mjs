@@ -21,10 +21,12 @@ import { fileURLToPath } from 'node:url';
 import * as appSchemas from '@openkit/app-api-schemas';
 import { createCoreClient } from '@openkit/core-client';
 import * as protocol from '@openkit/protocol';
+import { z } from 'zod';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const skillRoot = join(repoRoot, 'skills', 'openkit-ops');
 const cliPath = join(skillRoot, 'scripts', 'openkit');
+const sourceCliPath = join(repoRoot, 'skills', 'openkit-cli.mjs');
 const protocolExports = new Map(Object.entries(protocol));
 
 test('App update CLI admits only exact release requests and strips retained status annotations', async () => {
@@ -1562,7 +1564,7 @@ test('catalog search is concise and describe returns one machine-readable input 
   const { describeOperation, searchOperations } = await operations();
   const results = searchOperations('workspace');
   assert.ok(results.some((entry) => entry.id === 'workspace.list'));
-  assert.ok(results.every((entry) => !('handler' in entry) && !('inputSchema' in entry)));
+  assert.ok(results.every((entry) => Object.keys(entry).sort().join(',') === 'id,summary'));
   assert.equal(
     searchOperations('connection').some((entry) => entry.id === 'connection.meta'),
     false
@@ -1581,6 +1583,198 @@ test('catalog search is concise and describe returns one machine-readable input 
   assert.equal(description.inputSchema.type, 'object');
   assert.ok(!('handler' in description));
 });
+
+for (const [label, executable] of [
+  ['source', sourceCliPath],
+  ['bundled', cliPath],
+]) {
+  for (const args of [
+    ['--help'],
+    ['help'],
+    ['help', 'doctor'],
+    ['help', 'ops'],
+    ['help', 'ops', 'search'],
+    ['help', 'ops', 'describe'],
+    ['help', 'ops', 'call'],
+    ['doctor', '--help'],
+    ['ops', '--help'],
+    ['ops', 'search', '--help'],
+    ['ops', 'describe', '--help'],
+    ['ops', 'call', '--help'],
+  ]) {
+    test(`${label} CLI local help succeeds without endpoint, credentials or network: ${args.join(' ')}`, async () => {
+      const result = await runCli(
+        args,
+        {
+          OPENKIT_NANOCORE_URL: 'invalid endpoint that help must not resolve',
+          OPENKIT_NANOCORE_TOKEN: 'invalid credential that help must not resolve',
+        },
+        'not JSON; help must not read stdin',
+        [
+          dataModule(
+            "globalThis.fetch = async () => { process.stderr.write('help-network-attempt\\n'); throw new Error('help made a network request'); };"
+          ),
+        ],
+        undefined,
+        executable
+      );
+      assert.equal(result.code, 0, result.stdout + result.stderr);
+      const envelope = JSON.parse(result.stdout);
+      assert.equal(envelope.ok, true);
+      assert.equal(envelope.command, 'help');
+      assert.equal(Object.hasOwn(envelope, 'operation'), false);
+      assert.equal(Object.hasOwn(envelope, 'requestId'), false);
+      assert.equal(result.stderr, '');
+      const topic = (args[0] === 'help' ? args.slice(1) : args.slice(0, -1)).join(' ');
+      if (topic) assert.ok(JSON.stringify(envelope.data).includes(topic));
+      if (args.length === 1) {
+        const help = JSON.stringify(envelope.data);
+        for (const command of ['doctor', 'ops search', 'ops describe', 'ops call', '--input -'])
+          assert.ok(help.includes(command), `Help must show ${command}.`);
+        for (const operation of ['app-update.preflight', 'app-update.prepare', 'app-update.start'])
+          assert.ok(help.includes(operation), `Help must show the update sequence's ${operation}.`);
+      }
+    });
+  }
+
+  test(`${label} CLI compact discovery keeps concise search and shallow input constraints`, async () => {
+    const search = await runCli(
+      ['ops', 'search', 'workspace'],
+      {},
+      '{}',
+      [],
+      undefined,
+      executable
+    );
+    assert.equal(search.code, 0, search.stdout + search.stderr);
+    const results = JSON.parse(search.stdout).data;
+    assert.ok(results.some((entry) => entry.id === 'workspace.list'));
+    for (const entry of results) {
+      assert.deepEqual(Object.keys(entry).sort(), ['id', 'summary']);
+      assert.equal(typeof entry.summary, 'string');
+      assert.doesNotMatch(entry.summary, /[\r\n]/);
+    }
+    const descriptions = new Map();
+    for (const id of ['runtime.file-create', 'knowledge.answer', 'runtime.validate']) {
+      const result = await runCli(['ops', 'describe', id], {}, '{}', [], undefined, executable);
+      assert.equal(result.code, 0, result.stdout + result.stderr);
+      const envelope = JSON.parse(result.stdout);
+      assert.equal(envelope.command, 'ops.describe');
+      assert.equal(envelope.data.id, id);
+      for (const field of ['summary', 'inputSensitivity', 'outputSensitivity', 'requiredAccess'])
+        assert.equal(typeof envelope.data[field], 'string', `${id}.${field}`);
+      assert.equal(envelope.data.summary, appSchemas.OPERATION_DEFINITIONS[id].description);
+      assert.equal(envelope.data.mutating, appSchemas.OPERATION_DEFINITIONS[id].mutating);
+      assert.ok(envelope.data.requiredAccess.trim().length > 0);
+      assert.equal(Object.hasOwn(envelope.data, 'outputSchema'), false);
+      assert.equal(envelope.data.inputSchema.type, 'object');
+      for (const property of Object.values(envelope.data.inputSchema.properties)) {
+        for (const nested of ['properties', 'required', 'items', '$defs', 'definitions'])
+          assert.equal(Object.hasOwn(property, nested), false, `${id} expands ${nested}.`);
+      }
+      descriptions.set(id, envelope.data.inputSchema);
+    }
+    const create = descriptions.get('runtime.file-create');
+    assert.deepEqual([...create.required].sort(), ['id', 'kind']);
+    assert.equal(create.properties.id.type, 'string');
+    assert.equal(create.properties.id.minLength, 1);
+    assert.equal(create.properties.content.type, 'string');
+    assert.equal(create.properties.kind.type, 'string');
+    assert.deepEqual(create.properties.kind.enum, [
+      'server',
+      'gateway',
+      'model-catalog',
+      'internal-role',
+      'provider',
+      'agent',
+      'user',
+      'workspace',
+      'data-source',
+    ]);
+    const answer = descriptions.get('knowledge.answer');
+    assert.deepEqual([...answer.required].sort(), ['query', 'workspaceId']);
+    assert.equal(answer.properties.query.minLength, 1);
+    assert.equal(answer.properties.limit.type, 'integer');
+    assert.equal(answer.properties.limit.maximum, 10);
+    assert.ok(
+      answer.properties.limit.minimum === 1 || answer.properties.limit.exclusiveMinimum === 0,
+      'The optional integer limit must remain positive.'
+    );
+    const validation = descriptions.get('runtime.validate');
+    assert.equal(validation.properties.files.type, 'array');
+    assert.equal(validation.required?.includes('files') ?? false, false);
+  });
+
+  test(`${label} CLI full-schema opt-in returns shared JSON schemas without Zod state`, async () => {
+    const id = 'runtime.validate';
+    const definition = appSchemas.OPERATION_DEFINITIONS[id];
+    const expectedInput = z.toJSONSchema(definition.inputSchema.strict(), {
+      target: 'draft-7',
+      io: 'input',
+    });
+    const expectedOutput = z.toJSONSchema(definition.outputSchema, { target: 'draft-7' });
+    const described = await runCli(
+      ['ops', 'describe', id, '--schema'],
+      {},
+      '{}',
+      [],
+      undefined,
+      executable
+    );
+    assert.equal(described.code, 0, described.stdout + described.stderr);
+    const description = JSON.parse(described.stdout).data;
+    assert.deepEqual(description.inputSchema, expectedInput);
+    assert.ok(description.inputSchema.properties.files.items.properties.content);
+    const searched = await runCli(
+      ['ops', 'search', id, '--schema'],
+      {},
+      '{}',
+      [],
+      undefined,
+      executable
+    );
+    assert.equal(searched.code, 0, searched.stdout + searched.stderr);
+    const entry = JSON.parse(searched.stdout).data.find((candidate) => candidate.id === id);
+    assert.ok(entry, 'Schema search must retain the matching canonical operation.');
+    assert.deepEqual(entry.inputSchema, expectedInput);
+    assert.deepEqual(entry.outputSchema, expectedOutput);
+  });
+
+  test(`${label} CLI bounded discovery aliases retain canonical operation identities`, async () => {
+    for (const [query, expected] of [
+      [
+        'update',
+        ['app-update.preflight', 'app-update.prepare', 'app-update.start', 'app-update.status'],
+      ],
+      ['preflight', ['app-update.preflight']],
+      ['connection', ['diagnostics.app']],
+      ['version', ['diagnostics.app']],
+    ]) {
+      const result = await runCli(['ops', 'search', query], {}, '{}', [], undefined, executable);
+      assert.equal(result.code, 0, result.stdout + result.stderr);
+      const entries = JSON.parse(result.stdout).data;
+      for (const id of expected)
+        assert.ok(
+          entries.some((entry) => entry.id === id),
+          `${query} must discover ${id}.`
+        );
+      for (const entry of entries) {
+        assert.ok(Object.hasOwn(appSchemas.OPERATION_DEFINITIONS, entry.id));
+        assert.deepEqual(Object.keys(entry).sort(), ['id', 'summary']);
+      }
+    }
+    const aliasCall = await runCli(
+      ['ops', 'call', 'update', '--input', '-'],
+      {},
+      '{}',
+      [],
+      undefined,
+      executable
+    );
+    assert.equal(aliasCall.code, 2);
+    assert.equal(JSON.parse(aliasCall.stdout).error.code, 'operation_not_found');
+  });
+}
 
 test('portable archive operations stream bytes and refuse local path replacement', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'openkit-skill-archive-'));
