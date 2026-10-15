@@ -2442,8 +2442,9 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
     // Preparing turnsRoot also commits threadRoot after an unacknowledged file rename.
     ensureCanonicalDirectory(turnsRoot);
     const threadPath = join(threadRoot, 'thread.json');
-    const previousBytes = existsSync(threadPath) ? readCanonicalTextFile(threadPath) : undefined;
-    const previous = previousBytes === undefined ? undefined : JSON.parse(previousBytes);
+    const previousBytes = existsSync(threadPath) ? readCanonicalFile(threadPath) : undefined;
+    const previous =
+      previousBytes === undefined ? undefined : JSON.parse(previousBytes.toString('utf8'));
     removeStaleDirectories(turnsRoot, expectedTurnIds);
 
     for (const turn of threadTurns) {
@@ -2456,8 +2457,10 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
         writeTurnDirectory(stage, turn, records);
       });
     }
-    const nextBytes = `${JSON.stringify(projectCanonicalThreadRecord(thread, previous), null, 2)}\n`;
-    if (nextBytes !== previousBytes) writeFileAtomic(threadPath, nextBytes);
+    const nextBytes = Buffer.from(
+      `${JSON.stringify(projectCanonicalThreadRecord(thread, previous), null, 2)}\n`
+    );
+    if (!previousBytes?.equals(nextBytes)) writeFileAtomic(threadPath, nextBytes);
   }
 }
 
