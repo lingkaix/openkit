@@ -28,7 +28,10 @@ import {
   requireSchedulerExecutionAttempt,
   schedulerExecutionCorrelation,
 } from './runtime/execution-attempt-records.js';
-import { runSchedulerDispatchLoop } from './runtime/scheduler-dispatch-loop.js';
+import {
+  getSchedulerPreparationClaims,
+  runSchedulerDispatchLoop,
+} from './runtime/scheduler-dispatch-loop.js';
 import { createConfiguredWorkerLifecycleRuntime } from './runtime/turn-executor-factory.js';
 import type { TurnStartRuntimeContext } from './runtime/types.js';
 import {
@@ -2550,6 +2553,207 @@ describe('Task terminal replay closeout ownership', () => {
       collector.mockRestore();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('exact Task Agent selection', () => {
+  /** Creates real operation, Coordinator, scheduler and replay owners, with capacity held before execution. */
+  function fixture() {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'exact-task-agent-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const executor = new HoldingTurnExecutor(coreDb);
+    const preferred = createTestAgentSetup({ agentId: 'agent_preferred' }).manifest;
+    const selected = createTestAgentSetup({ agentId: 'agent_selected' }).manifest;
+    const makeApp = (ownerStore = store, manifests = [preferred, selected]) =>
+      createAppWithWorkspaceAuthority({
+        coreDb,
+        dataRoot,
+        store: ownerStore,
+        turnExecutor: executor,
+        agentManifests: manifests,
+        openKitConfig: { defaults: { defaultAgentId: preferred.id } },
+      });
+    const app = makeApp();
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
+    const prepare = vi
+      .spyOn(executor, 'prepareAgentSessionForTurn')
+      .mockRejectedValue(new WorkerGovernanceCapacityUnavailableError());
+    const requestId = '0190f4c8-0000-7000-8000-000000000133';
+    const scope = { actorId: 'user_local', workspaceId: 'ws_demo', threadId: 'th_demo' };
+    const post = (target: typeof app, choice: { agentId?: string; modelId?: string } = {}) =>
+      target.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: scope.workspaceId, threadId: scope.threadId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ requestId, input: 'Implement a focused change.', ...choice }),
+          }
+        )
+      );
+    /** Observes the existing effect owners, rather than inferring no effect from a refusal response. */
+    const effects = () => {
+      const db = openWorkspaceDb(dataRoot, scope.workspaceId);
+      try {
+        return {
+          turns: store.listThreadTurns(scope.workspaceId, scope.threadId),
+          items: store.listThreadItems(scope.workspaceId, scope.threadId),
+          receipts: store.listCommandRequests(),
+          admissions: listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+            workspaceId: scope.workspaceId,
+            statuses: ['queued', 'admitted', 'cancelled', 'denied', 'expired'],
+          }),
+          attempts: observeExecutionAttempts(coreDb),
+          checkpoints: db.sqlite.prepare('SELECT * FROM worker_turn_checkpoints').all(),
+        };
+      } finally {
+        db.sqlite.close();
+      }
+    };
+    /** Lets the capacity refusal finish before a stable observation or fixture disposal. */
+    const settlePreparation = async () => {
+      await setImmediate();
+      await Promise.allSettled([...getSchedulerPreparationClaims(coreDb).values()]);
+    };
+    return {
+      app,
+      coreDb,
+      dataRoot,
+      effects,
+      executor,
+      makeApp,
+      post,
+      preferred,
+      prepare,
+      requestId,
+      scope,
+      selected,
+      settlePreparation,
+      store,
+      /** Releases only this fixture after its background preparation has settled. */
+      async cleanup() {
+        await settlePreparation();
+        prepare.mockRestore();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it.each([
+    'omitted',
+    'supplied',
+  ] as const)('keeps %s selection and replay identity through duplicate admission and changed readiness', async (selector) => {
+    const f = fixture();
+    const choice = selector === 'supplied' ? { agentId: f.selected.id } : {};
+    const expectedAgentId = selector === 'supplied' ? f.selected.id : f.preferred.id;
+    // Fixed canonical bytes make adding a null/default selector observable for old commands.
+    const canonicalInput =
+      selector === 'supplied'
+        ? '{"agentId":"agent_selected","input":"Implement a focused change."}'
+        : '{"input":"Implement a focused change."}';
+    const expectedHash = `sha256:${createHash('sha256').update(canonicalInput).digest('hex')}`;
+    try {
+      const responses = await Promise.all([f.post(f.app, choice), f.post(f.app, choice)]);
+      const turns = [];
+      for (const response of responses) {
+        expect(response.status, await response.clone().text()).toBe(202);
+        turns.push(StartTaskModeResponseSchema.parse(await response.json()).turn);
+      }
+      const turn = turns[0]!;
+      expect(turn).toMatchObject({ agentId: expectedAgentId, status: 'pending' });
+      expect(turns[1]).toEqual(turn);
+      expect(f.store.listThreadTurns('ws_demo', 'th_demo')).toHaveLength(1);
+      expect(f.store.getCommandRequest('task.start', f.requestId, f.scope)).toMatchObject({
+        inputHash: expectedHash,
+        response: { kind: 'turn', id: turn.id },
+      });
+      const db = openWorkspaceDb(f.dataRoot, 'ws_demo');
+      try {
+        expect(getWorkerCheckpoint(db, 'ws_demo', 'th_demo', turn.id)).toMatchObject({
+          requestInputHash: expectedHash,
+        });
+      } finally {
+        db.sqlite.close();
+      }
+      await f.settlePreparation();
+      const beforeReplay = f.effects();
+      expect(beforeReplay.admissions).toHaveLength(1);
+      expect(f.executor.launches).toBe(0);
+
+      // Reopen the durable store with the original Agent unavailable and a different ready supply.
+      const remaining = createTestAgentSetup({ agentId: 'agent_replacement' }).manifest;
+      const reloaded = createDemoStore({ dataRoot: f.dataRoot });
+      const restarted = f.makeApp(reloaded, [remaining]);
+      const preparationCount = f.prepare.mock.calls.length;
+      const replay = await f.post(restarted, choice);
+      expect(replay.status, await replay.clone().text()).toBe(202);
+      expect(StartTaskModeResponseSchema.parse(await replay.json()).turn).toEqual(turn);
+      const changedSelectors =
+        selector === 'supplied' ? [{}, { agentId: remaining.id }] : [{ agentId: expectedAgentId }];
+      for (const changed of changedSelectors) {
+        const conflict = await f.post(restarted, changed);
+        expect(conflict.status, await conflict.clone().text()).toBe(409);
+        expect(await conflict.json()).toMatchObject({ code: 'idempotency_key_conflict' });
+      }
+      expect(f.effects()).toEqual(beforeReplay);
+      expect(f.prepare).toHaveBeenCalledTimes(preparationCount);
+      expect(f.executor.launches).toBe(0);
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it.each([
+    'missing',
+    'blocked',
+    'disabled',
+    'unknown',
+    'degraded',
+  ] as const)('refuses a %s exact Agent before effects without using the ready preferred Agent', async (readiness) => {
+    const f = fixture();
+    try {
+      const selected = {
+        ...f.selected,
+        readiness: { status: readiness === 'missing' ? ('ready' as const) : readiness },
+      };
+      const app = f.makeApp(
+        f.store,
+        readiness === 'missing' ? [f.preferred] : [f.preferred, selected]
+      );
+      const before = f.effects();
+      const response = await f.post(app, { agentId: f.selected.id });
+      expect(response.status, await response.clone().text()).toBe(409);
+      expect(await response.json()).toMatchObject({ code: 'task_mode_not_delegated' });
+      expect(f.effects()).toEqual(before);
+      expect(f.prepare).not.toHaveBeenCalled();
+      expect(f.executor.launches).toBe(0);
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it('preserves the typed model refusal for an exactly selected Agent', async () => {
+    const f = fixture();
+    try {
+      const before = f.effects();
+      const response = await f.post(f.app, {
+        agentId: f.selected.id,
+        modelId: 'other-model',
+      });
+      expect(response.status, await response.clone().text()).toBe(400);
+      expect(await response.json()).toMatchObject({ code: 'model_not_supported_by_agent' });
+      expect(f.store.listThreadTurns('ws_demo', 'th_demo')).toEqual(before.turns);
+      expect(f.effects().admissions).toEqual(before.admissions);
+      expect(f.prepare).not.toHaveBeenCalled();
+      expect(f.executor.launches).toBe(0);
+    } finally {
+      await f.cleanup();
     }
   });
 });
