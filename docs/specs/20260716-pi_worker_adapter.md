@@ -190,6 +190,7 @@ Whether `/usr/local/lib/openkit/allow-anthropic-api-key` remains is not settled 
 
 The [native terminal mapping](#native-output-mapping) preserves proved limits and distinguishes requested interruption from a runtime self-stop; none of these classifications proves cleanup or permits automatic continuation.
 
+- A settled native inference error whose prompt and terminal correlation are complete returns `failed` with private reason `pi-inference-failed`. It does not require successful assistant text. Missing, unmatched, or contradictory correlation retains `pi-terminal-correlation-failed`; an error must not disguise a route mismatch or malformed evidence. This extends only the private adapter reason vocabulary, not Core `StopReason`. Diagnostics remain bounded and redacted; cleanup and retry rules remain unchanged ([#186 ruling](../decisions/20261015-worker_failure_final_and_chat_call_rulings.md)).
 - Malformed or over-limit native output fails collection closed.
 - Missing trustworthy final assistant content fails collection when the native run claims success.
 - A non-zero or failed native outcome returns a failed adapter classification with bounded, redacted diagnostics.
@@ -199,6 +200,8 @@ The [native terminal mapping](#native-output-mapping) preserves proved limits an
 - Missing, empty, malformed, symlinked, wrong-id, wrong-cwd, or otherwise mismatched admitted identity fails before work.
 - Resume failure is explicit. The adapter does not create an empty session, replay the visible transcript, or pick a different file because one exists.
 - The Harness preserves the admitted Pi data root. Exact resume authority is the retained reference outside the disposable control binding.
+
+Acceptance distinguishes a correlated inference error, missing correlation, contradictory correlation, route mismatch, malformed output, and requested interruption. None becomes completed success. Both the Pi host producer and the supervising private-channel reader admit the same new reason and reject unknown reasons.
 
 ## Capability Declaration
 
