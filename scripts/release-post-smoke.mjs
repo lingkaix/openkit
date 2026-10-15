@@ -49,6 +49,26 @@ export function verifyLocalBinding(target, state) {
   return url.origin;
 }
 
+/** Resolve local configuration only, then pin all daemon reads to the proved Unix socket. */
+export function localDocker(run, env = process.env) {
+  const configured = env.DOCKER_CONTEXT
+    ? run('docker', [
+        'context',
+        'inspect',
+        env.DOCKER_CONTEXT,
+        '--format',
+        '{{.Endpoints.docker.Host}}',
+      ])
+    : env.DOCKER_HOST ||
+      run('docker', ['context', 'inspect', '--format', '{{.Endpoints.docker.Host}}']);
+  if (!/^unix:\/\/\/[^\r\n]+$/.test(configured))
+    throw Error('Post-publication smoke requires a local Unix Docker endpoint');
+  const pinned = { ...env };
+  delete pinned.DOCKER_CONTEXT;
+  delete pinned.DOCKER_HOST;
+  return (args) => run('docker', ['--host', configured, ...args], { env: pinned });
+}
+
 /** Transport output is private; malformed responses must not copy it into diagnostics. */
 function decode(bytes) {
   try {
@@ -149,6 +169,7 @@ export function postPublicationSmoke(
     reads: [],
   };
   try {
+    const docker = localDocker(run);
     publication({
       repository: params.repository,
       tag: params.tag,
@@ -210,7 +231,7 @@ export function postPublicationSmoke(
     const published = decode(readFileSync(join(assets, 'app.json'), 'utf8'));
     target = verifyLocalBinding(target, {
       running:
-        run('docker', [
+        docker([
           'inspect',
           '--type',
           'container',
@@ -219,7 +240,7 @@ export function postPublicationSmoke(
           params.container,
         ]) === 'true',
       ports: decode(
-        run('docker', [
+        docker([
           'inspect',
           '--type',
           'container',
@@ -229,7 +250,7 @@ export function postPublicationSmoke(
         ])
       ),
     });
-    const imageId = run('docker', [
+    const imageId = docker([
       'inspect',
       '--type',
       'container',
@@ -239,18 +260,10 @@ export function postPublicationSmoke(
     ]);
     const local = {
       imageId,
-      platform: run('docker', [
-        'image',
-        'inspect',
-        '--format',
-        '{{.Os}}/{{.Architecture}}',
-        imageId,
-      ]),
-      labels: decode(
-        run('docker', ['image', 'inspect', '--format', '{{json .Config.Labels}}', imageId])
-      ),
+      platform: docker(['image', 'inspect', '--format', '{{.Os}}/{{.Architecture}}', imageId]),
+      labels: decode(docker(['image', 'inspect', '--format', '{{json .Config.Labels}}', imageId])),
       repoDigests: decode(
-        run('docker', ['image', 'inspect', '--format', '{{json .RepoDigests}}', imageId])
+        docker(['image', 'inspect', '--format', '{{json .RepoDigests}}', imageId])
       ),
     };
     const diagnostics = cliCall(cliPath, target, 'diagnostics.app', {}, run);

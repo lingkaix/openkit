@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { commitAt } from '../scripts/release-observe.mjs';
 import {
+  localDocker,
   localTarget,
   postPublicationSmoke,
   verifyLocalBinding,
@@ -64,6 +65,29 @@ test('post-publication smoke refuses remote URLs and unbound or stopped containe
   assert.throws(() => verifyLocalBinding('https://localhost:4321', state));
 });
 
+test('Docker observations reject remote hosts and contexts and pin a local socket without inherited overrides', () => {
+  for (const host of ['ssh://host.invalid', 'tcp://127.0.0.1:2375', 'http://host.invalid', '']) {
+    assert.throws(() => localDocker(() => host, { DOCKER_HOST: host }));
+    assert.throws(() => localDocker(() => host, { DOCKER_CONTEXT: 'selected' }));
+  }
+  const calls = [];
+  const docker = localDocker(
+    (...call) => {
+      calls.push(call);
+      return '';
+    },
+    { DOCKER_HOST: 'unix:///run/fixture.sock', SENTINEL: 'retained' }
+  );
+  docker(['inspect', 'fixture']);
+  assert.deepEqual(calls, [
+    [
+      'docker',
+      ['--host', 'unix:///run/fixture.sock', 'inspect', 'fixture'],
+      { env: { SENTINEL: 'retained' } },
+    ],
+  ]);
+});
+
 test('identity joins exact source, tag, index and selected platform without confusing image IDs', () => {
   assert.equal(verifyLocalIdentity(identity).platformDigest, platformDigest);
   for (const change of [
@@ -86,6 +110,7 @@ for (const outcome of [
   'timeout',
   'malformed',
   'stopped',
+  'docker-remote',
 ]) {
   test(`scripted smoke driver records ${outcome} without deployment effects or private transcripts`, () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-release-smoke-'));
@@ -114,6 +139,11 @@ for (const outcome of [
         return '';
       }
       if (exe === 'docker') {
+        if (args[0] === 'context')
+          return outcome === 'docker-remote' ? 'ssh://host.invalid' : 'unix:///var/run/docker.sock';
+        assert.deepEqual(args.slice(0, 2), ['--host', 'unix:///var/run/docker.sock']);
+        assert.equal(options.env.DOCKER_CONTEXT, undefined);
+        assert.equal(options.env.DOCKER_HOST, undefined);
         const field = args[args.indexOf('--format') + 1];
         return {
           '{{.State.Running}}': outcome === 'stopped' ? 'false' : 'true',
@@ -156,6 +186,15 @@ for (const outcome of [
       if (outcome === 'passed') assert.equal(invoke().outcome, 'passed');
       else assert.throws(invoke, (error) => !error.message.includes('private malformed bytes'));
       const evidence = readFileSync(join(output, 'post-publication-smoke.json'), 'utf8');
+      if (outcome === 'docker-remote') {
+        assert.ok(
+          !calls.some(
+            ([exe, args]) =>
+              exe === 'docker' && args.includes('inspect') && !args.includes('context')
+          )
+        );
+        assert.ok(!calls.some(([exe]) => exe === process.execPath));
+      }
       assert.equal(JSON.parse(evidence).outcome, outcome === 'passed' ? 'passed' : 'failed');
       assert.ok(!evidence.includes('private malformed bytes'));
       assert.ok(!evidence.includes('4321'));

@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { premerge, validateMergeSnapshot } from '../scripts/ci-premerge.mjs';
-import { publishTag, reconcileTriage } from '../scripts/release-coordinate.mjs';
+import {
+  admissionIdentities,
+  publishTag,
+  reconcileTriage,
+} from '../scripts/release-coordinate.mjs';
 import {
   command,
   commitAt,
@@ -276,6 +280,37 @@ test('premerge uses only an ordinary exact-SHA fast-forward after successful fre
     )
   );
   assert.ok(!calls.some((c) => c.includes('push')));
+});
+
+test('admission accepts whole-image absence on permitted retry and refuses unobserved or conflicting identities', () => {
+  const source = commitAt('HEAD');
+  const tag = { object: { type: 'commit', sha: source } };
+  const authored = { state: 'same-tag-retry', permitted: true };
+  for (const present of [
+    ['true', 'true', 'true'],
+    ['true', 'false', 'false'],
+    ['false', 'false', 'false'],
+  ])
+    assert.equal(
+      admissionIdentities(
+        authored,
+        tag,
+        present.map((present) => ({ present })),
+        source
+      ).immutableReuseProved,
+      true
+    );
+  const absent = [{ present: 'false' }];
+  assert.equal(admissionIdentities({}, null, absent, source).state, 'unused');
+  for (const [permission, observedTag, states] of [
+    [{}, tag, absent],
+    [{ ...authored, permitted: false }, tag, absent],
+    [authored, null, [{ present: 'true' }]],
+    [authored, { object: { type: 'commit', sha: 'a'.repeat(40) } }, absent],
+    [authored, tag, [{ present: 'unknown' }]],
+    [authored, tag, []],
+  ])
+    assert.throws(() => admissionIdentities(permission, observedTag, states, source));
 });
 
 test('tag coordination refuses changed or failed admission before any tag effect', () => {

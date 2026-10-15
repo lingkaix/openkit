@@ -84,6 +84,22 @@ function imageIdentities(e, { run = command } = {}) {
   return states;
 }
 
+/** A permitted retry reuses complete images and can promote wholly absent images; the registry owner rejects partial tag sets. */
+export function admissionIdentities(authored, tag, states, source) {
+  if (!states.length || states.some((s) => !['true', 'false'].includes(s.present)))
+    throw Error('Complete immutable image observation required');
+  if (!tag && states.every((s) => s.present === 'false'))
+    return { state: 'unused', tagUnused: true, imagesUnused: true };
+  if (
+    authored?.state !== 'same-tag-retry' ||
+    authored.permitted !== true ||
+    tag?.object?.type !== 'commit' ||
+    tag.object.sha !== source
+  )
+    throw Error('Unused identities or an explicitly permitted immutable retry required');
+  return { ...authored, immutableReuseProved: true };
+}
+
 /** Read and combine observations without filling in grant, review, risk disposition or approval claims. */
 export function collectAdmission(
   authored,
@@ -137,19 +153,7 @@ export function collectAdmission(
   e.triage = reconcileTriage(e.triage, snapshot);
   const tag = read(`repos/${e.repository}/git/ref/tags/${e.tag}`, { allowMissing: true });
   const states = imageIdentities(e, { run });
-  if (!tag && states.every((s) => s.present === 'false'))
-    e.identities = { state: 'unused', tagUnused: true, imagesUnused: true };
-  else {
-    if (
-      e.identities?.state !== 'same-tag-retry' ||
-      e.identities.permitted !== true ||
-      tag?.object?.type !== 'commit' ||
-      tag.object.sha !== e.sha ||
-      !states.every((s) => s.present === 'true')
-    )
-      throw Error('Unused identities or an explicitly permitted immutable retry required');
-    e.identities = { ...e.identities, immutableReuseProved: true };
-  }
+  e.identities = admissionIdentities(e.identities, tag, states, e.sha);
   return { evidence: e, snapshot, digest: sha(canonical(e)) };
 }
 
