@@ -13,11 +13,6 @@ const model = {
   capabilities: ['chat-completions', 'tool-calling'],
   modelFamilyId: 'gpt-5',
 };
-const contextManagement = {
-  type: 'compaction' as const,
-  compactThreshold: 8_000,
-  authority: 'openkit' as const,
-};
 
 function userMessage(text = 'Inspect the environment.'): AgentMessage {
   return { role: 'user', content: [{ type: 'text', text }] };
@@ -36,7 +31,6 @@ function input(tools: readonly AgentTool[] = []) {
     messages: [userMessage()],
     tools,
     model,
-    contextManagement,
     limits: { maxModelTurns: 4, maxToolCalls: 3, deadlineMs: 5_000 },
     signal: new AbortController().signal,
   };
@@ -382,5 +376,136 @@ describe('internal Agent loop', () => {
     expect(JSON.stringify(call.mock.calls[1]?.[0].messages)).not.toContain('secret-value');
     expect(JSON.stringify(call.mock.calls[1]?.[0].messages)).not.toContain('abc123');
     expect(JSON.stringify(call.mock.calls[1]?.[0].messages)).not.toContain('must stay server-side');
+  });
+});
+
+describe('internal Agent assembled context', () => {
+  it('consumes a completed caller-assembled Tool exchange without replay or input mutation', async () => {
+    const execute = vi.fn(async () => ({
+      content: [{ type: 'text' as const, text: 'Unexpected replay.' }],
+    }));
+    const tool: AgentTool = {
+      name: 'source.read',
+      description: 'Read an admitted source.',
+      inputSchema: { type: 'object', additionalProperties: false },
+      execute,
+    };
+    const messages: readonly AgentMessage[] = Object.freeze([
+      userMessage('Read the admitted source.'),
+      assistantMessage([
+        { type: 'toolCall', callId: 'settled-read', name: tool.name, arguments: {} },
+      ]),
+      {
+        role: 'tool' as const,
+        callId: 'settled-read',
+        content: [{ type: 'text' as const, text: 'Settled observation.' }],
+        isError: false,
+      },
+      userMessage('Explain that observation without another read.'),
+    ]);
+    const before = structuredClone(messages);
+    const call = vi.fn(async (_request: InternalAgentProviderRequest) => ({
+      message: assistantMessage([{ type: 'text', text: 'The retained observation is available.' }]),
+    }));
+    const assembled = { ...input([tool]), messages };
+
+    const result = await runInternalAgentLoop(assembled, call);
+
+    expect(result.kind).toBe('quiescent');
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(call.mock.calls[0]?.[0].messages).toEqual(before);
+    expect(messages).toEqual(before);
+    expect(result.messages.slice(0, before.length)).toEqual(before);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('uses only newly assembled history and the current Tool closure in a fresh run', async () => {
+    const earlierExecute = vi.fn(async () => ({
+      content: [{ type: 'text' as const, text: 'earlier-source-only' }],
+    }));
+    const currentExecute = vi.fn(async () => ({
+      content: [{ type: 'text' as const, text: 'Current source access is denied.' }],
+      isError: true,
+    }));
+    const definition = {
+      name: 'source.read',
+      description: 'Read an admitted source.',
+      inputSchema: { type: 'object', additionalProperties: false },
+    };
+    const earlierProvider = vi
+      .fn()
+      .mockResolvedValueOnce({
+        message: assistantMessage([
+          { type: 'toolCall', callId: 'earlier-read', name: definition.name, arguments: {} },
+        ]),
+      })
+      .mockResolvedValueOnce({
+        message: assistantMessage([{ type: 'text', text: 'Earlier answer.' }]),
+      });
+    const earlier = await runInternalAgentLoop(
+      {
+        ...input([{ ...definition, execute: earlierExecute }]),
+        messages: [userMessage('earlier-user-only')],
+      },
+      earlierProvider
+    );
+    expect(earlier.kind).toBe('quiescent');
+    expect(earlierExecute).toHaveBeenCalledTimes(1);
+
+    const rebuiltMessages = Object.freeze([userMessage('current-authorized-input-only')]);
+    const currentProvider = vi
+      .fn()
+      .mockResolvedValueOnce({
+        message: assistantMessage([
+          { type: 'toolCall', callId: 'current-read', name: definition.name, arguments: {} },
+        ]),
+      })
+      .mockResolvedValueOnce({
+        message: assistantMessage([{ type: 'text', text: 'Access remains denied.' }]),
+      });
+    const current = await runInternalAgentLoop(
+      { ...input([{ ...definition, execute: currentExecute }]), messages: rebuiltMessages },
+      currentProvider
+    );
+
+    expect(current.kind).toBe('quiescent');
+    expect(currentProvider.mock.calls[0]?.[0].messages).toEqual(rebuiltMessages);
+    expect(currentExecute).toHaveBeenCalledTimes(1);
+    expect(earlierExecute).toHaveBeenCalledTimes(1);
+    expect(currentProvider.mock.calls[1]?.[0].messages.at(-1)).toMatchObject({
+      role: 'tool',
+      callId: 'current-read',
+      isError: true,
+    });
+    expect(JSON.stringify(currentProvider.mock.calls)).not.toContain('earlier-source-only');
+    expect(JSON.stringify(currentProvider.mock.calls)).not.toContain('earlier-user-only');
+  });
+});
+
+describe('internal Agent context ownership', () => {
+  it('accepts the complete private input without a compaction field', async () => {
+    const call = vi.fn(async (_request: InternalAgentProviderRequest) => ({
+      message: assistantMessage([{ type: 'text', text: 'Ready.' }]),
+    }));
+
+    const result = await runInternalAgentLoop(input(), call);
+
+    expect(result.kind).toBe('quiescent');
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(call.mock.calls[0]?.[0]).not.toHaveProperty('contextManagement');
+  });
+
+  it('keeps admitted history when a dependency returns an obsolete compaction checkpoint', async () => {
+    const initial = input();
+    const message = assistantMessage([{ type: 'text', text: 'Answer.' }]);
+    const response = {
+      message,
+      compactedMessages: [userMessage('Provider-owned replacement.')],
+    };
+
+    const result = await runInternalAgentLoop(initial, async () => response);
+
+    expect(result).toEqual({ kind: 'quiescent', messages: [...initial.messages, message] });
+    expect(initial.messages).toEqual([userMessage()]);
   });
 });
