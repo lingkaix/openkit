@@ -823,7 +823,11 @@ pub(crate) enum ResolvedImport {
     /// The archive's single descriptor is already the expected image manifest.
     Original,
     /// A projected single-manifest archive for the selected host platform.
-    Projected { digest: String, archive: File },
+    Projected {
+        digest: String,
+        manifest: Vec<u8>,
+        descriptor_sizes: BTreeMap<String, u64>,
+    },
 }
 
 /// Returns the host OCI platform for a supported NanoHost target.
@@ -3226,27 +3230,10 @@ pub(crate) fn resolve_import_archive<R: Read + Seek>(
         return Err(AcquisitionError::InvalidOciResult);
     }
     verify_descriptor_members(archive, &manifest.config.digest, &descriptor_sizes)?;
-    let scratch = std::env::temp_dir().join(format!(
-        "openkit-nanohost-import-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| AcquisitionError::Io)?
-            .as_nanos()
-    ));
-    let projected = (|| {
-        write_image_layout(&scratch, &manifest_digest, &manifest_bytes, &manifest)?;
-        copy_archive_blobs(archive, &scratch.join("blobs/sha256"), &descriptor_sizes)?;
-        archive_registry_layout(&scratch, &manifest_digest, &descriptor_sizes)
-    })();
-    if projected.is_err() {
-        let _ = fs::remove_dir_all(&scratch);
-    }
-    let archive_file = projected?;
-    fs::remove_dir_all(&scratch)?;
     Ok(ResolvedImport::Projected {
         digest: manifest_digest,
-        archive: archive_file,
+        manifest: manifest_bytes,
+        descriptor_sizes,
     })
 }
 
@@ -3366,53 +3353,105 @@ struct LayoutDescriptor {
     size: u64,
 }
 
-/// Streams the selected manifest's config and layers into an OCI layout.
-fn copy_archive_blobs<R: Read + Seek>(
-    archive: &mut R,
-    blob_root: &Path,
-    expected: &BTreeMap<String, u64>,
+/// Builds the bounded metadata members for the selected manifest archive.
+fn import_metadata(
+    digest: &str,
+    manifest: &[u8],
+) -> Result<Vec<(String, Vec<u8>)>, AcquisitionError> {
+    let parsed: OciImageManifest =
+        serde_json::from_slice(manifest).map_err(|_| AcquisitionError::InvalidOciResult)?;
+    let index = serde_json::to_vec(&serde_json::json!({
+        "schemaVersion": 2,
+        "manifests": [{
+            "mediaType": parsed.media_type.ok_or(AcquisitionError::InvalidOciResult)?,
+            "digest": digest,
+            "size": manifest.len(),
+        }],
+    }))
+    .map_err(|_| AcquisitionError::InvalidOciResult)?;
+    Ok(vec![
+        (
+            "oci-layout".into(),
+            b"{\"imageLayoutVersion\":\"1.0.0\"}\n".to_vec(),
+        ),
+        ("index.json".into(), index),
+        (
+            format!("blobs/sha256/{}", digest_hex(digest)?),
+            manifest.to_vec(),
+        ),
+    ])
+}
+
+/// Computes the exact uncompressed projection size before any staging write.
+pub(crate) fn import_projection_size(
+    digest: &str,
+    manifest: &[u8],
+    descriptor_sizes: &BTreeMap<String, u64>,
+) -> Result<u64, AcquisitionError> {
+    let metadata = import_metadata(digest, manifest)?;
+    metadata
+        .iter()
+        .map(|(_, bytes)| bytes.len() as u64)
+        .chain(descriptor_sizes.values().copied())
+        .try_fold(1024_u64, |total, size| {
+            total
+                .checked_add(512)
+                .and_then(|total| total.checked_add(size))
+                .and_then(|total| total.checked_add((512 - size % 512) % 512))
+                .filter(|total| *total <= IMAGE_ARCHIVE_MAX_BYTES)
+                .ok_or(AcquisitionError::InvalidOciResult)
+        })
+}
+
+/// Streams one selected archive directly into the store's already attributed staging file.
+///
+/// Rechecks referenced bytes while copying so a changed source cannot be published.
+pub(crate) fn write_import_projection<R: Read + Seek>(
+    source: &mut R,
+    output: &mut File,
+    digest: &str,
+    manifest: &[u8],
+    descriptor_sizes: &BTreeMap<String, u64>,
 ) -> Result<(), AcquisitionError> {
-    archive.seek(SeekFrom::Start(0))?;
-    let mut remaining = expected.clone();
-    let mut observed = BTreeSet::new();
-    while let Some(header) = next_tar_header(archive)? {
+    for (name, bytes) in import_metadata(digest, manifest)? {
+        output.write_all(&regular_tar_header(&name, bytes.len() as u64)?)?;
+        for chunk in bytes.chunks(ARCHIVE_CHUNK_BYTES) {
+            output.write_all(chunk)?;
+        }
+        output.write_all(&[0_u8; 512][..(512 - bytes.len() % 512) % 512])?;
+    }
+    source.seek(SeekFrom::Start(0))?;
+    let mut remaining = descriptor_sizes.clone();
+    while let Some(header) = next_tar_header(source)? {
         let wanted = header.name.strip_prefix("blobs/sha256/").and_then(|stem| {
             let digest = format!("sha256:{stem}");
-            expected.contains_key(&digest).then_some(digest)
+            descriptor_sizes.contains_key(&digest).then_some(digest)
         });
         if let Some(digest) = wanted {
-            if !header.regular
-                || header.size != expected[&digest]
-                || !observed.insert(digest.clone())
-            {
+            if !header.regular || remaining.remove(&digest) != Some(header.size) {
                 return Err(AcquisitionError::InvalidOciResult);
             }
-            let mut file = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .mode(0o600)
-                .open(blob_root.join(digest_hex(&digest)?))?;
+            output.write_all(&regular_tar_header(&header.name, header.size)?)?;
             let mut hasher = Sha256::new();
-            read_member_stream(archive, header.size, |chunk| {
+            read_member_stream(source, header.size, |chunk| {
                 hasher.update(chunk);
-                file.write_all(chunk)?;
+                output.write_all(chunk)?;
                 Ok(())
             })?;
-            file.sync_all()?;
             if format!("sha256:{:x}", hasher.finalize()) != digest {
                 return Err(AcquisitionError::InvalidOciResult);
             }
-            remaining.remove(&digest);
+            output.write_all(&[0_u8; 512][..((512 - header.size % 512) % 512) as usize])?;
         } else {
-            read_member_stream(archive, header.size, |_| Ok(()))?;
+            read_member_stream(source, header.size, |_| Ok(()))?;
         }
-        seek_tar_padding(archive, header.size)?;
+        seek_tar_padding(source, header.size)?;
     }
-    if remaining.is_empty() {
-        Ok(())
-    } else {
-        Err(AcquisitionError::InvalidOciResult)
+    if !remaining.is_empty() {
+        return Err(AcquisitionError::InvalidOciResult);
     }
+    output.write_all(&[0_u8; 1024])?;
+    Ok(())
 }
 
 /// In-process registry documents used by acquisition tests.
@@ -5491,23 +5530,19 @@ mod tests {
         let mut cursor = Cursor::new(archive);
         let resolved = resolve_import_archive(&mut cursor, &bytes.index_digest)
             .expect("project the host manifest");
-        let ResolvedImport::Projected {
-            digest,
-            archive: projected,
-        } = resolved
-        else {
+        let ResolvedImport::Projected { digest, .. } = resolved else {
             panic!("index archive must project the host manifest");
         };
         assert_eq!(digest, bytes.selected_digest);
         let store = open_store(&root);
-        store
-            .admit_oci_file(
-                &digest,
-                projected,
-                StoreLineage::LocalArchive(digest.clone()),
-                1,
-            )
-            .expect("admit projected manifest");
+        let archive_path = root.join("index.oci.tar");
+        fs::write(&archive_path, cursor.into_inner()).unwrap();
+        assert_eq!(
+            store
+                .admit_local_archive(&bytes.index_digest, File::open(archive_path).unwrap(), 1)
+                .expect("admit projected manifest"),
+            digest,
+        );
         store
             .read_verified(&bytes.selected_digest)
             .expect("stored child");

@@ -2526,3 +2526,6 @@ mod tests {
 
 #[cfg(test)]
 mod epoch_evidence;
+
+#[cfg(test)]
+mod image_import_tests;
