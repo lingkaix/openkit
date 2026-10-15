@@ -1890,6 +1890,59 @@ describe('internal rolling context Gateway boundary', () => {
     expect(createResponses).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    { admittedOutput: 2_000, expectedOutput: 2_000 },
+    { admittedOutput: null, expectedOutput: 8_000 },
+  ])('caps model output at the known admitted or member limit: %j', async ({
+    admittedOutput,
+    expectedOutput,
+  }) => {
+    const admitted: ResolvedLogicalModel = {
+      ...logicalModel,
+      contract: { context: 64_000, output: admittedOutput, inputModalities: null, reasoning: null },
+    };
+    const { provider, createResponses } = boundaryFixture(admitted);
+
+    await expect(provider(request())).resolves.toMatchObject({ message: { role: 'assistant' } });
+
+    expect(createResponses).toHaveBeenCalledTimes(1);
+    expect(createResponses.mock.calls[0]![1]).toMatchObject({
+      model: 'model',
+      max_output_tokens: expectedOutput,
+    });
+  });
+
+  it('enforces the admitted logical window when the selected member has more physical capacity', async () => {
+    const admitted: ResolvedLogicalModel = {
+      ...logicalModel,
+      contextManagement: { type: 'compaction', compactThreshold: 1_000 },
+      contract: { context: 8_000, output: 2_000, inputModalities: null, reasoning: null },
+    };
+    const { provider, createResponses } = boundaryFixture(admitted, undefined, {
+      context: 128_000,
+      output: 2_000,
+    });
+    const initial = request(
+      'Exact retained continuation fact and required source boundary. '.repeat(1_400)
+    );
+    const before = structuredClone(initial.messages);
+
+    const result = await runInternalAgentLoop(
+      {
+        ...initial,
+        tools: [],
+        limits: { maxModelTurns: 2, maxToolCalls: 1, deadlineMs: 5_000 },
+      },
+      provider
+    );
+
+    expect(result.kind).toBe('failed');
+    expect(result).toMatchObject({ code: 'internal_agent_context_exceeded' });
+    expect(result.messages).toEqual(before);
+    expect(createResponses).not.toHaveBeenCalled();
+    expect(initial.messages).toEqual(before);
+  });
+
   it('rejects a Provider compaction item without accepting its summary or ordinary output', async () => {
     const { provider, createResponses } = boundaryFixture();
     createResponses.mockResolvedValueOnce({

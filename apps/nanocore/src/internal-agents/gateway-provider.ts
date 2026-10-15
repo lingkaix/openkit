@@ -152,10 +152,13 @@ export function createInternalAgentGatewayProvider(
             },
             providerModel
           ).limit;
+          const maxOutputTokens = options.logicalModel.contract?.output ?? limits?.output;
           assertPhysicalContextFits(
             { instructions: request.systemPrompt, input: providerInput, tools: providerTools },
-            limits?.context,
-            limits?.output
+            limits?.context === undefined
+              ? undefined
+              : Math.min(limits.context, options.logicalModel.contract?.context ?? limits.context),
+            maxOutputTokens
           );
           const response = await options.dispatcher
             .createResponses(
@@ -166,6 +169,7 @@ export function createInternalAgentGatewayProvider(
                 input: providerInput,
                 parallel_tool_calls: false,
                 tools: providerTools,
+                ...(maxOutputTokens === undefined ? {} : { max_output_tokens: maxOutputTokens }),
               },
               {
                 ...(subscriptionModels ? { models: subscriptionModels } : {}),
