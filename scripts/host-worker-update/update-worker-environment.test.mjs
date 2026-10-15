@@ -6,7 +6,6 @@ import path from 'node:path';
 import { test } from 'node:test';
 import {
   AppUpdatePreflightResponseSchema,
-  NanoHostRuntimeTargetStatusResponseSchema,
   WORKER_ENVIRONMENT_OPERATION_DEFINITIONS,
   workerEnvironmentActivationConfirmation,
 } from '../../packages/app-api-schemas/dist/index.js';
@@ -28,7 +27,7 @@ const deployment = {
   reference: 'retained-staging-binding',
   sshAlias: 'a1',
   origin: target,
-  machineId: '3'.repeat(32),
+  machineIdentityDigest: '3'.repeat(64),
   container: 'openkit-app',
 };
 
@@ -97,11 +96,21 @@ async function fixture(t, platform) {
   const p = parameters(platform);
   const calls = [];
   const host = {
-    machineId: deployment.machineId,
-    sourceCommit,
-    distributionSha256: 'f'.repeat(64),
+    machineIdentityDigest: deployment.machineIdentityDigest,
+    archiveAttribution: {
+      sourceCommit,
+      tag,
+      platform: p.platform,
+      archiveSha256: 'f'.repeat(64),
+      payloads: {
+        nanohostSha256: '4'.repeat(64),
+        gatewaySha256: '5'.repeat(64),
+        unitFileSha256: '6'.repeat(64),
+      },
+    },
     physicalEpoch: currentPhysicalEpoch,
-    runtimeTarget: NanoHostRuntimeTargetStatusResponseSchema.parse({
+    runtimeTarget: {
+      physicalEpoch: currentPhysicalEpoch,
       identityId: 'configured-nanohost',
       deploymentId: 'configured-deployment',
       connectionGeneration: 8,
@@ -109,7 +118,40 @@ async function fixture(t, platform) {
       ready: true,
       freshEmpty: true,
       observedAt: '2026-10-15T00:00:00Z',
-    }),
+    },
+  };
+  host.runtimeTargetBefore = structuredClone(host.runtimeTarget);
+  const process = {
+    bootId: '11111111-1111-4111-8111-111111111111',
+    pid: 123,
+    startTimeTicks: '12345',
+  };
+  host.inspection = {
+    nonce: '7'.repeat(64),
+    outcome: 'observed',
+    machineIdentityDigest: host.machineIdentityDigest,
+    physicalEpoch: host.physicalEpoch,
+    identityId: host.runtimeTarget.identityId,
+    deploymentId: host.runtimeTarget.deploymentId,
+    connectionGeneration: 8,
+    coordinator: process,
+    executables: {
+      nanohost: {
+        process: structuredClone(process),
+        sha256: host.archiveAttribution.payloads.nanohostSha256,
+      },
+      gateway: {
+        process: { ...process, pid: 124, startTimeTicks: '12346' },
+        sha256: host.archiveAttribution.payloads.gatewaySha256,
+      },
+    },
+    unit: {
+      fileSha256: host.archiveAttribution.payloads.unitFileSha256,
+      effectiveStateDigest: '8'.repeat(64),
+      activeState: 'active',
+      subState: 'running',
+    },
+    replacementDuringMeasurement: false,
   };
   // This upstream observation is fixed independently of caller parameter assertions.
   const replacement = {
@@ -121,9 +163,26 @@ async function fixture(t, platform) {
     before: {
       ...structuredClone(host),
       physicalEpoch: previousPhysicalEpoch,
-      runtimeTarget: { ...structuredClone(host.runtimeTarget), connectionGeneration: 7 },
-      sourceCommit: '8'.repeat(40),
-      distributionSha256: '9'.repeat(64),
+      runtimeTarget: {
+        ...structuredClone(host.runtimeTarget),
+        physicalEpoch: previousPhysicalEpoch,
+        connectionGeneration: 7,
+      },
+      runtimeTargetBefore: {
+        ...structuredClone(host.runtimeTarget),
+        physicalEpoch: previousPhysicalEpoch,
+        connectionGeneration: 7,
+      },
+      inspection: {
+        ...structuredClone(host.inspection),
+        physicalEpoch: previousPhysicalEpoch,
+        connectionGeneration: 7,
+      },
+      archiveAttribution: {
+        ...structuredClone(host.archiveAttribution),
+        sourceCommit: '8'.repeat(40),
+        archiveSha256: '9'.repeat(64),
+      },
     },
     after: structuredClone(host),
   };
@@ -150,6 +209,8 @@ async function fixture(t, platform) {
     activation: (value) => value,
   };
   let prepared;
+  let sampled;
+  let bracketRead = 0;
   const io = {
     deploymentRecord: async () => controls.binding(),
     currentGrant: async () => controls.grant(),
@@ -157,12 +218,22 @@ async function fixture(t, platform) {
       assert.equal(selected, target);
       return controls.replacement();
     },
-    observeHost: async (selected) => {
+    archiveAttribution: async () => structuredClone(host.archiveAttribution),
+    inspectHost: async (selected, { nonce }) => {
       assert.equal(selected, target);
-      return controls.host();
+      return {
+        ...structuredClone(sampled.inspection),
+        nonce,
+        physicalEpoch: sampled.physicalEpoch,
+        machineIdentityDigest: sampled.machineIdentityDigest,
+      };
     },
     call: async (operation, input) => {
       calls.push({ operation, input: structuredClone(input) });
+      if (operation === 'nanohost.runtime-target') {
+        if (bracketRead++ % 2 === 0) sampled = controls.host();
+        return { ...structuredClone(sampled.runtimeTarget), physicalEpoch: sampled.physicalEpoch };
+      }
       if (operation === 'app-update.preflight') return controls.preflight();
       const definition = WORKER_ENVIRONMENT_OPERATION_DEFINITIONS[operation];
       assert.ok(definition, `Unexpected operation: ${operation}`);
@@ -299,7 +370,7 @@ for (const [name, change] of [
   [
     'missing host observation',
     (f) => {
-      f.io.observeHost = undefined;
+      f.io.inspectHost = undefined;
     },
   ],
   [
@@ -329,19 +400,19 @@ for (const [name, change] of [
   [
     'wrong host machine',
     (f) => {
-      f.host.machineId = '5'.repeat(32);
+      f.host.machineIdentityDigest = '5'.repeat(64);
     },
   ],
   [
-    'wrong host source',
+    'wrong running Gateway',
     (f) => {
-      f.host.sourceCommit = '6'.repeat(40);
+      f.host.inspection.executables.gateway.sha256 = '6'.repeat(64);
     },
   ],
   [
-    'wrong host distribution',
+    'wrong running NanoHost',
     (f) => {
-      f.host.distributionSha256 = '7'.repeat(64);
+      f.host.inspection.executables.nanohost.sha256 = '7'.repeat(64);
     },
   ],
   [
@@ -641,19 +712,19 @@ for (const [name, change] of [
   [
     'host machine',
     (host) => {
-      host.machineId = '5'.repeat(32);
+      host.machineIdentityDigest = '5'.repeat(64);
     },
   ],
   [
-    'host source',
+    'running Gateway',
     (host) => {
-      host.sourceCommit = '6'.repeat(40);
+      host.inspection.executables.gateway.sha256 = '6'.repeat(64);
     },
   ],
   [
-    'host distribution',
+    'running NanoHost',
     (host) => {
-      host.distributionSha256 = '7'.repeat(64);
+      host.inspection.executables.nanohost.sha256 = '7'.repeat(64);
     },
   ],
   [
@@ -766,7 +837,7 @@ test('refuses unknown preparation instruction fields before Worker effects', asy
   assert.deepEqual(effects(f), []);
 });
 
-test('reports distinct bounded refusal reasons for busy work and conflicting host source', async (t) => {
+test('reports distinct bounded refusal reasons for busy work and conflicting running Gateway', async (t) => {
   const busy = await fixture(t);
   const originalPreflight = busy.controls.preflight;
   busy.controls.preflight = () => {
@@ -776,7 +847,7 @@ test('reports distinct bounded refusal reasons for busy work and conflicting hos
     return body;
   };
   const wrongSource = await fixture(t);
-  wrongSource.host.sourceCommit = '6'.repeat(40);
+  wrongSource.host.inspection.executables.gateway.sha256 = '6'.repeat(64);
   let busyReason;
   let hostReason;
   await assert.rejects(
@@ -795,7 +866,7 @@ test('reports distinct bounded refusal reasons for busy work and conflicting hos
       hostReason = error.message;
       assert.equal(typeof hostReason, 'string');
       assert.ok(hostReason.length <= 256);
-      assert.match(hostReason, /host|source|identity/i);
+      assert.match(hostReason, /host|observation|identity/i);
       return true;
     }
   );
@@ -885,7 +956,7 @@ for (const [name, change] of [
   [
     'another predecessor machine',
     (_f, record) => {
-      record.before.machineId = '5'.repeat(32);
+      record.before.machineIdentityDigest = '5'.repeat(64);
     },
   ],
   [
@@ -897,7 +968,7 @@ for (const [name, change] of [
   [
     'another successor distribution',
     (_f, record) => {
-      record.after.distributionSha256 = '6'.repeat(64);
+      record.after.archiveAttribution.archiveSha256 = '6'.repeat(64);
     },
   ],
   [
@@ -952,4 +1023,115 @@ test('refuses a changed physical witness within the predecessor connection gener
   f.controls.replacement = () => record;
   await assert.rejects(() => run(f));
   assert.deepEqual(effects(f), []);
+});
+
+for (const [name, change] of [
+  [
+    'same-Epoch reconnect',
+    (host) => {
+      host.runtimeTarget.connectionGeneration += 1;
+      host.inspection.connectionGeneration += 1;
+    },
+  ],
+  [
+    'coordinator process replacement',
+    (host) => {
+      host.inspection.coordinator.startTimeTicks = '12399';
+      host.inspection.executables.nanohost.process.startTimeTicks = '12399';
+    },
+  ],
+  [
+    'Gateway process replacement',
+    (host) => {
+      host.inspection.executables.gateway.process.startTimeTicks = '12399';
+    },
+  ],
+]) {
+  test(`stops ${name} after preparation even when the next individual join is consistent`, async (t) => {
+    const f = await fixture(t);
+    f.controls.prepared = (body) => {
+      change(f.host);
+      return body;
+    };
+    await assert.rejects(() => run(f), /host incarnation changed before activation/);
+    assert.deepEqual(
+      effects(f).map(({ operation }) => operation),
+      ['worker-environment.prepare']
+    );
+    assert.equal(
+      f.calls.filter(({ operation }) => operation === 'nanohost.runtime-target').length,
+      4
+    );
+  });
+}
+
+for (const [field, value] of [
+  ['archiveSha256', 'a'.repeat(64)],
+  ['sourceCommit', 'b'.repeat(40)],
+  ['tag', 'v0.1.0-rc.7'],
+  ['platform', 'linux/amd64'],
+]) {
+  test(`requires independent archive ${field} to match the selected release before effects`, async (t) => {
+    const f = await fixture(t);
+    const baseline = f.io.archiveAttribution;
+    f.io.archiveAttribution = async () => ({ ...(await baseline()), [field]: value });
+    await assert.rejects(() => run(f));
+    assert.deepEqual(effects(f), []);
+  });
+}
+
+test('rejects a replayed successful inspection before activation without a second challenge', async (t) => {
+  const f = await fixture(t);
+  const inspect = f.io.inspectHost;
+  let retained;
+  let attempts = 0;
+  f.io.inspectHost = async (...args) => {
+    attempts += 1;
+    if (retained) return structuredClone(retained);
+    retained = await inspect(...args);
+    return retained;
+  };
+  await assert.rejects(() => run(f));
+  assert.equal(attempts, 2);
+  assert.deepEqual(
+    effects(f).map(({ operation }) => operation),
+    ['worker-environment.prepare']
+  );
+});
+
+for (const stage of ['before prepare', 'before activate']) {
+  test(`stops an unknown live-inspection outcome ${stage} without retry or raw evidence`, async (t) => {
+    const f = await fixture(t);
+    const inspect = f.io.inspectHost;
+    let attempts = 0;
+    f.io.inspectHost = async (...args) => {
+      attempts += 1;
+      if (attempts === (stage === 'before prepare' ? 1 : 2))
+        throw Error('Bearer syntheticunknownprobevalue');
+      return inspect(...args);
+    };
+    await assert.rejects(() => run(f));
+    assert.equal(attempts, stage === 'before prepare' ? 1 : 2);
+    assert.equal(effects(f).length, stage === 'before prepare' ? 0 : 1);
+    assert.equal((await evidenceText(f.evidence)).includes('syntheticunknownprobevalue'), false);
+  });
+}
+
+test('retains digest and archive attribution without the provisional raw identifier/checksum fields', async (t) => {
+  const f = await fixture(t);
+  const result = await run(f);
+  assert.equal(result.host.machineIdentityDigest, deployment.machineIdentityDigest);
+  assert.equal(result.host.archiveAttribution.archiveSha256, 'f'.repeat(64));
+  assert.equal(result.host.inspection.executables.nanohost.sha256, '4'.repeat(64));
+  assert.notEqual(result.host.inspection.nonce, result.hostBeforeActivation.inspection.nonce);
+  assert.notEqual(
+    result.hostBeforeActivation.inspection.nonce,
+    result.hostAfterActivation.inspection.nonce
+  );
+  assert.deepEqual(
+    result.hostBeforeActivation.runtimeTargetBefore,
+    result.hostBeforeActivation.runtimeTarget
+  );
+  assert.equal((await evidenceText(f.evidence)).includes('"machineId"'), false);
+  assert.equal((await evidenceText(f.evidence)).includes('distributionSha256'), false);
 });

@@ -5,12 +5,16 @@ import {
   ActivateWorkerEnvironmentRequestSchema,
   ActivateWorkerEnvironmentResponseSchema,
   AppUpdatePreflightResponseSchema,
-  NanoHostRuntimeTargetStatusResponseSchema,
   PrepareWorkerEnvironmentResponseSchema,
   WorkerEnvironmentPrepareInputSchema,
 } from '@openkit/app-api-schemas';
 import { createReleaseManifest } from '../release-record.mjs';
 import { canonical, noSecrets, once, save } from '../release-safety.mjs';
+import {
+  admitArchiveAttribution,
+  admitHostObservation,
+  observeOperatorHost,
+} from './host-observation.mjs';
 
 /** Only locally authored refusal text may enter an update result or caller error. */
 class WorkerUpdateStop extends Error {}
@@ -61,12 +65,15 @@ function deploymentBinding(target, record) {
       record.sshAlias === 'a1' &&
       typeof record.reference === 'string' &&
       record.reference.length > 0 &&
-      /^[a-f0-9]{32}$/.test(record.machineId ?? '') &&
+      /^[a-f0-9]{64}$/.test(record.machineIdentityDigest ?? '') &&
       /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(record.container ?? ''),
     'retained staging deployment binding unavailable'
   );
   return Object.fromEntries(
-    ['reference', 'sshAlias', 'origin', 'machineId', 'container'].map((key) => [key, record[key]])
+    ['reference', 'sshAlias', 'origin', 'machineIdentityDigest', 'container'].map((key) => [
+      key,
+      record[key],
+    ])
   );
 }
 
@@ -87,29 +94,28 @@ function requireGrant(target, grant, binding) {
   noSecrets(grant);
 }
 
-/** Inspect exact running distribution and authenticated readiness without inferring a physical Epoch. */
-function hostObservation(raw, binding, selection) {
-  const runtimeTarget = admit(
-    NanoHostRuntimeTargetStatusResponseSchema.strip(),
-    raw?.runtimeTarget,
-    'host readiness unavailable'
-  );
+/** Bind independently verified archive attribution to the selected release publication. */
+function selectedArchive(raw, selection, platform) {
+  const archive = admitArchiveAttribution(raw);
   requireFact(
-    raw.machineId === binding.machineId &&
-      raw.sourceCommit === selection.manifest.sourceCommit &&
-      raw.distributionSha256 === selection.distribution.sha256 &&
-      /^[a-f0-9]{64}$/.test(raw.physicalEpoch ?? '') &&
-      runtimeTarget.ready &&
-      runtimeTarget.predecessorFenced,
-    'running host identity, distribution, Epoch or readiness unavailable'
+    archive.archiveSha256 === selection.distribution.sha256 &&
+      archive.tag === selection.manifest.tag &&
+      archive.sourceCommit === selection.manifest.sourceCommit &&
+      archive.platform === platform,
+    'verified NanoHost archive does not match the selected release'
   );
-  return {
-    machineId: raw.machineId,
-    sourceCommit: raw.sourceCommit,
-    distributionSha256: raw.distributionSha256,
-    physicalEpoch: raw.physicalEpoch,
-    runtimeTarget,
-  };
+  return archive;
+}
+
+/** A new sample cannot silently replace a connection or process already used by this attempt. */
+function sameIncarnation(left, right) {
+  return (
+    left.physicalEpoch === right.physicalEpoch &&
+    canonical(left.runtimeTarget) ===
+      canonical({ ...right.runtimeTarget, observedAt: left.runtimeTarget.observedAt }) &&
+    canonical(left.inspection.coordinator) === canonical(right.inspection.coordinator) &&
+    canonical(left.inspection.executables) === canonical(right.inspection.executables)
+  );
 }
 
 /** Bind the existing upstream component evidence; an asserted historical witness cannot prove replacement. */
@@ -123,36 +129,30 @@ function replacementObservation(raw, target, p, binding, grant, host, selection)
       raw.release.sourceCommit === selection.manifest.sourceCommit,
     'accepted NanoHost replacement evidence for this invocation required'
   );
-  const previousTarget = admit(
-    NanoHostRuntimeTargetStatusResponseSchema.strip(),
-    raw.before?.runtimeTarget,
-    'NanoHost predecessor observation unavailable'
-  );
-  const successor = hostObservation(raw.after, binding, selection);
+  const previous = admitHostObservation(raw.before, {
+    binding,
+    archiveAttribution: raw.before?.archiveAttribution,
+    effectiveStateDigest: raw.before?.inspection?.unit?.effectiveStateDigest,
+  });
+  const successor = admitHostObservation(raw.after, {
+    binding,
+    archiveAttribution: host.archiveAttribution,
+    effectiveStateDigest: host.inspection.unit.effectiveStateDigest,
+  });
   requireFact(
-    raw.before.machineId === binding.machineId &&
-      /^[a-f0-9]{64}$/.test(raw.before.physicalEpoch ?? '') &&
-      raw.before.physicalEpoch === p.previousPhysicalEpoch &&
-      raw.before.physicalEpoch !== successor.physicalEpoch &&
-      previousTarget.identityId === host.runtimeTarget.identityId &&
-      previousTarget.deploymentId === host.runtimeTarget.deploymentId &&
-      successor.physicalEpoch === host.physicalEpoch &&
-      successor.runtimeTarget.freshEmpty &&
-      successor.runtimeTarget.identityId === host.runtimeTarget.identityId &&
-      successor.runtimeTarget.deploymentId === host.runtimeTarget.deploymentId &&
-      successor.runtimeTarget.connectionGeneration > previousTarget.connectionGeneration &&
-      successor.runtimeTarget.connectionGeneration <= host.runtimeTarget.connectionGeneration,
+    previous.physicalEpoch === p.previousPhysicalEpoch &&
+      previous.physicalEpoch !== successor.physicalEpoch &&
+      previous.runtimeTarget.identityId === host.runtimeTarget.identityId &&
+      previous.runtimeTarget.deploymentId === host.runtimeTarget.deploymentId &&
+      successor.runtimeTarget.connectionGeneration > previous.runtimeTarget.connectionGeneration &&
+      sameIncarnation(successor, host),
     'NanoHost replacement does not prove the selected predecessor and current fresh Epoch'
   );
   return {
     reference: raw.reference,
     outcome: 'passed',
     release: { tag: selection.manifest.tag, sourceCommit: selection.manifest.sourceCommit },
-    before: {
-      machineId: raw.before.machineId,
-      physicalEpoch: raw.before.physicalEpoch,
-      runtimeTarget: previousTarget,
-    },
+    before: previous,
     after: successor,
   };
 }
@@ -214,9 +214,14 @@ export async function updateWorkerEnvironment(target, params, evidenceDir, io) {
       'unknown update instruction'
     );
     requireFact(
-      ['call', 'deploymentRecord', 'currentGrant', 'observeHost', 'replacementObservation'].every(
-        (key) => typeof io?.[key] === 'function'
-      ),
+      [
+        'call',
+        'deploymentRecord',
+        'currentGrant',
+        'inspectHost',
+        'archiveAttribution',
+        'replacementObservation',
+      ].every((key) => typeof io?.[key] === 'function'),
       'independent administrator adapters required'
     );
     const selection = releaseSelection(p);
@@ -251,13 +256,25 @@ export async function updateWorkerEnvironment(target, params, evidenceDir, io) {
     const grant = structuredClone(await io.currentGrant());
     requireGrant(target, grant, binding);
     requireFact(canonical(grant) === canonical(p.grant), 'grant changed before preparation');
-    const host = hostObservation(await io.observeHost(target), binding, selection);
+    const archiveAttribution = selectedArchive(
+      await io.archiveAttribution(),
+      selection,
+      p.platform
+    );
+    const upstream = structuredClone(await io.replacementObservation(target));
+    // The separately accepted stage is the configuration authority; the archive alone is not.
+    const expected = {
+      binding,
+      archiveAttribution,
+      effectiveStateDigest: upstream?.after?.inspection?.unit?.effectiveStateDigest,
+    };
+    const host = await observeOperatorHost(target, expected, io);
     requireFact(
       host.physicalEpoch !== p.previousPhysicalEpoch && host.runtimeTarget.freshEmpty,
       'fresh physical Epoch evidence required before registry preparation'
     );
     result.nanoHostReplacement = replacementObservation(
-      await io.replacementObservation(target),
+      upstream,
       target,
       p,
       binding,
@@ -314,14 +331,9 @@ export async function updateWorkerEnvironment(target, params, evidenceDir, io) {
     const currentGrant = await io.currentGrant();
     requireGrant(target, currentGrant, currentBinding);
     requireFact(canonical(currentGrant) === canonical(grant), 'grant changed before activation');
-    const currentHost = hostObservation(await io.observeHost(target), currentBinding, selection);
-    requireFact(
-      currentHost.physicalEpoch === host.physicalEpoch &&
-        currentHost.runtimeTarget.identityId === host.runtimeTarget.identityId &&
-        currentHost.runtimeTarget.deploymentId === host.runtimeTarget.deploymentId &&
-        currentHost.runtimeTarget.connectionGeneration >= host.runtimeTarget.connectionGeneration,
-      'host incarnation changed before activation'
-    );
+    const currentHost = await observeOperatorHost(target, expected, io);
+    requireFact(sameIncarnation(currentHost, host), 'host incarnation changed before activation');
+    result.hostBeforeActivation = currentHost;
     result.preflightBeforeActivation = requireIdle(await io.call('app-update.preflight', {}));
     const activationRequest = admit(
       ActivateWorkerEnvironmentRequestSchema,
@@ -354,13 +366,9 @@ export async function updateWorkerEnvironment(target, params, evidenceDir, io) {
       'activation is partial, contradictory or unknown; inspect without retry'
     );
     result.stage = 'verification';
-    const afterHost = hostObservation(await io.observeHost(target), binding, selection);
+    const afterHost = await observeOperatorHost(target, expected, io);
     requireFact(
-      afterHost.physicalEpoch === host.physicalEpoch &&
-        afterHost.runtimeTarget.identityId === host.runtimeTarget.identityId &&
-        afterHost.runtimeTarget.deploymentId === host.runtimeTarget.deploymentId &&
-        afterHost.runtimeTarget.connectionGeneration >=
-          currentHost.runtimeTarget.connectionGeneration,
+      sameIncarnation(afterHost, currentHost),
       'host incarnation changed after activation; inspection required'
     );
     result.hostAfterActivation = afterHost;
