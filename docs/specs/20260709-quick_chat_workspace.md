@@ -3,16 +3,14 @@ status: Accepted
 implementation: Partial
 kind: concept
 ---
-# Quick Chat Workspace
+# Personal Workspace
 
 ## Owns
 
-- The product and implementation contract for the built-in Quick Chat workspace kind.
-- The per-user seed rule that makes Quick Chat each user's initial owner-only Workspace.
-- The rule that the Quick Chat Workspace cannot be shared or converted to a project; explicitly selected conversation snapshots may be published under the Thread sharing owner.
-- The capability boundary that allows lightweight Chat Mode and workspace knowledge while refusing repository, data-source, Task Mode, Goal Mode, worker execution, and project-worker hosting flows.
-- The Quick Chat work-request transition that preserves that capability boundary while resolving or creating a separate executing Workspace through one confirmation.
-- The App API and Web behavior required to project the Work Model boundary for Quick Chat.
+- The default personal Workspace, its owner-only provisioning, and the one-way migration from the former Quick Chat kind.
+- Its full ordinary Workspace capability under existing Task, Goal, Artifact, Sandbox, repository, and data-source owners.
+- The prohibition on adding members, transferring ownership, or implicitly converting it to a team Workspace.
+- Initial Web selection and the personal Workspace placement of the private administration entry.
 
 ## Does Not Own
 
@@ -48,112 +46,51 @@ kind: concept
 
 ## Summary
 
-`docs/core/work-model.md` owns Quick Chat's stable product meaning and owner-only lightweight boundary. This specification realizes it as each local or server user's initial Workspace; a fresh local data root therefore has one Quick Chat, while a server deployment has one independent Quick Chat per user.
+Each User receives a default `personal` Workspace. It is an ordinary Workspace whose only special boundary is owner-only membership. It can own Task, Goal, Artifact, Sandbox, repository, and data-source work under their existing authorization and lifecycle rules ([accepted rulings 1 and 12](../decisions/20261015-private_assistant_timeline_and_rolling_context.md)).
 
 ## Goals / Non-goals
 
-### Goals
-
-- Seed Quick Chat as the only Workspace initially visible to each newly created user.
-- Represent Quick Chat through a product-visible workspace kind rather than a hard-coded workspace id branch.
-- Allow Chat Mode, ordinary threads, ordinary items, and Knowledge Store records in Quick Chat.
-- Reject repository resource binding, workspace data-source catalog use, direct Task Mode, direct Goal Mode, direct worker turn startup, and project-worker hosting in Quick Chat itself.
-- Ensure a work request made in Quick Chat either reaches an accepted Task or Goal in a separate eligible Workspace through one confirmation or leaves a durable refusal naming the exact missing authorization.
-- Keep project work in ordinary workspaces such as `code` or `general`.
-- Keep Web initial Workspace selection simple by honoring an authorized current selection, otherwise selecting Quick Chat by kind, then falling back to the first authorized Workspace.
-
-### Non-goals
-
-- Do not add user-level default workspace preferences in this slice.
-- Do not add a full workspace capability matrix before more workspace kinds require it.
-- Do not let Quick Chat share knowledge implicitly with project workspaces.
-- Do not let a user invite members to, transfer, or otherwise share Quick Chat in V1.
-- Do not create a separate Chat-only product model outside the normal workspace, thread, turn, and item backbone.
-- Do not preserve compatibility for the older seeded workspace order.
-
-## Background
-
-The earlier NanoCore seed state created both `Demo Workspace` and `Quick Chat`.
-
-The current Web selection algorithm chooses a route workspace, then a stored workspace id, then the first workspace returned by the server.
-
-Because `Demo Workspace` is project-shaped seed data, automatically giving it to every new user makes the fresh landing state feel pre-populated instead of clean.
+Seed the personal Workspace without Demo data. Preserve User ownership, existing history, Knowledge, idempotent provisioning, explicit disclosure, and truthful failures. Do not add a capability matrix, user default preference, parallel storage tree, or automatic membership repair. The Core Assistant and shared internal runtime retain their own contracts.
 
 ## Selected Content And Personal Memory
 
-Quick Chat remains owner-only: its Workspace membership cannot be widened and it never becomes a shared work container. Any prohibition or error below for sharing Quick Chat refers to that Workspace conversion/membership operation, not `thread.share` publication of a selected snapshot into a separate eligible project Workspace. `20260909-thread_visibility_and_sharing.md` owns that explicit disclosure, original-private-history retention and receiving shared Thread. Existing handoff confirmation must also bind the exact public task brief and selected attachments.
+The personal Workspace remains owner-only: its Workspace membership cannot be widened and it cannot become a team Workspace. Ordinary work in it retains the existing Workspace audience without adding another member. Any prohibition or error below for sharing the personal Workspace refers to that Workspace conversion/membership operation, not `thread.share` publication of a selected snapshot into a separate eligible team Workspace. `20260909-thread_visibility_and_sharing.md` owns that explicit disclosure, original-private-history retention and receiving shared Thread. Existing handoff confirmation must also bind the exact public task brief and selected attachments.
 
-User Memory is independently stored in the User scope and retrieved through `20260909-personal_memory_and_knowledge_learning.md`. Quick Chat history may be a registered source after user-authorized capture, but its existing Workspace Knowledge records are not automatically renamed, exported as User Memory or silently activated as a personal profile. Quick Chat creation/deletion and project selection do not create/delete personal Memory.
+User Memory is independently stored in the User scope and retrieved through `20260909-personal_memory_and_knowledge_learning.md`. Personal Workspace history may be a registered source after user-authorized capture, but its existing Workspace Knowledge records are not automatically renamed, exported as User Memory or silently activated as a personal profile. Personal Workspace creation/deletion and project selection do not create/delete personal Memory.
 
 ## Decision
 
-OpenKit will add a `quick-chat` workspace kind.
+Use `kind: personal` instead of `quick-chat`. Remove the former non-worker capability guards. Do not require a different Workspace for a Task or Goal handoff. Current authority and effect-specific checks still apply. The private administration entry moves to this personal Workspace without changing its Tool set.
 
-NanoCore ensures one Quick Chat Workspace, and no Demo Workspace, for every active local or server user. Local boot ensures the local user's owner relationship, and Better Auth ensures a server user's Workspace and owner relationship before recording each new active session; both paths are idempotent, so a pre-existing project Workspace never suppresses the personal Quick Chat Workspace and an interrupted first attempt can retry on the next sign-in without a repair workflow. A presented usable server-admin bearer may also first enter through an actor-derived Quick Chat operation, including the private administration Assistant, without a prior browser session. After validating the current credential and active canonical user, that resolver invokes the same idempotent provisioner only for the authenticated actor’s deterministic home before the requested operation is authorized. That provisioning creates only the authenticated actor's own Quick Chat. A currently usable administrator credential may read another user's Quick Chat under the administrator eligibility rule in [Core Permissions](../core/permissions.md). That read does not create their home, transfer ownership, or revive a tombstone. Invalid credentials create nothing; conflicting ownership or retained membership tombstones fail closed without revival. A denied or interrupted attempt never deletes retained Workspace files as a cleanup shortcut; a subsequent authorized request reuses the same existing provisioning path.
+NanoCore ensures one personal Workspace, and no Demo Workspace, for every active local or server user. Local boot ensures the local user's owner relationship, and Better Auth ensures a server user's Workspace and owner relationship before recording each new active session; both paths are idempotent, so a pre-existing project Workspace never suppresses the personal Workspace and an interrupted first attempt can retry on the next sign-in without a repair workflow. A presented usable server-admin bearer may also first enter through an actor-derived personal-Workspace operation, including the private administration Assistant, without a prior browser session. After validating the current credential and active canonical user, that resolver invokes the same idempotent provisioner only for the authenticated actor’s deterministic home before the requested operation is authorized. That provisioning creates only the authenticated actor's own personal Workspace. A currently usable administrator credential may read another user's personal Workspace under the administrator eligibility rule in [Core Permissions](../core/permissions.md). That read does not create their home, transfer ownership, or revive a tombstone. Invalid credentials create nothing; conflicting ownership or retained membership tombstones fail closed without revival. A denied or interrupted attempt never deletes retained Workspace files as a cleanup shortcut; a subsequent authorized request reuses the same existing provisioning path.
 
-Quick Chat will be the default workspace by being the only fresh workspace, not by a separate `defaultWorkspaceId` record.
+Migrate each existing `quick-chat` Workspace one way to `personal`, preserving its identity, owner, membership tombstones, Threads, Knowledge, and other retained records. No compatibility kind, dual write, or parallel Workspace is added. A conflict or interrupted migration fails closed under the existing storage/migration owner; it never resets retained data. Completed migration and exact provisioning retry reuse the same Workspace.
 
-The first implementation will keep the rule deliberately small: `workspace.kind === 'quick-chat'` is the product signal that the workspace is lightweight and non-worker-capable.
-
-The implementation must centralize the guard instead of scattering checks for a literal workspace id such as `ws_quick_chat`.
+The personal Workspace is the initial selection without a separate `defaultWorkspaceId` record. Use kind and authenticated ownership, never a hard-coded Workspace id.
 
 ## Contract / Expected Behavior
 
 ### Workspace Shape
 
-Quick Chat is a `WorkspaceRecord` with `kind: "quick-chat"`, `status: "active"`, no default worker agent, no default model requirement, and no default skills.
+The personal Workspace is an active ordinary Workspace with `kind: personal`. Existing configuration owners resolve Agent, model, and Skill defaults. The kind introduces no worker-default prohibition or extra resource restrictions.
 
-Quick Chat owns normal workspace threads, turns, items, knowledge entries, knowledge proposals, knowledge sources, audit rows, capability usage rows, and workspace-local Knowledge Store files.
-
-Quick Chat does not own repository resources, workspace-root data-source bindings, worker materialization records, worker checkpoints, Goal Mode records, Task Mode worker state, staged workspace reviews, or workspace apply results.
+It owns normal Threads, Turns, Items, Knowledge, audit and usage projections. Repository, data-source, Worker, Goal, review, and apply records follow their existing owners. Personal placement grants no credential, permission, or external effect by implication.
 
 ### Sharing Boundary
 
-Quick Chat MUST remain owner-only in V1. Invitation, direct membership addition, role change, ownership transfer, and portable share operations MUST reject a Quick Chat target with a stable product error before mutation. Each user's Quick Chat id and Knowledge remain independent; a user's Quick Chat MUST NOT become a team Workspace by implication.
+The personal Workspace MUST remain owner-only in V1. Invitation, direct membership addition, role change, ownership transfer, and portable share operations MUST reject a personal Workspace target with a stable product error before mutation. Each user's personal Workspace id and Knowledge remain independent; a user's personal Workspace MUST NOT become a team Workspace by implication.
 
-### Allowed Behavior
+### Work And Handoff
 
-Quick Chat MUST allow Chat Mode direct answers.
+Chat, Task, Goal, Artifact, Sandbox, repository, and data-source operations use their ordinary owners in the personal Workspace. A personal Chat handoff may create its linked execution Thread in that same Workspace. It does not require creation or selection of a project Workspace merely because the origin is personal.
 
-Quick Chat MUST allow clarification gates and ordinary Action Center projections created by Chat Mode.
+The existing handoff confirmation binds the exact receiving Workspace, execution Thread, mode, work brief, selected inputs, and effect. Explicit disclosure to another Workspace remains subject to the sharing owner. An empty Workspace creation grants no resource configuration or execution authorization by itself.
 
-Quick Chat MUST allow Knowledge Store creation, update, retrieval, and Knowledge Manager answer/context operations that use workspace knowledge.
-
-Quick Chat MUST use provider-backed inference through the same Core Assistant, shared Internal Agent Loop, logical-model context policy, and LLM Gateway paths as other internal model-using roles. Its lightweight capability boundary does not authorize a separate direct Provider runtime.
-
-### Refused Behavior
-
-Quick Chat MUST reject workspace repository resource setup.
-
-Quick Chat MUST reject direct Task Mode start in the Quick Chat Workspace.
-
-Quick Chat MUST reject the Goal operations, including create Goal, revise intent, card create, edit, and cancel, Plan proposal, Plan approval, Goal cancel, completion acceptance, and Goal reads, in the Quick Chat Workspace. Quick Chat itself gains no Goal execution.
-
-Quick Chat MUST reject direct Core turn startup when the route would start a worker turn.
-
-Quick Chat admits no project-worker hosting integration.
-
-Quick Chat MUST reject workspace data-source edits that would make repository or host-root material available to workers.
-
-Direct project-only route refusals MUST use a stable App API error code and a user-safe message that identifies Quick Chat's boundary. Thread-scoped Chat Mode follows the work-request transition below rather than ending in a bare project-Workspace refusal.
-
-### Work Request Transition
-
-Quick Chat remains the conversation owner and remains owner-only, non-shareable, repository-free, data-source-free, and non-worker-capable. A work request does not add Task, Goal, Worker, repository, data-source, credential, policy, or Git capability to Quick Chat.
-
-When the Assistant classifies a Quick Chat request as Task or Goal work, it MUST resolve an existing eligible executing Workspace or propose creation of an empty project Workspace inside the same confirmation already required for the consequential handoff. The confirmation states the requested mode, exact executing Workspace, whether that Workspace will be created, the new execution Thread, and the effect that acceptance will produce.
-
-One accepted confirmation creates or selects the executing Workspace, creates the new execution Thread in that Workspace, and submits the accepted Task or Goal handoff. The originating Quick Chat Thread retains one handoff Item with causation to the new Thread. No Thread spans both Workspaces, and Quick Chat remains the owner of only the originating conversation.
-
-`workspace.create` is onboarding in this path, not administration. It creates only an empty project Workspace and grants no repository, data source, credential, worker, capability, policy, or external-effect configuration by implication. The Assistant SHOULD resolve an already eligible Workspace before proposing creation, but the user's message does not have to name or understand Workspace placement before asking for work.
-
-If an eligible Workspace cannot be resolved and the actor lacks the exact authority required to create one, the Chat Turn MUST terminate with a durable refusal Item that names that missing authorization. It MUST create no project Workspace, execution Thread, Task, Goal, Worker Turn, checkpoint, scheduler admission, or success-shaped handoff receipt.
-
-This transition changes no Quick Chat capability. Direct project-only routes still refuse Quick Chat before effect, and service-side enforcement remains authoritative even when a client or model proposes an invalid target.
+If the actor lacks required execution or disclosure authority, Chat records the exact durable refusal and creates no downstream work. Service admission stays authoritative when the client presents a stale or invalid target.
 
 ### Lifecycle, Conflict, And Recovery
 
-The transition is created by one accepted Quick Chat work request and becomes pending when the Assistant presents the combined placement and handoff confirmation. Before acceptance, the user may reject it or replace the request without creating an executing resource.
+The transition is created by one accepted personal-Workspace work request and becomes pending when the Assistant presents the combined placement and handoff confirmation. Before acceptance, the user may reject it or replace the request without creating an executing resource.
 
 Acceptance terminates the proposal only after the complete executing-Workspace, execution-Thread, handoff Item, and Task or Goal owner tuple is durable. Rejection terminates it without those effects. Missing authorization terminates it with the exact durable refusal Item. A missing required detail may produce one bounded clarification, after which the same request is reevaluated against current state.
 
@@ -165,45 +102,35 @@ Process restart recovers from the originating Thread, Chat command record, deter
 
 ### Observable Acceptance
 
-- A Quick Chat work request can reach an accepted Task or Goal without first requiring the user to navigate to or manually create a project Workspace.
-- The user makes one confirmation that identifies both execution placement and the Task or Goal handoff.
-- The resulting Task or Goal and its execution Thread belong to the eligible project Workspace, while Quick Chat retains only the originating conversation and handoff lineage.
-- If Workspace creation or selection lacks exact authorization, the durable refusal Item identifies that authorization and no downstream work exists.
-- Direct Task, Goal, Worker, repository, data-source, and Git routes remain unavailable against Quick Chat itself.
+- A personal Workspace accepts ordinary Task, Goal, Artifact, Sandbox, repository, and data-source admission under their existing owners.
+- A Chat handoff may use a linked execution Thread in that same Workspace with one existing confirmation.
+- Missing execution or disclosure authority leaves an exact durable refusal with no downstream work.
+- Member addition, invitation, transfer, and team conversion fail before mutation.
+- Migration preserves existing identities, Threads, Knowledge, ownership, and tombstones; restart never creates a duplicate home or resets data.
 
 ### Web Behavior
 
 The Web app does not need a custom default-workspace preference for this slice.
 
-An authorized current Workspace selection remains authoritative. Without one, Web selects the actor's Quick Chat Workspace by kind before falling back to the first authorized Workspace, so list ordering cannot route an unscoped lightweight conversation into a project Workspace.
+An authorized current Workspace selection remains authoritative. Without one, Web selects the actor's personal Workspace by kind before falling back to the first authorized Workspace, so list ordering cannot silently select another Workspace.
 
-The Web app should not show project-only affordances as usable actions in Quick Chat.
+The Web app exposes ordinary work affordances under their existing readiness and authority checks.
 
 Service-side refusals remain authoritative even when a client renders a stale or custom UI.
 
 ## Proposed Design
 
-Add `quick-chat` to `WorkspaceKindSchema`.
-
-Seed only Quick Chat when a user has no Workspace state. Under the owner-independent storage model, user provisioning records that user as the owner and only active member of a new top-level Quick Chat Workspace.
-
-Keep `createDemoWorkspaceForUser(userId)` as a test and development helper that returns an importable Demo Workspace fixture without mutating the default new-user seed state.
-
-Give Quick Chat no Workspace-specific Worker default by omitting `workspace.jsonc.defaultAgentId`. The project-only guard rejects Worker selection before default-Agent resolution, so Quick Chat never consults the Server Agent fallback. Quick Chat model choice follows the Assistant internal-role and Gateway logical-model preference chain and has no Workspace record default.
-
-Add a small NanoCore helper that reads the workspace and rejects project-only operations for `quick-chat`.
-
-Use that helper in repository setup, Task Mode startup, Goal operation entry, and direct worker-turn startup.
-
-Keep Chat Mode and Knowledge Store routes available in Quick Chat. Route model-backed Chat Mode work through the shared Internal Agent Loop even though ordinary short conversations will not reach its compaction threshold. For a Chat Mode Task or Goal handoff, keep the Quick Chat guard authoritative while the Assistant resolves or creates the separate executing Workspace through the combined confirmation; emit an exact durable missing-authorization refusal only when that transition cannot be authorized.
+Reuse the existing Workspace record, owner-independent storage, authenticated per-user provisioner, ordinary configuration resolution, and shared internal Agent loop. Retain Demo creation only as an explicit test/development helper. Replace `quick-chat` with `personal` through one migration and delete the former project-only guards. No special runtime or second provisioning owner is added.
 
 ## Current Implementation Projection
+
+The following observations describe the pre-cutover Quick Chat implementation. Its capability guards and kind are divergence from the accepted personal Workspace target above, not current design authority.
 
 `packages/protocol/src/models/workspace.ts` owns `WorkspaceKindSchema` and `WorkspaceRecordSchema`.
 
 `apps/nanocore/src/lib/store.ts` owns the explicit idempotent Quick Chat Workspace record constructor and the Demo Workspace fixture helper. Local app composition, the server active-session hook, and the actor-derived Quick Chat resolver for a presented usable server-admin bearer invoke the shared provisioning owner in `workspace-membership.ts`; the generic shared-store constructor creates no mode-specific or authority-free Workspace.
 
-Each active local or server user receives one deterministic top-level Quick Chat Workspace and canonical owner membership before product use; the shared process store no longer uses user-scoped physical ownership. The complete sharing lifecycle rejects invitation, role change, removal, leave, transfer, administrator recovery, and portable source-authority reuse for Quick Chat, while the centralized guard rejects repository setup, Task Mode, Goal Mode, project-worker hosting, and direct worker-Turn entry. The specification remains Partial only because the rebuilt Web must still project Quick Chat's project-only affordance boundary under S10; the kernel and App API ownership contract is implemented.
+Each active local or server user receives one deterministic top-level Quick Chat Workspace and canonical owner membership before product use; the shared process store no longer uses user-scoped physical ownership. The complete sharing lifecycle rejects invitation, role change, removal, leave, transfer, administrator recovery, and portable source-authority reuse for Quick Chat, while the centralized guard rejects repository setup, Task Mode, Goal Mode, project-worker hosting, and direct worker-Turn entry. The personal Workspace migration, ordinary capability admission, and updated Web projection remain implementation work.
 
 `apps/nanocore/src/app.ts` composes native mode and Turn owners with the definition-derived JSON and MCP bindings. `chat.quick` derives its Workspace from the trusted actor, provisions a presented usable administrator bearer through the existing owner, and retains provider errors, deadline and cancellation behavior. Its former JSON route and client method are absent.
 
@@ -215,54 +142,11 @@ Each active local or server user receives one deterministic top-level Quick Chat
 
 ## Alternatives Considered
 
-### Keep Quick Chat As A Normal `general` Workspace
-
-Rejected because project-only routes would keep treating it as eligible for repositories and worker execution.
-
-### Add `defaultWorkspaceId`
-
-Rejected for this slice because the product need is a safe lightweight workspace type, not an arbitrary user preference.
-
-### Use A Hard-Coded Quick Chat Workspace Id
-
-Rejected because it would create brittle route branches and break under multi-user namespace changes, import/export, or future seed id changes.
-
-### Add A Full Capability Matrix
-
-Deferred because the current product needs one special workspace kind and a few project-only guards.
-
-## Consequences
-
-Demo Workspace remains available to tests and development tools through an explicit helper, but it is not user seed data.
-
-The workspace kind enum becomes part of the shared protocol contract, so protocol tests and generated schemas must be updated.
-
-The implementation adds a domain-specific special case, but it is centralized as a workspace kind rather than scattered as id checks.
+The engineer chose an ordinary personal Workspace over the former lightweight Quick Chat kind. A default preference record, capability matrix, hard-coded Workspace id, or parallel Workspace would add an unneeded owner or mechanism.
 
 ## Testing Strategy / Acceptance Criteria
 
-- Protocol schema tests accept `kind: "quick-chat"` and reject unknown workspace kinds.
-- NanoCore store tests prove a fresh store lists only Quick Chat and keeps it worker-default-free.
-- Server auth flow tests prove sign-up establishes the actor-derived Quick Chat Workspace and canonical owner membership before the session can list Workspaces.
-- NanoCore route tests prove Quick Chat rejects repository setup with a stable error code.
-- NanoCore route tests prove Quick Chat rejects direct Task Mode, direct Goal Mode, and direct worker-turn startup before worker execution.
-- Chat Mode tests prove one confirmation resolves or creates a separate executing Workspace and creates exactly one Task or Goal handoff, while missing Workspace authority produces one exact durable refusal and no downstream owner.
-- Multi-user route tests prove every invitation, membership, and owner-transfer operation rejects Quick Chat before mutation.
-- Existing Chat Mode and knowledge tests continue to pass for ordinary workspace-scoped behavior.
-- Provider-backed Quick Chat tests prove the same Internal Agent Loop and logical-model context policy used by other internal roles, while a below-threshold request performs no compaction pass.
-- Focused Web tests prove an authorized current selection remains authoritative and an absent or stale selection prefers Quick Chat even when a project Workspace is returned first.
-- Focused package tests and typecheck pass for touched packages.
-
-## Risks & Mitigations
-
-- Risk: Quick Chat becomes a hidden project workspace through a missed route.
-- Mitigation: put refusal behind one shared helper and cover each project-only entry family.
-
-- Risk: The workspace kind grows into an ad hoc capability system.
-- Mitigation: keep only `quick-chat` and project-only guards until another concrete workspace kind needs reusable capabilities.
-
-- Risk: Workspace onboarding becomes a second confirmation or a hidden capability widening.
-- Mitigation: the one handoff confirmation names placement and effect together, while all project-only effects remain owned by the separate executing Workspace.
+Check ordinary work admission, owner-only membership, initial selection, exact provisioning retry, and the migration/restart predicates above. Preserve invalid-credential, wrong-owner, tombstone, no-reset, current-authority, disclosure, and command-replay checks. The shared loop remains required for model-backed Chat; personal placement grants no direct Provider exception.
 
 ## Open Questions
 
@@ -270,10 +154,8 @@ None.
 
 ## Deferred / Future Work
 
-- User-level default workspace preferences.
-- Workspace capability matrix if future workspace kinds require more than the Quick Chat versus project distinction.
+User-level default Workspace preferences require a demonstrated need. Shared conversations follow the post-v0.1.0 team-Workspace owner and do not relax personal membership.
 
 ## Links
-
 
 - `docs/specs/20260715-multi_user_workspace_system.md`

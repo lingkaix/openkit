@@ -3,13 +3,17 @@ status: Accepted
 implementation: Not Started
 kind: mechanism
 date: 2026-09-02
-updated: "2026-09-30"
+updated: "2026-10-15"
 ---
 # Agent Runtime Context Management And Compaction
 
 ## Owns
 
-This specification owns the Server-scoped active-context policy for logical models, the OpenKit automatic runtime-compaction lifecycle, the Responses-compatible `context_management` control, the OpenKit compaction item, the choice of exactly one compaction authority per internal run or Worker Turn, and the quality, observability, failure, retry, and recovery requirements shared by those paths.
+This specification owns the Server-scoped active-context policy for logical models, the OpenKit automatic runtime-compaction lifecycle, the Responses-compatible `context_management` control, the OpenKit compaction item, the shared durable rolling context for NanoCore internal roles, the choice of exactly one compaction authority per Worker Turn, and the quality, observability, failure, retry, and recovery requirements shared by those paths.
+
+## Applicability
+
+For NanoCore internal roles, [the accepted rolling-context ruling](../decisions/20261015-private_assistant_timeline_and_rolling_context.md) replaces the unimplemented Gateway compactor. The internal-role contract is [Internal Durable Rolling Context](#internal-durable-rolling-context). The Responses control, OpenKit Compaction Item, Gateway compactor lifecycle, and threshold-triggered compactor requirements below apply only to their remaining Gateway/Worker paths. They are not prerequisites for internal-role execution. Worker-native compaction, model physical limits, and Gateway routing retain their existing owners.
 
 ## Does Not Own
 
@@ -225,13 +229,19 @@ Automatic runtime compaction is not rendered as a user or assistant Thread messa
 
 If a workflow deliberately needs a visible, durable Context compact for handoff, retry, recovery, or a later bounded step, its existing workflow owner creates a traceable product record under `docs/core/agent-workflow.md`. Automatic runtime compaction does not create that record by implication and does not replace its source Items, Artifacts, Evidence, Knowledge, decisions, or checkpoints. If a summary contains reusable learning, it enters Knowledge only through the existing proposal and acceptance path.
 
-## Internal Agent Loop And Quick Chat
+## Internal Durable Rolling Context
 
-The Internal Agent Loop receives the resolved logical-model context policy with its immutable input. Before each Gateway call it supplies or permits injection of the exact Responses control, recognizes an OpenKit Compaction Item in completed output, replaces its transient older messages with the summary checkpoint, then processes later assistant and Tool-call items in order. A compaction subcall counts toward metering and the run deadline but is not an ordinary model turn and does not create another loop fuse.
+Every NanoCore internal model-using role uses one shared durable rolling-context mechanism. Role-specific loops and a Gateway compactor are excluded. This applies to Assistant, administration, Knowledge Manager, and the Goal Coordinator; a deterministic Workflow Coordinator performs no model call. The [engineer's ruling](../decisions/20261015-private_assistant_timeline_and_rolling_context.md) replaces the earlier transient-compaction-checkpoint design for internal roles.
 
-Every NanoCore-internal model-using role uses this one loop. Role-specific callers assemble prompts, Tools, messages, and product mappings, but they do not implement their own transcript loop or compactor. Short calls normally remain below threshold and pay no compaction call.
+The context belongs to its existing role/conversation owner. Its window continues across bounded runs and process restart. It is not a per-user process, a Worker AgentSession, reusable Memory, or a second canonical conversation log. Canonical Thread Items, accepted commands, source revisions, and effect records remain authoritative. The shared Internal Agent Loop receives the owner's admitted ordered messages and retains no independent durable truth.
 
-Quick Chat follows the same rule. Its lightweight Workspace capability boundary, absence of worker execution, and likely short conversations do not justify a direct Provider runtime. The current `callQuickChatProvider` path and tests that forbid the Internal Agent Runner are implementation divergence; implementation must replace that path with the shared Internal Agent Loop and preserve Quick Chat's existing timeout, cancellation, usage, redaction, and product-result behavior through the loop's owners.
+Creation derives the first window from authorized durable inputs. Updates retain a bounded continuation of the same context with source attribution and Tool call/result pairing. A bounded run's termination does not erase continuity. Retry reconstructs from current durable owners and never repeats a Tool effect merely to rebuild context. Archive, deletion, and retention follow the containing record's existing owner.
+
+Before model use, trusted assembly checks current source authority, output audience, source revision, role configuration, and physical model bounds. A stale or incompatible window is reconstructed from eligible durable inputs. Missing or contradictory required evidence fails closed; dependency failure and context overflow remain explicit failures. Provider state, caches, summaries, and a previous read cannot restore revoked authority or substitute for missing canonical history.
+
+Migration to the shared loop preserves existing timeout, cancellation, usage, redaction, and product-result behavior through their owning contracts. The rolling context must preserve required constraints, decisions, exact continuation references, failures, pending work, untrusted-data boundaries, and complete Tool call/result pairing when the window advances.
+
+Acceptance requires distinct internal roles to use the same mechanism, continuity across restart, bounded model input, private/shared audience isolation, and reconstruction after a correction or source revocation. Losing Provider state must not lose authoritative work. No internal-role execution calls the Gateway compactor, waits for it to exist, or silently discards required constraints or unresolved Tool effects.
 
 ## Worker Runtime Policy
 
@@ -261,9 +271,7 @@ The pending implementation requires `packages/config-schema/src/gateway.ts` to a
 
 The Gateway exposes `POST /v1/responses`, but the pinned pi-ai Responses abstraction does not admit `context_management` or parse a compaction output item. The current Codex worker hint recognizes `request_kind: "compaction"` and a `compact` subagent classification only as ephemeral native provenance; those hints do not implement this contract.
 
-The bounded shared Internal Agent Loop and Gateway adapter must pin this policy for the private administration entry. Until the OpenKit compactor exists, the adapter must conservatively check the assembled context before provider dispatch and return `context_compaction_unavailable` at the configured threshold. Below-threshold execution is not automatic-compaction conformance or proof of the complete administration workflow. Actual upstream overflow remains a separate provider failure.
-
-Ordinary Quick Chat still performs its direct provider call in `apps/nanocore/src/mode-entry-routes.ts`; its existing tests protect that implementation fact. Migrate it and replace those tests only when the shared path can perform the required compaction. New model-using roles must not extend the direct-provider exception. OpenKit compaction, strict Responses compaction-item mapping, all-role migration and the fixed evaluation set remain outstanding.
+Internal-role rolling context and migration to the shared loop remain implementation work under the accepted internal-role contract above. Existing direct Quick Chat calls and transient administration transcripts are implementation facts, not accepted substitutes. The unimplemented Gateway compactor is no longer a dependency for those migrations.
 
 The current AEP version 4 has no resolved context-management field, and the Codex, Pi, and OpenCode adapters do not consume one central threshold. Existing Harness-native defaults therefore remain implementation fact, not conformance with this design.
 
@@ -271,8 +279,8 @@ The current AEP version 4 has no resolved context-management field, and the Code
 
 1. Add and validate the required logical-model `contextManagement` policy, derive physical limits from the shared effective Provider metadata resolver, and expose the resolved policy without changing model identity.
 2. Add the OpenKit compactor and strict Responses control and item mapping behind the existing `POST /v1/responses`; do not add a standalone route.
-3. Extend the shared Internal Agent Loop with the transient compaction checkpoint, route every model-using internal role through it, and delete the Quick Chat direct-provider exception and its inverse tests.
-4. Update `docs/specs/20260703-audit_usage_evidence_records.md` and its existing record producers with the normalized audit, usage, and failure projection, add the fixed evaluation evidence, then roll out the threshold only for new internal runs.
+3. Implement internal-role durable rolling context through the shared Internal Agent Loop, independently of the Gateway compactor, and delete the Quick Chat direct-provider exception and its inverse tests.
+4. Update `docs/specs/20260703-audit_usage_evidence_records.md` and its existing record producers with the normalized audit, usage, and failure projection, add the fixed evaluation evidence, then roll out the threshold only for newly admitted Gateway/Worker executions.
 5. Version the AEP and add one adapter at a time, beginning by verifying whether pinned Codex exposes an exact native threshold control; do not admit that policy into a Worker package or mark a runtime conformant until its focused proof passes.
 
 ## Alternatives Considered
@@ -308,8 +316,8 @@ Rejected because rewriting a one-million-token model as 400,000 tokens corrupts 
 - `POST /v1/responses` accepts or injects exactly one `{ type: "compaction", compact_threshold }` control for OpenKit authority and rejects a mismatch before Provider dispatch.
 - The OpenKit compactor emits `{ type: "compaction", id, summary }`, applies it as low-authority continuation context, and never labels plaintext as `encrypted_content`.
 - The Gateway stores no conversation or compaction record, and a stateless caller can continue by retaining the latest compaction item and later output.
-- Each internal run and Worker Turn selects exactly one of `openkit` or `runtime-native`, and a focused check proves that the unselected path performs zero compaction work.
-- Quick Chat and every other model-using internal role execute through the same Internal Agent Loop; no Quick Chat-specific Provider loop or compactor remains.
+- Each Worker Turn selects exactly one of `openkit` or `runtime-native`, and a focused check proves that the unselected path performs zero compaction work.
+- Every model-using internal role uses the shared Internal Agent Loop and the durable rolling context defined above; no role-specific Provider loop or Gateway-compactor dependency remains.
 - A compaction pass preserves required constraints, decisions, Tool pairing, failures, exact continuation identifiers, pending work, and untrusted-data boundaries under the fixed evaluation set.
 - Missing, invalid, stale, oversized, aborted, failed, unknown, overflow, repeated-compaction, configuration-reload, and process-restart cases produce the exact bounded behavior defined above without silent truncation or duplicate effects.
 - Mixed-tier failover preserves the logical ID and pinned null family. Same-member attribution preserves opaque reasoning; another member, missing or conflicting attribution, eviction, external history, and restart use readable-text handoff without forwarding foreign capsules or adding a response field. The payload-free association stays within its fixed entry ceiling under sustained traffic, and eviction produces readable-text handoff rather than an error.
