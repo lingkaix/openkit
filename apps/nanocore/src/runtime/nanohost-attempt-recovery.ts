@@ -46,7 +46,10 @@ import {
   type WorkerBackendSessionRecord,
   workerBackendImageIdentity,
 } from './worker-backend-sessions.js';
-import { getWorkerControlAcceptedFinalStatus } from './worker-control-records.js';
+import {
+  getWorkerControlAcceptedFinalStatus,
+  hasPendingWorkerCancellationFinal,
+} from './worker-control-records.js';
 import type { WorkerGovernanceBackendSessionIdentity } from './worker-governance-backend.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 import {
@@ -87,6 +90,13 @@ export async function classifyNanoHostAttemptsAfterRestart(
       if (!session) continue; // Original operation remains unknown; absence is not a fence.
       const native = requireNanoHostExecutionAttempt(coreDb, attempt.attemptId);
       assertSessionMatchesAttempt(session, native);
+      // Restart must preserve the bounded cancellation final without arming ordinary reconnect.
+      if (
+        session.state === 'launching' &&
+        session.workspaceHandoffState === 'complete' &&
+        hasPendingWorkerCancellationFinal(native, timestamp)
+      )
+        continue;
       const eligible =
         native.phase === 'open' &&
         native.deadline !== null &&
@@ -166,6 +176,13 @@ export async function runNanoHostAttemptRecoveryMaintenance(
           await input.reconcileAcceptedFinalStatus(session);
         continue;
       }
+      // The original Native and absolute deadlines bound this wait; cleanup resumes on expiry.
+      if (
+        session.state === 'launching' &&
+        session.workspaceHandoffState === 'complete' &&
+        hasPendingWorkerCancellationFinal(native, timestamp)
+      )
+        continue;
       if (
         native.phase === 'open' &&
         native.recoveryState === 'awaiting-reconnect' &&

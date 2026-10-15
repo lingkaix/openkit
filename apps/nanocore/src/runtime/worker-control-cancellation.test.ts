@@ -27,6 +27,25 @@ import {
   bindNanoHostAttemptRouteTokenHashes,
   requireNanoHostExecutionAttempt,
 } from './nanohost-attempt-records.js';
+import {
+  classifyNanoHostAttemptsAfterRestart,
+  type RunNanoHostAttemptRecoveryInput,
+  runNanoHostAttemptRecoveryMaintenance,
+} from './nanohost-attempt-recovery.js';
+import {
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  fenceNanoHostRuntimeTargetAfterRestart,
+  upsertNanoHostRuntimeTarget,
+} from './nanohost-runtime-target.js';
+import { runSchedulerRestartRecovery } from './scheduler-restart-recovery.js';
+import {
+  getWorkerBackendSession,
+  markWorkerBackendSessionLaunching,
+  markWorkerBackendWorkspaceHandoffComplete,
+  recordWorkerBackendSessionMaterializing,
+  transitionWorkerBackendSessionState,
+  workerBackendLineageFromRuntimeImage,
+} from './worker-backend-sessions.js';
 import { hashWorkerRouteToken, type WorkerControlLineage } from './worker-control-gateway.js';
 import {
   canonicalStopReasonForAcceptedWorkerFinalStatus,
@@ -140,6 +159,15 @@ function createFixture() {
       coreDb = openCoreDb(dataRoot);
       gateway = createDefaultWorkerControlGateway(coreDb);
     },
+    /** Repeats index.ts startup order with both real recovery owners and the durable backend. */
+    async restartThroughStartup(input: RunNanoHostAttemptRecoveryInput) {
+      coreDb.sqlite.close();
+      coreDb = openCoreDb(dataRoot);
+      fenceNanoHostRuntimeTargetAfterRestart(coreDb, new Date().toISOString());
+      gateway = createDefaultWorkerControlGateway(coreDb);
+      await runSchedulerRestartRecovery(coreDb, input);
+      await classifyNanoHostAttemptsAfterRestart(coreDb, input);
+    },
     /** Transfers the exact attempt to cancellation without asserting cleanup. */
     close(cause = 'turn-cancelled') {
       return markSchedulerExecutionAttemptClosing(coreDb, { attemptId: ATTEMPT_ID, cause });
@@ -184,6 +212,92 @@ function createFixture() {
 }
 
 type Fixture = ReturnType<typeof createFixture>;
+
+/** Establishes exact admitted physical lineage through the existing backend record producers. */
+function recordLaunchedBackend(fixture: Fixture) {
+  const target = allocateNanoHostRuntimeTargetConnectionGeneration(fixture.coreDb, {
+    deploymentId: 'deployment-cancellation',
+    identityId: 'identity-cancellation',
+    observedAt: NOW,
+    targetId: 'runtime-target-cancellation',
+  });
+  upsertNanoHostRuntimeTarget(fixture.coreDb, {
+    ...target,
+    freshEmpty: true,
+    observedAt: NOW,
+    physicalEpoch: 'a'.repeat(64),
+    predecessorFenced: true,
+    ready: true,
+  });
+  recordWorkerBackendSessionMaterializing(fixture.coreDb, {
+    backendLineage: workerBackendLineageFromRuntimeImage(fixture.environmentPackage.runtime.image),
+    backendVersion: '0.0.99',
+    identity: {
+      agentSessionId: fixture.lineage.agentSessionId,
+      backendKind: fixture.environmentPackage.backend.preferred,
+      backendSessionId: 'nh-aaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb',
+      deploymentId: target.deploymentId,
+      packageSnapshotId: fixture.lineage.packageSnapshotId,
+      runtimeTargetId: target.targetId,
+      stagingDirectoryRef: `server/runtime/worker-backend-sessions/${fixture.lineage.packageSnapshotId}`,
+      transientProviderInstanceId: null,
+    },
+    lineage: fixture.lineage,
+    now: () => NOW,
+    sandboxBindingRef: BINDING,
+  });
+  transitionWorkerBackendSessionState(fixture.coreDb, {
+    attemptId: ATTEMPT_ID,
+    fromState: 'materializing',
+    toState: 'materialized',
+    now: () => NOW,
+  });
+  markWorkerBackendWorkspaceHandoffComplete(fixture.coreDb, {
+    attemptId: ATTEMPT_ID,
+    now: () => NOW,
+  });
+  return markWorkerBackendSessionLaunching(fixture.coreDb, {
+    attemptId: ATTEMPT_ID,
+    now: () => NOW,
+  });
+}
+
+/** Supplies only effect ports; an unexpected callback cannot fabricate authority or cleanup success. */
+function recoveryPorts() {
+  const failEffect = async () => {
+    throw new Error('Backend effect is unavailable in this in-process test.');
+  };
+  const cleanupBackendSession =
+    vi.fn<RunNanoHostAttemptRecoveryInput['cleanupBackendSession']>(failEffect);
+  const prepareBackendCleanup = vi.fn<RunNanoHostAttemptRecoveryInput['prepareBackendCleanup']>();
+  const input = {
+    executionBackend: {
+      id: 'nanohost',
+      submit: vi.fn(failEffect),
+      inspect: vi.fn(failEffect),
+      cancel: vi.fn(failEffect),
+      release: vi.fn(failEffect),
+    },
+    cleanupBackendSession,
+    prepareBackendCleanup,
+    restoreBackendSession: vi.fn(failEffect),
+    reconcileAcceptedFinalStatus: vi.fn(failEffect),
+    projectRecoveredTurn: vi.fn(failEffect),
+    now: () => new Date().toISOString(),
+  } satisfies RunNanoHostAttemptRecoveryInput;
+  return { input, cleanupBackendSession, prepareBackendCleanup };
+}
+
+/** Observes every pre-existing bound without introducing a cancellation grace deadline. */
+function nativeDeadlines(fixture: Fixture) {
+  const attempt = requireNanoHostExecutionAttempt(fixture.coreDb, ATTEMPT_ID);
+  return {
+    deadline: attempt.deadline,
+    startupDeadline: attempt.startupDeadline,
+    heartbeatDeadline: attempt.heartbeatDeadline,
+    recoveryDeadline: attempt.recoveryDeadline,
+  };
+}
 
 /** Constructs a candidate ordinary output that the closing lineage must refuse. */
 function ordinaryEvent(lineage: WorkerControlLineage, sequence = 7): WorkerCanonicalEventRecord {
@@ -647,6 +761,178 @@ describe('Core cancellation-only final admission', () => {
           .prepare("SELECT * FROM worker_control_records WHERE operation = 'final_status'")
           .all()
       ).toHaveLength(1);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it.each([
+    false,
+    true,
+  ])('preserves the real-backend first final through startup classification and maintenance=%s', async (maintenance) => {
+    const fixture = createFixture();
+    const ports = recoveryPorts();
+    try {
+      const backend = recordLaunchedBackend(fixture);
+      expect(backend).toMatchObject({
+        state: 'launching',
+        workspaceHandoffState: 'complete',
+        physicalCleanedAt: null,
+      });
+      fixture.gateway.recordHeartbeat({
+        authorization: `Bearer ${CONTROL_TOKEN}`,
+        lineage: fixture.lineage,
+        operation: 'heartbeat',
+        schemaVersion: 2,
+        sequence: 1,
+        body: { status: 'running' },
+      });
+      fixture.close();
+      const deadlines = nativeDeadlines(fixture);
+      const canonical = fixture.productState().canonical;
+      await fixture.restartThroughStartup(ports.input);
+      if (maintenance) await runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, ports.input);
+      expect(nativeDeadlines(fixture)).toEqual(deadlines);
+      expectOrdinaryEffectsRefused(fixture);
+      expect(fixture.gateway.recordFinalStatus(finalInput(fixture))).toMatchObject({
+        accepted: true,
+      });
+      expectOneFinal(fixture, 'cancelled');
+      expect(fixture.productState().canonical).toEqual(canonical);
+      expect(getWorkerBackendSession(fixture.coreDb, ATTEMPT_ID)).toEqual(backend);
+      expect(ports.cleanupBackendSession).not.toHaveBeenCalled();
+      expect(ports.input.executionBackend.submit).not.toHaveBeenCalled();
+      expect(ports.input.executionBackend.cancel).not.toHaveBeenCalled();
+      expect(ports.input.executionBackend.release).not.toHaveBeenCalled();
+      expect(requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID)).toMatchObject({
+        phase: 'closing',
+        terminalCause: 'turn-cancelled',
+        fenceRef: null,
+      });
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it.each([
+    'startup',
+    'heartbeat',
+    'absolute',
+  ] as const)('refuses the real-backend first final and retains cleanup at the original %s deadline', async (kind) => {
+    const fixture = createFixture();
+    const ports = recoveryPorts();
+    try {
+      const backend = recordLaunchedBackend(fixture);
+      if (kind === 'heartbeat')
+        fixture.gateway.recordHeartbeat({
+          authorization: `Bearer ${CONTROL_TOKEN}`,
+          lineage: fixture.lineage,
+          operation: 'heartbeat',
+          schemaVersion: 2,
+          sequence: 1,
+          body: { status: 'running' },
+        });
+      fixture.close();
+      const deadlines = nativeDeadlines(fixture);
+      const canonical = fixture.productState().canonical;
+      vi.setSystemTime(
+        new Date(
+          kind === 'startup'
+            ? deadlines.startupDeadline
+            : kind === 'heartbeat'
+              ? deadlines.heartbeatDeadline
+              : deadlines.deadline!
+        )
+      );
+      await fixture.restartThroughStartup(ports.input);
+      expectOrdinaryEffectsRefused(fixture);
+      expectRefusal(fixture, () => fixture.gateway.recordFinalStatus(finalInput(fixture)));
+      await expect(
+        runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, ports.input)
+      ).rejects.toThrow('Native attempt recovery failed');
+      expect(ports.cleanupBackendSession).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          agentSessionId: backend.agentSessionId,
+          backendSessionId: backend.backendSessionId,
+          packageSnapshotId: backend.packageSnapshotId,
+          runtimeTargetId: backend.runtimeTargetId,
+          deploymentId: backend.deploymentId,
+        })
+      );
+      expect(nativeDeadlines(fixture)).toEqual(deadlines);
+      expect(getWorkerBackendSession(fixture.coreDb, ATTEMPT_ID)).toMatchObject({
+        state: 'cleanup-failed',
+        workspaceHandoffState: 'complete',
+        physicalCleanedAt: null,
+      });
+      expect(fixture.productState().canonical).toEqual(canonical);
+      expect(requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID)).toMatchObject({
+        phase: 'closing',
+        terminalCause: 'turn-cancelled',
+        fenceRef: null,
+      });
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it.each([
+    'cleanup-pending',
+    'handoff-pending',
+    'needs-evidence',
+    'fenced',
+    'non-cancellation',
+  ] as const)('does not wait for a real-backend first final with existing %s evidence', async (contradiction) => {
+    const fixture = createFixture();
+    const ports = recoveryPorts();
+    try {
+      recordLaunchedBackend(fixture);
+      fixture.close(contradiction === 'non-cancellation' ? 'execution-failed' : 'turn-cancelled');
+      if (contradiction === 'cleanup-pending')
+        transitionWorkerBackendSessionState(fixture.coreDb, {
+          attemptId: ATTEMPT_ID,
+          fromState: 'launching',
+          toState: 'cleanup-pending',
+          now: () => NOW,
+        });
+      if (contradiction === 'handoff-pending')
+        fixture.coreDb.sqlite
+          .prepare(
+            "UPDATE worker_backend_sessions SET workspace_handoff_state = 'pending' WHERE attempt_id = ?"
+          )
+          .run(ATTEMPT_ID);
+      if (contradiction === 'needs-evidence')
+        fixture.coreDb.sqlite
+          .prepare(
+            "UPDATE scheduler_execution_attempts SET recovery_state = 'needs-evidence' WHERE attempt_id = ?"
+          )
+          .run(ATTEMPT_ID);
+      if (contradiction === 'fenced')
+        acceptSchedulerExecutionObservation(fixture.coreDb, {
+          ...schedulerExecutionCorrelation(
+            requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID)
+          ),
+          disposition: 'accepted',
+          execution: 'terminal',
+          outcomeRef: null,
+          fenceRef: 'fence:existing-cancellation-cleanup',
+        });
+      const deadlines = nativeDeadlines(fixture);
+      const canonical = fixture.productState().canonical;
+      await fixture.restartThroughStartup(ports.input);
+      expectOrdinaryEffectsRefused(fixture);
+      expectRefusal(fixture, () => fixture.gateway.recordFinalStatus(finalInput(fixture)));
+      await expect(
+        runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, ports.input)
+      ).rejects.toThrow('Native attempt recovery failed');
+      expect(ports.cleanupBackendSession).toHaveBeenCalledTimes(1);
+      expect(getWorkerBackendSession(fixture.coreDb, ATTEMPT_ID)).toMatchObject({
+        state: 'cleanup-failed',
+        workspaceHandoffState: contradiction === 'handoff-pending' ? 'pending' : 'complete',
+        physicalCleanedAt: null,
+      });
+      expect(nativeDeadlines(fixture)).toEqual(deadlines);
+      expect(fixture.productState().canonical).toEqual(canonical);
     } finally {
       fixture.dispose();
     }
