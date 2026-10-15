@@ -39,7 +39,7 @@ The `CI` workflow exposes these manual `gate` choices:
 - `release-gate`: tag-release gate equivalent.
 - `full`: explicit full manual validation, including L4.
 
-Main pushes and the manual `release-gate` and `full` gates also build and smoke every worker image from the catalog on both declared Linux platforms without registry publication. Main pushes also run the disposable stopped-server recovery probe.
+Main pushes and the manual `release-gate` and `full` gates also build and smoke every worker image from the catalog on both declared Linux platforms without registry publication. Each platform uses its native standard hosted runner, with image- and architecture-specific BuildKit caching; Worker smoke uses no QEMU. Main pushes also run the disposable stopped-server recovery probe.
 
 Agent-first L6 is not wired into GitHub Actions.
 

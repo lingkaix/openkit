@@ -216,6 +216,10 @@ test('manual release gate derives a nonpublishing worker image smoke matrix', ()
         image.runtimes,
         image.id === 'worker-common' ? '' : 'codex,pi,opencode,deepseek'
       );
+      assert.equal(
+        image.runner,
+        image.platform === 'linux/arm64' ? 'ubuntu-24.04-arm' : 'ubuntu-24.04'
+      );
       assert.equal(image.runtime, undefined);
       assert.equal(image.target, image.id);
     }
@@ -232,7 +236,8 @@ test('manual release gate derives a nonpublishing worker image smoke matrix', ()
     smokeJob.strategy.matrix,
     actionExpression('fromJSON(needs.container-image-matrix.outputs.worker-matrix)')
   );
-  assert.ok(step(smokeJob, 'Set up QEMU').uses);
+  assert.equal(smokeJob['runs-on'], actionExpression('matrix.runner'));
+  assert.ok(!smokeJob.steps.some((s) => s.uses?.startsWith('docker/setup-qemu-action@')));
   assert.ok(step(smokeJob, 'Set up Docker Buildx').uses);
   assert.equal(step(smokeJob, 'Build worker image').with.load, true);
   assert.equal(step(smokeJob, 'Build worker image').with.push, false);

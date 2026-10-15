@@ -82,7 +82,7 @@ for image in $(node -e "const m=require('./containers/images.json'); console.log
 done
 ```
 
-The tag workflow remains authoritative for both declared platforms because it smokes the exact pushed digest for `linux/amd64` and `linux/arm64` before promotion.
+The tag workflow remains authoritative for both declared platforms because it smokes the exact pushed digest for `linux/amd64` and `linux/arm64` before promotion. Candidate Worker-image smoke builds and executes on matching native standard hosted amd64 and arm64 runners, with separate BuildKit cache scopes.
 
 8. Run L4 Web e2e when the release decision requires that additional confidence. Before the tag, run deterministic CI only. After publication, run the bounded deployment update and qualification. Run stories 1 and 2 at release-cycle/change cadence. Run any other catalog story that the release cycle still needs. [Catalog Stories](../specs/20260829-release_management.md#catalog-stories) owns that rule. Follow [Post-Tag Catalog Stories](#post-tag-catalog-stories). Worker qualification is separate.
 
