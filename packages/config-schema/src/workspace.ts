@@ -94,6 +94,15 @@ export const WorkspaceConfigWorkspaceSchema = z
     internalRoles: z.array(WorkspaceInternalRoleBindingSchema).default([]),
     assistant: z
       .object({
+        // Selection contains catalog identities only; exact resource admission belongs to the consumer.
+        resources: z
+          .object({
+            skillIds: z.array(z.string().min(1)).refine((ids) => new Set(ids).size === ids.length, {
+              message: 'Assistant Skill IDs must be unique.',
+            }),
+          })
+          .strict()
+          .optional(),
         repositoryInspection: z
           .object({
             enabled: z.boolean().default(true),

@@ -84,6 +84,30 @@ function model(id = 'observation-one'): WorkObservationDraft {
   };
 }
 
+/** Minimal Core environment evidence, with no synthetic admission for older records. */
+function environment(workspaceId: string, assistantSkillAdmission?: unknown): WorkObservationDraft {
+  return {
+    id: 'environment-one',
+    type: 'env.bound',
+    ts: '2026-09-22T00:00:00.000Z',
+    obs: 'core',
+    ret: 'turn-evidence',
+    payload: {
+      version: '1',
+      workspaceId,
+      systemPromptDigest: `sha256:${'a'.repeat(64)}`,
+      tools: [],
+      ...(assistantSkillAdmission === undefined ? {} : { assistantSkillAdmission }),
+    },
+  };
+}
+
+const admittedSkill = {
+  skillId: 'source-skill',
+  versionId: `sha256:${'b'.repeat(64)}`,
+  contentDigest: `sha256:${'b'.repeat(64)}`,
+};
+
 /** Source-validated outward assistant fact with an exact expected body declaration. */
 function assistant(bytes: Uint8Array): WorkObservationDraft {
   return {
@@ -116,6 +140,172 @@ function assistant(bytes: Uint8Array): WorkObservationDraft {
 }
 
 describe('durable work observations', () => {
+  it('reads retained environments without inserting an Assistant Skill admission default', () => {
+    const f = fixture('off');
+    appendWorkObservation(f.db, {
+      ...f.owner,
+      observation: environment(f.db.workspaceId),
+      bodies: [],
+    });
+    const path = join(f.turnRoot, 'observations.jsonl');
+    const bytes = readFileSync(path, 'utf8');
+    f.db.sqlite.close();
+    const reopened = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
+    databases.push(reopened);
+    const rows = readWorkObservations(reopened, f.owner);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.payload).not.toHaveProperty('assistantSkillAdmission');
+    expect(readFileSync(path, 'utf8')).toBe(bytes);
+    expect(() =>
+      appendWorkObservation(reopened, {
+        ...f.owner,
+        observation: environment(f.db.workspaceId, { catalogRevision: null, skills: [] }),
+        bodies: [],
+      })
+    ).toThrow('recovery_required: observation identity conflict');
+    expect(readFileSync(path, 'utf8')).toBe(bytes);
+  });
+
+  it.each([
+    { catalogRevision: null, skills: [] },
+    { catalogRevision: 0, skills: [admittedSkill] },
+    {
+      catalogRevision: 7,
+      skills: [admittedSkill, { ...admittedSkill, skillId: 'source-skill-two' }],
+    },
+  ])('retains exact Assistant Skill admission with full I/O off: %j', (admission) => {
+    const f = fixture('off');
+    const timeline = readThreadRuntimeActivity(f.db, {
+      threadId: f.owner.threadId,
+      turnIds: [f.owner.turnId],
+    });
+    const input = {
+      ...f.owner,
+      observation: environment(f.db.workspaceId, admission),
+      bodies: [],
+    };
+    expect(appendWorkObservation(f.db, input).disposition).toBe('committed');
+    const path = join(f.turnRoot, 'observations.jsonl');
+    const bytes = readFileSync(path, 'utf8');
+    expect(JSON.parse(bytes).payload.assistantSkillAdmission).toEqual(admission);
+    expect(appendWorkObservation(f.db, input).disposition).toBe('duplicate');
+    expect(readFileSync(path, 'utf8')).toBe(bytes);
+    f.db.sqlite.close();
+    const reopened = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
+    databases.push(reopened);
+    const rows = readWorkObservations(reopened, f.owner);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.payload.assistantSkillAdmission).toEqual(admission);
+    expect(rows[0]?.ret).toBe('turn-evidence');
+    expect(rows[0]?.payload).not.toHaveProperty('bodies');
+    expect(listWorkspaceEvidenceBundles(reopened, f.db.workspaceId)).toEqual([]);
+    expect(
+      readThreadRuntimeActivity(reopened, {
+        threadId: f.owner.threadId,
+        turnIds: [f.owner.turnId],
+      })
+    ).toEqual(timeline);
+    expect(appendWorkObservation(reopened, input).disposition).toBe('duplicate');
+    expect(readFileSync(path, 'utf8')).toBe(bytes);
+  });
+
+  it.each([
+    { catalogRevision: 8, skills: [admittedSkill] },
+    { catalogRevision: 7, skills: [{ ...admittedSkill, skillId: 'other-skill' }] },
+    {
+      catalogRevision: 7,
+      skills: [
+        {
+          ...admittedSkill,
+          versionId: `sha256:${'c'.repeat(64)}`,
+          contentDigest: `sha256:${'c'.repeat(64)}`,
+        },
+      ],
+    },
+    { catalogRevision: null, skills: [] },
+  ])('refuses changed valid Assistant Skill admission under one identity: %j', (changed) => {
+    const f = fixture('off');
+    const input = {
+      ...f.owner,
+      observation: environment(f.db.workspaceId, { catalogRevision: 7, skills: [admittedSkill] }),
+      bodies: [],
+    };
+    appendWorkObservation(f.db, input);
+    const path = join(f.turnRoot, 'observations.jsonl');
+    const bytes = readFileSync(path, 'utf8');
+    expect(() =>
+      appendWorkObservation(f.db, {
+        ...input,
+        observation: environment(f.db.workspaceId, changed),
+      })
+    ).toThrow('recovery_required: observation identity conflict');
+    expect(readFileSync(path, 'utf8')).toBe(bytes);
+    expect(readWorkObservations(f.db, f.owner)).toHaveLength(1);
+  });
+
+  it.each([
+    ['null tuple', null],
+    ['missing revision', { skills: [] }],
+    ['missing skills', { catalogRevision: null }],
+    ['negative revision', { catalogRevision: -1, skills: [admittedSkill] }],
+    ['fractional revision', { catalogRevision: 1.5, skills: [admittedSkill] }],
+    ['string revision', { catalogRevision: '7', skills: [admittedSkill] }],
+    ['empty with revision', { catalogRevision: 0, skills: [] }],
+    ['selected without revision', { catalogRevision: null, skills: [admittedSkill] }],
+    ['duplicate IDs', { catalogRevision: 7, skills: [admittedSkill, admittedSkill] }],
+    [
+      'unordered IDs',
+      { catalogRevision: 7, skills: [admittedSkill, { ...admittedSkill, skillId: 'alpha' }] },
+    ],
+    ['invalid ID', { catalogRevision: 7, skills: [{ ...admittedSkill, skillId: 'Source Skill' }] }],
+    [
+      'missing digest',
+      {
+        catalogRevision: 7,
+        skills: [{ skillId: 'source-skill', versionId: admittedSkill.versionId }],
+      },
+    ],
+    [
+      'invalid digest',
+      { catalogRevision: 7, skills: [{ ...admittedSkill, contentDigest: 'b'.repeat(64) }] },
+    ],
+    [
+      'equal malformed version and digest',
+      {
+        catalogRevision: 7,
+        skills: [{ ...admittedSkill, versionId: 'b'.repeat(64), contentDigest: 'b'.repeat(64) }],
+      },
+    ],
+    [
+      'changed digest only',
+      {
+        catalogRevision: 7,
+        skills: [{ ...admittedSkill, contentDigest: `sha256:${'c'.repeat(64)}` }],
+      },
+    ],
+    [
+      'changed version only',
+      { catalogRevision: 7, skills: [{ ...admittedSkill, versionId: `sha256:${'c'.repeat(64)}` }] },
+    ],
+    [
+      'extra admission content',
+      { catalogRevision: 7, skills: [admittedSkill], prompt: 'unowned prompt' },
+    ],
+    ...['name', 'description', 'body', 'path', 'credentials', 'inputSchema'].map((key) => [
+      `extra Skill ${key}`,
+      { catalogRevision: 7, skills: [{ ...admittedSkill, [key]: 'unowned content' }] },
+    ]),
+  ])('rejects malformed Assistant Skill admission before persistence: %s', (_name, admission) => {
+    const f = fixture('off');
+    const observation = environment(f.db.workspaceId, admission);
+    expect(() =>
+      parseWorkObservationRecord({ ...observation, turnId: f.owner.turnId, v: 1, seq: 1 })
+    ).toThrow();
+    expect(() => appendWorkObservation(f.db, { ...f.owner, observation, bodies: [] })).toThrow();
+    expect(readWorkObservations(f.db, f.owner)).toEqual([]);
+    expect(existsSync(join(f.turnRoot, 'observations.jsonl'))).toBe(false);
+  });
+
   it('reads appends and reopens observations with annotated owning Turn attribution', () => {
     const f = fixture();
     expect(readWorkObservations(f.db, f.owner)).toEqual([]);

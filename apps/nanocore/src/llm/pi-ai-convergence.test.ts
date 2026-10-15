@@ -1215,6 +1215,7 @@ it.each([
     await client.createChatCompletionStream(provider, {
       model: 'physical',
       messages: [],
+      tools: [{ type: 'function', function: { name: 'lookup' } }],
       stream: true,
     })
   );
@@ -1430,9 +1431,18 @@ it.each([
   await expect(
     stream
       ? client
-          .createChatCompletionStream(provider, { model: 'physical', messages: [], stream })
+          .createChatCompletionStream(provider, {
+            model: 'physical',
+            messages: [],
+            tools: [{ type: 'function', function: { name: 'lookup' } }],
+            stream,
+          })
           .then(frames)
-      : client.createChatCompletion(provider, { model: 'physical', messages: [] })
+      : client.createChatCompletion(provider, {
+          model: 'physical',
+          messages: [],
+          tools: [{ type: 'function', function: { name: 'lookup' } }],
+        })
   ).rejects.toMatchObject({ code: 'unsupported_gateway_feature' });
   if (stream) expect(providerSignal?.aborted).toBe(true);
 });
@@ -1540,7 +1550,12 @@ it('rejects conflicting completed Chat arguments without replaying the upstream 
   });
   await expect(
     client
-      .createChatCompletionStream(provider, { model: 'physical', messages: [], stream: true })
+      .createChatCompletionStream(provider, {
+        model: 'physical',
+        messages: [],
+        tools: [{ type: 'function', function: { name: 'lookup' } }],
+        stream: true,
+      })
       .then(frames)
   ).rejects.toMatchObject({ code: 'unsupported_gateway_feature' });
   expect(providerSignal?.aborted).toBe(true);
@@ -1777,7 +1792,15 @@ it.each([
   Object.assign(faux.provider, { stream: () => events });
   await expect(
     client
-      .createChatCompletionStream(provider, { model: 'physical', messages: [], stream: true })
+      .createChatCompletionStream(provider, {
+        model: 'physical',
+        messages: [],
+        tools: ['lookup_started', 'lookup_other'].map((name) => ({
+          type: 'function',
+          function: { name },
+        })),
+        stream: true,
+      })
       .then(frames)
   ).rejects.toMatchObject({ code: 'unsupported_gateway_feature' });
 });

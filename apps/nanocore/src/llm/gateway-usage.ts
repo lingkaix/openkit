@@ -1,4 +1,8 @@
-import { type GatewayCallLedgerBinding, recordUsage } from '../capability/usage-ledger.js';
+import {
+  type CapabilityAuditLineage,
+  type GatewayCallLedgerBinding,
+  recordUsage,
+} from '../capability/usage-ledger.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 
 /**
@@ -334,6 +338,8 @@ function readNumber(value: unknown): number | undefined {
 /** Retains internal reported consumption; a successful unmetered call keeps its existing observed-request measurement. */
 export function recordInternalLlmGatewayUsage(
   input: GatewayCallLedgerBinding & {
+    /** Trusted command lineage for audit if usage recording fails; never a call start key. */
+    readonly auditLineage?: CapabilityAuditLineage;
     readonly logicalModelId: string;
     readonly providerId: string;
     readonly usage?: unknown;

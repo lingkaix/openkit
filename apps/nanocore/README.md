@@ -444,7 +444,7 @@ Worker Responses relay preserves native assistant message IDs and phases across 
 
 Private administration supports proposals for existing Provider catalog metadata and Gateway logical-model bindings. The human-confirmed `administration.configuration-apply` public operation rechecks current administrator authority and the exact candidate/source identities, then reports persistence and reload/restart separately. Credential setup remains with the existing forms.
 
-Administration model admission reports missing model selection or responses/tool-calling support as `administration_execution_failed`; `context_compaction_unavailable` identifies a missing context policy after those capabilities admit. A refused Turn performs no provider call.
+Administration model admission reports missing model selection or responses/tool-calling support as `administration_execution_failed`; internal roles do not require a compaction policy. Each Provider dispatch fits the admitted logical-model ceiling and current member physical bounds with known output reserve, or fails with `internal_agent_context_unavailable` or `internal_agent_context_exceeded` before that dispatch. A later failure does not replay earlier Tool effects.
 
 The centralized Workspace deletion retry guard accepts a currently usable server-admin bearer only when its canonical user is the original registry owner. The deletion route still validates the exact retained request, revision and confirmation; ordinary content reads remain denied after deletion begins.
 

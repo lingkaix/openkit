@@ -66,20 +66,12 @@ export interface InternalAgentLogicalModel {
   readonly modelFamilyId: string | null;
 }
 
-/** OpenKit-owned context policy pinned for one internal Agent run. */
-export interface InternalAgentContextManagement {
-  readonly type: 'compaction';
-  readonly compactThreshold: number;
-  readonly authority: 'openkit';
-}
-
 /** Complete trusted input to one bounded internal Agent run. */
 export interface InternalAgentLoopInput {
   readonly systemPrompt: string;
   readonly messages: readonly AgentMessage[];
   readonly tools: readonly AgentTool[];
   readonly model: InternalAgentLogicalModel;
-  readonly contextManagement: InternalAgentContextManagement;
   readonly limits: {
     readonly maxModelTurns: number;
     readonly maxToolCalls: number;
@@ -102,15 +94,13 @@ export interface InternalAgentProviderRequest {
   readonly messages: readonly AgentMessage[];
   readonly tools: readonly InternalAgentProviderTool[];
   readonly model: InternalAgentLogicalModel;
-  readonly contextManagement: InternalAgentContextManagement;
   readonly signal: AbortSignal;
   readonly onTextIncrement?: (text: string) => void;
 }
 
-/** Gateway response after provider conversion and optional admitted compaction. */
+/** Gateway response containing only the completed ordinary inference message. */
 export interface InternalAgentProviderResponse {
   readonly message: AgentAssistantMessage;
-  readonly compactedMessages?: readonly AgentMessage[];
 }
 
 /** Injected Gateway projection used by the product-agnostic loop. */
@@ -151,7 +141,7 @@ export async function runInternalAgentLoop(
   input: InternalAgentLoopInput,
   callProvider: InternalAgentProviderCall
 ): Promise<InternalAgentLoopExit> {
-  let messages = Array.isArray(input.messages) ? [...input.messages] : [];
+  const messages = Array.isArray(input.messages) ? [...input.messages] : [];
   const schemaValidator = new Ajv2020({ allErrors: false, strict: false });
   let validators: ReadonlyMap<string, ReturnType<typeof schemaValidator.compile>>;
   try {
@@ -163,7 +153,17 @@ export async function runInternalAgentLoop(
     return { kind: 'failed', messages, code: 'internal_agent_input_invalid' };
   }
 
-  const deadlineSignal = AbortSignal.timeout(input.limits.deadlineMs);
+  const deadlineController = new AbortController();
+  const deadlineSignal = deadlineController.signal;
+  const deadlineTimer = setTimeout(
+    () =>
+      deadlineController.abort(
+        new DOMException('Internal Agent deadline elapsed.', 'TimeoutError')
+      ),
+    input.limits.deadlineMs
+  );
+  deadlineTimer.unref();
+  let running = true;
   const signal = AbortSignal.any([input.signal, deadlineSignal]);
   const providerTools = input.tools.map(({ name, description, inputSchema }) => ({
     name,
@@ -176,135 +176,138 @@ export async function runInternalAgentLoop(
   let toolCalls = 0;
 
   const exitForCancellation = (): InternalAgentLoopExit | null => {
-    if (input.signal.aborted) return { kind: 'aborted', messages };
-    if (deadlineSignal.aborted) {
+    if (!signal.aborted) return null;
+    // AbortSignal.any retains the first reason even if the other source later aborts.
+    if (deadlineSignal.aborted && signal.reason === deadlineSignal.reason) {
       return { kind: 'limit_reached', messages, limit: 'deadline' };
     }
-    return null;
+    return { kind: 'aborted', messages };
   };
 
-  while (true) {
-    const cancelled = exitForCancellation();
-    if (cancelled) return cancelled;
-    if (modelTurns >= input.limits.maxModelTurns) {
-      return { kind: 'limit_reached', messages, limit: 'model_turns' };
-    }
-
-    let response: InternalAgentProviderResponse;
-    try {
-      response = await raceWithSignal(
-        callProvider({
-          systemPrompt: input.systemPrompt,
-          messages: [...messages],
-          tools: providerTools,
-          model: input.model,
-          contextManagement: input.contextManagement,
-          signal,
-          ...(input.onTextIncrement
-            ? {
-                onTextIncrement: (text: string) => {
-                  if (signal.aborted) return;
-                  try {
-                    input.onTextIncrement?.(text);
-                  } catch {
-                    // Transport observation cannot affect runtime semantics.
-                  }
-                },
-              }
-            : {}),
-        }),
-        signal
-      );
-      modelTurns += 1;
-    } catch (error) {
-      const providerCancelled = exitForCancellation();
-      return (
-        providerCancelled ?? {
-          kind: 'failed',
-          messages,
-          code: error instanceof InternalAgentProviderError ? error.code : 'provider_call_failed',
-        }
-      );
-    }
-
-    if (!isAssistantMessage(response.message)) {
-      return { kind: 'failed', messages, code: 'provider_response_invalid' };
-    }
-    if (response.compactedMessages) {
-      if (!response.compactedMessages.every(isAgentMessage)) {
-        return { kind: 'failed', messages, code: 'provider_response_invalid' };
-      }
-      messages = [...response.compactedMessages];
-    }
-    messages.push(response.message);
-
-    const requestedCalls = response.message.content.filter(
-      (content): content is { readonly type: 'toolCall' } & AgentToolCall =>
-        content.type === 'toolCall'
-    );
-    if (
-      requestedCalls.some(
-        (call) => !call.callId.trim() || callIds.has(call.callId) || !call.name.trim()
-      ) ||
-      new Set(requestedCalls.map((call) => call.callId)).size !== requestedCalls.length
-    ) {
-      return { kind: 'failed', messages, code: 'provider_response_invalid' };
-    }
-    for (const call of requestedCalls) callIds.add(call.callId);
-
-    if (requestedCalls.length === 0) {
-      return { kind: 'quiescent', messages };
-    }
-    if (response.message.truncated) {
-      messages.push(
-        ...requestedCalls.map((call) =>
-          toolError(call.callId, 'The incomplete Tool call was not executed.')
-        )
-      );
-      continue;
-    }
-
-    for (const call of requestedCalls) {
-      const cancelledBeforeTool = exitForCancellation();
-      if (cancelledBeforeTool) return cancelledBeforeTool;
-      const tool = tools.get(call.name);
-      const validate = validators.get(call.name);
-      if (!tool || !validate) {
-        messages.push(toolError(call.callId, 'The requested Tool is unavailable.'));
-        continue;
-      }
-      if (!validate(call.arguments)) {
-        messages.push(
-          toolError(call.callId, 'The Tool arguments do not match the required schema.')
-        );
-        continue;
-      }
-      if (toolCalls >= input.limits.maxToolCalls) {
-        return { kind: 'limit_reached', messages, limit: 'tool_calls' };
+  try {
+    while (true) {
+      const cancelled = exitForCancellation();
+      if (cancelled) return cancelled;
+      if (modelTurns >= input.limits.maxModelTurns) {
+        return { kind: 'limit_reached', messages, limit: 'model_turns' };
       }
 
-      toolCalls += 1;
+      let response: InternalAgentProviderResponse;
       try {
-        const result = await raceWithSignal(
-          tool.execute(call.arguments, { callId: call.callId, signal }),
+        response = await raceWithSignal(
+          callProvider({
+            systemPrompt: input.systemPrompt,
+            messages: [...messages],
+            tools: providerTools,
+            model: input.model,
+            signal,
+            ...(input.onTextIncrement
+              ? {
+                  onTextIncrement: (text: string) => {
+                    if (!running || signal.aborted) return;
+                    try {
+                      input.onTextIncrement?.(text);
+                    } catch {
+                      // Transport observation cannot affect runtime semantics.
+                    }
+                  },
+                }
+              : {}),
+          }),
           signal
         );
-        const content = sanitizeToolContent(result.content);
-        if (!content) {
-          return { kind: 'failed', messages, code: 'tool_result_invalid' };
+        modelTurns += 1;
+      } catch (error) {
+        const providerCancelled = exitForCancellation();
+        return (
+          providerCancelled ?? {
+            kind: 'failed',
+            messages,
+            code: error instanceof InternalAgentProviderError ? error.code : 'provider_call_failed',
+          }
+        );
+      }
+
+      const cancelledAfterProvider = exitForCancellation();
+      if (cancelledAfterProvider) return cancelledAfterProvider;
+      if (!isAssistantMessage(response.message)) {
+        return { kind: 'failed', messages, code: 'provider_response_invalid' };
+      }
+      messages.push(response.message);
+
+      const requestedCalls = response.message.content.filter(
+        (content): content is { readonly type: 'toolCall' } & AgentToolCall =>
+          content.type === 'toolCall'
+      );
+      if (
+        requestedCalls.some(
+          (call) => !call.callId.trim() || callIds.has(call.callId) || !call.name.trim()
+        ) ||
+        new Set(requestedCalls.map((call) => call.callId)).size !== requestedCalls.length
+      ) {
+        return { kind: 'failed', messages, code: 'provider_response_invalid' };
+      }
+      for (const call of requestedCalls) callIds.add(call.callId);
+
+      if (requestedCalls.length === 0) {
+        return { kind: 'quiescent', messages };
+      }
+      if (response.message.truncated) {
+        messages.push(
+          ...requestedCalls.map((call) =>
+            toolError(call.callId, 'The incomplete Tool call was not executed.')
+          )
+        );
+        continue;
+      }
+
+      for (const call of requestedCalls) {
+        const cancelledBeforeTool = exitForCancellation();
+        if (cancelledBeforeTool) return cancelledBeforeTool;
+        const tool = tools.get(call.name);
+        const validate = validators.get(call.name);
+        if (!tool || !validate) {
+          messages.push(toolError(call.callId, 'The requested Tool is unavailable.'));
+          continue;
         }
-        messages.push({
-          role: 'tool',
-          callId: call.callId,
-          content,
-          isError: result.isError === true,
-        });
-      } catch {
-        const toolCancelled = exitForCancellation();
-        if (toolCancelled) return toolCancelled;
-        messages.push(toolError(call.callId, 'The Tool failed without a safe result.'));
+        if (!validate(call.arguments)) {
+          messages.push(
+            toolError(call.callId, 'The Tool arguments do not match the required schema.')
+          );
+          continue;
+        }
+        if (toolCalls >= input.limits.maxToolCalls) {
+          return { kind: 'limit_reached', messages, limit: 'tool_calls' };
+        }
+
+        toolCalls += 1;
+        try {
+          const result = await raceWithSignal(
+            tool.execute(call.arguments, { callId: call.callId, signal }),
+            signal
+          );
+          const cancelledAfterTool = exitForCancellation();
+          if (cancelledAfterTool) return cancelledAfterTool;
+          const content = sanitizeToolContent(result.content);
+          if (!content) {
+            return { kind: 'failed', messages, code: 'tool_result_invalid' };
+          }
+          messages.push({
+            role: 'tool',
+            callId: call.callId,
+            content,
+            isError: result.isError === true,
+          });
+        } catch {
+          const toolCancelled = exitForCancellation();
+          if (toolCancelled) return toolCancelled;
+          messages.push(toolError(call.callId, 'The Tool failed without a safe result.'));
+        }
       }
     }
+  } finally {
+    running = false;
+    clearTimeout(deadlineTimer);
   }
 }
 
@@ -312,9 +315,6 @@ function assertInput(input: InternalAgentLoopInput): void {
   if (
     !input.systemPrompt.trim() ||
     !input.model.logicalModelId.trim() ||
-    input.contextManagement.type !== 'compaction' ||
-    input.contextManagement.authority !== 'openkit' ||
-    !positiveInteger(input.contextManagement.compactThreshold) ||
     !positiveInteger(input.limits.maxModelTurns) ||
     !positiveInteger(input.limits.maxToolCalls) ||
     !positiveInteger(input.limits.deadlineMs) ||
@@ -398,8 +398,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 async function raceWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  signal.throwIfAborted();
+  // Invocation can cancel synchronously before returning a rejecting Promise.
   void promise.catch(() => undefined);
+  signal.throwIfAborted();
   let listener: (() => void) | undefined;
   const aborted = new Promise<never>((_resolve, reject) => {
     listener = () => reject(signal.reason);

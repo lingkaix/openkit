@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { ensureLocalUser } from '../auth/identity.js';
 import type { BetterAuthServer } from '../auth/middleware.js';
@@ -153,11 +153,27 @@ describe('turn feedback', () => {
     });
   });
 
-  it('uses a temp file and rename for feedback updates', () => {
-    const source = readFileSync(join(process.cwd(), 'src', 'runtime', 'feedback.ts'), 'utf8');
-
-    expect(source).toContain('renameSync');
-    expect(source).toContain('.tmp');
+  it('retains replacement feedback on reopen and removes temporary files after success', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-replacement-'));
+    try {
+      const store = createDemoStore({ dataRoot });
+      const turn = store.createTurn('ws_demo', 'th_demo', 'Feedback replacement', {
+        kind: 'user',
+        id: 'user_local',
+      });
+      store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
+      const path = feedbackFilePath(store, store.getTurnById(turn.id));
+      const entriesBefore = readdirSync(dirname(path)).sort();
+      updateTurnFeedback(store, turn.id, { note: 'Prior feedback', rating: 'bad' });
+      updateTurnFeedback(store, turn.id, { note: 'Replacement feedback', rating: 'good' });
+      expect(readTurnFeedback(createDemoStore({ dataRoot }), turn.id)).toMatchObject({
+        note: 'Replacement feedback',
+        rating: 'good',
+      });
+      expect(readdirSync(dirname(path)).sort()).toEqual(entriesBefore);
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
   });
 
   it('keeps feedback Workspace-owned across authenticated request actors', async () => {

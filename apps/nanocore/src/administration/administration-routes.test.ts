@@ -895,7 +895,7 @@ describe('administration conversation route', () => {
     expect(createResponses).not.toHaveBeenCalled();
   });
 
-  it('refuses missing context policy as context_compaction_unavailable after capabilities admit', async () => {
+  it('answers without a compaction policy after model capabilities admit', async () => {
     const { body, createResponses, status } = await postAdministrationAdmissionTurn({
       label: 'missing-context-policy',
       toolCall: true,
@@ -904,23 +904,16 @@ describe('administration conversation route', () => {
 
     expect(status).toBe(200);
     expect(body, JSON.stringify(body)).toMatchObject({
-      outcome: 'refused',
-      explanation:
-        'Administration requires an admitted Tool-capable logical model with context policy.',
-      turn: {
-        status: 'failed',
-        error: {
-          code: 'context_compaction_unavailable',
-          message:
-            'Administration requires an admitted Tool-capable logical model with context policy.',
-        },
-      },
-      item: {
-        summary:
-          'Administration requires an admitted Tool-capable logical model with context policy.',
-      },
+      outcome: 'answered',
+      explanation: 'The private administration Assistant answered through the bounded Tool set.',
+      turn: { status: 'completed', error: null },
+      item: { type: 'assistant-message', text: 'Ready without compaction.' },
     });
-    expect(createResponses).not.toHaveBeenCalled();
+    expect(createResponses).toHaveBeenCalledTimes(1);
+    const payload = createResponses.mock.calls[0]?.[1];
+    expect(payload).toMatchObject({ instructions: expect.any(String), tools: expect.any(Array) });
+    expect(payload).not.toHaveProperty('contextManagement');
+    expect(payload).not.toHaveProperty('context_management');
   });
 });
 
@@ -1032,7 +1025,19 @@ async function postAdministrationAdmissionTurn(options: {
       } as ResolvedInternalRoleProfile;
     });
   }
-  const createResponses = vi.fn();
+  const createResponses = vi.fn().mockResolvedValue({
+    id: 'administration_without_compaction',
+    object: 'response',
+    status: 'completed',
+    output: [
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'Ready without compaction.' }],
+      },
+    ],
+  });
   const app = new Hono<{ Variables: AuthVariables }>();
   app.use('*', async (context, next) => {
     context.set('actor', actor);
