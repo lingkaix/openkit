@@ -606,12 +606,40 @@ describe.each([
     );
   });
 
+  it('uses a new import request when file content changes after failure', async () => {
+    const user = userEvent.setup();
+    const importWorkspaceArtifact = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Response lost'))
+      .mockResolvedValue({ artifactId: 'changed-notes', artifactVersion: 1 });
+    renderApp(path, makeClient({}, { 'artifact.import': importWorkspaceArtifact }));
+    const trigger = await screen.findByRole('button', {
+      name: 'Add artifact or upload attachment',
+    });
+    await waitFor(() => expect(trigger).toBeEnabled());
+    await user.click(trigger);
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    for (const content of ['First bytes', 'Corrected bytes']) {
+      const file = new File([content], 'notes.txt', { type: 'text/plain' });
+      Object.defineProperty(file, 'text', { value: vi.fn().mockResolvedValue(content) });
+      await user.upload(fileInput, file);
+      await waitFor(() => expect(trigger).toBeEnabled());
+    }
+    expect(await screen.findByRole('button', { name: 'Remove notes.txt' })).toBeInTheDocument();
+    expect(importWorkspaceArtifact).toHaveBeenCalledTimes(2);
+    const [first, second] = importWorkspaceArtifact.mock.calls.map(([input]) => input);
+    expect(first.content).toBe('First bytes');
+    expect(second.content).toBe('Corrected bytes');
+    expect(second.requestId).not.toBe(first.requestId);
+  });
+
   it('clears import errors only after success and preserves the conversation request through file selection retries', async () => {
     const user = userEvent.setup();
     const draftRequestId = '11111111-1111-4111-8111-111111111111';
     vi.spyOn(crypto, 'randomUUID')
       .mockReturnValueOnce(draftRequestId)
-      .mockReturnValue('22222222-2222-4222-8222-222222222222');
+      .mockReturnValueOnce('22222222-2222-4222-8222-222222222222')
+      .mockReturnValue('33333333-3333-4333-8333-333333333333');
     const importWorkspaceArtifact = vi
       .fn()
       .mockRejectedValueOnce(new Error('Private import failure details'))
@@ -657,6 +685,7 @@ describe.each([
     expect(screen.getByRole('button', { name: 'Remove Existing brief' })).toBeInTheDocument();
     expect(message).toHaveValue('Keep this draft');
     expect(importWorkspaceArtifact).toHaveBeenCalledTimes(2);
+    expect(importWorkspaceArtifact.mock.calls[1]).toEqual(importWorkspaceArtifact.mock.calls[0]);
     await user.click(trigger);
     expect(
       within(screen.getByRole('dialog', { name: 'Attachments' })).queryByRole('alert')
