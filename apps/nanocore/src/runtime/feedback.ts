@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   type SubmitTurnFeedbackRequest,
   type TurnFeedbackResponse,
@@ -8,6 +8,7 @@ import {
 import type { TurnSchema } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
+import { writeFileAtomic } from '../storage/workspace-file-records.js';
 
 type Turn = import('zod').infer<typeof TurnSchema>;
 
@@ -137,16 +138,11 @@ function readFeedbackFile(path: string, turnId: string): TurnFeedbackResponse {
 }
 
 /**
- * Writes feedback using a temp file and rename.
+ * Commits feedback bytes and the replacement directory entry before returning.
  *
  * @param path Feedback file path.
  * @param feedback Feedback record.
  */
 function writeFeedbackFile(path: string, feedback: TurnFeedbackResponse): void {
-  mkdirSync(dirname(path), { recursive: true });
-
-  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-
-  writeFileSync(tempPath, `${JSON.stringify(feedback, null, 2)}\n`);
-  renameSync(tempPath, path);
+  writeFileAtomic(path, `${JSON.stringify(feedback, null, 2)}\n`, 0o666 & ~process.umask());
 }

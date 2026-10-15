@@ -5,6 +5,7 @@ import {
   existsSync,
   fchmodSync,
   fstatSync,
+  fsyncSync,
   lstatSync,
   openSync,
   readdirSync,
@@ -206,6 +207,7 @@ export function initializeOrVerifyEncryptedFileVaultStore(input: {
   assertMasterKey(input.masterKey);
   const ensured = ensureEncryptedFileVaultStoreDirectory({ storeDir: input.storeDir });
   const canonicalStoreDir = assertEncryptedFileVaultDirectory(ensured.storeDir);
+  syncEncryptedFileVaultDirectory(dirname(canonicalStoreDir));
   const path = headerPath(canonicalStoreDir);
 
   if (!existsSync(path)) {
@@ -318,6 +320,8 @@ export function writeEncryptedFileVaultEntry(
   }
 
   writeEncryptedFileVaultJsonAtomically(path, entry);
+  syncEncryptedFileVaultDirectory(entriesDir);
+  syncEncryptedFileVaultDirectory(canonicalStoreDir);
   return entry;
 }
 
@@ -651,9 +655,11 @@ export function writeEncryptedFileVaultJsonAtomically(path: string, value: unkno
     );
     fchmodSync(fileDescriptor, REQUIRED_STORE_FILE_MODE);
     writeFileSync(fileDescriptor, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    fsyncSync(fileDescriptor);
     closeSync(fileDescriptor);
     fileDescriptor = undefined;
     renameSync(tempPath, path);
+    syncEncryptedFileVaultDirectory(dirname(path));
   } catch (error) {
     if (error instanceof VaultBackendError) {
       throw error;
@@ -667,6 +673,21 @@ export function writeEncryptedFileVaultJsonAtomically(path: string, value: unkno
         // Every exposed failure remains redacted and the owned temp stays fail-closed.
       }
     }
+  }
+}
+
+/** Commits a Vault directory entry without following a link or exposing native errors. */
+function syncEncryptedFileVaultDirectory(path: string): void {
+  try {
+    const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      if (!fstatSync(descriptor).isDirectory()) throw new Error('Invalid directory.');
+      fsyncSync(descriptor);
+    } finally {
+      closeSync(descriptor);
+    }
+  } catch {
+    throw invalidStoreFormatError('Encrypted-file vault file could not be written securely.');
   }
 }
 

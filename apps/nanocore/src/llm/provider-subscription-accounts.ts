@@ -1,15 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  rmdirSync,
-  unlinkSync,
-  writeFileSync,
-} from 'node:fs';
+import { lstatSync, readdirSync, readFileSync, rmdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { isDeepStrictEqual, TextDecoder, toUSVString } from 'node:util';
 
@@ -31,6 +21,7 @@ import {
 
 import { recordServerAuditEvent } from '../audit-events.js';
 import type { CoreDb } from '../storage/db.js';
+import { ensureCanonicalDirectory, writeFileAtomic } from '../storage/workspace-file-records.js';
 import {
   type VaultBackend,
   VaultBackendError,
@@ -1798,21 +1789,11 @@ export class ProviderSubscriptionAccountManager {
     const pair = this.requirePair(record);
     const validated = parseAccountRecord(record, pair);
     const directory = this.accountDirectory(pair);
-    this.ensureAccountDirectory(pair);
     const path = join(directory, 'account.json');
-    const temporaryPath = join(directory, `.account.${randomUUID()}.tmp`);
-
     try {
-      writeFileSync(temporaryPath, `${JSON.stringify(validated, null, 2)}\n`, {
-        encoding: 'utf8',
-        flag: 'wx',
-        mode: 0o600,
-      });
-      renameSync(temporaryPath, path);
+      this.ensureAccountDirectory(pair);
+      writeFileAtomic(path, `${JSON.stringify(validated, null, 2)}\n`);
     } catch {
-      if (existsSync(temporaryPath)) {
-        unlinkSync(temporaryPath);
-      }
       throw persistenceError();
     }
   }
@@ -1854,7 +1835,7 @@ export class ProviderSubscriptionAccountManager {
     for (const directory of managed) {
       const stat = lstatOrNull(directory);
       if (!stat) {
-        mkdirSync(directory);
+        ensureCanonicalDirectory(directory, 0o777);
       } else if (!stat.isDirectory() || stat.isSymbolicLink()) {
         throw persistenceError();
       }
