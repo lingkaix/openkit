@@ -18,6 +18,7 @@ import {
 import { recordResolvedAgentSetup } from '../agents/setup-ledger.js';
 import {
   type AgentSetupDiagnostic,
+  type AgentSetupResolverDependencies,
   type ResolvedAgentSetup,
   resolveAgentSetup,
 } from '../agents/setup-resolver.js';
@@ -29,7 +30,11 @@ import type { TurnExecutor, TurnStartRuntimeContext } from './types.js';
 /**
  * Input for starting a turn through the minimal orchestrator.
  */
-export interface StartTurnInput {
+export interface StartTurnInput
+  extends Pick<
+    AgentSetupResolverDependencies,
+    'providerCredentialConfigured' | 'subscriptionAccounts'
+  > {
   /** Exact durable execution attempt for the accepted pending Turn. */
   attemptId?: string;
   /** Scheduler-owned AgentSession id used when a lease already reserved lineage. */
@@ -289,6 +294,8 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
   const agentSetupResult = resolveAgentSetup(selectedAgent, {
     gatewayConfig: input.gatewayConfig,
     providerRegistry: input.providerRegistry,
+    providerCredentialConfigured: input.providerCredentialConfigured,
+    subscriptionAccounts: input.subscriptionAccounts,
     ...(input.profileId !== undefined ? { selectedProfileId: input.profileId } : {}),
     ...(input.modelId !== undefined ? { requestedLogicalModelId: input.modelId } : {}),
     workspaceId: input.workspaceId,

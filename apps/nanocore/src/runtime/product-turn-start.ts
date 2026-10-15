@@ -4,7 +4,10 @@ import type { ActorRef, SubmitTurnInputRequestSchema, TurnSchema } from '@openki
 import type { z } from 'zod';
 import { computeReadiness } from '../agents/readiness.js';
 import { selectAgent } from '../agents/selector.js';
-import { resolveAgentSetup } from '../agents/setup-resolver.js';
+import {
+  type AgentSetupResolverDependencies,
+  resolveAgentSetup,
+} from '../agents/setup-resolver.js';
 import type { Actor } from '../auth/identity.js';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { type RuntimeConfigSnapshot, resolveDefaultAgentId } from '../config/runtime-config.js';
@@ -28,7 +31,11 @@ import { materializeWorkspaceRootsForTurn } from './turn-workspace-context.js';
 import type { TurnExecutor } from './types.js';
 
 /** Product turn inputs needed for scheduler admission and worker startup. */
-interface StartProductTurnInput {
+interface StartProductTurnInput
+  extends Pick<
+    AgentSetupResolverDependencies,
+    'providerCredentialConfigured' | 'subscriptionAccounts'
+  > {
   /** Required Core database for durable scheduler admission. */
   readonly coreDb?: CoreDb;
   /** Parsed protocol turn-start request. */
@@ -176,6 +183,8 @@ export async function startProductTurn(input: StartProductTurnInput) {
   const setup = resolveAgentSetup(selectedAgent, {
     gatewayConfig: input.snapshot.gatewayConfig,
     providerRegistry: input.snapshot.providerRegistry,
+    providerCredentialConfigured: input.providerCredentialConfigured,
+    subscriptionAccounts: input.subscriptionAccounts,
     selectedProfileId: input.input.profileId ?? null,
     requestedLogicalModelId: input.input.modelId ?? null,
     workspaceId: input.input.workspaceId,
@@ -310,6 +319,8 @@ export async function startProductTurn(input: StartProductTurnInput) {
     executionBackend: backend,
     maxDispatches: 1,
     providerRegistry: input.snapshot.providerRegistry,
+    providerCredentialConfigured: input.providerCredentialConfigured,
+    subscriptionAccounts: input.subscriptionAccounts,
     gatewayConfig: input.snapshot.gatewayConfig,
     workspaceConfigs: input.snapshot.workspaceConfigs,
     userConfigs: input.snapshot.userConfigs,
