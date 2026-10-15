@@ -610,6 +610,122 @@ describe('Assistant progressive Skill reads', () => {
   });
 });
 
+describe('Assistant Skill sanitization through the shared loop', () => {
+  it.each([
+    {
+      label: 'credential text with JSON delimiters',
+      source: 'Example: Authorization: Bearer EXAMPLE',
+      expectsRefusal: false,
+    },
+    {
+      label: 'credential masks that expand beyond the response ceiling',
+      source: 'hf_x '.repeat(10_000),
+      expectsRefusal: true,
+    },
+    {
+      label: 'credential-shaped admitted supporting path',
+      source: '# Supporting guidance',
+      expectsRefusal: true,
+      path: 'references/SK-guidance.md',
+      refusalCanary: 'SK-guidance.md',
+    },
+  ])('keeps the final model observation valid, bounded, and safe for $label', async ({
+    source,
+    expectsRefusal,
+    path,
+    refusalCanary = 'hf_x',
+  }) => {
+    const f = fixture();
+    const imported = importSkill(
+      f,
+      'alpha',
+      path ? '# Root instructions' : source,
+      path
+        ? [
+            { kind: 'directory', path: 'references' },
+            { kind: 'file', path, contentBase64: Buffer.from(source).toString('base64') },
+          ]
+        : []
+    );
+    const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
+    const provider = vi
+      .fn()
+      .mockResolvedValueOnce({
+        message: {
+          role: 'assistant',
+          truncated: false,
+          content: [
+            {
+              type: 'toolCall',
+              callId: 'read-sanitized',
+              name: assembled.tool.name,
+              arguments: {
+                skillId: 'alpha',
+                ...(path ? { path } : {}),
+                versionId: imported.version.digest,
+                contentDigest: imported.version.digest,
+              },
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        message: {
+          role: 'assistant',
+          truncated: false,
+          content: [{ type: 'text', text: 'Read settled.' }],
+        },
+      });
+
+    const result = await runInternalAgentLoop(
+      {
+        systemPrompt: 'Use only the admitted Skill Tool.',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'Read the selected Skill.' }] }],
+        tools: [assembled.tool],
+        model: { logicalModelId: 'assistant', capabilities: ['tool-calling'], modelFamilyId: null },
+        limits: { maxModelTurns: 2, maxToolCalls: 1, deadlineMs: 5_000 },
+        signal: new AbortController().signal,
+      },
+      provider
+    );
+
+    expect(result.kind).toBe('quiescent');
+    expect(provider).toHaveBeenCalledTimes(2);
+    const observations = provider.mock.calls[1]![0].messages.filter(
+      (message: { role: string }) => message.role === 'tool'
+    );
+    expect(observations).toHaveLength(1);
+    const observation = observations[0]!;
+    expect(observation.callId).toBe('read-sanitized');
+    const text = observation.content[0].text;
+    expect(() => JSON.parse(text)).not.toThrow();
+    if (path && observation.isError !== true) expect(JSON.parse(text).path).toBe(path);
+    expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(65_536);
+    if (expectsRefusal) refusal(observation, f, refusalCanary);
+    else {
+      const parsed = success(observation);
+      expect(parsed).toEqual({
+        skillId: 'alpha',
+        versionId: imported.version.digest,
+        path: 'SKILL.md',
+        fileDigest: `sha256:${createHash('sha256').update(source).digest('hex')}`,
+        text: expect.any(String),
+      });
+      expect(parsed.text).toContain('Example:');
+      expect(parsed.text).not.toContain('EXAMPLE');
+    }
+    expect(
+      fs.readFileSync(
+        join(
+          skillSnapshotPath(f.dataRoot, f.workspaceId, 'alpha', imported.version.digest),
+          path ?? 'SKILL.md'
+        ),
+        'utf8'
+      )
+    ).toBe(source);
+  });
+});
+
 describe('Assistant Skill Tool in the shared loop', () => {
   it.each([
     false,

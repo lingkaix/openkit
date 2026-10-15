@@ -19,6 +19,7 @@ import { loadWorkspaceResourceCatalog, skillSnapshotPath } from '../catalog/reso
 import type { FsStore } from '../lib/store.js';
 import type { CoreDb } from '../storage/db.js';
 import type { AgentTool, ToolExecutionContext } from './internal-agent-loop.js';
+import { redactInternalAgentText } from './redaction.js';
 
 /** Complete UTF-8 model projections are bounded; instructions are never truncated. */
 const MAX_SKILL_PROJECTION_BYTES = 64 * 1024;
@@ -238,7 +239,16 @@ export async function assembleAssistantSkillResources(
           if ((value < 32 && value !== 9 && value !== 10 && value !== 13) || value === 127)
             throw new AssistantSkillResourceError('skill_content_not_text');
         }
-        const result = JSON.stringify({ skillId, versionId, path, fileDigest, text });
+        const result = JSON.stringify({
+          skillId,
+          versionId,
+          path,
+          fileDigest,
+          text: redactInternalAgentText(text),
+        });
+        // The loop sanitizes again. Require a fixed point so provenance and the byte bound survive it.
+        if (redactInternalAgentText(result) !== result)
+          throw new AssistantSkillResourceError('resource_unavailable');
         if (Buffer.byteLength(result) > MAX_SKILL_PROJECTION_BYTES)
           throw new AssistantSkillResourceError('skill_content_too_large');
         context.signal.throwIfAborted();
