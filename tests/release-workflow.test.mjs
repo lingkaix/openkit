@@ -922,3 +922,127 @@ test('publication proof covers every App producer, consumer and native fixture b
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// Harness admission only: stand-ins exercise driver outcomes, never container or product behavior.
+test('native App driver admits success and refuses wrong host, false negatives, product failure and timeout', () => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-native-driver-'));
+  try {
+    const platform = process.arch === 'arm64' ? 'linux/arm64' : 'linux/amd64';
+    const candidate = {
+      repository: 'example/openkit',
+      source: 'a'.repeat(40),
+      tag: 'v0.1.0-rc.8',
+      runId: '123',
+      attempt: '1',
+      image: 'ghcr.io/example/openkit-app',
+      digest: `sha256:${'b'.repeat(64)}`,
+      platforms: ['amd64', 'arm64'].map((arch, i) => ({
+        platform: `linux/${arch}`,
+        digest: `sha256:${String(i + 1).repeat(64)}`,
+      })),
+      smokeCommand: 'openkit-app-smoke',
+      reused: false,
+      latestBefore: '',
+    };
+    const input = join(root, 'candidate.json');
+    writeFileSync(input, JSON.stringify(candidate));
+    const bootstrap = `
+      import { mock } from 'node:test';
+      import { appendFileSync } from 'node:fs';
+      import { pathToFileURL } from 'node:url';
+      const mode = process.env.DRIVER_MODE;
+      const arch = process.arch === 'arm64' ? 'arm64' : 'amd64';
+      mock.module('node:child_process', { namedExports: { spawnSync(program, args) {
+        const ok = (stdout = '') => ({ status: 0, stdout, stderr: '' });
+        if (program === 'uname') return ok(args[0] === '-s' ? 'Linux' :
+          mode === 'wrong-host' ? 'wrong-kernel' : arch === 'arm64' ? 'aarch64' : 'x86_64');
+        if (program === 'cc') return ok();
+        if (program !== 'docker') throw Error('Unexpected program ' + program);
+        appendFileSync(process.env.DRIVER_LOG, JSON.stringify(args) + '\\n');
+        if (args[0] === 'buildx') return ok(JSON.stringify({ manifests: ['amd64', 'arm64'].map((architecture, i) =>
+          ({ platform: { os: 'linux', architecture }, digest: 'sha256:' + String(i + 1).repeat(64) })) }));
+        if (args[0] === 'context') return ok(args[1] === 'show' ? 'default' : 'unix:///var/run/docker.sock');
+        if (args[0] === 'info') return ok('linux/' + arch);
+        if (args[0] === 'pull') return ok();
+        if (args[0] !== 'run') throw Error('Unexpected Docker command ' + args[0]);
+        if (args.includes('LD_PRELOAD=/tmp/no-as-limit.so')) {
+          if (mode === 'negative-passes') return ok();
+          if (mode === 'negative-unrelated') return { status: 1, stdout: '', stderr: 'unrelated failure' };
+          if (mode === 'negative-timeout') return { status: null, error: Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }) };
+          return { status: 1, stdout: '', stderr: 'ERR_ASSERTION 2147483648 Max address space unlimited unlimited bytes' };
+        }
+        if (args.includes('ulimit -v')) return ok(mode === 'inherited-limit' ? '2097152' : 'unlimited');
+        if (mode === 'product-failure') return { status: 42, stdout: '', stderr: 'product failed' };
+        if (mode === 'product-timeout') return { status: null, error: Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }) };
+        return ok();
+      } } });
+      process.argv = [process.execPath, process.env.DRIVER_HELPER, 'smoke', process.env.DRIVER_INPUT, process.env.DRIVER_PLATFORM, process.env.DRIVER_OUTPUT];
+      await import(pathToFileURL(process.env.DRIVER_HELPER).href);
+    `;
+    for (const mode of [
+      'success',
+      'wrong-host',
+      'inherited-limit',
+      'negative-passes',
+      'negative-unrelated',
+      'negative-timeout',
+      'product-failure',
+      'product-timeout',
+    ]) {
+      const output = join(root, `${mode}.json`);
+      const log = join(root, `${mode}.log`);
+      const r = spawnSync(
+        process.execPath,
+        ['--experimental-test-module-mocks', '--input-type=module', '--eval', bootstrap],
+        {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            GITHUB_SHA: candidate.source,
+            GITHUB_REPOSITORY: candidate.repository,
+            GITHUB_REPOSITORY_OWNER: 'example',
+            GITHUB_EVENT_NAME: 'push',
+            GITHUB_REF: `refs/tags/${candidate.tag}`,
+            GITHUB_REF_NAME: candidate.tag,
+            GITHUB_RUN_ID: candidate.runId,
+            GITHUB_RUN_ATTEMPT: candidate.attempt,
+            RUNNER_ARCH: process.arch === 'arm64' ? 'ARM64' : 'X64',
+            DOCKER_HOST: '',
+            DOCKER_CONTEXT: '',
+            DRIVER_MODE: mode,
+            DRIVER_LOG: log,
+            DRIVER_HELPER: join(process.cwd(), 'scripts/release-app-native.mjs'),
+            DRIVER_INPUT: input,
+            DRIVER_PLATFORM: platform,
+            DRIVER_OUTPUT: output,
+          },
+        }
+      );
+      assert.equal(r.error, undefined);
+      if (mode === 'success') {
+        assert.equal(r.status, 0, r.stderr);
+        assert.equal(JSON.parse(readFileSync(output, 'utf8')).conclusion, 'success');
+      } else {
+        assert.equal(r.status, 1, `${mode}: ${r.stderr}`);
+        assert.throws(() => readFileSync(output), { code: 'ENOENT' }, mode);
+      }
+      const calls = readFileSync(log, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line));
+      const runs = calls.filter((args) => args[0] === 'run');
+      if (mode === 'wrong-host') {
+        assert.equal(runs.length, 0);
+        assert.ok(!calls.some((args) => args[0] === 'pull'));
+      }
+      if (mode === 'success') {
+        assert.equal(runs.length, 3);
+        assert.ok(runs[1].includes('test "$(ulimit -v)" = unlimited; exec "$@"'));
+        const manifest = candidate.platforms.find((p) => p.platform === platform).digest;
+        assert.ok(runs.every((args) => args.includes(`${candidate.image}@${manifest}`)));
+      }
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
