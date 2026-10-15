@@ -5294,3 +5294,43 @@ describe('subscription account publication durability', () => {
     }
   });
 });
+
+describe('uncommitted ancestor account recovery', () => {
+  it('retries a failed managed-ancestor synchronization before account authority can be published', async () => {
+    const fixture = createFixture();
+    const pair = accountPair('ancestor_retry');
+    const parent = join(fixture.dataRoot, 'server', 'files');
+    const managedRoot = join(parent, 'provider-subscriptions');
+    const path = accountPath(fixture.dataRoot, pair);
+    durability.events.length = 0;
+    durability.fail = (candidate, directory) => directory && candidate === parent;
+    try {
+      await expect(
+        fixture.manager.createAccount({ ...pair, displayName: 'Retained account' })
+      ).rejects.toMatchObject(PERSISTENCE_ERROR);
+      expect(existsSync(managedRoot)).toBe(true);
+      expect(existsSync(path)).toBe(false);
+      durability.events.length = 0;
+      await expect(
+        fixture.createManager().createAccount({ ...pair, displayName: 'Retained account' })
+      ).rejects.toMatchObject(PERSISTENCE_ERROR);
+      expect(existsSync(path)).toBe(false);
+      durability.events.length = 0;
+      durability.fail = undefined;
+      await fixture.createManager().createAccount({ ...pair, displayName: 'Retained account' });
+      expect(await fixture.createManager().listAccounts(pair.subscriptionProviderId)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ ...pair, displayName: 'Retained account' }),
+        ])
+      );
+      expect(lstatSync(path).mode & 0o777).toBe(0o600);
+      expect(
+        durability.events.some(
+          (event) => event.op === 'sync' && event.directory && event.path === parent
+        )
+      ).toBe(true);
+    } finally {
+      durability.fail = undefined;
+    }
+  });
+});
