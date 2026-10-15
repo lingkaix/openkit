@@ -7,6 +7,8 @@ import { applyScopedMigrations } from '../storage/migrate.js';
 import {
   type AdmittedWorkBody,
   appendWorkObservation,
+  type AssistantSkillAdmission,
+  AssistantSkillAdmissionSchema,
   readWorkObservationTurnBinding,
   type WorkObservationDraft,
 } from '../storage/work-observations.js';
@@ -35,9 +37,12 @@ export class ModelCaptureError extends Error {
 
 /**
  * Runs one model effect with the exact admitted Turn binding and owns any Workspace database it opens.
+ *
  * Optional internal-agent environment metadata commits before the effect, independently of full I/O capture.
  *
- * @param input Store-owned Turn, optional borrowed database and exact internal-agent prompt/Tool inputs.
+ * Producers of selected Skills require their fixed admission with the matching prompt and Tools; re-entry must supply that original environment, because the immutable writer rejects any replacement.
+ *
+ * @param input Store-owned Turn, optional borrowed database and exact trusted environment; producers of selected Skills set requireAssistantSkillAdmission to reject missing evidence before the effect.
  * @param run Model effect that receives the trusted context.
  * @returns The model effect's result.
  * @throws ModelCaptureError when durable lineage, coverage or required environment retention cannot be verified.
@@ -47,7 +52,11 @@ export async function withTurnModelCapture<T>(
     readonly store: FsStore;
     readonly turn: ReturnType<FsStore['createTurn']>;
     readonly workspaceDb?: WorkspaceDb;
+    /** Requires the producer's selected Skills tuple, including an explicit empty selection. */
+    readonly requireAssistantSkillAdmission?: boolean;
     readonly environment?: {
+      /** Historical identity from the same fixed assembly as the prompt and Tool closure. */
+      readonly assistantSkillAdmission?: AssistantSkillAdmission;
       readonly systemPrompt: string;
       readonly tools: readonly {
         readonly name: string;
@@ -87,6 +96,11 @@ export async function withTurnModelCapture<T>(
       if (!binding.coverage) {
         throw new ModelCaptureError();
       }
+      const admission = input.environment?.assistantSkillAdmission;
+      const assistantSkillAdmission =
+        input.requireAssistantSkillAdmission || admission !== undefined
+          ? AssistantSkillAdmissionSchema.parse(admission)
+          : undefined;
       if (input.environment) {
         if (binding.turn.startedAt === null) throw new ModelCaptureError();
         const { version } = JSON.parse(
@@ -105,6 +119,7 @@ export async function withTurnModelCapture<T>(
             payload: {
               version,
               workspaceId: captureDb.workspaceId,
+              ...(assistantSkillAdmission === undefined ? {} : { assistantSkillAdmission }),
               systemPromptDigest: digestLlmSystemPrompt({
                 endpoint: 'responses',
                 request: { instructions: input.environment.systemPrompt },
