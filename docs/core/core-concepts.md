@@ -74,7 +74,7 @@ The operation attached to each field follows its natural owner: a scalar prefere
 
 `Thread` is one durable narrative for related work inside exactly one workspace.
 
-A conversational Thread is addressed to exactly one conversational counterpart. A worker-execution Thread has no conversational counterpart: it is classified by its execution purpose and remains reachable through lineage and reference Items rather than being presented as an addressed conversation.
+A conversational Thread is addressed to exactly one conversational counterpart. In Chat Mode that counterpart is the Core Assistant. Its private Timeline and later Workspace-shared conversations retain distinct audiences ([decision](../decisions/20261015-shared_conversation_and_single_agent_threads.md)). A worker-execution Thread has no conversational counterpart: it is classified by its execution purpose and remains reachable through lineage and reference Items rather than being presented as an addressed conversation.
 
 A Thread has a durable visibility classification independent of its Workspace placement; Permissions resolves the actual audience from current identity and membership. Personal conversation is private to its initiating user by default; Task and Goal work is Workspace-shared. Permissions owns source and recipient eligibility, including private conversation inside a shared Workspace. Sharing publishes explicitly selected material through that owner and never implicitly changes prior history or grants execution authority.
 
