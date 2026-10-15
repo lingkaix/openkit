@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { WorkerCanonicalEventRecord } from '@openkit/worker-protocol';
 import { describe, expect, it, vi } from 'vitest';
 import type { WorkerAdapterResult, WorkerResidentTurnInput } from './adapter-registry.js';
-import type { WorkerControlFetch } from './control-client.js';
+import type { WorkerControlFetch, WorkerControlFetchResponse } from './control-client.js';
 import type { SandboxIntegrationClient } from './integration-client.js';
 import { emitRuntimeFact } from './runtime-capture.js';
 import { runResidentTurn } from './turn.js';
@@ -80,7 +80,11 @@ function fixture(
   refusedType?: string,
   code = 'worker_control_lease_not_live',
   status = 403,
-  acceptEnteredAppend = false
+  acceptEnteredAppend = false,
+  intercept?: (
+    url: string,
+    init: Parameters<WorkerControlFetch>[1]
+  ) => Promise<WorkerControlFetchResponse | null>
 ) {
   const root = mkdtempSync(join(tmpdir(), 'worker-cancellation-'));
   const sessionDir = join(root, 'capture');
@@ -155,6 +159,8 @@ function fixture(
       signal: init.signal,
     });
     const body = JSON.parse(init.body);
+    const intercepted = await intercept?.(url, init);
+    if (intercepted) return intercepted;
     if (refusedType === 'periodic-heartbeat' && url.endsWith('/heartbeat') && body.sequence > 0) {
       pendingAppend.resolve();
       await releaseAppend.promise;
@@ -287,6 +293,102 @@ function emitContent(
 
 describe('cancellation final after ordinary append refusal', () => {
   // P11 owns the narrow exception. P03 proves worker publication; Core authentication and restart admission belong to P13.
+  it('does not let a closing append refusal hide revocation of an already-entered heartbeat', async () => {
+    schedulingClock.controlled = true;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] });
+    const appendEntered = deferred<void>();
+    const heartbeatEntered = deferred<void>();
+    const releaseAppend = deferred<void>();
+    const releaseHeartbeat = deferred<void>();
+    const appendRead = deferred<void>();
+    const observedFailures: string[] = [];
+    const f = fixture(undefined, 'worker_control_lease_not_live', 403, false, async (url, init) => {
+      const body = JSON.parse(init.body);
+      if (url.endsWith('/events/append') && body.record.event.data.status === 'running') {
+        appendEntered.resolve();
+        await releaseAppend.promise;
+        return {
+          ok: false,
+          status: 403,
+          text: async () => {
+            observedFailures.push('worker_control_lease_not_live');
+            appendRead.resolve();
+            return JSON.stringify({ code: 'worker_control_lease_not_live' });
+          },
+        };
+      }
+      if (url.endsWith('/heartbeat') && body.sequence === 2) {
+        heartbeatEntered.resolve();
+        await releaseHeartbeat.promise;
+        return {
+          ok: false,
+          status: 403,
+          text: async () => {
+            observedFailures.push('worker_control_revoked');
+            return JSON.stringify({ code: 'worker_control_revoked' });
+          },
+        };
+      }
+      return null;
+    });
+    let settled = false;
+    const outcome = f.run().then(
+      (result) => ({ result }),
+      (error: unknown) => ({ error })
+    );
+    void outcome.then(() => {
+      settled = true;
+    });
+    try {
+      await f.readyAppend.promise;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await appendEntered.promise;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await heartbeatEntered.promise;
+      const enteredHeartbeat = f.requests.at(-1)!;
+      const requestsAtCancellation = f.requests.length;
+      f.cancellation.abort();
+      await f.nativeInterrupted.promise;
+      f.native.resolve(interrupted);
+      releaseAppend.resolve();
+      await appendRead.promise;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(observedFailures).toEqual(['worker_control_lease_not_live']);
+      expect(enteredHeartbeat.signal?.aborted).toBe(false);
+      expect(settled).toBe(false);
+      expect(f.finals).toEqual([]);
+      releaseHeartbeat.resolve();
+      const terminalOutcome = await outcome;
+      expect(observedFailures).toEqual(['worker_control_lease_not_live', 'worker_control_revoked']);
+      expect(f.finals).toEqual([]);
+      expect(terminalOutcome).toMatchObject({
+        error: { code: 'worker_control_revoked', status: 403 },
+      });
+      expect(f.requests.slice(requestsAtCancellation)).toEqual([]);
+      expect(
+        f.requests
+          .filter((request) => request.url.endsWith('/heartbeat'))
+          .map((request) => JSON.parse(request.body).sequence)
+      ).toEqual([0, 1, 2]);
+      expect(
+        f.requests.filter(
+          (request) =>
+            request.url.endsWith('/events/append') &&
+            JSON.parse(request.body).record.event.data.status === 'running'
+        )
+      ).toHaveLength(1);
+      expect(performance.now()).toBe(2_000);
+    } finally {
+      f.native.resolve(interrupted);
+      releaseAppend.resolve();
+      releaseHeartbeat.resolve();
+      await outcome;
+      schedulingClock.controlled = false;
+      vi.useRealTimers();
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
   it('joins an entered accepted chunk after cancellation and leaves later declared chunks unpublished', async () => {
     const f = fixture('observation.content.chunk', 'worker_control_lease_not_live', 403, true);
     const outcome = f.run().then(

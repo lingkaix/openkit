@@ -257,9 +257,14 @@ async function runResidentTurnImplementation(
   const stopHeartbeats = async (): Promise<void> => {
     heartbeatAbortController.abort();
     const results = await Promise.allSettled([heartbeat, heartbeatDelivery.request]);
+    let cancellationFailure: PromiseRejectedResult | undefined;
     for (const result of results)
-      if (result.status === 'rejected' && result.reason !== cancelledLiveOutput)
-        throw result.reason;
+      if (result.status === 'rejected' && result.reason !== cancelledLiveOutput) {
+        // A closing refusal cannot hide lost authority from another entered request.
+        if (!isCancellationDeliveryFailure(result.reason)) throw result.reason;
+        cancellationFailure ??= result;
+      }
+    if (cancellationFailure) throw cancellationFailure.reason;
   };
   let terminalPublication: Promise<void> | null = null;
   let terminalOutcomeAttempted = false;
