@@ -374,6 +374,7 @@ function nanoHostRuntimeTargetStatus() {
     identityId: 'integration_nanohost_primary',
     deploymentId: 'deploy_primary',
     connectionGeneration: 3,
+    physicalEpoch: 'a'.repeat(64),
     predecessorFenced: true,
     ready: true,
     freshEmpty: true,

@@ -86989,6 +86989,17 @@
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
           },
+          "physicalEpoch": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "predecessorFenced": {
             "type": "boolean"
           },
@@ -87008,6 +87019,7 @@
           "identityId",
           "deploymentId",
           "connectionGeneration",
+          "physicalEpoch",
           "predecessorFenced",
           "ready",
           "freshEmpty",
@@ -94361,5 +94373,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:d1f114128bd4bea76912141a061b28378fa927e029ef1b8664a694f8eb8aa56f"
+  "x-openkit-source-digest": "sha256:f9a077dd242c1fe6d43d443ccce97a162c20bfc657963bca8417645a6c327542"
 }

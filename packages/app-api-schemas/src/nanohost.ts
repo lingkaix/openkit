@@ -25,6 +25,10 @@ export const NanoHostRuntimeTargetStatusResponseSchema = z
     identityId: z.string().min(1),
     deploymentId: z.string().min(1),
     connectionGeneration: z.number().int().positive(),
+    physicalEpoch: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .nullable(),
     predecessorFenced: z.boolean(),
     ready: z.boolean(),
     freshEmpty: z.boolean(),
