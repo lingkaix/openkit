@@ -191,7 +191,7 @@ export class RuntimeConfigFileService {
   }
 
   /**
-   * Reads one supported runtime config file.
+   * Reads one supported runtime config file with a revision bound to the returned content.
    *
    * @param id Runtime config file id.
    * @returns Runtime config file content response.
@@ -211,9 +211,10 @@ export class RuntimeConfigFileService {
       this.assertInsideConfigRoot(spec.absolutePath);
     }
 
+    const content = readFileSync(spec.absolutePath, 'utf8');
     return RuntimeConfigFileReadResponseSchema.parse({
-      file: this.summaryForSpec(spec),
-      content: readFileSync(spec.absolutePath, 'utf8'),
+      file: this.summaryForSpec(spec, content),
+      content,
     });
   }
 
@@ -563,18 +564,20 @@ export class RuntimeConfigFileService {
    * Returns a summary for one resolved file spec.
    *
    * @param spec Resolved file spec.
+   * @param content Already-read content whose revision must match a detail response.
    * @returns Runtime config file summary.
    */
-  private summaryForSpec(spec: RuntimeConfigFileSpec): RuntimeConfigFileSummary {
+  private summaryForSpec(spec: RuntimeConfigFileSpec, content?: string): RuntimeConfigFileSummary {
     const exists = existsSync(spec.absolutePath);
     const stat = exists ? statSync(spec.absolutePath) : null;
+    const source = content ?? (exists ? readFileSync(spec.absolutePath, 'utf8') : undefined);
 
     return {
       id: spec.relativePath,
       kind: spec.kind,
       path: spec.relativePath,
       exists,
-      revision: exists ? contentRevision(readFileSync(spec.absolutePath, 'utf8')) : null,
+      revision: source !== undefined ? contentRevision(source) : null,
       updatedAt: stat ? stat.mtime.toISOString() : null,
     };
   }
