@@ -1953,6 +1953,16 @@ function directTaskKnowledgeRetrievalTraceId(
   return `krt_${uuid}`;
 }
 
+/** Request facts needed to resolve current worker eligibility before delegation. */
+export interface WorkerCoordinatorCandidateRequest {
+  /** Initiating User whose current setup preferences apply. */
+  readonly userId: string;
+  /** Exact Agent selection, when supplied by the caller. */
+  readonly agentId?: string;
+  /** Requested logical model takes precedence over configured preferences. */
+  readonly modelId?: string;
+}
+
 /**
  * Builds the first V1 Task Mode delegation decision from the rule-based Worker Coordinator.
  *
@@ -1972,20 +1982,26 @@ function createTaskModeDelegation(input: {
   readonly prompt: string;
   /** Optional exact Agent selection narrows existing eligible candidates without substitution. */
   readonly agentId?: string;
+  /** Requested logical model takes precedence over configured preferences. */
+  readonly modelId?: string;
   /** Initiating User whose current setup preferences apply before delegation. */
   readonly userId: string;
   /** Resolves ready worker candidates for the workspace. */
   readonly workerCoordinatorCandidates: (
     store: FsStore,
     workspaceId: string,
-    userId?: string
+    request: WorkerCoordinatorCandidateRequest
   ) => WorkerCoordinatorCandidate[];
 }): { coordinator: WorkerCoordinatorDecision; taskDecision: TaskDelegationDecision | null } {
   const coordinatorInput = {
     entryIntent: input.entryIntent,
     prompt: input.prompt,
     readiness: input
-      .workerCoordinatorCandidates(input.store, input.workspaceId, input.userId)
+      .workerCoordinatorCandidates(input.store, input.workspaceId, {
+        userId: input.userId,
+        ...(input.agentId === undefined ? {} : { agentId: input.agentId }),
+        ...(input.modelId === undefined ? {} : { modelId: input.modelId }),
+      })
       .filter((candidate) => input.agentId === undefined || candidate.agentId === input.agentId),
     threadState: { status: 'idle', threadId: input.threadId },
     workspaceSummary: {
@@ -2303,7 +2319,7 @@ export function createConversationService({
   readonly workerCoordinatorCandidates: (
     store: FsStore,
     workspaceId: string,
-    userId?: string
+    request: WorkerCoordinatorCandidateRequest
   ) => WorkerCoordinatorCandidate[];
 }) {
   const setupProviderSupply = {
@@ -2437,7 +2453,7 @@ export function createConversationService({
         ? [workspaceConfig.workspace.defaultAgentId]
         : []),
     ]);
-    for (const candidate of workerCoordinatorCandidates(store, workspaceId, userId)) {
+    for (const candidate of workerCoordinatorCandidates(store, workspaceId, { userId })) {
       if (!pinnedAgentIds.has(candidate.agentId)) continue;
       const manifest = snapshot.agentManifests.find((entry) => entry.id === candidate.agentId);
       if (!manifest) continue;
@@ -4410,7 +4426,7 @@ export function createTaskStartOperation({
   readonly workerCoordinatorCandidates: (
     store: FsStore,
     workspaceId: string,
-    userId?: string
+    request: WorkerCoordinatorCandidateRequest
   ) => WorkerCoordinatorCandidate[];
 }) {
   // One App-local owner per original Turn prevents replay from competing with its collector.
@@ -4575,6 +4591,7 @@ export function createTaskStartOperation({
         threadId,
         prompt: taskInput.input,
         ...(taskInput.agentId === undefined ? {} : { agentId: taskInput.agentId }),
+        ...(taskInput.modelId === undefined ? {} : { modelId: taskInput.modelId }),
         workerCoordinatorCandidates,
       });
 
