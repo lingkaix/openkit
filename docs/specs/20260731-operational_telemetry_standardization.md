@@ -73,6 +73,12 @@ Repository tests use the same system-under-test instrumentation and correlation 
 - Do not inject an OpenTelemetry SDK into user workers, agent runtimes, or governed sandboxes in the initial implementation.
 - Do not build a bundled observability backend, multi-collector topology, high-availability pipeline, disk spool, sampling control plane, or telemetry administration API.
 
+### Worker Sandbox Export Boundary
+
+The [#221 engineer ruling](../decisions/20261015-sandbox_telemetry_and_public_gateway_boundary.md) retains no telemetry export from inside the Worker Sandbox. Instrument the current Core/NanoHost boundaries through their existing owners. Do not inject an SDK, exporter credential, Collector authority, telemetry relay, or new Sandbox egress for this purpose. This is the selected disposition, not a deferral inferred from an old RC date.
+
+A future relay requires a separately accepted concrete need, egress authority, untrusted-origin handling, field/content restrictions, and failure contract. No current absence of Sandbox spans authorizes that route. Existing content-free Core/NanoHost diagnostics, disabled-export behavior, and canonical product/evidence ownership remain unchanged.
+
 ## Terms
 
 `Operational telemetry` means lossy, non-authoritative traces, metrics, and logs used to diagnose availability, latency, dependency behavior, and execution flow.
