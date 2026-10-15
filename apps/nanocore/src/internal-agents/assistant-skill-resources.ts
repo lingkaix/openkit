@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import {
   digestOpenKitTree,
   hashOpenKitTreeEntries,
@@ -18,6 +19,10 @@ import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import { loadWorkspaceResourceCatalog, skillSnapshotPath } from '../catalog/resource-catalog.js';
 import type { FsStore } from '../lib/store.js';
 import type { CoreDb } from '../storage/db.js';
+import {
+  type AssistantSkillAdmission,
+  AssistantSkillAdmissionSchema,
+} from '../storage/work-observations.js';
 import type { AgentTool, ToolExecutionContext } from './internal-agent-loop.js';
 import { redactInternalAgentText } from './redaction.js';
 
@@ -84,13 +89,16 @@ export interface AssistantSkillAssemblyInput {
 /** Fixed metadata, existing-owner evidence input, and one on-demand read Tool. */
 export interface AssistantSkillResources {
   readonly index: readonly AssistantSkillMetadata[];
-  readonly admission: {
-    /** No catalog observation is required when selection is empty. */
-    readonly catalogRevision: number | null;
-    readonly skills: readonly AssistantSkillMetadata[];
-  };
+  readonly admission: AssistantSkillAdmission;
   readonly tool: AgentTool;
+  /** Checks the original lineage and current retained authority without selecting new pins. */
+  assertCurrent(
+    lineage: Pick<AssistantSkillAssemblyInput, 'actor' | 'workspaceId' | 'threadId' | 'turnId'>
+  ): void;
 }
+
+/** Exact catalog metadata and retained inventory admitted together. */
+type AdmittedSkill = { metadata: AssistantSkillMetadata; version: SkillVersionRecord };
 
 /**
  * Assembles selected Skill metadata and an exact-snapshot read closure for an ordinary Assistant run.
@@ -119,10 +127,7 @@ export async function assembleAssistantSkillResources(
     threadId: input.threadId,
     turnId: input.turnId,
   };
-  const admitted = new Map<
-    string,
-    { metadata: AssistantSkillMetadata; version: SkillVersionRecord }
-  >();
+  const admitted = new Map<string, AdmittedSkill>();
   const metadata: AssistantSkillMetadata[] = [];
   let catalogRevision: number | null = null;
   try {
@@ -167,6 +172,41 @@ export async function assembleAssistantSkillResources(
     throw safeSkillFailure(error);
   }
   const index = Object.freeze(metadata);
+  const admission: AssistantSkillAdmission = AssistantSkillAdmissionSchema.parse({
+    catalogRevision,
+    skills: index.map(({ skillId, versionId, contentDigest }) => ({
+      skillId,
+      versionId,
+      contentDigest,
+    })),
+  });
+  for (const skill of admission.skills) Object.freeze(skill);
+  Object.freeze(admission.skills);
+  Object.freeze(admission);
+
+  /** Removal denies reuse; default and pin changes do not replace the original version. */
+  function assertRetainedSkills(selection: Iterable<AdmittedSkill>): void {
+    assertCurrentSkillAuthority(scope);
+    if (admitted.size === 0) return;
+    const current = loadWorkspaceResourceCatalog(scope.dataRoot, scope.workspaceId);
+    for (const selected of selection) {
+      const { skillId, contentDigest } = selected.metadata;
+      const entry = current.skills.entries.find((item) => item.id === skillId);
+      const version = current.skills.versions.find(
+        (item) => item.entryId === skillId && item.digest === contentDigest
+      );
+      if (
+        entry?.availability !== 'available' ||
+        !version ||
+        JSON.stringify(version.inventory) !== JSON.stringify(selected.version.inventory)
+      )
+        throw new AssistantSkillResourceError('resource_unavailable');
+      assertSnapshotContained(
+        scope.dataRoot,
+        skillSnapshotPath(scope.dataRoot, scope.workspaceId, skillId, contentDigest)
+      );
+    }
+  }
   const { $schema: _schema, ...inputSchema } = z.toJSONSchema(SkillReadInputSchema, {
     io: 'input',
   });
@@ -198,21 +238,8 @@ export async function assembleAssistantSkillResources(
           (file) => file.path === path && file.kind === 'file'
         );
         if (!retainedFile?.sha256) throw new AssistantSkillResourceError('invalid_skill_read');
-        assertCurrentSkillAuthority(scope);
-        const current = loadWorkspaceResourceCatalog(scope.dataRoot, scope.workspaceId);
-        const entry = current.skills.entries.find((item) => item.id === skillId);
-        const version = current.skills.versions.find(
-          (item) => item.entryId === skillId && item.digest === contentDigest
-        );
-        if (
-          entry?.availability !== 'available' ||
-          !version ||
-          JSON.stringify(version.inventory) !== JSON.stringify(selected.version.inventory)
-        )
-          throw new AssistantSkillResourceError('resource_unavailable');
-        // Default/pin changes affect later runs; removal and changed retained authority deny this read.
+        assertRetainedSkills([selected]);
         const root = skillSnapshotPath(scope.dataRoot, scope.workspaceId, skillId, contentDigest);
-        assertSnapshotContained(scope.dataRoot, root);
         assertSkillFileBounded(root, path);
         // Verify the complete immutable version, then return bytes from that same verified collection.
         const tree = digestOpenKitTree(root);
@@ -270,8 +297,24 @@ export async function assembleAssistantSkillResources(
   });
   return Object.freeze({
     index,
-    admission: Object.freeze({ catalogRevision, skills: index }),
+    admission,
     tool,
+    assertCurrent(
+      lineage: Pick<AssistantSkillAssemblyInput, 'actor' | 'workspaceId' | 'threadId' | 'turnId'>
+    ) {
+      try {
+        if (
+          lineage.workspaceId !== scope.workspaceId ||
+          lineage.threadId !== scope.threadId ||
+          lineage.turnId !== scope.turnId ||
+          !isDeepStrictEqual(lineage.actor, scope.actor)
+        )
+          throw new AssistantSkillResourceError('resource_access_denied');
+        assertRetainedSkills(admitted.values());
+      } catch (error) {
+        throw safeSkillFailure(error);
+      }
+    },
   });
 }
 

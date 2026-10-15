@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 import { operationToolName } from '@openkit/app-api-schemas';
 
 import {
+  type CapabilityAuditLineage,
   finishCapabilityCall,
   type GatewayCallContext,
   startCapabilityCall,
@@ -46,6 +47,8 @@ export interface InternalAgentGatewayProviderOptions {
   readonly resolveLogicalModel: (logicalModelId: string) => ResolvedLogicalModel | null;
   /** Entry-owned attribution for each logical model invocation; Turn and database come from admitted capture. */
   readonly callContext?: GatewayCallContext;
+  /** Entry-validated command context for audit only; never a call-start request key. */
+  readonly auditLineage?: CapabilityAuditLineage;
   readonly dispatcher: Pick<LLMGatewayProviderDispatcher, 'createResponses'>;
   readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
@@ -54,7 +57,11 @@ export interface InternalAgentGatewayProviderOptions {
     readonly workspaceId: string;
   };
   readonly usageEndpoint: 'quick_chat' | 'responses';
-  readonly onDispatch?: (result: { readonly providerId: string; readonly usage?: unknown }) => void;
+  readonly onDispatch?: (result: {
+    readonly id: string;
+    readonly providerId: string;
+    readonly usage?: unknown;
+  }) => void;
 }
 
 /**
@@ -189,6 +196,7 @@ export function createInternalAgentGatewayProvider(
                       recordInternalLlmGatewayUsage({
                         workspaceDb,
                         call,
+                        ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
                         logicalModelId: options.logicalModel.id,
                         providerId: provider.id,
                         usage,
@@ -246,6 +254,7 @@ export function createInternalAgentGatewayProvider(
               recordInternalLlmGatewayUsage({
                 workspaceDb,
                 call,
+                ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
                 logicalModelId: options.logicalModel.id,
                 providerId: provider.id,
                 usage: response.usage,
@@ -257,9 +266,16 @@ export function createInternalAgentGatewayProvider(
         },
       });
       callFinished = true;
-      if (call) finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded' });
+      if (call)
+        finishCapabilityCall({
+          workspaceDb,
+          callId: call.id,
+          status: 'succeeded',
+          ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
+        });
       const message = selected.message;
       options.onDispatch?.({
+        id: selected.response.id,
         providerId: selected.providerId,
         ...(selected.response.usage === undefined ? {} : { usage: selected.response.usage }),
       });
@@ -271,6 +287,7 @@ export function createInternalAgentGatewayProvider(
           workspaceDb,
           callId: call.id,
           status: 'failed',
+          ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
           errorCode: projectGatewayFailure(error, 'internal_inference_failed').code,
         });
       try {

@@ -20,6 +20,7 @@ import {
 import { FsStore } from '../lib/store.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { AssistantSkillAdmissionSchema } from '../storage/work-observations.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { assembleAssistantSkillResources } from './assistant-skill-resources.js';
 import { type AgentToolResult, runInternalAgentLoop } from './internal-agent-loop.js';
@@ -238,8 +239,26 @@ describe('Assistant selected Skill assembly', () => {
     ]);
     expect(assembled.admission).toEqual({
       catalogRevision: catalog.revision,
-      skills: assembled.index,
+      skills: [
+        {
+          skillId: 'alpha',
+          versionId: first.version.digest,
+          contentDigest: first.version.digest,
+        },
+        {
+          skillId: 'zeta',
+          versionId: catalog.skills.entries.find((entry) => entry.id === 'zeta')!.currentDigest,
+          contentDigest: catalog.skills.entries.find((entry) => entry.id === 'zeta')!.currentDigest,
+        },
+      ],
     });
+    expect(AssistantSkillAdmissionSchema.safeParse(assembled.admission).success).toBe(true);
+    expect(Object.isFrozen(assembled.admission)).toBe(true);
+    expect(Object.isFrozen(assembled.admission.skills)).toBe(true);
+    for (const selected of assembled.admission.skills) {
+      expect(Object.keys(selected).sort()).toEqual(['contentDigest', 'skillId', 'versionId']);
+      expect(Object.isFrozen(selected)).toBe(true);
+    }
     expect(JSON.stringify(assembled.index)).not.toContain('instructions');
     expect(JSON.stringify(assembled.index)).not.toContain(current.version.digest);
     expectNoSnapshotRead(

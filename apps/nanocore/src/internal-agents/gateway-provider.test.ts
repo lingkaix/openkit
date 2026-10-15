@@ -7,6 +7,7 @@ import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  type CapabilityAuditLineage,
   listWorkspaceCapabilityCalls,
   listWorkspaceUsageRecords,
 } from '../capability/usage-ledger.js';
@@ -741,7 +742,7 @@ describe('internal Agent Gateway provider', () => {
         },
       ],
     });
-    expect(onDispatch).toHaveBeenCalledWith({ providerId: 'provider' });
+    expect(onDispatch).toHaveBeenCalledWith({ id: 'response', providerId: 'provider' });
   });
 
   it.each([
@@ -2062,5 +2063,205 @@ describe('internal rolling context Gateway boundary', () => {
 
     expect(resolveLogicalModel.mock.calls).toEqual([['assistant'], ['assistant']]);
     expect(createResponses).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('command audit lineage at the internal Gateway seam', () => {
+  const commandRequestId = '00000000-0000-4000-8000-000000000144';
+
+  /** Composes real capture, Gateway, usage and audit writers; only model transport is injected. */
+  function auditFixture(
+    auditLineage?: CapabilityAuditLineage,
+    storedRequestId: string | null = null
+  ) {
+    const capture = captureBinding();
+    const createResponses = vi
+      .fn<LLMGatewayProviderDispatcher['createResponses']>()
+      .mockResolvedValue({
+        id: 'response-audit',
+        object: 'response',
+        status: 'completed',
+        output: [
+          {
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'Audited answer.' }],
+          },
+        ],
+        usage: { input_tokens: 9, output_tokens: 3, total_tokens: 12 },
+      });
+    const options = {
+      capture,
+      logicalModel,
+      resolveLogicalModel: () => logicalModel,
+      dispatcher: { createResponses },
+      resolveGatewayProvider: () =>
+        ({
+          id: 'provider',
+          models: ['model'],
+          gatewayCapabilities: {},
+          modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
+        }) as never,
+      promptCacheScope: { sessionId: capture.threadId, workspaceId: capture.turn.workspaceId },
+      usageEndpoint: 'responses' as const,
+      callContext: {
+        workspaceId: capture.turn.workspaceId,
+        authorityActor: capture.turn.triggerActor,
+        agentId: 'assistant',
+        family: 'llm' as const,
+        operation: 'quick_chat',
+        capabilityId: 'inference.local.quick_chat',
+        redactionClass: 'metadata-only',
+        requestId: storedRequestId,
+      },
+      ...(auditLineage === undefined ? {} : { auditLineage }),
+    };
+    return { capture, createResponses, provider: createInternalAgentGatewayProvider(options) };
+  }
+
+  it.each([
+    {
+      label: 'without command context',
+      lineage: undefined,
+      storedRequestId: null,
+      expectedAuditRequest: null,
+    },
+    {
+      label: 'with command context',
+      lineage: { commandRequestId },
+      storedRequestId: null,
+      expectedAuditRequest: commandRequestId,
+    },
+    {
+      label: 'with an existing non-null call request',
+      lineage: { commandRequestId },
+      storedRequestId: '00000000-0000-4000-8000-000000000145',
+      expectedAuditRequest: '00000000-0000-4000-8000-000000000145',
+    },
+  ])('preserves success attribution $label', async ({
+    lineage,
+    storedRequestId,
+    expectedAuditRequest,
+  }) => {
+    const f = auditFixture(lineage, storedRequestId);
+
+    await f.provider(request());
+
+    const calls = listWorkspaceCapabilityCalls(f.capture.workspaceDb, f.capture.turn.workspaceId);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      requestId: storedRequestId,
+      status: 'succeeded',
+      threadId: f.capture.threadId,
+      turnId: f.capture.turnId,
+    });
+    expect(listWorkspaceUsageRecords(f.capture.workspaceDb, f.capture.turn.workspaceId)).toEqual([
+      expect.objectContaining({
+        requestId: storedRequestId,
+        capabilityCallId: calls[0]!.id,
+        responsibleUserId: 'user_local',
+        threadId: f.capture.threadId,
+        turnId: f.capture.turnId,
+        quantity: 12,
+      }),
+    ]);
+    expect(
+      f.capture.workspaceDb.sqlite
+        .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
+        .all(calls[0]!.id)
+    ).toEqual([
+      expect.objectContaining({
+        action: 'capability.finish',
+        request_id: expectedAuditRequest,
+        capability_call_id: calls[0]!.id,
+        thread_id: f.capture.threadId,
+        turn_id: f.capture.turnId,
+        outcome: 'succeeded',
+      }),
+    ]);
+  });
+
+  it('retains the command audit request when inference fails', async () => {
+    const f = auditFixture({ commandRequestId });
+    const error = new GatewayAttemptFailure({ kind: 'invalid_request', settled: true });
+    f.createResponses.mockRejectedValue(error);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(f.provider(request())).rejects.toHaveProperty('failure.kind', 'invalid_request');
+
+    expect(f.createResponses).toHaveBeenCalledOnce();
+    const calls = listWorkspaceCapabilityCalls(f.capture.workspaceDb, f.capture.turn.workspaceId);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ requestId: null, status: 'failed' });
+    expect(listWorkspaceUsageRecords(f.capture.workspaceDb, f.capture.turn.workspaceId)).toEqual(
+      []
+    );
+    expect(
+      f.capture.workspaceDb.sqlite
+        .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
+        .all(calls[0]!.id)
+    ).toEqual([
+      expect.objectContaining({
+        action: 'capability.finish',
+        request_id: commandRequestId,
+        capability_call_id: calls[0]!.id,
+        workspace_id: f.capture.turn.workspaceId,
+        thread_id: f.capture.threadId,
+        turn_id: f.capture.turnId,
+        outcome: 'failed',
+      }),
+    ]);
+  });
+
+  it.each([
+    'reported-callback',
+    'successful-response',
+  ] as const)('retains command audit lineage when the %s usage write fails', async (boundary) => {
+    const f = auditFixture({ commandRequestId });
+    f.capture.workspaceDb.sqlite.exec(`
+      CREATE TRIGGER reject_gateway_usage_write
+      BEFORE INSERT ON usage_records
+      BEGIN
+        SELECT RAISE(ABORT, 'injected Gateway usage write failure');
+      END
+    `);
+    if (boundary === 'reported-callback') {
+      f.createResponses.mockImplementation(async (_provider, _input, context) => {
+        context?.onUsage?.({ input_tokens: 9, output_tokens: 3, total_tokens: 12 });
+        throw new Error('The failed usage callback must not return.');
+      });
+    }
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(f.provider(request())).rejects.toBeInstanceOf(Error);
+
+    expect(f.createResponses).toHaveBeenCalledOnce();
+    const calls = listWorkspaceCapabilityCalls(f.capture.workspaceDb, f.capture.turn.workspaceId);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      requestId: null,
+      status: 'failed',
+      errorCode: 'usage_record_failed',
+    });
+    expect(listWorkspaceUsageRecords(f.capture.workspaceDb, f.capture.turn.workspaceId)).toEqual(
+      []
+    );
+    expect(
+      f.capture.workspaceDb.sqlite
+        .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
+        .all(calls[0]!.id)
+    ).toEqual([
+      expect.objectContaining({
+        action: 'capability.finish',
+        capability_call_id: calls[0]!.id,
+        request_id: commandRequestId,
+        workspace_id: f.capture.turn.workspaceId,
+        thread_id: f.capture.threadId,
+        turn_id: f.capture.turnId,
+        outcome: 'failed',
+        error_code: 'usage_record_failed',
+      }),
+    ]);
   });
 });
