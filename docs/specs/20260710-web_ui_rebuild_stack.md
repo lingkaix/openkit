@@ -78,7 +78,7 @@ The rebuilt `apps/web` MUST use the following stack.
 - **Dependencies are direct.** The Adobe Spectrum token package and the A2UI React renderer are direct dependencies of `apps/web`, not vendored snapshots. A vendored snapshot is a fallback only if a licensing or stability issue later requires it.
 - **Rebuild is in place.** `apps/web` is rebuilt in place on the new stack; no parallel `web-next` app is created.
 - **Data access boundary unchanged:** the Web UI consumes the server only through the composed `@openkit/core-client` sub-clients.
-- **Delivery posture:** the Web UI is a professional-workspace SPA that may later ship inside a desktop application shell, so bundle byte size and Vite chunk-size warnings are informational rather than release acceptance predicates; add a size or loading budget only when an accepted measured transfer, parse, startup, or interaction objective requires one.
+- **Delivery posture:** the Web UI is a professional-workspace SPA whose Desktop shell is deferred beyond v0.1.0, so bundle byte size and Vite chunk-size warnings are informational rather than release acceptance predicates; add a size or loading budget only when an accepted measured transfer, parse, startup, or interaction objective requires one.
 
 ## Contract / Expected Behavior
 
@@ -181,7 +181,7 @@ Resolved target: icons stay on Iconify + Remix Icon; `apps/web` is rebuilt in pl
 
 ## Deferred / Future Work
 
-- Packaging the SPA into the Tauri desktop shell described in `docs/product-vision.md`.
+- All OpenKit Desktop application development is deferred beyond `v0.1.0`, including the Tauri shell, signing/distribution, local/remote connection, protected credentials, updates, installation, and recovery. The [D08 ruling](../decisions/20261015-discord_first_and_desktop_deferred.md) selects no first platform and authorizes no Desktop implementation in the first version. A later Desktop work package requires explicit activation and its concrete owning contracts.
 - Catalog expansion beyond the bounded component mapping needed by the first accepted Generative UI interaction.
 - Selective React Spectrum adoption for the heaviest widgets if custom primitives prove costly.
 

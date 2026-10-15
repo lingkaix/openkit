@@ -94,6 +94,12 @@ All threads, turns, items, artifacts, knowledge records, AgentSessions, and work
 
 Thread selection brings the user or channel into a durable work container. It does not imply that an AgentSession already exists.
 
+## First External Team Channel
+
+Discord is the first external team channel under the [2026-10-15 ruling](../decisions/20261015-discord_first_and_desktop_deferred.md). Channel accounts bind to current Core actors; channel membership alone grants no Workspace access or authority. Inbound deduplication and exact command/request identity preserve the existing Core replay boundary. Outbound delivery is a projection of Core outcomes, never a second workflow or proof that a recipient read or accepted a result.
+
+Direct decisions are limited to Pending Request kinds explicitly admitted by the common channel contract, with current responsible-user, source/audience, exact-request, and stale/duplicate checks. An unlisted kind links back to its authorized App decision surface. Email initially sends attention/digest links. Slack, Signal, and broader Email interaction remain separately admitted later work; success on Discord cannot close those outcomes. The channel owner must retain definite failure versus delivery-unknown and current-authority behavior across retry, restart, and account revocation. No message is sent by accepting this scope.
+
 ## Turn Communication Flow
 
 A turn is the active execution unit inside a thread. Stable turn semantics and lifecycle states are defined in `docs/core/protocol.md`.
