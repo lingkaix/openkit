@@ -217,7 +217,14 @@ test('CI derives the test image build context and Dockerfile from the image mani
 });
 
 test('every any-placed CI gate runs inside the test execution image', () => {
-  const gateJobs = ['pr-check', 'l0-l2-shards', 'nano-core-e2e', 'web-e2e', 'smoke', 'release-preflight'];
+  const gateJobs = [
+    'pr-check',
+    'l0-l2-shards',
+    'nano-core-e2e',
+    'web-e2e',
+    'smoke',
+    'release-preflight',
+  ];
 
   for (const job of gateJobs) {
     const block = ciWorkflow.match(new RegExp(`\\n  ${job}:\\n(?:    .*\\n|\\n)+`, 'u'));
