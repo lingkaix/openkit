@@ -24,7 +24,7 @@ import {
 import { projectAgentCatalogEntries } from './agents/catalog-projection.js';
 import type { AgentManifest } from './agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from './agents/readiness.js';
-import { resolveAgentSetup } from './agents/setup-resolver.js';
+import { type AgentSetupResolverDependencies, resolveAgentSetup } from './agents/setup-resolver.js';
 import { asApiError } from './api-errors.js';
 import {
   type AppUpdateHostTransport,
@@ -327,13 +327,15 @@ function assertProjectWorkspace(workspace: WorkspaceRecord, action: string): voi
  * @param workspaceId Workspace whose agents should be projected.
  * @param agentManifests Current file-backed agent manifests.
  * @param defaultAgentId Resolved User, Workspace, or Server Agent preference.
+ * @param setupDependencies Current Workspace/User composition and live Provider supply.
  * @returns Coordinator-visible worker candidates.
  */
 function workerCoordinatorCandidates(
   store: FsStore,
   workspaceId: string,
   agentManifests: readonly AgentManifest[],
-  defaultAgentId: string | null
+  defaultAgentId: string | null,
+  setupDependencies: AgentSetupResolverDependencies
 ): WorkerCoordinatorCandidate[] {
   store.getWorkspace(workspaceId);
 
@@ -344,17 +346,22 @@ function workerCoordinatorCandidates(
     })
     .map((manifest) => {
       const readiness = computeReadiness(manifest);
-      const launchable = isAgentLaunchable(readiness);
+      const resolved = resolveAgentSetup(manifest, setupDependencies);
+      const launchable = isAgentLaunchable(readiness) && resolved.setup !== null;
+      const reasons = [
+        ...readiness.reasons,
+        ...resolved.diagnostics.map((diagnostic) => diagnostic.message),
+      ];
 
       return {
         agentId: manifest.id,
         displayName: manifest.displayName,
         readiness: launchable
           ? ('ready' as const)
-          : readiness.status === 'unknown'
+          : resolved.setup !== null && readiness.status === 'unknown'
             ? ('unknown' as const)
             : ('blocked' as const),
-        ...(readiness.reasons.length > 0 ? { reasons: readiness.reasons } : {}),
+        ...(reasons.length > 0 ? { reasons } : {}),
       };
     });
 }
@@ -1101,18 +1108,32 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
    *
    * @param store Store that owns the workspace read models.
    * @param workspaceId Workspace whose worker candidates should be projected.
+   * @param userId Initiating User whose current setup preferences apply.
    * @returns Deterministically ordered opaque worker candidates.
    */
   function currentWorkerCoordinatorCandidates(
     store: FsStore,
-    workspaceId: string
+    workspaceId: string,
+    userId?: string
   ): WorkerCoordinatorCandidate[] {
     const snapshot = runtimeConfig();
+    const workspaceConfig = snapshot.workspaceConfigs.find(
+      (entry) => entry.workspaceId === workspaceId
+    )?.config;
+    const userConfig = snapshot.userConfigs.find((entry) => entry.userId === userId)?.config;
     return workerCoordinatorCandidates(
       store,
       workspaceId,
       snapshot.agentManifests,
-      resolveDefaultAgentId(snapshot, workspaceId)
+      resolveDefaultAgentId(snapshot, workspaceId, userId),
+      {
+        ...setupProviderSupply,
+        gatewayConfig: snapshot.gatewayConfig,
+        providerRegistry: snapshot.providerRegistry,
+        workspaceId,
+        ...(workspaceConfig ? { workspaceConfig } : {}),
+        ...(userConfig ? { userConfig } : {}),
+      }
     );
   }
 
@@ -1144,6 +1165,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   }): Promise<z.infer<typeof TurnSchema>> {
     const snapshot = runtimeConfig();
     const handle = await startProductTurn({
+      ...setupProviderSupply,
       input: {
         input: input.prompt,
         ...(input.profileId ? { profileId: input.profileId } : {}),
@@ -1612,6 +1634,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       const requestId = `${identity.slice(0, 8)}-${identity.slice(8, 12)}-4${identity.slice(13, 16)}-8${identity.slice(17, 20)}-${identity.slice(20, 32)}`;
 
       const handle = await startProductTurn({
+        ...setupProviderSupply,
         input: {
           input: 'Receive pending request outcomes.',
           requestId,
@@ -1767,6 +1790,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         }
       : {}),
     turnStartServices: {
+      ...setupProviderSupply,
       coreDb: options.coreDb,
       inflightCommands,
       providerCredentialResolver,
@@ -1820,6 +1844,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         }
       : {}),
     turnStartServices: {
+      ...setupProviderSupply,
       coreDb: options.coreDb,
       inflightCommands,
       providerCredentialResolver,

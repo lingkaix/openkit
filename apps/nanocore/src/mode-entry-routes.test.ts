@@ -14,6 +14,7 @@ import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
 } from './config/runtime-config.js';
+import * as knowledgeOwners from './knowledge-operations.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import type { FsStore } from './lib/store.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION } from './lib/store.js';
@@ -2753,6 +2754,43 @@ describe('exact Task Agent selection', () => {
       expect(f.prepare).not.toHaveBeenCalled();
       expect(f.executor.launches).toBe(0);
     } finally {
+      await f.cleanup();
+    }
+  });
+
+  it.each([
+    'missing-control-binary',
+    'unsupported-resources',
+  ] as const)('refuses exact Agent setup with %s before Knowledge or durable effects', async (ineligibility) => {
+    const f = fixture();
+    // Knowledge is downstream of eligibility. Fail at its real entry if admission crosses it.
+    const knowledge = vi
+      .spyOn(knowledgeOwners, 'createTaskKnowledgePreparation')
+      .mockRejectedValue(new Error('Unexpected Knowledge preparation for an ineligible Agent.'));
+    try {
+      const selected =
+        ineligibility === 'missing-control-binary'
+          ? {
+              ...f.selected,
+              runtime: {
+                ...f.selected.runtime,
+                binaries: f.selected.runtime.binaries.filter(
+                  (binary) => binary.id !== 'openkit-worker-shim'
+                ),
+              },
+            }
+          : { ...f.selected, resources: { 'unenforced-test-resource': { limit: 2 } } };
+      const app = f.makeApp(f.store, [f.preferred, selected]);
+      const before = f.effects();
+      const response = await f.post(app, { agentId: f.selected.id });
+      expect(response.status, await response.clone().text()).toBe(409);
+      expect(knowledge).not.toHaveBeenCalled();
+      expect(await response.json()).toMatchObject({ code: 'task_mode_not_delegated' });
+      expect(f.effects()).toEqual(before);
+      expect(f.prepare).not.toHaveBeenCalled();
+      expect(f.executor.launches).toBe(0);
+    } finally {
+      knowledge.mockRestore();
       await f.cleanup();
     }
   });

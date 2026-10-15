@@ -1972,17 +1972,20 @@ function createTaskModeDelegation(input: {
   readonly prompt: string;
   /** Optional exact Agent selection narrows existing eligible candidates without substitution. */
   readonly agentId?: string;
+  /** Initiating User whose current setup preferences apply before delegation. */
+  readonly userId: string;
   /** Resolves ready worker candidates for the workspace. */
   readonly workerCoordinatorCandidates: (
     store: FsStore,
-    workspaceId: string
+    workspaceId: string,
+    userId?: string
   ) => WorkerCoordinatorCandidate[];
 }): { coordinator: WorkerCoordinatorDecision; taskDecision: TaskDelegationDecision | null } {
   const coordinatorInput = {
     entryIntent: input.entryIntent,
     prompt: input.prompt,
     readiness: input
-      .workerCoordinatorCandidates(input.store, input.workspaceId)
+      .workerCoordinatorCandidates(input.store, input.workspaceId, input.userId)
       .filter((candidate) => input.agentId === undefined || candidate.agentId === input.agentId),
     threadState: { status: 'idle', threadId: input.threadId },
     workspaceSummary: {
@@ -2299,7 +2302,8 @@ export function createConversationService({
   readonly goalServices?: () => GoalOwnerServices;
   readonly workerCoordinatorCandidates: (
     store: FsStore,
-    workspaceId: string
+    workspaceId: string,
+    userId?: string
   ) => WorkerCoordinatorCandidate[];
 }) {
   const setupProviderSupply = {
@@ -2433,7 +2437,7 @@ export function createConversationService({
         ? [workspaceConfig.workspace.defaultAgentId]
         : []),
     ]);
-    for (const candidate of workerCoordinatorCandidates(store, workspaceId)) {
+    for (const candidate of workerCoordinatorCandidates(store, workspaceId, userId)) {
       if (!pinnedAgentIds.has(candidate.agentId)) continue;
       const manifest = snapshot.agentManifests.find((entry) => entry.id === candidate.agentId);
       if (!manifest) continue;
@@ -3633,6 +3637,7 @@ export function createConversationService({
         ? null
         : createTaskModeDelegation({
             entryIntent: 'conversation',
+            userId: actorId,
             store,
             workspaceId,
             threadId,
@@ -4168,6 +4173,7 @@ export function createConversationService({
       try {
         const delegation = createTaskModeDelegation({
           entryIntent: 'conversation',
+          userId: actorId,
           store,
           workspaceId: turn.workspaceId,
           threadId: turn.threadId,
@@ -4403,7 +4409,8 @@ export function createTaskStartOperation({
   }) => Promise<z.infer<typeof TurnSchema>>;
   readonly workerCoordinatorCandidates: (
     store: FsStore,
-    workspaceId: string
+    workspaceId: string,
+    userId?: string
   ) => WorkerCoordinatorCandidate[];
 }) {
   // One App-local owner per original Turn prevents replay from competing with its collector.
@@ -4562,6 +4569,7 @@ export function createTaskStartOperation({
 
       const delegation = createTaskModeDelegation({
         entryIntent: 'explicit_task',
+        userId: actorId,
         store,
         workspaceId,
         threadId,
