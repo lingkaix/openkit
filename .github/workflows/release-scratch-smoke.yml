@@ -43,7 +43,7 @@ jobs:
       - name: Set up pinned Node
         uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
         with:
-          install_args: node
+          install_args: node pnpm
           cache: false
 
       - name: Checkout published subject P separately
@@ -56,6 +56,10 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Install locked subject verifier dependencies
+        working-directory: subject
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Prepare published inputs
         env:

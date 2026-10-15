@@ -2,21 +2,22 @@
 /** Observe only the published scratch amd64 fixture; keep control C separate from subject P. */
 import { spawnSync } from 'node:child_process';
 import {
-  openSync,
   closeSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { pathToFileURL, fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { command, commitAt, githubJson, observePublication } from './release-observe.mjs';
-import { canonical, sha, noSecrets } from './release-safety.mjs';
+import { canonical, noSecrets, sha } from './release-safety.mjs';
 
 export const scratchRepository = 'notrucked/openkit';
 export const smokeJob = 'Published scratch amd64 retained-read smoke';
@@ -144,7 +145,7 @@ function downloadZip(id, file) {
   try {
     const result = spawnSync(
       'gh',
-      ['api', `repos/${scratchRepository}/actions/artifacts/${id}/zip`],
+      ['api', '--allow-escape-sequences', `repos/${scratchRepository}/actions/artifacts/${id}/zip`],
       { stdio: ['ignore', fd, 'pipe'], timeout: 120000 }
     );
     check(!result.error && result.status === 0, 'Artifact ZIP download failed');
@@ -248,6 +249,7 @@ export function observeSmoke(control, runId, { complete = true, read = githubJso
         (job.status === 'completed' &&
           job.conclusion === 'success' &&
           [
+            'Install locked subject verifier dependencies',
             'Prepare published inputs',
             'Run credential-isolated fixture',
             'Confirm attempt cleanup',
@@ -290,6 +292,9 @@ export function prepare({ subject, control, directory }) {
     'Reviewed CI control and job token required'
   );
   mkdirSync(directory, { mode: 0o700 });
+  save(join(directory, 'fixture-owner.json'), {
+    nonce: resources(directory, { runId: context.runId, attempt: context.attempt }).nonce,
+  });
   const published = publishedSubject(subject),
     smoke = observeSmoke(control, context.runId, { complete: false });
   const assets = join(directory, 'published');
@@ -405,6 +410,7 @@ export function cleanupFixture(
     })
 ) {
   const result = {
+    startedAt: new Date().toISOString(),
     containerRemoved: false,
     volumeRemoved: false,
     temporaryRemoved: false,
@@ -447,6 +453,17 @@ export function cleanupFixture(
     }
   }
   try {
+    if (existsSync(owned.directory)) {
+      const marker = join(owned.directory, 'fixture-owner.json');
+      check(
+        lstatSync(owned.directory).isDirectory() &&
+          !lstatSync(owned.directory).isSymbolicLink() &&
+          lstatSync(marker).isFile() &&
+          !lstatSync(marker).isSymbolicLink() &&
+          json(marker).nonce === owned.nonce,
+        'Foreign temporary cleanup directory refused'
+      );
+    }
     rmSync(owned.directory, { recursive: true, force: true });
     result.temporaryRemoved = !existsSync(owned.directory);
   } catch {
@@ -457,6 +474,7 @@ export function cleanupFixture(
     result.volumeRemoved &&
     result.temporaryRemoved &&
     result.errors.length === 0;
+  result.endedAt = new Date().toISOString();
   return result;
 }
 
@@ -834,6 +852,15 @@ export function validateResult(
   check(
     goodCleanup(record.cleanup?.initial) && goodCleanup(record.cleanup?.final),
     'Fixture cleanup is unresolved'
+  );
+  check(
+    [record.cleanup.initial, record.cleanup.final].every(
+      (c) =>
+        Date.parse(c.startedAt) >= Date.parse(record.startedAt) &&
+        Date.parse(c.endedAt) >= Date.parse(c.startedAt) &&
+        Date.parse(c.endedAt) <= Date.parse(record.endedAt)
+    ) && Date.parse(record.cleanup.final.startedAt) >= Date.parse(record.cleanup.initial.endedAt),
+    'Separate actual cleanup observations required'
   );
   const times = [
     record.prepareStartedAt,

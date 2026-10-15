@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { parse } from 'yaml';
 import { commitAt } from '../scripts/release-observe.mjs';
-import { sha } from '../scripts/release-safety.mjs';
+import { verifyLocalBinding } from '../scripts/release-post-smoke.mjs';
+import { canonical, sha } from '../scripts/release-safety.mjs';
 import {
   artifactFile,
   cleanupFixture,
@@ -101,6 +102,8 @@ function sample() {
     },
     cleanup: {
       initial: {
+        startedAt: '2026-10-16T00:04:01Z',
+        endedAt: '2026-10-16T00:04:10Z',
         success: true,
         containerRemoved: true,
         volumeRemoved: true,
@@ -108,6 +111,8 @@ function sample() {
         errors: [],
       },
       final: {
+        startedAt: '2026-10-16T00:04:11Z',
+        endedAt: '2026-10-16T00:04:20Z',
         success: true,
         containerRemoved: true,
         volumeRemoved: true,
@@ -320,6 +325,10 @@ test('local acceptance rechecks API attempts and never calls a registry', () => 
   for (const key of ['beforeReadAt', 'afterReadAt']) record.read[key] = start;
   record.restart.stoppedAt = start;
   record.restart.restartedAt = start;
+  for (const cleanup of Object.values(record.cleanup)) {
+    cleanup.startedAt = start;
+    cleanup.endedAt = start;
+  }
   const smoke = {
     ...context.smoke,
     startedAt: start,
@@ -348,9 +357,83 @@ test('local acceptance rechecks API attempts and never calls a registry', () => 
   assert.throws(() => run(true));
 });
 
+test('smoke provenance requires the exact dispatch and one complete current-attempt job', () => {
+  const control = 'b'.repeat(40);
+  const run = {
+    id: 12,
+    repository: { full_name: 'notrucked/openkit', fork: false },
+    event: 'workflow_dispatch',
+    head_sha: control,
+    head_branch: `scratch/cadence-smoke/${control}`,
+    run_attempt: 2,
+    path: '.github/workflows/release-scratch-smoke.yml',
+    status: 'completed',
+    conclusion: 'success',
+    run_started_at: '2026-10-16T00:00:00Z',
+  };
+  const job = {
+    id: 51,
+    name: 'Published scratch amd64 retained-read smoke',
+    run_attempt: 2,
+    status: 'completed',
+    conclusion: 'success',
+    started_at: run.run_started_at,
+    completed_at: '2026-10-16T00:05:00Z',
+    steps: [
+      'Install locked subject verifier dependencies',
+      'Prepare published inputs',
+      'Run credential-isolated fixture',
+      'Confirm attempt cleanup',
+      'Upload selected result',
+    ].map((name) => ({ name, conclusion: 'success' })),
+  };
+  const observe = (changedRun = run, jobs = [job], total = jobs.length) =>
+    observeSmoke(control, 12, {
+      read: (endpoint) =>
+        endpoint.includes('/jobs?') ? [{ total_count: total, jobs }] : changedRun,
+    });
+  assert.equal(observe().jobId, 51);
+  for (const change of [
+    { head_sha: 'a'.repeat(40) },
+    { event: 'pull_request' },
+    { event: 'pull_request_target' },
+    { repository: { full_name: 'notrucked/openkit', fork: true } },
+    { repository: { full_name: 'lingkaix/openkit', fork: false } },
+    { path: '.github/workflows/ci.yml' },
+    { head_branch: 'main' },
+    { run_attempt: 3 },
+    { status: 'in_progress' },
+    { conclusion: 'failure' },
+  ])
+    assert.throws(() => observe({ ...run, ...change }));
+  for (const jobs of [
+    [],
+    [job, job],
+    [{ ...job, run_attempt: 1 }],
+    [{ ...job, conclusion: 'skipped' }],
+    [{ ...job, conclusion: 'failure' }],
+    [{ ...job, name: 'another job' }],
+  ])
+    assert.throws(() => observe(run, jobs));
+  assert.throws(() => observe(run, [job], 2));
+  for (const step of job.steps) {
+    for (const conclusion of [undefined, 'skipped', 'failure'])
+      assert.throws(() =>
+        observe(run, [
+          {
+            ...job,
+            steps: job.steps.map((s) => (s.name === step.name ? { ...s, conclusion } : s)),
+          },
+        ])
+      );
+    assert.throws(() => observe(run, [{ ...job, steps: job.steps.filter((s) => s !== step) }]));
+  }
+});
+
 test('cleanup removes only labelled attempt resources and reports failures separately', () => {
   const directory = mkdtempSync(join(tmpdir(), 'scratch-cleanup-')),
     owned = resources(directory, { runId: 12, attempt: 2 });
+  writeFileSync(join(directory, 'fixture-owner.json'), JSON.stringify({ nonce: owned.nonce }));
   for (const foreign of [false, true]) {
     let container = true,
       volume = true;
@@ -434,4 +517,179 @@ test('workflow freezes the separate scratch graph, exact control, token scopes a
       .every((s) => s.with['persist-credentials'] === false),
     true
   );
+  assert.equal(
+    job.steps.find((s) => s.name === 'Install locked subject verifier dependencies')?.run,
+    'pnpm install --frozen-lockfile --ignore-scripts'
+  );
+});
+
+test('cleanup refuses an unowned temporary directory even if the resource names are absent', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'scratch-foreign-directory-'));
+  try {
+    writeFileSync(join(directory, 'unrelated'), 'retained');
+    const result = cleanupFixture(resources(directory, { runId: 12, attempt: 2 }), () => '');
+    assert.equal(result.success, false);
+    assert.equal(result.temporaryRemoved, false);
+    assert.equal(readFileSync(join(directory, 'unrelated'), 'utf8'), 'retained');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('the fixture driver admits restart and rejects command failure, timeout, changed reads and cleanup failure', async () => {
+  // Controlled command observations admit the instrument. Only the hosted run proves product behavior.
+  for (const fault of [undefined, 'create', 'timeout', 'read', 'restart', 'cleanup']) {
+    const parent = mkdtempSync(join(tmpdir(), 'scratch-driver-'));
+    const directory = join(parent, 'fixture');
+    mkdirSync(directory);
+    const { context } = sample();
+    const source = commitAt('HEAD');
+    const subject = {
+      ...context.subject,
+      sha: source,
+      image: { ...context.subject.image, image: 'ghcr.io/notrucked/openkit-app' },
+    };
+    const owned = resources(directory, context.smoke);
+    writeFileSync(join(directory, 'fixture-owner.json'), JSON.stringify({ nonce: owned.nonce }));
+    writeFileSync(
+      join(directory, 'prepared.json'),
+      JSON.stringify({
+        subject,
+        control: source,
+        smoke: context.smoke,
+        imageId: `sha256:${'5'.repeat(64)}`,
+        configDigest: `sha256:${'5'.repeat(64)}`,
+        prepareStartedAt: new Date().toISOString(),
+        preparedAt: new Date().toISOString(),
+      })
+    );
+    let container = false,
+      volume = false,
+      running = true,
+      restarted = false,
+      readiness = 0;
+    const calls = [];
+    const workspace = { id: 'synthetic', name: `Cadence scratch ${owned.nonce}` };
+    const state = () => [
+      {
+        Id: 'c'.repeat(64),
+        Image: `sha256:${'5'.repeat(64)}`,
+        Mounts: [{ Destination: '/data/openkit', Name: owned.volume, Type: 'volume' }],
+        State: {
+          Running: running,
+          Pid: running ? (restarted ? 82 : 81) : 0,
+          StartedAt:
+            restarted && fault !== 'restart' ? '2026-10-16T00:03:10Z' : '2026-10-16T00:01:00Z',
+          FinishedAt: '2026-10-16T00:03:00Z',
+        },
+        NetworkSettings: { Ports: { '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '12345' }] } },
+      },
+    ];
+    const run = (program, args, options) => {
+      calls.push([program, args]);
+      assert.ok(options.env);
+      for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'DOCKER_CONFIG', 'OPENKIT_NANOCORE_TOKEN'])
+        assert.equal(options.env[key], undefined, key);
+      assert.equal(options.env.HOME, join(directory, 'home'));
+      if (program === 'docker') {
+        assert.deepEqual(args.slice(0, 2), ['--host', 'unix:///var/run/docker.sock']);
+        const a = args.slice(2);
+        if (a[1] === 'ls')
+          return a[0] === 'container'
+            ? container
+              ? owned.container
+              : ''
+            : volume
+              ? owned.volume
+              : '';
+        if (a[0] === 'volume' && a[1] === 'create') {
+          volume = true;
+          return owned.volume;
+        }
+        if (a[0] === 'run') {
+          assert.equal(a.includes('--env'), false);
+          container = true;
+          return 'c'.repeat(64);
+        }
+        if (a[1] === 'inspect')
+          return a.includes('--format') ? owned.nonce : JSON.stringify(state());
+        if (a[0] === 'stop') {
+          assert.equal(
+            JSON.parse(readFileSync(join(directory, 'prior-read.json'), 'utf8')).beforeSha256,
+            sha(canonical(workspace))
+          );
+          running = false;
+          return owned.container;
+        }
+        if (a[0] === 'start') {
+          running = true;
+          restarted = true;
+          return owned.container;
+        }
+        if (a[1] === 'rm') {
+          if (fault === 'cleanup') throw Error('Controlled cleanup failure');
+          if (a[0] === 'container') container = false;
+          else volume = false;
+          return '';
+        }
+        throw Error('Unexpected fixture Docker command');
+      }
+      assert.equal(program, process.execPath);
+      assert.equal(args[1], 'ops');
+      if (args[3] === 'workspace.create' && fault === 'create')
+        throw Error('Controlled operation failure');
+      return JSON.stringify({ ok: true, operation: args[3], data: workspace });
+    };
+    try {
+      const result = await fixture(
+        { directory, subjectRoot: process.cwd() },
+        {
+          run,
+          ready: async () => {
+            if (++readiness === 2 && fault === 'timeout') throw Error('Fixture readiness timeout');
+          },
+          verifySkill: () => ({ cliPath: '/controlled/published-cli' }),
+          load: async () => ({
+            verifyLocalBinding,
+            postPublicationSmoke: ({ params }, { run: execute }) => {
+              assert.equal(restarted, true);
+              assert.equal(params.reads[0].sha256, sha(canonical(workspace)));
+              execute(
+                process.execPath,
+                ['/controlled/published-cli', 'ops', 'call', 'workspace.read'],
+                {}
+              );
+              if (fault === 'read') throw Error('Controlled retained read differs');
+              return {
+                outcome: 'passed',
+                identities: { imageId: `sha256:${'5'.repeat(64)}` },
+                reads: [{ sha256: params.reads[0].sha256 }],
+                end: new Date().toISOString(),
+              };
+            },
+          }),
+        }
+      );
+      assert.equal(
+        result.outcome,
+        [undefined, 'cleanup'].includes(fault) ? 'passed' : 'failed',
+        String(fault)
+      );
+      assert.equal(result.cleanup.initial.success, fault !== 'cleanup');
+      assert.equal(existsSync(directory), false);
+      assert.deepEqual(JSON.parse(readFileSync(owned.result, 'utf8')), result);
+      if (!fault) {
+        assert.equal(result.read.beforeSha256, result.read.afterSha256);
+        assert.ok(calls.some(([, args]) => args.includes('stop')));
+        assert.ok(calls.some(([, args]) => args.includes('start')));
+      }
+      if (fault === 'cleanup')
+        assert.deepEqual(result.cleanup.initial.errors, [
+          'container-cleanup-failed',
+          'volume-cleanup-failed',
+        ]);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  }
 });
