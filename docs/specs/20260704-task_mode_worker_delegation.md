@@ -231,6 +231,10 @@ A completed Turn without matching terminal stop evidence is incomplete, not `com
 
 `needs-review` is not a V1 Task state. Review remains an independent durable review record and Action Center projection so Task Mode does not invent another review authority.
 
+In this Task projection, `completed` means the last bounded Worker Turn ended normally under the [Stop Reason Contract](20260531-worker_turn_reliability_envelope.md#stop-reason-contract). It does not establish that the requested objective was achieved, an Artifact was accepted, or a governed external effect succeeded. The worker's claim must remain distinguishable from the outputs and verification evidence that support it. Missing evidence, incomplete work, and blockers remain explicit even when that Turn ended normally.
+
+A Task-specific result explanation distinguishes the bounded attempt's outcome from the requested work's claimed outcome, supporting evidence, and remaining limits. Ordinary Worker Turn observations retain their existing lifecycle meaning; they are not objective-acceptance records. This distinction creates no Task-only acceptance field, review gate, completion evaluator, or durable lifecycle. For standalone work, further execution needs the user's authorized follow-up under the existing Turn rules. Delivered pending-request outcomes and Goal-authorized admissions retain their existing owners; a completed label never starts a continuation itself.
+
 ### Escalation to Goal Mode
 
 A worker should recommend explicit Goal selection when:
@@ -300,6 +304,8 @@ Boot now fences scheduler and worker-control state before scanning direct Task c
 ## Testing Strategy / Acceptance Criteria
 
 Exact-Agent acceptance covers eligible selection, an ineligible or unready selected Agent with no effects, and no substitution when another Agent is ready. Replay checks cover identical selection, changed-selector conflict, and omission retaining the existing replay identity.
+
+Bounded-completion acceptance includes a normally ended Worker Turn whose requested objective is incomplete or lacks verification. Its Task projection remains `completed` when the existing terminal tuple proves that outcome, while the Task explanation reports the incomplete work or missing evidence. No objective acceptance, review acceptance, external-effect success, or automatic continuation follows from that label. A later authorized continuation preserves the prior Turn and its evidence.
 
 - L1: routing and worker-selection unit tests.
 - L2: contract tests for `TaskDelegationDecision`, required request identity, item projection, exact owner-derived states, and absence of a Task-only state or review record.
