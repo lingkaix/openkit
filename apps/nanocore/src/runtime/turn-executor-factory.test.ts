@@ -9418,9 +9418,9 @@ describe('createConfiguredTurnExecutor', () => {
           agentSetup: setup,
           scope: {
             agentSessionId: `as_busy_${suffix}`,
-            threadId: `thread_busy_${suffix}`,
+            threadId: `th_busy_${suffix}`,
             turnId: `turn_busy_${suffix}`,
-            workspaceId: 'workspace_busy',
+            workspaceId: 'ws_busy',
           },
           snapshotId: `snapshot_busy_${suffix}`,
         })
@@ -9505,74 +9505,92 @@ describe('createConfiguredTurnExecutor', () => {
         return { acceptedAt, status: 'completed', stopReason: 'completed' };
       },
     });
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'workspace_busy');
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_busy');
     applyScopedMigrations(workspaceDb);
-    const entries = ['first', 'second'].map((suffix, index) => {
-      const contextItemId = `it_busy_context_${suffix}`;
-      const requestId = `00000000-0000-4000-8000-00000000030${index}`;
-      const workerRequest = JSON.stringify({
-        schemaVersion: 1,
-        objective: 'Run an independent Task.',
-        acceptanceCriteria: ['Complete once capacity is released.'],
-        contextRefs: [{ kind: 'item', id: contextItemId }],
-        resources: [],
-        expectedArtifacts: [],
-        constraints: { maxContextTokens: 20000, maxWorkerIterations: 1 },
-        verification: [{ kind: 'manual', description: 'Inspect completion.' }],
-        reviewPolicy: { required: true, reviewers: ['human'], instructions: 'Review completion.' },
-        escalationConditions: [],
-        reviewContext: null,
-      });
-      const entry = createSchedulerAdmissionEntry(coreDb, {
-        backendId: backend.id,
-        queueEntryId: `queue_busy_${suffix}`,
-        requestId,
-        requestedAgentId: setup.manifest.id,
-        threadId: `thread_busy_${suffix}`,
-        turnId: `turn_busy_${suffix}`,
-        turnInput: workerRequest,
-        triggerActor: { kind: 'user', id: 'user-factory' },
-        workspaceId: 'workspace_busy',
-      });
-      publishFactoryAdmission(store, entry);
-      store.createItem({
-        id: contextItemId,
-        actor: entry.triggerActor,
-        type: 'user-message',
-        text: 'Independent Task context.',
-        status: 'completed',
-        createdAt: new Date().toISOString(),
-        completedAt: new Date().toISOString(),
-        threadId: entry.threadId,
-        turnId: entry.turnId,
-        workspaceId: entry.workspaceId,
-      });
-      const retrievalTraceId = `krt_0190f4c8-0000-7000-8000-00000000030${index}`;
-      retrieveWorkspaceKnowledge({
-        caller: 'task-mode',
-        dataRoot: coreDb.dataRoot,
-        limit: 5,
-        pinnedConceptIds: [],
-        query: 'Run an independent Task',
-        traceId: retrievalTraceId,
-        workspaceId: entry.workspaceId,
-      });
-      upsertWorkerCheckpoint(workspaceDb, {
-        iteration: 0,
-        requestId,
-        requestInputHash: commandInputHash(workerRequest),
-        stage: 'preparing',
-        threadId: entry.threadId,
-        turnId: entry.turnId,
-        workspaceId: entry.workspaceId,
-        diagnosticsSummary: createWorkerCheckpointContextDiagnostics({
-          contextDigest: commandInputHash(workerRequest),
+    const entries = await Promise.all(
+      ['first', 'second'].map(async (suffix, index) => {
+        const contextItemId = `it_busy_context_${suffix}`;
+        const requestId = `00000000-0000-4000-8000-00000000030${index}`;
+        const workerRequest = JSON.stringify({
+          schemaVersion: 1,
+          objective: 'Run an independent Task.',
+          acceptanceCriteria: ['Complete once capacity is released.'],
           contextRefs: [{ kind: 'item', id: contextItemId }],
-          knowledgeSelectionInput: { retrievalTraceId },
-        }),
-      });
-      return entry;
-    });
+          resources: [],
+          expectedArtifacts: [],
+          constraints: { maxContextTokens: 20000, maxWorkerIterations: 1 },
+          verification: [{ kind: 'manual', description: 'Inspect completion.' }],
+          reviewPolicy: {
+            required: true,
+            reviewers: ['human'],
+            instructions: 'Review completion.',
+          },
+          escalationConditions: [],
+          reviewContext: null,
+        });
+        const entry = createSchedulerAdmissionEntry(coreDb, {
+          backendId: backend.id,
+          queueEntryId: `queue_busy_${suffix}`,
+          requestId,
+          requestedAgentId: setup.manifest.id,
+          threadId: `th_busy_${suffix}`,
+          turnId: `turn_busy_${suffix}`,
+          turnInput: workerRequest,
+          triggerActor: { kind: 'user', id: 'user-factory' },
+          workspaceId: 'ws_busy',
+        });
+        publishFactoryAdmission(store, entry);
+        store.createItem({
+          id: contextItemId,
+          actor: entry.triggerActor,
+          type: 'user-message',
+          text: 'Independent Task context.',
+          status: 'completed',
+          createdAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          threadId: entry.threadId,
+          turnId: entry.turnId,
+          workspaceId: entry.workspaceId,
+        });
+        const retrievalTraceId = `krt_0190f4c8-0000-7000-8000-00000000030${index}`;
+        await retrieveWorkspaceKnowledge({
+          caller: 'task-mode',
+          dataRoot: coreDb.dataRoot,
+          limit: 5,
+          pinnedReferences: [],
+          access: {
+            store,
+            coreDb,
+            actor: entry.triggerActor,
+            outputThreadId: entry.threadId,
+            outputTurnId: entry.turnId,
+          },
+          query: 'Run an independent Task',
+          traceId: retrievalTraceId,
+          workspaceId: entry.workspaceId,
+        });
+        upsertWorkerCheckpoint(workspaceDb, {
+          iteration: 0,
+          requestId,
+          requestInputHash: commandInputHash(workerRequest),
+          stage: 'preparing',
+          threadId: entry.threadId,
+          turnId: entry.turnId,
+          workspaceId: entry.workspaceId,
+          diagnosticsSummary: createWorkerCheckpointContextDiagnostics({
+            contextDigest: commandInputHash(workerRequest),
+            contextRefs: [{ kind: 'item', id: contextItemId }],
+            knowledgeSelectionInput: {
+              retrievalTraceRef: {
+                scopeId: `retrieval-trace/turn/${entry.workspaceId}/${entry.threadId}/${entry.turnId}`,
+                objectId: retrievalTraceId,
+              },
+            },
+          }),
+        });
+        return entry;
+      })
+    );
     let attemptNumber = 0;
     const dispatch = {
       agentManifests: [setup.manifest],
