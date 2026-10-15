@@ -16,7 +16,7 @@ This directory owns the deterministic Workflow Coordinator, Internal Role Execut
 - Keep worker delegation schemas here because they are the concrete handoff from mode decisions to worker execution.
 - Configured product and worker agents belong to `../agents/`; governed worker execution and recovery belong to `../runtime/`.
 - Ordinary Quick Chat provider behavior remains in `../mode-entry-routes.ts`; do not introduce a registry, hook system, private event protocol, or streaming facade here.
-- Keep shared redaction helpers free of workflow or diagnostics ownership.
+- Keep shared redaction helpers free of workflow or diagnostics ownership. Sanitize decoded JSON string values and property names while preserving valid structure and unchanged safe bytes; opaque text retains its existing credential filters.
 
 ## Verification
 

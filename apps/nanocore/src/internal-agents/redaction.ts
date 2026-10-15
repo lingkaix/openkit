@@ -31,12 +31,29 @@ export function redactInternalAgentDiagnosticValue(value: unknown): unknown {
 }
 
 /**
- * Redacts sensitive substrings from diagnostics text.
+ * Redacts sensitive substrings while preserving complete JSON values and opaque text.
  *
- * @param value Diagnostics text.
+ * @param value Diagnostics or model-visible text.
  * @returns Text with common secret, token, authorization, and account-id patterns removed.
  */
 export function redactInternalAgentText(value: string): string {
+  try {
+    JSON.parse(value);
+  } catch (error) {
+    if (error instanceof SyntaxError) return redactOpaqueText(value);
+    throw error;
+  }
+  // Decode string tokens, including property names, without rebuilding JSON or changing other bytes.
+  // Capture and evidence readers detect redaction by byte inequality; safe JSON stays byte-identical.
+  return value.replace(/"(?:\\.|[^"\\])*"/g, (literal) => {
+    const decoded = JSON.parse(literal) as string;
+    const redacted = redactInternalAgentText(decoded);
+    return redacted === decoded ? literal : JSON.stringify(redacted);
+  });
+}
+
+/** Applies the existing common credential filters to one non-JSON text value. */
+function redactOpaqueText(value: string): string {
   return value
     .replace(/(authorization\s*[:=]\s*bearer\s+)[^\s,;]+/gi, `$1${REDACTED_VALUE}`)
     .replace(/\bbearer\s+[a-z0-9._~+/-]+=*/gi, `Bearer ${REDACTED_VALUE}`)
