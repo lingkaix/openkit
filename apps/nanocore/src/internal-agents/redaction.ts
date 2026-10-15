@@ -37,22 +37,19 @@ export function redactInternalAgentDiagnosticValue(value: unknown): unknown {
  * @returns Text with common secret, token, authorization, and account-id patterns removed.
  */
 export function redactInternalAgentText(value: string): string {
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(value);
+    JSON.parse(value);
   } catch (error) {
     if (error instanceof SyntaxError) return redactOpaqueText(value);
     throw error;
   }
-  let changed = false;
-  const result = JSON.stringify(parsed, (_key, part: unknown) => {
-    if (typeof part !== 'string') return part;
-    const redacted = redactInternalAgentText(part);
-    if (redacted !== part) changed = true;
-    return redacted;
+  // Decode string tokens, including property names, without rebuilding JSON or changing other bytes.
+  // Capture and evidence readers detect redaction by byte inequality; safe JSON stays byte-identical.
+  return value.replace(/"(?:\\.|[^"\\])*"/g, (literal) => {
+    const decoded = JSON.parse(literal) as string;
+    const redacted = redactInternalAgentText(decoded);
+    return redacted === decoded ? literal : JSON.stringify(redacted);
   });
-  // Capture and evidence readers detect redaction by byte inequality; do not normalize safe JSON.
-  return changed ? result! : value;
 }
 
 /** Applies the existing common credential filters to one non-JSON text value. */

@@ -48,6 +48,15 @@ describe('internal Agent text redaction', () => {
     expect(redactInternalAgentText(input)).toBe(input);
   });
 
+  it.each([
+    JSON.stringify({ hf_x: 'Safe value' }),
+    String.raw`{ "\u0068f_x" : "Safe value" }`,
+  ])('redacts decoded JSON property names without changing safe values: %j', (input) => {
+    const result = redactInternalAgentText(input);
+
+    expect(JSON.parse(result)).toEqual({ '[redacted]': 'Safe value' });
+  });
+
   it('keeps already-redacted structured content valid and unchanged on another pass', () => {
     const masked = redactInternalAgentText('Example: Authorization: Bearer EXAMPLE');
     const input = JSON.stringify({ text: masked, nested: [redactInternalAgentText('hf_x')] });
