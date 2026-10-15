@@ -407,7 +407,8 @@ async function completeObservedModel(
   context: Context,
   options: StreamOptions & Record<string, unknown>,
   transport: LLMGatewayTransportContext,
-  onTerminal: (message: AssistantMessage, failure: Error | undefined) => void
+  onTerminal: (message: AssistantMessage, failure: Error | undefined) => void,
+  validateEvent?: (event: AssistantMessageEvent) => void
 ): Promise<AssistantMessage> {
   const inference = prepareSubscriptionInference(
     models,
@@ -417,7 +418,7 @@ async function completeObservedModel(
     transport.deadline,
     transport.onProviderHandoff
   );
-  if (!transport.onModelEvent) {
+  if (!transport.onModelEvent && !validateEvent) {
     let response: AssistantMessage;
     try {
       if (subscriptionInferenceHandle(models)) {
@@ -450,7 +451,7 @@ async function completeObservedModel(
     while (true) {
       const result = await raceProviderWithSignal(() => iterator.next(), signal);
       if (result.done) {
-        transport.onModelEvent({ type: 'truncated' });
+        transport.onModelEvent?.({ type: 'truncated' });
         throw piAiStreamFailure('Provider stream failed.', 'provider_stream_truncated');
       }
       const terminalMessage =
@@ -461,6 +462,7 @@ async function completeObservedModel(
             : undefined;
       const terminalFailure = terminalMessage ? terminalPiAiFailure(terminalMessage) : undefined;
       if (terminalMessage) onTerminal(terminalMessage, terminalFailure);
+      validateEvent?.(result.value);
       await observeModelEvent(result.value, transport.onModelEvent);
       if (result.value.type === 'done') {
         await inference.observe(terminalFailure);
@@ -473,7 +475,7 @@ async function completeObservedModel(
     }
   } catch (error) {
     localAbort.abort(error);
-    transport.onModelEvent({ type: transport.signal?.aborted ? 'interrupted' : 'failed' });
+    transport.onModelEvent?.({ type: transport.signal?.aborted ? 'interrupted' : 'failed' });
     throw error;
   } finally {
     await iterator.return?.();
@@ -586,7 +588,8 @@ export class PiAiGatewayClient {
           (message, failure) => {
             observedFailure = failure;
             publishObservedUsage(onUsage, message.usage, model, knownCost);
-          }
+          },
+          createChatToolValidator(declaredTools)
         ),
       transport.signal,
       () => observedFailure
@@ -1463,6 +1466,7 @@ export class PiAiGatewayClient {
       { readonly index: number; readonly id: string; readonly name: string }
     >();
     const pendingToolCalls = new Set<number>();
+    const validateEvent = createChatToolValidator(declaredTools);
     const thinkingSent = new Map<number, { text: string; published: number }>();
     const textSent = new Map<number, string>();
     const toolArguments = new Map<number, string>();
@@ -1544,22 +1548,11 @@ export class PiAiGatewayClient {
       pendingToolCalls.delete(index);
       const sent = toolArguments.get(index) ?? '';
       const completed = JSON.stringify(toolCall.arguments);
-      let equivalent = false;
-      if (sent) {
-        try {
-          equivalent = isDeepStrictEqual(JSON.parse(sent), toolCall.arguments);
-        } catch {
-          // A valid streamed prefix is completed below; only a conflicting prefix fails.
-        }
-      }
       const published = toolIndexes.get(index);
       const [callId] = splitResponsesToolCallId(toolCall.id);
       if (published && (published.id !== callId || published.name !== toolCall.name))
         throw new GatewayUnsupportedFeatureError('pi-ai Chat conflicting tool identity');
-      if (equivalent) return false;
-      if (!completed.startsWith(sent))
-        throw new GatewayUnsupportedFeatureError('pi-ai Chat conflicting tool arguments');
-      const suffix = completed.slice(sent.length);
+      const suffix = chatToolArgumentSuffix(sent, toolCall.arguments);
       let toolIndex = published?.index;
       const missingStart = toolIndex === undefined;
       if (missingStart) {
@@ -1634,6 +1627,7 @@ export class PiAiGatewayClient {
               usageObserved = true;
               onUsage?.(event.type === 'done' ? event.message.usage : event.error.usage);
             }
+            validateEvent(event);
             await observeModelEvent(event, onModelEvent);
             if (event.type === 'done' || event.type === 'error')
               await onInferenceTerminal?.(
@@ -1802,11 +1796,6 @@ export class PiAiGatewayClient {
             }
 
             if (event.type === 'done') {
-              // A successful terminal cannot abandon a call whose start was already observed.
-              for (const index of [...toolIndexes.keys(), ...pendingToolCalls]) {
-                if (event.message.content[index]?.type !== 'toolCall')
-                  throw new GatewayUnsupportedFeatureError('pi-ai Chat incomplete tool call');
-              }
               event.message.content.forEach((block, index) => {
                 if (block.type === 'thinking')
                   enqueueThinking(controller, index, block, block.thinking);
@@ -4213,6 +4202,79 @@ function toOpenAIChatToolCalls(
         function: { name: block.name, arguments: JSON.stringify(block.arguments) },
       };
     });
+}
+
+/**
+ * Validates observed Chat call fragments and completions identically for final and streamed callers.
+ * Final calls consume stock events because a terminal parsed object alone can hide conflicting argument bytes.
+ */
+function createChatToolValidator(declaredTools: ReadonlySet<string>) {
+  const identities = new Map<number, { readonly id: string; readonly name: string } | undefined>();
+  const argumentsByIndex = new Map<number, string>();
+  /** Binds a completed call to its observed identity and argument prefix without changing either. */
+  function complete(index: number, block: ToolCall): void {
+    assertChatToolCall(block, declaredTools);
+    const [id] = splitResponsesToolCallId(block.id);
+    const known = identities.get(index);
+    if (known && (known.id !== id || known.name !== block.name))
+      throw new GatewayUnsupportedFeatureError('pi-ai Chat conflicting tool identity');
+    chatToolArgumentSuffix(argumentsByIndex.get(index) ?? '', block.arguments);
+    identities.set(index, { id, name: block.name });
+    argumentsByIndex.set(index, JSON.stringify(block.arguments));
+  }
+  return (event: AssistantMessageEvent): void => {
+    if (event.type === 'toolcall_start') {
+      if (identities.has(event.contentIndex))
+        throw new GatewayUnsupportedFeatureError('pi-ai Chat duplicate tool identity');
+      const block = readStreamToolCall(event.partial, event.contentIndex);
+      if (!isDefaultResponsesNamespace(block.namespace))
+        throw new GatewayUnsupportedFeatureError('pi-ai Chat tool namespace');
+      identities.set(
+        event.contentIndex,
+        block.id && declaredTools.has(block.name)
+          ? { id: splitResponsesToolCallId(block.id)[0], name: block.name }
+          : undefined
+      );
+      argumentsByIndex.set(event.contentIndex, '');
+    } else if (event.type === 'toolcall_delta') {
+      if (!identities.has(event.contentIndex))
+        throw new GatewayUnsupportedFeatureError('pi-ai chat tool call stream');
+      argumentsByIndex.set(
+        event.contentIndex,
+        (argumentsByIndex.get(event.contentIndex) ?? '') + event.delta
+      );
+    } else if (event.type === 'toolcall_end') complete(event.contentIndex, event.toolCall);
+    else if (event.type === 'done') {
+      // A successful terminal cannot abandon a call whose start was already observed.
+      for (const index of identities.keys())
+        if (event.message.content[index]?.type !== 'toolCall')
+          throw new GatewayUnsupportedFeatureError('pi-ai Chat incomplete tool call');
+      const ids = new Set<string>();
+      event.message.content.forEach((block, index) => {
+        if (block.type !== 'toolCall') return;
+        complete(index, block);
+        const [id] = splitResponsesToolCallId(block.id);
+        if (ids.has(id))
+          throw new GatewayUnsupportedFeatureError('pi-ai Chat duplicate tool identity');
+        ids.add(id);
+      });
+    }
+  };
+}
+
+/** Returns only unpublished completed argument bytes, refusing replacement of an observed prefix. */
+function chatToolArgumentSuffix(sent: string, argumentsValue: ToolCall['arguments']): string {
+  if (sent) {
+    try {
+      if (isDeepStrictEqual(JSON.parse(sent), argumentsValue)) return '';
+    } catch {
+      // A partial observed prefix can be completed by the authoritative semantic result.
+    }
+  }
+  const completed = JSON.stringify(argumentsValue);
+  if (!completed.startsWith(sent))
+    throw new GatewayUnsupportedFeatureError('pi-ai Chat conflicting tool arguments');
+  return completed.slice(sent.length);
 }
 
 /** Validates a completed Chat call against current declarations without promoting history or repairing arguments. */

@@ -11,6 +11,7 @@ import {
   type ToolCall,
   type TranscriptContext,
 } from '@earendil-works/pi-ai';
+import { deepseekProvider } from '@earendil-works/pi-ai/providers/deepseek';
 import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { OpenAICompatibleChatCompletionRequest } from './openai-compatible-client.js';
@@ -437,4 +438,114 @@ describe('new Chat calls require the current request declaration', () => {
       true
     );
   });
+});
+
+describe('Chat declaration validation through the stock completions parser', () => {
+  const cases = [
+    { label: 'truncated JSON', name: 'lookup', fragments: ['{"x":'], allowed: false },
+    {
+      label: 'valid declared JSON',
+      name: 'lookup',
+      fragments: ['{"query":', '"current"}'],
+      allowed: true,
+    },
+    { label: 'valid unknown callable', name: 'unknown', fragments: ['{}'], allowed: false },
+  ];
+  for (const stream of [false, true]) {
+    it.each(cases)(`$label uses the same final and streamed admission; stream=${stream}`, async ({
+      name,
+      fragments,
+      allowed,
+    }) => {
+      const stock = deepseekProvider();
+      const models = createModels();
+      models.setProvider(stock);
+      const model = models.getModels().find((entry) => entry.provider === stock.id);
+      if (!model) throw new Error('Stock DeepSeek fixture has no model.');
+      const provider = {
+        id: 'stock-declaration-profile',
+        adapterId: stock.id,
+        apiKey: 'synthetic',
+        baseUrl: null,
+        models: [model.id],
+        requiresApiKey: true,
+        gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
+      } as ResolvedLLMProviderConfig;
+      // The HTTP double is outside both the real stock parser and the Gateway projection.
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+        const chunks = [
+          ...fragments.map((argumentsFragment, index) => ({
+            index: 0,
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  ...(index === 0 ? { id: 'call_stock', type: 'function' } : {}),
+                  function: { ...(index === 0 ? { name } : {}), arguments: argumentsFragment },
+                },
+              ],
+            },
+            finish_reason: null,
+          })),
+          { index: 0, delta: {}, finish_reason: 'tool_calls' },
+        ].map((choice) => ({
+          id: 'chat_stock',
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: model.id,
+          choices: [choice],
+        }));
+        return new Response(
+          `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('')}data: [DONE]\n\n`,
+          { headers: { 'content-type': 'text/event-stream' } }
+        );
+      });
+      try {
+        const client = new PiAiGatewayClient({ models });
+        const request = { model: model.id, messages: [], tools: [declaration], stream };
+        if (stream) {
+          const result = await readChat(await client.createChatCompletionStream(provider, request));
+          const choices = result.frames.flatMap((frame) => frame.choices ?? []);
+          if (allowed) {
+            expect(result.error).toBeUndefined();
+            const calls = choices.flatMap((choice) => choice.delta?.tool_calls ?? []);
+            expect(calls.find((call) => call.function?.name)).toMatchObject({
+              id: 'call_stock',
+              function: { name: 'lookup' },
+            });
+            expect(
+              JSON.parse(calls.map((call) => call.function?.arguments ?? '').join(''))
+            ).toEqual({ query: 'current' });
+            expect(choices.at(-1).finish_reason).toBe('tool_calls');
+            expect(result.wire).toContain('[DONE]');
+          } else {
+            expect(result.error).toMatchObject({ code: 'unsupported_gateway_feature' });
+            expect(choices.some((choice) => choice.finish_reason)).toBe(false);
+            expect(result.wire).not.toContain('[DONE]');
+          }
+        } else if (allowed) {
+          const result = await client.createChatCompletion(provider, request);
+          expect(result.choices[0]).toMatchObject({
+            finish_reason: 'tool_calls',
+            message: {
+              tool_calls: [
+                {
+                  id: 'call_stock',
+                  type: 'function',
+                  function: { name: 'lookup', arguments: '{"query":"current"}' },
+                },
+              ],
+            },
+          });
+        } else {
+          await expect(client.createChatCompletion(provider, request)).rejects.toMatchObject({
+            code: 'unsupported_gateway_feature',
+          });
+        }
+        expect(fetchMock).toHaveBeenCalledOnce();
+      } finally {
+        fetchMock.mockRestore();
+      }
+    });
+  }
 });
