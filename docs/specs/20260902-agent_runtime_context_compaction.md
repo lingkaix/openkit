@@ -52,9 +52,9 @@ For NanoCore internal roles, [the accepted rolling-context ruling](../decisions/
 
 ## Summary
 
-OpenKit standardizes one centrally authored compaction threshold and one normalized control contract, not one universal summarization algorithm. Every NanoCore-internal model-using role runs through the shared Internal Agent Loop, including Quick Chat, and the loop uses the OpenKit Gateway compactor when its resolved logical model reaches the configured threshold. A Worker runtime that already owns trustworthy native compaction keeps that implementation but receives the same resolved threshold through its immutable setup; a future compatible Worker may instead round-trip the OpenKit compaction item through the Gateway. One execution selects exactly one authority, so native and OpenKit compaction never compete inside the same active context.
+Every NanoCore internal model-using role uses the shared Internal Agent Loop with durable rolling context reconstructed by its existing role owner. Its execution does not depend on the unimplemented Gateway compactor. Direct Quick Chat Provider calls remain implementation lag against that shared-loop target.
 
-The immediate blocker is the missing OpenKit compaction path for internal roles. The current Quick Chat direct provider function is implementation lag against the accepted shared-loop design, not a product exception and not a second runtime to preserve.
+The remaining Gateway/Worker paths standardize one centrally authored compaction threshold and normalized control contract. A Worker with trustworthy native compaction keeps that implementation subject to its immutable setup contract; a future compatible Worker may round-trip the OpenKit Compaction Item. Each such execution selects one compaction authority so native and OpenKit compaction do not compete. These paths do not block internal-role rolling context.
 
 ## Definitions And Exclusions
 
@@ -62,7 +62,7 @@ The immediate blocker is the missing OpenKit compaction path for internal roles.
 
 `Compaction Threshold` is the centrally configured token count at which OpenKit requires an active context to be compacted before ordinary inference continues. It is an operational working-set boundary below the Physical Context Window, not a claim that the model has a smaller physical window.
 
-`Active Context` is the provider-neutral, model-visible input currently assembled for one internal run or Worker-native conversation after applying the latest accepted compaction checkpoint. It excludes fresh trusted instructions, Tool definitions, credentials, policy facts, audit data, and product records that are not intentionally projected to the model.
+`Active Context` is the provider-neutral, model-visible input assembled for one execution. An internal run receives its admitted rolling window; a context-managed Gateway/Worker execution may apply its latest accepted compaction checkpoint. It excludes fresh trusted instructions, Tool definitions, credentials, policy facts, audit data, and product records that are not intentionally projected to the model.
 
 `Automatic Runtime Compaction` replaces older Active Context with a bounded continuation summary while preserving authoritative source history outside the model input. It is transient runtime continuity unless an existing workflow or AgentSession owner separately persists its native checkpoint.
 
@@ -116,9 +116,9 @@ The example keeps the catalog-derived Physical Context Window at 1,000,000 token
 
 The logical-model resolver uses each route's required context limit and optional maximum-output limit from the Gateway-owned effective Provider model metadata. For every authored route member with resolvable metadata, including an unavailable member whose limits remain known, it requires `compactThreshold` not to exceed that window, and additionally requires `compactThreshold + maximumOutputTokens` not to exceed it when the output limit is known. Missing effective context in a configured Provider model rejects configuration under the Gateway owner. An absent Provider profile or delisted route model is instead an unavailable member under [Gateway routing](20260526-llm_gateway_responses_api.md#unavailable-members), without fabricated limits; restored supply must pass threshold validation before selection. Missing output metadata remains unknown and does not prevent admission; the configuration does not claim its threshold is proven to fit an unknown output reserve. Adapter operating defaults do not become verified physical limits. A non-positive threshold, duplicate context-management entries, an unknown entry type, or a known route limit that cannot honor the threshold rejects the snapshot before the logical model becomes eligible. An actual upstream context-overflow error remains explicit and follows the existing failure path rather than silently substituting a model or inventing a physical limit.
 
-There are no Server-global numeric fallback, Provider-route override, Agent override, internal-role override, Workspace override, User override, percentage mode, summary-model selection, retained-tail knob, or prompt override in V1. Models have different physical limits, so the policy belongs to each logical model; every internal role and Worker that resolves that logical model receives the same value.
+There are no Server-global numeric fallback, Provider-route override, Agent override, internal-role override, Workspace override, User override, percentage mode, summary-model selection, retained-tail knob, or prompt override in V1. Models have different physical limits, so the policy belongs to each logical model; every Gateway/Worker execution using compaction for that logical model receives the same value. Internal roles use the rolling-window budget above rather than this compaction threshold.
 
-A successful configuration reload applies a changed threshold only to newly admitted internal runs and newly resolved Worker packages. An active internal run remains pinned to its accepted policy, and an active Worker Turn remains pinned to its immutable package. Rollback selects the prior value for later executions and never rewrites completed history or a native session checkpoint.
+A successful configuration reload applies a changed threshold only to newly admitted compaction-managed Gateway requests and newly resolved Worker packages. An active managed execution remains pinned to its accepted policy, and an active Worker Turn remains pinned to its immutable package. Rollback selects the prior value for later executions and never rewrites completed history or a native session checkpoint.
 
 ## Resolved Execution Projection
 
@@ -134,7 +134,7 @@ interface ResolvedContextManagement {
 
 `authority` is selected before the execution begins from the runtime kind and an adapter capability proven by its accepted specification and focused tests. It is never selected by the model, caller metadata, public request body, Provider response, or an unregistered runtime string.
 
-Every NanoCore-internal run uses `authority: "openkit"`. A Worker uses `runtime-native` only when its pinned adapter proves that it can apply the exact central threshold, retain a valid native continuation checkpoint, emit normalized outcome evidence, and disable the OpenKit automatic path for that Turn. A Worker uses `openkit` only when its adapter proves that it can preserve, return, and later submit the OpenKit Compaction Item without loss. Once an immutable Worker package carries `llm.contextManagement`, setup fails visibly if neither capability is proven rather than running two compactors or silently ignoring the policy. Until that coordinated AEP version is admitted, a Worker continues with its runtime-native local defaults, receives no OpenKit `context_management` injection, and makes no central-policy conformance claim.
+Internal roles use the durable rolling window, not this compaction-authority projection. A Worker uses `runtime-native` only when its pinned adapter proves that it can apply the exact central threshold, retain a valid native continuation checkpoint, emit normalized outcome evidence, and disable the OpenKit automatic path for that Turn. A Worker uses `openkit` only when its adapter proves that it can preserve, return, and later submit the OpenKit Compaction Item without loss. Once an immutable Worker package carries `llm.contextManagement`, setup fails visibly if neither capability is proven rather than running two compactors or silently ignoring the policy. Until that coordinated AEP version is admitted, a Worker continues with its runtime-native local defaults, receives no OpenKit `context_management` injection, and makes no central-policy conformance claim.
 
 The future Worker projection belongs at `llm.contextManagement` in the immutable Agent Environment Package and carries exactly the resolved object above. The current strict version 4 package has no such field, so Worker policy projection requires the next coordinated AEP schema and adapter implementation; an `extensions` workaround, ambient Harness configuration, or mutable post-launch file is forbidden.
 
@@ -153,7 +153,7 @@ The OpenKit Gateway accepts or injects this exact V1 control on `POST /v1/respon
 }
 ```
 
-OpenKit requires every effective compaction entry to contain `compact_threshold` even though the current OpenAI schema documents it as optional. A caller may omit the complete `context_management` field, in which case the trusted Gateway injects the pinned entry. If a caller supplies the field, a missing or mismatched threshold, additional entry, unknown field, unknown type, or request for OpenKit compaction under a `runtime-native` execution fails before Provider dispatch. The effective value MUST equal the policy pinned to the authenticated internal run, Worker Turn, or current unscoped Gateway request.
+OpenKit requires every effective compaction entry to contain `compact_threshold` even though the current OpenAI schema documents it as optional. A caller may omit the complete `context_management` field, in which case the trusted Gateway injects the pinned entry. If a caller supplies the field, a missing or mismatched threshold, additional entry, unknown field, unknown type, or request for OpenKit compaction under a `runtime-native` execution fails before Provider dispatch. The effective value MUST equal the policy pinned to the authenticated compaction-managed Worker Turn or current Gateway request. Trusted internal-role calls bypass this compaction control and use their admitted rolling window.
 
 V1 rejects a caller-supplied Responses input item whose type is `compaction_trigger`, or any other Provider-native compaction control, before Provider dispatch. OpenKit never forwards a second compaction trigger into an execution whose sole authority was already selected.
 
@@ -313,7 +313,7 @@ Rejected because the name would assert confidentiality that does not exist. Actu
 
 ### Add `POST /v1/responses/compact` Immediately
 
-Rejected because automatic `context_management` closes the present Internal Agent blocker and supports the future adapter path. A standalone operation becomes justified only when a real caller needs manual compaction or a canonical compacted-output array independent of ordinary inference.
+Rejected for the remaining Gateway/Worker path because automatic `context_management` supports that adapter contract. Internal roles no longer require this mechanism. A standalone operation becomes justified only when a real caller needs manual compaction or a canonical compacted-output array independent of ordinary inference.
 
 ### Store Gateway Conversations Or Compaction Records
 
