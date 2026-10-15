@@ -197,6 +197,14 @@ Through the gateway, workers do not receive MCP server command lines, tokens, or
 
 MCP tool calls must produce `CapabilityCall`, `UsageRecord` where measurable, and `AuditEvent` records.
 
+### MCP Item Identifier Name
+
+An existing product-visible MCP tool-call Item uses `it` UUIDv5 with exact JSON name `["mcp", packageSnapshotId, serverId, toolName, protocolRequestId]`. Inputs are the authenticated frozen AEP snapshot, exact bound catalog server, complete tool name and native JSON-RPC request ID. Preserve the admitted string or number type of that request ID. [Core Protocol](../core/protocol.md#ids) supplies canonical name bytes under the [accepted complete-name declaration](../decisions/20261015-identifier_owner_declarations.md).
+
+An approval or `work_request_input` request Item instead uses only [Pending Requests' name](20260930-pending_requests.md#deliver): `[durableRequestId, "request"]`. No nested digest, Turn-derived or MCP-specific alias supplies another product request Item. Item identity supplies neither call-start idempotency nor captured-call authority; those remain with Capability Usage Gateway Foundation and Pending Requests.
+
+Existing Item publication, current package/declaration/authorization checks, persistence, retention, termination and unknown-effect rules remain binding. No new publication or contact trigger is added. Acceptance requires numeric/string request distinction, distinct package/server/tool inputs, one Item per durable Pending Request and unchanged at-most-once contact. Native identifiers remain opaque input values; prefixing them grants no Core identity or authority.
+
 ### Built-In Tool Derivation
 
 Until a resource family is cut over, the descriptor, direct command dispatch, and claimed-scope agreement in the following two targets remain that family's contract.
