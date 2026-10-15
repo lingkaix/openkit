@@ -532,7 +532,7 @@ const candidateJobBaseline = {
 
 const shardJobBaseline = {
   'l0-l2-plan': '3403258929b8dd4591044849751e483d55299489e41bb9e50a3c61fd0359631c',
-  'l0-l2-shards': '90601da85c48559650162f822787172f86a93f8746e3a52ca78f10c8d084246a',
+  'l0-l2-shards': '778e4d456fa047a1c782af520ccf9972226ef0c56b01094c5ec7b004847155f6',
   'l0-l2': '3425b1ab09142a2a670502a5ae6d9d271b67a10fcdb0d86b29bec30fb6d43bfc',
 };
 
@@ -747,4 +747,12 @@ test('L0-L2 runs complete package coverage and native/root suites through a fail
   assert.match(scripts['verify:l0-l2'], /pnpm run test:ci/u);
   assert.doesNotMatch(scripts['verify:l0-l2'], /test:unit|test:coverage/u);
   assert.match(scripts['test:ci'], /release-tests\.mjs/u);
+});
+
+test('Cargo target cache retains the image-owned dictionary build output with its absolute include paths', () => {
+  const dockerfile = readFileSync('containers/test-env/Dockerfile', 'utf8');
+  const dictionary = dockerfile.match(/^ENV LINDERA_BUILD_DICTIONARY_CACHE_DIR="([^"]+)"$/mu)?.[1];
+  assert.ok(dictionary);
+  const cache = step(workflow.jobs['l0-l2-shards'], 'Cache locked build inputs and outputs');
+  assert.ok(cache.with.path.trim().split('\n').includes(dictionary));
 });

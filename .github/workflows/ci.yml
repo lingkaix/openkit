@@ -300,7 +300,7 @@ jobs:
             apps/nanohost/target
             /usr/local/cargo/registry
             /usr/local/cargo/git
-            ~/.cache/openkit/lindera
+            /opt/openkit-lindera
           key: l0-l2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.id }}-${{ hashFiles('pnpm-lock.yaml', '**/Cargo.lock', '**/mise.toml', '.mise.toml', 'scripts/retrieval-*', 'containers/test-env/Dockerfile') }}-${{ github.sha }}
           restore-keys: |
             l0-l2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.id }}-${{ hashFiles('pnpm-lock.yaml', '**/Cargo.lock', '**/mise.toml', '.mise.toml', 'scripts/retrieval-*', 'containers/test-env/Dockerfile') }}-
