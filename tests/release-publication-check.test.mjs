@@ -603,6 +603,17 @@ for (const [name, change] of [
     change(input);
     assert.throws(() => checkPublication(input, { now }), /approved publication baseline identity/);
   });
+for (const approval of [null, [], true, 'approval', 7])
+  test(`baseline authority refuses a non-object approval: ${JSON.stringify(approval)}`, () => {
+    const input = scratchEvidence();
+    input.grant.baseline = approval;
+    assert.throws(() => checkPublication(input, { now }), /approved publication baseline identity/);
+  });
+test('baseline authority refuses an unknown approval field', () => {
+  const input = scratchEvidence();
+  input.grant.baseline.requiredApproval = 'engineer-only';
+  assert.throws(() => checkPublication(input, { now }), /approved publication baseline identity/);
+});
 for (const field of ['runId', 'attempt', 'sha'])
   for (const change of ['missing', 'mismatched'])
     test(`baseline authority refuses ${change} required-job ${field}`, () => {

@@ -209,16 +209,22 @@ export function checkPublication(e, { now = new Date(), repoRoot = process.cwd()
   );
   const baseline = e.baseline,
     approvedBaseline = g.baseline;
+  const baselineIdentityFields = ['repository', 'tag', 'sha', 'workflow', 'runId', 'attempt'];
   requireFact(
     approvedBaseline &&
+      typeof approvedBaseline === 'object' &&
+      !Array.isArray(approvedBaseline) &&
+      Object.keys(approvedBaseline).length === baselineIdentityFields.length + 1 &&
+      Object.hasOwn(approvedBaseline, 'kind') &&
       ((approvedBaseline.kind === 'production-tag' &&
         approvedBaseline.repository === e.repository) ||
         (approvedBaseline.kind === 'scratch-rehearsal' &&
           approvedBaseline.repository === 'notrucked/openkit' &&
           baselineVersion.includes('-'))) &&
       approvedBaseline.workflow === '.github/workflows/ci.yml' &&
-      ['repository', 'tag', 'sha', 'workflow', 'runId', 'attempt'].every(
-        (field) => baseline[field] === approvedBaseline[field]
+      baselineIdentityFields.every(
+        (field) =>
+          Object.hasOwn(approvedBaseline, field) && baseline[field] === approvedBaseline[field]
       ) &&
       baseline.event === 'push' &&
       baseline.ref === `refs/tags/${baseline.tag}` &&

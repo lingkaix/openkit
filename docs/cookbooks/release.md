@@ -175,7 +175,7 @@ The check refuses every absent condition. Its input must come from retained actu
 
 ### Baseline Evidence Fields
 
-Copy the approved identity into `grant.baseline` from the separately approved baseline record. Do not derive approval from an unreviewed run. Collect `baseline` from the actual repository tag and current run/attempt APIs, retaining the observations. The checker remains offline; fields supplied without those observations are not evidence.
+Copy the approved identity into `grant.baseline` from the separately approved baseline record. Do not derive approval from an unreviewed run. `grant.baseline` is a closed object with exactly the seven fields below; unknown approval fields refuse admission. Collect `baseline` from the actual repository tag and current run/attempt APIs, retaining the observations. The checker remains offline; fields supplied without those observations are not evidence.
 
 | Field | Required value or observation |
 | --- | --- |
