@@ -283,7 +283,8 @@ async function runResidentTurnImplementation(
       void stopStartedTurn(residentTurn).then((stopped) => {
         if (!stopped) failUnprovedStop(new Error('Resident native interrupt was not proved.'));
       });
-    } else {
+    } else if (!workerControlReady) {
+      // Once ready, queued cancellation must preserve control delivery for terminal publication.
       controlAbortController.abort(interruptReason);
     }
   };
@@ -332,10 +333,30 @@ async function runResidentTurnImplementation(
       return { status: 'interrupted' };
     }
 
+    heartbeat = runWorkerHeartbeatLoop(
+      session,
+      writer,
+      heartbeatAbortController.signal,
+      heartbeatDelivery,
+      () => (residentTurn ? 'running' : 'starting')
+    );
+    // Live rejection stops the same control owner immediately, including pending delivery.
+    const heartbeatFailure = heartbeat.then(
+      () => {
+        throw new Error('Worker control stopped before final status acceptance.');
+      },
+      (error: unknown) => {
+        controlAbortController.abort(error);
+        throw error;
+      }
+    );
+    heartbeatFailure.catch(() => undefined);
+
     progress.stage = 'native_spawn';
     // Rejection guarantees no live native Turn. Unproved attempts must be returned with
     // rejecting settlement so the existing bounded stop/fence path retains cleanup ownership.
     const startedTurn = await options.resident.startTurn({
+      signal: AbortSignal.any([options.signal, controlAbortController.signal]),
       recordLifecycleFact: timeline.record,
       llmRoute,
       allowedLlmRoutes,
@@ -385,23 +406,6 @@ async function runResidentTurnImplementation(
     }
     options.onStarted();
     session.enablePostLaunchRecovery();
-    heartbeat = runWorkerHeartbeatLoop(
-      session,
-      writer,
-      heartbeatAbortController.signal,
-      heartbeatDelivery
-    );
-    // Live rejection stops the same control owner immediately, including pending delivery.
-    const heartbeatFailure = heartbeat.then(
-      () => {
-        throw new Error('Worker control stopped before final status acceptance.');
-      },
-      (error: unknown) => {
-        controlAbortController.abort(error);
-        throw error;
-      }
-    );
-    heartbeatFailure.catch(() => undefined);
     let adapterResult: Awaited<WorkerResidentTurn['settled']>;
     // A resident host that ends on its own fails the Turn; it is not an interrupt, and the ended
     // host is the proof that its native work stopped.
@@ -524,6 +528,26 @@ async function runResidentTurnImplementation(
       status,
     };
   } catch (error) {
+    // Only queued cancellation carries this exact reason; admitted preparation keeps its own failure.
+    if (
+      interrupted &&
+      residentTurn === null &&
+      !terminalOutcomeAttempted &&
+      error === options.signal.reason
+    ) {
+      progress.stage = null;
+      terminalOutcomeAttempted = true;
+      terminalPublication = writeAndReportTerminalOutcome(
+        writer,
+        workerControlReady ? controlSession : null,
+        { status: 'interrupted', stopReason: 'aborted' },
+        timeline,
+        controlAbortController.signal,
+        stopHeartbeats
+      );
+      await terminalPublication;
+      return { status: 'interrupted' };
+    }
     if (!terminalOutcomeAttempted) {
       terminalOutcomeAttempted = true;
       // Keep the deciding native failure while the settlement wrapper retains cleanup ownership.
@@ -1609,13 +1633,15 @@ function redactDiagnosticOutput(output: string, credentialValues: readonly strin
  * @param transcript Ordered local/live event owner, sealed before final publication.
  * @param signal Stops scheduling before final submission or at supervisor closeout.
  * @param delivery Sole periodic request retained for closeout join, with the existing control signal.
+ * @param phase Selects startup or running message text; periodic status stays running after sequence zero.
  * @returns Promise that resolves on scheduling cancellation and rejects on control or live-event failure.
  */
 async function runWorkerHeartbeatLoop(
   client: WorkerControlClient,
   transcript: WorkerTranscriptWriter,
   signal: AbortSignal,
-  delivery: { request: Promise<unknown> | null; readonly signal: AbortSignal }
+  delivery: { request: Promise<unknown> | null; readonly signal: AbortSignal },
+  phase: () => 'starting' | 'running'
 ): Promise<void> {
   let failEvent!: (error: unknown) => void;
   const eventFailure = new Promise<never>((_resolve, reject) => {
@@ -1629,8 +1655,12 @@ async function runWorkerHeartbeatLoop(
         eventFailure,
       ]);
       if (!signal.aborted) {
+        const preparing = phase() === 'starting';
         delivery.request = client.recordHeartbeat(
-          { message: 'Worker shim running.', status: 'running' },
+          {
+            message: preparing ? 'Worker shim starting.' : 'Worker shim running.',
+            status: 'running',
+          },
           delivery.signal
         );
         await Promise.race([delivery.request, eventFailure]);

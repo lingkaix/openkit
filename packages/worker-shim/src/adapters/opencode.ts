@@ -22,6 +22,7 @@ import type {
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
+import { nativeStartupAdmission } from '../native-startup.js';
 import { validateTurnReasoningEffort } from '../reasoning-effort.js';
 import {
   type RuntimeFact,
@@ -126,46 +127,48 @@ export function createOpenCodeAdapter(
   const rpcTimeoutMs = dependencies.rpcTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeRequestMs;
   return {
     async openSession(input) {
-      const deadline =
-        dependencies.openDeadline ??
-        new LifecycleDeadline(
-          LIFECYCLE_DEFAULTS.nativeOpenMs,
-          LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
+      return nativeStartupAdmission.run(async () => {
+        const deadline =
+          dependencies.openDeadline ??
+          new LifecycleDeadline(
+            LIFECYCLE_DEFAULTS.nativeOpenMs,
+            LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
+          );
+        const secrets = [input.loopback.inferenceCredential, input.loopback.capabilityCredential];
+        let binary: string;
+        try {
+          binary = resolveBinary();
+        } catch (error) {
+          throw new Error(boundOpenCodeDiagnostic(errorText(error), secrets));
+        }
+        let clientModule: OpenCodeClientModule;
+        try {
+          if (deadline.workRemainingMs() <= 0)
+            throw new NativeDeadlineError('OpenCode open preparation timed out.');
+          clientModule = await nativeDeadline(
+            'client loading',
+            loadClient(),
+            deadline.workRemainingMs()
+          );
+        } catch (error) {
+          throw new Error(
+            boundOpenCodeDiagnostic(
+              error instanceof NativeDeadlineError ? errorText(error) : missingClientMessage(error),
+              secrets
+            )
+          );
+        }
+        return supervise(
+          input,
+          binary,
+          clientModule,
+          spawnServer,
+          stopTimeoutMs,
+          rpcTimeoutMs,
+          dependencies.interruptTimeoutMs ?? Number.POSITIVE_INFINITY,
+          deadline
         );
-      const secrets = [input.loopback.inferenceCredential, input.loopback.capabilityCredential];
-      let binary: string;
-      try {
-        binary = resolveBinary();
-      } catch (error) {
-        throw new Error(boundOpenCodeDiagnostic(errorText(error), secrets));
-      }
-      let clientModule: OpenCodeClientModule;
-      try {
-        if (deadline.workRemainingMs() <= 0)
-          throw new NativeDeadlineError('OpenCode open preparation timed out.');
-        clientModule = await nativeDeadline(
-          'client loading',
-          loadClient(),
-          deadline.workRemainingMs()
-        );
-      } catch (error) {
-        throw new Error(
-          boundOpenCodeDiagnostic(
-            error instanceof NativeDeadlineError ? errorText(error) : missingClientMessage(error),
-            secrets
-          )
-        );
-      }
-      return supervise(
-        input,
-        binary,
-        clientModule,
-        spawnServer,
-        stopTimeoutMs,
-        rpcTimeoutMs,
-        dependencies.interruptTimeoutMs ?? Number.POSITIVE_INFINITY,
-        deadline
-      );
+      });
     },
   };
 }
@@ -278,7 +281,7 @@ async function supervise(
     resolveClosed = resolve;
   });
   let closing = false;
-  let turnActive = false;
+  let turnState: 'idle' | 'queued' | 'active' = 'idle';
   // Only the shared callback is retained; no adapter timeline or labels are owned here.
   let recordLifecycleFact: WorkerResidentTurnInput['recordLifecycleFact'];
   let exitObserved = false;
@@ -355,6 +358,7 @@ async function supervise(
 
   let stopPromise: Promise<boolean> | null = null;
   let closePromise: Promise<void> | null = null;
+  const startupAbort = new AbortController();
   const confirmStopped = (
     deadline = new LifecycleDeadline(LIFECYCLE_DEFAULTS.nativeStopMs)
   ): Promise<boolean> => {
@@ -395,9 +399,10 @@ async function supervise(
       LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
     )
   ): Promise<void> => {
+    startupAbort.abort(new Error('OpenCode binding closed before startup admission.'));
     if (!closePromise) {
       closing = true;
-      const activeAtClose = turnActive;
+      const activeAtClose = turnState === 'active';
       persistencePreservingClose = false;
       closePromise = (async () => {
         // On 2.0.22 --stdio EOF returns normally from serve and runs scoped finalizers,
@@ -553,7 +558,7 @@ async function supervise(
         if (!proved.reference || !sessionId) {
           throw new Error('OpenCode resume did not prove the native conversation.');
         }
-        if (turnActive) throw new Error('OpenCode binding already has an active Turn.');
+        if (turnState !== 'idle') throw new Error('OpenCode binding already has an active Turn.');
         const routes = [...turn.allowedLlmRoutes].sort((a, b) => a.id.localeCompare(b.id));
         for (const route of routes) assertRoute(route, input.loopback.inferenceBaseUrl);
         // Advertisement can change without changing the native all-level declaration.
@@ -586,14 +591,8 @@ async function supervise(
             'OpenCode does not re-list tools at Turn start, so this supply change needs a successor AgentSession that resumes the native conversation.'
           );
         }
-        turnActive = true;
-        // MCP supply arrives only here; idle time after session.open is not preparation time.
-        const setupDeadline = new LifecycleDeadline(
-          LIFECYCLE_DEFAULTS.nativeOpenMs,
-          LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
-        );
-        const rpc: NativeRpc = (name, work) =>
-          nativeDeadline(name, work, setupDeadline.workRemainingMs(rpcTimeoutMs));
+        turnState = 'queued';
+        // The first Turn initializes deferred native services; queue time owns no RPC budget.
 
         let nativeWarnings = '';
         let nativeModels: string[] = [];
@@ -627,226 +626,255 @@ async function supervise(
           `${sessionId}:${turn.turnId}`
         );
         const originRef = runtimeOriginRef(turn.runtimeCapture.packageSnapshotId, sessionId);
-        try {
-          if (boundSupply === null) {
-            const native = await inspectNativeBindings(
-              client,
-              turn.workingDirectory,
-              configPath,
-              serverIds,
-              rpc
-            );
-            nativeWarnings = native.warnings;
-            nativeModels = native.models;
-            // The final inline native Skill source is separate from all authored roots.
-            // Populate it once before reload, including an explicitly empty selection.
-            for (const skill of turn.skillTargetPaths) {
-              if (basename(skill.id) !== skill.id || skill.id === '.' || skill.id === '..') {
-                throw new Error('OpenCode managed Skill id escapes its projection root.');
+        const prepare = async (): Promise<WorkerResidentTurn | undefined> => {
+          turnState = 'active';
+          const setupDeadline = new LifecycleDeadline(
+            LIFECYCLE_DEFAULTS.nativeOpenMs,
+            LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
+          );
+          const rpc: NativeRpc = (name, work) =>
+            nativeDeadline(name, work, setupDeadline.workRemainingMs(rpcTimeoutMs));
+          try {
+            if (boundSupply === null) {
+              const native = await inspectNativeBindings(
+                client,
+                turn.workingDirectory,
+                configPath,
+                serverIds,
+                rpc
+              );
+              nativeWarnings = native.warnings;
+              nativeModels = native.models;
+              // The final inline native Skill source is separate from all authored roots.
+              // Populate it once before reload, including an explicitly empty selection.
+              for (const skill of turn.skillTargetPaths) {
+                if (basename(skill.id) !== skill.id || skill.id === '.' || skill.id === '..') {
+                  throw new Error('OpenCode managed Skill id escapes its projection root.');
+                }
+                symlinkSync(skill.targetPath, join(directories.skillsDir, skill.id), 'dir');
               }
-              symlinkSync(skill.targetPath, join(directories.skillsDir, skill.id), 'dir');
             }
-          }
-          if (boundRoutes === null) {
-            // Explicit configuration and location.reload are supported by the pin. Reload
-            // rebuilds services in this same host; it neither creates nor replaces a session.
-            const config = serverConfig(
-              directories.pluginDir,
-              directories.skillsDir,
-              routes,
-              nativeModels
+            if (boundRoutes === null) {
+              // Explicit configuration and location.reload are supported by the pin. Reload
+              // rebuilds services in this same host; it neither creates nor replaces a session.
+              const config = serverConfig(
+                directories.pluginDir,
+                directories.skillsDir,
+                routes,
+                nativeModels
+              );
+              writeSecret(configPath, JSON.stringify(config));
+              await rpc('location.reload catalog', client.location.reload());
+              boundRoutes = routeKey;
+            }
+            if (boundSupply === null) {
+              // Move initializes the destination services. Configure that location
+              // before prompting, keeping native and managed MCP in its own registry.
+              await rpc(
+                'session.move',
+                client.session.move({ directory: turn.workingDirectory, sessionID: sessionId })
+              );
+              // Move is itself a native inbox operation. Drain it before recording the
+              // prompt boundary, so its idle event cannot settle the admitted Turn.
+              await rpc('session.wait after move', client.session.wait({ sessionID: sessionId }));
+              await syncMcpServers(
+                client,
+                serverIds,
+                input.loopback.capabilityBaseUrl,
+                turn.workingDirectory,
+                directories.loopbackDir,
+                rpc,
+                setupDeadline
+              );
+              boundSupply = supplyKey;
+            }
+            const catalog = await rpc(
+              'model.list catalog',
+              client.model.list({ location: { directory: turn.workingDirectory } })
             );
-            writeSecret(configPath, JSON.stringify(config));
-            await rpc('location.reload catalog', client.location.reload());
-            boundRoutes = routeKey;
-          }
-          if (boundSupply === null) {
-            // Move initializes the destination services. Configure that location
-            // before prompting, keeping native and managed MCP in its own registry.
-            await rpc(
-              'session.move',
-              client.session.move({ directory: turn.workingDirectory, sessionID: sessionId })
+            const actual = catalog.data
+              .filter((model) => model.providerID === OPENCODE_PROVIDER_ID && model.enabled)
+              .map((model) => model.id)
+              .sort();
+            if (
+              JSON.stringify(actual) !== JSON.stringify(routes.map((route) => route.model).sort())
+            ) {
+              throw new Error('OpenCode native catalog does not match the admitted model set.');
+            }
+            const previousSelection = await rpc(
+              'session.get before model selection',
+              client.session.get({ sessionID: sessionId })
             );
-            // Move is itself a native inbox operation. Drain it before recording the
-            // prompt boundary, so its idle event cannot settle the admitted Turn.
-            await rpc('session.wait after move', client.session.wait({ sessionID: sessionId }));
-            await syncMcpServers(
-              client,
-              serverIds,
-              input.loopback.capabilityBaseUrl,
-              turn.workingDirectory,
-              directories.loopbackDir,
-              rpc,
-              setupDeadline
+            assertSessionInfo(previousSelection, sessionId);
+            const selectingEffort = reasoning && effort !== undefined;
+            if (
+              selectingEffort ||
+              previousSelection.model?.providerID !== OPENCODE_PROVIDER_ID ||
+              previousSelection.model?.id !== turn.llmRoute.model
+            ) {
+              await rpc(
+                'session.switchModel',
+                client.session.switchModel({
+                  sessionID: sessionId,
+                  model: {
+                    providerID: OPENCODE_PROVIDER_ID,
+                    id: turn.llmRoute.model,
+                    ...(selectingEffort ? { variant: effort } : {}),
+                  },
+                })
+              );
+              await rpc(
+                'session.wait after model selection',
+                client.session.wait({ sessionID: sessionId })
+              );
+            }
+            const selected = await rpc(
+              'session.get selected model',
+              client.session.get({ sessionID: sessionId })
             );
-            boundSupply = supplyKey;
-          }
-          const catalog = await rpc(
-            'model.list catalog',
-            client.model.list({ location: { directory: turn.workingDirectory } })
-          );
-          const actual = catalog.data
-            .filter((model) => model.providerID === OPENCODE_PROVIDER_ID && model.enabled)
-            .map((model) => model.id)
-            .sort();
-          if (
-            JSON.stringify(actual) !== JSON.stringify(routes.map((route) => route.model).sort())
-          ) {
-            throw new Error('OpenCode native catalog does not match the admitted model set.');
-          }
-          const previousSelection = await rpc(
-            'session.get before model selection',
-            client.session.get({ sessionID: sessionId })
-          );
-          assertSessionInfo(previousSelection, sessionId);
-          const selectingEffort = reasoning && effort !== undefined;
-          if (
-            selectingEffort ||
-            previousSelection.model?.providerID !== OPENCODE_PROVIDER_ID ||
-            previousSelection.model?.id !== turn.llmRoute.model
-          ) {
-            await rpc(
-              'session.switchModel',
-              client.session.switchModel({
-                sessionID: sessionId,
-                model: {
-                  providerID: OPENCODE_PROVIDER_ID,
-                  id: turn.llmRoute.model,
-                  ...(selectingEffort ? { variant: effort } : {}),
-                },
+            if (selectingEffort && selected.model?.variant !== effort)
+              throw new Error('OpenCode effort selection was not proved.');
+            const effective = ReasoningEffortSchema.safeParse(selected.model?.variant);
+            reasoningEffortDiagnostic = effective.success ? effective.data : 'unknown';
+            assertSessionInfo(selected, sessionId);
+            // Full permission is the default; preserve authored denies from the native agent.
+            const agent = await rpc(
+              'agent.get permissions',
+              client.agent.get({
+                agentID: selected.agent ?? 'build',
+                location: { directory: turn.workingDirectory },
               })
             );
             await rpc(
-              'session.wait after model selection',
-              client.session.wait({ sessionID: sessionId })
+              'session.update permissions',
+              client.session.update({
+                sessionID: sessionId,
+                permissions: [
+                  { action: '*', resource: '*', effect: 'allow' },
+                  ...agent.data.permissions.filter((rule) => rule.effect === 'deny'),
+                ],
+              })
             );
-          }
-          const selected = await rpc(
-            'session.get selected model',
-            client.session.get({ sessionID: sessionId })
-          );
-          if (selectingEffort && selected.model?.variant !== effort)
-            throw new Error('OpenCode effort selection was not proved.');
-          const effective = ReasoningEffortSchema.safeParse(selected.model?.variant);
-          reasoningEffortDiagnostic = effective.success ? effective.data : 'unknown';
-          assertSessionInfo(selected, sessionId);
-          // Full permission is the default; preserve authored denies from the native agent.
-          const agent = await rpc(
-            'agent.get permissions',
-            client.agent.get({
-              agentID: selected.agent ?? 'build',
-              location: { directory: turn.workingDirectory },
-            })
-          );
-          await rpc(
-            'session.update permissions',
-            client.session.update({
-              sessionID: sessionId,
-              permissions: [
-                { action: '*', resource: '*', effect: 'allow' },
-                ...agent.data.permissions.filter((rule) => rule.effect === 'deny'),
-              ],
-            })
-          );
 
-          if (
-            selected.model?.providerID !== OPENCODE_PROVIDER_ID ||
-            selected.model.id !== turn.llmRoute.model
-          ) {
-            throw new Error('OpenCode native preferred model selection was not proved.');
-          }
-          const previous = await listMessages(client, sessionId, rpc);
-          if (publishedBoundary) assertPublishedBoundary(publishedBoundary, previous);
-          before = new Set(previous.map((message) => message.id));
-          await nativeDeadline(
-            'structural preparation',
-            (async () => {
+            if (
+              selected.model?.providerID !== OPENCODE_PROVIDER_ID ||
+              selected.model.id !== turn.llmRoute.model
+            ) {
+              throw new Error('OpenCode native preferred model selection was not proved.');
+            }
+            const previous = await listMessages(client, sessionId, rpc);
+            if (publishedBoundary) assertPublishedBoundary(publishedBoundary, previous);
+            before = new Set(previous.map((message) => message.id));
+            await nativeDeadline(
+              'structural preparation',
+              (async () => {
+                await capture.emit(sourceRef, {
+                  kind: 'coverage',
+                  runtimeOriginRef: originRef,
+                  family: 'primary-content',
+                  coverage:
+                    turn.runtimeCapture.captureCoverage.value === 'on' ? 'collecting' : 'off',
+                });
+                if (captureAbandoned) return;
+                await capture.emit(sourceRef, {
+                  kind: 'origin',
+                  runtimeOriginRef: originRef,
+                  phase: 'started',
+                });
+              })(),
+              setupDeadline.workRemainingMs()
+            );
+            promptStartedAt = Date.now();
+            promptAttempted = true;
+            nativeTerminal = undefined;
+            const admitted = await rpc(
+              'session.prompt',
+              client.session.prompt({ sessionID: sessionId, text: turn.turnInput })
+            );
+            if (typeof admitted.id !== 'string' || admitted.id.length === 0) {
+              throw new Error('OpenCode prompt admission did not return an identity.');
+            }
+            promptId = admitted.id;
+            // The admitted prompt now starts an actual correlated-terminal proof attempt.
+            nativeTerminal = false;
+          } catch (error) {
+            turnState = 'idle';
+            const failure = new Error(boundOpenCodeDiagnostic(errorText(error), secretValues));
+            if (!promptAttempted) {
+              captureAbandoned = true;
+              // No prompt was submitted. Reuse the qualified EOF drain and its retained close
+              // promise, so a clean setup refusal remains closable without mistaking exit for flush.
+              try {
+                await closeHost(setupDeadline);
+              } catch (cleanupError) {
+                return surfaceUnprovedOpenCodeTurn(
+                  new Error(
+                    boundOpenCodeDiagnostic(
+                      `${failure.message}; ${errorText(cleanupError)}`,
+                      secretValues
+                    )
+                  ),
+                  confirmAgain
+                );
+              }
+              throw failure;
+            }
+            // A submitted prompt may already be accepted. Confirmed stop can normalize its
+            // failed settlement, but cannot erase that attempt through a clean refusal.
+            const stopped = await confirmStopped(setupDeadline);
+            try {
+              await capture.emit(sourceRef, {
+                kind: 'origin',
+                runtimeOriginRef: originRef,
+                phase: 'unknown',
+              });
               await capture.emit(sourceRef, {
                 kind: 'coverage',
                 runtimeOriginRef: originRef,
                 family: 'primary-content',
-                coverage: turn.runtimeCapture.captureCoverage.value === 'on' ? 'collecting' : 'off',
+                coverage: 'unavailable',
+                reason: 'collector-failed',
               });
-              if (captureAbandoned) return;
               await capture.emit(sourceRef, {
-                kind: 'origin',
+                kind: 'coverage',
                 runtimeOriginRef: originRef,
-                phase: 'started',
+                family: 'primary-content',
+                coverage: 'ended',
               });
-            })(),
-            setupDeadline.workRemainingMs()
-          );
-          promptStartedAt = Date.now();
-          promptAttempted = true;
-          nativeTerminal = undefined;
-          const admitted = await rpc(
-            'session.prompt',
-            client.session.prompt({ sessionID: sessionId, text: turn.turnInput })
-          );
-          if (typeof admitted.id !== 'string' || admitted.id.length === 0) {
-            throw new Error('OpenCode prompt admission did not return an identity.');
-          }
-          promptId = admitted.id;
-          // The admitted prompt now starts an actual correlated-terminal proof attempt.
-          nativeTerminal = false;
-        } catch (error) {
-          turnActive = false;
-          const failure = new Error(boundOpenCodeDiagnostic(errorText(error), secretValues));
-          if (!promptAttempted) {
-            captureAbandoned = true;
-            // No prompt was submitted. Reuse the qualified EOF drain and its retained close
-            // promise, so a clean setup refusal remains closable without mistaking exit for flush.
-            try {
-              await closeHost(setupDeadline);
-            } catch (cleanupError) {
-              return surfaceUnprovedOpenCodeTurn(
-                new Error(
-                  boundOpenCodeDiagnostic(
-                    `${failure.message}; ${errorText(cleanupError)}`,
-                    secretValues
-                  )
-                ),
-                confirmAgain
-              );
+            } catch (captureError) {
+              return surfaceUnprovedOpenCodeTurn(captureError, confirmAgain);
             }
-            throw failure;
+            if (stopped || exitObserved) {
+              return {
+                settled: Promise.resolve({
+                  ...failedResult(failure.message, secretValues),
+                  nativeEvidence: nativeEvidence(),
+                }),
+                interrupt: async () => undefined,
+              };
+            }
+            childState = 'unknown';
+            return surfaceUnprovedOpenCodeTurn(failure, confirmAgain);
           }
-          // A submitted prompt may already be accepted. Confirmed stop can normalize its
-          // failed settlement, but cannot erase that attempt through a clean refusal.
-          const stopped = await confirmStopped(setupDeadline);
-          try {
-            await capture.emit(sourceRef, {
-              kind: 'origin',
-              runtimeOriginRef: originRef,
-              phase: 'unknown',
-            });
-            await capture.emit(sourceRef, {
-              kind: 'coverage',
-              runtimeOriginRef: originRef,
-              family: 'primary-content',
-              coverage: 'unavailable',
-              reason: 'collector-failed',
-            });
-            await capture.emit(sourceRef, {
-              kind: 'coverage',
-              runtimeOriginRef: originRef,
-              family: 'primary-content',
-              coverage: 'ended',
-            });
-          } catch (captureError) {
-            return surfaceUnprovedOpenCodeTurn(captureError, confirmAgain);
+          return undefined;
+        };
+        try {
+          let refused: WorkerResidentTurn | undefined;
+          if (boundSupply === null || boundRoutes === null) {
+            refused = await nativeStartupAdmission.run(
+              prepare,
+              turn.signal
+                ? AbortSignal.any([turn.signal, startupAbort.signal])
+                : startupAbort.signal
+            );
+          } else {
+            refused = await prepare();
           }
-          if (stopped || exitObserved) {
-            return {
-              settled: Promise.resolve({
-                ...failedResult(failure.message, secretValues),
-                nativeEvidence: nativeEvidence(),
-              }),
-              interrupt: async () => undefined,
-            };
-          }
-          childState = 'unknown';
-          return surfaceUnprovedOpenCodeTurn(failure, confirmAgain);
+          if (refused) return refused;
+        } catch (error) {
+          // Queued cancellation has made no native request and needs no failed-start drain.
+          turnState = 'idle';
+          throw error;
         }
         let interruptDeadline: LifecycleDeadline | undefined;
         let nativePhase: RuntimeFact['phase'] = 'unknown';
@@ -979,7 +1007,7 @@ async function supervise(
             return { ...result, nativeEvidence: nativeEvidence() };
           })
           .finally(() => {
-            turnActive = false;
+            turnState = 'idle';
           });
         settled.catch(() => undefined);
         return {
@@ -1002,7 +1030,7 @@ async function supervise(
                   );
                 throw error;
               });
-            if (collected || !turnActive) return Promise.resolve();
+            if (collected || turnState !== 'active') return Promise.resolve();
             interruptDeadline = deadline;
             interruptPromise = nativeDeadline(
               'interruption proof',

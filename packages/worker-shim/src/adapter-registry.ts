@@ -136,6 +136,8 @@ export interface WorkerResidentOpenInput {
 
 /** Per-Turn input for one resident binding, resolved from the Turn's own AEP. */
 export interface WorkerResidentTurnInput {
+  /** Cancels queued cold startup; admitted native work keeps its existing interrupt owner. */
+  readonly signal?: AbortSignal;
   /** Shared value-free recorder for native events and host exit evidence unavailable to the Harness. */
   readonly recordLifecycleFact?: TurnLifecycleRecorder;
   /** The package's unique preferred LLM route selected by the Harness. */

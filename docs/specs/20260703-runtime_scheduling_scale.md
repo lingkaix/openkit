@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: topology
-updated: 2026-10-06
+updated: 2026-10-15
 ---
 # Runtime Scheduling And Scale
 
@@ -71,6 +71,8 @@ The private execution attempt is Core's grant for one bounded Turn. [Durable Sch
 
 The aggregate active-Turn bound of a Sandbox is authored deployment configuration, with a current default of 20. It bounds simultaneous work rather than replacing the Sandbox's CPU, memory, disk, process, and other resource limits. A capacity refusal names the exhausted declared bound or the missing adapter proof; a count below the configured bound is not proof of available resources. No additional lower fixed active-Turn cap may be introduced merely to simplify implementation. Values follow [the numeric-default ruling](../decisions/20261002-specification_numeric_values_are_defaults.md).
 
+The Worker Shim admits native cold starts through one bounded FIFO stage shared by its runtime adapters. The stage includes deferred first-Turn native service initialization. The current default admits two simultaneous cold starts. This startup bound is separate from the default of 20 active Turns. This protects native startup RPC deadlines on constrained hosts under the [engineer decision in #245](https://github.com/lingkaix/openkit/issues/245#issuecomment-6183280161). Queue waiting does not consume native preparation or per-request deadlines; those budgets begin after startup admission. Queue waiting does not pause or extend the absolute Turn attempt deadline or NanoHost liveness gates. A cancelled or interrupted queued Turn leaves without native launch. Startup capacity returns after native acceptance or failed-start cleanup; running Turns and warm reuse do not hold it. This stage has no durable records, restart recovery, or automatic retry. Lost Turn authority cancels queued startup through the existing control path. Unknown native cleanup retains its existing fence.
+
 Thread-level confidentiality inside a shared Sandbox is not provided. Threads sharing a Sandbox can read each other's files. Thread/runtime directories prevent accidental path collisions; they are not a confidentiality or filesystem security boundary. Do not rely on directory separation for cross-Thread confidentiality, and do not infer isolation from successful concurrency probes.
 
 `maxOpenSessions` bounds retained native contexts in a Harness, including idle contexts. `maxActiveTurns` bounds simultaneous Turns across distinct AgentSessions in that Harness; each AgentSession has at most one active Turn. Positive declared Harness bounds must be proved by its adapter and runtime. The Sandbox bounds Harness count, aggregate open contexts and active Turns, CPU, memory, disk, processes, network, and other backend-enforceable resources. The adapter refuses submission when any applicable bound lacks current proved capacity. Counts are backend-private occupancy, not another Core grant.
@@ -133,6 +135,7 @@ The configured NanoHost, shared Runtime Epoch, one NanoHost transport session, p
 ## Testing Strategy / Acceptance Criteria
 
 - L1 proves one configured backend id for local and remote deployment, exact Harness compatibility, declared/proved positive open-session and active-Turn bounds, aggregate Sandbox bounds, duplicate rejection, absolute-deadline/revocation gates and unchanged NanoHost heartbeat/startup gates, exact Core process-key adoption, and separate native residency/Turn exclusion release.
+- L1 proves twenty simultaneous starts under a constrained startup bound, the peak startup count, fresh native RPC budgets after queue delay, and queued cancellation without launch.
 - L1 retains recurring queued-occurrence bounds, admitted/running plus one waiting occurrence, distinct schedules sharing a Thread under attempt single-flight, and no trigger-local parallelism or post-acceptance deadline cancellation.
 - L1 proves fresh per-Turn authority/AEP/context/attempt checks, no Goal-aware pin writer, and the same worker-side `session.open`/`turn.start` carriage. The port changes Core orchestration, not NanoHost Rust or native protocol behavior.
 - L2 proves scoped control credentials, lineage, process hash, and sequence at the attempt boundary and no second Core capacity grant.

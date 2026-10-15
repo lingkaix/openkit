@@ -17,6 +17,7 @@ import type {
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
+import { nativeStartupAdmission } from '../native-startup.js';
 import { validateTurnReasoningEffort } from '../reasoning-effort.js';
 import { containTurnLifecycleRecorder } from '../turn-timeline.js';
 import {
@@ -396,73 +397,78 @@ export class PiResidentBinding implements WorkerResidentSession {
     hostCommand: readonly string[],
     options: PiResidentAdapterOptions = {}
   ): Promise<PiResidentBinding> {
-    const deadline = new LifecycleDeadline(
-      LIFECYCLE_DEFAULTS.nativeOpenMs,
-      LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
-    );
-    assertLoopback(input.loopback);
-    const resume = input.resumeReference
-      ? await piDeadline(
-          proveResumeReference(input.resumeReference, input.stateRoot),
-          deadline.workRemainingMs(),
-          'Pi resume proof timed out.'
-        )
-      : null;
-    await piDeadline(
-      initializePiNativeHome(input.stateRoot),
-      deadline.workRemainingMs(),
-      'Pi native home preparation timed out.'
-    );
-    if (hostCommand.length === 0 || !hostCommand[0]) {
-      throw new PiAdapterError('Pi host command is missing.');
-    }
-    const child = spawn(hostCommand[0], hostCommand.slice(1), {
-      env: childEnvironment(input.environment, [
-        input.loopback.inferenceCredential,
-        input.loopback.capabilityCredential,
-      ]),
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
-    });
-    const piped = child.stdio[3];
-    const connected = piped !== null && piped !== undefined && typeof piped !== 'number';
-    const binding = new PiResidentBinding(
-      child,
-      input,
-      resume,
-      connected ? (piped as Duplex) : new PassThrough(),
-      options
-    );
-    if (!connected) {
-      await binding.#releaseOrSurface(new PiAdapterError('Pi host channel is missing.'), deadline);
-      return binding;
-    }
-    try {
-      await piDeadline(
-        binding.#waitUntilSpawned(),
-        deadline.workRemainingMs(),
-        'Pi host spawn timed out.'
+    return nativeStartupAdmission.run(async () => {
+      const deadline = new LifecycleDeadline(
+        LIFECYCLE_DEFAULTS.nativeOpenMs,
+        LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
       );
-    } catch (error) {
-      await binding.#releaseOrSurface(error, deadline);
-      return binding;
-    }
-    options.observeChannel?.(binding.#channel);
-    // Cold SDK loading belongs to open, before the bounded stop exchange can begin.
-    // No state-changing request has been sent; require the fresh-host refusal, not a closing refusal.
-    try {
-      const readiness = await binding.#request({ op: 'inspect' }, deadline.workRemainingMs());
-      if (
-        readiness.ok ||
-        readiness.error.code !== 'invalid_state' ||
-        readiness.error.message !== 'Host is not open.'
-      ) {
-        throw new PiAdapterError('Pi unopened host readiness was not proved.');
+      assertLoopback(input.loopback);
+      const resume = input.resumeReference
+        ? await piDeadline(
+            proveResumeReference(input.resumeReference, input.stateRoot),
+            deadline.workRemainingMs(),
+            'Pi resume proof timed out.'
+          )
+        : null;
+      await piDeadline(
+        initializePiNativeHome(input.stateRoot),
+        deadline.workRemainingMs(),
+        'Pi native home preparation timed out.'
+      );
+      if (hostCommand.length === 0 || !hostCommand[0]) {
+        throw new PiAdapterError('Pi host command is missing.');
       }
-    } catch (error) {
-      await binding.#releaseOrSurface(error, deadline);
-    }
-    return binding;
+      const child = spawn(hostCommand[0], hostCommand.slice(1), {
+        env: childEnvironment(input.environment, [
+          input.loopback.inferenceCredential,
+          input.loopback.capabilityCredential,
+        ]),
+        shell: false,
+        stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
+      });
+      const piped = child.stdio[3];
+      const connected = piped !== null && piped !== undefined && typeof piped !== 'number';
+      const binding = new PiResidentBinding(
+        child,
+        input,
+        resume,
+        connected ? (piped as Duplex) : new PassThrough(),
+        options
+      );
+      if (!connected) {
+        await binding.#releaseOrSurface(
+          new PiAdapterError('Pi host channel is missing.'),
+          deadline
+        );
+        return binding;
+      }
+      try {
+        await piDeadline(
+          binding.#waitUntilSpawned(),
+          deadline.workRemainingMs(),
+          'Pi host spawn timed out.'
+        );
+      } catch (error) {
+        await binding.#releaseOrSurface(error, deadline);
+        return binding;
+      }
+      options.observeChannel?.(binding.#channel);
+      // Cold SDK loading belongs to open, before the bounded stop exchange can begin.
+      // No state-changing request has been sent; require the fresh-host refusal, not a closing refusal.
+      try {
+        const readiness = await binding.#request({ op: 'inspect' }, deadline.workRemainingMs());
+        if (
+          readiness.ok ||
+          readiness.error.code !== 'invalid_state' ||
+          readiness.error.message !== 'Host is not open.'
+        ) {
+          throw new PiAdapterError('Pi unopened host readiness was not proved.');
+        }
+      } catch (error) {
+        await binding.#releaseOrSurface(error, deadline);
+      }
+      return binding;
+    });
   }
 
   /** Compaction entry ids from the latest settlement. */

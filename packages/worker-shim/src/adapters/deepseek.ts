@@ -44,6 +44,7 @@ import type {
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
+import { nativeStartupAdmission } from '../native-startup.js';
 import { validateTurnReasoningEffort } from '../reasoning-effort.js';
 import { RuntimeSemanticCapture, runtimeOriginRef, runtimeRef } from '../runtime-capture.js';
 import { containTurnLifecycleRecorder } from '../turn-timeline.js';
@@ -252,16 +253,18 @@ export function classifyDeepSeekStop(input: {
  * Harness fences; they are not reported as a clean refusal.
  */
 async function openDeepSeekSession(input: WorkerResidentOpenInput): Promise<WorkerResidentSession> {
-  const deadline = new LifecycleDeadline(
-    LIFECYCLE_DEFAULTS.nativeOpenMs,
-    LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
-  );
-  // Filesystem initialization completes before refusal so it cannot race a successor's home writes.
-  await initializeNativeHome(input.stateRoot);
-  if (deadline.workRemainingMs() <= 0) throw new Error('DeepSeek open did not prepare.');
-  const session = new DeepSeekSession(input);
-  if (input.resumeReference) await session.proveResume(deadline);
-  return session;
+  return nativeStartupAdmission.run(async () => {
+    const deadline = new LifecycleDeadline(
+      LIFECYCLE_DEFAULTS.nativeOpenMs,
+      LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
+    );
+    // Filesystem initialization completes before refusal so it cannot race a successor's home writes.
+    await initializeNativeHome(input.stateRoot);
+    if (deadline.workRemainingMs() <= 0) throw new Error('DeepSeek open did not prepare.');
+    const session = new DeepSeekSession(input);
+    if (input.resumeReference) await session.proveResume(deadline);
+    return session;
+  });
 }
 
 /** Closed positive proofs of native cleanup, owned by one resident binding. */
@@ -275,6 +278,7 @@ class DeepSeekSession implements WorkerResidentSession {
   private agent: ClientSideConnection | null = null;
   private child: ChildProcessWithoutNullStreams | null = null;
   private closing = false;
+  private readonly startupAbort = new AbortController();
   /** Confirmed admission cleanup ends this binding; recovery belongs to a successor. */
   private ended = false;
   private generation = 0;
@@ -366,6 +370,7 @@ class DeepSeekSession implements WorkerResidentSession {
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
     this.closing = true;
+    this.startupAbort.abort(new Error('DeepSeek binding is closing.'));
     this.closePromise = this.finishClose();
     return this.closePromise;
   }
@@ -534,13 +539,29 @@ class DeepSeekSession implements WorkerResidentSession {
       release = resolve;
     });
     try {
-      return await this.admitTurn(
-        input,
-        new LifecycleDeadline(
-          LIFECYCLE_DEFAULTS.nativeOpenMs,
-          LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
-        )
-      );
+      const admit = () =>
+        this.admitTurn(
+          input,
+          new LifecycleDeadline(
+            LIFECYCLE_DEFAULTS.nativeOpenMs,
+            LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
+          )
+        );
+      // A running resume proof host needs a slot only when its static supply requires replacement.
+      const cold =
+        !this.processIsLive() ||
+        (!this.exitUnproved &&
+          !this.unknownIdentity &&
+          !this.supplyMounted &&
+          this.proofHostNeedsReplacement(routePatch(input, this.input.loopback)));
+      return await (cold
+        ? nativeStartupAdmission.run(
+            admit,
+            input.signal
+              ? AbortSignal.any([input.signal, this.startupAbort.signal])
+              : this.startupAbort.signal
+          )
+        : admit());
     } finally {
       this.preparationDeadline = null;
       release();
@@ -578,10 +599,7 @@ class DeepSeekSession implements WorkerResidentSession {
       if (this.sessionId === null) {
         await this.createSession(input, patch);
       } else if (!this.supplyMounted) {
-        if (
-          !sameList(patch.skillTargetPaths, this.record?.skillTargetPaths ?? []) ||
-          !sameCatalog(patch.models, this.record?.models ?? [])
-        ) {
+        if (this.proofHostNeedsReplacement(patch)) {
           await this.replaceProofHost(patch);
         }
         await this.mountInitialSupply(input);
@@ -662,6 +680,14 @@ class DeepSeekSession implements WorkerResidentSession {
     } catch (error) {
       return this.abandonUnaccepted(error, deadline);
     }
+  }
+
+  /** Whether the first Turn needs a cold replacement of its already-running resume proof host. */
+  private proofHostNeedsReplacement(patch: LoopbackPatch): boolean {
+    return (
+      !sameList(patch.skillTargetPaths, this.record?.skillTargetPaths ?? []) ||
+      !sameCatalog(patch.models, this.record?.models ?? [])
+    );
   }
 
   /**

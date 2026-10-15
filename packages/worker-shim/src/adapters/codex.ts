@@ -17,6 +17,7 @@ import type {
 } from '../adapter-registry.js';
 import { CodexRuntimeCapture } from '../codex-runtime-capture.js';
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
+import { nativeStartupAdmission } from '../native-startup.js';
 import { validateTurnReasoningEffort } from '../reasoning-effort.js';
 import { containTurnLifecycleRecorder } from '../turn-timeline.js';
 import {
@@ -1428,37 +1429,41 @@ export async function openCodexResidentSession(
   input: WorkerResidentOpenInput,
   launch?: CodexResidentLaunch
 ): Promise<WorkerResidentSession> {
-  const secrets = [input.loopback.inferenceCredential, input.loopback.capabilityCredential];
-  if (secrets.some((secret) => secret.length === 0)) {
-    throw new Error('Codex requires both loopback credentials before native work.');
-  }
-  assertLaunchEnvironment(input.environment, secrets);
-  const resumeThreadId = input.resumeReference ? decodeThreadId(input.resumeReference) : null;
-  await mkdir(input.stateRoot, { recursive: true, mode: 0o700 });
-  const child = (
-    launch?.spawnProcess ??
-    ((binary, args, options) =>
-      spawn(binary, [...args], {
-        ...options,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      }) as ChildProcessWithoutNullStreams)
-  )(launch?.binaryPath ?? CODEX_PRODUCTION_BINARY, codexLaunchArguments(), {
-    cwd: input.stateRoot,
-    env: codexChildEnvironment(input.environment, input.stateRoot),
+  return nativeStartupAdmission.run(async () => {
+    const secrets = [input.loopback.inferenceCredential, input.loopback.capabilityCredential];
+    if (secrets.some((secret) => secret.length === 0)) {
+      throw new Error('Codex requires both loopback credentials before native work.');
+    }
+    assertLaunchEnvironment(input.environment, secrets);
+    const resumeThreadId = input.resumeReference ? decodeThreadId(input.resumeReference) : null;
+    await mkdir(input.stateRoot, { recursive: true, mode: 0o700 });
+    const child = (
+      launch?.spawnProcess ??
+      ((binary, args, options) =>
+        spawn(binary, [...args], {
+          ...options,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        }) as ChildProcessWithoutNullStreams)
+    )(launch?.binaryPath ?? CODEX_PRODUCTION_BINARY, codexLaunchArguments(), {
+      cwd: input.stateRoot,
+      env: codexChildEnvironment(input.environment, input.stateRoot),
+    });
+    const session = new CodexResidentSession(
+      input,
+      child,
+      launch?.stopGraceMs ?? CODEX_STOP_GRACE_MS,
+      launch
+    );
+    const deadline = new LifecycleDeadline(
+      launch?.setupTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeOpenMs
+    );
+    try {
+      await controlDeadline(session.establish(resumeThreadId, deadline), deadline.remainingMs());
+    } catch (error) {
+      await session.failOpen(error, resumeThreadId, secrets);
+    }
+    return session;
   });
-  const session = new CodexResidentSession(
-    input,
-    child,
-    launch?.stopGraceMs ?? CODEX_STOP_GRACE_MS,
-    launch
-  );
-  const deadline = new LifecycleDeadline(launch?.setupTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeOpenMs);
-  try {
-    await controlDeadline(session.establish(resumeThreadId, deadline), deadline.remainingMs());
-  } catch (error) {
-    await session.failOpen(error, resumeThreadId, secrets);
-  }
-  return session;
 }
 
 /** Resident Codex App Server v2 adapter. One process per binding; close does not delete `CODEX_HOME`. */

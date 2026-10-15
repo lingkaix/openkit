@@ -15,7 +15,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { HarnessSuccessBodySchemas } from '@openkit/worker-protocol';
+import {
+  HarnessSuccessBodySchemas,
+  WorkerControlHeartbeatRequestSchema,
+} from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   WorkerAdapterResult,
@@ -27,6 +30,7 @@ import type {
 import { WorkerControlClient, type WorkerControlFetch } from './control-client.js';
 import { runWorkerHarness, WorkerHarness } from './harness.js';
 import type { SandboxIntegrationClient } from './integration-client.js';
+import { NativeStartupAdmission } from './native-startup.js';
 import { WorkerTranscriptWriter } from './transcript.js';
 import { initializeSessionWorkspace, runResidentTurn } from './turn.js';
 import { TURN_TIMELINE_LABELS, TurnTimeline } from './turn-timeline.js';
@@ -1728,6 +1732,120 @@ describe('Worker Harness resident AgentSessions', () => {
     expect(integration.finalStatuses.map((status) => status.body.status)).toEqual([
       outcome === 'completed' ? 'completed' : 'failed',
     ]);
+  });
+
+  it.each([
+    'interrupt',
+    'authority-loss',
+  ] as const)('keeps valid heartbeats live while queued and cancels on %s without native launch', async (cancellation) => {
+    const admission = new NativeStartupAdmission(1);
+    const release = observation();
+    const occupied = admission.run(() => release.promise);
+    const queued = observation();
+    const integration = fakeIntegration();
+    const fetch = integration.client.workerControlFetch;
+    const statuses: string[] = [];
+    let authorityLost = false;
+    vi.spyOn(integration.client, 'workerControlFetch').mockImplementation((async (url, init) => {
+      if (url.endsWith('/heartbeat')) {
+        const heartbeat = WorkerControlHeartbeatRequestSchema.parse(JSON.parse(init.body));
+        statuses.push(heartbeat.body.status);
+        if (authorityLost)
+          return {
+            ok: false,
+            status: 403,
+            text: async () => JSON.stringify({ code: 'worker_control_lease_not_live' }),
+          };
+      }
+      return fetch(url, init);
+    }) satisfies WorkerControlFetch);
+    const f = harnessFixture({ integration });
+    const open = f.fake.adapter.openSession;
+    const launch = vi.fn();
+    vi.spyOn(f.fake.adapter, 'openSession').mockImplementation(async (input) => {
+      const binding = await open(input);
+      return {
+        ...binding,
+        startTurn: (turnInput) => {
+          queued.resolve();
+          return admission.run(async () => {
+            launch();
+            return binding.startTurn(turnInput);
+          }, turnInput.signal);
+        },
+      };
+    });
+    await f.open('as-queued');
+    const clock = controlSchedulingTime();
+    const start = f.start('as-queued', 'turn-queued');
+    try {
+      await queued.promise;
+      expect(statuses).toEqual(['starting']);
+      await clock.advance(3_000);
+      expect(statuses).toEqual(['starting', 'running', 'running', 'running']);
+      expect(launch).not.toHaveBeenCalled();
+      if (cancellation === 'interrupt') {
+        expect(
+          await f.send('turn.interrupt', {
+            ...f.selector('as-queued'),
+            turnId: 'turn-queued',
+            leaseId: 'lease-turn-queued',
+            purpose: 'interrupt',
+          })
+        ).toMatchObject({ disposition: 'succeeded', body: { state: 'interrupted' } });
+      } else {
+        authorityLost = true;
+        await clock.advance(1_000);
+      }
+      expect(await start).toMatchObject({
+        disposition: 'refused',
+        body: { reasonCode: 'dependency_failed' },
+      });
+      if (cancellation === 'interrupt')
+        expect(integration.finalStatuses.at(-1)?.body.status).toBe('interrupted');
+      else expect(integration.finalStatuses).toHaveLength(0);
+    } finally {
+      release.resolve();
+      await occupied;
+      await start;
+      clock.restore();
+    }
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('preserves an admitted preparation failure when interruption arrives before its rejection', async () => {
+    const f = harnessFixture();
+    const entered = observation();
+    const release = observation();
+    const failure = new Error('Native preparation failed.');
+    const open = f.fake.adapter.openSession;
+    vi.spyOn(f.fake.adapter, 'openSession').mockImplementation(async (input) => ({
+      ...(await open(input)),
+      startTurn: async () => {
+        entered.resolve();
+        await release.promise;
+        throw failure;
+      },
+    }));
+    await f.open('as-preparing');
+    const start = f.start('as-preparing', 'turn-preparing');
+    await entered.promise;
+    const interruption = f.send('turn.interrupt', {
+      ...f.selector('as-preparing'),
+      turnId: 'turn-preparing',
+      leaseId: 'lease-turn-preparing',
+      purpose: 'interrupt',
+    });
+    release.resolve();
+    await interruption;
+    expect(await start).toMatchObject({
+      disposition: 'refused',
+      body: { reasonCode: 'dependency_failed' },
+    });
+    expect(f.integration.finalStatuses.at(-1)?.body).toMatchObject({
+      status: 'failed',
+      diagnostics: { native: 'Native preparation failed.' },
+    });
   });
 
   it.each([

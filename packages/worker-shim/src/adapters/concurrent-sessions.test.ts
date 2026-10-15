@@ -268,11 +268,17 @@ it.each([
       });
     }
     expect(inputs.every((input) => input.workingDirectory === sharedWork)).toBe(true);
-    // Stage cold startup within unchanged RPC bounds while holding all twenty Turns for overlap and addressed interruption.
-    for (const [index, session] of sessions.entries()) {
-      turns.push(await session.startTurn(inputs[index]!));
-    }
-    const handles = turns;
+    const started = await Promise.allSettled(
+      sessions.map(async (session, index) => {
+        const turn = await session.startTurn(inputs[index]!);
+        turns.push(turn);
+        return turn;
+      })
+    );
+    const handles = started.map((result) => {
+      if (result.status === 'rejected') throw result.reason;
+      return result.value;
+    });
     await Promise.all(entered.map((entry) => entry.promise));
     expect(requests.filter((request) => !request.auxiliary)).toHaveLength(names.length);
     expect(heldResponses.size).toBe(names.length);

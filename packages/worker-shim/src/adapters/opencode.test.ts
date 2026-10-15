@@ -32,6 +32,7 @@ import { WORKER_ADAPTERS } from '../adapter-registry.js';
 import { WorkerHarness } from '../harness.js';
 import type { SandboxIntegrationClient } from '../integration-client.js';
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
+import { nativeStartupAdmission } from '../native-startup.js';
 import { type RuntimeObservation, RuntimeSemanticCapture } from '../runtime-capture.js';
 import {
   type SyntheticCapability,
@@ -131,6 +132,58 @@ describe('OpenCode resident adapter', () => {
     });
     return { adapter, child, client, layout, creds, environment: () => environment };
   }
+
+  it.each([
+    'interrupt',
+    'close',
+  ] as const)('removes deferred cold service startup from admission on %s', async (action) => {
+    const f = timelineFixture('new');
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    Object.assign(f.child, {
+      stdin: Object.assign(new EventEmitter(), {
+        end: () => {
+          f.child.stdout?.emit('end');
+          f.child.stderr?.emit('end');
+          Object.assign(f.child, { exitCode: 0 });
+          f.child.emit('exit', 0, null);
+          f.child.emit('close', 0, null);
+        },
+      }),
+    });
+    const inspect = vi.spyOn(f.client.config, 'get');
+    const prompt = vi.spyOn(f.client.session, 'prompt');
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const occupied = Array.from({ length: LIFECYCLE_DEFAULTS.nativeStartupConcurrency }, () =>
+      nativeStartupAdmission.run(() => held)
+    );
+    const controller = new AbortController();
+    const starting = session.startTurn({
+      ...turnInput(f.layout, f.creds, 'queued', 'prompt-model'),
+      signal: controller.signal,
+    });
+    const rejected = expect(starting).rejects.toThrow(
+      action === 'interrupt' ? 'queued Turn interrupted' : 'closed before startup admission'
+    );
+    try {
+      await expect(
+        session.startTurn(turnInput(f.layout, f.creds, 'duplicate', 'prompt-model'))
+      ).rejects.toThrow('already has an active Turn');
+      if (action === 'interrupt') controller.abort(new Error('queued Turn interrupted'));
+      else await expect(session.close()).resolves.toBeUndefined();
+      await rejected;
+      expect(inspect).not.toHaveBeenCalled();
+      expect(prompt).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await Promise.all(occupied);
+    }
+    expect(inspect).not.toHaveBeenCalled();
+    expect(prompt).not.toHaveBeenCalled();
+  });
 
   it('preserves correlated succeeded idle with native length as length', async () => {
     const f = timelineFixture('new');

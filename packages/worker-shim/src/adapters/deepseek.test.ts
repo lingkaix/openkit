@@ -30,6 +30,7 @@ import type {
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
+import { nativeStartupAdmission } from '../native-startup.js';
 import type { RuntimeObservation } from '../runtime-capture.js';
 import {
   failDeepSeekAdmission,
@@ -331,6 +332,122 @@ describe('deepseek permission and bounds', () => {
 });
 
 describe('deepseek resident adapter', () => {
+  it.each([
+    'interrupt',
+    'close',
+  ] as const)('removes a cold Turn from startup admission on %s without spawning', async (action) => {
+    const inference = await startSyntheticInference(() => ({ text: 'must not launch' }));
+    closers.push(() => inference.close());
+    const roots = tempRoots();
+    const session = await open(roots, inference, null);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const occupied = Array.from({ length: LIFECYCLE_DEFAULTS.nativeStartupConcurrency }, () =>
+      nativeStartupAdmission.run(() => held)
+    );
+    const controller = new AbortController();
+    const pending = session.startTurn({
+      ...turn(roots, inference, 'queued input', [], 'queued'),
+      signal: controller.signal,
+    });
+    const rejected = expect(pending).rejects.toThrow(
+      action === 'close' ? 'closing' : 'interrupted'
+    );
+    try {
+      expect(session.childState()).toBe('absent');
+      if (action === 'close') await session.close();
+      else controller.abort(new Error('Turn interrupted'));
+      await rejected;
+    } finally {
+      release();
+      await Promise.all(occupied);
+    }
+    expect(session.childState()).toBe('absent');
+    expect(existsSync(join(roots.control, 'deepseek-host.pid'))).toBe(false);
+    await expect(session.close()).resolves.toBeUndefined();
+  });
+
+  it(
+    'starts native preparation after a long queued wait with its full owned budget',
+    async () => {
+      const inference = await startSyntheticInference(() => ({ text: 'fresh startup budget' }));
+      closers.push(() => inference.close());
+      const roots = tempRoots();
+      const session = await open(roots, inference, null);
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const occupied = Array.from({ length: LIFECYCLE_DEFAULTS.nativeStartupConcurrency }, () =>
+        nativeStartupAdmission.run(() => held)
+      );
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+      try {
+        const pending = session.startTurn(
+          turn(roots, inference, 'queued input', [], 'queued-budget')
+        );
+        // Exceeds the RPC ceiling and leaves less than the native preparation cleanup tail.
+        await vi.advanceTimersByTimeAsync(LIFECYCLE_DEFAULTS.nativeOpenMs - 1_000);
+        expect(session.childState()).toBe('absent');
+        release();
+        await Promise.all(occupied);
+        const active = await pending;
+        expect(await active.settled).toMatchObject({
+          status: 'completed',
+          assistantText: 'fresh startup budget',
+        });
+      } finally {
+        release();
+        await Promise.all(occupied);
+        vi.useRealTimers();
+      }
+    },
+    LIVE
+  );
+
+  it(
+    'does not queue an already-running resume host behind cold startups',
+    async () => {
+      const inference = await startSyntheticInference(() => ({ text: 'warm native result' }));
+      closers.push(() => inference.close());
+      const roots = tempRoots();
+      const first = await open(roots, inference, null);
+      await (await first.startTurn(turn(roots, inference, 'seed', [], 'warm-seed'))).settled;
+      const handle = await first.nativeHandle();
+      if (handle.state !== 'ready') throw new Error('Missing warm resume reference.');
+      await first.close();
+      const resumed = await open(roots, inference, handle.reference);
+      const pid = readFileSync(join(roots.control, 'deepseek-host.pid'), 'utf8');
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const occupied = Array.from({ length: LIFECYCLE_DEFAULTS.nativeStartupConcurrency }, () =>
+        nativeStartupAdmission.run(() => held)
+      );
+      const controller = new AbortController();
+      try {
+        const pending = resumed.startTurn({
+          ...turn(roots, inference, 'warm input', [], 'warm-next'),
+          signal: controller.signal,
+        });
+        // This signal owns only queued cold startup; admitted work keeps its native interrupt owner.
+        controller.abort(new Error('Warm work must not wait for cold startup capacity.'));
+        expect(await (await pending).settled).toMatchObject({
+          status: 'completed',
+          assistantText: 'warm native result',
+        });
+        expect(readFileSync(join(roots.control, 'deepseek-host.pid'), 'utf8')).toBe(pid);
+      } finally {
+        release();
+        await Promise.all(occupied);
+      }
+    },
+    LIVE
+  );
+
   it(
     'ignores null-id terminal evidence before a prompt while preserving a correlated reply',
     async () => {
