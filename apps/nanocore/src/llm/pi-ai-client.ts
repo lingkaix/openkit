@@ -572,13 +572,15 @@ export class PiAiGatewayClient {
     assertChatRequestAdmission(request, false);
 
     const { knownCost, model } = this.resolveModel(provider, request.model, models);
+    const context = this.toContext(request, model);
+    const declaredTools = new Set(context.tools?.map((tool) => tool.name));
     let observedFailure: Error | undefined;
     const response = await raceProviderWithSignal(
       () =>
         completeObservedModel(
           models,
           model,
-          this.toContext(request, model),
+          context,
           this.toStreamOptions(provider, request, transport, model),
           transport,
           (message, failure) => {
@@ -592,7 +594,7 @@ export class PiAiGatewayClient {
 
     if (observedFailure) throw observedFailure;
 
-    return this.toChatCompletionResponse(response, request.model);
+    return this.toChatCompletionResponse(response, request.model, declaredTools);
   }
 
   /**
@@ -628,12 +630,15 @@ export class PiAiGatewayClient {
       transport.deadline,
       transport.onProviderHandoff
     );
-    const events = inference.stream(this.toContext(request, model));
+    const context = this.toContext(request, model);
+    const declaredTools = new Set(context.tools?.map((tool) => tool.name));
+    const events = inference.stream(context);
     const iterator = inference.iterator(events[Symbol.asyncIterator]());
 
     return this.toChatCompletionSseStream(
       iterator,
       request.model,
+      declaredTools,
       (usage) => publishObservedUsage(onUsage, usage, model, knownCost),
       signal,
       (reason) => {
@@ -1380,11 +1385,13 @@ export class PiAiGatewayClient {
    *
    * @param message pi-ai assistant message.
    * @param requestModel Model requested by the caller.
+   * @param declaredTools Callable names admitted for this request, excluding history.
    * @returns OpenAI-compatible Chat Completions response.
    */
   private toChatCompletionResponse(
     message: AssistantMessage,
-    requestModel: string
+    requestModel: string,
+    declaredTools: ReadonlySet<string>
   ): OpenAICompatibleChatCompletionResponse {
     const usage = toChatUsage(message.usage);
     const content = message.content
@@ -1394,7 +1401,7 @@ export class PiAiGatewayClient {
     const reasoning = message.content
       .flatMap((block) => (block.type === 'thinking' && !block.redacted ? [block.thinking] : []))
       .join('');
-    const toolCalls = toOpenAIChatToolCalls(message.content);
+    const toolCalls = toOpenAIChatToolCalls(message.content, declaredTools);
 
     return {
       id: `chatcmpl_${message.responseId ?? `pi_${message.timestamp}`}`,
@@ -1425,6 +1432,7 @@ export class PiAiGatewayClient {
    *
    * @param iterator pi-ai assistant event iterator.
    * @param requestModel Model requested by the caller.
+   * @param declaredTools Callable names admitted for this request, excluding history.
    * @param onUsage Optional observer for the provider-native terminal usage payload.
    * @param signal Combined caller and downstream cancellation signal.
    * @param abortUpstream Cancels provider work when the downstream stream stops early.
@@ -1435,6 +1443,7 @@ export class PiAiGatewayClient {
   private toChatCompletionSseStream(
     iterator: AsyncIterator<AssistantMessageEvent>,
     requestModel: string,
+    declaredTools: ReadonlySet<string>,
     onUsage: ((usage: unknown) => void) | undefined,
     signal: AbortSignal,
     abortUpstream: (reason?: unknown) => void,
@@ -1453,6 +1462,7 @@ export class PiAiGatewayClient {
       number,
       { readonly index: number; readonly id: string; readonly name: string }
     >();
+    const pendingToolCalls = new Set<number>();
     const thinkingSent = new Map<number, { text: string; published: number }>();
     const textSent = new Map<number, string>();
     const toolArguments = new Map<number, string>();
@@ -1530,10 +1540,10 @@ export class PiAiGatewayClient {
       index: number,
       toolCall: ToolCall
     ) => {
-      if (!isDefaultResponsesNamespace(toolCall.namespace))
-        throw new GatewayUnsupportedFeatureError('pi-ai Chat tool namespace');
+      assertChatToolCall(toolCall, declaredTools);
+      pendingToolCalls.delete(index);
       const sent = toolArguments.get(index) ?? '';
-      const completed = JSON.stringify(toolCall.arguments ?? {});
+      const completed = JSON.stringify(toolCall.arguments);
       let equivalent = false;
       if (sent) {
         try {
@@ -1683,6 +1693,14 @@ export class PiAiGatewayClient {
               const toolCall = readStreamToolCall(event.partial, event.contentIndex);
               if (!isDefaultResponsesNamespace(toolCall.namespace))
                 throw new GatewayUnsupportedFeatureError('pi-ai Chat tool namespace');
+              // Stock can expose a provisional identity before toolcall_end supplies it.
+              // Only a complete current callable identity can be published as a call start.
+              if (!toolCall.id || !declaredTools.has(toolCall.name)) {
+                pendingToolCalls.add(event.contentIndex);
+                continue;
+              }
+              if (toolIndexes.has(event.contentIndex))
+                throw new GatewayUnsupportedFeatureError('pi-ai Chat conflicting tool identity');
               const [callId] = splitResponsesToolCallId(toolCall.id);
               if (toolIds.has(callId))
                 throw new GatewayUnsupportedFeatureError('pi-ai Chat duplicate tool identity');
@@ -1717,14 +1735,15 @@ export class PiAiGatewayClient {
             }
 
             if (event.type === 'toolcall_delta') {
-              toolArguments.set(
-                event.contentIndex,
-                (toolArguments.get(event.contentIndex) ?? '') + event.delta
-              );
+              if (pendingToolCalls.has(event.contentIndex)) continue;
               const toolIndex = toolIndexes.get(event.contentIndex)?.index;
               if (toolIndex === undefined) {
                 throw new GatewayUnsupportedFeatureError('pi-ai chat tool call stream');
               }
+              toolArguments.set(
+                event.contentIndex,
+                (toolArguments.get(event.contentIndex) ?? '') + event.delta
+              );
               drainThinking(controller);
               controller.enqueue(
                 encoder.encode(
@@ -1783,6 +1802,11 @@ export class PiAiGatewayClient {
             }
 
             if (event.type === 'done') {
+              // A successful terminal cannot abandon a call whose start was already observed.
+              for (const index of [...toolIndexes.keys(), ...pendingToolCalls]) {
+                if (event.message.content[index]?.type !== 'toolCall')
+                  throw new GatewayUnsupportedFeatureError('pi-ai Chat incomplete tool call');
+              }
               event.message.content.forEach((block, index) => {
                 if (block.type === 'thinking')
                   enqueueThinking(controller, index, block, block.thinking);
@@ -4167,15 +4191,18 @@ function toPiAssistantToolCalls(message: OpenAICompatibleChatMessage) {
  * Converts pi-ai tool-call content into OpenAI-compatible Chat Completions tool calls.
  *
  * @param content pi-ai assistant content blocks.
+ * @param declaredTools Callable names admitted for this request, excluding history.
  * @returns OpenAI-compatible tool calls.
  */
-function toOpenAIChatToolCalls(content: AssistantMessage['content']) {
+function toOpenAIChatToolCalls(
+  content: AssistantMessage['content'],
+  declaredTools: ReadonlySet<string>
+) {
   const ids = new Set<string>();
   return content
     .filter((block) => block.type === 'toolCall')
     .map((block) => {
-      if (!isDefaultResponsesNamespace(block.namespace))
-        throw new GatewayUnsupportedFeatureError('pi-ai Chat tool namespace');
+      assertChatToolCall(block, declaredTools);
       const [id] = splitResponsesToolCallId(block.id);
       if (ids.has(id))
         throw new GatewayUnsupportedFeatureError('pi-ai Chat duplicate tool identity');
@@ -4183,9 +4210,19 @@ function toOpenAIChatToolCalls(content: AssistantMessage['content']) {
       return {
         id,
         type: 'function',
-        function: { name: block.name, arguments: JSON.stringify(block.arguments ?? {}) },
+        function: { name: block.name, arguments: JSON.stringify(block.arguments) },
       };
     });
+}
+
+/** Validates a completed Chat call against current declarations without promoting history or repairing arguments. */
+function assertChatToolCall(block: ToolCall, declaredTools: ReadonlySet<string>): void {
+  if (!isDefaultResponsesNamespace(block.namespace))
+    throw new GatewayUnsupportedFeatureError('pi-ai Chat tool namespace');
+  if (typeof block.id !== 'string' || !block.id || !declaredTools.has(block.name))
+    throw new GatewayUnsupportedFeatureError('pi-ai Chat undeclared provider tool output');
+  if (!readRecord(block.arguments))
+    throw new GatewayUnsupportedFeatureError('pi-ai Chat tool arguments');
 }
 
 /**
@@ -4205,7 +4242,7 @@ function readStreamToolCall(message: AssistantMessage, contentIndex: number) {
 
 /**
  * Validates native function syntax before conversion can supply empty arguments or accept objects.
- * Declared history and Chat keep their existing normalization contract.
+ * Declared history and Chat input keep their existing normalization contract.
  * @param value Undeclared historical or completed Provider function arguments.
  */
 function assertNativeResponsesFunctionArguments(value: unknown): void {
