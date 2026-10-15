@@ -73,6 +73,33 @@ function gatewayConfig(): GatewayConfig {
 }
 
 describe('resolveAgentSetup', () => {
+  it('blocks unsupported resource limits without dropping authored intent or exposing it', () => {
+    const manifest = agentConfig({ resources: { 'private-resource-fixture': { limit: 2 } } });
+    const original = structuredClone(manifest);
+    const dependencies = { gatewayConfig: gatewayConfig(), providerRegistry: providerRegistry() };
+    const result = resolveAgentSetup(manifest, dependencies);
+
+    expect(result.setup).toBeNull();
+    expect(result.diagnostics).toEqual([
+      {
+        agentId: manifest.id,
+        code: 'agent_setup.unsupported_resources',
+        message: `Agent ${manifest.id} declares resource limits that the Worker cannot enforce; leave resources empty or absent.`,
+        severity: 'error',
+      },
+    ]);
+    expect(manifest).toEqual(original);
+    expect(JSON.stringify(result.diagnostics)).not.toContain('private-resource-fixture');
+
+    for (const resources of [undefined, {}]) {
+      const corrected = resolveAgentSetup(agentConfig({ resources }), dependencies);
+      expect(corrected.diagnostics).toEqual([]);
+      expect(corrected.setup).not.toBeNull();
+    }
+    expect(result.setup).toBeNull();
+    expect(manifest).toEqual(original);
+  });
+
   it.each([
     'api-key',
     'subscription',
