@@ -1,4 +1,5 @@
 import {
+  RUNTIME_FRAME_MAX_BYTES,
   type RuntimeCaptureInput,
   type RuntimeFact,
   RuntimeSemanticCapture,
@@ -7,11 +8,18 @@ import {
 } from '../runtime-capture.js';
 import type { PiTurnProjection } from './pi.js';
 
+/** Bounds waiting closures even when native events contain very little content. */
+const CAPTURE_PENDING_EVENTS = 256;
+
 /** Pi's completed SDK events mapped into the existing structural and restricted-content collector. */
 export class PiRuntimeCapture {
   private readonly semantic: RuntimeSemanticCapture;
   private readonly sourceRef: string;
   private queue: Promise<void> = Promise.resolve();
+  private pending: Array<{ work: () => Promise<void>; bytes: number }> = [];
+  private pendingBytes = 0;
+  private draining = false;
+  private limited = false;
   private abandoned = false;
   private assistantCount = 0;
 
@@ -55,7 +63,27 @@ export class PiRuntimeCapture {
 
   /** Consumes only positively selected outward assistant and native tool events; reasoning is excluded. */
   public observe(value: unknown): void {
-    void this.enqueue(async () => {
+    if (this.abandoned || this.limited) return;
+    if (
+      isRecord(value) &&
+      typeof value.type === 'string' &&
+      value.type !== 'tool_execution_start' &&
+      value.type !== 'tool_execution_end' &&
+      !(
+        value.type === 'message_end' &&
+        isRecord(value.message) &&
+        value.message.role === 'assistant'
+      )
+    )
+      return;
+    let bytes: number;
+    try {
+      bytes = Buffer.byteLength(JSON.stringify(value) ?? '', 'utf8');
+    } catch {
+      this.admit(() => this.gap('malformed-frame'), 0);
+      return;
+    }
+    this.admit(async () => {
       if (!isRecord(value) || typeof value.type !== 'string') {
         await this.gap('malformed-frame');
         return;
@@ -125,12 +153,12 @@ export class PiRuntimeCapture {
         );
       }
       await this.semantic.flushCompleted();
-    }).catch(() => undefined);
+    }, bytes);
   }
 
   /** Records a native omitted frame as an explicit collection gap. */
   public omitted(): void {
-    void this.enqueue(() => this.gap('limit-exceeded')).catch(() => undefined);
+    this.admit(() => this.gap('limit-exceeded'), 0);
   }
 
   /** Joins observed events and the validated original terminal text, independent of the trimmed public result. */
@@ -149,18 +177,54 @@ export class PiRuntimeCapture {
         family: 'primary-content',
         coverage: 'ended',
       });
+      // The adapter already records rejected finalization as incomplete without changing native settlement.
+      if (this.limited) throw new Error('Pi runtime capture backlog exceeded its limit.');
     });
   }
 
   /** Preserves accepted records and prevents later collector calls after a lifecycle deadline expires. */
   public abandon(): void {
     this.abandoned = true;
+    this.pending = [];
+    this.pendingBytes = 0;
+  }
+
+  /** Bounds waiting native work; overflow reserves one fixed gap and drops the rest of this Turn's events. */
+  private admit(work: () => Promise<void>, bytes: number): void {
+    if (this.abandoned || this.limited) return;
+    if (
+      this.pending.length >= CAPTURE_PENDING_EVENTS ||
+      this.pendingBytes + bytes > RUNTIME_FRAME_MAX_BYTES
+    ) {
+      this.limited = true;
+      this.pending.push({ work: () => this.gap('limit-exceeded'), bytes: 0 });
+    } else {
+      this.pending.push({ work, bytes });
+      this.pendingBytes += bytes;
+    }
+    if (this.draining) return;
+    this.draining = true;
+    // One drain owns the waiting closures. Abandonment can release them while an entered sink remains held.
+    void this.enqueue(async () => {
+      try {
+        while (!this.abandoned && this.pending.length) {
+          const next = this.pending.shift()!;
+          this.pendingBytes -= next.bytes;
+          await next.work();
+        }
+      } finally {
+        this.draining = false;
+      }
+    }).catch(() => undefined);
   }
 
   /** Serializes facts at the existing source-order boundary and retains a failed publication as failure. */
   private enqueue(work: () => Promise<void>): Promise<void> {
     this.queue = this.queue.then(() => (this.abandoned ? undefined : work()));
-    this.queue.catch(() => undefined);
+    void this.queue.catch(() => {
+      this.pending = [];
+      this.pendingBytes = 0;
+    });
     return this.queue;
   }
 
