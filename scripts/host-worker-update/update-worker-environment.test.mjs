@@ -219,13 +219,22 @@ async function fixture(t, platform) {
       return controls.replacement();
     },
     archiveAttribution: async () => structuredClone(host.archiveAttribution),
-    inspectHost: async (selected, { nonce }) => {
+    runOperator: async (selected, { stdin }) => {
+      const { nonce } = JSON.parse(stdin);
       assert.equal(selected, target);
       return {
-        ...structuredClone(sampled.inspection),
-        nonce,
-        physicalEpoch: sampled.physicalEpoch,
-        machineIdentityDigest: sampled.machineIdentityDigest,
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stderr: Buffer.alloc(0),
+        stdout: Buffer.from(
+          JSON.stringify({
+            ...structuredClone(sampled.inspection),
+            nonce,
+            physicalEpoch: sampled.physicalEpoch,
+            machineIdentityDigest: sampled.machineIdentityDigest,
+          })
+        ),
       };
     },
     call: async (operation, input) => {
@@ -370,7 +379,7 @@ for (const [name, change] of [
   [
     'missing host observation',
     (f) => {
-      f.io.inspectHost = undefined;
+      f.io.runOperator = undefined;
     },
   ],
   [
@@ -1087,10 +1096,10 @@ for (const [field, value] of [
 
 test('rejects a replayed successful inspection before activation without a second challenge', async (t) => {
   const f = await fixture(t);
-  const inspect = f.io.inspectHost;
+  const inspect = f.io.runOperator;
   let retained;
   let attempts = 0;
-  f.io.inspectHost = async (...args) => {
+  f.io.runOperator = async (...args) => {
     attempts += 1;
     if (retained) return structuredClone(retained);
     retained = await inspect(...args);
@@ -1107,9 +1116,9 @@ test('rejects a replayed successful inspection before activation without a secon
 for (const stage of ['before prepare', 'before activate']) {
   test(`stops an unknown live-inspection outcome ${stage} without retry or raw evidence`, async (t) => {
     const f = await fixture(t);
-    const inspect = f.io.inspectHost;
+    const inspect = f.io.runOperator;
     let attempts = 0;
-    f.io.inspectHost = async (...args) => {
+    f.io.runOperator = async (...args) => {
       attempts += 1;
       if (attempts === (stage === 'before prepare' ? 1 : 2))
         throw Error('Bearer syntheticunknownprobevalue');

@@ -218,7 +218,7 @@ export async function updateWorkerEnvironment(target, params, evidenceDir, io) {
         'call',
         'deploymentRecord',
         'currentGrant',
-        'inspectHost',
+        'runOperator',
         'archiveAttribution',
         'replacementObservation',
       ].every((key) => typeof io?.[key] === 'function'),

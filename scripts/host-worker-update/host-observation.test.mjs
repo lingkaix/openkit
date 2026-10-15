@@ -72,14 +72,25 @@ function fixture() {
       if (storedReads === 2) value.observedAt = '2026-10-15T00:00:01Z';
       return controls.stored(value, storedReads);
     },
-    inspectHost: async (selected, request) => {
+    runOperator: async (selected, invocation) => {
+      const request = JSON.parse(invocation.stdin);
       assert.equal(selected, target);
       assert.deepEqual(Object.keys(request), ['nonce']);
       assert.match(request.nonce, /^[a-f0-9]{64}$/);
       events.push('inspect');
       challenges.push(request.nonce);
       assert.equal(challenges.length, 1, 'one observation cannot retry host inspection');
-      return controls.inspection({ ...structuredClone(inspection), nonce: request.nonce });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stderr: Buffer.alloc(0),
+        stdout: Buffer.from(
+          JSON.stringify(
+            controls.inspection({ ...structuredClone(inspection), nonce: request.nonce })
+          )
+        ),
+      };
     },
   };
   return {

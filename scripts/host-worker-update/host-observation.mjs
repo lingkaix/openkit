@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import { NanoHostRuntimeTargetStatusResponseSchema } from '@openkit/app-api-schemas';
+import { parseTree } from 'jsonc-parser';
 import { z } from 'zod';
 import { canonical } from '../release-safety.mjs';
 import { verifyNanoHostRelease } from '../verify-nanohost-release.mjs';
@@ -20,8 +21,14 @@ import { verifyNanoHostRelease } from '../verify-nanohost-release.mjs';
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const processStamp = z.object({
   bootId: z.string().uuid(),
-  pid: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  startTimeTicks: z.string().regex(/^[1-9][0-9]*$/),
+  pid: z.number().int().positive().max(2_147_483_647),
+  startTimeTicks: z
+    .string()
+    .max(20)
+    .regex(/^[1-9][0-9]*$/)
+    .refine(
+      (value) => /^[1-9][0-9]{0,19}$/.test(value) && BigInt(value) <= 18_446_744_073_709_551_615n
+    ),
 });
 // P12 owns the public projection. Remove this local draft extension when its SHA lands.
 // Missing physicalEpoch must fail while producer implementations are pending; no old-response fallback exists.
@@ -129,7 +136,7 @@ export function admitHostObservation(raw, { binding, archiveAttribution, effecti
  * No unknown/unavailable result is retried and no prior nonce can answer this challenge.
  * @param {string} target Explicit HTTPS origin selected by retained operator binding.
  * @param {object} expected Retained machine, verified archive and accepted effective unit digest.
- * @param {object} io Public administrator caller and fixed nonce-only operator inspection adapter.
+ * @param {object} io Public administrator caller and bounded external operator command executor.
  * @returns {Promise<object>} Qualified private host evidence; never a live qualification verdict.
  */
 export async function observeOperatorHost(target, expected, io) {
@@ -149,7 +156,10 @@ export async function observeOperatorHost(target, expected, io) {
       before.ready && before.freshEmpty && before.predecessorFenced && before.physicalEpoch !== null
     );
     const nonce = randomBytes(32).toString('hex');
-    const live = admit(inspectionSchema, await io.inspectHost(target, { nonce }));
+    const live = admit(
+      inspectionSchema,
+      await invokeNanoHostInspection(target, { nonce }, io.runOperator)
+    );
     requireFact(live.nonce === nonce);
     const after = admit(StoredRuntimeTargetSchema, await io.call('nanohost.runtime-target', {}));
     requireFact(canonical(tuple(before)) === canonical(tuple(after)));
@@ -166,6 +176,109 @@ export async function observeOperatorHost(target, expected, io) {
     );
   } catch {
     throw new Error('Host observation unavailable; inspect before any new effect.');
+  }
+}
+
+/** Decode one strict UTF-8 JSON envelope without ambiguous duplicate properties. */
+function inspectionJson(output) {
+  requireFact(typeof output === 'string' || output instanceof Uint8Array);
+  const bytes = typeof output === 'string' ? Buffer.from(output, 'utf8') : output;
+  requireFact(bytes.byteLength > 0 && bytes.byteLength <= 16_384);
+  const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  const value = JSON.parse(text);
+  const tree = parseTree(text);
+  const visit = (node) => {
+    if (node.type === 'object') {
+      const keys = node.children.map((property) => property.children[0].value);
+      requireFact(new Set(keys).size === keys.length);
+    }
+    for (const child of node.children ?? []) visit(child);
+  };
+  visit(tree);
+  return value;
+}
+
+/**
+ * Invoke P02's fixed producer through the already authenticated external operator tool.
+ * The tool must bound collection and honor cancellation; this function never opens SSH or
+ * selects a local installed host. Its caller supplies the retained host binding as target.
+ * @param {string} target Explicit HTTPS origin bound to the external operator host session.
+ * @param {{nonce:string}} request Fresh nonce only; no command or host selectors are accepted.
+ * @param {Function} runOperator Bounded command executor on that authorized operator channel.
+ * @returns {Promise<object>} Stripped observed or closed unavailable producer envelope.
+ */
+export async function invokeNanoHostInspection(target, request, runOperator) {
+  let timer;
+  try {
+    const started = performance.now();
+    const url = new URL(target);
+    requireFact(
+      url.protocol === 'https:' && url.origin === target && !url.username && !url.password
+    );
+    const input = admit(z.strictObject({ nonce: digest }), request);
+    requireFact(typeof runOperator === 'function');
+    const controller = new AbortController();
+    const deadline = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error('Inspection deadline exceeded'));
+      }, 10_000);
+    });
+    const result = await Promise.race([
+      Promise.resolve().then(() =>
+        runOperator(target, {
+          command: ['/usr/lib/openkit/nanohost', 'inspect'],
+          stdin: JSON.stringify(input),
+          timeoutMs: 10_000,
+          maxStdoutBytes: 16_384,
+          maxStderrBytes: 256,
+          signal: controller.signal,
+        })
+      ),
+      deadline,
+    ]);
+    requireFact(
+      performance.now() - started < 10_000 &&
+        result?.exitCode === 0 &&
+        result.signal === null &&
+        result.timedOut === false
+    );
+    requireFact(
+      (typeof result.stderr === 'string' || result.stderr instanceof Uint8Array) &&
+        result.stderr.length === 0
+    );
+    const raw = inspectionJson(result.stdout);
+    const envelope =
+      raw?.outcome === 'observed'
+        ? admit(inspectionSchema, raw)
+        : admit(
+            z.object({
+              nonce: digest,
+              outcome: z.literal('unavailable'),
+              reason: z.enum([
+                'not-running',
+                'access-denied',
+                'connection-unavailable',
+                'process-changed',
+                'measurement-unavailable',
+                'unit-unavailable',
+              ]),
+            }),
+            raw
+          );
+    requireFact(envelope.nonce === input.nonce);
+    if (envelope.outcome === 'observed') {
+      requireFact(
+        canonical(envelope.coordinator) === canonical(envelope.executables.nanohost.process) &&
+          envelope.executables.gateway.process.bootId === envelope.coordinator.bootId &&
+          envelope.executables.gateway.process.pid !== envelope.coordinator.pid
+      );
+    }
+    return envelope;
+  } catch {
+    throw new Error('NanoHost inspection unavailable; inspect before any new effect.');
+  } finally {
+    clearTimeout(timer);
   }
 }
 
