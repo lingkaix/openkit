@@ -255,15 +255,6 @@ export function createAdministrationOperationImplementations(input: Administrati
                     : 'Administration requires an admitted logical model with responses and tool-calling capabilities.'
                 );
               }
-              if (!selection.logicalModel.contextManagement) {
-                return failedAdministrationTurn(
-                  store,
-                  turn.id,
-                  'context_compaction_unavailable',
-                  'Administration requires an admitted Tool-capable logical model with context policy.'
-                );
-              }
-
               const catalog = configuration(actor);
               const tools = createAdministrationTools({
                 configurationTools: createAdministrationConfigurationTools(
@@ -316,10 +307,6 @@ export function createAdministrationOperationImplementations(input: Administrati
                         logicalModelId: selection.logicalModel.id,
                         capabilities: selection.logicalModel.capabilities,
                         modelFamilyId: selection.logicalModel.modelFamilyId,
-                      },
-                      contextManagement: {
-                        ...selection.logicalModel.contextManagement,
-                        authority: 'openkit',
                       },
                       limits: selection.profile?.limits ?? DEFAULT_LIMITS,
                       signal: context.signal ?? new AbortController().signal,
