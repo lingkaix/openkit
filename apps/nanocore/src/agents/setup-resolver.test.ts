@@ -74,6 +74,90 @@ function gatewayConfig(): GatewayConfig {
 
 describe('resolveAgentSetup', () => {
   it.each([
+    false,
+    true,
+    undefined,
+  ])('uses a backup for setup only when failover is enabled: %s', (autoFailover) => {
+    const gateway = gatewayConfig();
+    const model = gateway.logicalModels[0]!;
+    const configured: GatewayConfig = {
+      ...gateway,
+      logicalModels: [
+        {
+          ...model,
+          ...(autoFailover !== undefined ? { routing: { autoFailover } } : {}),
+          routes: [
+            { ...model.routes[0]!, id: 'primary', providerProfileId: 'missing-provider' },
+            { ...model.routes[0]!, id: 'backup' },
+          ],
+        },
+      ],
+    };
+    const result = resolveAgentSetup(agentConfig(), {
+      gatewayConfig: configured,
+      providerRegistry: providerRegistry(),
+    });
+
+    if (autoFailover === false) {
+      expect(result.setup).toBeNull();
+      expect(result.diagnostics).toContainEqual(
+        expect.objectContaining({ code: 'agent_setup.logical_model_not_allowed' })
+      );
+    } else {
+      expect(result.diagnostics).toEqual([]);
+      expect(result.setup?.logicalModels.preferredLogicalModelId).toBe('reasoning');
+      expect(result.setup?.logicalModels.allowed[0]?.routes).toEqual([
+        expect.objectContaining({ id: 'primary', available: false }),
+        expect.objectContaining({ id: 'backup', available: true }),
+      ]);
+    }
+  });
+
+  it('excludes dormant-only supply from all and admits it when its primary returns', () => {
+    const gateway = gatewayConfig();
+    const model = gateway.logicalModels[0]!;
+    const configured: GatewayConfig = {
+      ...gateway,
+      logicalModels: [
+        model,
+        {
+          ...model,
+          id: 'primary-only',
+          routing: { autoFailover: false },
+          routes: [
+            { ...model.routes[0]!, id: 'primary', providerProfileId: 'restored-provider' },
+            { ...model.routes[0]!, id: 'backup' },
+          ],
+        },
+      ],
+    };
+    const manifest = agentConfig({
+      models: { preferredLogicalModelId: 'reasoning', allowedLogicalModelIds: 'all' },
+    });
+    const providers = providerRegistry();
+    const before = resolveAgentSetup(manifest, {
+      gatewayConfig: configured,
+      providerRegistry: providers,
+    });
+    expect(before.diagnostics).toEqual([]);
+    expect(before.setup?.logicalModels.allowed.map((entry) => entry.id)).toEqual(['reasoning']);
+
+    const after = resolveAgentSetup(manifest, {
+      gatewayConfig: configured,
+      providerRegistry: new ProviderRegistry([
+        ...providers.list(),
+        { ...providers.list()[0]!, id: 'restored-provider' },
+      ]),
+    });
+    expect(after.diagnostics).toEqual([]);
+    expect(after.setup?.logicalModels.allowed.map((entry) => entry.id)).toEqual([
+      'reasoning',
+      'primary-only',
+    ]);
+    expect(before.setup?.logicalModels.allowed.map((entry) => entry.id)).toEqual(['reasoning']);
+  });
+
+  it.each([
     '/usr/local/bin/node',
     '/usr/local/bin/openkit-worker-shim',
   ])('blocks setup before AEP construction when control binary %s is absent', (path) => {
