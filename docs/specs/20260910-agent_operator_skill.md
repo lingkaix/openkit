@@ -3,7 +3,7 @@ status: Accepted
 implementation: Partial
 kind: boundary
 date: "2026-09-10"
-updated: "2026-10-14"
+updated: "2026-10-15"
 ---
 # Agent Operator Skill
 
@@ -69,24 +69,38 @@ Acceptance requires a complete archive used from outside the checkout, resolvabl
 
 ### CLI command contract
 
-The first CLI exposes exactly these command families:
+The CLI exposes these command families and local discovery forms:
 
 ```text
+openkit --help
+openkit help [command]
 openkit doctor
-openkit ops search <query>
-openkit ops describe <operation-id>
+openkit ops search <query> [--schema]
+openkit ops describe <operation-id> [--schema]
 openkit ops call <operation-id> --input -
 ```
 
 `openkit doctor` reports separate service availability, product-work readiness, update readiness and maintenance safety. It reads authorized App diagnostics and the content-free App-update preflight. Unavailable evidence stays unknown and never becomes a ready claim. Execution-host readiness includes observation age and states that it is not a live probe. `freshEmpty` is not deployment-wide idleness. `openkit doctor` validates executable version, endpoint configuration, reachability, authentication availability, NanoCore readiness, and capability compatibility without invoking a mutating product operation; normal authentication last-use and audit recording may still occur.
 
-`openkit ops search` returns only concise matching operation metadata. Search must support operation id, capability group, and summary text.
+`openkit ops search` returns operation ids and one-line summaries by default. Search supports operation id, capability group, summary text, and bounded discovery aliases. Update, preflight, caller identity, connection, and version terms lead to the relevant existing operations. Aliases affect discovery only; they never create another operation identity or dispatch path. `--schema` explicitly requests the full shared schemas.
 
-`openkit ops describe` returns one operation's description, mutating flag, sensitivity metadata, required actor/capability summary, and JSON input schema.
+`openkit ops describe` returns one operation's description, mutating flag, sensitivity metadata, required actor/capability summary, and a compact input contract. The compact contract identifies required fields, accepted value kinds, and constraints without expanding nested schema internals by default. `--schema` returns the full shared JSON input schema. Both forms derive from the same definition.
 
 `openkit ops call` reads one strict flat JSON object from stdin, validates it against the shared operation schema, invokes the public client mapping, and writes one JSON result envelope. Flat means that path scope, query, and body fields share one top-level namespace instead of `params`, `query`, or `body` wrappers; nested product values explicitly required by the referenced schema remain valid. The catalog rejects unknown fields and maps the validated fields to the referenced Core Client method.
 
-The first implementation must not add a large tree of hand-authored convenience subcommands. Repeated real-agent mistakes may justify a later focused command, but only after usage evidence shows that search, describe, and call are insufficient.
+`--help`, `help`, and per-command `--help` are local, successful discovery commands. They name supported commands, show strict stdin JSON examples, and show the update sequence through search, describe, and call. Help requires no endpoint or credential and performs no network or product effect. Discovery and help retain the JSON envelope contract. These corrections address the observed operator failures in [#236](https://github.com/lingkaix/openkit/issues/236), under [the accepted owner alignment](../decisions/20261015-operator_cli_discovery_and_caller_read.md). They add no hand-authored business subcommand tree.
+
+### Current caller and retained-work read
+
+The definition-derived `caller.read` operation returns the authenticated caller's non-secret `userId` and `credential: { kind, scope }`. The credential fields project existing authentication facts and grant no new scope. They contain no credential value, contact information, credential location, or authentication payload. This read accepts no user selector and creates no principal or durable state.
+
+An optional exact `workspaceId` requests one content-free retained-work observation for a pre-existing Workspace owned by that caller. Omission returns caller metadata only. The optional `workspace` result contains `workspaceId`, actual `ownerUserId`, actual `membershipStatus`, the current `accessCause`, `observedAt`, and `counts: { threads, turns, items, artifacts }`. Counts cover only records currently readable by that caller under their existing source audiences. The operation refuses a missing, inaccessible, or other-owned Workspace without disclosing its content. It does not enumerate all administrator-readable Workspaces or provision a default Workspace. Repeated explicit reads can compare selected owned Workspaces before and after update; counts alone do not prove content equality or replace public reads of selected retained records.
+
+Existing Identity and credential owners define `kind` and `scope`; no new credential class is introduced. The membership projection is `active`, `removed`, or `null` when no relationship exists. `accessCause` distinguishes `membership` from `administrator`; administrator eligibility never changes actual ownership or membership into an owner role. Existing Workspace list and read results preserve that same distinction. [Multi-User Workspace System](20260715-multi_user_workspace_system.md#workspace-membership) owns these relationships, and [Core Permissions](../core/permissions.md#administrator-eligibility) owns administrator eligibility.
+
+Each read rechecks current authentication, credential limits, Workspace lifecycle, and source audiences. Revoked or expired credentials fail under their existing owner. Missing or unavailable count evidence returns a typed failure, never a fabricated zero. Restart recomputes from canonical records; there is no retained summary, continuity flag, or repair workflow. This is the minimal [#235](https://github.com/lingkaix/openkit/issues/235) projection accepted in [the owner alignment](../decisions/20261015-operator_cli_discovery_and_caller_read.md).
+
+Acceptance covers local help without credentials, compact discovery without nested schemas, full-schema opt-in, useful update aliases, and unchanged canonical invocation. Caller checks cover metadata-only omission, one explicitly selected owned Workspace, actual ownership distinct from administrator access, current audience-filtered counts, and rejection after revocation. Secret values and another user's private records must never enter any result or diagnostic.
 
 
 ### Output and error envelopes
@@ -121,7 +135,7 @@ A failed operation uses:
 }
 ```
 
-Every envelope includes `ok` and `command`. The `command` value is one of `doctor`, `ops.search`, `ops.describe`, or `ops.call`; `operation` is present only for `ops.call`, and `requestId` is present whenever the command issued or attempted a NanoCore request.
+Every envelope includes `ok` and `command`. The `command` value is one of `help`, `doctor`, `ops.search`, `ops.describe`, or `ops.call`; `operation` is present only for `ops.call`, and `requestId` is present whenever the command issued or attempted a NanoCore request.
 
 Diagnostics that are not part of the result envelope go to stderr and must remain redacted.
 
