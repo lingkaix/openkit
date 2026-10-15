@@ -24,6 +24,7 @@ import {
   closeSchedulerExecutionAttemptWithFence,
   isSchedulerExecutionBusyRefusal,
   listOpenSchedulerExecutionAttempts,
+  listSchedulerExecutionAttemptsByTurnId,
   markSchedulerExecutionAttemptClosing,
   requireSchedulerExecutionAttempt,
   type SchedulerExecutionAttemptRecord,
@@ -694,21 +695,56 @@ export function hasNanoHostAttemptPreEffectProof(coreDb: CoreDb, attemptId: stri
   );
 }
 
+/** The same absent native facts are required by individual and retained-sibling pre-effect proofs. */
+const absentNativeExecutionEvidenceSql = `last_accepted_heartbeat_at IS NULL
+  AND last_worker_sequence IS NULL AND worker_process_key_hash IS NULL
+  AND worker_control_token_hash IS NULL AND worker_inference_token_hash IS NULL
+  AND worker_capability_token_hash IS NULL`;
+
 /** Reads native evidence without treating a closed attempt or physical cleanup as proof of non-execution. */
 function hasNanoHostAttemptNoExecutionEvidence(
   coreDb: CoreDb,
   attempt: SchedulerExecutionAttemptRecord
 ): boolean {
   const proof = coreDb.sqlite
-    .prepare(`SELECT last_accepted_heartbeat_at, last_worker_sequence, worker_process_key_hash,
-      worker_control_token_hash, worker_inference_token_hash, worker_capability_token_hash
-      FROM scheduler_execution_attempts WHERE attempt_id = ?`)
-    .get(attempt.attemptId) as Record<string, string | number | null> | undefined;
+    .prepare(`SELECT 1 FROM scheduler_execution_attempts
+      WHERE attempt_id = ? AND ${absentNativeExecutionEvidenceSql}`)
+    .get(attempt.attemptId);
   const binding = coreDb.sqlite
     .prepare(`SELECT 1 FROM agent_session_runtime_bindings
       WHERE agent_session_id = ? OR current_turn_id = ? OR current_attempt_id = ? LIMIT 1`)
     .get(attempt.agentSessionId, attempt.turnId, attempt.attemptId);
-  return Boolean(proof && !binding && Object.values(proof).every((value) => value === null));
+  return Boolean(proof && !binding);
+}
+
+/** Rechecks retained busy siblings in batches so each pass preserves exclusion without per-sibling reads. */
+function hasNanoHostBusySiblingProofs(
+  coreDb: CoreDb,
+  attempt: SchedulerExecutionAttemptRecord
+): boolean {
+  const siblings = listSchedulerExecutionAttemptsByTurnId(coreDb, attempt.turnId).filter(
+    (sibling) => sibling.attemptId !== attempt.attemptId
+  );
+  if (siblings.some((sibling) => !isSchedulerExecutionBusyRefusal(sibling))) return false;
+  if (siblings.length === 0) return true;
+  const execution = coreDb.sqlite
+    .prepare(`SELECT 1 FROM scheduler_execution_attempts AS sibling
+      WHERE turn_id = ? AND attempt_id <> ?
+      AND (NOT (${absentNativeExecutionEvidenceSql}) OR EXISTS (
+        SELECT 1 FROM worker_backend_sessions AS backend WHERE backend.attempt_id = sibling.attempt_id
+      )) LIMIT 1`)
+    .get(attempt.turnId, attempt.attemptId);
+  if (execution) return false;
+  // Each identity set is selected once because per-sibling binding scans grow with history; closed or unreadable binding rows still block.
+  const binding = coreDb.sqlite
+    .prepare(`SELECT 1 FROM agent_session_runtime_bindings
+      WHERE current_turn_id = ? OR agent_session_id IN (
+        SELECT agent_session_id FROM scheduler_execution_attempts WHERE turn_id = ? AND attempt_id <> ?
+      ) OR current_attempt_id IN (
+        SELECT attempt_id FROM scheduler_execution_attempts WHERE turn_id = ? AND attempt_id <> ?
+      ) LIMIT 1`)
+    .get(attempt.turnId, attempt.turnId, attempt.attemptId, attempt.turnId, attempt.attemptId);
+  return !binding;
 }
 
 /**
@@ -885,9 +921,6 @@ async function settleTerminalFailedStart(
     ) {
       throw new Error('Failed-start product, admission or package lineage disagrees.');
     }
-    const attempts = coreDb.sqlite
-      .prepare('SELECT attempt_id AS attemptId FROM scheduler_execution_attempts WHERE turn_id = ?')
-      .all(attempt.turnId) as Array<{ attemptId: string }>;
     const competing = coreDb.sqlite
       .prepare(
         `SELECT attempt_id FROM scheduler_execution_attempts WHERE agent_session_id = ? AND attempt_id <> ?
@@ -906,12 +939,7 @@ async function settleTerminalFailedStart(
     const turns = store.listThreadTurns(attempt.workspaceId, attempt.threadId);
     if (
       // Proved no-effect capacity deferrals share this Turn but hold no execution ownership.
-      attempts.some(
-        ({ attemptId: siblingId }) =>
-          siblingId !== attemptId &&
-          (!isSchedulerExecutionBusyRefusal(requireSchedulerExecutionAttempt(coreDb, siblingId)) ||
-            !hasNanoHostAttemptPreEffectProof(coreDb, siblingId))
-      ) ||
+      !hasNanoHostBusySiblingProofs(coreDb, attempt) ||
       admissions.length !== 1 ||
       competing ||
       otherBackend ||
