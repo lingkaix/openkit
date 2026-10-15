@@ -2568,7 +2568,9 @@ export function registerLlmGatewayRoutes({
         providerSubscriptionAccountManager,
         providerCredentialConfigured
       )
-        .filter((model) => model.routes.some((route) => route.available))
+        .filter((model) =>
+          planLogicalModel(model, [], () => true).some((member) => member.selected)
+        )
         .map((model) => ({
           id: model.id,
           object: 'model',
