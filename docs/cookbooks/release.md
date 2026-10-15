@@ -173,6 +173,23 @@ node scripts/release-publication-check.mjs /example/private/publication-evidence
 
 The check refuses every absent condition. Its input must come from retained actual observations; a producer's manually entered `success` value is not execution evidence. It creates no tag, changes no label, and supplies no authorization by itself. Stable publication, visibility, credential expansion, and strict-risk exceptions remain engineer-reserved.
 
+### Baseline Evidence Fields
+
+Copy the approved identity into `grant.baseline` from the separately approved baseline record. Do not derive approval from an unreviewed run. Collect `baseline` from the actual repository tag and current run/attempt APIs, retaining the observations. The checker remains offline; fields supplied without those observations are not evidence.
+
+| Field | Required value or observation |
+| --- | --- |
+| `grant.baseline.kind` | `scratch-rehearsal` for the approved changed-path scratch proof, or `production-tag` for an approved earlier real production tag. |
+| `grant.baseline.repository`, `.tag`, `.sha` | Approved owner/repository, exact tag and full source commit. Scratch uses `notrucked/openkit` and a prerelease; production uses the target production repository. |
+| `grant.baseline.workflow`, `.runId`, `.attempt` | Approved `.github/workflows/ci.yml`, numeric workflow run ID and positive attempt. |
+| `baseline.repository`, `.tag`, `.sha`, `.workflow`, `.runId`, `.attempt` | Observed repository, tag, run `head_sha`, workflow path, run ID and current attempt; each must equal its approved identity field. |
+| `baseline.event`, `.ref` | Observed `push` and `refs/tags/<baseline.tag>`, supported by the tag identity, run metadata and successful tag-only job executions. A branch push or manual run does not qualify. |
+| `baseline.resolvedTagSha` | Commit obtained by resolving the actual repository tag, peeling an annotated tag if needed; must equal the run's `baseline.sha`. |
+| `baseline.jobs[*].id`, `.name`, `.conclusion` | Actual attempt-specific job executions. Every required name must occur once and have a positive ID and `success`. Both native App smoke jobs remain required for native publication inputs. |
+| `baseline.jobs[*].runId`, `.attempt`, `.sha` | Required executions' observed run ID, attempt and `head_sha`; must equal the enclosing observed baseline. Map API `run_id`, `run_attempt` and `head_sha` without replacing them with approved values. |
+
+Keep the existing `baseline.publicationInputs`, candidate, identities, triage, freshness, asset-set and prerelease/Latest evidence. The complete immutable-Git publication comparison still decides input equality. This schema does not grant a new scratch owner, stable publication or any publication effect.
+
 ## Publish
 
 After applicable publication authorization and mechanical admission:

@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { parseVersionTag } from './release-preflight.mjs';
 import { canonical, sha } from './release-safety.mjs';
 
 const candidateJobs = [
@@ -186,21 +187,53 @@ export function checkPublication(e, { now = new Date(), repoRoot = process.cwd()
       successfulJobs(c, candidateJobs),
     'successful exact-P candidate run and jobs'
   );
+  let baselineVersion;
+  try {
+    baselineVersion = parseVersionTag(e.baseline?.tag ?? '');
+  } catch {
+    baselineVersion = undefined;
+  }
+  const baselineJobNames = actual.jobs['smoke-app-native']
+    ? [
+        ...publicationJobs,
+        'Build app candidate',
+        'Smoke App native (linux/amd64)',
+        'Smoke App native (linux/arm64)',
+      ]
+    : publicationJobs;
   requireFact(
-    /^v\d+\.\d+\.\d+(?:-[a-z0-9.]+)?$/.test(e.baseline?.tag ?? '') &&
+    baselineVersion &&
       e.baseline.publicationInputs === e.publicationInputs &&
-      successfulJobs(
-        e.baseline,
-        actual.jobs['smoke-app-native']
-          ? [
-              ...publicationJobs,
-              'Build app candidate',
-              'Smoke App native (linux/amd64)',
-              'Smoke App native (linux/arm64)',
-            ]
-          : publicationJobs
-      ),
+      successfulJobs(e.baseline, baselineJobNames),
     'successful real-tag unchanged-publication baseline'
+  );
+  const baseline = e.baseline,
+    approvedBaseline = g.baseline;
+  requireFact(
+    approvedBaseline &&
+      ((approvedBaseline.kind === 'production-tag' &&
+        approvedBaseline.repository === e.repository) ||
+        (approvedBaseline.kind === 'scratch-rehearsal' &&
+          approvedBaseline.repository === 'notrucked/openkit' &&
+          baselineVersion.includes('-'))) &&
+      approvedBaseline.workflow === '.github/workflows/ci.yml' &&
+      ['repository', 'tag', 'sha', 'workflow', 'runId', 'attempt'].every(
+        (field) => baseline[field] === approvedBaseline[field]
+      ) &&
+      baseline.event === 'push' &&
+      baseline.ref === `refs/tags/${baseline.tag}` &&
+      baseline.resolvedTagSha === baseline.sha &&
+      Number.isSafeInteger(baseline.attempt) &&
+      baseline.attempt > 0 &&
+      baseline.jobs
+        .filter((job) => baselineJobNames.includes(job.name))
+        .every(
+          (job) =>
+            job.runId === baseline.runId &&
+            job.attempt === baseline.attempt &&
+            job.sha === baseline.sha
+        ),
+    'approved publication baseline identity and tag-push provenance'
   );
   const identities = e.identities;
   requireFact(
