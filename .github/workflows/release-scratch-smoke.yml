@@ -59,7 +59,9 @@ jobs:
 
       - name: Install locked subject verifier dependencies
         working-directory: subject
-        run: pnpm install --frozen-lockfile --ignore-scripts
+        run: |
+          pnpm --filter . install --frozen-lockfile --ignore-scripts
+          node --input-type=module -e "await import('./scripts/release-post-smoke.mjs')"
 
       - name: Prepare published inputs
         env:

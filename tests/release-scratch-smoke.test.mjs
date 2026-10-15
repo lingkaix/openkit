@@ -525,7 +525,8 @@ test('workflow freezes the separate scratch graph, exact control, token scopes a
   );
   assert.equal(
     job.steps.find((s) => s.name === 'Install locked subject verifier dependencies')?.run,
-    'pnpm install --frozen-lockfile --ignore-scripts'
+    'pnpm --filter . install --frozen-lockfile --ignore-scripts\n' +
+      'node --input-type=module -e "await import(\'./scripts/release-post-smoke.mjs\')"\n'
   );
 });
 
