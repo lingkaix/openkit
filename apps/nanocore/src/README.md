@@ -48,7 +48,7 @@ Actor-derived Quick Chat admission provisions a current administrator bearer's o
 - `test-support/` contains shared test fixtures only.
 - `lib/` contains the existing app-local stores and simulator; do not expand it with new general helpers, and place new behavior with its concrete owner.
 
-Setup composition in `app.ts`, conversation targets, and setup diagnostics forwards the existing credential-presence predicate and subscription-account owner to the Agent setup resolver. Public Turn operations, both direct App worker admissions and the boot scheduler retry service pass the same live owners through product admission and dispatch. These live references stay separate from configuration snapshots and public responses; setup adds no Provider probe, Vault material resolution, quota gate, or cached availability state.
+Setup composition in `app.ts`, conversation targets, and setup diagnostics forwards the existing credential-presence predicate and subscription-account owner to the Agent setup resolver. Public Turn operations, both direct App worker admissions and the boot scheduler retry service pass the same live owners through product admission and dispatch. These live references stay separate from configuration snapshots and public responses; setup adds no Provider probe, Vault material resolution, quota gate, or cached availability state. Managed Vault presence uses Core reference metadata; injected credential-material resolvers remain dispatch-only for Vault references. Non-Vault references retain the existing configured-supply fallback.
 
 ## Change Workflow
 

@@ -230,8 +230,12 @@ describe('runtime config reload API', () => {
           kind: 'gateway',
           models: ['openai/gpt-5.1'],
           vendor: 'openrouter',
+          secretRef: 'env:OPENKIT_RELOAD_FIXTURE_KEY',
         },
       ]),
+      // This lifecycle fixture needs configured non-Vault supply, without a Provider call.
+      providerCredentialResolver: (secretRef) =>
+        secretRef === 'env:OPENKIT_RELOAD_FIXTURE_KEY' ? 'test-only-reload-key' : null,
       store,
       turnExecutor: new SimulatedTurnExecutor({ coreDb }),
     });
@@ -258,6 +262,7 @@ describe('runtime config reload API', () => {
       );
       const turn = (await turnRes.json()) as { id: string; configVersion: number };
 
+      expect(turnRes.status, JSON.stringify(turn)).toBe(202);
       expect(turn.configVersion, JSON.stringify(turn)).toBe(1);
       expect(turn).not.toHaveProperty('agentSessionId');
       await vi.waitFor(() => {

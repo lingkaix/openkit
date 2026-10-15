@@ -4903,6 +4903,13 @@ describe('nanocore server', () => {
   it('starts scheduled turns without resolving Gateway credentials in Agent composition', async () => {
     const coreDb = createCoreDb();
     const executor = new FakeTurnExecutor();
+    createVaultReference(coreDb, {
+      referenceId: 'provider_openrouter',
+      ownerScope: 'server',
+      displayName: 'Configured Gateway fixture',
+      secretKind: 'provider-api-key',
+      backendKind: 'encrypted-file',
+    });
     const providerCredentialResolver = vi.fn((secretRef: string) =>
       secretRef === 'vault://provider_openrouter' ? 'test-key' : null
     );
@@ -4954,6 +4961,7 @@ describe('nanocore server', () => {
         attemptId: expect.any(String),
       });
       expect(providerCredentialResolver).not.toHaveBeenCalled();
+      expect(listVaultUseRecords(coreDb)).toEqual([]);
       expect(turn.id).toMatch(/^turn_0190f4c8-0000-7000-8000-000000000216/);
     } finally {
       coreDb.sqlite.close();
