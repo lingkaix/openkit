@@ -1913,7 +1913,6 @@ describe('Worker Harness resident AgentSessions', () => {
       });
     const f = harnessFixture({ integration });
     f.fake.script.push({ kind: 'hold' });
-    let interruption: ReturnType<typeof f.send> | undefined;
     try {
       await f.open('as-a');
       await f.start('as-a', 'turn-1');
@@ -1922,12 +1921,8 @@ describe('Worker Harness resident AgentSessions', () => {
       await firstEvent.promise;
       await clock.advance(0);
       expect(heartbeats.length).toBeGreaterThanOrEqual(2);
-      interruption = f.send('turn.interrupt', {
-        ...f.selector('as-a'),
-        turnId: 'turn-1',
-        leaseId: 'lease-turn-1',
-        purpose: 'interrupt',
-      });
+      // Normal completion preserves live lease authority through each delayed publication barrier.
+      f.fake.residents[0]!.finish('Completed quiet native work.');
       await blocked.promise;
       const before = heartbeats.length;
       // Controlled scheduling crosses the same injected deadline without relying on CI wall time.
@@ -1937,7 +1932,7 @@ describe('Worker Harness resident AgentSessions', () => {
       expect(integration.finalStatuses).toHaveLength(0);
     } finally {
       release.resolve();
-      await interruption;
+      f.fake.residents[0]?.finish();
       await cleared.promise;
       const accepted = heartbeats.length;
       await clock.advance(1100);
@@ -1946,7 +1941,8 @@ describe('Worker Harness resident AgentSessions', () => {
       clock.restore();
       await f.settle('as-a');
     }
-    expect(integration.finalStatuses.at(-1)?.body.status).toBe('interrupted');
+    expect(integration.finalStatuses.at(-1)?.body.status).toBe('completed');
+    expect(f.fake.residents[0]?.interrupts).toBe(0);
   });
 
   it('keeps lease heartbeats independent of an unanswered event through timeout and retry during quiet native work', async () => {

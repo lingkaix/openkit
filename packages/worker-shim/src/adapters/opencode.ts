@@ -21,6 +21,7 @@ import type {
   WorkerResidentTurn,
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
+import { WorkerControlError } from '../control-client.js';
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
 import { nativeStartupAdmission } from '../native-startup.js';
 import { validateTurnReasoningEffort } from '../reasoning-effort.js';
@@ -611,7 +612,7 @@ async function supervise(
         let promptId = '';
         let promptAttempted = false;
         let captureAbandoned = false;
-        let ownedCaptureStop: RuntimeCaptureStoppedError | null = null;
+        let ownedCaptureStop: RuntimeCaptureStoppedError | WorkerControlError | null = null;
         // Native HTTP authentication is adapter-private, so the shared input cannot enumerate it.
         const capture = new RuntimeSemanticCapture({
           ...turn.runtimeCapture,
@@ -626,7 +627,14 @@ async function supervise(
               try {
                 await turn.runtimeCapture.emit(record, body);
               } catch (error) {
-                if (error instanceof RuntimeCaptureStoppedError && turn.signal?.aborted) {
+                if (
+                  turn.signal?.aborted &&
+                  (error instanceof RuntimeCaptureStoppedError ||
+                    (error instanceof WorkerControlError &&
+                      error.status === 403 &&
+                      error.code === 'worker_control_lease_not_live'))
+                ) {
+                  // An entered publication can reach closing before its acknowledgement; preserve its rejection and the separate native result.
                   ownedCaptureStop = error;
                   captureAbandoned = true;
                 }
