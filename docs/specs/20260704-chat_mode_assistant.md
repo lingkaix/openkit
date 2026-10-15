@@ -467,6 +467,8 @@ Previously open questions are resolved as follows. The Workspace host repository
 
 ## Deferred / Future Work
 
+Standalone `chat.quick` retirement or Timeline admission remains undecided, while its [documented direct-call divergence](20260909-internal_agent_resource_integration.md#first-resource-family-144) still requires the shared loop.
+
 - Rich UI for Assistant routing explanations.
 
 ## Links
