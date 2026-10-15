@@ -1,12 +1,16 @@
 // openkit-test-platform: posix
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
+  renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -19,6 +23,8 @@ import { createRuntimeConfigManager, loadRuntimeConfig } from './runtime-config.
 import { RuntimeConfigFileService } from './runtime-config-files.js';
 
 const durability = vi.hoisted(() => ({
+  afterRead: undefined as ((path: string) => void) | undefined,
+  readFailurePath: undefined as string | undefined,
   paths: new Map<number, string>(),
   events: [] as Array<{
     op: 'sync' | 'rename';
@@ -34,6 +40,14 @@ vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
     ...actual,
+    readFileSync: ((...args: Parameters<typeof actual.readFileSync>) => {
+      const path = String(args[0]);
+      if (path === durability.readFailurePath)
+        throw Object.assign(new Error('Injected source read failure'), { code: 'EACCES' });
+      const content = actual.readFileSync(...args);
+      durability.afterRead?.(path);
+      return content;
+    }) as typeof actual.readFileSync,
     openSync: ((...args: Parameters<typeof actual.openSync>) => {
       const descriptor = actual.openSync(...args);
       durability.paths.set(descriptor, String(args[0]));
@@ -69,6 +83,8 @@ const MESSAGE =
   'Only credential-free remote Git sources can be materialized into a work slot in this release. Folder and other source kinds are not supported yet. Work without a source input still runs.';
 const roots: string[] = [];
 afterEach(() => {
+  durability.afterRead = undefined;
+  durability.readFailurePath = undefined;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -131,6 +147,80 @@ function catalog(kind: string, id = 'documents') {
   });
 }
 const selection = [{ id: 'documents', sourceRef: 'documents', access: 'read-write' }];
+
+describe('registered config detail read coherence', () => {
+  it('binds the revision to one actual source read when an external writer replaces the file', () => {
+    const f = fixture();
+    const id = 'workspaces/ws_demo/workspace.jsonc';
+    const original = '// Original café\n{"workspace":{"name":"Original","roots":[]}}\n';
+    const replacement = '// Replacement\n{"workspace":{"name":"Replacement","roots":[]}}\n';
+    const path = f.write(id, original);
+    const incoming = `${path}.external`;
+    writeFileSync(incoming, replacement);
+    let sourceReads = 0;
+    durability.afterRead = (readPath) => {
+      if (readPath !== path) return;
+      sourceReads += 1;
+      // Replace only after the real read has completed, before a potential second read.
+      if (sourceReads === 1) renameSync(incoming, path);
+    };
+
+    const result = f.files.readFile(id);
+    durability.afterRead = undefined;
+
+    expect(result.file.revision).toBe(
+      `sha256:${createHash('sha256').update(result.content).digest('hex')}`
+    );
+    expect(sourceReads).toBe(1);
+    expect(result.content).toBe(original);
+    expect(readFileSync(path, 'utf8')).toBe(replacement);
+  });
+
+  it('keeps a missing registered file absent and reports not found', () => {
+    const f = fixture();
+    const id = 'agents/missing.agent.jsonc';
+    const path = join(f.dataRoot, 'config', id);
+
+    expect(() => f.files.readFile(id)).toThrow(
+      expect.objectContaining({ code: 'config_file_not_found', status: 404 })
+    );
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it('propagates source read failure without changing authored bytes', () => {
+    const f = fixture();
+    const id = 'workspaces/ws_demo/workspace.jsonc';
+    const original = '{"workspace":{"name":"Unreadable","roots":[]}}\n';
+    const path = f.write(id, original);
+    durability.readFailurePath = path;
+
+    expect(() => f.files.readFile(id)).toThrow(expect.objectContaining({ code: 'EACCES' }));
+    durability.readFailurePath = undefined;
+    expect(readFileSync(path, 'utf8')).toBe(original);
+  });
+
+  it('refuses a foreign Workspace symlink before reading its content', () => {
+    const f = fixture(true);
+    const id = 'workspaces/ws_demo/workspace.jsonc';
+    const path = join(f.dataRoot, 'workspaces/ws_demo/config/workspace.jsonc');
+    const foreignContent = '{"workspace":{"name":"Foreign","roots":[]}}\n';
+    const foreignPath = f.write(`workspaces/${f.otherWorkspaceId}/workspace.jsonc`, foreignContent);
+    rmSync(path);
+    symlinkSync(foreignPath, path);
+    let sourceReads = 0;
+    durability.afterRead = (readPath) => {
+      if (readPath === path || readPath === foreignPath) sourceReads += 1;
+    };
+
+    expect(() => f.files.readFile(id)).toThrow(
+      expect.objectContaining({ code: 'config_path_not_allowed', status: 400 })
+    );
+    expect(sourceReads).toBe(0);
+    durability.afterRead = undefined;
+    expect(readlinkSync(path)).toBe(foreignPath);
+    expect(readFileSync(foreignPath, 'utf8')).toBe(foreignContent);
+  });
+});
 
 describe('configuration-stage work-slot source refusal', () => {
   it.each([
