@@ -118,6 +118,7 @@ It must not carry the secret value.
 A vault grant should carry:
 
 - grant id
+- required immutable issuance provenance (`target` or `imported-history`)
 - vault reference id
 - subject summary
 - owner scope
@@ -130,6 +131,12 @@ A vault grant should carry:
 - approval id when required
 - status
 - created and expires timestamps
+
+The canonical VaultGrant carries required immutable closed-core `issuance`, with values `target` and `imported-history` ([accepted provenance decision](../decisions/20261016-identifier_derivation_and_import_allocations.md)). This field records provenance within the existing grant, without a second grant, state machine or registry. Only the existing current-deployment issuer writes `target` when it independently creates a new authorized grant. The importer always writes `imported-history`, ignoring a source claim of target issuance. Re-export and re-import preserve historical content and again admit the grant only as `imported-history` on the new target. Missing, unknown or contradictory issuance fails closed. Record updates and duplicate-ID handling MUST NOT change or upgrade issuance. UUID kind/version, reference rebinding and source Approval or decision IDs cannot promote history. Use requires a new normally authorized target-issued grant. Retention, revocation, expiry and historical status remain unchanged.
+
+Before remote mutation, secret resolution, injection plan/receipt creation or AEP injection selection, resolve the canonical grant. Require `issuance=target` on the canonical grant in addition to the existing current-authority, active-status, scope, lifetime, constraint, reference and required-lineage checks. Keep `approvalId` and `policyDecisionId` as lineage under the existing Vault rule; do not re-run or reconstruct Approval at use time. The field alone grants no use and changes neither the issuer nor permission lifecycle. The separate Approval reserved-identity rule remains unchanged. This stateless check creates no request lifecycle.
+
+The required field needs the applicable protocol and record/portable schema version change. Current-format validators reject missing or unknown provenance rather than accepting an older import shape or defaulting to `target`. Acceptance must prove that an imported active-looking grant remains unusable before and after restart, reference rebind and re-export, including a grant without `approvalId`. Missing issuance must fail closed. A new independently authorized target grant must remain usable, including when its issuer permits no `approvalId`.
 
 Nullable grant identity and target fields have exact constraint semantics. A non-null `userId`, `workspaceId`, `targetAgentId`, `targetAgentSessionId`, or `targetCapabilityId` restricts use to the exact matching current execution fact, while `null` adds no constraint for that dimension and never bypasses owner-scope, reference-identity, policy, lifetime, or injection-path validation.
 
@@ -316,7 +323,7 @@ If revocation cannot affect an already-running process, NanoCore must mark the s
 - Normal config, manifests, AEP snapshots, item logs, knowledge, artifacts, diagnostics, and protocol payloads carry secret references, grants, or redacted markers only.
 - Inline provider secrets and URL userinfo are not allowed in provider profiles or server config. The consumer-free `extraHeaders` and `extraBody` fields are removed and rejected as unknown fields without compatibility handling; authored credentials use `secretRef` only.
 - `env:` secret references remain an explicit development-only input where separately allowed; they are not a Vault backend. Provider `secretRef: vault://<referenceId>` is the implemented Vault-backed provider credential shape.
-- Workspace exports may include non-secret `VaultReference`, `VaultGrant`, `VaultInjectionPlan`, `VaultInjectionReceipt`, and `VaultUse` history at the exact paths owned by the portability specification, but must not export secret material or treat any imported row as target access authority. Imports keep references unbound and remint grants into the reserved import namespace; that imported grant identity remains permanently non-authorizing after rebind, and fresh authorization creates a distinct target-issued grant before use.
+- Workspace exports may include non-secret `VaultReference`, `VaultGrant`, `VaultInjectionPlan`, `VaultInjectionReceipt`, and `VaultUse` history at the exact paths owned by the portability specification. They must not export secret material or treat imported rows as target authority. Imports keep references unbound and remint grants as canonical `grant` identities with immutable `issuance=imported-history`. This provenance stays non-authorizing after rebinding. Fresh authorization creates a distinct `issuance=target` grant before use, subject to the Grant Shape predicate above.
 - Workspace-lifetime grants are allowed only through explicit policy and should be reserved for stable gateway or provider paths. Worker-visible credential paths should default to shorter lifetimes.
 - Worker-visible secret material requires an explicit policy decision and should require a human approval gate unless a workspace policy has preauthorized the exact low-risk path.
 - Explicit OpenShell Codex auth file uploads have been removed. The durable `vault_codex_auth_json` path produces injection plans, receipts, and audit records for Codex auth JSON.
