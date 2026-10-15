@@ -536,20 +536,37 @@ export function describeOperation(id, { schema = false } = {}) {
   const inputSchema = z.toJSONSchema(operation.inputSchema, { target: 'draft-7', io: 'input' });
   return {
     ...publicMetadata(operation),
-    inputSchema: schema
-      ? inputSchema
-      : {
-          ...compactValueContract(inputSchema),
-          properties: Object.fromEntries(
-            Object.entries(inputSchema.properties ?? {}).map(([name, property]) => [
-              name,
-              compactValueContract(property),
-            ])
-          ),
-          ...(inputSchema.required ? { required: inputSchema.required } : {}),
-          additionalProperties: inputSchema.additionalProperties,
-        },
+    inputSchema: schema ? inputSchema : compactInputContract(inputSchema),
   };
+}
+
+/**
+ * Preserves each accepted flat input alternative and its required fields.
+ * Nested product values use field summaries instead of expanding their contents.
+ *
+ * @param {Record<string, unknown>} schema Shared input schema or root alternative.
+ * @returns {Record<string, unknown>} Shallow input contract.
+ */
+function compactInputContract(schema) {
+  const contract = compactValueContract(schema);
+  if (schema.properties) {
+    contract.properties = Object.fromEntries(
+      Object.entries(schema.properties).map(([name, property]) => [
+        name,
+        compactValueContract(property),
+      ])
+    );
+  }
+  if (schema.required) contract.required = schema.required;
+  if (Object.hasOwn(schema, 'additionalProperties')) {
+    contract.additionalProperties = schema.additionalProperties;
+  }
+  for (const key of ['anyOf', 'oneOf', 'allOf']) {
+    if (Array.isArray(schema[key])) {
+      contract[key] = schema[key].map(compactInputContract);
+    }
+  }
+  return contract;
 }
 
 /**
