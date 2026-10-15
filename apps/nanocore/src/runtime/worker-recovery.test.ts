@@ -245,6 +245,7 @@ function createCheckpointCloseoutFixture(
     store,
     checkpoint,
     attempt,
+    environmentPackage,
     agentSessionId,
     close: () => {
       workspaceDb.sqlite.close();
@@ -466,6 +467,102 @@ function runtimeSha256(bytes: Uint8Array): string {
 }
 
 describe('worker recovery materialization', () => {
+  it.each([
+    ['advanced pointer', 'completed', 'completed'],
+    ['absent current pointer', 'completed', 'completed'],
+    ['advanced pointer', 'failed', 'error'],
+    ['absent current pointer', 'failed', 'error'],
+    [
+      'missing original package',
+      'completed',
+      'Worker checkpoint is missing its environment package.',
+    ],
+    [
+      'corrupt original package',
+      'completed',
+      'Worker checkpoint is missing its environment package.',
+    ],
+    [
+      'foreign attempt package',
+      'completed',
+      'Worker environment package contradicts its checkpoint lineage.',
+    ],
+    [
+      'absent attempt package',
+      'completed',
+      'Worker environment package contradicts its checkpoint lineage.',
+    ],
+  ] as const)('resolves historical attempt lineage with %s after %s', (scenario, outcome, expected) => {
+    const f = createCheckpointCloseoutFixture(outcome);
+    try {
+      const turn = f.store.createTurn('ws_demo', 'th_demo', 'Later package', {
+        kind: 'user',
+        id: 'user_local',
+      });
+      f.store.updateTurn(turn.id, {
+        agentId: 'agent_codex_host',
+        agentSessionId: f.agentSessionId,
+      });
+      const environmentPackage = resolveAgentEnvironmentPackage({
+        agentSetup: createTestAgentSetup(),
+        agentSessionId: f.agentSessionId,
+        backend: { kind: 'openshell' },
+        createdAt: new Date().toISOString(),
+        requestId: '00000000-0000-4000-8000-000000000502',
+        triggerActor: turn.triggerActor,
+        turn: f.store.getTurnById(turn.id),
+        turnInput: 'Later package',
+        workspaceRoots: [],
+      });
+      recordAgentEnvironmentPackageSnapshot(f.workspaceDb, {
+        environmentPackage,
+        createdAt: environmentPackage.createdAt,
+      });
+      const terminal = f.store
+        .getTurnEvents(f.checkpoint.turnId)
+        .find((event) => event.event === 'turn.completed')!;
+      f.store.updateAgentSession(f.agentSessionId, {
+        environmentPackageSnapshotId:
+          scenario === 'absent current pointer' ? null : environmentPackage.snapshotId,
+        status: 'closed',
+        updatedAt: new Date(Date.parse(terminal.timestamp) + 1000).toISOString(),
+      });
+      const originalPath = join(
+        f.workspaceDb.dataRoot,
+        'workspaces',
+        f.checkpoint.workspaceId,
+        'runtime',
+        'agent-sessions',
+        f.agentSessionId,
+        'aep-snapshots',
+        `${f.environmentPackage.snapshotId}.json`
+      );
+      if (scenario === 'missing original package') unlinkSync(originalPath);
+      if (scenario === 'corrupt original package') writeFileSync(originalPath, '{}');
+      if (scenario === 'foreign attempt package' || scenario === 'absent attempt package') {
+        f.coreDb.sqlite
+          .prepare('UPDATE scheduler_execution_attempts SET input_ref = ? WHERE attempt_id = ?')
+          .run(
+            scenario === 'absent attempt package' ? null : environmentPackage.snapshotId,
+            f.attempt.attemptId
+          );
+      }
+      const reloaded = createDemoStore({ dataRoot: f.workspaceDb.dataRoot });
+      const recover = () =>
+        recoverWorkerCheckpointStopReason(f.coreDb, reloaded, f.workspaceDb, f.checkpoint);
+      if (expected === 'completed' || expected === 'error') expect(recover()).toBe(expected);
+      else expect(recover).toThrow(expected);
+      expect(reloaded.getAgentSession(f.agentSessionId).environmentPackageSnapshotId).toBe(
+        scenario === 'absent current pointer' ? null : environmentPackage.snapshotId
+      );
+      expect(getWorkerCheckpoint(f.workspaceDb, 'ws_demo', 'th_demo', f.checkpoint.turnId)).toEqual(
+        f.checkpoint
+      );
+    } finally {
+      f.close();
+    }
+  });
+
   it('recovers Subject A: failed Turn with a live-closeout retained idle AgentSession', () => {
     const f = createCheckpointCloseoutFixture('failed');
     try {
