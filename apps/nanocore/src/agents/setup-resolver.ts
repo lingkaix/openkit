@@ -8,7 +8,8 @@ import type {
 import { ReasoningEffortSchema } from '@openkit/protocol';
 import { planLogicalModel } from '../llm/gateway-execution.js';
 import { type ResolvedLogicalModel, resolveLogicalModelCatalog } from '../llm/logical-models.js';
-import type { ProviderRegistry } from '../providers/registry.js';
+import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
+import type { ProviderCredentialConfigured, ProviderRegistry } from '../providers/registry.js';
 import type { AgentManifest } from './manifest.js';
 
 /** Blocking setup resolution diagnostic. */
@@ -60,6 +61,12 @@ export interface AgentSetupResolveResult {
 export interface AgentSetupResolverDependencies {
   providerRegistry: ProviderRegistry;
   gatewayConfig: GatewayConfig;
+  /** Current network-free subscription supply when its live owner is available. */
+  subscriptionAccounts?:
+    | Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>
+    | undefined;
+  /** Current API-key presence without resolving Vault material. */
+  providerCredentialConfigured?: ProviderCredentialConfigured | undefined;
   workspaceConfig?: WorkspaceConfig;
   userConfig?: UserConfig;
   workspaceId?: string;
@@ -137,7 +144,9 @@ export function resolveAgentSetup(
   try {
     catalog = resolveLogicalModelCatalog(
       dependencies.gatewayConfig,
-      dependencies.providerRegistry
+      dependencies.providerRegistry,
+      dependencies.subscriptionAccounts,
+      dependencies.providerCredentialConfigured
     ).filter((model) =>
       // Setup adds no capability requirement, but dormant backups cannot establish readiness.
       planLogicalModel(model, [], () => true).some((selection) => selection.selected)
