@@ -1,14 +1,63 @@
-import { lstatSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+// openkit-test-platform: posix
+import { lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  initializeOrVerifyEncryptedFileVaultStore,
   openEncryptedFileVaultEntry,
   readEncryptedFileVaultEntry,
   sealEncryptedFileVaultEntry,
   writeEncryptedFileVaultEntry,
 } from './vault-encrypted-file-store.js';
+
+const durability = vi.hoisted(() => ({
+  paths: new Map<number, string>(),
+  events: [] as Array<{
+    op: 'sync' | 'rename';
+    path: string;
+    from?: string;
+    directory?: boolean;
+    mode?: number;
+  }>,
+  fail: undefined as ((path: string, directory: boolean) => boolean) | undefined,
+}));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    openSync: ((...args: Parameters<typeof actual.openSync>) => {
+      const descriptor = actual.openSync(...args);
+      durability.paths.set(descriptor, String(args[0]));
+      return descriptor;
+    }) as typeof actual.openSync,
+    closeSync: ((descriptor: number) => {
+      durability.paths.delete(descriptor);
+      return actual.closeSync(descriptor);
+    }) as typeof actual.closeSync,
+    fsyncSync: ((descriptor: number) => {
+      const path = durability.paths.get(descriptor) ?? '<untracked>';
+      const directory = actual.fstatSync(descriptor).isDirectory();
+      durability.events.push({
+        op: 'sync',
+        path,
+        directory,
+        mode: actual.fstatSync(descriptor).mode & 0o777,
+      });
+      if (durability.fail?.(path, directory)) throw new Error('Injected publication sync failure');
+      return actual.fsyncSync(descriptor);
+    }) as typeof actual.fsyncSync,
+    renameSync: ((
+      from: Parameters<typeof actual.renameSync>[0],
+      to: Parameters<typeof actual.renameSync>[1]
+    ) => {
+      durability.events.push({ op: 'rename', from: String(from), path: String(to) });
+      return actual.renameSync(from, to);
+    }) as typeof actual.renameSync,
+  };
+});
 
 const TEST_CIPHERTEXT = Buffer.from('ciphertext').toString('base64');
 const TEST_DATA_KEY = Buffer.alloc(32, 1).toString('base64');
@@ -394,5 +443,68 @@ describe('encrypted-file vault store format', () => {
       })
     ).toThrow('test random source failed');
     expect(failedDataKey).toEqual(Buffer.alloc(32));
+  });
+});
+
+describe('uncommitted header initialization recovery', () => {
+  it('rejects repeated initialization until the authenticated header directory entry synchronizes', () => {
+    const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-header-sync-retry-'));
+    const masterKey = Buffer.alloc(32, 7);
+    const input = { storeDir, masterKey };
+    const header = join(storeDir, 'header.json');
+    durability.events.length = 0;
+    durability.fail = (path, directory) =>
+      directory &&
+      path === storeDir &&
+      durability.events.some((event) => event.op === 'rename' && event.path === header);
+    try {
+      expect(() => initializeOrVerifyEncryptedFileVaultStore(input)).toThrow(
+        'Encrypted-file vault file could not be written securely.'
+      );
+      const retainedHeader = readFileSync(header);
+      expect(lstatSync(header).mode & 0o777).toBe(0o600);
+      durability.events.length = 0;
+      durability.fail = (path, directory) => directory && path === storeDir;
+      expect(() => initializeOrVerifyEncryptedFileVaultStore(input)).toThrow(
+        'Encrypted-file vault file could not be written securely.'
+      );
+      expect(readFileSync(header)).toEqual(retainedHeader);
+      expect(durability.events.some((event) => event.op === 'rename')).toBe(false);
+      durability.events.length = 0;
+      durability.fail = undefined;
+      expect(initializeOrVerifyEncryptedFileVaultStore(input)).toBe(storeDir);
+      expect(readFileSync(header)).toEqual(retainedHeader);
+      expect(
+        durability.events.some(
+          (event) => event.op === 'sync' && event.directory && event.path === storeDir
+        )
+      ).toBe(true);
+      expect(() =>
+        initializeOrVerifyEncryptedFileVaultStore({ storeDir, masterKey: Buffer.alloc(32, 8) })
+      ).toThrow('Encrypted-file vault master key failed authentication.');
+      sealEncryptedFileVaultEntry({
+        createdAt: '2026-07-05T00:10:00.000Z',
+        masterKey,
+        material: Buffer.from('retained test material'),
+        metadata: { ownerScope: 'server' },
+        referenceId: 'vault_recovered',
+        storeDir,
+        version: 1,
+      });
+      expect(
+        Buffer.from(
+          openEncryptedFileVaultEntry({
+            storeDir,
+            referenceId: 'vault_recovered',
+            version: 1,
+            masterKey,
+          })
+        ).toString('utf8')
+      ).toBe('retained test material');
+    } finally {
+      durability.fail = undefined;
+      masterKey.fill(0);
+      rmSync(storeDir, { recursive: true, force: true });
+    }
   });
 });

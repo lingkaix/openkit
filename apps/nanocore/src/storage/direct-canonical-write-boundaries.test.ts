@@ -530,3 +530,42 @@ describe('single-file publication seam', () => {
     }
   });
 });
+
+describe('uncommitted ancestor recovery', () => {
+  it.each([
+    'flat',
+    'nested',
+  ] as const)('retries the failed ancestor synchronization for a %s manifest directory', (shape) => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-manifest-ancestor-retry-'));
+    const directory = shape === 'flat' ? join(root, 'new') : join(root, 'new', 'nested');
+    const path = join(directory, 'manifest.json');
+    durability.events.length = 0;
+    durability.fail = (candidate, isDirectory) => isDirectory && candidate === root;
+    try {
+      expect(() => writeStorageJsonAtomically(path, { revision: 1 })).toThrow(
+        'Injected publication sync failure'
+      );
+      expect(existsSync(join(root, 'new'))).toBe(true);
+      expect(existsSync(path)).toBe(false);
+      // The nested case still lacks its immediate parent after the failed outer mkdir commit.
+      if (shape === 'nested') expect(existsSync(directory)).toBe(false);
+      durability.events.length = 0;
+      expect(() => writeStorageJsonAtomically(path, { revision: 1 })).toThrow(
+        'Injected publication sync failure'
+      );
+      expect(existsSync(path)).toBe(false);
+      durability.events.length = 0;
+      durability.fail = undefined;
+      writeStorageJsonAtomically(path, { revision: 1 });
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ revision: 1 });
+      expect(
+        durability.events.some(
+          (event) => event.op === 'sync' && event.directory && event.path === root
+        )
+      ).toBe(true);
+    } finally {
+      durability.fail = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

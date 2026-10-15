@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -1503,6 +1504,61 @@ describe('runtime provenance publication durability', () => {
     } finally {
       publication.fail = undefined;
       fixture.workspaceDb.sqlite.close();
+    }
+  });
+});
+
+describe('uncommitted ancestor evidence recovery', () => {
+  it('retries failed newly created evidence ancestry before acknowledging retained provenance', async () => {
+    const fixture = createImportFixture('openkit-provenance-ancestor-retry-');
+    const captureRoot = mkdtempSync(join(tmpdir(), 'openkit-provenance-ancestor-capture-'));
+    const capture = createRuntimeCaptureFixture(captureRoot, fixture.lineage);
+    const evidenceRoot = join(fixture.workspaceRoot, 'evidence');
+    // This fixture contains no retained evidence; emulate first-use parent creation.
+    rmSync(evidenceRoot, { recursive: true, force: true });
+    const input = {
+      backend: { kind: 'openshell' as const, placement: 'local' as const, version: '0.0.80' },
+      capture,
+      collectedAt: '2026-07-13T00:00:01.000Z',
+      environmentPackage: fixture.environmentPackage,
+      workspaceDb: fixture.workspaceDb,
+      workspaceRoot: fixture.workspaceRoot,
+    };
+    publication.events.length = 0;
+    publication.fail = (path, directory) => directory && path === fixture.workspaceRoot;
+    try {
+      await expect(importWorkerRuntimeProvenance(input)).rejects.toThrow(
+        'Injected async publication sync failure'
+      );
+      expect(existsSync(evidenceRoot)).toBe(true);
+      expect(listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_demo')).toEqual([]);
+      publication.events.length = 0;
+      await expect(importWorkerRuntimeProvenance(input)).rejects.toThrow(
+        'Injected async publication sync failure'
+      );
+      expect(
+        publication.events.some(
+          (event) => event.op === 'sync' && event.directory && event.path === fixture.workspaceRoot
+        )
+      ).toBe(true);
+      expect(listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_demo')).toEqual([]);
+      publication.events.length = 0;
+      publication.fail = undefined;
+      const result = await importWorkerRuntimeProvenance(input);
+      expect(result.complete).toBe(true);
+      expect(listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_demo')).toHaveLength(2);
+      expect(
+        readFileSync(join(evidenceRoot, 'backend', result.rawBundleId, 'raw-streams.json'))
+      ).toEqual(capture.manifestBytes);
+      expect(
+        publication.events.some(
+          (event) => event.op === 'sync' && event.directory && event.path === fixture.workspaceRoot
+        )
+      ).toBe(true);
+    } finally {
+      publication.fail = undefined;
+      fixture.workspaceDb.sqlite.close();
+      rmSync(captureRoot, { recursive: true, force: true });
     }
   });
 });

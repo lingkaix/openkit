@@ -267,6 +267,8 @@ export function initializeOrVerifyEncryptedFileVaultStore(input: {
     throw invalidStoreFormatError('Encrypted-file vault master key failed authentication.');
   }
 
+  // Authentication alone does not commit a header left visible by a failed rename acknowledgement.
+  syncEncryptedFileVaultDirectory(canonicalStoreDir);
   return canonicalStoreDir;
 }
 
@@ -679,6 +681,9 @@ export function writeEncryptedFileVaultJsonAtomically(path: string, value: unkno
 /** Commits a Vault directory entry without following a link or exposing native errors. */
 function syncEncryptedFileVaultDirectory(path: string): void {
   try {
+    if (typeof constants.O_NOFOLLOW !== 'number' || constants.O_NOFOLLOW === 0) {
+      throw new Error('No-follow directory synchronization is unavailable.');
+    }
     const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       if (!fstatSync(descriptor).isDirectory()) throw new Error('Invalid directory.');

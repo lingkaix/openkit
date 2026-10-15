@@ -2993,8 +2993,7 @@ export function appendCanonicalTextFile(path: string, content: string): void {
  * @param mode Exact replacement mode when supplied; otherwise the private writer default.
  */
 export function writeFileAtomic(path: string, content: string | Uint8Array, mode?: number): void {
-  if (!lstatSync(dirname(path), { throwIfNoEntry: false }))
-    ensureCanonicalDirectory(dirname(path), 0o777);
+  ensureCanonicalDirectory(dirname(path), 0o777);
   const existingMetadata = lstatSync(path, { throwIfNoEntry: false });
   if (existingMetadata) {
     assertCanonicalRegularFile(path);
@@ -3185,8 +3184,8 @@ export function ensureCanonicalDirectory(path: string, mode = 0o700): void {
     return;
   }
 
-  if (!lstatSync(dirname(path), { throwIfNoEntry: false }))
-    ensureCanonicalDirectory(dirname(path), mode);
+  // A visible parent can remain after its creation was not durably acknowledged.
+  ensureCanonicalDirectory(dirname(path), mode);
   assertCanonicalDirectory(dirname(path));
   mkdirSync(path, { mode });
   assertCanonicalDirectory(path);
@@ -3248,13 +3247,23 @@ export async function syncCanonicalDirectoryAsync(path: string): Promise<void> {
 
 /** Creates missing asynchronous publication parents and commits their entries before use. */
 export async function ensureCanonicalDirectoryAsync(path: string): Promise<void> {
-  const firstCreated = await fsPromises.mkdir(path, { recursive: true });
-  if (firstCreated === undefined) return;
-  // mkdir reports the first new ancestor, so existing ancestry needs no repeated full walk.
-  for (let current = path; ; current = dirname(current)) {
-    await syncCanonicalDirectoryAsync(current);
-    if (current === dirname(firstCreated)) break;
+  const metadata = await fsPromises.lstat(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (!metadata) {
+    // Commit each parent before creating children so a failed retry has one entry to verify.
+    await ensureCanonicalDirectoryAsync(dirname(path));
+    try {
+      await fsPromises.mkdir(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
   }
+  const current = metadata ?? (await fsPromises.lstat(path));
+  if (!current.isDirectory() || current.isSymbolicLink())
+    throw new Error(`Canonical path must be a directory: ${path}.`);
+  await syncCanonicalDirectoryAsync(dirname(path));
 }
 
 /** Synchronizes a complete asynchronous staging tree, with child entries committed before their parents. */
