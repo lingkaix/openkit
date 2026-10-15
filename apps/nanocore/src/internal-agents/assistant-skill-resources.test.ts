@@ -1,3 +1,5 @@
+// openkit-test-platform: posix
+// Snapshot containment fixtures require POSIX symbolic-link behavior.
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
