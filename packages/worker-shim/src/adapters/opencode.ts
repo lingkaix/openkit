@@ -285,6 +285,8 @@ async function supervise(
   // Only the shared callback is retained; no adapter timeline or labels are owned here.
   let recordLifecycleFact: WorkerResidentTurnInput['recordLifecycleFact'];
   let exitObserved = false;
+  // RPCs detach from this notification when they finish; Promise reactions cannot be removed.
+  const nativeExit = new AbortController();
   let resolveExited!: () => void;
   const exited = new Promise<void>((resolve) => {
     resolveExited = resolve;
@@ -332,6 +334,7 @@ async function supervise(
     exitObserved = true;
     childState = 'absent';
     resolveExited();
+    nativeExit.abort();
   };
   // A spawn `error` is not process exit. Resolving `exited` there let a live server look dead.
   child.on('error', (error) => {
@@ -429,7 +432,13 @@ async function supervise(
               deadline.remainingMs(stopTimeoutMs)
             );
           if (activeAtClose || !gracefulExit || !stdoutEnded || !stderrEnded || streamFailed) {
-            throw new Error('OpenCode native drain or persistence flush was not proved.');
+            // Keep each failed proof visible without native output or binding secrets (#246).
+            throw new Error(
+              'OpenCode native drain or persistence flush was not proved. ' +
+                `(activeTurn=${activeAtClose}, normalExit=${gracefulExit}, ` +
+                `stdoutEof=${stdoutEnded}, stderrEof=${stderrEnded}, streamError=${streamFailed}, ` +
+                `stopRequested=${stopRequested}, forcedStop=${forcedStop})`
+            );
           }
           persistencePreservingClose = true;
           return;
@@ -686,6 +695,16 @@ async function supervise(
                 rpc,
                 setupDeadline
               );
+              // The drained move leaves the bootstrap services unused.
+              // Release them before inference so parallel close drains only the active Workspace.
+              if (
+                (await realpath(turn.workingDirectory)) !== (await realpath(directories.workDir))
+              ) {
+                await rpc(
+                  'bootstrap location eviction',
+                  client.debug.location.evict({ location: { directory: directories.workDir } })
+                );
+              }
               boundSupply = supplyKey;
             }
             const catalog = await rpc(
@@ -919,17 +938,22 @@ async function supervise(
           startedAt: promptStartedAt,
           stop: () => confirmStopped(interruptDeadline),
           interruptRequested: () => interruptDeadline !== undefined,
-          rpc: (name, work) =>
-            Promise.race([
+          rpc: (name, work) => {
+            let onExit!: () => void;
+            const lostNative = new Promise<never>((_resolve, reject) => {
+              onExit = () => reject(new Error('OpenCode server exited during the Turn.'));
+              if (nativeExit.signal.aborted) onExit();
+              else nativeExit.signal.addEventListener('abort', onExit, { once: true });
+            });
+            return Promise.race([
               nativeDeadline(
                 name,
                 work,
                 interruptDeadline?.workRemainingMs(rpcTimeoutMs) ?? rpcTimeoutMs
               ),
-              exited.then(() => {
-                throw new Error('OpenCode server exited during the Turn.');
-              }),
-            ]),
+              lostNative,
+            ]).finally(() => nativeExit.signal.removeEventListener('abort', onExit));
+          },
           observed: observeMessages,
           published: async (messages) => {
             if (captureAbandoned) return;
@@ -1656,7 +1680,8 @@ async function settleTurn(options: {
       }
       // Reuse the native poll owner so structural facts survive a later terminal or host loss.
       await options.observed(await listMessages(options.client, options.sessionId, options.rpc));
-      await delay(200);
+      // Four read RPCs per poll must leave CPU time for twenty resident bindings to prepare.
+      await delay(1_000);
     }
     const all = await listMessages(options.client, options.sessionId, options.rpc);
     const messages = all.filter((message) => !options.before.has(message.id));
