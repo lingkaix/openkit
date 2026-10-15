@@ -330,6 +330,32 @@ export function mcpToolArgumentsContentDigest(argumentsValue: Record<string, unk
     .digest('hex')}`;
 }
 
+/** Reads exact retained approval evidence without treating imported history as current live authority. */
+export function readRetainedMcpToolSchemaSnapshot(input: {
+  readonly catalogEntryId: string;
+  readonly schemaSnapshotId: string;
+  readonly workspaceDb: WorkspaceDb;
+  readonly workspaceId: string;
+}): Pick<ExportableMcpToolSchemaSnapshot, 'schemaSnapshotId' | 'tools'> | null {
+  const row = input.workspaceDb.sqlite
+    .prepare(
+      `SELECT snapshot_id, tools_json
+       FROM mcp_tool_schema_snapshots
+       WHERE workspace_id = ? AND catalog_entry_id = ? AND snapshot_id = ?
+         AND source IN ('aep', 'live')`
+    )
+    .get(input.workspaceId, input.catalogEntryId, input.schemaSnapshotId) as
+    | { snapshot_id: string; tools_json: string }
+    | undefined;
+
+  return row
+    ? {
+        schemaSnapshotId: row.snapshot_id,
+        tools: z.array(WorkerCapabilityMcpToolSchema).parse(JSON.parse(row.tools_json)),
+      }
+    : null;
+}
+
 /** Reads the current durable schema snapshot used before approval or upstream contact. */
 export function readCurrentMcpToolSchemaSnapshot(input: {
   readonly catalogEntryId: string;
