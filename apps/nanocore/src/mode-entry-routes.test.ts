@@ -2758,6 +2758,155 @@ describe('exact Task Agent selection', () => {
     }
   });
 
+  it('admits an exact Agent with an unavailable preferred model when an allowed healthy model is requested', async () => {
+    const f = fixture();
+    const healthyModelId = 'openai/gpt-5.2';
+    try {
+      const selected = {
+        ...f.selected,
+        models: {
+          preferredLogicalModelId: 'unavailable-preferred-model',
+          allowedLogicalModelIds: 'all' as const,
+        },
+      };
+      const gateway = createTestGatewayConfig();
+      const app = createAppWithWorkspaceAuthority({
+        coreDb: f.coreDb,
+        dataRoot: f.dataRoot,
+        store: f.store,
+        turnExecutor: f.executor,
+        agentManifests: [f.preferred, selected],
+        openKitConfig: { defaults: { defaultAgentId: f.preferred.id } },
+        gatewayConfig: {
+          ...gateway,
+          logicalModels: [
+            ...gateway.logicalModels,
+            {
+              ...gateway.logicalModels[0]!,
+              id: selected.models.preferredLogicalModelId,
+              routes: [
+                {
+                  id: 'unavailable-route',
+                  providerProfileId: 'unavailable-provider',
+                  providerModel: healthyModelId,
+                },
+              ],
+            },
+          ],
+        },
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'Healthy local Provider',
+            kind: 'local',
+            models: [healthyModelId],
+          },
+          {
+            id: 'unavailable-provider',
+            displayName: 'Missing-key Provider',
+            kind: 'gateway',
+            vendor: 'openai',
+            baseUrl: 'https://inference.example.invalid/v1',
+            models: [healthyModelId],
+            secretRef: 'vault://absent-model-override-key',
+          },
+        ]),
+        providerCredentialResolver: () => null,
+      });
+      const response = await f.post(app, { agentId: selected.id, modelId: healthyModelId });
+      expect(response.status, await response.clone().text()).toBe(202);
+      const { turn } = StartTaskModeResponseSchema.parse(await response.json());
+      expect(turn).toMatchObject({ agentId: selected.id, status: 'pending' });
+      await f.settlePreparation();
+      const effects = f.effects();
+      expect(effects.turns).toHaveLength(1);
+      expect(effects.receipts).toHaveLength(1);
+      expect(effects.checkpoints).toHaveLength(1);
+      expect(effects.admissions).toEqual([
+        expect.objectContaining({
+          turnId: turn.id,
+          requestedAgentId: selected.id,
+          modelId: healthyModelId,
+        }),
+      ]);
+      expect(f.executor.launches).toBe(0);
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it('refuses an unavailable requested model before Knowledge even when the exact Agent preferred model is healthy', async () => {
+    const f = fixture();
+    const healthyModelId = 'openai/gpt-5.2';
+    const unavailableModelId = 'unavailable-requested-model';
+    const knowledge = vi
+      .spyOn(knowledgeOwners, 'createTaskKnowledgePreparation')
+      .mockRejectedValue(
+        new Error('Unexpected Knowledge preparation for an unavailable requested model.')
+      );
+    try {
+      const selected = {
+        ...f.selected,
+        models: { preferredLogicalModelId: healthyModelId, allowedLogicalModelIds: 'all' as const },
+      };
+      const gateway = createTestGatewayConfig();
+      const app = createAppWithWorkspaceAuthority({
+        coreDb: f.coreDb,
+        dataRoot: f.dataRoot,
+        store: f.store,
+        turnExecutor: f.executor,
+        agentManifests: [f.preferred, selected],
+        openKitConfig: { defaults: { defaultAgentId: f.preferred.id } },
+        gatewayConfig: {
+          ...gateway,
+          logicalModels: [
+            ...gateway.logicalModels,
+            {
+              ...gateway.logicalModels[0]!,
+              id: unavailableModelId,
+              routes: [
+                {
+                  id: 'unavailable-route',
+                  providerProfileId: 'unavailable-provider',
+                  providerModel: healthyModelId,
+                },
+              ],
+            },
+          ],
+        },
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'Healthy local Provider',
+            kind: 'local',
+            models: [healthyModelId],
+          },
+          {
+            id: 'unavailable-provider',
+            displayName: 'Missing-key Provider',
+            kind: 'gateway',
+            vendor: 'openai',
+            baseUrl: 'https://inference.example.invalid/v1',
+            models: [healthyModelId],
+            secretRef: 'vault://absent-requested-model-key',
+          },
+        ]),
+        providerCredentialResolver: () => null,
+      });
+      const before = f.effects();
+      const response = await f.post(app, { agentId: selected.id, modelId: unavailableModelId });
+      expect(response.status, await response.clone().text()).toBe(409);
+      expect(knowledge).not.toHaveBeenCalled();
+      expect(await response.json()).toMatchObject({ code: 'task_mode_not_delegated' });
+      expect(f.effects()).toEqual(before);
+      expect(f.prepare).not.toHaveBeenCalled();
+      expect(f.executor.launches).toBe(0);
+    } finally {
+      knowledge.mockRestore();
+      await f.cleanup();
+    }
+  });
+
   it.each([
     'missing-control-binary',
     'unsupported-resources',
