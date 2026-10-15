@@ -462,8 +462,8 @@ async function completeObservedModel(
             : undefined;
       const terminalFailure = terminalMessage ? terminalPiAiFailure(terminalMessage) : undefined;
       if (terminalMessage) onTerminal(terminalMessage, terminalFailure);
-      validateEvent?.(result.value);
       await observeModelEvent(result.value, transport.onModelEvent);
+      validateEvent?.(result.value);
       if (result.value.type === 'done') {
         await inference.observe(terminalFailure);
         return result.value.message;
@@ -1627,8 +1627,8 @@ export class PiAiGatewayClient {
               usageObserved = true;
               onUsage?.(event.type === 'done' ? event.message.usage : event.error.usage);
             }
-            validateEvent(event);
             await observeModelEvent(event, onModelEvent);
+            validateEvent(event);
             if (event.type === 'done' || event.type === 'error')
               await onInferenceTerminal?.(
                 event.type === 'done' ? event.message : event.error,
@@ -4211,6 +4211,7 @@ function toOpenAIChatToolCalls(
 /**
  * Validates observed Chat call fragments and completions identically for final and streamed callers.
  * Final calls consume stock events because a terminal parsed object alone can hide conflicting argument bytes.
+ * Semantic capture runs before this public-output guard so refusal cannot discard observed content.
  */
 function createChatToolValidator(declaredTools: ReadonlySet<string>) {
   const identities = new Map<number, { readonly id: string; readonly name: string } | undefined>();

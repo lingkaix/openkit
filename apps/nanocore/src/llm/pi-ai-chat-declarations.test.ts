@@ -568,3 +568,79 @@ it.each([
     stream
   );
 });
+
+describe('refused Chat output remains observable for model capture', () => {
+  for (const stream of [false, true]) {
+    it.each([
+      false,
+      true,
+    ])(`preserves refused call content before public validation; terminalOnly=%s stream=${stream}`, async (terminalOnly) => {
+      const argumentsOut = { query: ' non-secret observation\n雪 ', nested: { count: 2 } };
+      const call = fauxToolCall('unknown', argumentsOut, { id: 'call_refused|fc_refused' });
+      const message = fauxAssistantMessage([call], { stopReason: 'toolUse' });
+      const events: AssistantMessageEvent[] = [
+        { type: 'start', partial: fauxAssistantMessage([]) },
+      ];
+      if (!terminalOnly) {
+        events.push(
+          { type: 'toolcall_start', contentIndex: 0, partial: message },
+          {
+            type: 'toolcall_delta',
+            contentIndex: 0,
+            delta: JSON.stringify(argumentsOut),
+            partial: message,
+          },
+          { type: 'toolcall_end', contentIndex: 0, toolCall: call, partial: message }
+        );
+      }
+      events.push({ type: 'done', reason: 'toolUse', message });
+      const subject = fixture(message, events);
+      // This sink proves the real client's semantic selection boundary, not durable persistence.
+      const observed: unknown[] = [];
+      const transport = {
+        onModelEvent: (event: unknown) => {
+          observed.push(event);
+        },
+      };
+      const request = { model: 'physical', messages: [], tools: [declaration], stream };
+      if (stream) {
+        const result = await readChat(
+          await subject.client.createChatCompletionStream(
+            subject.provider,
+            request,
+            undefined,
+            transport
+          )
+        );
+        expect(result.error).toMatchObject({ code: 'unsupported_gateway_feature' });
+        expect(result.wire).not.toContain('[DONE]');
+        expect(
+          result.frames
+            .flatMap((frame) => frame.choices ?? [])
+            .some((choice) => choice.finish_reason)
+        ).toBe(false);
+      } else {
+        await expect(
+          subject.client.createChatCompletion(subject.provider, request, undefined, transport)
+        ).rejects.toMatchObject({ code: 'unsupported_gateway_feature' });
+      }
+      expect(subject.invoke).toHaveBeenCalledOnce();
+      if (terminalOnly) {
+        expect(observed).toContainEqual({
+          type: 'done',
+          message: {
+            type: 'message',
+            stopReason: 'toolUse',
+            content: [{ type: 'toolCall', id: call.id, name: 'unknown', arguments: argumentsOut }],
+          },
+        });
+      } else {
+        expect(observed).toContainEqual({
+          type: 'toolcall_end',
+          contentIndex: 0,
+          toolCall: { id: call.id, name: 'unknown', arguments: argumentsOut },
+        });
+      }
+    });
+  }
+});
