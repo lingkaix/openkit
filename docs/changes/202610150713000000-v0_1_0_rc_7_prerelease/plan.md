@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: blocked
 date: "2026-10-15"
 started: "2026-10-15"
 branch: release/v0.1.0-rc.7-prep
@@ -32,6 +32,10 @@ Source: the coordinator relayed the Grok review's required correction to the mal
 ### Intent Revision 5 — 2026-10-15
 
 Source: the coordinator authorized preparation before main turns green. Rebase onto the exact CI-fix candidate `b6d632d96a08dad4a6cffb58f350758789c71fc9`, which is intended to become main by fast-forward only after full CI run 38718755932 succeeds. Include the three CI corrections in notes and this record, refresh reconciliation with #249, and retain the hexadecimal-reference guard. Obtain a fresh `gpt-6.1-sol` review in its own detached worktree of the exact new head, covering the increment since `9af5b3d8`. The reviewer writes the requested external verdict. Push only the preparation branch. Start no branch CI, push no main ref, create no tag and publish no release.
+
+### Intent Revision 6 — 2026-10-15 (UTC)
+
+Source: after exact-P review and main integration, the coordinator authorized publication under the standing prerelease grant. Wait for main-push run 38730826228; stop on a required gate failure. Refresh actual-source admission observations, run the offline checker on exact P, then push only the lightweight rc.7 tag if admitted. Watch the tag workflow and verify the published assets, images and flags. Move no main ref, change no labels, and contact no deployment host. The coordinator later required disk-backed task-owned temporary storage and cleanup after local tools finish. No retry or failed-check bypass was authorized.
 
 ## Engineer Rulings — 2026-10-15
 
@@ -88,20 +92,20 @@ Disposition: prereleases may ship with these four gaps disclosed. All four must 
 | Tag and channel | `v0.1.0-rc.7`, non-draft prerelease; no GHCR `latest` or GitHub Latest assignment |
 | Previous release | `v0.1.0-rc.6`, exact source `0aa3f9a24e4cd0fdbec36b8d5f72d374a0086b3c` |
 | Fresh branch | `release/v0.1.0-rc.7-prep`; created from `c2fc03985de30a0de60e31edb1afa75fb6b2d730`, then rebased onto confirmed main `06b0d27c57b341b335942fc485bed9acc4783c0b` and now the authorized CI-fix candidate `b6d632d96a08dad4a6cffb58f350758789c71fc9` |
-| Base CI | Main-push run [38697916406](https://github.com/lingkaix/openkit/actions/runs/38697916406) completed `failure` in L0–L2 and L5 smoke. The coordinator identifies the protocol coverage guard and R2 Worker MCP smoke HTTP 409. The correction candidate `b6d632d96a08dad4a6cffb58f350758789c71fc9` is now included. Full [run 38718755932](https://github.com/lingkaix/openkit/actions/runs/38718755932) is in progress at the rebase observation; main fast-forward still depends on its success. No final-P gate has passed |
-| Tested commit T | No successful final-P candidate run is claimed. Update T from completed actual candidate evidence before final admission |
-| Publishing commit P | Final preparation HEAD, exact SHA supplied in the handoff. It requires independent review, main membership and successful candidate CI on exactly P |
+| Base CI | Exact-P main-push [run 38730826228](https://github.com/lingkaix/openkit/actions/runs/38730826228) completed success at 2026-10-15T12:33:38Z; all eleven required candidate jobs succeeded. Earlier failed-base evidence remains historical |
+| Tested commit T | `fcbb9978aa9f0967551da4a0d808d043e087075c`, qualified by the successful main-push candidate gate |
+| Publishing commit P | `fcbb9978aa9f0967551da4a0d808d043e087075c`; reviewed, contained in main and admitted before tagging. The lightweight tag remains on this commit |
 | Preparation diff | Release notes, this record and minimum four-attachment status projections. No product implementation, publication job or invoked script changes |
 | Controlled assets | Three catalog release images; operations archive with reviewed helper; target-native NanoHost archives for amd64 and arm64; `SHA256SUMS`. Exactly four portable attachments; manifest delivery remains conditional on the rehearsed #225 path |
 | Checklist identity | Release Management `7b266ae721211cf2c13b0af0b6897e911218b3cf`; Release Cookbook `39f1feeb4e1b99e3c24d1a68750d1e07035d33ec`; Test Strategy `3874ba2855230dd4a5b783c6452c287a07a70d31`. These Git blob identities freeze the governing checklist for this preparation |
 | Visibility posture | Public GitHub repository; only `worker-common` is required to support anonymous GHCR inspection. No visibility change is authorized |
-| Grant | Standing prerelease grant first covers rc.6 and includes rc.7 while all owner predicates hold. The latest coordinator instruction permits this preparer to push only the preparation branch; the coordinator admits and tags |
-| Publication proof | The three publication job blocks and nine invoked script inputs match rc.6. Successful rc.6 tag run is the baseline below. No new scratch rehearsal is required for that unchanged proved mechanism |
+| Grant | Standing prerelease grant applied. Fresh observation at 2026-10-15T12:34:57.587Z, declared valid until 2026-10-15T12:44:57.587Z; offline admission passed before the authorized tag push at 12:35:37Z |
+| Publication proof | The three job blocks and nine invoked inputs still match the successful rc.6 real-tag baseline. No scratch write was required. This unchanged-mechanism proof did not establish a passing smoke result for the new App payload |
 | Known host limits | #248 is fixed in source, pending published-asset positive readiness. #242 remains unverified on that host path. Neither issue is closed here |
 | Risk dispositions | The 2026-10-15 engineer rulings admit #223 as a disclosed non-blocker for every prerelease before first stable `v0.1.0`, without another rc question. The four disclosed notice gaps are permitted in prereleases and tracked by #249. Both issues block first stable and stay unlabeled |
 | Manual gates | Catalog stories remain post-tag at release-cycle/change cadence. Worker qualification runs after the deployment update, separately from L6. No live result is claimed |
-| Production boundary | Only the preparation-branch push is authorized. No staging/production contact, main push, workflow dispatch, tag, release, label, visibility or credential change is authorized. The CI workflow push filter admits main and release tags only |
-| Next action | Finish local checks, freeze the exact head for detached independent review, and push only the preparation branch. The coordinator waits for the base gate and fast-forward, then obtains final-P main membership, exact-P candidate CI and admission before tagging |
+| Production boundary | Only the authorized tag and its workflow publication effects occurred. No main push, retry, label change, visibility change, credential expansion or deployment-host contact. Further publication is stopped after App smoke failure |
+| Next action | Coordinator assigns investigation of the arm64 App image resource-limit observation. Preserve the existing check and immutable tag. Apply Release Management failure/retry rules only after qualifying corrective evidence and applicable direction |
 
 ## Included Work Since rc.6
 
@@ -258,3 +262,48 @@ Catalog stories and Worker qualification remain post-publication. Published rc.7
 The preparation adds notes and this record, plus three minimum status-line corrections in the release owner/cookbook. The four-attachment criterion and delayed-manifest condition do not change. The preparation-authored diff adds no code, package version, workflow, registry or durable state. The increment since `9af5b3d8` also includes the three coordinator-selected CI-fix commits through the rebase. Independent review and final publication remain pending at this record's freeze; the external verdict and handoff bind review to the exact resulting head.
 
 The first dependency install failed because shared `/tmp` exhausted inodes. Moving only this task's fresh worktree to the disk filesystem and retrying the frozen install corrected setup. No other task data or retained release evidence was removed. Disposable test files use task-owned disk-backed temporary storage. No setup failure is counted as a passing check.
+
+## Publication Attempt And Failure — 2026-10-15 (UTC)
+
+The coordinator confirmed review approval of exact P `fcbb9978aa9f0967551da4a0d808d043e087075c` and fast-forwarded it to main. The actual main-push run completed success. Fresh reads confirmed main membership, all eleven required candidate jobs, the real-tag publication baseline and actual Git input equality, unused identities, the blocker label, all 98 current issue dispositions, fixed prerelease flags and absent Latest pointers. No new issue or post-P issue update was observed. The private admission snapshot contains no credentials and is mode 0600. `node scripts/release-publication-check.mjs /tmp/rc7-publication-evidence-final.json` exited 0 with `status: eligible`; it was repeated immediately before tagging. The tag push occurred within the declared observation window. No ENOSPC result occurred in this attempt.
+
+The lightweight tag `v0.1.0-rc.7` points to P and was pushed at 12:35:37Z. [Tag run 38735832117](https://github.com/lingkaix/openkit/actions/runs/38735832117) started at 2026-10-15T12:35:39Z and completed failure at 2026-10-15T13:44:01Z: duration `01:08:22`. The tag's L0–L2 and L3 jobs reused exact-commit candidate evidence. Native NanoHost builds, portable packaging, both hosted qualification jobs, L5 and portability passed.
+
+The new release blocker is the App image's arm64 smoke result at [the existing assertion](../../../containers/app/smoke.sh#L88). The amd64 Retrieval Kernel and App smoke passed. On arm64, the assertion required `Max address space` to be `2147483648` bytes; `/proc/<child>/limits` reported `unlimited`. The deciding failure occurred at 13:42:49Z. Cause remains unresolved; this result does not establish whether enforcement or the emulated observation is wrong. The App candidate build took `00:56:28` before the smoke step. No check was weakened, skipped or retried to obtain a pass.
+
+App promotion and image-record upload were skipped. GitHub Release creation and published-release verification were skipped. No GitHub Release URL, published portable checksum, downloaded-release-asset pass, or verified-publication time exists for this attempt. The release remains blocked. The earlier local archive probe and CI packaging passes do not replace those missing publication results.
+
+### Observed Partial Identities
+
+Read-only registry observations at 2026-10-15T13:47:43.000Z confirmed these published Worker identities against the retained workflow image records. Each has both declared platform records and all three matching immutable tags. Anonymous inspection succeeded, including the required worker base.
+
+| Image | Recorded and observed index digest | State |
+| --- | --- | --- |
+| `openkit-worker-common` | `sha256:aab2af6eb9712e72640d52f67057d81002c377f32cb94e9b8c6440fd75b74268` | Complete matching rc.7, version-without-v and source-revision tags |
+| `openkit-worker-runtimes` | `sha256:4393146e3fd1aae15274b63f8755c6cfcfa8762c28b2aaefb922611d16a5d3de` | Complete matching rc.7, version-without-v and source-revision tags |
+| `openkit-app` | `sha256:587f437bad9e27f0c994d1fa3a8308e65ed367e2f4d73e65ffb983123583d629` | Digest-only candidate; arm64 smoke failed; no rc.7, version-without-v or source-revision tag was promoted |
+
+GitHub Latest and all three GHCR Latest pointers remain absent, matching pre-tag observations. The GitHub release endpoint returned 404. #223 and #249 remain open and unlabeled; no issue or label was written. No main ref, existing release tag or image tag was moved. No deployment was installed or contacted. The digest values above are OCI content digests, not Git object identities. Retain the full exact-P admission observations, two image records, redacted deciding log lines and partial-identity reads under private evidence aliases `rc7-publication-admission`, `rc7-published-worker-records` and `rc7-partial-publication`; they supply no authority for a retry.
+
+### Actual Elapsed Milestones
+
+All times are UTC on 2026-10-15. Elapsed time starts at the main-push gate start, 11:55:35Z. Parallel job durations are not added together.
+
+| Milestone | Observation | Elapsed |
+| --- | --- | --- |
+| Main-push gate passed | 2026-10-15T12:33:38Z | 00:38:03 |
+| Admission passed | 2026-10-15T12:34:57.829Z | 00:39:22 |
+| Lightweight tag pushed | 2026-10-15T12:35:37Z | 00:40:02 |
+| Both native NanoHost builds passed | 2026-10-15T12:40:34Z | 00:44:59 |
+| Portable packaging passed | 2026-10-15T12:44:22Z | 00:48:47 |
+| Both hosted qualifications passed | 2026-10-15T12:44:43Z | 00:49:08 |
+| worker-common published | 2026-10-15T13:02:14Z | 01:06:39 |
+| worker-runtimes published | 2026-10-15T13:14:13Z | 01:18:38 |
+| App candidate build completed | 2026-10-15T13:41:44Z | 01:46:09 |
+| App arm64 smoke failed | 2026-10-15T13:42:49Z | 01:47:14 |
+| Tag workflow failed | 2026-10-15T13:44:01Z | 01:48:26 |
+| Verified publication | Not reached | Not available |
+
+The historical 35–45 minute tag-path projection did not predict this attempt. The App candidate build alone took 56m28s. This is a new measured cadence cost; no unproved substep cause or new performance contract is inferred. The existing failed resource-limit check remains binding. The coordinator must resolve that finding before further publication under the immutable-identity and applicable authorization rules. This record is a local failure closeout after P, not a change to P or a completed release cycle.
+
+Failure-closeout checks passed: documentation model (486 documents), spec lifecycle, generated index and `git diff --check`, all exit 0. The maximal-token guard found 24 unique 40-hex references across 29 occurrences: 8 commit objects, 12 other Git objects and the same four justified nonlocal values above. All 6 recorded SHA-256 values match their named source, archive, workflow-record or registry evidence; no malformed or unexplained value remains. These checks validate the documentary closeout and do not convert the failed App smoke into a pass.
