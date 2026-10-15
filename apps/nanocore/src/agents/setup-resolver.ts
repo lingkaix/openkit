@@ -22,6 +22,7 @@ export interface AgentSetupDiagnostic {
     | 'agent_setup.logical_model_not_allowed'
     | 'agent_setup.logical_model_not_found'
     | 'agent_setup.missing_control_binary'
+    | 'agent_setup.unsupported_resources'
     | 'agent_setup.unsupported_required_feature';
   message: string;
   severity: 'error';
@@ -87,6 +88,16 @@ export function resolveAgentSetup(
     dependencies,
     diagnostics
   );
+
+  // No Worker backend enforces these limits; match the AEP refusal before reporting readiness.
+  if (config.resources && Object.keys(config.resources).length > 0) {
+    diagnostics.push({
+      agentId: config.id,
+      code: 'agent_setup.unsupported_resources',
+      message: `Agent ${config.id} declares resource limits that the Worker cannot enforce; leave resources empty or absent.`,
+      severity: 'error',
+    });
+  }
 
   // AEP construction requires both fixed control paths, regardless of the native adapter.
   for (const name of ['node', 'openkit-worker-shim'] as const) {
