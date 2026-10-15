@@ -65,6 +65,12 @@ Codex and xAI subscription providers are not special Gateway backends. Their pro
 
 ## Public HTTP Contract
 
+### Public App Reachability
+
+The Gateway keeps its existing authorized listener and caller scope. Its `/v1` contract does not make those routes part of the public App origin. The public App rejects exact `/v1` and every `/v1/` descendant with HTTP 404 and a bounded JSON `not_found` error for every method. It performs no Gateway forwarding, Provider contact, or redirect to another listener, and never returns the Web application's HTML as a successful API response ([#209 ruling](../decisions/20261015-sandbox_telemetry_and_public_gateway_boundary.md)).
+
+The existing authenticated Gateway and Worker-local inference paths keep their current authorization and routing boundaries. Missing public reachability is an explicit refusal, not permission to add a proxy or change Gateway binding. Acceptance checks GET, HEAD, and POST on `/v1`, models, Chat, and Responses paths, query strings, and unknown descendants; ordinary Web reads and the existing App API remain under their own routes.
+
 ### `POST /v1/chat/completions`
 
 The route accepts OpenAI-compatible Chat Completions requests with supported system, developer, user, assistant, and tool messages. Unknown fields may pass through only when the selected endpoint mapping can preserve them; an unsupported semantic requirement fails with a stable Gateway error instead of being silently dropped.
