@@ -17,7 +17,11 @@ import {
   type PendingMcpVaultInjection,
   resolveWorkerMcpCredentials,
 } from '../worker-mcp-routes.js';
-import { readCurrentMcpToolSchemaSnapshot } from './mcp-tool-schema-snapshots.js';
+import {
+  canonicalMcpToolSchemas,
+  readCurrentMcpToolSchemaSnapshot,
+  readRetainedMcpToolSchemaSnapshot,
+} from './mcp-tool-schema-snapshots.js';
 import {
   executionCallIdForRequest,
   PendingRequestCommandError,
@@ -171,8 +175,7 @@ export function admitCapturedPendingCall(
 }
 
 /**
- * Re-evaluates a captured call against the current catalog and schema snapshot.
- * Credential grants are read from Core. The Workspace read uses the grant transaction's connection.
+ * Re-evaluates a captured call against the current catalog and exact retained schema evidence. Credential grants are read from Core. The Workspace read uses the grant transaction's connection.
  *
  * @param input Captured record and current supply.
  * @returns Supply, schema, policy, and credential facts.
@@ -220,11 +223,28 @@ export function evaluateCapturedPendingCall(input: {
     workspaceDb: { sqlite: input.sqlite } as WorkspaceDb,
     workspaceId: record.workspaceId,
   });
-  const toolPresent = Boolean(snapshot?.tools.some((tool) => tool.name === record.toolName));
+  const currentTool = snapshot?.tools.find((tool) => tool.name === record.toolName);
+  let schemaCurrent = snapshot?.schemaSnapshotId === record.schemaSnapshotId;
+  if (resolved.schemaPolicy === 'tracking') {
+    const captured = readRetainedMcpToolSchemaSnapshot({
+      catalogEntryId: record.serverId,
+      schemaSnapshotId: record.schemaSnapshotId,
+      workspaceDb: { sqlite: input.sqlite } as WorkspaceDb,
+      workspaceId: record.workspaceId,
+    });
+    const capturedTool = captured?.tools.find((tool) => tool.name === record.toolName);
+    // The complete requested schema includes nested descriptions and annotations.
+    schemaCurrent = Boolean(
+      currentTool &&
+        capturedTool &&
+        JSON.stringify(canonicalMcpToolSchemas([currentTool])) ===
+          JSON.stringify(canonicalMcpToolSchemas([capturedTool]))
+    );
+  }
   return {
     agentAuthority,
-    toolInSupply: Boolean(selected && allowed && toolPresent),
-    schemaCurrent: snapshot?.schemaSnapshotId === record.schemaSnapshotId,
+    toolInSupply: Boolean(selected && allowed && currentTool),
+    schemaCurrent,
     policyAllows: resolved.approvalRequiredTools.includes(record.toolName),
     credentialsValid:
       !input.prepared?.failed &&
