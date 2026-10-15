@@ -491,15 +491,16 @@ const providerSubscriptionAccountManager = new ProviderSubscriptionAccountManage
   coreDb,
   vaultBackend: () => activeVaultUnlockState.backend(),
 });
+const providerCredentialConfigured = createProviderCredentialConfigured({
+  coreDb,
+  fallback: resolveEnvSecretRef,
+});
 const runtimeConfigManager = createRuntimeConfigManager({
   captureCoverage: requireBootValue(sharedStore, 'Shared Workspace store was not initialized.'),
   dataRoot,
   initialSnapshot: runtimeConfigSnapshot,
   subscriptionAccounts: providerSubscriptionAccountManager,
-  providerCredentialConfigured: createProviderCredentialConfigured({
-    coreDb,
-    fallback: resolveEnvSecretRef,
-  }),
+  providerCredentialConfigured,
 });
 
 if (mode === 'local') {
@@ -656,6 +657,8 @@ const nanoHostServer = nanoHostListener
   : null;
 
 schedulerDispatchRetry = startSchedulerDispatchRetryService({
+  providerCredentialConfigured,
+  subscriptionAccounts: providerSubscriptionAccountManager,
   coreDb,
   dependencies: { providerCredentialResolver: schedulerProviderCredentialResolver },
   intervalMs: SCHEDULER_DISPATCH_RETRY_INTERVAL_MS,

@@ -6,6 +6,7 @@ import {
   TurnSchema,
 } from '@openkit/protocol';
 import type { z } from 'zod';
+import type { AgentSetupResolverDependencies } from './agents/setup-resolver.js';
 import type { Actor } from './auth/identity.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
 import { readStrictWorkerContextPackageDigest } from './context/worker-context-projection.js';
@@ -102,7 +103,11 @@ function projectOrdinaryTurn(turn: TurnReadModel) {
 }
 
 /** Existing worker admission dependencies; invocation adds no Turn lifecycle. */
-export interface TurnStartDependencies {
+export interface TurnStartDependencies
+  extends Pick<
+    AgentSetupResolverDependencies,
+    'providerCredentialConfigured' | 'subscriptionAccounts'
+  > {
   readonly coreDb: CoreDb | undefined;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly providerCredentialResolver: ProviderCredentialResolver;
@@ -122,6 +127,8 @@ export async function startTurn(
     coreDb,
     inflightCommands,
     providerCredentialResolver,
+    providerCredentialConfigured,
+    subscriptionAccounts,
     runtimeConfig,
     turnExecutor,
     workerPlacement,
@@ -161,6 +168,8 @@ export async function startTurn(
       const observed = observeTurnAdmission({
         execute: (admit) =>
           startProductTurn({
+            providerCredentialConfigured,
+            subscriptionAccounts,
             input,
             requestActor: actor,
             providerCredentialResolver,
