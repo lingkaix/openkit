@@ -22,7 +22,7 @@ This produces the `openkit/test-env:dev` local tag from the manifest. Gates do n
 node scripts/docker/test-image-tag.mjs
 ```
 
-The printed tag is a digest of `containers/test-env/Dockerfile`, `containers/test-env/smoke.sh`, and `apps/web/package.json`. A change to any of them yields a new tag, so a tree can never be tested against an image built from different image or Playwright package inputs. CI resolves the same tag with `--owner` and publishes it to GHCR when it is absent. Adding or bumping the image Rust pin changes that digest and requires `scripts/docker/build-image.sh test-env` (local) plus CI republish of the new digest tag.
+The printed tag is a digest of the manifest-selected Dockerfile, smoke script, build context and platforms, plus `apps/web/package.json`, `scripts/retrieval-dictionary.py`, the vendored IPADIC archive and its COPYING notice. A change to any input yields a new tag, so a tree can never be tested against an image built from different image, Playwright package or retrieval dictionary inputs. CI resolves the same tag with `--owner` and publishes it to GHCR when it is absent. Adding or bumping the image Rust pin changes that digest and requires `scripts/docker/build-image.sh test-env` (local) plus CI republish of the new digest tag.
 
 The image embeds that full build-input digest. When `scripts/test-env.sh any` is already running inside the image, it compares the embedded value with the digest of the current mounted tree and exits before dependency installation or the requested command if they differ.
 

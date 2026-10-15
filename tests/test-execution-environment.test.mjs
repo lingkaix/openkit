@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -31,6 +32,24 @@ const rootManifest = JSON.parse(read('package.json'));
 const webManifest = JSON.parse(read('apps/web/package.json'));
 const ciWorkflow = parse(read('.github/workflows/ci.yml'));
 const turboTasks = JSON.parse(read('turbo.json')).tasks;
+const retrievalDictionaryInputs = [
+  'scripts/retrieval-dictionary.py',
+  'apps/retrieval-kernel/vendor/mecab-ipadic-2.7.0-20250920.tar.gz',
+  'apps/retrieval-kernel/vendor/IPADIC-COPYING',
+];
+
+/**
+ * Supplies the exact dictionary build inputs required by the real image digest producer.
+ *
+ * @param {string} fixtureRoot Isolated checkout-shaped fixture root.
+ */
+function copyRetrievalDictionaryInputs(fixtureRoot) {
+  for (const relativePath of retrievalDictionaryInputs) {
+    const destination = join(fixtureRoot, relativePath);
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(join(repoRoot, relativePath), destination);
+  }
+}
 
 test('real-subscription entrypoint runs only the host runner after separate preflight', () => {
   assert.equal(
@@ -311,6 +330,7 @@ test('inside-image placement rejects a stale build-input digest before running t
     ]) {
       writeFileSync(join(fixtureRoot, relativePath), read(relativePath));
     }
+    copyRetrievalDictionaryInputs(fixtureRoot);
     writeFileSync(fixtureIdentity, 'sha256:stale\n');
     writeFileSync(`${fixtureIdentity}-build-input-digest`, 'sha256:stale\n');
 
@@ -523,6 +543,7 @@ test('test image content tag changes with every manifest-selected build input', 
       read('containers/test-env/smoke.sh')
     );
     writeFileSync(fixtureWebManifest, `${JSON.stringify(webManifest)}\n`);
+    copyRetrievalDictionaryInputs(fixtureRoot);
 
     const before = spawnSync(process.execPath, [tagScript], {
       cwd: fixtureRoot,
@@ -583,6 +604,23 @@ test('test image content tag changes with every manifest-selected build input', 
       },
       'test image tag does not cover every manifest-selected build input'
     );
+    writeFileSync(fixtureImageManifest, JSON.stringify(fixtureManifest));
+    for (const relativePath of retrievalDictionaryInputs) {
+      const fixtureInput = join(fixtureRoot, relativePath);
+      const original = readFileSync(fixtureInput);
+      writeFileSync(fixtureInput, Buffer.concat([original, Buffer.from('changed fixture input')]));
+      const changed = spawnSync(process.execPath, [tagScript], {
+        cwd: fixtureRoot,
+        encoding: 'utf8',
+      });
+      assert.equal(changed.status, 0, changed.stderr);
+      assert.notEqual(
+        changed.stdout.trim(),
+        before.stdout.trim(),
+        `${relativePath} must affect the tag`
+      );
+      writeFileSync(fixtureInput, original);
+    }
   } finally {
     rmSync(fixtureRoot, { force: true, recursive: true });
   }
@@ -623,6 +661,7 @@ function prepareInImageFixture(digestFileContents) {
   ]) {
     writeFileSync(join(fixtureRoot, relativePath), read(relativePath));
   }
+  copyRetrievalDictionaryInputs(fixtureRoot);
   writeFileSync(fixtureIdentity, 'identity\n');
   const digest =
     digestFileContents ??
