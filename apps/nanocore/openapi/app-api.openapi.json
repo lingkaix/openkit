@@ -64782,6 +64782,10 @@
             "type": "string",
             "minLength": 1
           },
+          "agentId": {
+            "type": "string",
+            "minLength": 1
+          },
           "modelId": {
             "type": "string",
             "minLength": 1
@@ -92399,5 +92403,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:18880fbd98485ebf69151c125137865da51d62cf65512f82db86b443aa38d318"
+  "x-openkit-source-digest": "sha256:9d11e9a19c144d008749a429c92ee33dc1b0771661e9ffc4a66f073fc4c13aa9"
 }
