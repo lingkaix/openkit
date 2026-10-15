@@ -22,9 +22,16 @@ on:
           - smoke
           - release-gate
           - full
+          - registry-admission
 
       candidate_tag:
         description: Intended prerelease with a committed unused notes input; empty selects the sole pending input
+        required: false
+        default: ''
+        type: string
+
+      candidate_run:
+        description: Successful exact-P candidate run for registry-only refresh; empty uses this run
         required: false
         default: ''
         type: string
@@ -1134,6 +1141,42 @@ jobs:
         with:
           name: candidate-${{ matrix.id }}-${{ github.run_attempt }}
           path: temp/candidate-platforms/${{ matrix.id }}.json
+          if-no-files-found: error
+          retention-days: 14
+
+  candidate-registry:
+    name: Prerelease registry admission
+    if: always() && ((needs.candidate-plan.outputs.enabled == 'true' && needs.candidate-index.result == 'success' && needs.l0-l2.result == 'success' && needs.nano-core-e2e.result == 'success' && needs.smoke.result == 'success' && needs.workspace-portability-target.result == 'success' && needs.app-image-admin-recovery.result == 'success' && needs.nanohost-installer.result == 'success') || (github.event_name == 'workflow_dispatch' && inputs.gate == 'registry-admission'))
+    needs: [candidate-plan, candidate-index, l0-l2, nano-core-e2e, smoke, workspace-portability-target, app-image-admin-recovery, nanohost-installer]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Log in to GHCR for read-only observation
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Inspect retained candidate indexes and immutable release identities
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_TAG: ${{ needs.candidate-plan.outputs.tag || inputs.candidate_tag }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+        run: node scripts/release-registry-evidence.mjs --tag "${CANDIDATE_TAG}" --candidate-run "${CANDIDATE_RUN}" --directory temp/registry-admission
+      - name: Retain exact-P registry admission evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: registry-admission-${{ github.run_attempt }}
+          path: temp/registry-admission/registry-admission.json
           if-no-files-found: error
           retention-days: 14
 

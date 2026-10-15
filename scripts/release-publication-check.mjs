@@ -6,6 +6,7 @@ import { posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { canonical, sha } from './release-safety.mjs';
 
+export const registryJob = 'Prerelease registry admission';
 export const candidateJobs = [
   'L0-L2 static, unit, contract',
   'L3 NanoCore e2e',
@@ -73,7 +74,12 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
   const jobs = {},
     files = {},
     pending = new Set();
-  const movedJobs = ['candidate-plan', 'candidate-images', 'candidate-index'];
+  const movedJobs = [
+    'candidate-plan',
+    'candidate-images',
+    'candidate-index',
+    ...(blocks.has('candidate-registry') ? ['candidate-registry'] : []),
+  ];
   const hasMovedWork = movedJobs.some((name) => blocks.has(name));
   let candidateImageIds;
   for (const name of [
@@ -216,6 +222,33 @@ export function checkPublication(e, { now = new Date(), repoRoot = process.cwd()
       successfulJobs(e.baseline, publicationJobs),
     'successful real-tag unchanged-publication baseline'
   );
+  if (actual.candidateImageIds?.length) {
+    const r = e.registry;
+    requireFact(
+      Number.isSafeInteger(r?.artifactId) &&
+        r.artifactId > 0 &&
+        r?.sha === e.sha &&
+        r.tag === e.tag &&
+        r.inputs === actual.sha256 &&
+        Number.isSafeInteger(r.attempt) &&
+        r.attempt > 0 &&
+        r.provenance?.runId === r.runId &&
+        r.provenance.attempt === r.attempt &&
+        r.candidate?.runId === e.candidate.runId &&
+        r.candidate.attempt === e.candidate.attempt &&
+        ((r.event === 'push' && r.ref === 'refs/heads/main') || r.event === 'workflow_dispatch') &&
+        Number.isFinite(Date.parse(r.inspectionStartedAt)) &&
+        start <= Date.parse(r.inspectionStartedAt) &&
+        Date.parse(r.inspectionStartedAt) <= Date.parse(r.checkedAt) &&
+        hash.test(r.recordSha256 ?? '') &&
+        r.recordSha256 === e.identities?.registryEvidenceSha256 &&
+        Number.isFinite(Date.parse(r.checkedAt)) &&
+        start <= Date.parse(r.checkedAt) &&
+        Date.parse(r.checkedAt) <= now.getTime() &&
+        successfulJobs(r, [registryJob]),
+      'fresh exact-P CI registry evidence'
+    );
+  }
   const identities = e.identities;
   requireFact(
     (identities?.state === 'unused' &&

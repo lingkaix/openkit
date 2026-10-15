@@ -19,6 +19,7 @@ import {
   checkPublication,
   publicationInputsAt,
 } from './release-publication-check.mjs';
+import { readRegistryEvidence } from './release-registry-evidence.mjs';
 import { canonical, noSecrets, sha } from './release-safety.mjs';
 
 /** Bind authored classifications to the complete freshly observed backlog, not label absence. */
@@ -53,37 +54,6 @@ export function reconcileTriage(triage, snapshot) {
   return { ...triage, label: 'release-blocker' };
 }
 
-/** Observe exact immutable identities through the existing registry-state owner. */
-function imageIdentities(e, { run = command } = {}) {
-  const images = JSON.parse(run('git', ['show', `${e.sha}:containers/images.json`])).images.filter(
-    (i) => i.release
-  );
-  const states = images.map((i) => {
-    const image = `ghcr.io/${e.repository.split('/')[0].toLowerCase()}/${i.repository}`;
-    return Object.fromEntries(
-      run(process.execPath, [
-        'scripts/release-image-state.mjs',
-        '--version-tag',
-        `${image}:${e.tag}`,
-        '--version-without-v-tag',
-        `${image}:${e.tag.slice(1)}`,
-        '--sha-tag',
-        `${image}:sha-${e.sha.slice(0, 12)}`,
-        '--latest-tag',
-        `${image}:latest`,
-      ])
-        .split('\n')
-        .map((line) => {
-          const n = line.indexOf('=');
-          return [line.slice(0, n), line.slice(n + 1)];
-        })
-    );
-  });
-  if (!states.length || states.some((s) => !['true', 'false'].includes(s.present)))
-    throw Error('Complete immutable image observation required');
-  return states;
-}
-
 /** A permitted retry reuses complete images and can promote wholly absent images; the registry owner rejects partial tag sets. */
 export function admissionIdentities(authored, tag, states, source) {
   if (!states.length || states.some((s) => !['true', 'false'].includes(s.present)))
@@ -109,6 +79,7 @@ export function collectAdmission(
     issues = observeIssues,
     candidate = observeRun,
     publication = observePublication,
+    registry = readRegistryEvidence,
   } = {}
 ) {
   noSecrets(authored);
@@ -152,8 +123,28 @@ export function collectAdmission(
   const snapshot = issues(e.repository);
   e.triage = reconcileTriage(e.triage, snapshot);
   const tag = read(`repos/${e.repository}/git/ref/tags/${e.tag}`, { allowMissing: true });
-  const states = imageIdentities(e, { run });
-  e.identities = admissionIdentities(e.identities, tag, states, e.sha);
+  const images = JSON.parse(run('git', ['show', `${e.sha}:containers/images.json`])).images.filter(
+    (i) => i.release
+  );
+  e.registry = registry({
+    repository: e.repository,
+    source: e.sha,
+    tag: e.tag,
+    inputs: inputs.sha256,
+    candidate: e.candidate,
+    registryRunId: e.registry?.runId ?? e.candidate.runId,
+    images,
+    notBefore: e.observedAt,
+    validUntil: e.validUntil,
+  });
+  const states = e.registry.images.map(({ state }) => ({
+    ...state,
+    present: String(state.present),
+  }));
+  e.identities = {
+    ...admissionIdentities(e.identities, tag, states, e.sha),
+    registryEvidenceSha256: e.registry.recordSha256,
+  };
   return { evidence: e, snapshot, digest: sha(canonical(e)) };
 }
 

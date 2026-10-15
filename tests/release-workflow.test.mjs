@@ -525,6 +525,7 @@ const unchangedJobBaseline = {
 };
 
 const candidateJobBaseline = {
+  'candidate-registry': '72cacdb0d0dc6a58f934694798f40dac51be4c7f062b714ead5b5f7e389e66f5',
   'candidate-plan': 'c043add46eb7d92273ec28af77bb7b896c333cdede70a3b71a123e006b86d033',
   'candidate-images': 'a0740482ba092070384eaadcc824d002b6ab9e593a3bf4d4f028ff8b4da81c7a',
   'candidate-index': '205763b1d946f852ef1cf2ae51b98bcd6adbba4b127c00bfc32f2e2ce410e89f',
@@ -573,7 +574,7 @@ test('only complete L0-L2 shards and NanoCore e2e can read exact-commit reuse ev
     if (!selected.includes(name)) {
       assert.equal(
         job.permissions?.actions,
-        name === 'publish-container-images' ? 'read' : undefined,
+        ['publish-container-images', 'candidate-registry'].includes(name) ? 'read' : undefined,
         name
       );
       assert.ok(!job.steps?.some((entry) => entry.id === 'reuse'), name);
@@ -755,4 +756,29 @@ test('Cargo target cache retains the image-owned dictionary build output with it
   assert.ok(dictionary);
   const cache = step(workflow.jobs['l0-l2-shards'], 'Cache locked build inputs and outputs');
   assert.ok(cache.with.path.trim().split('\n').includes(dictionary));
+});
+
+test('registry admission runs after complete gates with read-only package authority and supports observation-only refresh', () => {
+  const job = workflow.jobs['candidate-registry'];
+  assert.deepEqual(job.permissions, { contents: 'read', actions: 'read', packages: 'read' });
+  assert.deepEqual(job.needs, [
+    'candidate-plan',
+    'candidate-index',
+    'l0-l2',
+    'nano-core-e2e',
+    'smoke',
+    'workspace-portability-target',
+    'app-image-admin-recovery',
+    'nanohost-installer',
+  ]);
+  for (const prerequisite of job.needs.filter((n) => n !== 'candidate-plan'))
+    assert.ok(job.if.includes(`needs.${prerequisite}.result == 'success'`));
+  assert.match(job.if, /inputs.gate == 'registry-admission'/);
+  const inspect = step(job, 'Inspect retained candidate indexes and immutable release identities');
+  assert.match(inspect.run, /release-registry-evidence.mjs/);
+  assert.equal(inspect.env.GITHUB_TOKEN, actionExpression('secrets.GITHUB_TOKEN'));
+  const retain = step(job, 'Retain exact-P registry admission evidence');
+  assert.equal(retain.with.name, 'registry-admission-$' + '{{ github.run_attempt }}');
+  assert.equal(retain.with['if-no-files-found'], 'error');
+  assert.ok(!job.steps.some((s) => s.uses?.startsWith('docker/build-push-action@')));
 });

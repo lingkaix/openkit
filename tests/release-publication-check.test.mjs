@@ -37,7 +37,13 @@ function repository({ moved = false } = {}) {
         'github-release',
         'verify-release',
         ...(moved
-          ? ['candidate-plan', 'candidate-images', 'candidate-index', 'container-image-matrix']
+          ? [
+              'candidate-plan',
+              'candidate-images',
+              'candidate-index',
+              'candidate-registry',
+              'container-image-matrix',
+            ]
           : []),
       ]
         .map((n) => `  ${n}:\n    steps:\n      - run: node scripts/release-notes.mjs\n`)
@@ -92,6 +98,7 @@ test('publication proof includes every moved job and image-construction input', 
     'candidate-plan',
     'candidate-images',
     'candidate-index',
+    'candidate-registry',
     'container-image-matrix',
   ])
     assert.ok(proof.jobs[name]);
@@ -154,6 +161,45 @@ test('offline admission refuses a missing candidate index even when every prior 
     /candidate run and jobs/
   );
   input.candidate.jobs.push({ name: 'Candidate index (fixture)', id: 999, conclusion: 'success' });
+  assert.throws(
+    () => actualCheck(input, { repoRoot: r.root, now: new Date('2026-10-14T00:10:00Z') }),
+    /registry evidence/
+  );
+  input.registry = {
+    sha: r.head,
+    tag: input.tag,
+    inputs: proof.sha256,
+    runId: 3,
+    attempt: 1,
+    event: 'workflow_dispatch',
+    conclusion: 'success',
+    checkedAt: '2026-10-14T00:05:00Z',
+    artifactId: 93,
+    provenance: { runId: 3, attempt: 1 },
+    candidate: { runId: input.candidate.runId, attempt: input.candidate.attempt },
+    inspectionStartedAt: '2026-10-14T00:04:00Z',
+    recordSha256: 'c'.repeat(64),
+    jobs: [{ id: 94, name: 'Prerelease registry admission', conclusion: 'success', attempt: 1 }],
+  };
+  input.identities.registryEvidenceSha256 = input.registry.recordSha256;
+  for (const change of [
+    { sha: 'd'.repeat(40) },
+    { tag: 'v0.1.0-rc.9' },
+    { inputs: 'd'.repeat(64) },
+    { artifactId: 0 },
+    { checkedAt: '2026-10-13T00:00:00Z' },
+    { recordSha256: 'd'.repeat(64) },
+    { jobs: [] },
+  ])
+    assert.throws(
+      () =>
+        actualCheck(
+          { ...input, registry: { ...input.registry, ...change } },
+          { repoRoot: r.root, now: new Date('2026-10-14T00:10:00Z') }
+        ),
+      /registry evidence/
+    );
+
   assert.equal(
     actualCheck(input, { repoRoot: r.root, now: new Date('2026-10-14T00:10:00Z') }).status,
     'eligible'

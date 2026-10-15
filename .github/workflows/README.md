@@ -52,3 +52,5 @@ Run `node --test tests/release-workflow.test.mjs tests/release-preflight.test.mj
 Run `git diff --check` before finishing.
 
 If `actionlint` is available locally, run it against workflow files.
+
+The final prerelease registry-admission job has read-only package access. It retains exact-source index and immutable-identity observations for local admission through repository artifacts. An explicit registry-only dispatch refreshes those observations without rebuilding the successful candidate. See the [release cookbook](../../docs/cookbooks/release.md#cadence-commands) for its bounded window and required evidence.
