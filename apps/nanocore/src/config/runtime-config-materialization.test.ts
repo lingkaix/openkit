@@ -2,11 +2,14 @@
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -798,5 +801,50 @@ describe('Workspace Assistant Skill read-only validation', () => {
     } finally {
       durability.mkdirFailurePath = undefined;
     }
+  });
+});
+
+describe('Workspace Assistant Skill catalog confinement', () => {
+  it.each(
+    (['directory', 'file'] as const).flatMap((redirect) =>
+      (['create', 'update'] as const).map((mode) => ({ redirect, mode }))
+    )
+  )('rejects a catalog $redirect symlink to another Workspace on $mode without changing either authority', ({
+    redirect,
+    mode,
+  }) => {
+    const f = assistantSelectionFixture(mode);
+    const localDirectory = join(f.dataRoot, 'workspaces', 'ws_demo', 'catalog');
+    const foreignDirectory = join(
+      f.dataRoot,
+      'workspaces',
+      f.otherWorkspaceId as string,
+      'catalog'
+    );
+    const foreignCatalog = join(foreignDirectory, 'catalog.json');
+    const foreignBefore = readFileSync(foreignCatalog);
+    const linkPath =
+      redirect === 'directory' ? localDirectory : join(localDirectory, 'catalog.json');
+    const linkTarget = redirect === 'directory' ? foreignDirectory : foreignCatalog;
+    rmSync(linkPath, { recursive: redirect === 'directory' });
+    symlinkSync(linkTarget, linkPath, redirect === 'directory' ? 'dir' : 'file');
+    expect(() => f.write(assistantSelectionContent(['foreign-guidance']))).toThrowError(
+      expect.objectContaining({ code: 'config_file_invalid', status: 400 })
+    );
+    if (mode === 'create') expect(existsSync(f.path)).toBe(false);
+    else expect(readFileSync(f.path, 'utf8')).toBe(f.previous);
+    expect(readFileSync(foreignCatalog)).toEqual(foreignBefore);
+    expect(lstatSync(linkPath).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(linkPath)).toBe(linkTarget);
+    const validation = f.files.validate({
+      files: [{ id: f.id, content: assistantSelectionContent(['foreign-guidance']) }],
+      mode: 'safe',
+    });
+    expect(validation.valid).toBe(false);
+    expect(validation.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'invalid_workspace_config', severity: 'error' }),
+      ])
+    );
   });
 });

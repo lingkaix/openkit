@@ -53,7 +53,12 @@ import {
 import { type ParseError, parse, printParseErrorCode } from 'jsonc-parser';
 import { z } from 'zod';
 import { AuthoredAgentConfigSchema } from '../agents/manifest.js';
-import { ensureCanonicalDirectory, writeFileAtomic } from '../storage/workspace-file-records.js';
+import {
+  assertCanonicalDirectory,
+  ensureCanonicalDirectory,
+  readCanonicalTextFile,
+  writeFileAtomic,
+} from '../storage/workspace-file-records.js';
 import { VaultBackendError } from '../vault/vault-backend.js';
 import {
   diffRuntimeConfig,
@@ -623,15 +628,18 @@ export class RuntimeConfigFileService {
             const path = ['workspace', 'assistant', 'resources', 'skillIds'];
             try {
               // Catalog path helpers also provision directories; draft validation must only read.
-              const catalogPath = join(
+              const workspaceRoot = join(this.dataRoot, 'workspaces', spec.workspaceId ?? '');
+              const catalogRoot = join(workspaceRoot, 'catalog');
+              for (const directory of [
                 this.dataRoot,
-                'workspaces',
-                spec.workspaceId ?? '',
-                'catalog',
-                'catalog.json'
-              );
+                dirname(workspaceRoot),
+                workspaceRoot,
+                catalogRoot,
+              ]) {
+                assertCanonicalDirectory(directory);
+              }
               const catalog = parseResourceCatalogDocument(
-                JSON.parse(readFileSync(catalogPath, 'utf8'))
+                JSON.parse(readCanonicalTextFile(join(catalogRoot, 'catalog.json')))
               );
               const existing = new Set(catalog.skills.entries.map((entry) => entry.id));
               if (skillIds.some((id) => !existing.has(id))) {
