@@ -794,3 +794,40 @@ describe('unchanged canonical Thread publication', () => {
     ).toBe('Visible pending commit');
   });
 });
+
+describe('canonical Thread byte comparison', () => {
+  it('normalizes raw bytes that decode to unchanged canonical Thread text', () => {
+    const f = threadPublicationFixture();
+    const path = f.paths[1];
+    const envelope = JSON.parse(readFileSync(path, 'utf8'));
+    envelope.futureNote = 'Retained \uFFFD annotation';
+    writeFileSync(path, `${JSON.stringify(envelope, null, 2)}\n`);
+    f.store.updateWorkspace(f.workspace.id, { name: 'Settled annotation bytes' });
+    const canonical = readFileSync(path);
+    const replacementCharacter = Buffer.from('\uFFFD', 'utf8');
+    const offset = canonical.indexOf(replacementCharacter);
+    expect(offset).toBeGreaterThanOrEqual(0);
+    const noncanonical = Buffer.concat([
+      canonical.subarray(0, offset),
+      Buffer.from([0xff]),
+      canonical.subarray(offset + replacementCharacter.length),
+    ]);
+    expect(noncanonical.equals(canonical)).toBe(false);
+    expect(noncanonical.toString('utf8')).toBe(canonical.toString('utf8'));
+    writeFileSync(path, noncanonical);
+    const siblings = f.paths.map((candidate) => readFileSync(candidate));
+    trace.events.length = 0;
+    f.store.updateWorkspace(f.workspace.id, { name: 'Normalize exact canonical bytes' });
+    expect(threadReplacements()).toEqual([path]);
+    expect(readFileSync(path)).toEqual(canonical);
+    for (const [index, candidate] of f.paths.entries())
+      if (index !== 1) expect(readFileSync(candidate)).toEqual(siblings[index]);
+    const retained = JSON.parse(readFileSync(path, 'utf8'));
+    expect(retained.futureNote).toBe(envelope.futureNote);
+    expect(retained.contentDigest).toBe(envelope.contentDigest);
+    expect(retained.lineage).toEqual(envelope.lineage);
+    expect(
+      new FsStore({ dataRoot: f.dataRoot }).getThread(f.workspace.id, f.threads[1].id)
+    ).toEqual(f.store.getThread(f.workspace.id, f.threads[1].id));
+  });
+});
