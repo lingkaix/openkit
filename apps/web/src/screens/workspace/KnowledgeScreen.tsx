@@ -1523,7 +1523,7 @@ function KnowledgeLedgerPanel({
   );
 }
 
-/** Compose recorded selected hits with authorized current content, never snapshot bytes. */
+/** Compose selected search hits with authorized current Workspace content, never snapshot bytes. */
 function KnowledgeRetrievalPanel({
   workspaceId,
   connectionBlocked,
@@ -1537,6 +1537,7 @@ function KnowledgeRetrievalPanel({
   const retrieve = useRetrieveKnowledge();
   const prepare = usePrepareKnowledgeContext();
   const [query, setQuery] = useWorkspaceScoped(workspaceId, '');
+  const currentPageScopeId = workspaceId ? `page/workspace/${workspaceId}` : null;
   const retrieveBlocked = connectionBlocked || !workspaceId || retrieve.isPending;
   const prepareBlocked = connectionBlocked || !workspaceId || prepare.isPending;
 
@@ -1628,18 +1629,21 @@ function KnowledgeRetrievalPanel({
       </Card>
       {retrieveResult ? (
         <Card className="flex flex-col gap-2">
-          <p className="text-sm text-fg-strong">{retrieveResult.traceId}</p>
           <p className="text-xs text-fg-muted">
-            Current content; may differ from the recorded retrieval.
+            Current content; may differ from the search result.
           </p>
           <ol className="flex flex-col gap-3">
             {retrieveResult.selected.map((row) => {
-              const entry = currentEntries.find(
-                (candidate) => candidate.id === row.knowledgePageId
-              );
+              const entry =
+                row.reference.scopeId === currentPageScopeId
+                  ? currentEntries.find((candidate) => candidate.id === row.reference.objectId)
+                  : undefined;
               return (
-                <li key={row.knowledgePageId} className="flex flex-col gap-1">
-                  <p className="text-xs text-fg-muted">{row.knowledgePageId}</p>
+                <li
+                  key={`${row.reference.scopeId}:${row.reference.objectId}`}
+                  className="flex flex-col gap-1"
+                >
+                  <p className="text-xs text-fg-muted">{row.reference.objectId}</p>
                   {entry ? (
                     <>
                       <p className="text-sm font-bold text-fg-strong">{entry.title}</p>
@@ -1664,7 +1668,10 @@ function KnowledgeRetrievalPanel({
             })}
           </ol>
           {retrieveResult.excluded.map((row) => (
-            <p key={`${row.knowledgePageId}:${row.reason}`} className="text-xs text-fg-muted">
+            <p
+              key={`${row.reference.scopeId}:${row.reference.objectId}:${row.reason}`}
+              className="text-xs text-fg-muted"
+            >
               {EXCLUSION_REASON_LABEL[row.reason]}
             </p>
           ))}

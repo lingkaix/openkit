@@ -10,6 +10,7 @@ import {
   WorkspaceImportResponseSchema,
 } from '@openkit/app-api-schemas';
 import { parseWorkspaceDataSourceCatalog } from '@openkit/config-schema';
+import type { ActorRef } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 
 import {
@@ -23,6 +24,7 @@ import {
   listWorkspaceAuditEvents,
   recordWorkspaceAuditEvent,
 } from '../audit-events.js';
+import type { Actor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
   isCurrentDeploymentAdministrator,
@@ -113,8 +115,10 @@ import {
   importVaultInjectionReceipts,
   listExportableVaultInjectionReceipts,
 } from '../vault-injection-receipts.js';
+import { readWorkspaceDeletionRequest } from '../workspace-deletion-request.js';
 import { listExportableWorkspaceMaterialRows } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { getWorkspaceRegistryLifecycleFact } from '../workspace-sharing.js';
 import {
   type CoreDb,
   openBootVerifiedWorkspaceDb,
@@ -128,6 +132,7 @@ import {
   importLightAppFamilies,
   listExportableLightAppFamilies,
 } from './generative-portability.js';
+import { assertKnowledgeRetrievalTraceReadable } from './index-rebuild.js';
 import { applyScopedMigrations } from './migrate.js';
 import {
   artifactReviews,
@@ -165,7 +170,9 @@ import {
   type WorkspaceImportSnapshot,
 } from './workspace-import.js';
 import {
+  parseWorkspaceRetrievalTraceFile,
   readWorkspacePortableFileState,
+  serializeWorkspaceRetrievalTrace,
   writeWorkspacePortableFileState,
 } from './workspace-portable-file-state.js';
 
@@ -861,6 +868,7 @@ export function importVerifiedWorkspace({
   const snapshot = readWorkspaceImportSnapshot({
     verified,
     targetWorkspaceId: importedWorkspaceId,
+    targetServerId: readDataRootLayoutMarker(dataRoot).deploymentId,
   });
   const stageWorkspace = ({ workspaceRoot }: ImportWorkspaceStage) => {
     writeWorkspacePortableFileState(workspaceRoot, snapshot.portableFileState);
@@ -949,24 +957,67 @@ export function importVerifiedWorkspace({
   });
 }
 
+/** Returns the only recovery export id owned by one Workspace deletion request. */
+export function workspaceDeletionRecoveryExportId(requestId: string): string {
+  assertSafeWorkspacePathSegment(requestId, 'Deletion request id');
+  return `wsexp_delete_${requestId}`;
+}
+
+/** Proves the narrow durable authority for one deletion recovery export. */
+function assertDeletionRecoveryExportAuthority(input: {
+  readonly authorityUserId: string;
+  readonly coreDb: CoreDb | undefined;
+  readonly dataRoot: string;
+  readonly exportId: string;
+  readonly requestId: string;
+  readonly workspaceId: string;
+}): true {
+  if (!input.coreDb) {
+    throw new Error('Workspace deletion recovery export requires durable authority.');
+  }
+  const request = readWorkspaceDeletionRequest(input.dataRoot, input.workspaceId, input.requestId);
+  const registry = getWorkspaceRegistryLifecycleFact(input.coreDb, input.workspaceId);
+  if (
+    request.phase !== 'deleting' ||
+    request.workspaceId !== input.workspaceId ||
+    request.originalOwnerUserId !== input.authorityUserId ||
+    request.recoveryExportId !== null ||
+    request.recoveryExportManifestDigest !== null ||
+    input.exportId !== workspaceDeletionRecoveryExportId(request.requestId) ||
+    registry?.status !== 'deleting' ||
+    registry.ownerUserId !== request.originalOwnerUserId ||
+    registry.registryRevision !== request.expectedRegistryRevision + 1
+  ) {
+    throw new Error('Workspace deletion recovery export authority is inconsistent.');
+  }
+  return true;
+}
+
 /** Creates and verifies one server-managed portable Workspace export. */
 export function createVerifiedWorkspaceExport({
+  authorityActor,
   authorityUserId,
   administratorEligible = false,
   coreDb,
   dataRoot,
+  deletionRecoveryRequestId,
   exportId = `wsexp_${randomUUID()}`,
   repositoryWorkspaceDb,
+  requestActor,
   store,
   workspaceId,
 }: {
+  readonly authorityActor?: ActorRef;
   readonly authorityUserId: string;
   /** Trusted current administrator eligibility; JSON input cannot select this audience. */
   readonly administratorEligible?: boolean;
   readonly coreDb: CoreDb | undefined;
   readonly dataRoot: string;
+  /** Exact durable deletion request that grants only its recovery export authority. */
+  readonly deletionRecoveryRequestId?: string;
   readonly exportId?: string;
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
+  readonly requestActor?: Actor;
   readonly store: FsStore;
   readonly workspaceId: string;
 }) {
@@ -975,6 +1026,16 @@ export function createVerifiedWorkspaceExport({
   if (!administratorEligible && threads.some((thread) => thread.visibility === 'private')) {
     throw new Error('Private Thread history requires a separately authorized export.');
   }
+  const deletionRecoveryAuthorized = deletionRecoveryRequestId
+    ? assertDeletionRecoveryExportAuthority({
+        authorityUserId,
+        coreDb,
+        dataRoot,
+        exportId,
+        requestId: deletionRecoveryRequestId,
+        workspaceId,
+      })
+    : false;
   const turns = threads.flatMap((thread) => store.listThreadTurns(workspaceId, thread.id));
   const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
   assertCanonicalDirectory(workspaceRoot);
@@ -1083,10 +1144,38 @@ export function createVerifiedWorkspaceExport({
     }
     runtimeProvenanceIndexes.set(bundle.id, text);
   }
-  const portableFileState = readWorkspacePortableFileState(
-    workspaceRoot,
-    turns.map(({ threadId, id }) => ({ threadId, turnId: id }))
-  );
+  const portableFileState = readWorkspacePortableFileState(workspaceRoot, {
+    workspaceId,
+    threads: threads.map(({ id }) => ({ threadId: id })),
+    turns: turns.map(({ threadId, id }) => ({ threadId, turnId: id })),
+  });
+  if (
+    portableFileState.retrievalTraceFiles.size > 0 &&
+    !deletionRecoveryAuthorized &&
+    (!authorityActor || !requestActor)
+  ) {
+    throw new Error('Workspace retrieval traces require current export authority.');
+  }
+  for (const [path, trace] of portableFileState.retrievalTraceFiles) {
+    const { reference } = parseWorkspaceRetrievalTraceFile(
+      path,
+      serializeWorkspaceRetrievalTrace(trace),
+      workspaceId
+    );
+    if (!deletionRecoveryAuthorized) {
+      assertKnowledgeRetrievalTraceReadable({
+        dataRoot,
+        workspaceId,
+        access: {
+          store,
+          coreDb,
+          actor: authorityActor!,
+          requestActor: requestActor!,
+        },
+        retrievalTraceRef: reference,
+      });
+    }
+  }
   const workerContextTraces = [...portableFileState.workerContextPackageFiles]
     .filter(([path]) => path.endsWith('/context-package.json'))
     .map(([path, text]) => [path, parseWorkerContextPackageTrace(JSON.parse(text))] as const);

@@ -316,6 +316,8 @@ export function createKnowledgeOperationImplementations(
             coreDb,
             actor: context.actorRef,
             requestActor: publicOperationActor(context),
+            outputThreadId: context.queryContext?.threadId,
+            outputTurnId: context.queryContext?.turnId,
           },
         });
         recordKnowledgeGatewayUsage({
@@ -714,13 +716,16 @@ export function createKnowledgeOperationImplementations(
             caller: 'app-api',
             query: commandInput.query,
             limit: commandInput.limit,
-            pinnedConceptIds: commandInput.pinnedConceptIds,
+            pinnedReferences: commandInput.pinnedReferences,
+            sourceScope: commandInput.sourceScope,
             states: commandInput.states,
             access: {
               store,
               coreDb,
               actor: context.actorRef,
               requestActor: publicOperationActor(context),
+              outputThreadId: context.queryContext?.threadId,
+              outputTurnId: context.queryContext?.turnId,
             },
             traceId: `krt_${randomUUID()}`,
           })
@@ -765,6 +770,8 @@ export function createKnowledgeOperationImplementations(
             coreDb,
             actor: context.actorRef,
             requestActor: publicOperationActor(context),
+            outputThreadId: context.queryContext?.threadId,
+            outputTurnId: context.queryContext?.turnId,
           },
         });
         recordKnowledgeGatewayUsage({
@@ -1379,7 +1386,12 @@ export function createTaskKnowledgePreparation(
 ) {
   return async (
     value: unknown,
-    context: { readonly actor: import('./auth/identity.js').Actor; readonly traceId: string }
+    context: {
+      readonly actor: import('./auth/identity.js').Actor;
+      readonly traceId: string;
+      readonly threadId: string;
+      readonly turnId?: string;
+    }
   ): Promise<import('./knowledge-manager.js').PreparedTaskKnowledgeContext> => {
     const admitted = admitOperation(
       KNOWLEDGE_OPERATION_DEFINITIONS['knowledge.context.prepare'],
@@ -1413,10 +1425,13 @@ export function createTaskKnowledgePreparation(
           coreDb: dependencies.coreDb,
           actor: admitted.context.actorRef,
           requestActor: context.actor,
+          outputThreadId: context.threadId,
+          outputTurnId: context.turnId,
         },
       });
       const validated = KNOWLEDGE_OPERATION_DEFINITIONS['knowledge.context.prepare'].outputSchema
-        .pick({ retrievalTraceId: true })
+        .pick({ retrievalTraceRef: true })
+        .required({ retrievalTraceRef: true })
         .safeParse(output);
       if (!validated.success)
         throw new OperationError(

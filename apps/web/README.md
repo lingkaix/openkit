@@ -363,7 +363,7 @@ Every production Knowledge caller in `screens/workspace/data.ts` uses the defini
 
 The Retrieval panel uses the derived-index read only for availability and failure state. It does not expose a separate tokenizer-term inventory; ranked retrieval belongs to the Retrieval Kernel.
 
-Retrieval preserves the recorded trace identity and selected-hit order while composing titles and previews of at most 240 characters from the selected Workspace's existing authorized Knowledge read. These are explicitly labeled current content and may differ from the recorded retrieval; they are not a retrieval-time snapshot. Each available hit links to the existing full-content display. Missing entries and failed current reads show content as unavailable, including when a failed refetch retains cached data. Workspace changes hide results from another Workspace, and excluded hits retain only their existing reason labels without content enrichment.
+Retrieval preserves selected-hit order while composing titles and previews of at most 240 characters from the selected Workspace's existing authorized Knowledge read. A hit is resolved only when its qualified page scope names that exact Workspace and its object id matches the current page. The threadless App search returns no trace identity. Current content may differ from the search result and is not a retrieval-time snapshot. Each available hit links to the existing full-content display. Missing entries, another owner's matching page path and failed current reads show content as unavailable, including when a failed refetch retains cached data. Workspace changes hide results from another Workspace, and excluded hits retain only their existing reason labels without content enrichment.
 
 ### Artifacts and typography
 

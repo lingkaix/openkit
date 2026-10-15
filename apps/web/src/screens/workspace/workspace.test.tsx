@@ -21,7 +21,7 @@ const WORKSPACE_COUNTS = {
   knowledgeEntryCount: 0,
 } as const;
 const WORKSPACE_A = {
-  id: 'ws1',
+  id: 'ws_1',
   name: 'Market research',
   kind: 'general',
   status: 'active',
@@ -30,7 +30,7 @@ const WORKSPACE_A = {
   updatedAt: TIMESTAMP_NEW,
 } as const;
 const WORKSPACE_B = {
-  id: 'ws2',
+  id: 'ws_2',
   name: 'Second workspace',
   kind: 'general',
   status: 'active',
@@ -42,7 +42,7 @@ const WORKSPACE_B = {
 const APPROVAL_ROW = {
   id: 'approval:ap1',
   kind: 'approval',
-  workspaceId: 'ws1',
+  workspaceId: 'ws_1',
   threadId: 'th1',
   turnId: 't1',
   itemId: 'i1',
@@ -54,7 +54,7 @@ const APPROVAL_ROW = {
   source: {
     type: 'approval',
     approvalRequestId: 'ap1',
-    workspaceId: 'ws1',
+    workspaceId: 'ws_1',
     threadId: 'th1',
     turnId: 't1',
     itemId: 'i1',
@@ -72,14 +72,14 @@ const APPROVAL_ROW = {
       method: 'POST',
       href: operationHttpPath('approval.respond'),
     },
-    { kind: 'open_thread', label: 'Open', method: 'GET', href: '/api/workspaces/ws1/threads/th1' },
+    { kind: 'open_thread', label: 'Open', method: 'GET', href: '/api/workspaces/ws_1/threads/th1' },
   ],
 };
 
 const OPEN_ONLY_ROW = {
   id: 'question:q1',
   kind: 'question',
-  workspaceId: 'ws1',
+  workspaceId: 'ws_1',
   threadId: 'th2',
   turnId: 't2',
   itemId: 'i2',
@@ -91,7 +91,7 @@ const OPEN_ONLY_ROW = {
   source: {
     type: 'protocol_item',
     itemType: 'user-input-request',
-    workspaceId: 'ws1',
+    workspaceId: 'ws_1',
     threadId: 'th2',
     turnId: 't2',
     itemId: 'i2',
@@ -103,14 +103,14 @@ const OPEN_ONLY_ROW = {
       method: 'POST',
       href: '/api/app/operations/question.answer',
     },
-    { kind: 'open_thread', label: 'Open', method: 'GET', href: '/api/workspaces/ws1/threads/th2' },
+    { kind: 'open_thread', label: 'Open', method: 'GET', href: '/api/workspaces/ws_1/threads/th2' },
   ],
 };
 
 const ARTIFACT_INSPECTION_ROW = {
   id: 'artifact-review:rev1',
   kind: 'artifact_review',
-  workspaceId: 'ws1',
+  workspaceId: 'ws_1',
   threadId: 'th_goal',
   title: 'Review worker output',
   artifactId: 'ar1',
@@ -124,7 +124,7 @@ const ARTIFACT_INSPECTION_ROW = {
     reviewId: 'rev1',
     artifactId: 'ar1',
     artifactVersion: 1,
-    workspaceId: 'ws1',
+    workspaceId: 'ws_1',
     threadId: 'th_goal',
   },
   actions: [
@@ -265,7 +265,7 @@ const KNOWLEDGE_ENTRY_B = {
 
 const KNOWLEDGE_SOURCE = {
   id: 'ks_source',
-  workspaceId: 'ws1',
+  workspaceId: 'ws_1',
   kind: 'transcript',
   title: 'Customer interview Q3',
   uri: null,
@@ -280,7 +280,7 @@ const KNOWLEDGE_SOURCE = {
 
 const KNOWLEDGE_OBSERVATION = {
   id: 'ko_observation',
-  workspaceId: 'ws1',
+  workspaceId: 'ws_1',
   kind: 'user-feedback',
   summary: 'Customers repeatedly ask for shorter weekly updates.',
   sourceReferences: [],
@@ -295,7 +295,7 @@ const KNOWLEDGE_OBSERVATION = {
 
 const KNOWLEDGE_CLAIM = {
   id: 'kc_claim',
-  workspaceId: 'ws1',
+  workspaceId: 'ws_1',
   statement: 'Weekly updates should fit on one screen.',
   sourceReferences: [],
   scope: 'workspace',
@@ -310,7 +310,6 @@ const KNOWLEDGE_CLAIM = {
 
 const KNOWLEDGE_DIGEST = KNOWLEDGE_SOURCE.contentDigest;
 const KNOWLEDGE_PAGE_DIGEST = `sha256:${'b'.repeat(64)}`;
-const RETRIEVAL_TRACE_ID = 'krt_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const RETRIEVAL_REQUEST_DIGEST = `sha256:${'c'.repeat(64)}`;
 const RETRIEVAL_QUERY = 'weekly updates';
 const MANAGER_QUESTION = 'How long should weekly updates be?';
@@ -376,7 +375,7 @@ const SERVER_CLAIM = {
 
 const SOURCE_DERIVED_REPRESENTATION = {
   id: 'ks_source:text',
-  workspaceId: 'ws1',
+  workspaceId: 'ws_1',
   sourceId: KNOWLEDGE_SOURCE.id,
   kind: 'text',
   path: 'sources/derived/ks_source/text.json',
@@ -388,7 +387,7 @@ const SOURCE_DERIVED_REPRESENTATION = {
 
 const KNOWLEDGE_CONFLICT = {
   id: 'kf_conflict',
-  workspaceId: 'ws1',
+  workspaceId: 'ws_1',
   subjectReferences: ['knowledge:mem1', 'claim:kc_claim'],
   sourceReferences: ['source:ks_source'],
   status: 'conflicting',
@@ -499,15 +498,27 @@ const KNOWLEDGE_INDEXES = knowledgeIndexesFor(WORKSPACE_A.id, {
 });
 
 const KNOWLEDGE_RETRIEVAL = {
-  traceId: RETRIEVAL_TRACE_ID,
-  workspaceId: 'ws1',
+  queryContext: {
+    serverId: 'srv_local',
+    workspaceId: 'ws_1',
+    actor: { kind: 'user', id: 'user_local' },
+  },
+  sourceScope: 'page/workspace/ws_1',
+  notebookRevision: null,
+  workspaceId: 'ws_1',
   caller: 'app-api',
   requestDigest: RETRIEVAL_REQUEST_DIGEST,
-  retrievalParameters: { limit: 5, pinnedConceptIds: [], states: ['active'] },
+  retrievalParameters: {
+    limit: 5,
+    pinnedReferences: [],
+    states: ['active'],
+    sourceScope: 'workspace',
+  },
   createdAt: TIMESTAMP_NEW,
   selected: [
     {
-      knowledgePageId: KNOWLEDGE_ENTRY.id,
+      reference: { scopeId: 'page/workspace/ws_1', objectId: KNOWLEDGE_ENTRY.id },
+      revision: KNOWLEDGE_PAGE_DIGEST,
       contentDigest: KNOWLEDGE_PAGE_DIGEST,
       score: 4,
       sourceReferences: ['source:ks_source'],
@@ -515,8 +526,10 @@ const KNOWLEDGE_RETRIEVAL = {
   ],
   excluded: [
     {
-      knowledgePageId: 'old-plan',
+      reference: { scopeId: 'page/workspace/ws_1', objectId: 'old-plan' },
+      revision: null,
       contentDigest: null,
+      sourceReferences: [],
       reason: 'sensitive_content',
     },
   ],
@@ -525,9 +538,8 @@ const KNOWLEDGE_RETRIEVAL = {
 const KNOWLEDGE_CONTEXT = {
   operationId: 'km_context',
   operation: 'prepare-context-material',
-  workspaceId: 'ws1',
+  workspaceId: 'ws_1',
   caller: 'app-api',
-  retrievalTraceId: RETRIEVAL_TRACE_ID,
   outcome: 'prepared',
   selected: KNOWLEDGE_RETRIEVAL.selected,
   excluded: KNOWLEDGE_RETRIEVAL.excluded,
@@ -536,15 +548,14 @@ const KNOWLEDGE_CONTEXT = {
 const KNOWLEDGE_ANSWER = {
   operationId: 'km_answer',
   operation: 'answer',
-  workspaceId: 'ws1',
+  workspaceId: 'ws_1',
   caller: 'app-api',
-  retrievalTraceId: RETRIEVAL_TRACE_ID,
   query: MANAGER_QUESTION,
   outcome: 'answered',
   answer: 'Keep weekly updates to one screen.',
   citations: [
     {
-      knowledgeEntryId: KNOWLEDGE_ENTRY.id,
+      reference: { scopeId: 'page/workspace/ws_1', objectId: KNOWLEDGE_ENTRY.id },
       kind: 'preference',
       title: KNOWLEDGE_ENTRY.title,
       excerpt: KNOWLEDGE_ENTRY.content,
@@ -567,7 +578,7 @@ const KNOWLEDGE_REPAIR = {
 const KNOWLEDGE_REPAIRS = {
   operationId: 'km_repair',
   operation: 'suggest-repair',
-  workspaceId: 'ws1',
+  workspaceId: 'ws_1',
   caller: 'app-api',
   outcome: 'suggested',
   suggestions: [KNOWLEDGE_REPAIR],
@@ -576,7 +587,7 @@ const KNOWLEDGE_REPAIRS = {
 const KNOWLEDGE_HEALTH = {
   operationId: 'km_health',
   operation: 'health-check',
-  workspaceId: 'ws1',
+  workspaceId: 'ws_1',
   caller: 'app-api',
   outcome: 'needs-attention',
   summary: 'Knowledge Manager found 1 repair suggestion.',
@@ -607,7 +618,7 @@ const KNOWLEDGE_PROPOSAL_ROW = {
   source: {
     type: 'knowledge',
     knowledgeProposalId: 'kp_exact',
-    workspaceId: 'ws1',
+    workspaceId: 'ws_1',
     status: 'pending',
   },
   actions: [
@@ -1319,7 +1330,7 @@ describe('Overview / Action Center (board 07)', () => {
     expect(client.operations['pending-request.withdraw']).toHaveBeenCalledWith(
       expect.objectContaining({
         pendingRequestId: 'ap1',
-        ...{ workspaceId: 'ws1', threadId: 'th1' },
+        ...{ workspaceId: 'ws_1', threadId: 'th1' },
       })
     );
   });
@@ -1382,7 +1393,7 @@ describe('Overview / Action Center (board 07)', () => {
         expect.objectContaining({
           approvalRequestId: 'ap1',
           ...{
-            workspaceId: 'ws1',
+            workspaceId: 'ws_1',
             threadId: 'th1',
             turnId: 't1',
             decision: 'granted',
@@ -1401,7 +1412,7 @@ describe('Overview / Action Center (board 07)', () => {
     expect(await screen.findByText('Answer required')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open thread' })).toHaveAttribute(
       'href',
-      '/chat/ws1/th2'
+      '/chat/ws_1/th2'
     );
     expect(screen.queryByRole('button', { name: 'Allow' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
@@ -1414,10 +1425,10 @@ describe('Overview / Action Center (board 07)', () => {
     const row = {
       id: `${type}:review1`,
       kind: type,
-      workspaceId: 'ws1',
+      workspaceId: 'ws_1',
       title: 'Review workspace changes',
       createdAt: TIMESTAMP_OLD,
-      source: { type, workspaceId: 'ws1', reviewId: 'review1' },
+      source: { type, workspaceId: 'ws_1', reviewId: 'review1' },
       actions: [{ kind: 'open_artifact', label: 'Open review', method: 'GET' }],
     };
     renderApp(
@@ -1519,11 +1530,11 @@ describe('Overview / Action Center (board 07)', () => {
     ).toBeInTheDocument();
     expect(screen.getAllByRole('link', { name: 'Open goal' })[0]).toHaveAttribute(
       'href',
-      '/goals/ws1/th_goal_need'
+      '/goals/ws_1/th_goal_need'
     );
     expect(screen.getAllByRole('link', { name: 'Open task' })[0]).toHaveAttribute(
       'href',
-      '/tasks/ws1/th_task_1'
+      '/tasks/ws_1/th_task_1'
     );
     expect(screen.getAllByText('Working').length).toBeGreaterThanOrEqual(7);
     expect(screen.getByRole('heading', { name: 'Task 4' })).toBeInTheDocument();
@@ -1632,7 +1643,7 @@ describe('Overview / Action Center (board 07)', () => {
         expect.objectContaining({
           approvalRequestId: 'ap1',
           ...{
-            workspaceId: 'ws1',
+            workspaceId: 'ws_1',
             threadId: 'th1',
             turnId: 't1',
             decision: 'denied',
@@ -1850,7 +1861,7 @@ describe('Overview / Action Center (board 07)', () => {
       artifactVersion: 1,
       source: {
         type: 'artifact_review',
-        workspaceId: 'ws1',
+        workspaceId: 'ws_1',
         artifactId: 'ar1',
         artifactVersion: 1,
       },
@@ -1893,7 +1904,7 @@ describe('Overview / Action Center (board 07)', () => {
     expect(await screen.findByText('Review worker output')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open goal' })).toHaveAttribute(
       'href',
-      '/goals/ws1/th_goal/artifacts/ar1'
+      '/goals/ws_1/th_goal/artifacts/ar1'
     );
     expect(screen.queryByRole('button', { name: 'Allow' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Accept review' })).not.toBeInTheDocument();
@@ -2612,7 +2623,7 @@ describe('Agents roster continued', () => {
     expect(refreshHealth).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: /refresh health/i }));
 
-    await waitFor(() => expect(refreshHealth).toHaveBeenCalledWith({ workspaceId: 'ws1' }));
+    await waitFor(() => expect(refreshHealth).toHaveBeenCalledWith({ workspaceId: 'ws_1' }));
     await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
     expect(await screen.findByText('Rechecked')).toBeInTheDocument();
     expect(refreshHealth).toHaveBeenCalledTimes(1);
@@ -2711,7 +2722,7 @@ describe('Agents roster continued', () => {
     expect(within(details).getByText(/Authoritative health/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /refresh health/i }));
-    await waitFor(() => expect(refreshHealth).toHaveBeenCalledWith({ workspaceId: 'ws1' }));
+    await waitFor(() => expect(refreshHealth).toHaveBeenCalledWith({ workspaceId: 'ws_1' }));
     expect(refreshHealth).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
     expect(get.mock.calls).toEqual([[{ agentId: AGENT_READY.id }], [{ agentId: AGENT_READY.id }]]);
@@ -3181,7 +3192,7 @@ describe('Knowledge (board 14)', () => {
     await waitFor(() =>
       expect(createKnowledge).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws1',
+          workspaceId: 'ws_1',
           kind: 'preference',
           title: 'Prefer concise memos',
           content: 'Keep it short.',
@@ -3238,7 +3249,7 @@ describe('Knowledge (board 14)', () => {
 
     await waitFor(() =>
       expect(updateKnowledge).toHaveBeenCalledWith({
-        workspaceId: 'ws1',
+        workspaceId: 'ws_1',
         knowledgeEntryId: KNOWLEDGE_ENTRY.id,
         ...{
           requestId: expect.any(String),
@@ -3287,7 +3298,7 @@ describe('Knowledge (board 14)', () => {
     await user.click(save);
     await waitFor(() =>
       expect(updateKnowledge).toHaveBeenCalledWith({
-        workspaceId: 'ws1',
+        workspaceId: 'ws_1',
         knowledgeEntryId: entry.id,
         ...{
           content: 'Changed server content',
@@ -3362,7 +3373,7 @@ describe('Knowledge (board 14)', () => {
 
     await waitFor(() =>
       expect(deleteKnowledge).toHaveBeenCalledWith({
-        workspaceId: 'ws1',
+        workspaceId: 'ws_1',
         knowledgeEntryId: KNOWLEDGE_ENTRY.id,
         ...{
           requestId: expect.any(String),
@@ -3750,9 +3761,9 @@ describe('Knowledge (board 14)', () => {
     for (const rawValue of ['transcript', 'retained', 'needs-review', 'weak_evidence']) {
       expect(document.body).not.toHaveTextContent(rawValue);
     }
-    expect(listKnowledgeSources).toHaveBeenCalledWith({ workspaceId: 'ws1' });
-    expect(listKnowledgeObservations).toHaveBeenCalledWith({ workspaceId: 'ws1' });
-    expect(listKnowledgeClaims).toHaveBeenCalledWith({ workspaceId: 'ws1' });
+    expect(listKnowledgeSources).toHaveBeenCalledWith({ workspaceId: 'ws_1' });
+    expect(listKnowledgeObservations).toHaveBeenCalledWith({ workspaceId: 'ws_1' });
+    expect(listKnowledgeClaims).toHaveBeenCalledWith({ workspaceId: 'ws_1' });
   });
 
   it('keeps a Loading skeleton visible until the attention read settles', async () => {
@@ -3850,7 +3861,7 @@ describe('Knowledge (board 14)', () => {
     await user.click(action);
     await waitFor(() =>
       expect(submitKnowledgeProposalDecision).toHaveBeenCalledWith({
-        workspaceId: 'ws1',
+        workspaceId: 'ws_1',
         proposalId: 'kp_exact',
         ...{
           decision,
@@ -4117,7 +4128,7 @@ describe('Knowledge (board 14)', () => {
     await user.click(within(sources).getByRole('button', { name: 'Register source' }));
     await waitFor(() =>
       expect(registerKnowledgeSource).toHaveBeenCalledWith({
-        workspaceId: 'ws1',
+        workspaceId: 'ws_1',
         ...{
           requestId: expect.any(String),
           kind: REGISTER_SOURCE_INPUT.kind,
@@ -4137,7 +4148,7 @@ describe('Knowledge (board 14)', () => {
     );
     await waitFor(() =>
       expect(readKnowledgeSource).toHaveBeenCalledWith({
-        workspaceId: 'ws1',
+        workspaceId: 'ws_1',
         sourceId: KNOWLEDGE_SOURCE.id,
       })
     );
@@ -4203,7 +4214,7 @@ describe('Knowledge (board 14)', () => {
         selector: ':not(option)',
       })
     ).toBeInTheDocument();
-    expect(listKnowledgeConflicts.mock.calls).toEqual([[{ workspaceId: 'ws1' }]]);
+    expect(listKnowledgeConflicts.mock.calls).toEqual([[{ workspaceId: 'ws_1' }]]);
 
     await selectListedOption(user, ledger, 'Observation kind', OBSERVATION_KIND_OPTION);
     await fillKnowledgeFields(user, ledger, [
@@ -4214,7 +4225,7 @@ describe('Knowledge (board 14)', () => {
     await waitFor(() =>
       expect(recordKnowledgeObservation).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws1',
+          workspaceId: 'ws_1',
           requestId: expect.any(String),
           kind: OBSERVATION_KIND,
           summary: KNOWLEDGE_OBSERVATION.summary,
@@ -4224,8 +4235,8 @@ describe('Knowledge (board 14)', () => {
     );
     await waitFor(() => expect(listKnowledgeObservations).toHaveBeenCalledTimes(2));
     expect(listKnowledgeObservations.mock.calls).toEqual([
-      [{ workspaceId: 'ws1' }],
-      [{ workspaceId: 'ws1' }],
+      [{ workspaceId: 'ws_1' }],
+      [{ workspaceId: 'ws_1' }],
     ]);
     expect(await within(ledger).findByText(SERVER_OBSERVATION.summary)).toBeInTheDocument();
     expect(
@@ -4240,7 +4251,7 @@ describe('Knowledge (board 14)', () => {
     await waitFor(() =>
       expect(recordKnowledgeClaim).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws1',
+          workspaceId: 'ws_1',
           requestId: expect.any(String),
           statement: KNOWLEDGE_CLAIM.statement,
           producer: KNOWLEDGE_CLAIM.producer,
@@ -4249,8 +4260,8 @@ describe('Knowledge (board 14)', () => {
     );
     await waitFor(() => expect(listKnowledgeClaims).toHaveBeenCalledTimes(2));
     expect(listKnowledgeClaims.mock.calls).toEqual([
-      [{ workspaceId: 'ws1' }],
-      [{ workspaceId: 'ws1' }],
+      [{ workspaceId: 'ws_1' }],
+      [{ workspaceId: 'ws_1' }],
     ]);
     expect(await within(ledger).findByText(SERVER_CLAIM.statement)).toBeInTheDocument();
     expect(screen.queryByText('Mutation claim must not become visible')).not.toBeInTheDocument();
@@ -4264,7 +4275,7 @@ describe('Knowledge (board 14)', () => {
     await waitFor(() =>
       expect(recordKnowledgeConflict).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceId: 'ws1',
+          workspaceId: 'ws_1',
           requestId: expect.any(String),
           summary: CONFLICT_SUMMARY,
           subjectReferences: KNOWLEDGE_CONFLICT.subjectReferences,
@@ -4274,8 +4285,8 @@ describe('Knowledge (board 14)', () => {
     );
     await waitFor(() => expect(listKnowledgeConflicts).toHaveBeenCalledTimes(2));
     expect(listKnowledgeConflicts.mock.calls).toEqual([
-      [{ workspaceId: 'ws1' }],
-      [{ workspaceId: 'ws1' }],
+      [{ workspaceId: 'ws_1' }],
+      [{ workspaceId: 'ws_1' }],
     ]);
     expect(
       await within(ledger).findByText(SERVER_CONFLICT.summary, {
@@ -4292,7 +4303,7 @@ describe('Knowledge (board 14)', () => {
     await user.click(within(ledger).getByRole('button', { name: 'Resolve conflict' }));
     await waitFor(() =>
       expect(resolveKnowledgeConflict).toHaveBeenCalledWith({
-        workspaceId: 'ws1',
+        workspaceId: 'ws_1',
         conflictId: KNOWLEDGE_CONFLICT.id,
         ...{
           requestId: expect.any(String),
@@ -4303,9 +4314,9 @@ describe('Knowledge (board 14)', () => {
     );
     await waitFor(() => expect(listKnowledgeConflicts).toHaveBeenCalledTimes(3));
     expect(listKnowledgeConflicts.mock.calls).toEqual([
-      [{ workspaceId: 'ws1' }],
-      [{ workspaceId: 'ws1' }],
-      [{ workspaceId: 'ws1' }],
+      [{ workspaceId: 'ws_1' }],
+      [{ workspaceId: 'ws_1' }],
+      [{ workspaceId: 'ws_1' }],
     ]);
     expect(screen.queryByText('Mutation resolution is not authority')).not.toBeInTheDocument();
     expect(
@@ -4339,7 +4350,7 @@ describe('Knowledge (board 14)', () => {
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Knowledge' })).toBeInTheDocument();
     const retrieval = knowledgePanel('Retrieval');
-    await waitFor(() => expect(readKnowledgeIndexes).toHaveBeenCalledWith({ workspaceId: 'ws1' }));
+    await waitFor(() => expect(readKnowledgeIndexes).toHaveBeenCalledWith({ workspaceId: 'ws_1' }));
     expect(document.body).not.toHaveTextContent('knowledge/pages/mem1.md');
     expect(knowledgeScreenSource).not.toMatch(/\.fullText\b|indexTerms/);
 
@@ -4347,12 +4358,13 @@ describe('Knowledge (board 14)', () => {
     await user.click(within(retrieval).getByRole('button', { name: 'Retrieve' }));
     await waitFor(() =>
       expect(retrieveKnowledge).toHaveBeenCalledWith({
-        workspaceId: 'ws1',
+        workspaceId: 'ws_1',
         ...{ query: cjkQuery },
       })
     );
-    expect(await within(retrieval).findByText(RETRIEVAL_TRACE_ID)).toBeInTheDocument();
-    expect(within(retrieval).getByText(KNOWLEDGE_ENTRY.id)).toBeInTheDocument();
+    expect(await within(retrieval).findByText(KNOWLEDGE_ENTRY.id)).toBeInTheDocument();
+    expect(KNOWLEDGE_RETRIEVAL).not.toHaveProperty('traceId');
+    expect(KNOWLEDGE_RETRIEVAL).not.toHaveProperty('retrievalTraceRef');
     expect(within(retrieval).getByText(cjkEntry.title)).toBeInTheDocument();
     expect(within(retrieval).getByText(cjkEntry.content)).toBeInTheDocument();
     expect(within(retrieval).getByText('Sensitive content')).toBeInTheDocument();
@@ -4361,7 +4373,7 @@ describe('Knowledge (board 14)', () => {
     await user.click(within(retrieval).getByRole('button', { name: 'Prepare context' }));
     await waitFor(() =>
       expect(prepareKnowledgeContext).toHaveBeenCalledWith({
-        workspaceId: 'ws1',
+        workspaceId: 'ws_1',
         ...{ query: cjkQuery },
       })
     );
@@ -4384,16 +4396,22 @@ describe('Knowledge (board 14)', () => {
       title: 'Excluded private plan',
       content: 'Excluded plan content must not become a retrieval preview.',
     };
-    const trace = {
+    const result = {
       ...KNOWLEDGE_RETRIEVAL,
       selected: [
         KNOWLEDGE_RETRIEVAL.selected[0],
-        { ...KNOWLEDGE_RETRIEVAL.selected[0], knowledgePageId: second.id },
-        { ...KNOWLEDGE_RETRIEVAL.selected[0], knowledgePageId: 'missing-page' },
+        {
+          ...KNOWLEDGE_RETRIEVAL.selected[0],
+          reference: { scopeId: 'page/workspace/ws_1', objectId: second.id },
+        },
+        {
+          ...KNOWLEDGE_RETRIEVAL.selected[0],
+          reference: { scopeId: 'page/workspace/ws_1', objectId: 'missing-page' },
+        },
       ],
     };
     const listKnowledge = vi.fn().mockResolvedValue({ items: [excluded, second, first] });
-    const retrieveKnowledge = vi.fn().mockResolvedValue(trace);
+    const retrieveKnowledge = vi.fn().mockResolvedValue(result);
     renderApp(
       '/knowledge',
       makeClient({
@@ -4405,7 +4423,7 @@ describe('Knowledge (board 14)', () => {
     const retrieval = knowledgePanel('Retrieval');
     await fillKnowledgeFields(user, retrieval, [['Query', RETRIEVAL_QUERY]]);
     await user.click(within(retrieval).getByRole('button', { name: 'Retrieve' }));
-    await within(retrieval).findByText(trace.traceId);
+    await within(retrieval).findByText(first.title);
 
     expect(within(retrieval).getByText(first.title)).toBeInTheDocument();
     expect(within(retrieval).getByText(`${first.content.slice(0, 240)}…`)).toBeInTheDocument();
@@ -4413,12 +4431,12 @@ describe('Knowledge (board 14)', () => {
     expect(within(retrieval).getByText(second.title)).toBeInTheDocument();
     expect(within(retrieval).getByText(second.content)).toBeInTheDocument();
     expect(
-      within(retrieval).getByText('Current content; may differ from the recorded retrieval.')
+      within(retrieval).getByText('Current content; may differ from the search result.')
     ).toBeInTheDocument();
     const hits = within(retrieval).getAllByRole('listitem');
     expect(hits).toHaveLength(3);
-    for (const [index, selected] of trace.selected.entries()) {
-      expect(within(hits[index]).getByText(selected.knowledgePageId)).toBeInTheDocument();
+    for (const [index, selected] of result.selected.entries()) {
+      expect(within(hits[index]).getByText(selected.reference.objectId)).toBeInTheDocument();
     }
     expect(within(hits[2]).getByText('Current content unavailable.')).toBeInTheDocument();
     expect(within(hits[2]).queryByRole('link')).not.toBeInTheDocument();
@@ -4445,7 +4463,39 @@ describe('Knowledge (board 14)', () => {
     ]);
   });
 
-  it('keeps the retrieval trace while current content changes or becomes unavailable', async () => {
+  it("does not resolve another owner's matching page path as current Workspace content", async () => {
+    const user = userEvent.setup();
+    const otherWorkspaceResult = {
+      ...KNOWLEDGE_RETRIEVAL,
+      sourceScope: 'page/workspace/ws_2',
+      selected: [
+        {
+          ...KNOWLEDGE_RETRIEVAL.selected[0],
+          reference: { scopeId: 'page/workspace/ws_2', objectId: KNOWLEDGE_ENTRY.id },
+        },
+      ],
+      excluded: [],
+    };
+    renderApp(
+      '/knowledge',
+      makeClient({
+        core: { 'knowledge.list': vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }) },
+        app: { 'knowledge.retrieval': vi.fn().mockResolvedValue(otherWorkspaceResult) },
+      })
+    );
+    await screen.findByRole('heading', { level: 1, name: 'Knowledge' });
+    const retrieval = knowledgePanel('Retrieval');
+    await fillKnowledgeFields(user, retrieval, [['Query', RETRIEVAL_QUERY]]);
+    await user.click(within(retrieval).getByRole('button', { name: 'Retrieve' }));
+
+    expect(await within(retrieval).findByText(KNOWLEDGE_ENTRY.id)).toBeInTheDocument();
+    expect(within(retrieval).getByText('Current content unavailable.')).toBeInTheDocument();
+    expect(within(retrieval).queryByText(KNOWLEDGE_ENTRY.title)).not.toBeInTheDocument();
+    expect(within(retrieval).queryByText(KNOWLEDGE_ENTRY.content)).not.toBeInTheDocument();
+    expect(within(retrieval).queryByRole('link')).not.toBeInTheDocument();
+  });
+
+  it('keeps the search selection while current content changes or becomes unavailable', async () => {
     const user = userEvent.setup();
     const listKnowledge = vi
       .fn()
@@ -4478,7 +4528,6 @@ describe('Knowledge (board 14)', () => {
     expect(await within(retrieval).findByText('Current content unavailable.')).toBeInTheDocument();
     expect(within(retrieval).queryByRole('link')).not.toBeInTheDocument();
     expect(within(retrieval).queryByText(UPDATED_KNOWLEDGE_ENTRY.content)).not.toBeInTheDocument();
-    expect(within(retrieval).getByText(RETRIEVAL_TRACE_ID)).toBeInTheDocument();
     expect(within(retrieval).getByText(KNOWLEDGE_ENTRY.id)).toBeInTheDocument();
     expect(retrieveKnowledge).toHaveBeenCalledTimes(1);
   });
@@ -4518,7 +4567,7 @@ describe('Knowledge (board 14)', () => {
     expect(within(retrieval).queryByText(KNOWLEDGE_ENTRY.title)).not.toBeInTheDocument();
     expect(within(retrieval).queryByText(KNOWLEDGE_ENTRY.content)).not.toBeInTheDocument();
     expect(within(retrieval).queryByRole('link')).not.toBeInTheDocument();
-    expect(within(retrieval).getByText(RETRIEVAL_TRACE_ID)).toBeInTheDocument();
+    expect(within(retrieval).getByText(KNOWLEDGE_ENTRY.id)).toBeInTheDocument();
     expect(document.body).not.toHaveTextContent(error.message);
   });
 
@@ -4566,7 +4615,7 @@ describe('Knowledge (board 14)', () => {
     );
 
     const retrieval = knowledgePanel('Retrieval');
-    expect(within(retrieval).queryByText(RETRIEVAL_TRACE_ID)).not.toBeInTheDocument();
+    expect(within(retrieval).queryByText(KNOWLEDGE_ENTRY.id)).not.toBeInTheDocument();
     expect(within(retrieval).queryByText(KNOWLEDGE_ENTRY.title)).not.toBeInTheDocument();
     expect(within(retrieval).queryByText(collidingB.title)).not.toBeInTheDocument();
     expect(within(retrieval).queryByText(collidingB.content)).not.toBeInTheDocument();
@@ -4609,7 +4658,7 @@ describe('Knowledge (board 14)', () => {
     await user.click(within(manager).getByRole('button', { name: 'Answer' }));
     await waitFor(() =>
       expect(answerKnowledgeManager).toHaveBeenCalledWith({
-        workspaceId: 'ws1',
+        workspaceId: 'ws_1',
         ...{ query: MANAGER_QUESTION },
       })
     );
@@ -4618,10 +4667,13 @@ describe('Knowledge (board 14)', () => {
     await user.click(within(manager).getByRole('button', { name: 'Suggest repairs' }));
     await user.click(within(manager).getByRole('button', { name: 'Check health' }));
     await waitFor(() =>
-      expect(suggestKnowledgeRepairs).toHaveBeenCalledWith({ workspaceId: 'ws1', ...{ limit: 10 } })
+      expect(suggestKnowledgeRepairs).toHaveBeenCalledWith({
+        workspaceId: 'ws_1',
+        ...{ limit: 10 },
+      })
     );
     await waitFor(() =>
-      expect(checkKnowledgeHealth).toHaveBeenCalledWith({ workspaceId: 'ws1', ...{ limit: 10 } })
+      expect(checkKnowledgeHealth).toHaveBeenCalledWith({ workspaceId: 'ws_1', ...{ limit: 10 } })
     );
     expect(await within(manager).findByText(KNOWLEDGE_HEALTH.summary)).toBeInTheDocument();
     expect(within(manager).getByText(KNOWLEDGE_REPAIR.title)).toBeInTheDocument();
@@ -4660,7 +4712,7 @@ describe('Knowledge (board 14)', () => {
       expected: [
         [
           expect.objectContaining({
-            workspaceId: 'ws1',
+            workspaceId: 'ws_1',
             kind: REGISTER_SOURCE_INPUT.kind,
             title: REGISTER_SOURCE_INPUT.title,
             content: REGISTER_SOURCE_INPUT.content,
@@ -4682,7 +4734,7 @@ describe('Knowledge (board 14)', () => {
         derivedRepresentations: [SOURCE_DERIVED_REPRESENTATION],
       },
       result: 'Text',
-      expected: [[{ workspaceId: 'ws1', sourceId: KNOWLEDGE_SOURCE.id }]],
+      expected: [[{ workspaceId: 'ws_1', sourceId: KNOWLEDGE_SOURCE.id }]],
     },
     {
       method: 'knowledge.observation.record',
@@ -4713,7 +4765,7 @@ describe('Knowledge (board 14)', () => {
       expected: [
         [
           expect.objectContaining({
-            workspaceId: 'ws1',
+            workspaceId: 'ws_1',
             kind: OBSERVATION_KIND,
             summary: KNOWLEDGE_OBSERVATION.summary,
             producer: KNOWLEDGE_OBSERVATION.producer,
@@ -4746,7 +4798,7 @@ describe('Knowledge (board 14)', () => {
       expected: [
         [
           expect.objectContaining({
-            workspaceId: 'ws1',
+            workspaceId: 'ws_1',
             statement: KNOWLEDGE_CLAIM.statement,
             producer: KNOWLEDGE_CLAIM.producer,
           }),
@@ -4778,7 +4830,7 @@ describe('Knowledge (board 14)', () => {
       expected: [
         [
           expect.objectContaining({
-            workspaceId: 'ws1',
+            workspaceId: 'ws_1',
             statement: KNOWLEDGE_CLAIM.statement,
             producer: KNOWLEDGE_CLAIM.producer,
           }),
@@ -4794,7 +4846,7 @@ describe('Knowledge (board 14)', () => {
       message: /couldn't load|access denied/i,
       success: { items: [KNOWLEDGE_CONFLICT] },
       result: KNOWLEDGE_CONFLICT.summary,
-      expected: [[{ workspaceId: 'ws1' }]],
+      expected: [[{ workspaceId: 'ws_1' }]],
     },
     {
       method: 'knowledge.conflict.list',
@@ -4805,7 +4857,7 @@ describe('Knowledge (board 14)', () => {
       message: /couldn't load/i,
       success: { items: [KNOWLEDGE_CONFLICT] },
       result: KNOWLEDGE_CONFLICT.summary,
-      expected: [[{ workspaceId: 'ws1' }]],
+      expected: [[{ workspaceId: 'ws_1' }]],
     },
     {
       method: 'knowledge.conflict.record',
@@ -4833,7 +4885,7 @@ describe('Knowledge (board 14)', () => {
       expected: [
         [
           expect.objectContaining({
-            workspaceId: 'ws1',
+            workspaceId: 'ws_1',
             summary: CONFLICT_SUMMARY,
             subjectReferences: KNOWLEDGE_CONFLICT.subjectReferences,
             producer: KNOWLEDGE_CONFLICT.producer,
@@ -4867,7 +4919,7 @@ describe('Knowledge (board 14)', () => {
       expected: [
         [
           expect.objectContaining({
-            workspaceId: 'ws1',
+            workspaceId: 'ws_1',
             summary: CONFLICT_SUMMARY,
             subjectReferences: KNOWLEDGE_CONFLICT.subjectReferences,
             producer: KNOWLEDGE_CONFLICT.producer,
@@ -4904,7 +4956,7 @@ describe('Knowledge (board 14)', () => {
       expected: [
         [
           expect.objectContaining({
-            workspaceId: 'ws1',
+            workspaceId: 'ws_1',
             conflictId: KNOWLEDGE_CONFLICT.id,
             resolution: CONFLICT_RESOLUTION,
             resolvedBy: 'user:test',
@@ -4921,7 +4973,7 @@ describe('Knowledge (board 14)', () => {
       message: /couldn't load|access denied/i,
       success: KNOWLEDGE_INDEXES,
       result: null,
-      expected: [[{ workspaceId: 'ws1' }]],
+      expected: [[{ workspaceId: 'ws_1' }]],
     },
     {
       method: 'knowledge.indexes',
@@ -4932,7 +4984,7 @@ describe('Knowledge (board 14)', () => {
       message: /couldn't load/i,
       success: KNOWLEDGE_INDEXES,
       result: null,
-      expected: [[{ workspaceId: 'ws1' }]],
+      expected: [[{ workspaceId: 'ws_1' }]],
     },
     {
       method: 'knowledge.retrieval',
@@ -4944,8 +4996,8 @@ describe('Knowledge (board 14)', () => {
       action: 'Retrieve',
       fields: [['Query', RETRIEVAL_QUERY]] as const,
       success: KNOWLEDGE_RETRIEVAL,
-      result: RETRIEVAL_TRACE_ID,
-      expected: [[{ workspaceId: 'ws1', ...{ query: RETRIEVAL_QUERY } }]],
+      result: KNOWLEDGE_ENTRY.id,
+      expected: [[{ workspaceId: 'ws_1', ...{ query: RETRIEVAL_QUERY } }]],
     },
     {
       method: 'knowledge.context.prepare',
@@ -4958,7 +5010,7 @@ describe('Knowledge (board 14)', () => {
       fields: [['Query', RETRIEVAL_QUERY]] as const,
       success: KNOWLEDGE_CONTEXT,
       result: 'prepared',
-      expected: [[{ workspaceId: 'ws1', ...{ query: RETRIEVAL_QUERY } }]],
+      expected: [[{ workspaceId: 'ws_1', ...{ query: RETRIEVAL_QUERY } }]],
     },
     {
       method: 'knowledge.answer',
@@ -4971,7 +5023,7 @@ describe('Knowledge (board 14)', () => {
       fields: [['Question', MANAGER_QUESTION]] as const,
       success: KNOWLEDGE_ANSWER,
       result: KNOWLEDGE_ANSWER.answer,
-      expected: [[{ workspaceId: 'ws1', ...{ query: MANAGER_QUESTION } }]],
+      expected: [[{ workspaceId: 'ws_1', ...{ query: MANAGER_QUESTION } }]],
     },
     {
       method: 'knowledge.repair.suggest',
@@ -4983,7 +5035,7 @@ describe('Knowledge (board 14)', () => {
       action: 'Suggest repairs',
       success: KNOWLEDGE_REPAIRS,
       result: KNOWLEDGE_REPAIR.title,
-      expected: [[{ workspaceId: 'ws1', ...{ limit: 10 } }]],
+      expected: [[{ workspaceId: 'ws_1', ...{ limit: 10 } }]],
     },
     {
       method: 'knowledge.repair.suggest',
@@ -4995,7 +5047,7 @@ describe('Knowledge (board 14)', () => {
       action: 'Suggest repairs',
       success: KNOWLEDGE_REPAIRS,
       result: KNOWLEDGE_REPAIR.title,
-      expected: [[{ workspaceId: 'ws1', ...{ limit: 10 } }]],
+      expected: [[{ workspaceId: 'ws_1', ...{ limit: 10 } }]],
     },
     {
       method: 'knowledge.health.check',
@@ -5007,7 +5059,7 @@ describe('Knowledge (board 14)', () => {
       action: 'Check health',
       success: KNOWLEDGE_HEALTH,
       result: KNOWLEDGE_HEALTH.summary,
-      expected: [[{ workspaceId: 'ws1', ...{ limit: 10 } }]],
+      expected: [[{ workspaceId: 'ws_1', ...{ limit: 10 } }]],
     },
   ])('scopes a $kind $method retry to the $panel panel', async (testCase) => {
     const user = userEvent.setup();
@@ -5072,7 +5124,7 @@ describe('Knowledge (board 14)', () => {
     }
     if (owner && 'owner' in testCase && testCase.owner) {
       await waitFor(() => expect(owner.mock.calls.length).toBeGreaterThanOrEqual(2));
-      expect(owner.mock.calls.every((call) => call[0]?.workspaceId === 'ws1')).toBe(true);
+      expect(owner.mock.calls.every((call) => call[0]?.workspaceId === 'ws_1')).toBe(true);
     }
     await proveScopedRetrySettled(
       panel,
@@ -5639,7 +5691,7 @@ describe('Knowledge (board 14)', () => {
       ] as const,
       nextExpected: [
         expect.objectContaining({
-          workspaceId: 'ws1',
+          workspaceId: 'ws_1',
           kind: NEXT_REGISTER_SOURCE_INPUT.kind,
           title: NEXT_REGISTER_SOURCE_INPUT.title,
           content: NEXT_REGISTER_SOURCE_INPUT.content,
@@ -5681,7 +5733,7 @@ describe('Knowledge (board 14)', () => {
       ] as const,
       nextExpected: [
         expect.objectContaining({
-          workspaceId: 'ws1',
+          workspaceId: 'ws_1',
           kind: NEXT_OBSERVATION_KIND,
           summary: NEXT_OBSERVATION.summary,
           producer: NEXT_OBSERVATION.producer,
@@ -5719,7 +5771,7 @@ describe('Knowledge (board 14)', () => {
       ] as const,
       nextExpected: [
         expect.objectContaining({
-          workspaceId: 'ws1',
+          workspaceId: 'ws_1',
           statement: NEXT_CLAIM.statement,
           producer: NEXT_CLAIM.producer,
         }),
@@ -5759,7 +5811,7 @@ describe('Knowledge (board 14)', () => {
       ] as const,
       nextExpected: [
         expect.objectContaining({
-          workspaceId: 'ws1',
+          workspaceId: 'ws_1',
           summary: NEXT_CONFLICT_INPUT.summary,
           subjectReferences: NEXT_CONFLICT_INPUT.subjectReferences,
           producer: NEXT_CONFLICT_INPUT.producer,
@@ -5801,7 +5853,7 @@ describe('Knowledge (board 14)', () => {
       ] as const,
       nextExpected: [
         expect.objectContaining({
-          workspaceId: 'ws1',
+          workspaceId: 'ws_1',
           conflictId: SECOND_CONFLICT.id,
           resolution: NEXT_RESOLUTION.resolution,
           resolvedBy: NEXT_RESOLUTION.resolvedBy,

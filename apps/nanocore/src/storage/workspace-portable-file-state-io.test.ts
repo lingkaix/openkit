@@ -13,6 +13,11 @@ import {
 const JUNE = '2026-06-30T23:59:59.000Z';
 const JULY = '2026-07-01T00:00:00.000Z';
 const PORTABLE_TURN = { threadId: 'th_portable', turnId: 'tu_portable' } as const;
+const PORTABLE_OWNERS = {
+  workspaceId: 'ws_portable_source',
+  threads: [{ threadId: PORTABLE_TURN.threadId }],
+  turns: [PORTABLE_TURN],
+} as const;
 
 /** Creates one empty real workspace root. */
 function workspaceRoot(prefix: string): string {
@@ -122,10 +127,23 @@ function writePortableFixture(root: string): void {
   ];
   const retrieval = {
     traceId: 'krt_00000000-0000-4000-8000-000000000001',
-    workspaceId,
+    queryContext: {
+      serverId: 'server_portable_source',
+      workspaceId,
+      actor: { kind: 'user', id: 'user_local' },
+      threadId: PORTABLE_TURN.threadId,
+      turnId: PORTABLE_TURN.turnId,
+    },
+    sourceScope: `page/workspace/${workspaceId}`,
+    notebookRevision: null,
     caller: 'app-api',
     requestDigest: `sha256:${'0'.repeat(64)}`,
-    retrievalParameters: { limit: 1, pinnedConceptIds: [], states: ['active'] },
+    retrievalParameters: {
+      limit: 1,
+      pinnedReferences: [],
+      states: ['active'],
+      sourceScope: 'workspace',
+    },
     createdAt: JULY,
     selected: [],
     excluded: [],
@@ -136,7 +154,34 @@ function writePortableFixture(root: string): void {
   writeJsonl(join(root, 'knowledge', 'claims', '202607.jsonl'), claims);
   writeJsonl(join(root, 'knowledge', 'conflicts', '202606.jsonl'), [conflicts[0]]);
   writeJsonl(join(root, 'knowledge', 'conflicts', '202607.jsonl'), [conflicts[1]]);
-  writeJsonl(join(root, 'knowledge', 'traces', '202607.jsonl'), [retrieval]);
+  const retrievalPath = join(
+    root,
+    'threads',
+    PORTABLE_TURN.threadId,
+    'turns',
+    PORTABLE_TURN.turnId,
+    'retrieval-traces',
+    `${retrieval.traceId}.json`
+  );
+  mkdirSync(dirname(retrievalPath), { recursive: true });
+  writeFileSync(retrievalPath, `${JSON.stringify(retrieval)}\n`);
+  const threadRetrieval = {
+    ...retrieval,
+    traceId: 'krt_00000000-0000-4000-8000-000000000002',
+    queryContext: {
+      ...retrieval.queryContext,
+      turnId: undefined,
+    },
+  };
+  const threadRetrievalPath = join(
+    root,
+    'threads',
+    PORTABLE_TURN.threadId,
+    'retrieval-traces',
+    `${threadRetrieval.traceId}.json`
+  );
+  mkdirSync(dirname(threadRetrievalPath), { recursive: true });
+  writeFileSync(threadRetrievalPath, `${JSON.stringify(threadRetrieval)}\n`);
 
   mkdirSync(join(root, 'config'), { recursive: true });
   writeFileSync(
@@ -183,48 +228,56 @@ function writePortableFixture(root: string): void {
 }
 
 describe('workspace portable file-state IO', () => {
-  it('reads, rewrites and reopens all Knowledge ledger families with nested descriptive additions', () => {
+  it('retains ledger annotations while excluding ignored trace fields from portable writes', () => {
     const source = workspaceRoot('openkit-knowledge-extended-');
     const target = workspaceRoot('openkit-knowledge-rewritten-');
     writePortableFixture(source);
-    for (const family of ['observations', 'claims', 'conflicts', 'traces']) {
+    for (const family of ['observations', 'claims', 'conflicts']) {
       const path = join(source, 'knowledge', family, '202607.jsonl');
       const rows = readFileSync(path, 'utf8')
         .trim()
         .split('\n')
         .map((line) => JSON.parse(line));
       for (const row of rows) row.futureNote = 'retained';
-      if (family === 'traces') {
-        rows[0].retrievalParameters.futureNote = 'retained';
-        rows[0].selected = [
-          {
-            knowledgePageId: 'selected',
-            contentDigest: `sha256:${'a'.repeat(64)}`,
-            score: 1,
-            sourceReferences: [],
-            futureNote: 'retained',
-          },
-        ];
-        rows[0].excluded = [
-          {
-            knowledgePageId: 'excluded',
-            contentDigest: null,
-            reason: 'source_unavailable',
-            futureNote: 'retained',
-          },
-        ];
-      }
       writeJsonl(path, rows);
     }
-    const state = readWorkspacePortableFileState(source, [PORTABLE_TURN]);
-    expect(JSON.stringify([...state.retrievalTraces.values()])).not.toContain('futureNote');
+    const retrievalPath = join(
+      source,
+      'threads',
+      PORTABLE_TURN.threadId,
+      'turns',
+      PORTABLE_TURN.turnId,
+      'retrieval-traces',
+      'krt_00000000-0000-4000-8000-000000000001.json'
+    );
+    const retrieval = JSON.parse(readFileSync(retrievalPath, 'utf8'));
+    retrieval.futureNote = 'retained';
+    retrieval.retrievalParameters.futureNote = 'retained';
+    writeFileSync(retrievalPath, `${JSON.stringify(retrieval)}\n`);
+    const state = readWorkspacePortableFileState(source, PORTABLE_OWNERS);
+    expect(JSON.stringify([...state.retrievalTraceFiles.values()])).not.toContain('futureNote');
+    expect(readFileSync(retrievalPath, 'utf8')).toContain('futureNote');
     writeWorkspacePortableFileState(target, state);
-    const reopened = readWorkspacePortableFileState(target, [PORTABLE_TURN]);
-    expect(reopened.retrievalTraces).toEqual(state.retrievalTraces);
-    for (const family of ['observations', 'claims', 'conflicts', 'traces'])
+    const reopened = readWorkspacePortableFileState(target, PORTABLE_OWNERS);
+    expect(reopened.retrievalTraceFiles).toEqual(state.retrievalTraceFiles);
+    for (const family of ['observations', 'claims', 'conflicts'])
       expect(readFileSync(join(target, 'knowledge', family, '202607.jsonl'), 'utf8')).toContain(
         'futureNote'
       );
+    expect(
+      readFileSync(
+        join(
+          target,
+          'threads',
+          PORTABLE_TURN.threadId,
+          'turns',
+          PORTABLE_TURN.turnId,
+          'retrieval-traces',
+          'krt_00000000-0000-4000-8000-000000000001.json'
+        ),
+        'utf8'
+      )
+    ).not.toContain('futureNote');
   });
   it('round-trips strict monthly ledgers and exact workspace-owned text', () => {
     const sourceRoot = workspaceRoot('openkit-portable-state-source-');
@@ -242,7 +295,7 @@ describe('workspace portable file-state IO', () => {
       '---\nopenkit_entry_id: "kn_target"\n---\nTarget owned page.\n'
     );
 
-    const state = readWorkspacePortableFileState(sourceRoot, [PORTABLE_TURN]);
+    const state = readWorkspacePortableFileState(sourceRoot, PORTABLE_OWNERS);
 
     expect([...state.observations.keys()]).toEqual(['202606', '202607']);
     expect(state.claims.get('202607')?.map((row) => row.id)).toEqual(['kc_first', 'kc_second']);
@@ -277,7 +330,7 @@ describe('workspace portable file-state IO', () => {
 
     writeWorkspacePortableFileState(targetRoot, state);
 
-    const roundTripped = readWorkspacePortableFileState(targetRoot, [PORTABLE_TURN]);
+    const roundTripped = readWorkspacePortableFileState(targetRoot, PORTABLE_OWNERS);
     for (const [path, content] of state.nativeKnowledgePages) {
       expect(roundTripped.nativeKnowledgePages.get(path)).toBe(content);
     }
@@ -318,7 +371,7 @@ describe('workspace portable file-state IO', () => {
         unexpected: true,
       },
     ]);
-    expect(() => readWorkspacePortableFileState(malformedRoot, [PORTABLE_TURN])).toThrow();
+    expect(() => readWorkspacePortableFileState(malformedRoot, PORTABLE_OWNERS)).toThrow();
 
     writePortableFixture(linkedRoot);
     writeFileSync(join(outsideRoot, 'sentinel.txt'), 'untouched\n');
@@ -326,7 +379,7 @@ describe('workspace portable file-state IO', () => {
       join(outsideRoot, 'sentinel.txt'),
       join(linkedRoot, 'knowledge', 'pages', 'linked.md')
     );
-    expect(() => readWorkspacePortableFileState(linkedRoot, [PORTABLE_TURN])).toThrow(
+    expect(() => readWorkspacePortableFileState(linkedRoot, PORTABLE_OWNERS)).toThrow(
       /symbolic link/i
     );
     expect(readFileSync(join(outsideRoot, 'sentinel.txt'), 'utf8')).toBe('untouched\n');
@@ -358,7 +411,12 @@ describe('workspace portable file-state IO', () => {
     writePortableFixture(root);
     alter(root);
 
-    expect(() => readWorkspacePortableFileState(root, knownTurns)).toThrow();
+    expect(() =>
+      readWorkspacePortableFileState(root, {
+        ...PORTABLE_OWNERS,
+        turns: knownTurns,
+      })
+    ).toThrow();
   });
 
   it('rejects a worker Context Package trace carried by another Turn path', () => {
@@ -381,8 +439,70 @@ describe('workspace portable file-state IO', () => {
       })}\n`
     );
 
-    expect(() => readWorkspacePortableFileState(root, [PORTABLE_TURN])).toThrow(
+    expect(() => readWorkspacePortableFileState(root, PORTABLE_OWNERS)).toThrow(
       'Worker Context Package trace path lineage is contradictory.'
     );
+  });
+
+  it('rejects retired ledgers and trace files with contradictory path lineage', () => {
+    const retiredRoot = workspaceRoot('openkit-portable-state-retired-trace-');
+    writePortableFixture(retiredRoot);
+    writeJsonl(join(retiredRoot, 'knowledge', 'traces', '202607.jsonl'), []);
+    expect(() => readWorkspacePortableFileState(retiredRoot, PORTABLE_OWNERS)).toThrow(
+      'The retired Knowledge retrieval trace ledger is unsupported.'
+    );
+
+    const contradictoryRoot = workspaceRoot('openkit-portable-state-trace-lineage-');
+    writePortableFixture(contradictoryRoot);
+    const path = join(
+      contradictoryRoot,
+      'threads',
+      PORTABLE_TURN.threadId,
+      'turns',
+      PORTABLE_TURN.turnId,
+      'retrieval-traces',
+      'krt_00000000-0000-4000-8000-000000000001.json'
+    );
+    const trace = JSON.parse(readFileSync(path, 'utf8'));
+    trace.queryContext.turnId = 'tu_other';
+    writeFileSync(path, `${JSON.stringify(trace)}\n`);
+    expect(() => readWorkspacePortableFileState(contradictoryRoot, PORTABLE_OWNERS)).toThrow(
+      'Knowledge retrieval trace lineage is contradictory.'
+    );
+  });
+
+  it('ignores publisher temporary files while retaining Thread and Turn traces', () => {
+    const root = workspaceRoot('openkit-portable-state-trace-temporary-');
+    writePortableFixture(root);
+    writeFileSync(
+      join(
+        root,
+        'threads',
+        PORTABLE_TURN.threadId,
+        'retrieval-traces',
+        '.krt_00000000-0000-4000-8000-000000000099.00000000-0000-4000-8000-000000000098.tmp'
+      ),
+      'incomplete'
+    );
+    expect(readWorkspacePortableFileState(root, PORTABLE_OWNERS).retrievalTraceFiles.size).toBe(2);
+  });
+
+  it('rejects a publisher-temp-shaped symbolic link in a retrieval trace directory', () => {
+    const root = workspaceRoot('openkit-portable-state-trace-temp-link-');
+    try {
+      const traceDirectory = join(root, 'threads', PORTABLE_TURN.threadId, 'retrieval-traces');
+      mkdirSync(traceDirectory, { recursive: true });
+      symlinkSync(
+        'missing-trace-target',
+        join(
+          traceDirectory,
+          '.krt_00000000-0000-4000-8000-000000000099.00000000-0000-4000-8000-000000000098.tmp'
+        )
+      );
+
+      expect(() => readWorkspacePortableFileState(root, PORTABLE_OWNERS)).toThrow(/symbolic link/i);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
   });
 });

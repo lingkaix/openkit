@@ -64,6 +64,7 @@ import {
   KnowledgeManagerSuggestRepairResponseSchema,
   KnowledgeObservationSchema,
   KnowledgeRetrievalResponseSchema,
+  KnowledgeRetrievalTraceSchema,
   KnowledgeSourceSchema,
   ListAgentCatalogResponseSchema,
   ListAgentEnvironmentPackageSnapshotsResponseSchema,
@@ -204,6 +205,17 @@ function jsonContainsKey(value: unknown, key: string): boolean {
   return false;
 }
 const retrievalTraceId = 'krt_123e4567-e89b-42d3-a456-426614174000';
+const knowledgePageScopeId = 'page/workspace/ws_demo';
+const retrievalTraceRef = {
+  scopeId: 'retrieval-trace/thread/ws_demo/th_demo',
+  objectId: retrievalTraceId,
+} as const;
+const knowledgeQueryContext = {
+  serverId: 'srv_demo',
+  workspaceId: 'ws_demo',
+  actor: { kind: 'user', id: 'user_local' },
+  threadId: 'th_demo',
+} as const;
 const knowledgeSourceReference = `source:ks_123e4567-e89b-42d3-a456-426614174000@sha256:${'1'.repeat(64)}`;
 const knowledgePageId = 'lessons/release-review';
 const canonicalKnowledgePageBytes = [
@@ -1069,30 +1081,37 @@ describe('app api schemas', () => {
     });
   });
 
-  it('accepts Knowledge Store retrieval trace payloads', () => {
+  it('keeps scored Knowledge retrieval responses distinct from persisted evidence', () => {
     const selected = {
-      knowledgePageId: 'release-plan',
+      reference: { scopeId: knowledgePageScopeId, objectId: 'release-plan' },
+      revision: `sha256:${'b'.repeat(64)}`,
       contentDigest: `sha256:${'b'.repeat(64)}`,
       score: 4,
       sourceReferences: ['source:ks_demo'],
     };
     const excluded = {
-      knowledgePageId: 'old-plan',
+      reference: { scopeId: knowledgePageScopeId, objectId: 'old-plan' },
+      revision: null,
       contentDigest: null,
+      sourceReferences: [],
       reason: 'source_unavailable',
     };
     const response = {
-      traceId: retrievalTraceId,
+      queryContext: knowledgeQueryContext,
+      sourceScope: knowledgePageScopeId,
+      notebookRevision: null,
       workspaceId: 'ws_demo',
       caller: 'assistant',
       requestDigest: `sha256:${'a'.repeat(64)}`,
       retrievalParameters: {
         limit: 3,
-        pinnedConceptIds: ['release-plan'],
+        pinnedReferences: [selected.reference],
         states: ['active'],
+        sourceScope: 'workspace',
       },
       selected: [selected],
       excluded: [excluded],
+      retrievalTraceRef,
       createdAt: timestamp,
     } as const;
 
@@ -1100,15 +1119,31 @@ describe('app api schemas', () => {
       RetrieveKnowledgeRequestSchema.parse({
         query: 'release cadence',
         limit: 3,
-        pinnedConceptIds: ['release-plan'],
+        pinnedReferences: [selected.reference],
       })
     ).toEqual({
       query: 'release cadence',
       limit: 3,
-      pinnedConceptIds: ['release-plan'],
+      pinnedReferences: [selected.reference],
       states: ['active'],
     });
     expect(KnowledgeRetrievalResponseSchema.parse(response)).toEqual(response);
+    expect(jsonContainsKey(response, 'traceId')).toBe(false);
+    expect(jsonContainsKey(response, 'retrievalTraceId')).toBe(false);
+    const {
+      retrievalTraceRef: _retrievalTraceRef,
+      workspaceId: _workspaceId,
+      ...responseMetadata
+    } = response;
+    const trace = {
+      ...responseMetadata,
+      queryContext: knowledgeQueryContext,
+      traceId: retrievalTraceId,
+      selected: response.selected.map(({ score: _score, ...candidate }) => candidate),
+    };
+    const parsedTrace = KnowledgeRetrievalTraceSchema.parse(trace);
+    expect(parsedTrace.traceId).toBe(retrievalTraceId);
+    expect(jsonContainsKey(parsedTrace.selected, 'score')).toBe(false);
     expect(() => RetrieveKnowledgeRequestSchema.parse({ query: 'release', states: [] })).toThrow();
     for (const score of [Number.NaN, Number.POSITIVE_INFINITY, -1])
       expect(() =>
@@ -1254,13 +1289,12 @@ describe('app api schemas', () => {
         operation: 'answer',
         workspaceId: 'ws_demo',
         caller: 'assistant',
-        retrievalTraceId,
         query: 'release cadence',
         outcome: 'answered',
         answer: 'Release cadence is weekly.',
         citations: [
           {
-            knowledgeEntryId: 'mem_demo',
+            reference: { scopeId: knowledgePageScopeId, objectId: 'mem_demo' },
             kind: 'project-context',
             title: 'Release plan',
             excerpt: 'Release cadence is weekly.',
@@ -1272,8 +1306,7 @@ describe('app api schemas', () => {
     ).toMatchObject({
       operation: 'answer',
       outcome: 'answered',
-      retrievalTraceId,
-      citations: [{ knowledgeEntryId: 'mem_demo' }],
+      citations: [{ reference: { scopeId: knowledgePageScopeId, objectId: 'mem_demo' } }],
     });
   });
 
@@ -1307,11 +1340,11 @@ describe('app api schemas', () => {
       operation: 'prepare-context-material' as const,
       workspaceId: 'ws_demo',
       caller: 'app-api' as const,
-      retrievalTraceId,
       outcome: 'prepared' as const,
       selected: [
         {
-          knowledgePageId: 'kn_demo',
+          reference: { scopeId: knowledgePageScopeId, objectId: 'kn_demo' },
+          revision: 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
           contentDigest: 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
           score: 3,
           sourceReferences: ['source:ks_release'],
@@ -1319,19 +1352,24 @@ describe('app api schemas', () => {
       ],
       excluded: [
         {
-          knowledgePageId: 'kn_expired',
+          reference: { scopeId: knowledgePageScopeId, objectId: 'kn_expired' },
+          revision: 'sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789',
           contentDigest: 'sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789',
           reason: 'freshness_expired' as const,
+          sourceReferences: [],
         },
         {
-          knowledgePageId: 'kn_missing',
+          reference: { scopeId: knowledgePageScopeId, objectId: 'kn_missing' },
+          revision: null,
           contentDigest: null,
           reason: 'source_unavailable' as const,
+          sourceReferences: [],
         },
       ],
     };
 
     expect(KnowledgeManagerPrepareContextResponseSchema.parse(response)).toEqual(response);
+    expect(jsonContainsKey(response, 'retrievalTraceRef')).toBe(false);
     expect(
       KnowledgeManagerPrepareContextResponseSchema.safeParse({
         ...response,

@@ -97,7 +97,7 @@ function minimalExportInput(
       conflicts: new Map(),
       nativeKnowledgePages: new Map(),
       observations: new Map(),
-      retrievalTraces: new Map(),
+      retrievalTraceFiles: new Map(),
       workerContextPackageFiles: new Map(),
       workspaceConfig: JSON.stringify({
         schemaVersion: 1,

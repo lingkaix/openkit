@@ -37,6 +37,7 @@ import {
   createVerifiedWorkspaceExport,
   existingWorkspaceExportRoot,
   importVerifiedWorkspace,
+  workspaceDeletionRecoveryExportId,
 } from './storage/workspace-transfer-routes.js';
 import {
   createWorkspaceDeletionClosure,
@@ -301,7 +302,7 @@ async function advanceWorkspaceDeletion(input: {
     requireDeletingRegistry(input.coreDb, request);
   }
   if (request.phase === 'deleting') {
-    const exportId = deletionRecoveryExportId(request.requestId);
+    const exportId = workspaceDeletionRecoveryExportId(request.requestId);
     const exportRoot = join(
       input.dataRoot,
       'server',
@@ -318,6 +319,7 @@ async function advanceWorkspaceDeletion(input: {
           authorityUserId: request.originalOwnerUserId,
           coreDb: input.coreDb,
           dataRoot: input.dataRoot,
+          deletionRecoveryRequestId: request.requestId,
           exportId,
           repositoryWorkspaceDb: input.repositoryWorkspaceDb,
           store: input.store,
@@ -659,10 +661,6 @@ function requireTerminalDeletionTruth(
     throw recoveryRequired();
   }
   return { auditEventId: auditEvents[0].id, commandReceiptKey: receipt.key };
-}
-
-function deletionRecoveryExportId(requestId: string): string {
-  return `wsexp_delete_${requestId}`;
 }
 
 function deletionClosureId(requestId: string): string {

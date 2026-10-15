@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { type ActorRef, responsibleUserIdForActor } from '@openkit/protocol';
+import { KnowledgeQueryContextSchema } from '@openkit/app-api-schemas';
+import {
+  type ActorRef,
+  ReferenceScopeIdSchema,
+  RetrievalTraceReferenceSchema,
+  responsibleUserIdForActor,
+} from '@openkit/protocol';
 import { parseDocument } from 'yaml';
 import type { Actor } from './auth/identity.js';
 import {
@@ -25,6 +31,7 @@ import {
   type RetrievalScope,
 } from './retrieval-service.js';
 import { type CoreDb, openWorkspaceDb } from './storage/db.js';
+import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import {
   listKnowledgePageIds,
   readWorkspaceKnowledgePage,
@@ -38,11 +45,49 @@ export interface KnowledgeRetrievalAccess {
   actor: ActorRef;
   requestActor?: Actor | undefined;
   outputThreadId?: string | undefined;
+  /** Existing querying Turn, supplied only by trusted execution assembly. */
+  outputTurnId?: string | undefined;
 }
 interface Target {
   dataRoot: string;
   workspaceId: string;
   access: KnowledgeRetrievalAccess;
+}
+/** Resolves trusted query lineage before any source inventory or kernel access. */
+export function resolveKnowledgeQueryContext(input: Target) {
+  const { access, workspaceId } = input;
+  try {
+    if (!workspaceId || !access.actor) throw new Error('Missing query owner.');
+    input.access.store.getWorkspace(workspaceId);
+    ReferenceScopeIdSchema.parse(`page/workspace/${workspaceId}`);
+    if (access.outputTurnId && !access.outputThreadId) throw new Error('Turn without Thread.');
+    if (access.outputThreadId) {
+      const thread = access.store.getThread(workspaceId, access.outputThreadId);
+      if (thread.workspaceId !== workspaceId) throw new Error('Wrong Thread Workspace.');
+      const scopeId = access.outputTurnId
+        ? `retrieval-trace/turn/${workspaceId}/${access.outputThreadId}/${access.outputTurnId}`
+        : `retrieval-trace/thread/${workspaceId}/${access.outputThreadId}`;
+      RetrievalTraceReferenceSchema.shape.scopeId.parse(scopeId);
+      if (access.outputTurnId) {
+        const turn = access.store.getTurnById(access.outputTurnId);
+        if (turn.workspaceId !== workspaceId || turn.threadId !== access.outputThreadId)
+          throw new Error('Wrong Turn lineage.');
+      }
+    }
+    return KnowledgeQueryContextSchema.parse({
+      serverId: readDataRootLayoutMarker(input.dataRoot).deploymentId,
+      workspaceId,
+      actor: access.actor,
+      ...(access.outputThreadId ? { threadId: access.outputThreadId } : {}),
+      ...(access.outputTurnId ? { turnId: access.outputTurnId } : {}),
+    });
+  } catch {
+    throw new OperationError(
+      'invalid_request',
+      'Knowledge query context is missing or contradictory.',
+      400
+    );
+  }
 }
 /** Rechecks live membership, credentials and Policy before opening a named generation. */
 export function admitKnowledgeRetrieval(input: Pick<Target, 'workspaceId' | 'access'>): void {
@@ -127,12 +172,26 @@ export function knowledgePageReadable(
   if (!document) return true;
   const refs = stringListFrontmatterField(document, 'source_refs');
   if (refs === null) return false;
+  return knowledgeSourceReferencesReadable(input, pageId, refs, visiting);
+}
+/** Rechecks exact retained source references, including references no longer on the current page. */
+export function knowledgeSourceReferencesReadable(
+  input: Target,
+  pageId: string,
+  refs: readonly string[],
+  visiting = new Set<string>([pageId])
+): boolean {
   const { store } = input.access;
   const sources = new Map(
     store.listKnowledgeSources(input.workspaceId).map((source) => [source.id, source.contentDigest])
   );
   for (const reference of refs) {
     try {
+      // The existing proof owner verifies the exact terminal Turn, final Item and S39 tuple.
+      if (/^(?:turn|item|context-package):/.test(reference)) {
+        const proof = currentKnowledgeReferenceProofs(input).get(pageId);
+        if (!proof?.sourceReferences.includes(reference)) return false;
+      }
       if (reference.startsWith('source:')) {
         const resolution = resolveRegisteredKnowledgeSourceReference(reference, sources);
         if (!resolution.resolved || !resolution.targetId) return false;
@@ -148,9 +207,20 @@ export function knowledgePageReadable(
           join(input.dataRoot, 'workspaces', input.workspaceId),
           match[1]!
         );
+        if (source === null || (match[2] && digest(source) !== match[2])) return false;
+        const sourceDocument = parseOkfDocument({
+          path: `knowledge/pages/${match[1]!}.md`,
+          content: source,
+        }).document;
+        const sensitivity = sourceDocument
+          ? stringFrontmatterField(sourceDocument, 'sensitivity')
+          : null;
+        // A nested source has no candidate disposition that can protect its identity later.
         if (
-          source === null ||
-          (match[2] && digest(source) !== match[2]) ||
+          !sourceDocument ||
+          sensitivity === null ||
+          sensitivity === 'restricted' ||
+          sensitivity === 'confidential' ||
           !knowledgePageReadable(input, match[1]!, source, new Set(visiting))
         )
           return false;
@@ -158,10 +228,9 @@ export function knowledgePageReadable(
         const turn = store.getTurnById(reference.slice(5));
         if (turn.workspaceId !== input.workspaceId || !threadReadable(input, turn.threadId))
           return false;
-      } else if (reference.startsWith('item:') || reference.startsWith('context-package:')) {
-        // The exact terminal Turn/Item/S39 trio is verified by the shared publication evidence owner.
-        if (!currentKnowledgeReferenceProofs(input).has(pageId)) return false;
-      } else return false;
+      } else if (!reference.startsWith('item:') && !reference.startsWith('context-package:')) {
+        return false;
+      }
     } catch {
       return false;
     }

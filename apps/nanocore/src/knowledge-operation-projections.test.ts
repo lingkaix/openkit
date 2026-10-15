@@ -150,7 +150,9 @@ function observationView(value: unknown): unknown {
         )
         .map(([key, item]) => [
           key,
-          key === 'createdAt' && 'traceId' in value ? '<trace-time>' : observationView(item),
+          key === 'createdAt' && ('traceId' in value || 'requestDigest' in value)
+            ? '<trace-time>'
+            : observationView(item),
         ])
     );
   return value;
@@ -424,8 +426,43 @@ describe('Knowledge operation definition cutover', () => {
         ).rejects.toMatchObject({ code: 'workspace_access_denied' });
       }
       expect(f.store.listKnowledgeSources('ws_demo')).toEqual([]);
-      const traceRoot = join(f.dataRoot, 'workspaces/ws_demo/knowledge/traces');
+      const traceRoot = join(f.dataRoot, 'workspaces/ws_demo/threads/th_demo/retrieval-traces');
       expect(existsSync(traceRoot) ? readdirSync(traceRoot) : []).toEqual([]);
+    } finally {
+      f.close();
+    }
+  });
+
+  it('rejects a Workspace-qualified pin before opening the administrator-selected Server source', async () => {
+    const f = fixture();
+    const administrator = createOpenKitAccessTokenRecord(f.coreDb, {
+      ownerUserId: 'user_local',
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    try {
+      await expect(
+        createOperationInvocation(f.dependencies)(
+          'knowledge.retrieval',
+          {
+            workspaceId: 'ws_demo',
+            query: 'release cadence',
+            sourceScope: 'server',
+            pinnedReferences: [{ scopeId: 'page/workspace/ws_demo', objectId: 'release-plan' }],
+          },
+          {
+            kind: 'public',
+            actor: {
+              kind: 'token',
+              userId: 'user_local',
+              tokenId: administrator.record.tokenId,
+              tokenScope: 'server-admin',
+              tokenWorkspaceIds: [],
+            },
+          }
+        )
+      ).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
     } finally {
       f.close();
     }
@@ -494,7 +531,11 @@ describe('Knowledge operation definition cutover', () => {
             const result = await project(id, {
               workspaceId: 'ws_demo',
               query: 'audience budget baseline',
-              ...(id === 'knowledge.retrieval' ? { pinnedConceptIds: [entry.id] } : {}),
+              ...(id === 'knowledge.retrieval'
+                ? {
+                    pinnedReferences: [{ scopeId: 'page/workspace/ws_demo', objectId: entry.id }],
+                  }
+                : {}),
             });
             expect(JSON.stringify(result)).not.toContain(entry.title);
             expect(JSON.stringify(result)).not.toContain(entry.content);
@@ -504,7 +545,11 @@ describe('Knowledge operation definition cutover', () => {
               expect(result).toMatchObject({
                 selected: [],
                 excluded: [
-                  { knowledgePageId: entry.id, contentDigest: null, reason: 'sensitive_content' },
+                  {
+                    reference: { scopeId: 'page/workspace/ws_demo', objectId: entry.id },
+                    contentDigest: null,
+                    reason: 'sensitive_content',
+                  },
                 ],
               });
             else expect(result).toMatchObject({ selected: [] });
@@ -531,33 +576,33 @@ describe('Knowledge operation definition cutover', () => {
         operation: 'prepare-context-material',
         selected: [],
         excluded: [],
-        retrievalTraceId: expect.any(String),
       });
+      expect(publicResult).not.toHaveProperty('retrievalTraceRef');
+      expect(publicResult).not.toHaveProperty('retrievalTraceId');
       expect(retrieve).toHaveBeenCalledTimes(1);
       const traceId = `krt_${randomUUID()}`;
       const taskResult = await createTaskKnowledgePreparation(f.dependencies)(input, {
         actor: { kind: 'local', userId: 'user_local' },
         traceId,
+        threadId: 'th_demo',
       });
-      expect(taskResult).toEqual({ retrievalTraceId: traceId });
+      expect(taskResult).toEqual({
+        retrievalTraceRef: {
+          scopeId: 'retrieval-trace/thread/ws_demo/th_demo',
+          objectId: traceId,
+        },
+      });
       expect(retrieve).toHaveBeenCalledTimes(2);
       expect(retrieve.mock.calls.map(([request]) => request.caller)).toEqual([
         'app-api',
         'task-mode',
       ]);
-      const traceRows = readdirSync(
-        join(f.dataRoot, 'workspaces/ws_demo/knowledge/traces')
-      ).flatMap((name) =>
-        readFileSync(join(f.dataRoot, 'workspaces/ws_demo/knowledge/traces', name), 'utf8')
-          .trim()
-          .split('\n')
-          .map((line) => JSON.parse(line))
+      const traceRoot = join(f.dataRoot, 'workspaces/ws_demo/threads/th_demo/retrieval-traces');
+      expect(readdirSync(traceRoot)).toEqual([`${traceId}.json`]);
+      expect(JSON.parse(readFileSync(join(traceRoot, `${traceId}.json`), 'utf8'))).toEqual(
+        expect.objectContaining({ traceId })
       );
-      expect(traceRows).toHaveLength(2);
-      expect(traceRows.map((row) => row.traceId)).toEqual([
-        (publicResult as { retrievalTraceId: string }).retrievalTraceId,
-        traceId,
-      ]);
+      expect(existsSync(join(f.dataRoot, 'workspaces/ws_demo/knowledge/traces'))).toBe(false);
       await expect(
         invoke(
           'knowledge.context.prepare',
@@ -582,6 +627,7 @@ describe('Knowledge operation definition cutover', () => {
             tokenWorkspaceIds: ['ws_demo'],
           },
           traceId: `krt_${randomUUID()}`,
+          threadId: 'th_demo',
         })
       ).rejects.toMatchObject({ code: 'workspace_access_denied' });
       expect(retrieve).toHaveBeenCalledTimes(2);

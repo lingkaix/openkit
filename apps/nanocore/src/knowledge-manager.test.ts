@@ -849,7 +849,7 @@ describe('Knowledge Manager answer operation', () => {
     expect(existsSync(join(workspaceRoot, 'indexes', 'search.json'))).toBe(false);
   });
 
-  it('retrieves ranked Knowledge Store candidates and persists the trace', async () => {
+  it('retrieves ranked Knowledge Store candidates without a threadless trace', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-retrieval-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -933,20 +933,26 @@ describe('Knowledge Manager answer operation', () => {
 
     const body = KnowledgeRetrievalResponseSchema.parse(await res.json());
     expect(body).toEqual({
-      traceId: expect.stringMatching(
-        /^krt_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-      ),
+      queryContext: {
+        serverId: expect.any(String),
+        workspaceId: 'ws_demo',
+        actor: { kind: 'user', id: 'user_local' },
+      },
+      sourceScope: 'page/workspace/ws_demo',
+      notebookRevision: null,
       workspaceId: 'ws_demo',
       caller: 'app-api',
       requestDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       retrievalParameters: {
         limit: 1,
-        pinnedConceptIds: [],
+        pinnedReferences: [],
         states: ['active'],
+        sourceScope: 'workspace',
       },
       selected: [
         {
-          knowledgePageId: 'release-plan',
+          reference: { scopeId: 'page/workspace/ws_demo', objectId: 'release-plan' },
+          revision: `sha256:${createHash('sha256').update(releasePage).digest('hex')}`,
           contentDigest: `sha256:${createHash('sha256').update(releasePage).digest('hex')}`,
           score: expect.any(Number),
           sourceReferences: [`source:${sourceId}`],
@@ -956,15 +962,11 @@ describe('Knowledge Manager answer operation', () => {
       createdAt: expect.any(String),
     });
     expect(body.selected[0]!.score).toBeGreaterThan(0);
-
-    const month = body.createdAt.slice(0, 7).replace('-', '');
-    const tracePath = join(workspaceRoot, 'knowledge', 'traces', `${month}.jsonl`);
-    expect(
-      readFileSync(tracePath, 'utf8')
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line))
-    ).toEqual([body]);
+    expect(body).not.toHaveProperty('retrievalTraceRef');
+    expect(body).not.toHaveProperty('traceId');
+    expect(body).not.toHaveProperty('retrievalTraceId');
+    expect(existsSync(join(workspaceRoot, 'threads', 'th_demo', 'retrieval-traces'))).toBe(false);
+    expect(existsSync(join(workspaceRoot, 'knowledge', 'traces'))).toBe(false);
 
     const usageRes = await app.request(
       ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
@@ -1056,31 +1058,23 @@ describe('Knowledge Manager answer operation', () => {
       caller: 'app-api',
       operation: 'answer',
       outcome: 'answered',
-      retrievalTraceId: expect.stringMatching(/^krt_/),
       workspaceId: 'ws_demo',
     });
+    expect(body).not.toHaveProperty('retrievalTraceRef');
+    expect(body).not.toHaveProperty('retrievalTraceId');
     expect(body.answer).toContain('Release cadence is fortnightly');
     expect(body.citations).toEqual([
       expect.objectContaining({
+        reference: { scopeId: 'page/workspace/ws_demo', objectId: knowledge.id },
         kind: 'project-context',
         title: 'Release plan',
       }),
     ]);
 
-    const month = new Date().toISOString().slice(0, 7).replace('-', '');
-    const retrievalRows = readFileSync(
-      join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'traces', `${month}.jsonl`),
-      'utf8'
-    )
-      .trim()
-      .split('\n')
-      .map((line) => KnowledgeRetrievalResponseSchema.parse(JSON.parse(line)));
-    expect(retrievalRows).toHaveLength(1);
-    expect(retrievalRows[0]).toMatchObject({
-      caller: 'app-api',
-      traceId: body.retrievalTraceId,
-      workspaceId: 'ws_demo',
-    });
+    expect(
+      existsSync(join(dataRoot, 'workspaces', 'ws_demo', 'threads', 'th_demo', 'retrieval-traces'))
+    ).toBe(false);
+    expect(existsSync(join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'traces'))).toBe(false);
 
     const usageRes = await app.request(
       ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
@@ -1313,7 +1307,6 @@ describe('Knowledge Manager answer operation', () => {
       'operation',
       'operationId',
       'outcome',
-      'retrievalTraceId',
       'selected',
       'workspaceId',
     ]);
@@ -1321,12 +1314,12 @@ describe('Knowledge Manager answer operation', () => {
       caller: 'app-api',
       operation: 'prepare-context-material',
       outcome: 'prepared',
-      retrievalTraceId: expect.stringMatching(/^krt_/),
       workspaceId: 'ws_demo',
     });
     expect(body.selected).toEqual([
       {
-        knowledgePageId: knowledge.id,
+        reference: { scopeId: 'page/workspace/ws_demo', objectId: knowledge.id },
+        revision: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
         contentDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
         score: expect.any(Number),
         sourceReferences: [`source:${source.id}`],
@@ -1338,24 +1331,14 @@ describe('Knowledge Manager answer operation', () => {
     expect(repeatRes.status).toBe(200);
     const repeatBody = KnowledgeManagerPrepareContextResponseSchema.parse(await repeatRes.json());
     expect(repeatBody.operationId).not.toBe(body.operationId);
-    expect(repeatBody.retrievalTraceId).not.toBe(body.retrievalTraceId);
     expect(repeatBody.selected).toEqual(body.selected);
     expect(repeatBody.excluded).toEqual(body.excluded);
 
-    const month = new Date().toISOString().slice(0, 7).replace('-', '');
-    const retrievalRows = readFileSync(
-      join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'traces', `${month}.jsonl`),
-      'utf8'
-    )
-      .trim()
-      .split('\n')
-      .map((line) => KnowledgeRetrievalResponseSchema.parse(JSON.parse(line)));
-    expect(retrievalRows).toHaveLength(2);
-    expect(retrievalRows.map((row) => row.traceId)).toEqual([
-      body.retrievalTraceId,
-      repeatBody.retrievalTraceId,
-    ]);
-    expect(retrievalRows.map((row) => row.selected)).toEqual([body.selected, repeatBody.selected]);
+    expect(repeatBody).not.toHaveProperty('retrievalTraceRef');
+    expect(
+      existsSync(join(dataRoot, 'workspaces', 'ws_demo', 'threads', 'th_demo', 'retrieval-traces'))
+    ).toBe(false);
+    expect(existsSync(join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'traces'))).toBe(false);
     expect(
       existsSync(join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'context-packages'))
     ).toBe(false);

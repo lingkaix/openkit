@@ -316,7 +316,7 @@ function createLineageExportInput(
       conflicts: new Map(),
       nativeKnowledgePages: new Map(),
       observations: new Map(),
-      retrievalTraces: new Map(),
+      retrievalTraceFiles: new Map(),
       workerContextPackageFiles: new Map(),
       workspaceConfig: JSON.stringify({
         schemaVersion: 1,
@@ -698,6 +698,7 @@ function importLineage(input: WriteWorkspaceExportTreeInput) {
   return readWorkspaceImportSnapshot({
     verified,
     targetWorkspaceId,
+    targetServerId: 'server_target',
   });
 }
 
@@ -886,7 +887,12 @@ function createWorkResourceLineageExportInput(followUp?: {
     agentSessionId: source.sessionId,
     excludedItems: [],
     goalId: null,
-    knowledgeSelectionInput: { retrievalTraceId },
+    knowledgeSelectionInput: {
+      retrievalTraceRef: {
+        scopeId: `retrieval-trace/turn/${source.workspaceId}/${source.threadId}/${source.turnId}`,
+        objectId: retrievalTraceId,
+      },
+    },
     packageFiles,
     packageSnapshotId: snapshot.snapshotId,
     requestId: 'request_source',
@@ -1011,32 +1017,46 @@ function createWorkResourceLineageExportInput(followUp?: {
   input.portableFileState = {
     claims: new Map(),
     conflicts: new Map(),
-    nativeKnowledgePages: new Map(),
+    nativeKnowledgePages: new Map([[`knowledge/pages/${knowledgePageId}.md`, knowledgeContent]]),
     observations: new Map(),
-    retrievalTraces: new Map([
+    retrievalTraceFiles: new Map([
       [
-        '202607',
-        [
-          {
-            caller: 'task-mode',
-            createdAt: timestamp,
-            excluded: [],
-            requestDigest: `sha256:${createHash('sha256')
-              .update('portable Knowledge retrieval')
-              .digest('hex')}`,
-            retrievalParameters: { limit: 5, pinnedConceptIds: [], states: ['active'] },
-            selected: [
-              {
-                contentDigest: knowledgeContentDigest,
-                knowledgePageId,
-                score: 1,
-                sourceReferences: knowledgeSourceRefs,
-              },
-            ],
-            traceId: retrievalTraceId,
+        `threads/${source.threadId}/turns/${source.turnId}/retrieval-traces/${retrievalTraceId}.json`,
+        {
+          caller: 'task-mode',
+          createdAt: timestamp,
+          excluded: [],
+          notebookRevision: null,
+          queryContext: {
+            serverId: 'dep_source',
             workspaceId: source.workspaceId,
+            actor: { kind: 'user', id: 'user_local' },
+            threadId: source.threadId,
+            turnId: source.turnId,
           },
-        ],
+          requestDigest: `sha256:${createHash('sha256')
+            .update('portable Knowledge retrieval')
+            .digest('hex')}`,
+          retrievalParameters: {
+            limit: 5,
+            pinnedReferences: [],
+            states: ['active'],
+            sourceScope: 'workspace',
+          },
+          selected: [
+            {
+              contentDigest: knowledgeContentDigest,
+              reference: {
+                scopeId: `page/workspace/${source.workspaceId}`,
+                objectId: knowledgePageId,
+              },
+              revision: knowledgeContentDigest,
+              sourceReferences: knowledgeSourceRefs,
+            },
+          ],
+          sourceScope: `page/workspace/${source.workspaceId}`,
+          traceId: retrievalTraceId,
+        },
       ],
     ]),
     workerContextPackageFiles: new Map([
@@ -1803,7 +1823,7 @@ describe('workspace auxiliary lineage reminting', () => {
     const expectedReference = `context-package:${targetTrace.turnId}@${targetTrace.contextPackageDigest}`;
     const [pagePath, pageContent] = [
       ...imported.portableFileState.nativeKnowledgePages.entries(),
-    ][0]!;
+    ].find(([path]) => path === `knowledge/pages/${knowledge.id}.md`)!;
 
     expect(targetTrace.contextPackageDigest).not.toBe(sourceTrace.contextPackageDigest);
     expect(imported.knowledge[0]?.sourceReferences).toEqual([expectedReference]);
@@ -2002,7 +2022,13 @@ describe('workspace auxiliary lineage reminting', () => {
           `sha256:${createHash('sha256').update(unsafeManifestBytes).digest('hex')}`
         );
         expect
-          .soft(() => readWorkspaceImportSnapshot({ verified: unsafeVerified, targetWorkspaceId }))
+          .soft(() =>
+            readWorkspaceImportSnapshot({
+              verified: unsafeVerified,
+              targetWorkspaceId,
+              targetServerId: 'server_target',
+            })
+          )
           .toThrow('Agent environment package snapshot is not redacted');
         expect(existsSync(targetWorkspaceRoot)).toBe(false);
         expect(readFileSync(snapshotFile, 'utf8')).toBe(unsafeSnapshotBytes);
@@ -2016,7 +2042,11 @@ describe('workspace auxiliary lineage reminting', () => {
       writeFileSync(snapshotFile, safeSnapshotBytes);
       writeFileSync(manifestPath, safeManifestBytes);
     }
-    const imported = readWorkspaceImportSnapshot({ verified, targetWorkspaceId });
+    const imported = readWorkspaceImportSnapshot({
+      verified,
+      targetWorkspaceId,
+      targetServerId: 'server_target',
+    });
     expect(JSON.stringify(imported)).not.toContain('annotation');
     expect(imported.artifactReviews[0]?.materialProposal).not.toHaveProperty('annotation');
     expect(imported.workspaceMaterials[0]).not.toHaveProperty('annotation');
@@ -2071,7 +2101,9 @@ describe('workspace auxiliary lineage reminting', () => {
   });
 
   it('remints one complete Material, Review, and S39 imported-history graph', () => {
-    const imported = importLineage(createWorkResourceLineageExportInput());
+    const input = createWorkResourceLineageExportInput();
+    const sourceRetrievalTrace = [...input.portableFileState!.retrievalTraceFiles.values()][0]!;
+    const imported = importLineage(input);
     const material = imported.workspaceMaterials[0];
     const revisions = imported.workspaceMaterialRevisions;
     const binding = imported.threadMaterialBindings[0];
@@ -2080,6 +2112,9 @@ describe('workspace auxiliary lineage reminting', () => {
       ([path]) => path.endsWith('/context-package.json')
     )?.[1];
     const trace = parseWorkerContextPackageTrace(JSON.parse(traceText ?? '{}'));
+    const [retrievalTracePath, retrievalTrace] = [
+      ...imported.portableFileState.retrievalTraceFiles.entries(),
+    ][0]!;
     const stagedRoot = mkdtempSync(join(tmpdir(), 'openkit-imported-history-package-'));
     writeWorkspacePortableFileState(stagedRoot, imported.portableFileState);
     expect(() => verifyImportedWorkerContextPackageSnapshot(imported, stagedRoot)).not.toThrow();
@@ -2115,10 +2150,37 @@ describe('workspace auxiliary lineage reminting', () => {
     expect(revisions[1]?.createdByRequestId).toBe(review?.decisionRequestId);
     expect(binding?.lastMutationRequestId).toBe(review?.decisionRequestId);
     expect(review?.decisionRequestId).toMatch(/^import-lineage:sha256:[a-f0-9]{64}$/);
+    expect(retrievalTracePath).toBe(
+      `threads/${imported.threads[0]?.id}/turns/${imported.turns[0]?.id}/retrieval-traces/${sourceRetrievalTrace.traceId}.json`
+    );
+    expect(retrievalTrace).toMatchObject({
+      traceId: sourceRetrievalTrace.traceId,
+      requestDigest: sourceRetrievalTrace.requestDigest,
+      queryContext: {
+        serverId: 'server_target',
+        workspaceId: targetWorkspaceId,
+        threadId: imported.threads[0]?.id,
+        turnId: imported.turns[0]?.id,
+      },
+      sourceScope: `page/workspace/${targetWorkspaceId}`,
+      selected: [
+        expect.objectContaining({
+          reference: {
+            scopeId: `page/workspace/${targetWorkspaceId}`,
+            objectId: 'knowledge_portable_source',
+          },
+        }),
+      ],
+    });
     expect(trace).toMatchObject({
       agentSessionId: imported.agentSessions[0]?.id,
       contextPackageId: `ctxpkg_${imported.turns[0]?.id}`,
-      knowledgeSelectionInput: { retrievalTraceId: 'krt_00000000-0000-4000-8000-000000000001' },
+      knowledgeSelectionInput: {
+        retrievalTraceRef: {
+          scopeId: `retrieval-trace/turn/${targetWorkspaceId}/${imported.threads[0]?.id}/${imported.turns[0]?.id}`,
+          objectId: 'krt_00000000-0000-4000-8000-000000000001',
+        },
+      },
       knowledgeSelections: [
         {
           contentDigest: `sha256:${createHash('sha256')
@@ -2169,7 +2231,14 @@ describe('workspace auxiliary lineage reminting', () => {
         `threads/${trace.threadId}/turns/${trace.turnId}/context-package/package.json`,
       ])
     );
-    expect(imported.portableFileState.nativeKnowledgePages.size).toBe(0);
+    expect(imported.portableFileState.nativeKnowledgePages).toEqual(
+      new Map([
+        [
+          'knowledge/pages/knowledge_portable_source.md',
+          '# Retained portable knowledge\n\nUse the retained package bytes.\n',
+        ],
+      ])
+    );
     expect(
       imported.portableFileState.workerContextPackageFiles.get(
         `threads/${trace.threadId}/turns/${trace.turnId}/context-package/knowledge/pages/knowledge_portable_source.md`
@@ -2198,7 +2267,7 @@ describe('workspace auxiliary lineage reminting', () => {
       itemRevisions: imported.itemRevisions,
       knowledge: imported.knowledge,
       portableFileState: imported.portableFileState,
-      sourceDeploymentId: 'dep_imported_history',
+      sourceDeploymentId: 'server_target',
       threadMaterialBindings: imported.threadMaterialBindings,
       threads: imported.threads,
       turnEvents: imported.turnEvents,
@@ -2212,6 +2281,7 @@ describe('workspace auxiliary lineage reminting', () => {
     const reimported = readWorkspaceImportSnapshot({
       verified: reExported,
       targetWorkspaceId: 'ws_reimported',
+      targetServerId: 'server_reimport_target',
     });
     const reimportedRoot = mkdtempSync(join(tmpdir(), 'openkit-reimported-history-package-'));
     writeWorkspacePortableFileState(reimportedRoot, reimported.portableFileState);

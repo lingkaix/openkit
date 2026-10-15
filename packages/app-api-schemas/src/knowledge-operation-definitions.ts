@@ -220,7 +220,8 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
-    description: 'Retrieve governed Knowledge candidates and record their selection trace.',
+    description:
+      'Retrieve governed, source-qualified Knowledge candidates in the trusted query context.',
     inputSchema: RetrieveKnowledgeRequestSchema.extend({ ...workspaceSelector }).strict(),
     outputSchema: KnowledgeRetrievalResponseSchema,
     credentials: publicCredentials,
@@ -233,7 +234,8 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
-    description: 'Prepare bounded Knowledge selection material and its existing retrieval trace.',
+    description:
+      'Prepare bounded Knowledge selection material with its query-owned trace reference when present.',
     inputSchema: KnowledgeManagerPrepareContextRequestSchema.extend({
       ...workspaceSelector,
     }).strict(),

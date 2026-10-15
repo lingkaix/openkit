@@ -11,6 +11,7 @@ import {
 } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import {
+  assertKnowledgeRetrievalTraceReadable,
   resolveWorkspaceKnowledgeRetrievalPages,
   retrieveWorkspaceKnowledge,
 } from './index-rebuild.js';
@@ -326,7 +327,7 @@ describe('knowledge proposal authority', () => {
       id: 'kf_missing_page_retry',
       workspaceId: fixture.workspaceId,
       subjectReferences: [`knowledge:${fixture.knowledgePageId}`],
-      sourceReferences: [],
+      sourceReferences: [fixture.sourceReference],
       status: 'needs_review',
       summary: 'Resolve before completing the interrupted page write.',
       suggestedActions: ['Resolve before publication.'],
@@ -385,17 +386,18 @@ describe('knowledge proposal authority', () => {
     );
 
     const retrieval = await retrieveWorkspaceKnowledge({
-      caller: 'task-mode',
+      caller: 'app-api',
       dataRoot: fixture.dataRoot,
       limit: 1,
-      pinnedConceptIds: [copiedPageId],
+      pinnedReferences: [
+        { scopeId: `page/workspace/${fixture.workspaceId}`, objectId: copiedPageId },
+      ],
       query: 'Review authority lesson',
       access: {
         store: fixture.store,
         actor: { kind: 'user', id: 'user_local' },
         requestActor: { kind: 'local', userId: 'user_local' },
       },
-      traceId: 'krt_00000000-0000-4000-8000-000000000701',
       workspaceId: fixture.workspaceId,
       now: () => DECIDED_AT,
     });
@@ -403,25 +405,35 @@ describe('knowledge proposal authority', () => {
     expect(retrieval.selected).toEqual([
       expect.objectContaining({
         contentDigest: fixture.contentDigest,
-        knowledgePageId: fixture.knowledgePageId,
+        reference: {
+          scopeId: `page/workspace/${fixture.workspaceId}`,
+          objectId: fixture.knowledgePageId,
+        },
+        revision: fixture.contentDigest,
         sourceReferences: [fixture.sourceReference],
       }),
     ]);
     expect(retrieval.excluded).toContainEqual({
       contentDigest: digest(copiedPageBytes),
-      knowledgePageId: copiedPageId,
+      reference: {
+        scopeId: `page/workspace/${fixture.workspaceId}`,
+        objectId: copiedPageId,
+      },
+      revision: digest(copiedPageBytes),
+      sourceReferences: [fixture.sourceReference],
       reason: 'lower_conformance',
     });
+    expect(retrieval).not.toHaveProperty('retrievalTraceRef');
     expect(
       resolveWorkspaceKnowledgeRetrievalPages({
-        caller: 'task-mode',
+        caller: 'app-api',
         dataRoot: fixture.dataRoot,
         access: {
           store: fixture.store,
           actor: { kind: 'user', id: 'user_local' },
           requestActor: { kind: 'local', userId: 'user_local' },
         },
-        retrievalTraceId: retrieval.traceId,
+        selection: retrieval,
         workspaceId: fixture.workspaceId,
       })
     ).toEqual([
@@ -432,6 +444,76 @@ describe('knowledge proposal authority', () => {
         sourceRefs: [fixture.sourceReference],
       }),
     ]);
+  });
+
+  it('rejects arbitrary stored work-history references without disclosing their identity', async () => {
+    const fixture = createFixture('proposal-trace-source-proof');
+    decide(fixture, 'accepted', 'review-trace-source-proof');
+    const thread = fixture.store.createThread(fixture.workspaceId, 'Trace source authority');
+    const access = {
+      store: fixture.store,
+      actor: { kind: 'user', id: 'user_local' } as const,
+      requestActor: { kind: 'local', userId: 'user_local' } as const,
+      outputThreadId: thread.id,
+    };
+    const traceId = 'krt_00000000-0000-4000-8000-000000000704';
+    const retrieval = await retrieveWorkspaceKnowledge({
+      access,
+      caller: 'task-mode',
+      dataRoot: fixture.dataRoot,
+      pinnedReferences: [
+        {
+          scopeId: `page/workspace/${fixture.workspaceId}`,
+          objectId: fixture.knowledgePageId,
+        },
+      ],
+      query: 'Review authority lesson',
+      traceId,
+      workspaceId: fixture.workspaceId,
+      now: () => DECIDED_AT,
+    });
+    const retrievalTraceRef = retrieval.retrievalTraceRef;
+    expect(retrievalTraceRef).toEqual({
+      scopeId: `retrieval-trace/thread/${fixture.workspaceId}/${thread.id}`,
+      objectId: traceId,
+    });
+    if (!retrievalTraceRef) throw new Error('Retrieval trace fixture is missing.');
+    const tracePath = join(
+      fixture.dataRoot,
+      'workspaces',
+      fixture.workspaceId,
+      'threads',
+      thread.id,
+      'retrieval-traces',
+      `${traceId}.json`
+    );
+    const trace = JSON.parse(readFileSync(tracePath, 'utf8'));
+    const arbitraryReferences = [
+      'item:it_private_history',
+      'context-package:ctxpkg_private_history',
+    ];
+    trace.selected[0].sourceReferences = [fixture.sourceReference, ...arbitraryReferences];
+    writeFileSync(tracePath, JSON.stringify(trace));
+
+    let failure: unknown;
+    try {
+      assertKnowledgeRetrievalTraceReadable({
+        access,
+        dataRoot: fixture.dataRoot,
+        retrievalTraceRef,
+        workspaceId: fixture.workspaceId,
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      code: 'workspace_access_denied',
+      message: 'Knowledge trace or source is unavailable.',
+      status: 403,
+    });
+    for (const reference of arbitraryReferences)
+      expect(JSON.stringify(failure)).not.toContain(reference);
+    expect(readFileSync(fixture.pagePath, 'utf8')).toBe(fixture.canonicalPageBytes);
   });
 
   it('projects an accepted decision for receipt replay without repairing a missing page', () => {

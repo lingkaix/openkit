@@ -394,8 +394,9 @@ export function prepareWorkerTurnContextPackage(
           coreDb: coreDb ?? undefined,
           actor: store.getTurnById(input.turnId).triggerActor,
           outputThreadId: input.threadId,
+          outputTurnId: input.turnId,
         },
-        retrievalTraceId: knowledgeSelectionInput.retrievalTraceId,
+        retrievalTraceRef: knowledgeSelectionInput.retrievalTraceRef,
         workspaceId: input.workspaceId,
       });
     } catch {

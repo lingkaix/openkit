@@ -150,7 +150,7 @@ async function createFailedStartFixture(
   ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId: 'ws_demo' });
-  const threadId = `thread_${suffix}`;
+  const threadId = `th_${suffix}`;
   const turnId = `turn_${suffix}`;
   const agentSessionId = `as_${suffix}`;
   const packageSnapshotId = `aepsnap_turn_${suffix}_as_${suffix}`;
@@ -1015,12 +1015,12 @@ describe('terminal failed-start product recovery', () => {
         error: decided.error,
       });
       const sibling = `z_after_publication_${contradiction}`;
-      f.store.createThread('ws_demo', 'Independent worker', `thread_${sibling}`);
+      f.store.createThread('ws_demo', 'Independent worker', `th_${sibling}`);
       f.store.createAgentSession({
         id: `as_${sibling}`,
         agentId: 'agent_codex_host',
         workspaceId: 'ws_demo',
-        threadId: `thread_${sibling}`,
+        threadId: `th_${sibling}`,
         status: 'busy',
         message: null,
         environmentPackageSnapshotId: `aepsnap_turn_${sibling}_as_${sibling}`,
@@ -1029,7 +1029,7 @@ describe('terminal failed-start product recovery', () => {
       });
       f.store.createTurn(
         'ws_demo',
-        `thread_${sibling}`,
+        `th_${sibling}`,
         'Independent work',
         { kind: 'user', id: LOCAL_USER_ID },
         null,
@@ -1915,6 +1915,7 @@ function recordTestAgentEnvironmentPackage(
     return recordBaseTestAgentEnvironmentPackage(workspaceDb, {
       coreDb,
       suffix: input.suffix,
+      threadId: `th_${input.suffix}`,
       triggerActor: input.triggerActor ?? { kind: 'user', id: LOCAL_USER_ID },
       workspaceInputIds: input.workspaceInputIds,
     });
@@ -1957,7 +1958,7 @@ function dispatchLease(
     queueEntryId: `queue_${suffix}`,
     requestId: `request_${suffix}`,
     requestedAgentId: 'agent_codex_host',
-    threadId: `thread_${suffix}`,
+    threadId: `th_${suffix}`,
     turnId: `turn_${suffix}`,
     turnInput: `Run ${suffix}`,
     workspaceId: 'ws_demo',
@@ -2049,7 +2050,7 @@ async function prepareReconnectLease(
       agentSessionId: `as_${suffix}`,
       packageSnapshotId: `aepsnap_turn_${suffix}_as_${suffix}`,
       requestId: `request_${suffix}`,
-      threadId: `thread_${suffix}`,
+      threadId: `th_${suffix}`,
       turnId: `turn_${suffix}`,
       workspaceId: 'ws_demo',
     },
@@ -2115,7 +2116,7 @@ function recordBackendSession(
       transientProviderInstanceId: null,
     },
     lineage: {
-      threadId: `thread_${suffix}`,
+      threadId: `th_${suffix}`,
       turnId: `turn_${suffix}`,
       workspaceId: 'ws_demo',
     },
@@ -4631,7 +4632,7 @@ describe('minimal scheduler reconnect contract', () => {
     const coreDb = createMigratedCoreDb();
     const suffix = 'graceful_same_epoch_reconnect';
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    store.createThread('ws_demo', 'Same-Epoch restart fixture', `thread_${suffix}`);
+    store.createThread('ws_demo', 'Same-Epoch restart fixture', `th_${suffix}`);
     store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: '2026-07-05T00:00:01.000Z',
@@ -4641,7 +4642,7 @@ describe('minimal scheduler reconnect contract', () => {
       policySnapshotId: 'worker_turn_launch_policy',
       sessionCompatibilityKey: null,
       status: 'busy',
-      threadId: `thread_${suffix}`,
+      threadId: `th_${suffix}`,
       updatedAt: '2026-07-05T00:00:01.000Z',
       workspaceId: 'ws_demo',
       workspaceRoots: [],
@@ -4655,7 +4656,7 @@ describe('minimal scheduler reconnect contract', () => {
         agentSessionId: `as_${suffix}`,
         packageSnapshotId: `aepsnap_turn_${suffix}_as_${suffix}`,
         requestId: `request_${suffix}`,
-        threadId: `thread_${suffix}`,
+        threadId: `th_${suffix}`,
         turnId: `turn_${suffix}`,
         workspaceId: 'ws_demo',
       },
@@ -5264,7 +5265,7 @@ describe('minimal scheduler reconnect contract', () => {
           agentSessionId: `as_${suffix}`,
           packageSnapshotId: `aepsnap_turn_${suffix}_as_${suffix}`,
           requestId: `request_${suffix}`,
-          threadId: `thread_${suffix}`,
+          threadId: `th_${suffix}`,
           turnId: `turn_${suffix}`,
           workspaceId: 'ws_demo',
         },
@@ -5343,7 +5344,7 @@ describe('minimal scheduler reconnect contract', () => {
             agentSessionId: `as_${suffix}`,
             attemptId: `lease_${suffix}`,
             packageSnapshotId: `aepsnap_turn_${suffix}_as_${suffix}`,
-            threadId: `thread_${suffix}`,
+            threadId: `th_${suffix}`,
             turnId: `turn_${suffix}`,
             workspaceId: 'ws_demo',
           });
@@ -5470,7 +5471,7 @@ async function createFinalReviewRecoveryFixture(
 ) {
   const coreDb = createMigratedCoreDb();
   const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-  const threadId = `thread_${suffix}`;
+  const threadId = `th_${suffix}`;
   const turnId = `turn_${suffix}`;
   const agentSessionId = `as_${suffix}`;
   const attemptId = `lease_${suffix}`;

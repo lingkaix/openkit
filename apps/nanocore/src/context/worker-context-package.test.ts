@@ -281,7 +281,12 @@ function createAcceptedFixture(
     excludedItems: [{ itemId: 'it_excluded', reason: 'policy_excluded' }],
     goalId: options.knowledge ? null : 'goal_context',
     knowledgeSelectionInput: options.knowledge
-      ? { retrievalTraceId: 'krt_0190f4c8-0000-7000-8000-000000000399' }
+      ? {
+          retrievalTraceRef: {
+            scopeId: `retrieval-trace/turn/ws_context/th_context/${turnId}`,
+            objectId: 'krt_0190f4c8-0000-7000-8000-000000000399',
+          },
+        }
       : null,
     knowledgeExclusions: options.knowledge
       ? [
@@ -660,6 +665,7 @@ describe('worker Context Package owner', () => {
     raw.retainedTrace = { ignored: 'untrusted metadata cannot replace trace bytes' };
     if (knowledge) {
       raw.knowledgeSelectionInput.annotation = 'retrieval input';
+      raw.knowledgeSelectionInput.retrievalTraceRef.annotation = 'qualified reference';
       raw.knowledgeSelections[0].annotation = 'Knowledge selection';
       raw.knowledgeExclusions[0].annotation = 'Knowledge exclusion';
     }
@@ -792,6 +798,10 @@ describe('worker Context Package owner', () => {
   it('materializes one governed Knowledge selection into the existing package and trace', () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-context-knowledge-'));
     const retrievalTraceId = 'krt_0190f4c8-0000-7000-8000-000000000399';
+    const retrievalTraceRef = {
+      scopeId: 'retrieval-trace/turn/ws_context/th_context/tu_context',
+      objectId: retrievalTraceId,
+    };
     const contentDigest = sha256(KNOWLEDGE_PAGE_BYTES);
     const packageFiles = createWorkerContextPackageFiles({
       contextBudgetTokens: 4_096,
@@ -852,7 +862,7 @@ describe('worker Context Package owner', () => {
       excludedItems: [],
       goalId: null,
       knowledgeExclusions: [],
-      knowledgeSelectionInput: { retrievalTraceId },
+      knowledgeSelectionInput: { retrievalTraceRef },
       packageFiles,
       packageSnapshotId: 'aepsnap_context',
       requestId: 'req_context',
@@ -860,9 +870,22 @@ describe('worker Context Package owner', () => {
     };
     expect(createWorkerContextPackageTrace(traceInput)).toMatchObject({
       knowledgeExclusions: [],
-      knowledgeSelectionInput: { retrievalTraceId },
+      knowledgeSelectionInput: { retrievalTraceRef },
       knowledgeSelections: [expectedSelection],
     });
+    expect(() =>
+      parseWorkerContextPackageTrace(
+        createWorkerContextPackageTrace({
+          ...traceInput,
+          knowledgeSelectionInput: {
+            retrievalTraceRef: {
+              ...retrievalTraceRef,
+              scopeId: 'retrieval-trace/workspace/ws_context',
+            },
+          },
+        })
+      )
+    ).toThrow('Worker Context Package trace is malformed.');
     expect(() =>
       createWorkerContextPackageTrace({
         ...traceInput,

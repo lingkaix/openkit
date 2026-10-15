@@ -10,6 +10,9 @@ import { OperationError } from './operation-error.js';
 import type { SchedulerExecutionLineage } from './scheduler-records.js';
 /** Request-local facts supplied only by trusted entry assembly. */
 export interface OperationRequestFacts {
+  /** Existing querying lineage supplied by internal assembly, never an operation payload. */
+  readonly queryContext?: { readonly threadId: string; readonly turnId?: string };
+
   readonly signal?: AbortSignal;
   readonly delivery?: 'human' | 'model';
   readonly observeSuccessStatus?: (status: 200 | 201 | 202 | 204) => void;

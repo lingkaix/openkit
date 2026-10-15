@@ -105,7 +105,11 @@ describe('worker checkpoint storage', () => {
           annotation: 'assembly',
           contextRefs: [{ kind: 'workspace', id: 'ws_demo', annotation: 'reference' }],
           knowledgeSelectionInput: {
-            retrievalTraceId: 'krt_00000000-0000-4000-8000-000000000001',
+            retrievalTraceRef: {
+              scopeId: 'retrieval-trace/turn/ws_demo/th_demo/tu_extended',
+              objectId: 'krt_00000000-0000-4000-8000-000000000001',
+              annotation: 'qualified reference',
+            },
             annotation: 'selection',
           },
         },
@@ -113,9 +117,27 @@ describe('worker checkpoint storage', () => {
       const expected = {
         contextDigest: 'sha256:context',
         contextRefs: [{ kind: 'workspace', id: 'ws_demo' }],
-        knowledgeSelectionInput: { retrievalTraceId: 'krt_00000000-0000-4000-8000-000000000001' },
+        knowledgeSelectionInput: {
+          retrievalTraceRef: {
+            scopeId: 'retrieval-trace/turn/ws_demo/th_demo/tu_extended',
+            objectId: 'krt_00000000-0000-4000-8000-000000000001',
+          },
+        },
       };
       expect(parseWorkerCheckpointContextAssembly(diagnostics)).toEqual(expected);
+      expect(
+        parseWorkerCheckpointContextAssembly(
+          JSON.stringify({
+            contextAssembly: {
+              contextDigest: 'sha256:context',
+              contextRefs: [],
+              knowledgeSelectionInput: {
+                retrievalTraceId: 'krt_00000000-0000-4000-8000-000000000001',
+              },
+            },
+          })
+        )
+      ).toBeNull();
       const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
         workspaceId: 'ws_demo',
         threadId: 'th_demo',

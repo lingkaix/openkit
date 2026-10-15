@@ -17,6 +17,7 @@ import { ensureLocalUser } from './auth/identity.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
+import { closeRetrievalServices } from './retrieval-service.js';
 import {
   closeSchedulerExecutionAttemptWithFence,
   markSchedulerExecutionAttemptClosing,
@@ -25,8 +26,13 @@ import {
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
+import { retrieveWorkspaceKnowledge } from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { createVerifiedWorkspaceExport } from './storage/workspace-transfer-routes.js';
+import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
+import {
+  createVerifiedWorkspaceExport,
+  workspaceDeletionRecoveryExportId,
+} from './storage/workspace-transfer-routes.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { operationRequest } from './test-support/operation-request.js';
 import {
@@ -1362,6 +1368,147 @@ it.each([
       recoveryExportId: exportId,
     });
   } finally {
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { force: true, recursive: true });
+  }
+});
+
+it('retains a Thread-owned retrieval trace in the verified deletion recovery export', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-deletion-retrieval-trace-'));
+  const coreDb = openCoreDb(dataRoot);
+
+  try {
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Deletion retrieval trace fixture');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: workspace.id,
+    });
+    const thread = store.createThread(workspace.id, 'Deletion trace owner');
+    const page = store.createKnowledgeEntry(workspace.id, {
+      kind: 'project-context',
+      title: 'Deletion recovery trace',
+      content: 'Retain this retrieval trace in the verified recovery export.',
+    });
+    const traceId = 'krt_00000000-0000-4000-8000-000000000901';
+    const retrieval = await retrieveWorkspaceKnowledge({
+      access: {
+        store,
+        coreDb,
+        actor: { kind: 'user', id: 'user_local' },
+        requestActor: { kind: 'local', userId: 'user_local' },
+        outputThreadId: thread.id,
+      },
+      caller: 'task-mode',
+      dataRoot,
+      pinnedReferences: [{ scopeId: `page/workspace/${workspace.id}`, objectId: page.id }],
+      query: 'Deletion recovery trace',
+      traceId,
+      workspaceId: workspace.id,
+    });
+    expect(retrieval.retrievalTraceRef).toEqual({
+      scopeId: `retrieval-trace/thread/${workspace.id}/${thread.id}`,
+      objectId: traceId,
+    });
+    const traceRelativePath = `threads/${thread.id}/retrieval-traces/${traceId}.json`;
+    const sourceTrace = JSON.parse(
+      readFileSync(join(dataRoot, 'workspaces', workspace.id, traceRelativePath), 'utf8')
+    );
+    const repositoryWorkspaceDb = (workspaceId: string) => {
+      const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+      applyScopedMigrations(workspaceDb);
+      return workspaceDb;
+    };
+    const unauthorizedExportId = 'wsexp_unauthorized_retrieval_trace';
+    expect(() =>
+      createVerifiedWorkspaceExport({
+        authorityUserId: 'user_local',
+        coreDb,
+        dataRoot,
+        exportId: unauthorizedExportId,
+        repositoryWorkspaceDb,
+        store,
+        workspaceId: workspace.id,
+      })
+    ).toThrow('Workspace retrieval traces require current export authority.');
+    expect(
+      existsSync(
+        join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, unauthorizedExportId)
+      )
+    ).toBe(false);
+    const unboundRequestId = '00000000-0000-4000-8000-000000000903';
+    const unboundExportId = workspaceDeletionRecoveryExportId(unboundRequestId);
+    expect(() =>
+      createVerifiedWorkspaceExport({
+        authorityUserId: 'user_local',
+        coreDb,
+        dataRoot,
+        deletionRecoveryRequestId: unboundRequestId,
+        exportId: unboundExportId,
+        repositoryWorkspaceDb,
+        store,
+        workspaceId: workspace.id,
+      })
+    ).toThrow();
+    expect(
+      existsSync(join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, unboundExportId))
+    ).toBe(false);
+    const app = createApp({
+      coreDb,
+      dataRoot,
+      mode: 'local',
+      repositoryWorkspaceDb,
+      store,
+      turnExecutor: new SimulatedTurnExecutor(),
+    });
+    const requestId = '00000000-0000-4000-8000-000000000902';
+    const response = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({
+            confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+            expectedRegistryRevision: 1,
+            requestId,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
+
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(await response.json()).toMatchObject({
+      deletion: { phase: 'cleaned', status: 'deleted', workspaceId: workspace.id },
+    });
+    const deletion = readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId);
+    expect(deletion).toMatchObject({
+      phase: 'cleaned',
+      recoveryExportId: `wsexp_delete_${requestId}`,
+      recoveryExportManifestDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+    });
+    const exportRoot = join(
+      dataRoot,
+      'server',
+      'exports',
+      'workspaces',
+      workspace.id,
+      deletion.recoveryExportId!
+    );
+    const verified = verifyWorkspaceExportTree({ exportRoot });
+    expect(verified.manifestDigest).toBe(deletion.recoveryExportManifestDigest);
+    expect(verified.checkedFiles).toContain(`workspace-files/${traceRelativePath}`);
+    const exportedTrace = JSON.parse(
+      readFileSync(join(exportRoot, 'workspace-files', traceRelativePath), 'utf8')
+    );
+    expect(exportedTrace).toEqual(sourceTrace);
+    expect(JSON.stringify(exportedTrace)).not.toContain('"score"');
+  } finally {
+    await closeRetrievalServices();
     coreDb.sqlite.close();
     rmSync(dataRoot, { force: true, recursive: true });
   }

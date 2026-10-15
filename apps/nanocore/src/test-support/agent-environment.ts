@@ -154,6 +154,8 @@ export interface RecordTestAgentEnvironmentPackageInput {
   readonly workspaceInputIds: readonly string[];
   /** Optional Item lineage the recorded scope carries. */
   readonly itemId?: string;
+  /** Optional exact Thread id when a fixture exercises an identifier-owning boundary. */
+  readonly threadId?: string;
 }
 
 /**
@@ -184,7 +186,7 @@ export function recordTestAgentEnvironmentPackage(
       turn: {
         id: `turn_${input.suffix}`,
         workspaceId: workspaceDb.workspaceId,
-        threadId: `thread_${input.suffix}`,
+        threadId: input.threadId ?? `thread_${input.suffix}`,
         triggerActor: input.triggerActor,
         items: [],
         status: 'running',

@@ -186,7 +186,7 @@ Use the same selected Retrieval Kernel tokenizer for the query, canonical title,
 
 ## Current Implementation Projection
 
-The coordinator and Consultant accepted the qualified-reference and query-act amendments under the engineer's delegation; Phase B implements them. Current code still returns the plain `retrievalTraceId` and uses Workspace-owned trace storage; that implementation fact does not retain the retired target shape.
+The coordinator and Consultant accepted the qualified-reference and query-act amendments under the engineer's delegation; Phase B implements them. Current results use qualified page references and `retrievalTraceRef` when querying lineage exists. Threadless direct User calls return their existing outcome without a trace or reference; no plain trace-id result or Workspace trace ledger remains.
 
 NanoCore exposes the five deterministic Knowledge Manager operations through the Knowledge definition table, native invocation, derived JSON routes and OpenAPI, `client.operations`, the bundled CLI and remote MCP. Public and trusted Task preparation enter the same definition and admission, preserving public metadata and Task’s exact trace-only view. Answer and context preparation delegate to S61's governed retrieval owner; context preparation returns that owner's trace reference and exposes no standalone worker-context materialization or delivery surface.
 

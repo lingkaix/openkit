@@ -9,7 +9,8 @@ import {
   WorkspaceConfigSchema,
   type WorkspaceExportManifest,
 } from '@openkit/config-schema';
-import { ItemSchema, KnowledgeEntrySchema } from '@openkit/protocol';
+import { ItemSchema, KnowledgeEntrySchema, ThreadSchema, TurnSchema } from '@openkit/protocol';
+import { z } from 'zod';
 import type { ResolvedAgentSetupRecord } from '../agents/setup-ledger.js';
 import {
   AGENT_RESOURCE_CATALOG_EXPORT_PATH,
@@ -36,6 +37,7 @@ import {
   readCanonicalTextFile,
 } from './workspace-file-records.js';
 import {
+  parseWorkspaceRetrievalTraceFile,
   type WorkspacePortableFileState,
   writeWorkspacePortableExportState,
 } from './workspace-portable-file-state.js';
@@ -51,11 +53,12 @@ export interface ExportedKnowledgeSourceMaterial {
 /** File name for the root workspace export manifest. */
 export const WORKSPACE_EXPORT_MANIFEST_FILE = 'openkit-workspace-export.json';
 
-/** Legacy Vault injection record paths rejected by the current workspace export format. */
+/** Retired record paths rejected by the current workspace export format. */
 export const UNSUPPORTED_WORKSPACE_EXPORT_RECORD_PATHS = [
   'records/injection-plans.jsonl',
   'records/injection-receipts.jsonl',
   'catalog/catalog.json',
+  'records/knowledge-retrieval-traces.jsonl',
 ] as const;
 
 /** Workspace SQLite tables whose portable row families are covered by workspace export/import. */
@@ -925,6 +928,7 @@ export function verifyWorkspaceExportTree(
       fileContents.set(entry.path, text);
     }
   }
+  verifyPortableRetrievalTraceFiles(fileContents, manifest.workspaceId);
 
   const itemRevisionText = fileContents.get('records/item-revisions.jsonl');
   const itemRevisions =
@@ -950,6 +954,65 @@ export function verifyWorkspaceExportTree(
     binaryFileContents,
     manifestDigest: digestText(manifestText),
   };
+}
+
+/** Validates every query-owned trace path against the exported canonical Thread and Turn graph. */
+function verifyPortableRetrievalTraceFiles(
+  files: ReadonlyMap<string, string>,
+  workspaceId: string
+): void {
+  const traceFiles = [...files].filter(([path]) => path.includes('/retrieval-traces/'));
+  if (traceFiles.length === 0) return;
+  const threadOwnerSchema = z
+    .object({ id: ThreadSchema.shape.id, workspaceId: ThreadSchema.shape.workspaceId })
+    .strip();
+  const turnOwnerSchema = z
+    .object({
+      id: TurnSchema.shape.id,
+      threadId: TurnSchema.shape.threadId,
+      workspaceId: TurnSchema.shape.workspaceId,
+    })
+    .strip();
+  const threads = readJsonlForVerification(files, 'records/threads.jsonl').map((value) =>
+    threadOwnerSchema.parse(value)
+  );
+  const turns = readJsonlForVerification(files, 'records/turns.jsonl').map((value) =>
+    turnOwnerSchema.parse(value)
+  );
+  const threadIds = new Set(threads.map((thread) => thread.id));
+  const turnsById = new Map(turns.map((turn) => [turn.id, turn] as const));
+  for (const [exportPath, text] of traceFiles) {
+    const match =
+      /^workspace-files\/(threads\/[^/]+\/(?:turns\/[^/]+\/)?retrieval-traces\/[^/]+\.json)$/.exec(
+        exportPath
+      );
+    if (!match) throw new Error(`Invalid portable retrieval trace path: ${exportPath}`);
+    const relativePath = match[1]!;
+    parseWorkspaceRetrievalTraceFile(relativePath, text, workspaceId);
+    const parts = relativePath.split('/');
+    const threadId = parts[1]!;
+    if (!threadIds.has(threadId)) {
+      throw new Error('Portable retrieval trace has no exported Thread owner.');
+    }
+    if (parts[2] === 'turns') {
+      const turn = turnsById.get(parts[3]!);
+      if (!turn || turn.threadId !== threadId || turn.workspaceId !== workspaceId) {
+        throw new Error('Portable retrieval trace has no exported Turn owner.');
+      }
+    }
+  }
+}
+
+/** Parses one required JSONL family from the verified byte map without reopening files. */
+function readJsonlForVerification(files: ReadonlyMap<string, string>, path: string): unknown[] {
+  const text = files.get(path);
+  if (text === undefined) throw new Error(`Workspace export is missing ${path}.`);
+  return text.length === 0
+    ? []
+    : text
+        .trimEnd()
+        .split('\n')
+        .map((line) => JSON.parse(line));
 }
 
 /**

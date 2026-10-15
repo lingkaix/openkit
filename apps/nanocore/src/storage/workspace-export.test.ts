@@ -36,6 +36,10 @@ import {
   serializeKnowledgeProposalRecord,
 } from './workspace-file-records.js';
 import { readWorkspaceImportSnapshot } from './workspace-import.js';
+import {
+  readWorkspacePortableFileState,
+  writeWorkspacePortableFileState,
+} from './workspace-portable-file-state.js';
 
 const timestamp = '2026-07-05T00:00:00.000Z';
 const localActor = { kind: 'user', id: LOCAL_USER_ID } as const;
@@ -69,7 +73,7 @@ function writeWorkspaceExportTree(input: WorkspaceExportTestInput) {
       conflicts: new Map(),
       nativeKnowledgePages: new Map(),
       observations: new Map(),
-      retrievalTraces: new Map(),
+      retrievalTraceFiles: new Map(),
       workerContextPackageFiles: new Map(),
       workspaceConfig: JSON.stringify({
         schemaVersion: 1,
@@ -91,6 +95,7 @@ function readImportSnapshot(exportRoot: string, targetWorkspaceId: string) {
   return readWorkspaceImportSnapshot({
     verified: verifyWorkspaceExportTree({ exportRoot }),
     targetWorkspaceId,
+    targetServerId: 'server_test_target',
   });
 }
 
@@ -215,6 +220,7 @@ describe('workspace export verifier', () => {
   it.each([
     'records/injection-plans.jsonl',
     'records/injection-receipts.jsonl',
+    'records/knowledge-retrieval-traces.jsonl',
   ])('rejects the unsupported legacy workspace export record path %s', (recordPath) => {
     expect(() =>
       verifyWorkspaceExportTree({ exportRoot: writeExportTree(recordPath, '') })
@@ -341,7 +347,6 @@ describe('workspace export verifier', () => {
       'records/knowledge-claims.jsonl',
       'records/knowledge-conflicts.jsonl',
       'records/knowledge-observations.jsonl',
-      'records/knowledge-retrieval-traces.jsonl',
       'records/knowledge.jsonl',
       'records/thread-material-bindings.jsonl',
       'records/threads.jsonl',
@@ -1211,7 +1216,7 @@ describe('workspace export verifier', () => {
         suggestedWorkspaceId: 'ws_imported_ws_demo',
       },
       verification: {
-        fileCount: 19,
+        fileCount: 18,
         checkedFiles: [
           'records/agent-resource-catalog.json',
           'records/agent-sessions.jsonl',
@@ -1220,7 +1225,6 @@ describe('workspace export verifier', () => {
           'records/knowledge-claims.jsonl',
           'records/knowledge-conflicts.jsonl',
           'records/knowledge-observations.jsonl',
-          'records/knowledge-retrieval-traces.jsonl',
           'records/knowledge.jsonl',
           'records/thread-material-bindings.jsonl',
           'records/threads.jsonl',
@@ -1235,6 +1239,157 @@ describe('workspace export verifier', () => {
         ],
       },
     });
+  });
+
+  it('remints trace context while retaining foreign Server references as unavailable evidence', () => {
+    const root = freshExportRoot('openkit-workspace-server-trace-import-');
+    const thread = {
+      id: 'th_server_trace',
+      workspaceId: 'ws_demo',
+      name: 'Server trace',
+      preview: 'Server trace',
+      status: 'active',
+      entryPath: 'conversation',
+      visibility: 'workspace',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    } as const;
+    const traceId = 'krt_00000000-0000-4000-8000-000000000881';
+    const requestDigest = `sha256:${'8'.repeat(64)}`;
+    const sourcePortableRoot = mkdtempSync(
+      join(tmpdir(), 'openkit-workspace-server-trace-source-')
+    );
+    const sourceTracePath = `threads/${thread.id}/retrieval-traces/${traceId}.json`;
+    const sourceTrace = {
+      traceId,
+      query: 'private query annotation',
+      futureRootNote: 'private root annotation',
+      queryContext: {
+        serverId: 'dep_source',
+        workspaceId: 'ws_demo',
+        actor: { kind: 'user', id: 'user_source', futureActorNote: 'retained' },
+        threadId: thread.id,
+      },
+      sourceScope: 'page/server',
+      notebookRevision: null,
+      caller: 'app-api',
+      requestDigest,
+      retrievalParameters: {
+        limit: 1,
+        pinnedReferences: [],
+        states: ['active'],
+        sourceScope: 'server',
+        futureParameterNote: 'private parameter annotation',
+      },
+      selected: [
+        {
+          reference: { scopeId: 'page/server', objectId: 'same-path' },
+          revision: `sha256:${'9'.repeat(64)}`,
+          contentDigest: `sha256:${'9'.repeat(64)}`,
+          sourceReferences: [],
+          body: 'private body annotation',
+          title: 'private title annotation',
+          snippet: 'private snippet annotation',
+          score: 99,
+          futureSelectedNote: 'private selected annotation',
+        },
+      ],
+      excluded: [],
+      createdAt: timestamp,
+    };
+    mkdirSync(join(sourcePortableRoot, 'config'));
+    writeFileSync(
+      join(sourcePortableRoot, 'config', 'workspace.jsonc'),
+      JSON.stringify({
+        schemaVersion: 1,
+        workspace: { name: 'Demo workspace', defaultAgentId: null },
+      })
+    );
+    mkdirSync(join(sourcePortableRoot, 'threads', thread.id, 'retrieval-traces'), {
+      recursive: true,
+    });
+    const sourceTraceText = `${JSON.stringify(sourceTrace)}\n`;
+    writeFileSync(join(sourcePortableRoot, sourceTracePath), sourceTraceText);
+    const portableFileState = readWorkspacePortableFileState(sourcePortableRoot, {
+      workspaceId: 'ws_demo',
+      threads: [{ threadId: thread.id }],
+      turns: [],
+    });
+    const normalizedSourceTrace = [...portableFileState.retrievalTraceFiles.values()][0]!;
+    expect(
+      (normalizedSourceTrace.queryContext.actor as Record<string, unknown>).futureActorNote
+    ).toBeUndefined();
+    expect(JSON.stringify(normalizedSourceTrace)).not.toContain('private');
+    expect(readFileSync(join(sourcePortableRoot, sourceTracePath), 'utf8')).toBe(sourceTraceText);
+    const verified = writeWorkspaceExportTree({
+      exportRoot: root,
+      exportId: 'wsexp_server_trace',
+      sourceDeploymentId: 'dep_source',
+      createdAt: timestamp,
+      workspace: {
+        id: 'ws_demo',
+        name: 'Demo workspace',
+        kind: 'general',
+        status: 'active',
+        counts: { threadCount: 1, artifactCount: 0, knowledgeEntryCount: 0 },
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      threads: [thread],
+      turns: [],
+      knowledge: [],
+      itemRevisions: [],
+      artifacts: [],
+      artifactReviews: [],
+      agentSessions: [],
+      turnEvents: [],
+      portableFileState,
+    });
+    const imported = readWorkspaceImportSnapshot({
+      verified,
+      targetWorkspaceId: 'ws_target',
+      targetServerId: 'dep_target',
+    });
+    const [path, trace] = [...imported.portableFileState.retrievalTraceFiles][0]!;
+    const exportedTraceText = verified.fileContents.get(`workspace-files/${sourceTracePath}`)!;
+
+    expect(imported.workspace.importedFrom?.sourceDeploymentId).toBe('dep_source');
+    for (const annotation of [
+      'private query annotation',
+      'private root annotation',
+      'private parameter annotation',
+      'private body annotation',
+      'private title annotation',
+      'private snippet annotation',
+      'private selected annotation',
+      'futureActorNote',
+    ]) {
+      expect(exportedTraceText).not.toContain(annotation);
+      expect(JSON.stringify(trace)).not.toContain(annotation);
+    }
+    expect(path).toBe(`threads/${imported.threads[0]?.id}/retrieval-traces/${traceId}.json`);
+    expect(trace).toMatchObject({
+      requestDigest,
+      queryContext: {
+        serverId: 'dep_target',
+        workspaceId: 'ws_target',
+        threadId: imported.threads[0]?.id,
+      },
+      sourceScope: 'page/server',
+      selected: [
+        expect.objectContaining({
+          reference: { scopeId: 'page/server', objectId: 'same-path' },
+        }),
+      ],
+    });
+    expect((trace.queryContext.actor as Record<string, unknown>).futureActorNote).toBeUndefined();
+    const targetPortableRoot = mkdtempSync(
+      join(tmpdir(), 'openkit-workspace-server-trace-target-')
+    );
+    writeWorkspacePortableFileState(targetPortableRoot, imported.portableFileState);
+    const targetTraceText = readFileSync(join(targetPortableRoot, path), 'utf8');
+    expect(targetTraceText).not.toContain('private');
+    expect(targetTraceText).not.toContain('futureActorNote');
   });
 
   it('rejects imported records with unsupported required features', () => {

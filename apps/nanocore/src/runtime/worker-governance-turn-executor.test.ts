@@ -434,6 +434,7 @@ async function createWorkerContextExecutorFixture(
   options: {
     readonly materialContent?: string;
     readonly maxContextTokens?: number;
+    readonly retrievalTraceOwner?: 'thread-before-turn' | 'turn';
     readonly turnId?: string;
     readonly workerRequest?: string;
   } = {}
@@ -443,6 +444,25 @@ async function createWorkerContextExecutorFixture(
   applyMigrations(coreDb);
   const store = createDemoStore({ dataRoot });
   const requestId = '00000000-0000-4000-8000-000000000270';
+  const retrievalTraceId = 'krt_0190f4c8-0000-7000-8000-000000000397';
+  const retrievalTraceOwner = options.retrievalTraceOwner ?? 'turn';
+  if (retrievalTraceOwner === 'thread-before-turn') {
+    await retrieveWorkspaceKnowledge({
+      access: {
+        actor: { kind: 'user', id: LOCAL_USER_ID },
+        coreDb,
+        outputThreadId: 'th_demo',
+        store,
+      },
+      caller: 'task-mode',
+      dataRoot,
+      limit: 5,
+      pinnedReferences: [],
+      query: 'Prepare worker context',
+      traceId: retrievalTraceId,
+      workspaceId: 'ws_demo',
+    });
+  }
   const turn = createAssignedTurn(
     store,
     'ws_demo',
@@ -493,22 +513,31 @@ async function createWorkerContextExecutorFixture(
     turnId: turn.id,
     turnInput: workerRequest,
   });
-  const retrievalTraceId = 'krt_0190f4c8-0000-7000-8000-000000000397';
-  await retrieveWorkspaceKnowledge({
-    access: {
-      actor: turn.triggerActor,
-      coreDb,
-      outputThreadId: turn.threadId,
-      store,
-    },
-    caller: 'task-mode',
-    dataRoot,
-    limit: 5,
-    pinnedConceptIds: [],
-    query: 'Prepare worker context',
-    traceId: retrievalTraceId,
-    workspaceId: turn.workspaceId,
-  });
+  const retrievalTraceRef = {
+    scopeId:
+      retrievalTraceOwner === 'thread-before-turn'
+        ? `retrieval-trace/thread/${turn.workspaceId}/${turn.threadId}`
+        : `retrieval-trace/turn/${turn.workspaceId}/${turn.threadId}/${turn.id}`,
+    objectId: retrievalTraceId,
+  };
+  if (retrievalTraceOwner === 'turn') {
+    await retrieveWorkspaceKnowledge({
+      access: {
+        actor: turn.triggerActor,
+        coreDb,
+        outputThreadId: turn.threadId,
+        outputTurnId: turn.id,
+        store,
+      },
+      caller: 'task-mode',
+      dataRoot,
+      limit: 5,
+      pinnedReferences: [],
+      query: 'Prepare worker context',
+      traceId: retrievalTraceId,
+      workspaceId: turn.workspaceId,
+    });
+  }
   const workspaceDb = openTestWorkspaceDb(coreDb);
   upsertWorkerCheckpoint(workspaceDb, {
     goalId: null,
@@ -523,7 +552,7 @@ async function createWorkerContextExecutorFixture(
     diagnosticsSummary: createWorkerCheckpointContextDiagnostics({
       contextDigest: commandInputHash(workerRequest),
       contextRefs: [{ kind: 'item', id: contextItemId }],
-      knowledgeSelectionInput: options.workerRequest ? null : { retrievalTraceId },
+      knowledgeSelectionInput: options.workerRequest ? null : { retrievalTraceRef },
       repositoryResourceId: 'repo_default',
     }),
   });
@@ -574,6 +603,7 @@ async function createWorkerContextExecutorFixture(
     packageRoot,
     queuedMaterial,
     requestId,
+    retrievalTraceRef,
     revision,
     sandboxBindingRef,
     store,
@@ -7746,6 +7776,67 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
+  it('persists the exact pre-Turn Thread retrieval reference through the S39 bridge', async () => {
+    const fixture = await createWorkerContextExecutorFixture('thread-retrieval-trace', {
+      retrievalTraceOwner: 'thread-before-turn',
+    });
+    const backend = new FakeWorkerGovernanceBackend();
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb: fixture.coreDb,
+      createAgentSessionId: () => fixture.agentSessionId,
+      environmentBackend: { kind: 'openshell' },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+
+    try {
+      await executor.startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
+        attemptId: `lease_${fixture.turn.id}`,
+        agentSessionId: fixture.agentSessionId,
+        agentSetup: createTestAgentSetup(),
+        requestId: fixture.requestId,
+        sandboxBindingRef: fixture.sandboxBindingRef,
+        triggerActor: fixture.turn.triggerActor,
+        workspaceRoots: [],
+      });
+
+      const contextTrace = JSON.parse(readFileSync(fixture.tracePath, 'utf8'));
+      expect(contextTrace.knowledgeSelectionInput).toEqual({
+        retrievalTraceRef: fixture.retrievalTraceRef,
+      });
+      expect(
+        existsSync(
+          join(
+            fixture.coreDb.dataRoot,
+            'workspaces',
+            fixture.turn.workspaceId,
+            'threads',
+            fixture.turn.threadId,
+            'retrieval-traces',
+            `${fixture.retrievalTraceRef.objectId}.json`
+          )
+        )
+      ).toBe(true);
+      expect(
+        existsSync(
+          join(
+            fixture.coreDb.dataRoot,
+            'workspaces',
+            fixture.turn.workspaceId,
+            'threads',
+            fixture.turn.threadId,
+            'turns',
+            fixture.turn.id,
+            'retrieval-traces',
+            `${fixture.retrievalTraceRef.objectId}.json`
+          )
+        )
+      ).toBe(false);
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
   it('delivers direct-Task Knowledge through S39 and proves exact completed-work proposal lineage', async () => {
     const fixture = await createWorkerContextExecutorFixture('task-knowledge');
     const knowledge = fixture.store.createKnowledgeEntry('ws_demo', {
@@ -7759,17 +7850,22 @@ describe('WorkerGovernanceTurnExecutor', () => {
       title: 'Oversized zygomorphic worker guidance',
     });
     const retrievalTraceId = 'krt_0190f4c8-0000-7000-8000-000000000398';
+    const retrievalTraceRef = {
+      scopeId: `retrieval-trace/turn/${fixture.turn.workspaceId}/${fixture.turn.threadId}/${fixture.turn.id}`,
+      objectId: retrievalTraceId,
+    };
     const retrieval = await retrieveWorkspaceKnowledge({
       access: {
         actor: fixture.turn.triggerActor,
         coreDb: fixture.coreDb,
         outputThreadId: fixture.turn.threadId,
+        outputTurnId: fixture.turn.id,
         store: fixture.store,
       },
       caller: 'task-mode',
       dataRoot: fixture.coreDb.dataRoot,
       limit: 5,
-      pinnedConceptIds: [],
+      pinnedReferences: [],
       query: 'Zygomorphic worker guidance',
       traceId: retrievalTraceId,
       workspaceId: fixture.turn.workspaceId,
@@ -7796,12 +7892,18 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect.arrayContaining([
         expect.objectContaining({
           contentDigest: knowledgePageDigest,
-          knowledgePageId: knowledge.id,
+          reference: {
+            objectId: knowledge.id,
+            scopeId: `page/workspace/${fixture.turn.workspaceId}`,
+          },
           sourceReferences: [],
         }),
         expect.objectContaining({
           contentDigest: oversizedKnowledgePageDigest,
-          knowledgePageId: oversizedKnowledge.id,
+          reference: {
+            objectId: oversizedKnowledge.id,
+            scopeId: `page/workspace/${fixture.turn.workspaceId}`,
+          },
           sourceReferences: [],
         }),
       ])
@@ -7819,7 +7921,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         diagnosticsSummary: createWorkerCheckpointContextDiagnostics({
           contextDigest: commandInputHash(fixture.workerRequest),
           contextRefs: [],
-          knowledgeSelectionInput: { retrievalTraceId },
+          knowledgeSelectionInput: { retrievalTraceRef },
           repositoryResourceId: 'repo_default',
         }),
         goalId: null,
@@ -7847,7 +7949,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
             reason: 'budget_exceeded',
           },
         ],
-        knowledgeSelectionInput: { retrievalTraceId },
+        knowledgeSelectionInput: { retrievalTraceRef },
         knowledgeSelections: [
           {
             contentDigest: knowledgePageDigest,
@@ -8025,18 +8127,24 @@ describe('WorkerGovernanceTurnExecutor', () => {
             body: JSON.stringify({
               query: 'Direct Task lesson',
               limit: 5,
-              pinnedConceptIds: [],
+              pinnedReferences: [],
             }),
           }
         )
       );
       expect(retrievalResponse.status, await retrievalResponse.clone().text()).toBe(200);
       const acceptedRetrieval = (await retrievalResponse.json()) as {
-        selected: Array<{ knowledgePageId: string; sourceReferences: string[] }>;
+        selected: Array<{
+          reference: { scopeId: string; objectId: string };
+          sourceReferences: string[];
+        }>;
       };
       expect(acceptedRetrieval.selected).toEqual([
         expect.objectContaining({
-          knowledgePageId: 'direct-task-lesson',
+          reference: {
+            scopeId: 'page/workspace/ws_demo',
+            objectId: 'direct-task-lesson',
+          },
           sourceReferences,
         }),
       ]);

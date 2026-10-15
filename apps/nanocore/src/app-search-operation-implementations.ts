@@ -82,7 +82,7 @@ export function createAppSearchOperationImplementations(
             workspaceId: workspace.id,
             access,
             caller: 'app-api',
-            retrievalTraceId: trace.traceId,
+            selection: trace,
           });
           if (!pages)
             throw new OperationError(

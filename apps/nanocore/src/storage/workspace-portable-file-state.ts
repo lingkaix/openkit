@@ -14,10 +14,12 @@ import {
   KnowledgeClaimSchema,
   KnowledgeConflictSchema,
   KnowledgeObservationSchema,
-  KnowledgeRetrievalResponseSchema,
+  type KnowledgeRetrievalTrace,
+  KnowledgeRetrievalTraceReaderSchema,
 } from '@openkit/app-api-schemas';
-import { z } from 'zod';
-
+import { type RetrievalTraceReference, RetrievalTraceReferenceSchema } from '@openkit/protocol';
+import type { z } from 'zod';
+import { assertRetrievalTraceIdentity, retrievalTraceRelativePath } from './retrieval-traces.js';
 import {
   appendCanonicalTextFile,
   assertCanonicalDirectory,
@@ -29,15 +31,10 @@ import {
 const ObservationRowSchema = KnowledgeObservationSchema.strict();
 const ClaimRowSchema = KnowledgeClaimSchema.strict();
 const ConflictRowSchema = KnowledgeConflictSchema.strict();
-const RetrievalTraceRowSchema = KnowledgeRetrievalResponseSchema.strict();
 const ObservationReaderSchema = ObservationRowSchema.strip();
 const ClaimReaderSchema = ClaimRowSchema.strip();
 const ConflictReaderSchema = ConflictRowSchema.strip();
-const RetrievalTraceReaderSchema = RetrievalTraceRowSchema.extend({
-  retrievalParameters: RetrievalTraceRowSchema.shape.retrievalParameters.strip(),
-  selected: z.array(RetrievalTraceRowSchema.shape.selected.element.strip()),
-  excluded: z.array(RetrievalTraceRowSchema.shape.excluded.element.strip()),
-}).strip();
+const RetrievalTraceReaderSchema = KnowledgeRetrievalTraceReaderSchema;
 const retainedLedgerRow = Symbol('retainedKnowledgeLedgerRow');
 
 /** Keeps owned source annotations separate from the normalized Knowledge read model. */
@@ -67,8 +64,8 @@ export interface WorkspacePortableFileState {
   readonly claims: ReadonlyMap<string, readonly z.infer<typeof ClaimRowSchema>[]>;
   /** Complete conflict append history grouped by canonical ledger month. */
   readonly conflicts: ReadonlyMap<string, readonly z.infer<typeof ConflictRowSchema>[]>;
-  /** Retrieval traces grouped by canonical ledger month in append order. */
-  readonly retrievalTraces: ReadonlyMap<string, readonly z.infer<typeof RetrievalTraceRowSchema>[]>;
+  /** Immutable query-owned retrieval traces keyed by canonical Workspace-relative path. */
+  readonly retrievalTraceFiles: ReadonlyMap<string, KnowledgeRetrievalTrace>;
   /** Exact workspace configuration text, or null when absent. */
   readonly workspaceConfig: string | null;
   /** Exact workspace knowledge schema text, or null when absent. */
@@ -77,6 +74,16 @@ export interface WorkspacePortableFileState {
   readonly nativeKnowledgePages: ReadonlyMap<string, string>;
   /** Turn-owned worker Context Package traces and exact worker-visible text files. */
   readonly workerContextPackageFiles: ReadonlyMap<string, string>;
+}
+
+/** Canonical Workspace, Thread, and Turn owners admitted for portable file reads. */
+export interface WorkspacePortableOwnerGraph {
+  /** Workspace that owns every portable path. */
+  readonly workspaceId: string;
+  /** Canonical Threads that may own Thread-level traces. */
+  readonly threads: readonly { readonly threadId: string }[];
+  /** Canonical Turns that may own Turn-level traces and Context Packages. */
+  readonly turns: readonly { readonly threadId: string; readonly turnId: string }[];
 }
 
 /**
@@ -203,82 +210,16 @@ export function readWorkspaceKnowledgeConflictLedger(
 }
 
 /**
- * Appends one strictly validated retrieval trace to its canonical monthly ledger.
- *
- * @param workspaceRoot Published workspace root.
- * @param row Retrieval trace to append.
- * @throws Error for duplicate ids, malformed rows, timestamps, paths, links, or non-regular files.
- */
-export function appendWorkspaceKnowledgeRetrievalTrace(
-  workspaceRoot: string,
-  row: z.infer<typeof RetrievalTraceRowSchema>
-): void {
-  const parsed = RetrievalTraceRowSchema.parse(row);
-  // ponytail: a linear scan fits the small-deployment profile; add an index only if trace volume proves it necessary.
-  const existing = readMonthlyLedger(
-    workspaceRoot,
-    'knowledge/traces',
-    RetrievalTraceReaderSchema,
-    (entry) => entry.createdAt,
-    true
-  );
-
-  if (
-    [...existing.values()].some((rows) => rows.some((entry) => entry.traceId === parsed.traceId))
-  ) {
-    throw new Error('Duplicate Knowledge retrieval trace id.');
-  }
-  appendMonthlyLedgerRow(
-    workspaceRoot,
-    'knowledge/traces',
-    parsed,
-    RetrievalTraceRowSchema,
-    (entry) => entry.createdAt
-  );
-}
-
-/**
- * Reads one strictly validated Knowledge retrieval trace by id.
- *
- * @param workspaceRoot Published workspace root.
- * @param traceId Retrieval trace id to locate.
- * @returns The unique trace, or null when no row has that id.
- * @throws Error when the ledger is malformed or contains the id more than once.
- */
-export function readWorkspaceKnowledgeRetrievalTrace(
-  workspaceRoot: string,
-  traceId: string
-): z.infer<typeof RetrievalTraceRowSchema> | null {
-  // ponytail: a linear scan fits the small-deployment profile; add an index only if trace volume proves it necessary.
-  const matches = [
-    ...readMonthlyLedger(
-      workspaceRoot,
-      'knowledge/traces',
-      RetrievalTraceReaderSchema,
-      (row) => row.createdAt
-    ).values(),
-  ]
-    .flat()
-    .filter((row) => row.traceId === traceId);
-
-  if (matches.length > 1) {
-    throw new Error('Duplicate Knowledge retrieval trace id.');
-  }
-
-  return matches[0] ?? null;
-}
-
-/**
  * Reads all authoritative portable file state beneath one real workspace root.
  *
  * @param workspaceRoot Published source workspace root.
- * @param turns Canonical Thread and Turn identities allowed to own package trees.
+ * @param owners Canonical Workspace, Thread, and Turn identities allowed to own portable trees.
  * @returns Strictly parsed ledgers and exact portable text files.
  * @throws Error for malformed rows, invalid month placement, links, or non-regular files.
  */
 export function readWorkspacePortableFileState(
   workspaceRoot: string,
-  turns: readonly { readonly threadId: string; readonly turnId: string }[]
+  owners: WorkspacePortableOwnerGraph
 ): WorkspacePortableFileState {
   const root = resolve(workspaceRoot);
 
@@ -287,16 +228,11 @@ export function readWorkspacePortableFileState(
     observations: readWorkspaceKnowledgeObservationLedger(root),
     claims: readWorkspaceKnowledgeClaimLedger(root),
     conflicts: readWorkspaceKnowledgeConflictLedger(root),
-    retrievalTraces: readMonthlyLedger(
-      root,
-      'knowledge/traces',
-      RetrievalTraceReaderSchema,
-      (row) => row.createdAt
-    ),
+    retrievalTraceFiles: readWorkspaceRetrievalTraceFiles(root, owners),
     workspaceConfig: readOptionalText(root, 'config/workspace.jsonc'),
     workspaceSchema: readOptionalText(root, 'knowledge/schema/workspace-schema.yaml'),
     nativeKnowledgePages: readNativeKnowledgePages(root),
-    workerContextPackageFiles: readWorkerContextPackageFiles(root, turns),
+    workerContextPackageFiles: readWorkerContextPackageFiles(root, owners.turns),
   };
 }
 
@@ -335,13 +271,6 @@ export function writeWorkspacePortableFileState(
     ConflictReaderSchema,
     (row) => row.resolvedAt ?? row.createdAt
   );
-  writeMonthlyLedger(
-    root,
-    'knowledge/traces',
-    state.retrievalTraces,
-    RetrievalTraceReaderSchema,
-    (row) => row.createdAt
-  );
   if (state.workspaceConfig !== null) {
     writeText(root, 'config/workspace.jsonc', state.workspaceConfig, false);
   }
@@ -349,6 +278,7 @@ export function writeWorkspacePortableFileState(
     writeText(root, 'knowledge/schema/workspace-schema.yaml', state.workspaceSchema, true);
   }
   writeTextMap(root, state.nativeKnowledgePages, 'knowledge/pages/', true);
+  writeWorkspaceRetrievalTraceFiles(root, state.retrievalTraceFiles);
   assertWorkerContextPackageFiles(state.workerContextPackageFiles);
   writeTextMap(root, state.workerContextPackageFiles, 'threads/', false);
 }
@@ -393,17 +323,6 @@ export function writeWorkspacePortableExportState(
     ),
     false
   );
-  writeText(
-    root,
-    'records/knowledge-retrieval-traces.jsonl',
-    serializeMonthlyLedger(
-      state?.retrievalTraces ?? empty,
-      RetrievalTraceReaderSchema,
-      (row) => row.createdAt
-    ),
-    false
-  );
-
   if (!state) {
     return;
   }
@@ -419,6 +338,7 @@ export function writeWorkspacePortableExportState(
     );
   }
   writeExportTextMap(root, state.nativeKnowledgePages, 'knowledge/pages/');
+  writeWorkspaceRetrievalTraceExportFiles(root, state.retrievalTraceFiles);
   assertWorkerContextPackageFiles(state.workerContextPackageFiles);
   writeExportTextMap(root, state.workerContextPackageFiles, 'threads/');
 }
@@ -585,6 +505,170 @@ function readNativeKnowledgePages(root: string): ReadonlyMap<string, string> {
   return new Map(
     [...readTextTree(root, 'knowledge/pages', true)].filter(([path]) => path.endsWith('.md'))
   );
+}
+
+/** Parses one query-owned trace file and binds its body to its canonical Workspace-relative path. */
+export function parseWorkspaceRetrievalTraceFile(
+  relativePath: string,
+  text: string,
+  expectedWorkspaceId: string
+): { readonly reference: RetrievalTraceReference; readonly trace: KnowledgeRetrievalTrace } {
+  safeRelativeSegments(relativePath);
+  const turnMatch = /^threads\/([^/]+)\/turns\/([^/]+)\/retrieval-traces\/([^/]+)\.json$/.exec(
+    relativePath
+  );
+  const threadMatch = /^threads\/([^/]+)\/retrieval-traces\/([^/]+)\.json$/.exec(relativePath);
+  if (!turnMatch && !threadMatch) {
+    throw new Error(`Portable retrieval trace path is invalid: ${relativePath}.`);
+  }
+  const reference = RetrievalTraceReferenceSchema.parse({
+    scopeId: turnMatch
+      ? `retrieval-trace/turn/${expectedWorkspaceId}/${turnMatch[1]}/${turnMatch[2]}`
+      : `retrieval-trace/thread/${expectedWorkspaceId}/${threadMatch![1]}`,
+    objectId: turnMatch ? turnMatch[3] : threadMatch![2],
+  });
+  const trace = RetrievalTraceReaderSchema.parse(JSON.parse(text));
+  assertRetrievalTraceIdentity(reference, trace);
+  return { reference, trace };
+}
+
+/** Serializes only normalized trace evidence; ignored additions cannot enter export or import. */
+export function serializeWorkspaceRetrievalTrace(trace: KnowledgeRetrievalTrace): string {
+  return `${JSON.stringify(RetrievalTraceReaderSchema.parse(trace))}\n`;
+}
+
+/** Reads every trace file whose path has one canonical Thread or Turn owner. */
+function readWorkspaceRetrievalTraceFiles(
+  root: string,
+  owners: WorkspacePortableOwnerGraph
+): ReadonlyMap<string, KnowledgeRetrievalTrace> {
+  if (workspaceDirectory(root, 'knowledge/traces', false)) {
+    throw new Error('The retired Knowledge retrieval trace ledger is unsupported.');
+  }
+  const knownThreads = new Set(owners.threads.map(({ threadId }) => threadId));
+  const knownTurns = new Set(
+    owners.turns.map(({ threadId, turnId }) => {
+      if (!knownThreads.has(threadId)) {
+        throw new Error(`Portable Turn has no canonical Thread: ${threadId}/${turnId}.`);
+      }
+      return `${threadId}\0${turnId}`;
+    })
+  );
+  if (knownThreads.size !== owners.threads.length || knownTurns.size !== owners.turns.length) {
+    throw new Error('Portable retrieval trace owners must be unique.');
+  }
+  const files = new Map<string, KnowledgeRetrievalTrace>();
+  const threadsDirectory = workspaceDirectory(root, 'threads', false);
+  if (!threadsDirectory) return files;
+
+  for (const thread of readdirSync(threadsDirectory, { withFileTypes: true }).sort((a, b) =>
+    a.name.localeCompare(b.name)
+  )) {
+    if (thread.isSymbolicLink()) {
+      throw new Error(`Portable workspace path must not be a symbolic link: ${thread.name}.`);
+    }
+    if (!thread.isDirectory()) continue;
+    const threadRoot = `threads/${thread.name}`;
+    const threadTraces = workspaceDirectory(root, `${threadRoot}/retrieval-traces`, false);
+    if (threadTraces) {
+      if (!knownThreads.has(thread.name)) {
+        throw new Error(`Portable retrieval trace has no canonical Thread: ${thread.name}.`);
+      }
+      readRetrievalTraceDirectory(
+        root,
+        `${threadRoot}/retrieval-traces`,
+        owners.workspaceId,
+        files
+      );
+    }
+    const turnsDirectory = workspaceDirectory(root, `${threadRoot}/turns`, false);
+    if (!turnsDirectory) continue;
+    for (const turn of readdirSync(turnsDirectory, { withFileTypes: true }).sort((a, b) =>
+      a.name.localeCompare(b.name)
+    )) {
+      if (turn.isSymbolicLink()) {
+        throw new Error(`Portable workspace path must not be a symbolic link: ${turn.name}.`);
+      }
+      if (!turn.isDirectory()) continue;
+      const traceRoot = `${threadRoot}/turns/${turn.name}/retrieval-traces`;
+      const traceDirectory = workspaceDirectory(root, traceRoot, false);
+      if (!traceDirectory) continue;
+      if (!knownTurns.has(`${thread.name}\0${turn.name}`)) {
+        throw new Error(
+          `Portable retrieval trace has no canonical Turn: ${thread.name}/${turn.name}.`
+        );
+      }
+      readRetrievalTraceDirectory(root, traceRoot, owners.workspaceId, files);
+    }
+  }
+  return files;
+}
+
+/** Reads one strict immutable trace directory without accepting alternate entries. */
+function readRetrievalTraceDirectory(
+  root: string,
+  relativeDirectory: string,
+  workspaceId: string,
+  files: Map<string, KnowledgeRetrievalTrace>
+): void {
+  const directory = workspaceDirectory(root, relativeDirectory, false);
+  if (!directory) return;
+  for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) =>
+    a.name.localeCompare(b.name)
+  )) {
+    const relativePath = `${relativeDirectory}/${entry.name}`;
+    if (entry.isSymbolicLink()) {
+      throw new Error(`Portable workspace path must not be a symbolic link: ${relativePath}.`);
+    }
+    if (!entry.isFile()) {
+      throw new Error(
+        `Portable retrieval trace directory contains an invalid entry: ${relativePath}.`
+      );
+    }
+    if (/^\.krt_[0-9a-f-]+\.[0-9a-f-]+\.tmp$/.test(entry.name)) continue;
+    if (!/^krt_[^/]+\.json$/.test(entry.name)) {
+      throw new Error(
+        `Portable retrieval trace directory contains an invalid entry: ${relativePath}.`
+      );
+    }
+    const { trace } = parseWorkspaceRetrievalTraceFile(
+      relativePath,
+      readCanonicalTextFile(join(directory, entry.name)),
+      workspaceId
+    );
+    files.set(relativePath, trace);
+  }
+}
+
+/** Writes reminted trace files into an unpublished staging Workspace. */
+function writeWorkspaceRetrievalTraceFiles(
+  root: string,
+  files: ReadonlyMap<string, KnowledgeRetrievalTrace>
+): void {
+  for (const [path, trace] of [...files].sort(([left], [right]) => left.localeCompare(right))) {
+    const text = serializeWorkspaceRetrievalTrace(trace);
+    const { reference } = parseWorkspaceRetrievalTraceFile(
+      path,
+      text,
+      trace.queryContext.workspaceId
+    );
+    if (retrievalTraceRelativePath(reference) !== path) {
+      throw new Error(`Portable retrieval trace path is contradictory: ${path}.`);
+    }
+    writeText(root, path, text, false);
+  }
+}
+
+/** Writes admitted trace files under the portable export namespace. */
+function writeWorkspaceRetrievalTraceExportFiles(
+  root: string,
+  files: ReadonlyMap<string, KnowledgeRetrievalTrace>
+): void {
+  for (const [path, trace] of [...files].sort(([left], [right]) => left.localeCompare(right))) {
+    const text = serializeWorkspaceRetrievalTrace(trace);
+    parseWorkspaceRetrievalTraceFile(path, text, trace.queryContext.workspaceId);
+    writeText(root, `workspace-files/${path}`, text, false);
+  }
 }
 
 /** Reads only complete worker Context Package trees owned by canonical Turns. */

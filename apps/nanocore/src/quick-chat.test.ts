@@ -1228,13 +1228,17 @@ describe('quick chat app API', () => {
       join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'pages', `${knowledge.id}.md`)
     );
     const contentDigest = `sha256:${createHash('sha256').update(pageBytes).digest('hex')}`;
-    const traceRoot = join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'traces');
+    const traceRoot = join(
+      dataRoot,
+      'workspaces',
+      'ws_demo',
+      'threads',
+      'th_demo',
+      'retrieval-traces'
+    );
     const traces = existsSync(traceRoot)
-      ? readdirSync(traceRoot).flatMap((fileName) =>
-          readFileSync(join(traceRoot, fileName), 'utf8')
-            .trim()
-            .split('\n')
-            .map((line) => JSON.parse(line))
+      ? readdirSync(traceRoot).map((fileName) =>
+          JSON.parse(readFileSync(join(traceRoot, fileName), 'utf8'))
         )
       : [];
 
@@ -1243,8 +1247,11 @@ describe('quick chat app API', () => {
         caller: 'app-api',
         selected: [
           expect.objectContaining({
-            knowledgePageId: knowledge.id,
             contentDigest,
+            reference: {
+              scopeId: 'page/workspace/ws_demo',
+              objectId: knowledge.id,
+            },
           }),
         ],
       }),

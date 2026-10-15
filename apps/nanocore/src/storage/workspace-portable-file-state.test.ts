@@ -1,5 +1,13 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -16,9 +24,13 @@ import { knowledgeOperationRequest } from '../test-support/knowledge-operation.j
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb } from './db.js';
+import { readDataRootLayoutMarker } from './fs-layout.js';
+import { retrieveWorkspaceKnowledge } from './index-rebuild.js';
 import { applyMigrations } from './migrate.js';
+import { publishRetrievalTrace, retrievalTraceRelativePath } from './retrieval-traces.js';
 import { verifyWorkspaceExportTree } from './workspace-export.js';
 import { readWorkspaceImportSnapshot } from './workspace-import.js';
+import { readWorkspacePortableFileState } from './workspace-portable-file-state.js';
 
 /**
  * Reads one optional JSONL fixture so a single red test can report every missing file family.
@@ -36,6 +48,56 @@ function readOptionalJsonl(path: string): Array<Record<string, unknown>> {
 }
 
 describe('workspace portable file state', () => {
+  it('rejects a publisher-temp-shaped directory in a retrieval trace directory', () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-retrieval-trace-temp-entry-'));
+    try {
+      const threadId = 'th_00000000-0000-4000-8000-000000000881';
+      const traceDirectory = join(workspaceRoot, 'threads', threadId, 'retrieval-traces');
+      mkdirSync(traceDirectory, { recursive: true });
+      const tempPath = join(
+        traceDirectory,
+        '.krt_00000000-0000-4000-8000-000000000882.00000000-0000-4000-8000-000000000883.tmp'
+      );
+      mkdirSync(tempPath);
+
+      expect(() =>
+        readWorkspacePortableFileState(workspaceRoot, {
+          workspaceId: 'ws_demo',
+          threads: [{ threadId }],
+          turns: [],
+        })
+      ).toThrow(/invalid entry/i);
+    } finally {
+      rmSync(workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('ignores a regular publisher temporary file in a retrieval trace directory', () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-retrieval-trace-temp-file-'));
+    try {
+      const threadId = 'th_00000000-0000-4000-8000-000000000881';
+      const traceDirectory = join(workspaceRoot, 'threads', threadId, 'retrieval-traces');
+      mkdirSync(traceDirectory, { recursive: true });
+      writeFileSync(
+        join(
+          traceDirectory,
+          '.krt_00000000-0000-4000-8000-000000000882.00000000-0000-4000-8000-000000000883.tmp'
+        ),
+        'incomplete'
+      );
+
+      expect(
+        readWorkspacePortableFileState(workspaceRoot, {
+          workspaceId: 'ws_demo',
+          threads: [{ threadId }],
+          turns: [],
+        }).retrievalTraceFiles.size
+      ).toBe(0);
+    } finally {
+      rmSync(workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
   it('preserves authoritative workspace files, append history, and reminted references', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-portable-files-'));
     const coreDb = openCoreDb(dataRoot);
@@ -253,10 +315,14 @@ describe('workspace portable file state', () => {
     const retrieval = KnowledgeRetrievalResponseSchema.parse(await retrievalRes.json());
     expect(retrieval.selected).toEqual([
       expect.objectContaining({
-        knowledgePageId: 'portable-file',
+        reference: {
+          scopeId: `page/workspace/${sourceWorkspaceId}`,
+          objectId: 'portable-file',
+        },
         sourceReferences: [`knowledge:${knowledge.id}`],
       }),
     ]);
+    expect(retrieval.retrievalTraceRef).toBeUndefined();
 
     const exportRes = await app.request(
       ...operationRequest(
@@ -389,25 +455,7 @@ describe('workspace portable file state', () => {
       ],
     });
 
-    const importedRetrievalRows = readOptionalJsonl(
-      join(
-        importedRoot,
-        'knowledge',
-        'traces',
-        `${retrieval.createdAt.slice(0, 7).replace('-', '')}.jsonl`
-      )
-    );
-    expect.soft(importedRetrievalRows).toEqual([
-      expect.objectContaining({
-        workspaceId: importedWorkspaceId,
-        selected: [
-          expect.objectContaining({
-            knowledgePageId: 'portable-file',
-            sourceReferences: [`knowledge:${importedKnowledge.id}`],
-          }),
-        ],
-      }),
-    ]);
+    expect(existsSync(join(importedRoot, 'knowledge', 'traces'))).toBe(false);
 
     const importedConfigPath = join(importedRoot, 'config', 'workspace.jsonc');
     expect
@@ -476,11 +524,151 @@ describe('workspace portable file state', () => {
     );
     expect(importedRetrieval.selected).toEqual([
       expect.objectContaining({
-        knowledgePageId: importedAcceptedKnowledge.id,
+        reference: {
+          scopeId: `page/workspace/${importedWorkspaceId}`,
+          objectId: importedAcceptedKnowledge.id,
+        },
         sourceReferences: [knowledgeReference.replaceAll(knowledge.id, importedKnowledge.id)],
       }),
     ]);
 
+    coreDb.sqlite.close();
+  });
+
+  it('fails export before publication when a retained trace source is no longer readable', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-trace-export-access-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const workspaceId = 'ws_demo';
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId,
+    });
+    const thread = store.listThreads(workspaceId)[0]!;
+    const traceId = 'krt_00000000-0000-4000-8000-000000000882';
+    const reference = {
+      scopeId: `retrieval-trace/thread/${workspaceId}/${thread.id}`,
+      objectId: traceId,
+    } as const;
+    publishRetrievalTrace(join(dataRoot, 'workspaces', workspaceId), reference, {
+      traceId,
+      queryContext: {
+        serverId: readDataRootLayoutMarker(dataRoot).deploymentId,
+        workspaceId,
+        actor: { kind: 'user', id: 'user_local' },
+        threadId: thread.id,
+      },
+      sourceScope: `page/workspace/${workspaceId}`,
+      notebookRevision: null,
+      caller: 'app-api',
+      requestDigest: `sha256:${'8'.repeat(64)}`,
+      retrievalParameters: {
+        limit: 1,
+        pinnedReferences: [],
+        states: ['active'],
+        sourceScope: 'workspace',
+      },
+      selected: [],
+      excluded: [
+        {
+          reference: {
+            scopeId: `page/workspace/${workspaceId}`,
+            objectId: 'restricted-same-path',
+          },
+          revision: null,
+          contentDigest: null,
+          sourceReferences: [],
+          reason: 'source_unavailable',
+        },
+      ],
+      createdAt: '2026-07-06T00:00:00.000Z',
+    });
+    const app = createApp({ coreDb, dataRoot, store });
+    const response = await app.request(
+      ...operationRequest('workspace.export', { workspaceId }, { method: 'POST' })
+    );
+    const body = await response.text();
+
+    expect(response.status).toBe(503);
+    expect(JSON.parse(body)).toMatchObject({ code: 'knowledge_source_unavailable' });
+    expect(body).not.toContain('restricted-same-path');
+    const workspaceExports = join(dataRoot, 'server', 'exports', 'workspaces', workspaceId);
+    expect(existsSync(workspaceExports) ? readdirSync(workspaceExports) : []).toEqual([]);
+    coreDb.sqlite.close();
+  });
+
+  it('fails export without disclosure when a selected page becomes restricted', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-trace-export-revoked-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const workspaceId = 'ws_demo';
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId,
+    });
+    const thread = store.listThreads(workspaceId)[0]!;
+    const page = store.createKnowledgeEntry(workspaceId, {
+      kind: 'project-context',
+      title: 'Revoked export selection',
+      content: 'This content must not leave after revocation.',
+      sourceReferences: [],
+    });
+    const result = await retrieveWorkspaceKnowledge({
+      dataRoot,
+      workspaceId,
+      caller: 'app-api',
+      query: 'Revoked export selection',
+      limit: 1,
+      pinnedReferences: [{ scopeId: `page/workspace/${workspaceId}`, objectId: page.id }],
+      access: {
+        store,
+        coreDb,
+        actor: { kind: 'user', id: 'user_local' },
+        requestActor: { kind: 'local', userId: 'user_local' },
+        outputThreadId: thread.id,
+      },
+      traceId: 'krt_00000000-0000-4000-8000-000000000883',
+      now: () => '2026-07-06T00:00:00.000Z',
+    });
+    expect(result.retrievalTraceRef).toBeDefined();
+    const tracePath = join(
+      dataRoot,
+      'workspaces',
+      workspaceId,
+      retrievalTraceRelativePath(result.retrievalTraceRef!)
+    );
+    const originalTrace = readFileSync(tracePath, 'utf8');
+    const pagePath = join(
+      dataRoot,
+      'workspaces',
+      workspaceId,
+      'knowledge',
+      'pages',
+      `${page.id}.md`
+    );
+    writeFileSync(
+      pagePath,
+      readFileSync(pagePath, 'utf8').replace('sensitivity: "normal"', 'sensitivity: "restricted"')
+    );
+    const app = createApp({ coreDb, dataRoot, store });
+    const response = await app.request(
+      ...operationRequest('workspace.export', { workspaceId }, { method: 'POST' })
+    );
+    const body = await response.text();
+
+    expect(response.status).toBe(403);
+    expect(JSON.parse(body)).toMatchObject({ code: 'workspace_access_denied' });
+    expect(body).not.toContain(page.id);
+    expect(body).not.toContain('This content must not leave after revocation.');
+    expect(readFileSync(tracePath, 'utf8')).toBe(originalTrace);
+    const workspaceExports = join(dataRoot, 'server', 'exports', 'workspaces', workspaceId);
+    expect(existsSync(workspaceExports) ? readdirSync(workspaceExports) : []).toEqual([]);
     coreDb.sqlite.close();
   });
 });

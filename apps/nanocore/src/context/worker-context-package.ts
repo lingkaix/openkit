@@ -15,7 +15,11 @@ import {
   WorkspaceMaterializationRecordSchema,
 } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
-import type { ActorRef } from '@openkit/protocol';
+import {
+  type ActorRef,
+  type RetrievalTraceReference,
+  RetrievalTraceReferenceSchema,
+} from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { z } from 'zod';
 
@@ -74,6 +78,7 @@ const Sha256Schema = IdSchema.regex(/^sha256:[a-f0-9]{64}$/);
 const ContextPackageDigestSchema = z.string().regex(/^ctxpkg_sha256_[a-f0-9]{64}$/);
 const IMPORTED_HISTORY_REQUEST_ID_PATTERN = /^import-lineage:sha256:[a-f0-9]{64}$/;
 const ExclusionReasonSchema = z.enum(EXCLUSION_REASONS);
+const RetainedRetrievalTraceReferenceSchema = RetrievalTraceReferenceSchema.strip();
 const FileInventoryEntrySchema = z.strictObject({
   byteLength: z.number().int().nonnegative().safe(),
   contentDigest: Sha256Schema,
@@ -103,7 +108,7 @@ const MaterialExclusionSchema = z.object({
   sensitivity: z.enum(['public', 'internal', 'restricted']),
 });
 const KnowledgeSelectionInputSchema = z.object({
-  retrievalTraceId: IdSchema,
+  retrievalTraceRef: RetainedRetrievalTraceReferenceSchema,
 });
 const KnowledgeSelectionSchema = z.object({
   contentDigest: Sha256Schema,
@@ -247,8 +252,8 @@ export interface WorkerContextPackageKnowledgeSelection {
 
 /** Existing S61 retrieval trace consumed as the Task selection input. */
 export interface WorkerContextPackageKnowledgeSelectionReference {
-  /** Exact governed-retrieval trace identity. */
-  readonly retrievalTraceId: string;
+  /** Exact scope-qualified governed-retrieval trace identity. */
+  readonly retrievalTraceRef: RetrievalTraceReference;
 }
 
 /** S61-selected Knowledge page omitted only by the later package budget. */
@@ -1422,10 +1427,7 @@ function assertTraceShape(value: unknown): asserts value is WorkerContextPackage
     throw new Error('Worker Context Package Knowledge delivery lacks its selection input.');
   }
   if (trace.knowledgeSelectionInput !== null) {
-    assertSafeWorkspacePathSegment(
-      trace.knowledgeSelectionInput.retrievalTraceId,
-      'Knowledge retrieval trace id'
-    );
+    RetainedRetrievalTraceReferenceSchema.parse(trace.knowledgeSelectionInput.retrievalTraceRef);
   }
   for (const itemId of trace.includedItemIds) {
     assertSafeWorkspacePathSegment(itemId, 'included Item id');

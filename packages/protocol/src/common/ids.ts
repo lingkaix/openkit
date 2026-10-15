@@ -84,3 +84,27 @@ export const AuditEventIdSchema = z.string().min(1);
  * Idempotency key used to correlate mutating commands with resulting events.
  */
 export const RequestIdSchema = z.string().uuid();
+
+/** Checks the current User id form at a boundary that names that kind. */
+export function isUserId(value: string): boolean {
+  // Better Auth's current generator emits 32 alphanumeric characters; local/product ids use user_.
+  return /^[A-Za-z0-9]{32}$/.test(value) || (value.startsWith('user_') && value.length > 5);
+}
+
+/** Checks the current Workspace id form; the identifier rollout tightens this owner. */
+export function isWorkspaceId(value: string): boolean {
+  return value.startsWith('ws_') && value.length > 3;
+}
+
+/** Checks the current Thread id form at a boundary that names that kind. */
+export function isThreadId(value: string): boolean {
+  return value.startsWith('th_') && value.length > 3;
+}
+
+/** Checks the current Turn id form at a boundary that names that kind. */
+export function isTurnId(value: string): boolean {
+  // Store-created Turns use tu_; active command-derived Turn owners use turn_.
+  return (
+    (value.startsWith('tu_') && value.length > 3) || (value.startsWith('turn_') && value.length > 5)
+  );
+}

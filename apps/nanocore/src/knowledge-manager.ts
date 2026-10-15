@@ -7,7 +7,7 @@ import type {
   KnowledgeManagerPrepareContextResponse,
   KnowledgeManagerSuggestRepairResponse,
 } from '@openkit/app-api-schemas';
-import type { KnowledgeEntrySchema } from '@openkit/protocol';
+import type { KnowledgeEntrySchema, RetrievalTraceReference } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { KnowledgeProposalRecord } from './lib/store.js';
 import { analyzeKnowledgePage } from './retrieval-knowledge-adapter.js';
@@ -74,7 +74,7 @@ export interface PrepareTaskKnowledgeContextInput {
 /** Exact S17 result consumed by the direct Task owner. */
 export interface PreparedTaskKnowledgeContext {
   /** Existing S61 trace that owns the Task Knowledge selection. */
-  readonly retrievalTraceId: string;
+  readonly retrievalTraceRef: RetrievalTraceReference;
 }
 
 /** Input for one deterministic Knowledge Manager proposal draft operation. */
@@ -135,14 +135,14 @@ export async function answerKnowledgeManager(
     caller: input.caller,
     query: input.query,
     limit: input.limit ?? 5,
-    pinnedConceptIds: [],
+    pinnedReferences: [],
     traceId: `krt_${randomUUID()}`,
   });
   const pages = resolveWorkspaceKnowledgeRetrievalPages({
     access: input.access,
     caller: input.caller,
     dataRoot: input.dataRoot,
-    retrievalTraceId: retrieval.traceId,
+    selection: retrieval,
     workspaceId: input.workspaceId,
   });
   if (!pages) {
@@ -151,6 +151,7 @@ export async function answerKnowledgeManager(
   const analyzedPages = await Promise.all(
     pages.map(async (page) => ({
       id: page.knowledgePageId,
+      reference: page.reference,
       content: page.body,
       kind: page.kind,
       sourceReferences: page.sourceRefs,
@@ -169,7 +170,7 @@ export async function answerKnowledgeManager(
     access: input.access,
     caller: input.caller,
     dataRoot: input.dataRoot,
-    retrievalTraceId: retrieval.traceId,
+    selection: retrieval,
     workspaceId: input.workspaceId,
   });
   if (
@@ -195,7 +196,7 @@ export async function answerKnowledgeManager(
       operation: 'answer',
       workspaceId: input.workspaceId,
       caller: input.caller,
-      retrievalTraceId: retrieval.traceId,
+      ...(retrieval.retrievalTraceRef ? { retrievalTraceRef: retrieval.retrievalTraceRef } : {}),
       query: input.query,
       outcome: 'insufficient-evidence',
       answer: 'I do not have enough source-traceable workspace knowledge to answer that.',
@@ -209,7 +210,7 @@ export async function answerKnowledgeManager(
   }
 
   const citations = matches.map((entry) => ({
-    knowledgeEntryId: entry.id,
+    reference: entry.reference,
     kind: entry.kind,
     title: entry.title,
     excerpt: excerpt(entry.content),
@@ -220,7 +221,7 @@ export async function answerKnowledgeManager(
     operation: 'answer',
     workspaceId: input.workspaceId,
     caller: input.caller,
-    retrievalTraceId: retrieval.traceId,
+    ...(retrieval.retrievalTraceRef ? { retrievalTraceRef: retrieval.retrievalTraceRef } : {}),
     query: input.query,
     outcome: 'answered',
     answer: matches[0]?.content ?? citations[0]?.excerpt ?? 'Knowledge matched the query.',
@@ -246,7 +247,7 @@ export async function prepareKnowledgeContext(
     caller: 'app-api',
     query: input.query,
     limit: input.limit ?? 5,
-    pinnedConceptIds: [],
+    pinnedReferences: [],
     traceId: `krt_${randomUUID()}`,
   });
 
@@ -255,7 +256,7 @@ export async function prepareKnowledgeContext(
     operation: 'prepare-context-material',
     workspaceId: input.workspaceId,
     caller: input.caller,
-    retrievalTraceId: retrieval.traceId,
+    ...(retrieval.retrievalTraceRef ? { retrievalTraceRef: retrieval.retrievalTraceRef } : {}),
     outcome: retrieval.selected.length > 0 ? 'prepared' : 'insufficient-evidence',
     selected: retrieval.selected,
     excluded: retrieval.excluded,
@@ -279,11 +280,13 @@ export async function prepareTaskKnowledgeContext(
     caller: 'task-mode',
     query: input.query,
     limit: 5,
-    pinnedConceptIds: [],
+    pinnedReferences: [],
     traceId: input.traceId,
   });
 
-  return { retrievalTraceId: retrieval.traceId };
+  if (!retrieval.retrievalTraceRef)
+    throw new Error('Task Knowledge selection requires its query-owned trace.');
+  return { retrievalTraceRef: retrieval.retrievalTraceRef };
 }
 
 /**

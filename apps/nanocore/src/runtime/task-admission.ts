@@ -142,7 +142,7 @@ export function createCoordinatorTaskTool(options: {
                   workspaceMutationAdmission: options.workspaceMutationAdmission,
                 })(
                   { workspaceId: goal.workspaceId, query: input.request.objective },
-                  { actor, traceId: `krt_${requestId}` }
+                  { actor, traceId: `krt_${requestId}`, threadId }
                 );
                 return {
                   delegationRequest: input.request,

@@ -1,7 +1,6 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import {
-  appendFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -13,6 +12,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { KnowledgeRetrievalTraceSchema } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it } from 'vitest';
 import { DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION } from '../knowledge/okf.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
@@ -365,13 +365,17 @@ describe('workspace derived index rebuild', () => {
     });
     const traceId = 'krt_00000000-0000-4000-8000-000000000003';
     const input = {
-      access: localRetrievalAccess(dataRoot, store),
+      access: { ...localRetrievalAccess(dataRoot, store), outputThreadId: 'th_demo' },
       dataRoot,
       workspaceId: 'ws_demo',
       caller: 'task-mode' as const,
       query: 'retrievalneedle',
       limit: 1,
-      pinnedConceptIds: [overflow.id, selected.id, selected.id],
+      pinnedReferences: [
+        { scopeId: 'page/workspace/ws_demo', objectId: overflow.id },
+        { scopeId: 'page/workspace/ws_demo', objectId: selected.id },
+        { scopeId: 'page/workspace/ws_demo', objectId: selected.id },
+      ],
       traceId,
       now: () => createdAt,
     };
@@ -386,13 +390,14 @@ describe('workspace derived index rebuild', () => {
       resolveWorkspaceKnowledgeRetrievalPages({
         caller: 'task-mode',
         dataRoot,
-        access: localRetrievalAccess(dataRoot, store),
+        access: { ...localRetrievalAccess(dataRoot, store), outputThreadId: 'th_demo' },
         workspaceId: 'ws_demo',
-        retrievalTraceId: traceId,
+        retrievalTraceRef: trace.retrievalTraceRef!,
       })
     ).toEqual([
       {
         body: 'retrievalneedle',
+        reference: { scopeId: 'page/workspace/ws_demo', objectId: selected.id },
         knowledgePageId: selected.id,
         contentDigest: sha256Digest(selectedPageBytes),
         kind: 'project-context',
@@ -402,41 +407,61 @@ describe('workspace derived index rebuild', () => {
       },
     ]);
 
-    const row = JSON.parse(
-      readFileSync(join(workspaceRoot, 'knowledge', 'traces', '202607.jsonl'), 'utf8')
-    ) as unknown;
+    const tracePath = join(
+      workspaceRoot,
+      'threads',
+      'th_demo',
+      'retrieval-traces',
+      `${traceId}.json`
+    );
+    const row = KnowledgeRetrievalTraceSchema.parse(JSON.parse(readFileSync(tracePath, 'utf8')));
     expect(row).toEqual({
       traceId,
-      workspaceId: 'ws_demo',
+      queryContext: {
+        serverId: expect.any(String),
+        workspaceId: 'ws_demo',
+        actor: { kind: 'user', id: 'user_local' },
+        threadId: 'th_demo',
+      },
+      sourceScope: 'page/workspace/ws_demo',
+      notebookRevision: null,
       caller: 'task-mode',
-      requestDigest: sha256Digest(
-        '{"caller":"task-mode","request":{"limit":1,"pinnedConceptIds":["mem_2","mem_3"],"query":"retrievalneedle","states":["active"]},"workspaceId":"ws_demo"}'
-      ),
+      requestDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       retrievalParameters: {
         limit: 1,
-        pinnedConceptIds: [selected.id, overflow.id],
+        pinnedReferences: [
+          { scopeId: 'page/workspace/ws_demo', objectId: selected.id },
+          { scopeId: 'page/workspace/ws_demo', objectId: overflow.id },
+        ],
         states: ['active'],
+        sourceScope: 'workspace',
       },
       selected: [
         {
-          knowledgePageId: selected.id,
+          reference: { scopeId: 'page/workspace/ws_demo', objectId: selected.id },
+          revision: sha256Digest(selectedPageBytes),
           contentDigest: sha256Digest(selectedPageBytes),
-          score: expect.any(Number),
           sourceReferences: [sourceReference],
         },
       ],
       excluded: [
         {
-          knowledgePageId: overflow.id,
+          reference: { scopeId: 'page/workspace/ws_demo', objectId: overflow.id },
+          revision: sha256Digest(
+            readFileSync(join(workspaceRoot, 'knowledge', 'pages', `${overflow.id}.md`), 'utf8')
+          ),
           contentDigest: sha256Digest(
             readFileSync(join(workspaceRoot, 'knowledge', 'pages', `${overflow.id}.md`), 'utf8')
           ),
+          sourceReferences: [],
           reason: 'budget_exceeded',
         },
       ],
       createdAt,
     });
     expect(trace.selected[0]?.score).toBeGreaterThan(0);
+    expect(JSON.stringify(row)).not.toContain('score');
+    expect(JSON.stringify(row)).not.toContain('retrievalneedle');
     expect(JSON.stringify(row)).not.toContain(zeroScore.id);
   });
 
@@ -499,7 +524,7 @@ describe('workspace derived index rebuild', () => {
       decidedAt: '2026-07-12T00:00:00.000Z',
     });
     const retrieval = await retrieveWorkspaceKnowledge({
-      access: localRetrievalAccess(dataRoot, store),
+      access: { ...localRetrievalAccess(dataRoot, store), outputThreadId: 'th_demo' },
       caller: 'task-mode',
       dataRoot,
       query: 'Reviewed task proof',
@@ -508,15 +533,19 @@ describe('workspace derived index rebuild', () => {
       now: () => '2026-07-12T00:00:00.000Z',
     });
 
-    expect(retrieval.selected).toContainEqual(expect.objectContaining({ knowledgePageId }));
+    expect(retrieval.selected).toContainEqual(
+      expect.objectContaining({
+        reference: { scopeId: 'page/workspace/ws_demo', objectId: knowledgePageId },
+      })
+    );
     rmSync(join(workspaceRoot, 'knowledge', 'reviews', `${proposal.id}.json`));
     const afterStore = new FsStore({ dataRoot });
     expect(() =>
       resolveWorkspaceKnowledgeRetrievalPages({
-        access: localRetrievalAccess(dataRoot, afterStore),
+        access: { ...localRetrievalAccess(dataRoot, afterStore), outputThreadId: 'th_demo' },
         caller: 'task-mode',
         dataRoot,
-        retrievalTraceId: retrieval.traceId,
+        retrievalTraceRef: retrieval.retrievalTraceRef!,
         workspaceId: 'ws_demo',
       })
     ).toThrow('Knowledge retrieval trace no longer matches authoritative pages.');
@@ -550,10 +579,10 @@ describe('workspace derived index rebuild', () => {
     writeFileSync(join(workspaceRoot, 'knowledge', 'pages', `${knowledgePageId}.md`), content);
 
     const retrieval = await retrieveWorkspaceKnowledge({
-      access: localRetrievalAccess(dataRoot, store),
+      access: { ...localRetrievalAccess(dataRoot, store), outputThreadId: 'th_demo' },
       caller: 'task-mode',
       dataRoot,
-      pinnedConceptIds: [knowledgePageId],
+      pinnedReferences: [{ scopeId: 'page/workspace/ws_demo', objectId: knowledgePageId }],
       query: 'accepted page',
       traceId: 'krt_00000000-0000-4000-8000-000000000703',
       workspaceId: 'ws_demo',
@@ -566,7 +595,9 @@ describe('workspace derived index rebuild', () => {
     expect(retrieval.selected).toEqual([]);
     expect(retrieval.excluded).toContainEqual({
       contentDigest: sha256Digest(content),
-      knowledgePageId,
+      reference: { scopeId: 'page/workspace/ws_demo', objectId: knowledgePageId },
+      revision: sha256Digest(content),
+      sourceReferences: [],
       reason: 'lower_conformance',
     });
     expect(validationIndex.records.find((record) => record.conceptId === knowledgePageId)).toEqual(
@@ -574,81 +605,80 @@ describe('workspace derived index rebuild', () => {
     );
   });
 
-  it('repairs an incomplete retrieval-trace tail before appending', async () => {
+  it('publishes one immutable trace beside an interrupted temporary file', async () => {
     const dataRoot = createDataRoot();
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Retrieval trace recovery');
-    const tracePath = join(
+    const thread = store.createThread(workspace.id, 'Retrieval owner');
+    const traceRoot = join(
       dataRoot,
       'workspaces',
       workspace.id,
-      'knowledge',
-      'traces',
-      '202607.jsonl'
+      'threads',
+      thread.id,
+      'retrieval-traces'
     );
+    mkdirSync(traceRoot, { recursive: true });
+    const interruptedPath = join(traceRoot, '.krt_interrupted.tmp');
+    writeFileSync(interruptedPath, '{"interrupted":true');
     const input = {
-      access: localRetrievalAccess(dataRoot, store),
+      access: { ...localRetrievalAccess(dataRoot, store), outputThreadId: thread.id },
       dataRoot,
       workspaceId: workspace.id,
-      caller: 'app-api' as const,
+      caller: 'task-mode' as const,
       query: 'canonical recovery',
       now: () => '2026-07-12T00:00:00.000Z',
     };
-
     const firstTraceId = 'krt_00000000-0000-4000-8000-000000000001';
 
-    await retrieveWorkspaceKnowledge({ ...input, traceId: firstTraceId });
-    appendFileSync(tracePath, '{"traceId":"interrupted');
-    await retrieveWorkspaceKnowledge({
-      ...input,
-      traceId: 'krt_00000000-0000-4000-8000-000000000002',
+    const first = await retrieveWorkspaceKnowledge({ ...input, traceId: firstTraceId });
+    const tracePath = join(traceRoot, `${firstTraceId}.json`);
+    expect(
+      KnowledgeRetrievalTraceSchema.parse(JSON.parse(readFileSync(tracePath, 'utf8')))
+    ).toEqual(expect.objectContaining({ traceId: firstTraceId }));
+    expect(first.retrievalTraceRef).toEqual({
+      scopeId: `retrieval-trace/thread/${workspace.id}/${thread.id}`,
+      objectId: firstTraceId,
     });
-
-    const rows = readFileSync(tracePath, 'utf8').trim().split('\n');
-    expect(rows).toHaveLength(2);
-    expect(rows.map((row) => JSON.parse(row))).toHaveLength(2);
+    expect(readFileSync(interruptedPath, 'utf8')).toBe('{"interrupted":true');
+    const before = readFileSync(tracePath);
     await expect(retrieveWorkspaceKnowledge({ ...input, traceId: firstTraceId })).rejects.toThrow(
-      /duplicate/i
+      'Knowledge retrieval trace already exists.'
     );
+    expect(readFileSync(tracePath)).toEqual(before);
   });
 
-  it('rejects a symlinked retrieval-trace ledger without writing outside', async () => {
+  it('rejects a symlinked immutable retrieval-trace target without writing outside', async () => {
     const dataRoot = createDataRoot();
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Retrieval trace symlink');
+    const thread = store.createThread(workspace.id, 'Retrieval owner');
+    const traceId = 'krt_00000000-0000-4000-8000-000000000004';
     const tracePath = join(
       dataRoot,
       'workspaces',
       workspace.id,
-      'knowledge',
-      'traces',
-      '202607.jsonl'
+      'threads',
+      thread.id,
+      'retrieval-traces',
+      `${traceId}.json`
     );
     const outsideRoot = mkdtempSync(join(tmpdir(), 'openkit-index-trace-outside-'));
-    const outsidePath = join(outsideRoot, 'sentinel.jsonl');
+    const outsidePath = join(outsideRoot, 'sentinel.json');
     const input = {
-      access: localRetrievalAccess(dataRoot, store),
+      access: { ...localRetrievalAccess(dataRoot, store), outputThreadId: thread.id },
       dataRoot,
       workspaceId: workspace.id,
-      caller: 'app-api' as const,
+      caller: 'task-mode' as const,
       query: 'canonical symlink',
       now: () => '2026-07-12T00:00:00.000Z',
     };
 
-    await retrieveWorkspaceKnowledge({
-      ...input,
-      traceId: 'krt_00000000-0000-4000-8000-000000000004',
-    });
-    rmSync(tracePath);
+    mkdirSync(join(tracePath, '..'), { recursive: true });
     writeFileSync(outsidePath, 'untouched\n');
     symlinkSync(outsidePath, tracePath);
 
-    await expect(
-      retrieveWorkspaceKnowledge({
-        ...input,
-        traceId: 'krt_00000000-0000-4000-8000-000000000005',
-      })
-    ).rejects.toThrow();
+    await expect(retrieveWorkspaceKnowledge({ ...input, traceId })).rejects.toThrow();
     expect(readFileSync(outsidePath, 'utf8')).toBe('untouched\n');
   });
 
@@ -1469,12 +1499,15 @@ describe('workspace derived index rebuild', () => {
       limit: 5,
       now: () => '2026-07-05T00:00:00.000Z',
       query: 'protocol',
-      traceId: 'krt_00000000-0000-4000-8000-000000000099',
       workspaceId: 'ws_demo',
     });
 
     expect(retrieval.selected).toEqual(
-      expect.arrayContaining([expect.objectContaining({ knowledgePageId: 'mem_project' })])
+      expect.arrayContaining([
+        expect.objectContaining({
+          reference: { scopeId: 'page/workspace/ws_demo', objectId: 'mem_project' },
+        }),
+      ])
     );
     expect(
       JSON.parse(readFileSync(join(indexesRoot, 'knowledge-validation.json'), 'utf8'))

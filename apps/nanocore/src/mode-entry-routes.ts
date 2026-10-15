@@ -15,6 +15,7 @@ import {
 import {
   type ActorRef,
   isCheckpointCollectableTurnStatus,
+  type RetrievalTraceReference,
   responsibleUserIdForActor,
   type StopReason,
   TurnSchema,
@@ -71,6 +72,7 @@ import {
 import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { createOperationInvocation } from './operation-composition.js';
+import { OperationError } from './operation-error.js';
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
 import type { ProviderCredentialConfigured } from './providers/registry.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from './runtime/aep-snapshot-ledger.js';
@@ -3145,6 +3147,7 @@ export function createConversationService({
           {
             kind: 'public',
             actor: actor,
+            queryContext: { threadId },
           }
         );
         const completedAt = new Date().toISOString();
@@ -3331,7 +3334,9 @@ export function createConversationService({
                     'Task Knowledge retrieval requires a file-backed data root.'
                   );
                 }
-                let knowledgeSelectionInput: { readonly retrievalTraceId: string };
+                let knowledgeSelectionInput: {
+                  readonly retrievalTraceRef: RetrievalTraceReference;
+                };
                 try {
                   knowledgeSelectionInput = await createTaskKnowledgePreparation({
                     coreDb,
@@ -3348,12 +3353,12 @@ export function createConversationService({
                         receivingThreadId,
                         chatInput.requestId
                       ),
+                      threadId: receivingThreadId,
                     }
                   );
                 } catch (error) {
                   throw directTaskModeRecoveryError(
-                    error instanceof Error &&
-                      error.message === 'Duplicate Knowledge retrieval trace id.'
+                    error instanceof OperationError && error.code === 'idempotency_key_conflict'
                       ? 'Task Knowledge retrieval exists without a provable worker owner.'
                       : 'Task Knowledge retrieval could not establish one coherent selection.'
                   );
@@ -4581,7 +4586,9 @@ export function createTaskStartOperation({
                 );
               }
 
-              let knowledgeSelectionInput: { readonly retrievalTraceId: string };
+              let knowledgeSelectionInput: {
+                readonly retrievalTraceRef: RetrievalTraceReference;
+              };
               try {
                 knowledgeSelectionInput = await createTaskKnowledgePreparation({
                   coreDb,
@@ -4598,12 +4605,12 @@ export function createTaskStartOperation({
                       threadId,
                       taskInput.requestId
                     ),
+                    threadId,
                   }
                 );
               } catch (error) {
                 throw directTaskModeRecoveryError(
-                  error instanceof Error &&
-                    error.message === 'Duplicate Knowledge retrieval trace id.'
+                  error instanceof OperationError && error.code === 'idempotency_key_conflict'
                     ? 'Task Knowledge retrieval exists without a provable worker owner.'
                     : 'Task Knowledge retrieval could not establish one coherent selection.'
                 );

@@ -5913,7 +5913,7 @@
         "tags": [
           "knowledge"
         ],
-        "summary": "Retrieve governed Knowledge candidates and record their selection trace.",
+        "summary": "Retrieve governed, source-qualified Knowledge candidates in the trusted query context.",
         "security": [
           {
             "bearerAuth": []
@@ -5934,7 +5934,7 @@
         },
         "responses": {
           "200": {
-            "description": "Retrieve governed Knowledge candidates and record their selection trace.",
+            "description": "Retrieve governed, source-qualified Knowledge candidates in the trusted query context.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5962,7 +5962,7 @@
         "tags": [
           "knowledge"
         ],
-        "summary": "Prepare bounded Knowledge selection material and its existing retrieval trace.",
+        "summary": "Prepare bounded Knowledge selection material with its query-owned trace reference when present.",
         "security": [
           {
             "bearerAuth": []
@@ -5983,7 +5983,7 @@
         },
         "responses": {
           "200": {
-            "description": "Prepare bounded Knowledge selection material and its existing retrieval trace.",
+            "description": "Prepare bounded Knowledge selection material with its query-owned trace reference when present.",
             "content": {
               "application/json": {
                 "schema": {
@@ -44166,9 +44166,22 @@
               "app-api"
             ]
           },
-          "retrievalTraceId": {
-            "type": "string",
-            "pattern": "^krt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          "retrievalTraceRef": {
+            "type": "object",
+            "properties": {
+              "scopeId": {
+                "type": "string"
+              },
+              "objectId": {
+                "type": "string",
+                "pattern": "^krt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              }
+            },
+            "required": [
+              "scopeId",
+              "objectId"
+            ],
+            "additionalProperties": false
           },
           "query": {
             "type": "string",
@@ -44190,9 +44203,23 @@
             "items": {
               "type": "object",
               "properties": {
-                "knowledgeEntryId": {
-                  "type": "string",
-                  "minLength": 1
+                "reference": {
+                  "type": "object",
+                  "properties": {
+                    "scopeId": {
+                      "type": "string"
+                    },
+                    "objectId": {
+                      "type": "string",
+                      "maxLength": 240,
+                      "pattern": "^(?!(?:.*\\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+                    }
+                  },
+                  "required": [
+                    "scopeId",
+                    "objectId"
+                  ],
+                  "additionalProperties": false
                 },
                 "kind": {
                   "type": "string",
@@ -44212,7 +44239,7 @@
                 }
               },
               "required": [
-                "knowledgeEntryId",
+                "reference",
                 "kind",
                 "title",
                 "excerpt"
@@ -44242,7 +44269,6 @@
           "operation",
           "workspaceId",
           "caller",
-          "retrievalTraceId",
           "query",
           "outcome",
           "answer",
@@ -46051,12 +46077,26 @@
             "exclusiveMinimum": 0,
             "maximum": 20
           },
-          "pinnedConceptIds": {
+          "pinnedReferences": {
             "default": [],
             "type": "array",
             "items": {
-              "type": "string",
-              "minLength": 1
+              "type": "object",
+              "properties": {
+                "scopeId": {
+                  "type": "string"
+                },
+                "objectId": {
+                  "type": "string",
+                  "maxLength": 240,
+                  "pattern": "^(?!(?:.*\\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+                }
+              },
+              "required": [
+                "scopeId",
+                "objectId"
+              ],
+              "additionalProperties": false
             }
           },
           "states": {
@@ -46075,6 +46115,13 @@
               ]
             }
           },
+          "sourceScope": {
+            "type": "string",
+            "enum": [
+              "workspace",
+              "server"
+            ]
+          },
           "workspaceId": {
             "type": "string",
             "minLength": 1
@@ -46083,7 +46130,7 @@
         "required": [
           "query",
           "limit",
-          "pinnedConceptIds",
+          "pinnedReferences",
           "states",
           "workspaceId"
         ],
@@ -46093,13 +46140,103 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "traceId": {
-            "type": "string",
-            "pattern": "^krt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          "queryContext": {
+            "type": "object",
+            "properties": {
+              "serverId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "workspaceId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "actor": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "agent",
+                          "automation",
+                          "integration",
+                          "system"
+                        ]
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "responsibleUserId": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id",
+                      "responsibleUserId"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "threadId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "turnId": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "serverId",
+              "workspaceId",
+              "actor"
+            ],
+            "additionalProperties": false
           },
-          "workspaceId": {
-            "type": "string",
-            "minLength": 1
+          "sourceScope": {
+            "type": "string"
+          },
+          "notebookRevision": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "caller": {
             "type": "string",
@@ -46121,11 +46258,25 @@
                 "exclusiveMinimum": 0,
                 "maximum": 20
               },
-              "pinnedConceptIds": {
+              "pinnedReferences": {
                 "type": "array",
                 "items": {
-                  "type": "string",
-                  "minLength": 1
+                  "type": "object",
+                  "properties": {
+                    "scopeId": {
+                      "type": "string"
+                    },
+                    "objectId": {
+                      "type": "string",
+                      "maxLength": 240,
+                      "pattern": "^(?!(?:.*\\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+                    }
+                  },
+                  "required": [
+                    "scopeId",
+                    "objectId"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "states": {
@@ -46140,21 +46291,55 @@
                     "superseded"
                   ]
                 }
+              },
+              "sourceScope": {
+                "type": "string",
+                "enum": [
+                  "workspace",
+                  "server"
+                ]
               }
             },
             "required": [
               "limit",
-              "pinnedConceptIds",
-              "states"
+              "pinnedReferences",
+              "states",
+              "sourceScope"
             ],
             "additionalProperties": false
+          },
+          "createdAt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
           },
           "selected": {
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
-                "knowledgePageId": {
+                "reference": {
+                  "type": "object",
+                  "properties": {
+                    "scopeId": {
+                      "type": "string"
+                    },
+                    "objectId": {
+                      "type": "string",
+                      "maxLength": 240,
+                      "pattern": "^(?!(?:.*\\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+                    }
+                  },
+                  "required": [
+                    "scopeId",
+                    "objectId"
+                  ],
+                  "additionalProperties": false
+                },
+                "revision": {
                   "type": "string",
                   "minLength": 1
                 },
@@ -46175,7 +46360,8 @@
                 }
               },
               "required": [
-                "knowledgePageId",
+                "reference",
+                "revision",
                 "contentDigest",
                 "score",
                 "sourceReferences"
@@ -46188,9 +46374,34 @@
             "items": {
               "type": "object",
               "properties": {
-                "knowledgePageId": {
-                  "type": "string",
-                  "minLength": 1
+                "reference": {
+                  "type": "object",
+                  "properties": {
+                    "scopeId": {
+                      "type": "string"
+                    },
+                    "objectId": {
+                      "type": "string",
+                      "maxLength": 240,
+                      "pattern": "^(?!(?:.*\\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+                    }
+                  },
+                  "required": [
+                    "scopeId",
+                    "objectId"
+                  ],
+                  "additionalProperties": false
+                },
+                "revision": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "contentDigest": {
                   "anyOf": [
@@ -46202,6 +46413,13 @@
                       "type": "null"
                     }
                   ]
+                },
+                "sourceReferences": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
                 },
                 "reason": {
                   "type": "string",
@@ -46216,27 +46434,44 @@
                 }
               },
               "required": [
-                "knowledgePageId",
+                "reference",
+                "revision",
                 "contentDigest",
+                "sourceReferences",
                 "reason"
               ],
               "additionalProperties": false
             }
           },
-          "createdAt": {
-            "type": "string",
-            "minLength": 1
+          "retrievalTraceRef": {
+            "type": "object",
+            "properties": {
+              "scopeId": {
+                "type": "string"
+              },
+              "objectId": {
+                "type": "string",
+                "pattern": "^krt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              }
+            },
+            "required": [
+              "scopeId",
+              "objectId"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
-          "traceId",
-          "workspaceId",
+          "queryContext",
+          "sourceScope",
+          "notebookRevision",
           "caller",
           "requestDigest",
           "retrievalParameters",
+          "createdAt",
+          "workspaceId",
           "selected",
-          "excluded",
-          "createdAt"
+          "excluded"
         ],
         "additionalProperties": false
       },
@@ -46288,9 +46523,22 @@
               "app-api"
             ]
           },
-          "retrievalTraceId": {
-            "type": "string",
-            "pattern": "^krt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          "retrievalTraceRef": {
+            "type": "object",
+            "properties": {
+              "scopeId": {
+                "type": "string"
+              },
+              "objectId": {
+                "type": "string",
+                "pattern": "^krt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              }
+            },
+            "required": [
+              "scopeId",
+              "objectId"
+            ],
+            "additionalProperties": false
           },
           "outcome": {
             "type": "string",
@@ -46304,7 +46552,25 @@
             "items": {
               "type": "object",
               "properties": {
-                "knowledgePageId": {
+                "reference": {
+                  "type": "object",
+                  "properties": {
+                    "scopeId": {
+                      "type": "string"
+                    },
+                    "objectId": {
+                      "type": "string",
+                      "maxLength": 240,
+                      "pattern": "^(?!(?:.*\\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+                    }
+                  },
+                  "required": [
+                    "scopeId",
+                    "objectId"
+                  ],
+                  "additionalProperties": false
+                },
+                "revision": {
                   "type": "string",
                   "minLength": 1
                 },
@@ -46325,7 +46591,8 @@
                 }
               },
               "required": [
-                "knowledgePageId",
+                "reference",
+                "revision",
                 "contentDigest",
                 "score",
                 "sourceReferences"
@@ -46338,9 +46605,34 @@
             "items": {
               "type": "object",
               "properties": {
-                "knowledgePageId": {
-                  "type": "string",
-                  "minLength": 1
+                "reference": {
+                  "type": "object",
+                  "properties": {
+                    "scopeId": {
+                      "type": "string"
+                    },
+                    "objectId": {
+                      "type": "string",
+                      "maxLength": 240,
+                      "pattern": "^(?!(?:.*\\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+                    }
+                  },
+                  "required": [
+                    "scopeId",
+                    "objectId"
+                  ],
+                  "additionalProperties": false
+                },
+                "revision": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "contentDigest": {
                   "anyOf": [
@@ -46352,6 +46644,13 @@
                       "type": "null"
                     }
                   ]
+                },
+                "sourceReferences": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
                 },
                 "reason": {
                   "type": "string",
@@ -46366,8 +46665,10 @@
                 }
               },
               "required": [
-                "knowledgePageId",
+                "reference",
+                "revision",
                 "contentDigest",
+                "sourceReferences",
                 "reason"
               ],
               "additionalProperties": false
@@ -46379,7 +46680,6 @@
           "operation",
           "workspaceId",
           "caller",
-          "retrievalTraceId",
           "outcome",
           "selected",
           "excluded"
@@ -92099,5 +92399,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:467f3b53d6b0c7f44d6ebfc802ec6fe5d8e7d89e50271a597854e6d07e5e6b17"
+  "x-openkit-source-digest": "sha256:18880fbd98485ebf69151c125137865da51d62cf65512f82db86b443aa38d318"
 }

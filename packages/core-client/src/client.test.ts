@@ -2751,9 +2751,14 @@ describe('createCoreClient', () => {
   });
 
   it('routes NanoCore App API calls through app-owned schemas', async () => {
-    const retrievalTraceId = 'krt_123e4567-e89b-42d3-a456-426614174000';
     const retrievalRequestDigest = `sha256:${'b'.repeat(64)}`;
     const retrievedPageDigest = `sha256:${'c'.repeat(64)}`;
+    const knowledgePageScopeId = 'page/workspace/ws_demo';
+    const knowledgeQueryContext = {
+      serverId: 'dep_demo',
+      workspaceId: 'ws_demo',
+      actor: { kind: 'user', id: 'user_local' },
+    } as const;
     const proposalSourceReference = `source:ks_123e4567-e89b-42d3-a456-426614174000@sha256:${'d'.repeat(64)}`;
     const proposalPageBytes = [
       '---',
@@ -2899,12 +2904,11 @@ describe('createCoreClient', () => {
           workspaceId: 'ws_demo',
           caller: 'app-api',
           query: 'release cadence',
-          retrievalTraceId,
           outcome: 'answered',
           answer: 'Release cadence is weekly.',
           citations: [
             {
-              knowledgeEntryId: 'mem_demo',
+              reference: { scopeId: knowledgePageScopeId, objectId: 'mem_demo' },
               kind: 'project-context',
               title: 'Release plan',
               excerpt: 'Release cadence is weekly.',
@@ -3186,18 +3190,23 @@ describe('createCoreClient', () => {
       },
       'POST /api/app/operations/knowledge.retrieval': {
         body: {
-          traceId: retrievalTraceId,
+          queryContext: knowledgeQueryContext,
+          sourceScope: knowledgePageScopeId,
+          notebookRevision: null,
           workspaceId: 'ws_demo',
           caller: 'app-api',
           requestDigest: retrievalRequestDigest,
           retrievalParameters: {
             limit: 1,
-            pinnedConceptIds: [],
+            pinnedReferences: [],
+            states: ['active'],
+            sourceScope: 'workspace',
           },
           createdAt: timestamp,
           selected: [
             {
-              knowledgePageId: 'release-plan',
+              reference: { scopeId: knowledgePageScopeId, objectId: 'release-plan' },
+              revision: retrievedPageDigest,
               contentDigest: retrievedPageDigest,
               score: 4,
               sourceReferences: ['source:ks_demo'],
@@ -3205,8 +3214,10 @@ describe('createCoreClient', () => {
           ],
           excluded: [
             {
-              knowledgePageId: 'old-plan',
+              reference: { scopeId: knowledgePageScopeId, objectId: 'old-plan' },
+              revision: null,
               contentDigest: null,
+              sourceReferences: [],
               reason: 'sensitive_content',
             },
           ],
@@ -3218,11 +3229,11 @@ describe('createCoreClient', () => {
           operation: 'prepare-context-material',
           workspaceId: 'ws_demo',
           caller: 'app-api',
-          retrievalTraceId,
           outcome: 'prepared',
           selected: [
             {
-              knowledgePageId: 'release-plan',
+              reference: { scopeId: knowledgePageScopeId, objectId: 'release-plan' },
+              revision: retrievedPageDigest,
               contentDigest: retrievedPageDigest,
               score: 4,
               sourceReferences: ['source:ks_demo'],
@@ -3230,8 +3241,10 @@ describe('createCoreClient', () => {
           ],
           excluded: [
             {
-              knowledgePageId: 'old-plan',
+              reference: { scopeId: knowledgePageScopeId, objectId: 'old-plan' },
+              revision: null,
               contentDigest: null,
+              sourceReferences: [],
               reason: 'sensitive_content',
             },
           ],
@@ -3535,16 +3548,16 @@ describe('createCoreClient', () => {
       outcome: 'answered',
       item: { type: 'assistant-message', text: 'Answer' },
     });
-    await expect(
-      client.operations['knowledge.answer']({
-        workspaceId: 'ws_demo',
-        ...{ query: 'release cadence' },
-      })
-    ).resolves.toMatchObject({
-      outcome: 'answered',
-      retrievalTraceId,
-      citations: [{ knowledgeEntryId: 'mem_demo' }],
+    const knowledgeAnswer = await client.operations['knowledge.answer']({
+      workspaceId: 'ws_demo',
+      ...{ query: 'release cadence' },
     });
+    expect(knowledgeAnswer).toMatchObject({
+      outcome: 'answered',
+      citations: [{ reference: { scopeId: knowledgePageScopeId, objectId: 'mem_demo' } }],
+    });
+    expect(knowledgeAnswer).not.toHaveProperty('retrievalTraceRef');
+    expect(knowledgeAnswer).not.toHaveProperty('retrievalTraceId');
     await expect(
       client.operations['knowledge.source.register']({
         workspaceId: 'ws_demo',
@@ -3578,7 +3591,6 @@ describe('createCoreClient', () => {
       linkGraph: { edges: [{ fromId: 'alpha', resolved: true }] },
       validation: { records: [{ conceptId: 'alpha', indexed: true }] },
       sourceReferences: { references: [{ reference: 'source:ks_demo', resolved: true }] },
-      fullText: { tokenizer: 'unicode-simple-v1', terms: [{ term: 'alpha' }] },
     });
     await expect(
       client.operations['knowledge.observation.record']({
@@ -3657,18 +3669,23 @@ describe('createCoreClient', () => {
         ...{ query: 'release cadence', limit: 1 },
       })
     ).resolves.toEqual({
-      traceId: retrievalTraceId,
+      queryContext: knowledgeQueryContext,
+      sourceScope: knowledgePageScopeId,
+      notebookRevision: null,
       workspaceId: 'ws_demo',
       caller: 'app-api',
       requestDigest: retrievalRequestDigest,
       retrievalParameters: {
         limit: 1,
-        pinnedConceptIds: [],
+        pinnedReferences: [],
+        states: ['active'],
+        sourceScope: 'workspace',
       },
       createdAt: timestamp,
       selected: [
         {
-          knowledgePageId: 'release-plan',
+          reference: { scopeId: knowledgePageScopeId, objectId: 'release-plan' },
+          revision: retrievedPageDigest,
           contentDigest: retrievedPageDigest,
           score: 4,
           sourceReferences: ['source:ks_demo'],
@@ -3676,8 +3693,10 @@ describe('createCoreClient', () => {
       ],
       excluded: [
         {
-          knowledgePageId: 'old-plan',
+          reference: { scopeId: knowledgePageScopeId, objectId: 'old-plan' },
+          revision: null,
           contentDigest: null,
+          sourceReferences: [],
           reason: 'sensitive_content',
         },
       ],
@@ -3695,11 +3714,11 @@ describe('createCoreClient', () => {
       operation: 'prepare-context-material',
       workspaceId: 'ws_demo',
       caller: 'app-api',
-      retrievalTraceId,
       outcome: 'prepared',
       selected: [
         {
-          knowledgePageId: 'release-plan',
+          reference: { scopeId: knowledgePageScopeId, objectId: 'release-plan' },
+          revision: retrievedPageDigest,
           contentDigest: retrievedPageDigest,
           score: 4,
           sourceReferences: ['source:ks_demo'],
@@ -3707,8 +3726,10 @@ describe('createCoreClient', () => {
       ],
       excluded: [
         {
-          knowledgePageId: 'old-plan',
+          reference: { scopeId: knowledgePageScopeId, objectId: 'old-plan' },
+          revision: null,
           contentDigest: null,
+          sourceReferences: [],
           reason: 'sensitive_content',
         },
       ],

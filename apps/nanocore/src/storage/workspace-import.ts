@@ -15,7 +15,8 @@ import {
   KnowledgeClaimSchema,
   KnowledgeConflictSchema,
   KnowledgeObservationSchema,
-  KnowledgeRetrievalResponseSchema,
+  type KnowledgeRetrievalTrace,
+  KnowledgeRetrievalTraceSchema,
   RuntimeEvidenceRecordSchema,
   StagedWorkspaceReviewReaderSchema,
   StagedWorkspaceReviewSchema,
@@ -58,6 +59,9 @@ import {
   CapabilityCallSchema,
   ItemSchema,
   KnowledgeEntrySchema,
+  parseReferenceScope,
+  type RetrievalTraceReference,
+  RetrievalTraceReferenceSchema,
   SseEventEnvelopeSchema,
   ThreadSchema,
   TurnSchema,
@@ -115,6 +119,7 @@ import {
   remintWorkerRuntimeProvenanceIndex,
   WorkerRuntimeOriginIndexRowSchema,
 } from '../runtime/worker-runtime-provenance.js';
+import { retrievalTraceRelativePath } from './retrieval-traces.js';
 import { parseWorkObservationRecord, type WorkObservationReference } from './work-observations.js';
 import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
 import {
@@ -139,7 +144,11 @@ import {
   parseOwnedKnowledgeEntry,
   WorkspaceSystemRecordSchema,
 } from './workspace-file-records.js';
-import type { WorkspacePortableFileState } from './workspace-portable-file-state.js';
+import {
+  parseWorkspaceRetrievalTraceFile,
+  serializeWorkspaceRetrievalTrace,
+  type WorkspacePortableFileState,
+} from './workspace-portable-file-state.js';
 
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type Thread = import('zod').infer<typeof ThreadSchema>;
@@ -208,12 +217,6 @@ const ImportedUsageRecordSchema = UsageRecordSchema.strip();
 const ImportedKnowledgeObservationSchema = KnowledgeObservationSchema.strip();
 const ImportedKnowledgeClaimSchema = KnowledgeClaimSchema.strip();
 const ImportedKnowledgeConflictSchema = KnowledgeConflictSchema.strip();
-const ImportedKnowledgeRetrievalTraceSchema = KnowledgeRetrievalResponseSchema.safeExtend({
-  retrievalParameters: KnowledgeRetrievalResponseSchema.shape.retrievalParameters.strip(),
-  selected: z.array(KnowledgeRetrievalResponseSchema.shape.selected.element.strip()),
-  excluded: z.array(KnowledgeRetrievalResponseSchema.shape.excluded.element.strip()),
-}).strip();
-
 const ExportedResolvedAgentSetupSchema = z
   .object({
     id: z.string().min(1),
@@ -523,6 +526,8 @@ export interface ReadWorkspaceImportSnapshotInput {
   verified: VerifiedWorkspaceExportTree;
   /** Workspace id to use in imported records. */
   targetWorkspaceId: string;
+  /** Current target Server identity used for reminted trusted query context. */
+  targetServerId?: string;
 }
 
 /** Importable record snapshot extracted from one workspace export. */
@@ -750,6 +755,8 @@ interface ImportRemintContext {
   report: WorkspaceImportDryRunReport;
   /** Workspace id assigned to reconstructed records. */
   targetWorkspaceId: string;
+  /** Current target Server identity, required when the export contains retrieval traces. */
+  targetServerId?: string;
   /** Parsed source Material owners. */
   sourceWorkspaceMaterials: ImportedWorkspaceMaterial[];
   /** Parsed source Material revisions. */
@@ -847,6 +854,7 @@ export function readWorkspaceImportSnapshot(
     manifestDigest: input.verified.manifestDigest,
     report,
     targetWorkspaceId: input.targetWorkspaceId,
+    ...(input.targetServerId ? { targetServerId: input.targetServerId } : {}),
     sourceWorkspaceMaterials,
     sourceWorkspaceMaterialRevisions,
     sourceThreadMaterialBindings,
@@ -884,10 +892,16 @@ export function readWorkspaceImportSnapshot(
     presentationIds: new Map(),
   };
   const canonical = readCanonicalImportState(context);
+  const retrievalTraces = readRetrievalTraceImportState(context);
   const workerRuntime = readWorkerRuntimeControlState(context);
   const securityRuntime = readSecurityRuntimeLedgerState(context);
   const workspaceSync = readWorkspaceSyncImportState(context);
-  const workResources = readWorkResourceImportState(context, canonical, workspaceSync);
+  const workResources = readWorkResourceImportState(
+    context,
+    canonical,
+    workspaceSync,
+    retrievalTraces
+  );
   const knowledgeReferenceReplacements = [
     ...context.contextPackageReferences,
     ...context.turnIds,
@@ -910,7 +924,8 @@ export function readWorkspaceImportSnapshot(
   const portableFileState = readPortableImportState(
     context,
     workResources.workerContextPackageFiles,
-    knowledge
+    knowledge,
+    retrievalTraces.files
   );
   const importedCatalog = readImportedAgentResourceCatalog(context.files);
 
@@ -2395,7 +2410,8 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
 function readWorkResourceImportState(
   context: ImportRemintContext,
   canonical: ReturnType<typeof readCanonicalImportState>,
-  workspaceSync: ReturnType<typeof readWorkspaceSyncImportState>
+  workspaceSync: ReturnType<typeof readWorkspaceSyncImportState>,
+  retrievalTraces: ImportedRetrievalTraceState
 ) {
   assertMaterialGraph(
     context.sourceWorkspaceMaterials,
@@ -2483,6 +2499,21 @@ function readWorkResourceImportState(
     ) {
       throw new Error('Worker Context Package trace path lineage is contradictory.');
     }
+    const sourceRetrievalReference = sourceTrace.knowledgeSelectionInput?.retrievalTraceRef ?? null;
+    const targetRetrievalReference = sourceRetrievalReference
+      ? requiredMapValue(
+          retrievalTraces.references,
+          retrievalTraceReferenceKey(sourceRetrievalReference),
+          'Knowledge retrieval trace reference'
+        )
+      : null;
+    const targetSelectedPages = sourceRetrievalReference
+      ? requiredMapValue(
+          retrievalTraces.selectedPages,
+          retrievalTraceReferenceKey(sourceRetrievalReference),
+          'Knowledge retrieval trace selection'
+        )
+      : new Map<string, ImportedRetrievalSelectedPage>();
     const sourceRequestItem = requiredMapValue(
       context.itemLineage,
       sourceTrace.workerRequestItemId,
@@ -2507,6 +2538,27 @@ function readWorkResourceImportState(
       knowledgePageId: selection.knowledgePageId,
       sourceRefs: selection.sourceRefs,
     }));
+    const targetKnowledgeSelections = sourceTrace.knowledgeSelections.map((selection) => {
+      const target = requiredMapValue(
+        targetSelectedPages,
+        selection.knowledgePageId,
+        'Knowledge retrieval selection page'
+      );
+      if (
+        target.sourceContentDigest !== selection.contentDigest ||
+        !isDeepStrictEqual(target.sourceReferences, selection.sourceRefs)
+      ) {
+        throw new Error(
+          'Worker Context Package Knowledge selection contradicts its retrieval trace.'
+        );
+      }
+      return {
+        content: target.content,
+        contentDigest: target.contentDigest,
+        knowledgePageId: selection.knowledgePageId,
+        sourceRefs: target.targetSourceReferences,
+      };
+    });
     const sourcePackage = createWorkerContextPackageFiles({
       contextBudgetTokens: sourceManifest.contextBudgetTokens,
       includedItemIds: sourceTrace.includedItemIds,
@@ -2610,7 +2662,7 @@ function readWorkResourceImportState(
       includedItemIds: sourceTrace.includedItemIds.map((id) =>
         requiredMapValue(context.itemIds, id, 'included Item')
       ),
-      knowledgeSelections,
+      knowledgeSelections: targetKnowledgeSelections,
       materialSelections: sourceTrace.materialSelections.map((selection) => {
         const sourceRevision = requireMaterialRevision(
           context.sourceWorkspaceMaterialRevisions,
@@ -2661,8 +2713,22 @@ function readWorkResourceImportState(
         itemId: requiredMapValue(context.itemIds, exclusion.itemId, 'excluded Item'),
       })),
       goalId: sourceTrace.goalId ? sourceTrace.goalId : null,
-      knowledgeExclusions: sourceTrace.knowledgeExclusions,
-      knowledgeSelectionInput: sourceTrace.knowledgeSelectionInput,
+      knowledgeExclusions: sourceTrace.knowledgeExclusions.map((exclusion) => {
+        const target = requiredMapValue(
+          targetSelectedPages,
+          exclusion.knowledgePageId,
+          'Knowledge retrieval exclusion page'
+        );
+        if (target.sourceContentDigest !== exclusion.contentDigest) {
+          throw new Error(
+            'Worker Context Package Knowledge exclusion contradicts its retrieval trace.'
+          );
+        }
+        return { ...exclusion, contentDigest: target.contentDigest };
+      }),
+      knowledgeSelectionInput: targetRetrievalReference
+        ? { retrievalTraceRef: targetRetrievalReference }
+        : null,
       materialExclusions: sourceTrace.materialExclusions.map((exclusion) => ({
         ...exclusion,
         materialId: requiredMapValue(context.materialIds, exclusion.materialId, 'Material'),
@@ -2781,6 +2847,9 @@ function readWorkResourceImportState(
     (path) =>
       path.startsWith('workspace-files/threads/') &&
       !/^workspace-files\/threads\/[^/]+\/turns\/[^/]+\/observations\.jsonl$/.test(path) &&
+      !/^workspace-files\/threads\/[^/]+\/(?:turns\/[^/]+\/)?retrieval-traces\/[^/]+\.json$/.test(
+        path
+      ) &&
       !tracePaths.some(([tracePath]) => path.startsWith(tracePath.slice(0, -'.json'.length)))
   );
   if (orphanWorkerFile) {
@@ -3436,6 +3505,282 @@ function materialRevisionKey(materialId: string, revisionId: string): string {
   return `${materialId}\0${revisionId}`;
 }
 
+/** One reminted selected page used to keep S61 evidence and S39 bytes aligned. */
+interface ImportedRetrievalSelectedPage {
+  readonly content: string;
+  readonly contentDigest: string;
+  readonly sourceContentDigest: string;
+  readonly sourceReferences: readonly string[];
+  readonly targetSourceReferences: readonly string[];
+}
+
+/** Retrieval traces reminted before dependent S39 package reconstruction. */
+interface ImportedRetrievalTraceState {
+  readonly files: ReadonlyMap<string, KnowledgeRetrievalTrace>;
+  readonly references: ReadonlyMap<string, RetrievalTraceReference>;
+  readonly selectedPages: ReadonlyMap<string, ReadonlyMap<string, ImportedRetrievalSelectedPage>>;
+}
+
+/** Stable map key for one qualified retrieval-trace reference. */
+function retrievalTraceReferenceKey(reference: RetrievalTraceReference): string {
+  const parsed = RetrievalTraceReferenceSchema.parse(reference);
+  return `${parsed.scopeId}\0${parsed.objectId}`;
+}
+
+/** Builds the already-owned id substitutions available before S39 digest reconstruction. */
+function portableReferenceReplacements(
+  context: ImportRemintContext
+): readonly (readonly [string, string])[] {
+  const replacementMap = new Map<string, string>([
+    [context.report.exportedWorkspaceId, context.targetWorkspaceId],
+  ]);
+  for (const idMap of [
+    context.contextPackageReferences,
+    context.threadIds,
+    context.turnIds,
+    context.itemIds,
+    context.artifactIds,
+    context.agentSessionIds,
+    context.knowledgeSourceIds,
+    context.approvalRequestIds,
+    context.vaultGrantIds,
+  ]) {
+    for (const [sourceId, targetId] of idMap) {
+      const existing = replacementMap.get(sourceId);
+      if (existing && existing !== targetId) {
+        throw new Error(`Portable reference id is ambiguous: ${sourceId}`);
+      }
+      replacementMap.set(sourceId, targetId);
+    }
+  }
+  return [...replacementMap].sort(([left], [right]) => right.length - left.length);
+}
+
+/** Remints one page collection while leaving unavailable Server or User sources source-qualified. */
+function remintImportedPageScope(scopeId: string, context: ImportRemintContext): string {
+  const scope = parseReferenceScope(scopeId);
+  if (!scope || scope.family !== 'page') {
+    throw new Error('Portable retrieval trace source scope is invalid.');
+  }
+  if (scope.kind === 'workspace') {
+    if (scope.workspaceId !== context.report.exportedWorkspaceId) {
+      throw new Error('Portable retrieval trace belongs to another Workspace source.');
+    }
+    return `page/workspace/${context.targetWorkspaceId}`;
+  }
+  return scopeId;
+}
+
+/** Remints one page reference without granting imported Server or User evidence in the target. */
+function remintImportedPageReference(
+  reference: { readonly scopeId: string; readonly objectId: string },
+  sourceScope: string,
+  targetScope: string,
+  context: ImportRemintContext
+): { readonly scopeId: string; readonly objectId: string } {
+  if (reference.scopeId !== sourceScope) {
+    throw new Error('Portable retrieval trace reference is outside its selected source.');
+  }
+  remintImportedPageScope(reference.scopeId, context);
+  return { scopeId: targetScope, objectId: reference.objectId };
+}
+
+/** Reconstructs immutable query-owned trace files before S39 consumes their qualified references. */
+function readRetrievalTraceImportState(context: ImportRemintContext): ImportedRetrievalTraceState {
+  const tracePaths = [...context.files.keys()]
+    .filter((path) =>
+      /^workspace-files\/threads\/[^/]+\/(?:turns\/[^/]+\/)?retrieval-traces\/[^/]+\.json$/.test(
+        path
+      )
+    )
+    .sort();
+  if (tracePaths.length > 0 && !context.targetServerId) {
+    throw new Error('Workspace import requires the target Server identity for retrieval traces.');
+  }
+  const sourceTurns = new Map(
+    readImportJsonl(context.files, 'records/turns.jsonl').map((record) => {
+      const turn = TurnSchema.parse(record);
+      return [turn.id, turn.threadId] as const;
+    })
+  );
+  const replacements = portableReferenceReplacements(context);
+  const files = new Map<string, KnowledgeRetrievalTrace>();
+  const references = new Map<string, RetrievalTraceReference>();
+  const selectedPages = new Map<string, ReadonlyMap<string, ImportedRetrievalSelectedPage>>();
+
+  for (const exportPath of tracePaths) {
+    const sourcePath = exportPath.slice('workspace-files/'.length);
+    const { reference: sourceReference, trace: sourceTrace } = parseWorkspaceRetrievalTraceFile(
+      sourcePath,
+      requiredExportFile(context.files, exportPath),
+      context.report.exportedWorkspaceId
+    );
+    if (sourceTrace.queryContext.serverId !== context.report.manifest.sourceDeploymentId) {
+      throw new Error('Portable retrieval trace Server lineage is contradictory.');
+    }
+    const sourceOwner = parseReferenceScope(sourceReference.scopeId);
+    if (!sourceOwner || sourceOwner.family !== 'retrieval-trace') {
+      throw new Error('Portable retrieval trace owner is invalid.');
+    }
+    const targetThreadId = requiredMapValue(context.threadIds, sourceOwner.threadId, 'thread');
+    let targetTurnId: string | undefined;
+    if (sourceOwner.kind === 'turn') {
+      if (sourceTurns.get(sourceOwner.turnId) !== sourceOwner.threadId) {
+        throw new Error('Portable retrieval trace Turn owner is contradictory.');
+      }
+      targetTurnId = requiredMapValue(context.turnIds, sourceOwner.turnId, 'turn');
+    }
+    const targetReference = RetrievalTraceReferenceSchema.parse({
+      scopeId: targetTurnId
+        ? `retrieval-trace/turn/${context.targetWorkspaceId}/${targetThreadId}/${targetTurnId}`
+        : `retrieval-trace/thread/${context.targetWorkspaceId}/${targetThreadId}`,
+      objectId: sourceReference.objectId,
+    });
+    const targetSourceScope = remintImportedPageScope(sourceTrace.sourceScope, context);
+    const expectedSourceScope =
+      sourceTrace.retrievalParameters.sourceScope === 'workspace'
+        ? `page/workspace/${context.report.exportedWorkspaceId}`
+        : 'page/server';
+    if (sourceTrace.sourceScope !== expectedSourceScope) {
+      throw new Error('Portable retrieval trace source selection is contradictory.');
+    }
+    const targetSelections = new Map<string, ImportedRetrievalSelectedPage>();
+    const selected = sourceTrace.selected.map((entry) => {
+      const reference = remintImportedPageReference(
+        entry.reference,
+        sourceTrace.sourceScope,
+        targetSourceScope,
+        context
+      );
+      if (!sourceTrace.sourceScope.startsWith('page/workspace/')) {
+        return {
+          ...entry,
+          reference,
+          sourceReferences: rewritePortableReferences(entry.sourceReferences, replacements),
+        };
+      }
+      if (entry.sourceReferences.some((value) => value.startsWith('context-package:'))) {
+        throw new Error(
+          'Portable Knowledge history requires unavailable historical notebook closure.'
+        );
+      }
+      const pagePath = `workspace-files/knowledge/pages/${entry.reference.objectId}.md`;
+      const sourceContent = requiredExportFile(context.files, pagePath);
+      const sourceContentDigest = `sha256:${createHash('sha256').update(sourceContent).digest('hex')}`;
+      if (sourceContentDigest !== entry.contentDigest || entry.revision !== entry.contentDigest) {
+        throw new Error('Portable retrieval trace does not match its exported Knowledge Page.');
+      }
+      const targetContent = rewriteNativePageReferences(pagePath, sourceContent, replacements);
+      const targetContentDigest = `sha256:${createHash('sha256').update(targetContent).digest('hex')}`;
+      const targetSourceReferences = rewritePortableReferences(
+        entry.sourceReferences,
+        replacements
+      );
+      if (targetSelections.has(entry.reference.objectId)) {
+        throw new Error('Portable retrieval trace selects one Knowledge Page more than once.');
+      }
+      targetSelections.set(entry.reference.objectId, {
+        content: targetContent,
+        contentDigest: targetContentDigest,
+        sourceContentDigest,
+        sourceReferences: entry.sourceReferences,
+        targetSourceReferences,
+      });
+      return {
+        ...entry,
+        reference,
+        revision: targetContentDigest,
+        contentDigest: targetContentDigest,
+        sourceReferences: targetSourceReferences,
+      };
+    });
+    const excluded = sourceTrace.excluded.map((entry) => {
+      const reference = remintImportedPageReference(
+        entry.reference,
+        sourceTrace.sourceScope,
+        targetSourceScope,
+        context
+      );
+      const targetSourceReferences = rewritePortableReferences(
+        entry.sourceReferences,
+        replacements
+      );
+      if (sourceTrace.sourceScope.startsWith('page/workspace/') && entry.contentDigest !== null) {
+        if (entry.sourceReferences.some((value) => value.startsWith('context-package:'))) {
+          throw new Error(
+            'Portable Knowledge history requires unavailable historical notebook closure.'
+          );
+        }
+        const pagePath = `workspace-files/knowledge/pages/${entry.reference.objectId}.md`;
+        const sourceContent = requiredExportFile(context.files, pagePath);
+        const sourceContentDigest = `sha256:${createHash('sha256').update(sourceContent).digest('hex')}`;
+        if (
+          sourceContentDigest !== entry.contentDigest ||
+          (entry.revision !== null && entry.revision !== entry.contentDigest)
+        ) {
+          throw new Error(
+            'Portable retrieval exclusion does not match its exported Knowledge Page.'
+          );
+        }
+        const targetContent = rewriteNativePageReferences(pagePath, sourceContent, replacements);
+        const targetContentDigest = `sha256:${createHash('sha256').update(targetContent).digest('hex')}`;
+        return {
+          ...entry,
+          reference,
+          revision: entry.revision === null ? null : targetContentDigest,
+          contentDigest: targetContentDigest,
+          sourceReferences: targetSourceReferences,
+        };
+      }
+      return {
+        ...entry,
+        reference,
+        sourceReferences: targetSourceReferences,
+      };
+    });
+    const targetTrace = KnowledgeRetrievalTraceSchema.parse({
+      ...sourceTrace,
+      // The digest remains evidence of the original request; query text is intentionally absent and cannot be rehashed after owner reminting.
+      requestDigest: sourceTrace.requestDigest,
+      queryContext: {
+        ...sourceTrace.queryContext,
+        serverId: context.targetServerId,
+        workspaceId: context.targetWorkspaceId,
+        threadId: targetThreadId,
+        ...(targetTurnId ? { turnId: targetTurnId } : { turnId: undefined }),
+      },
+      sourceScope: targetSourceScope,
+      retrievalParameters: {
+        ...sourceTrace.retrievalParameters,
+        pinnedReferences: sourceTrace.retrievalParameters.pinnedReferences.map((reference) =>
+          remintImportedPageReference(
+            reference,
+            sourceTrace.sourceScope,
+            targetSourceScope,
+            context
+          )
+        ),
+      },
+      selected,
+      excluded,
+    });
+    const targetPath = retrievalTraceRelativePath(targetReference);
+    parseWorkspaceRetrievalTraceFile(
+      targetPath,
+      serializeWorkspaceRetrievalTrace(targetTrace),
+      context.targetWorkspaceId
+    );
+    const key = retrievalTraceReferenceKey(sourceReference);
+    if (references.has(key) || files.has(targetPath)) {
+      throw new Error('Portable retrieval trace identity is duplicated.');
+    }
+    references.set(key, targetReference);
+    selectedPages.set(key, targetSelections);
+    files.set(targetPath, targetTrace);
+  }
+  return { files, references, selectedPages };
+}
+
 /**
  * Reconstructs authoritative workspace files after every referenced id map is known.
  *
@@ -3446,35 +3791,12 @@ function materialRevisionKey(materialId: string, revisionId: string): string {
 function readPortableImportState(
   context: ImportRemintContext,
   workerContextPackageFiles: ReadonlyMap<string, string>,
-  knowledge: readonly KnowledgeEntry[]
+  knowledge: readonly KnowledgeEntry[],
+  retrievalTraceFiles: ReadonlyMap<string, KnowledgeRetrievalTrace>
 ): WorkspacePortableFileState {
-  const {
-    agentSessionIds,
-    approvalRequestIds,
-    artifactIds,
-
-    itemIds,
-    knowledgeSourceIds,
-    report,
-    threadIds,
-    turnIds,
-    vaultGrantIds,
-  } = context;
-  const portableFileState = readPortableFileStateFromExport(context.files, {
-    sourceWorkspaceId: report.exportedWorkspaceId,
-    targetWorkspaceId: context.targetWorkspaceId,
-    threadIds,
-    turnIds,
-    itemIds,
-    artifactIds,
-    agentSessionIds,
-    knowledgeSourceIds,
-    contextPackageReferences: context.contextPackageReferences,
-    approvalRequestIds,
-    vaultGrantIds,
-  });
+  const portableFileState = readPortableFileStateFromExport(context);
   assertPortableKnowledgePagesMatch(portableFileState.nativeKnowledgePages, knowledge);
-  return { ...portableFileState, workerContextPackageFiles };
+  return { ...portableFileState, retrievalTraceFiles, workerContextPackageFiles };
 }
 
 /**
@@ -3532,49 +3854,17 @@ function assertPortableKnowledgePagesMatch(
  * @param context Canonical id maps established by the current import.
  * @returns Portable file state ready for staged publication.
  */
-function readPortableFileStateFromExport(
-  files: ReadonlyMap<string, string>,
-  context: {
-    readonly sourceWorkspaceId: string;
-    readonly targetWorkspaceId: string;
-    readonly threadIds: ReadonlyMap<string, string>;
-    readonly turnIds: ReadonlyMap<string, string>;
-    readonly itemIds: ReadonlyMap<string, string>;
-    readonly artifactIds: ReadonlyMap<string, string>;
-    readonly agentSessionIds: ReadonlyMap<string, string>;
-    readonly knowledgeSourceIds: ReadonlyMap<string, string>;
-    readonly contextPackageReferences: ReadonlyMap<string, string>;
-    readonly approvalRequestIds: ReadonlyMap<string, string>;
-    readonly vaultGrantIds: ReadonlyMap<string, string>;
-  }
-): WorkspacePortableFileState {
-  const replacementMap = new Map<string, string>([
-    [context.sourceWorkspaceId, context.targetWorkspaceId],
-  ]);
-  for (const idMap of [
-    context.contextPackageReferences,
-    context.threadIds,
-    context.turnIds,
-    context.itemIds,
-    context.artifactIds,
-    context.agentSessionIds,
-    context.knowledgeSourceIds,
-    context.approvalRequestIds,
-    context.vaultGrantIds,
-  ]) {
-    for (const [sourceId, targetId] of idMap) {
-      const existing = replacementMap.get(sourceId);
-      if (existing && existing !== targetId) {
-        throw new Error(`Portable reference id is ambiguous: ${sourceId}`);
-      }
-      replacementMap.set(sourceId, targetId);
-    }
-  }
-  const replacements = [...replacementMap].sort(([left], [right]) => right.length - left.length);
+function readPortableFileStateFromExport(context: ImportRemintContext): WorkspacePortableFileState {
+  const files = context.files;
+  const replacements = portableReferenceReplacements(context);
   const observations = readImportJsonl(files, 'records/knowledge-observations.jsonl').map(
     (record) => {
       const parsed = ImportedKnowledgeObservationSchema.parse(record);
-      assertPortableWorkspaceOwner(parsed.workspaceId, context.sourceWorkspaceId, 'observation');
+      assertPortableWorkspaceOwner(
+        parsed.workspaceId,
+        context.report.exportedWorkspaceId,
+        'observation'
+      );
       return ImportedKnowledgeObservationSchema.parse({
         ...parsed,
         workspaceId: context.targetWorkspaceId,
@@ -3584,7 +3874,7 @@ function readPortableFileStateFromExport(
   );
   const claims = readImportJsonl(files, 'records/knowledge-claims.jsonl').map((record) => {
     const parsed = ImportedKnowledgeClaimSchema.parse(record);
-    assertPortableWorkspaceOwner(parsed.workspaceId, context.sourceWorkspaceId, 'claim');
+    assertPortableWorkspaceOwner(parsed.workspaceId, context.report.exportedWorkspaceId, 'claim');
     return ImportedKnowledgeClaimSchema.parse({
       ...parsed,
       workspaceId: context.targetWorkspaceId,
@@ -3593,7 +3883,11 @@ function readPortableFileStateFromExport(
   });
   const conflicts = readImportJsonl(files, 'records/knowledge-conflicts.jsonl').map((record) => {
     const parsed = ImportedKnowledgeConflictSchema.parse(record);
-    assertPortableWorkspaceOwner(parsed.workspaceId, context.sourceWorkspaceId, 'conflict');
+    assertPortableWorkspaceOwner(
+      parsed.workspaceId,
+      context.report.exportedWorkspaceId,
+      'conflict'
+    );
     return ImportedKnowledgeConflictSchema.parse({
       ...parsed,
       workspaceId: context.targetWorkspaceId,
@@ -3601,25 +3895,6 @@ function readPortableFileStateFromExport(
       sourceReferences: rewritePortableReferences(parsed.sourceReferences, replacements),
     });
   });
-  const retrievalTraces = readImportJsonl(files, 'records/knowledge-retrieval-traces.jsonl').map(
-    (record) => {
-      const parsed = ImportedKnowledgeRetrievalTraceSchema.parse(record);
-      assertPortableWorkspaceOwner(
-        parsed.workspaceId,
-        context.sourceWorkspaceId,
-        'retrieval trace'
-      );
-      return ImportedKnowledgeRetrievalTraceSchema.parse({
-        ...parsed,
-        workspaceId: context.targetWorkspaceId,
-        selected: parsed.selected.map((candidate) => ({
-          ...candidate,
-          sourceReferences: rewritePortableReferences(candidate.sourceReferences, replacements),
-        })),
-      });
-    }
-  );
-
   let workspaceConfig: string | null = null;
   let workspaceSchema: string | null = null;
   const nativeKnowledgePages = new Map<string, string>();
@@ -3651,7 +3926,7 @@ function readPortableFileStateFromExport(
     observations: groupPortableRecords(observations, (record) => record.observedAt),
     claims: groupPortableRecords(claims, (record) => record.createdAt),
     conflicts: groupPortableRecords(conflicts, (record) => record.resolvedAt ?? record.createdAt),
-    retrievalTraces: groupPortableRecords(retrievalTraces, (record) => record.createdAt),
+    retrievalTraceFiles: new Map(),
     workspaceConfig,
     workspaceSchema,
     nativeKnowledgePages,

@@ -51,12 +51,12 @@ describe('Knowledge retrieval and answer segmentation', () => {
     expect(await answer(one)).toMatchObject({ outcome: 'insufficient-evidence', citations: [] });
     expect(await answer(two)).toMatchObject({
       outcome: 'answered',
-      citations: [{ knowledgeEntryId: page.id }],
+      citations: [{ reference: { scopeId: `page/workspace/${workspace.id}`, objectId: page.id } }],
     });
     store.updateKnowledgeEntry(workspace.id, page.id, { title: one });
     expect(await answer(one)).toMatchObject({
       outcome: 'answered',
-      citations: [{ knowledgeEntryId: page.id }],
+      citations: [{ reference: { scopeId: `page/workspace/${workspace.id}`, objectId: page.id } }],
     });
   });
 });

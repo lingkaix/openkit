@@ -1,4 +1,9 @@
-import type { ActorRef, StopReason } from '@openkit/protocol';
+import {
+  type ActorRef,
+  type RetrievalTraceReference,
+  RetrievalTraceReferenceSchema,
+  type StopReason,
+} from '@openkit/protocol';
 
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import {
@@ -10,6 +15,8 @@ import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { recordWorkerCheckpointRuntimeEvidence } from './runtime-evidence.js';
 import { isTerminalWorkerTurnStage, type WorkerTurnStage } from './worker-stage.js';
+
+const RetainedRetrievalTraceReferenceSchema = RetrievalTraceReferenceSchema.strip();
 
 /**
  * Stored worker checkpoint record.
@@ -152,7 +159,7 @@ export interface WorkerCheckpointContextAssemblySummary {
   /** Source references selected for the worker context package. */
   readonly contextRefs: readonly { readonly kind: string; readonly id: string }[];
   /** Governed Knowledge selection consumed by a direct Task, or null when not requested. */
-  readonly knowledgeSelectionInput: { readonly retrievalTraceId: string } | null;
+  readonly knowledgeSelectionInput: { readonly retrievalTraceRef: RetrievalTraceReference } | null;
 }
 
 /**
@@ -232,7 +239,8 @@ export function parseWorkerCheckpointContextAssembly(
     }
 
     const knowledgeSelectionInput = record.knowledgeSelectionInput;
-    let normalizedKnowledgeSelectionInput: { retrievalTraceId: string } | null = null;
+    let normalizedKnowledgeSelectionInput: { retrievalTraceRef: RetrievalTraceReference } | null =
+      null;
     if (knowledgeSelectionInput !== null) {
       if (
         !knowledgeSelectionInput ||
@@ -241,17 +249,13 @@ export function parseWorkerCheckpointContextAssembly(
       ) {
         return null;
       }
-      const retrievalTraceId = (knowledgeSelectionInput as Record<string, unknown>)
-        .retrievalTraceId;
-      if (
-        typeof retrievalTraceId !== 'string' ||
-        !/^krt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
-          retrievalTraceId
-        )
-      ) {
+      const retrievalTraceRef = RetainedRetrievalTraceReferenceSchema.safeParse(
+        (knowledgeSelectionInput as Record<string, unknown>).retrievalTraceRef
+      );
+      if (!retrievalTraceRef.success) {
         return null;
       }
-      normalizedKnowledgeSelectionInput = { retrievalTraceId };
+      normalizedKnowledgeSelectionInput = { retrievalTraceRef: retrievalTraceRef.data };
     }
 
     return {

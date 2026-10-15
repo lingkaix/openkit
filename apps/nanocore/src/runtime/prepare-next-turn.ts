@@ -1,3 +1,4 @@
+import type { RetrievalTraceReference } from '@openkit/protocol';
 import type { LlmProjectionResult } from '../context/llm-projection.js';
 import type {
   DelegationContextRef,
@@ -69,7 +70,7 @@ export interface PreparedNextTurn {
   /** Context package digest from the selected projection. */
   readonly contextPackageDigest: string;
   /** Governed Knowledge selection consumed by a direct Task, or null for non-Task turns. */
-  readonly knowledgeSelectionInput: { readonly retrievalTraceId: string } | null;
+  readonly knowledgeSelectionInput: { readonly retrievalTraceRef: RetrievalTraceReference } | null;
 }
 
 /**

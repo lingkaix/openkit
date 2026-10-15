@@ -1,6 +1,6 @@
 # LLM Context Projection
 
-Retained Context Package manifests and traces admit descriptive annotations while verifying the original canonical representation and byte digests. The trace reader returns known fields with its original immutable representation retained for same-identity serialization. Inventories and structured instructions remain exact; portable import remints only owned references and recalculates target digests. See [Worker Context Package](../../../../docs/specs/20260703-worker_context_package.md).
+Retained Context Package manifests and traces admit descriptive annotations while verifying the original canonical representation and byte digests. A direct Task trace retains the complete scope-qualified retrieval trace reference that selected its Knowledge bytes. The trace reader returns known fields with its original immutable representation retained for same-identity serialization. Inventories and structured instructions remain exact; portable import remints only owned references and recalculates target digests. See [Worker Context Package](../../../../docs/specs/20260703-worker_context_package.md).
 
 This directory owns deterministic projection of durable OpenKit items into provider-visible LLM context.
 

@@ -1,7 +1,19 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
-import { RetrieveKnowledgeRequestSchema } from '@openkit/app-api-schemas';
+import {
+  type KnowledgeRetrievalResponse,
+  KnowledgeRetrievalResponseSchema,
+  type KnowledgeRetrievalTrace,
+  KnowledgeRetrievalTraceSchema,
+  RetrieveKnowledgeRequestSchema,
+} from '@openkit/app-api-schemas';
+import {
+  type PageReference,
+  parseReferenceScope,
+  type RetrievalTraceReference,
+} from '@openkit/protocol';
+import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
 import {
   DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA,
   isActiveOpenKitKnowledgePage,
@@ -26,19 +38,18 @@ import {
   type KnowledgeRetrievalAccess,
   knowledgePageConflicted,
   knowledgePageReadable,
+  knowledgeSourceReferencesReadable,
+  resolveKnowledgeQueryContext,
 } from '../retrieval-knowledge-adapter.js';
 import { getRetrievalService } from '../retrieval-service.js';
 import { resolveDataRootPath } from './fs-layout.js';
+import { publishRetrievalTrace, readRetrievalTrace } from './retrieval-traces.js';
 import {
   assertCanonicalDirectory,
   listKnowledgePageIds,
   readCanonicalTextFile,
   readWorkspaceKnowledgePage,
 } from './workspace-file-records.js';
-import {
-  appendWorkspaceKnowledgeRetrievalTrace,
-  readWorkspaceKnowledgeRetrievalTrace,
-} from './workspace-portable-file-state.js';
 
 export type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
 
@@ -193,7 +204,9 @@ export interface RetrieveWorkspaceKnowledgeInput extends ReadWorkspaceKnowledgeD
   /** Maximum number of selected candidates. */
   limit?: number | undefined;
   /** Concepts that should be included when present and active. */
-  pinnedConceptIds?: readonly string[] | undefined;
+  pinnedReferences?: readonly PageReference[] | undefined;
+  /** Narrowing-only base selection; the current Workspace is the default. */
+  sourceScope?: 'workspace' | 'server' | undefined;
   /** Optional trace id for deterministic tests and route ownership. */
   traceId?: string | undefined;
   /** Optional timestamp source for deterministic tests. */
@@ -228,35 +241,10 @@ export interface WorkspaceKnowledgeRetrievalExclusion {
     | 'source_unavailable';
 }
 
-/** Persisted Knowledge Store retrieval trace. */
-export interface WorkspaceKnowledgeRetrievalTrace {
-  /** Trace id for the retrieval decision. */
-  traceId: string;
-  /** Workspace that owns the retrieval. */
-  workspaceId: string;
-  /** Server-owned product surface that requested retrieval. */
-  caller: RetrieveWorkspaceKnowledgeInput['caller'];
-  /** Digest of the normalized governed request and caller. */
-  requestDigest: string;
-  /** Non-sensitive parameters retained for replay inspection. */
-  retrievalParameters: {
-    /** Maximum selected candidate count. */
-    limit: number;
-    /** Bytewise-sorted duplicate-free pinned page ids. */
-    pinnedConceptIds: string[];
-    /** Explicitly admitted page states. */
-    states: ('active' | 'draft' | 'archived' | 'superseded')[];
-  };
-  /** Selected candidates in deterministic ranking order. */
-  selected: WorkspaceKnowledgeRetrievalCandidate[];
-  /** Excluded candidates with deterministic reasons. */
-  excluded: WorkspaceKnowledgeRetrievalExclusion[];
-  /** Trace creation timestamp. */
-  createdAt: string;
-}
-
 /** Exact authoritative Knowledge Page selected for one Task worker Context Package. */
 export interface ResolvedWorkspaceKnowledgeRetrievalPage {
+  /** Qualified identity retained through citations and current-byte resolution. */
+  reference: PageReference;
   /** Selected Knowledge Page id. */
   knowledgePageId: string;
   /** SHA-256 digest of the exact authoritative page bytes. */
@@ -549,20 +537,22 @@ export function readWorkspaceKnowledgeDerivedIndexes(
 }
 
 /**
- * Retrieves ranked Knowledge Store candidates and persists the selection trace.
+ * Retrieves ranked Knowledge candidates and publishes a trace when querying Thread context exists.
  *
  * @param input Retrieval target and query.
- * @returns Persisted selection of current verified bytes, without a notebook-history claim.
+ * @returns Fresh selection of current verified bytes and an optional qualified trace reference.
  * @throws Error when the canonical workspace projection is missing.
  */
 export async function retrieveWorkspaceKnowledge(
   input: RetrieveWorkspaceKnowledgeInput
-): Promise<WorkspaceKnowledgeRetrievalTrace> {
+): Promise<KnowledgeRetrievalResponse> {
+  const queryContext = resolveKnowledgeQueryContext(input);
   admitKnowledgeRetrieval(input);
   const normalized = RetrieveKnowledgeRequestSchema.parse({
     query: input.query,
     limit: input.limit,
-    pinnedConceptIds: input.pinnedConceptIds,
+    pinnedReferences: input.pinnedReferences,
+    sourceScope: input.sourceScope,
     states: input.states,
   });
   const states = [...new Set(normalized.states)].sort(compareBytewise);
@@ -572,10 +562,35 @@ export async function retrieveWorkspaceKnowledge(
       'Automatic Knowledge retrieval requires active state.',
       400
     );
-  const normalizedPinnedConceptIds = [...new Set(input.pinnedConceptIds ?? [])].sort(
-    compareBytewise
-  );
-  const pinnedConceptIds = new Set(normalizedPinnedConceptIds);
+  const sourceScope =
+    normalized.sourceScope === 'server' ? 'page/server' : `page/workspace/${input.workspaceId}`;
+  if (normalized.pinnedReferences.some((reference) => reference.scopeId !== sourceScope))
+    throw new OperationError(
+      'invalid_request',
+      'Knowledge pin is outside the selected source.',
+      400
+    );
+  if (normalized.sourceScope === 'server') {
+    if (
+      !input.access.coreDb ||
+      !input.access.requestActor ||
+      !isCurrentDeploymentAdministrator(input.access.coreDb, input.access.requestActor)
+    )
+      throw new OperationError('workspace_access_denied', 'Server Knowledge access denied.', 403);
+    throw new OperationError('knowledge_retrieval_failed', 'Server Knowledge is unavailable.', 503);
+  }
+  if (!queryContext.threadId && (input.caller !== 'app-api' || input.access.actor.kind !== 'user'))
+    throw new OperationError(
+      'invalid_request',
+      'This Knowledge caller requires querying Thread context.',
+      400
+    );
+  const normalizedPinnedReferences = [
+    ...new Map(
+      normalized.pinnedReferences.map((reference) => [reference.objectId, reference])
+    ).values(),
+  ].sort((a, b) => compareBytewise(a.objectId, b.objectId));
+  const pinnedPageIds = new Set(normalizedPinnedReferences.map((reference) => reference.objectId));
   const limit = normalized.limit;
   const createdAt = input.now?.() ?? new Date().toISOString();
   const traceId = input.traceId ?? `krt_${randomUUID()}`;
@@ -588,7 +603,7 @@ export async function retrieveWorkspaceKnowledge(
   const indexes = readWorkspaceKnowledgeDerivedIndexes(input);
   const sourceReferencesByConcept = new Map<string, string[]>();
   const scores = new Map<string, number>();
-  const addressedIds = new Set(normalizedPinnedConceptIds);
+  const addressedIds = new Set(normalizedPinnedReferences.map((reference) => reference.objectId));
 
   for (const reference of indexes.sourceReferences.references) {
     const references = sourceReferencesByConcept.get(reference.conceptId) ?? [];
@@ -643,7 +658,7 @@ export async function retrieveWorkspaceKnowledge(
   const candidates = [...addressedIds]
     .map((knowledgePageId) => ({
       knowledgePageId,
-      pinned: pinnedConceptIds.has(knowledgePageId),
+      pinned: pinnedPageIds.has(knowledgePageId),
       score: scores.get(knowledgePageId) ?? 0,
     }))
     .sort(compareKnowledgeRetrievalCandidates);
@@ -823,25 +838,50 @@ export async function retrieveWorkspaceKnowledge(
   const request = {
     query: input.query,
     limit,
-    pinnedConceptIds: normalizedPinnedConceptIds,
+    pinnedReferences: normalizedPinnedReferences,
     states,
+    sourceScope: normalized.sourceScope ?? 'workspace',
   };
-  const trace: WorkspaceKnowledgeRetrievalTrace = {
-    traceId,
-    workspaceId: input.workspaceId,
+  const referenceFor = (knowledgePageId: string): PageReference => ({
+    scopeId: sourceScope,
+    objectId: knowledgePageId,
+  });
+  const metadata = {
+    queryContext,
+    sourceScope,
+    notebookRevision: null,
     caller: input.caller,
     requestDigest: sha256Digest(
-      canonicalJson({ workspaceId: input.workspaceId, caller: input.caller, request })
+      canonicalJson({ queryContext, sourceScope, caller: input.caller, request })
     ),
     retrievalParameters: {
       limit,
-      pinnedConceptIds: normalizedPinnedConceptIds,
+      pinnedReferences: normalizedPinnedReferences,
       states,
+      sourceScope: normalized.sourceScope ?? 'workspace',
     },
-    selected,
-    excluded,
     createdAt,
   };
+  const result = KnowledgeRetrievalResponseSchema.parse({
+    ...metadata,
+    workspaceId: input.workspaceId,
+    selected: selected.map(({ knowledgePageId, ...facts }) => ({
+      ...facts,
+      reference: referenceFor(knowledgePageId),
+      revision: facts.contentDigest,
+    })),
+    excluded: excluded.map(({ knowledgePageId, ...facts }) => ({
+      ...facts,
+      reference: referenceFor(knowledgePageId),
+      revision: facts.contentDigest,
+      sourceReferences:
+        facts.contentDigest === null
+          ? []
+          : [...new Set(sourceReferencesByConcept.get(knowledgePageId) ?? [])].sort(
+              compareBytewise
+            ),
+    })),
+  });
 
   admitKnowledgeRetrieval(input);
   if (canonicalJson(before.view) !== canonicalJson(collectKnowledgeInventory(input).view))
@@ -850,8 +890,153 @@ export async function retrieveWorkspaceKnowledge(
       'Knowledge eligibility changed during retrieval.',
       409
     );
-  appendWorkspaceKnowledgeRetrievalTrace(workspaceRoot, trace);
+  if (canonicalJson(queryContext) !== canonicalJson(resolveKnowledgeQueryContext(input)))
+    throw new OperationError('knowledge_retrieval_failed', 'Knowledge query context changed.', 409);
+  if (queryContext.threadId) {
+    const reference: RetrievalTraceReference = {
+      scopeId: queryContext.turnId
+        ? `retrieval-trace/turn/${input.workspaceId}/${queryContext.threadId}/${queryContext.turnId}`
+        : `retrieval-trace/thread/${input.workspaceId}/${queryContext.threadId}`,
+      objectId: traceId,
+    };
+    const trace = KnowledgeRetrievalTraceSchema.parse({
+      ...metadata,
+      traceId,
+      selected: result.selected.map(({ score: _score, ...evidence }) => evidence),
+      excluded: result.excluded,
+    });
+    publishRetrievalTrace(workspaceRoot, reference, trace);
+    result.retrievalTraceRef = reference;
+  }
+  return result;
+}
 
+interface KnowledgeTraceReadInput {
+  dataRoot: string;
+  workspaceId: string;
+  access: KnowledgeRetrievalAccess;
+  retrievalTraceRef: RetrievalTraceReference;
+}
+
+/** One canonical reader binds file identity, containing audience and current Server before projection. */
+function readAdmittedKnowledgeTrace(input: KnowledgeTraceReadInput): KnowledgeRetrievalTrace {
+  const scope = parseReferenceScope(input.retrievalTraceRef.scopeId);
+  if (!scope || scope.family !== 'retrieval-trace' || scope.workspaceId !== input.workspaceId)
+    throw knowledgeTraceUnavailable();
+  const target = {
+    ...input,
+    access: {
+      ...input.access,
+      outputThreadId: scope.threadId,
+      outputTurnId: scope.kind === 'turn' ? scope.turnId : undefined,
+    },
+  };
+  const context = resolveKnowledgeQueryContext(target);
+  admitKnowledgeRetrieval(target);
+  const trace = readRetrievalTrace(
+    resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId),
+    input.retrievalTraceRef
+  );
+  if (!trace)
+    throw new OperationError('knowledge_retrieval_failed', 'Knowledge trace is unavailable.', 503);
+  if (trace.queryContext.serverId !== context.serverId) throw knowledgeTraceUnavailable();
+  const sourceScope =
+    trace.retrievalParameters.sourceScope === 'server'
+      ? 'page/server'
+      : `page/workspace/${trace.queryContext.workspaceId}`;
+  if (trace.sourceScope !== sourceScope) throw knowledgeTraceUnavailable();
+  return trace;
+}
+
+/** A failed reference check never discloses the failed source identity. */
+function knowledgeTraceUnavailable(): OperationError {
+  return new OperationError(
+    'workspace_access_denied',
+    'Knowledge trace or source is unavailable.',
+    403
+  );
+}
+
+/** Resolves one current reference for either metadata admission or selected-byte materialization. */
+function currentKnowledgeReferenceContent(
+  input: { dataRoot: string; workspaceId: string; access: KnowledgeRetrievalAccess },
+  reference: PageReference,
+  serverId: string
+): string | null {
+  const importedFrom = input.access.store.getWorkspace(input.workspaceId).importedFrom;
+  const crossDeploymentImport =
+    importedFrom !== undefined && importedFrom.sourceDeploymentId !== serverId;
+  if (
+    crossDeploymentImport &&
+    (reference.scopeId === 'page/server' || reference.scopeId.startsWith('page/user/'))
+  )
+    throw knowledgeTraceUnavailable();
+  if (reference.scopeId !== `page/workspace/${input.workspaceId}`) {
+    if (
+      reference.scopeId === 'page/server' &&
+      input.access.coreDb &&
+      input.access.requestActor &&
+      isCurrentDeploymentAdministrator(input.access.coreDb, input.access.requestActor)
+    )
+      throw new OperationError(
+        'knowledge_source_unavailable',
+        'Knowledge trace source is unavailable.',
+        503
+      );
+    throw knowledgeTraceUnavailable();
+  }
+  const content = readWorkspaceKnowledgePage(
+    resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId),
+    reference.objectId
+  );
+  if (content === null) return null;
+  const document = parseOkfDocument({
+    path: `knowledge/pages/${reference.objectId}.md`,
+    content,
+  }).document;
+  const sensitivity = document ? stringFrontmatterField(document, 'sensitivity') : null;
+  if (
+    sensitivity === 'restricted' ||
+    sensitivity === 'confidential' ||
+    !knowledgePageReadable(input, reference.objectId, content)
+  )
+    throw knowledgeTraceUnavailable();
+  return content;
+}
+
+/** Admits the full trace projection, including exclusions and pins, before read or ordinary export. */
+export function assertKnowledgeRetrievalTraceReadable(
+  input: KnowledgeTraceReadInput
+): KnowledgeRetrievalTrace {
+  const trace = readAdmittedKnowledgeTrace(input);
+  const target = {
+    ...input,
+    access: {
+      ...input.access,
+      outputThreadId: trace.queryContext.threadId,
+      outputTurnId: trace.queryContext.turnId,
+    },
+  };
+  const references = [
+    ...trace.selected.map((entry) => entry.reference),
+    ...trace.excluded.map((entry) => entry.reference),
+    ...trace.retrievalParameters.pinnedReferences,
+  ];
+  for (const reference of references) {
+    if (reference.scopeId !== trace.sourceScope) throw knowledgeTraceUnavailable();
+    if (currentKnowledgeReferenceContent(target, reference, trace.queryContext.serverId) === null)
+      throw new OperationError(
+        'knowledge_source_unavailable',
+        'Knowledge trace source is unavailable.',
+        503
+      );
+  }
+  for (const entry of [...trace.selected, ...trace.excluded]) {
+    if (
+      !knowledgeSourceReferencesReadable(target, entry.reference.objectId, entry.sourceReferences)
+    )
+      throw knowledgeTraceUnavailable();
+  }
   return trace;
 }
 
@@ -868,7 +1053,9 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
   /** Workspace expected to own the retrieval trace and pages. */
   workspaceId: string;
   /** Persisted governed retrieval trace to resolve. */
-  retrievalTraceId: string;
+  retrievalTraceRef?: RetrievalTraceReference;
+  /** Fresh server-owned selection permits threadless reads without fabricating a trace. */
+  selection?: KnowledgeRetrievalResponse;
   /** Server-owned caller expected on the retrieval trace. */
   caller: RetrieveWorkspaceKnowledgeInput['caller'];
   /** Fresh source and destination authorization for exact-byte disclosure. */
@@ -877,14 +1064,31 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
   const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
   admitKnowledgeRetrieval(input);
   const referenceProofs = currentKnowledgeReferenceProofs(input);
-  const trace = readWorkspaceKnowledgeRetrievalTrace(workspaceRoot, input.retrievalTraceId);
-
-  if (!trace) {
-    throw new Error('Knowledge retrieval trace was not found.');
+  const context = resolveKnowledgeQueryContext(input);
+  if (Boolean(input.retrievalTraceRef) === Boolean(input.selection))
+    throw new Error('Exactly one Knowledge selection or trace reference is required.');
+  let trace: KnowledgeRetrievalResponse | KnowledgeRetrievalTrace;
+  if (input.retrievalTraceRef) {
+    const scope = parseReferenceScope(input.retrievalTraceRef.scopeId);
+    if (
+      !scope ||
+      scope.family !== 'retrieval-trace' ||
+      scope.workspaceId !== input.workspaceId ||
+      scope.threadId !== context.threadId ||
+      (scope.kind === 'turn' && scope.turnId !== context.turnId)
+    )
+      throw new OperationError('workspace_access_denied', 'Knowledge trace audience denied.', 403);
+    trace = readAdmittedKnowledgeTrace({ ...input, retrievalTraceRef: input.retrievalTraceRef });
+  } else {
+    trace = KnowledgeRetrievalResponseSchema.parse(input.selection);
   }
-  if (trace.workspaceId !== input.workspaceId || trace.caller !== input.caller) {
+  if (
+    trace.queryContext.workspaceId !== input.workspaceId ||
+    trace.queryContext.serverId !== context.serverId ||
+    trace.caller !== input.caller ||
+    (trace.queryContext.threadId && trace.queryContext.threadId !== context.threadId)
+  )
     throw new Error('Knowledge retrieval trace lineage is contradictory.');
-  }
 
   const workspaceSchemaText = readWorkspaceKnowledgeSchemaText(workspaceRoot);
   const registeredSources = readRegisteredSources(workspaceRoot, input.workspaceId);
@@ -892,18 +1096,14 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
   const pages: ResolvedWorkspaceKnowledgeRetrievalPage[] = [];
 
   for (const selected of trace.selected) {
-    const path = `knowledge/pages/${selected.knowledgePageId}.md`;
-    const content = readWorkspaceKnowledgePage(workspaceRoot, selected.knowledgePageId);
+    if (selected.reference.scopeId !== trace.sourceScope)
+      throw new Error('Knowledge selection source is contradictory.');
+    const path = `knowledge/pages/${selected.reference.objectId}.md`;
+    const content = currentKnowledgeReferenceContent(input, selected.reference, context.serverId);
     if (content === null) {
       return null;
     }
 
-    if (!knowledgePageReadable(input, selected.knowledgePageId, content))
-      throw new OperationError(
-        'workspace_access_denied',
-        'Knowledge source disclosure denied.',
-        403
-      );
     const parsed = parseOkfDocument({ path, content });
     const document = parsed.document;
     const sourceRefs = document
@@ -914,7 +1114,7 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
     const contentDigest = sha256Digest(content);
     const referenceProof = matchingKnowledgeReferenceProof(
       referenceProofs,
-      selected.knowledgePageId,
+      selected.reference.objectId,
       contentDigest,
       sourceRefs
     );
@@ -937,7 +1137,7 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
       !document ||
       validation.conformance !== 'Workspace-schema-valid' ||
       validation.errors.length > 0 ||
-      document.conceptId !== selected.knowledgePageId ||
+      document.conceptId !== selected.reference.objectId ||
       stringFrontmatterField(document, 'openkit_status') !== 'active' ||
       (reviewState !== 'accepted' && reviewState !== 'user-authored') ||
       (reviewState === 'accepted' && !referenceProof) ||
@@ -953,7 +1153,8 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
     }
 
     pages.push({
-      knowledgePageId: selected.knowledgePageId,
+      reference: selected.reference,
+      knowledgePageId: selected.reference.objectId,
       contentDigest,
       sourceRefs,
       content,

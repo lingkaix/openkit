@@ -64,10 +64,13 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
     const trace = await retrieveWorkspaceKnowledge({
       ...retrievalInput(fixture, 'selection-marker'),
       limit: 1,
-      traceId: traceId(1),
     });
 
-    expect(trace.selected).toEqual([expect.objectContaining({ knowledgePageId: selected.id })]);
+    expect(trace.selected).toEqual([
+      expect.objectContaining({
+        reference: { scopeId: `page/workspace/${fixture.workspaceId}`, objectId: selected.id },
+      }),
+    ]);
     expect(exclusionReasons(trace)).toEqual(
       expect.objectContaining({
         [sensitive.id]: 'sensitive_content',
@@ -80,7 +83,6 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
     const frontmatterOnly = await retrieveWorkspaceKnowledge({
       ...retrievalInput(fixture, 'confidential'),
       limit: 20,
-      traceId: traceId(2),
     });
     expect(frontmatterOnly).toMatchObject({ selected: [], excluded: [] });
   });
@@ -96,20 +98,18 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
     const ordinary = await retrieveWorkspaceKnowledge({
       ...retrievalInput(fixture, 'release cadence'),
       limit: 2,
-      traceId: traceId(3),
     });
     const withPin = await retrieveWorkspaceKnowledge({
       ...retrievalInput(fixture, 'release cadence'),
       limit: 2,
-      pinnedConceptIds: [pinned.id],
-      traceId: traceId(4),
+      pinnedReferences: [pageReference(fixture, pinned.id)],
     });
     const ordinaryScores = new Map(
-      ordinary.selected.map((candidate) => [candidate.knowledgePageId, candidate.score])
+      ordinary.selected.map((candidate) => [candidate.reference.objectId, candidate.score])
     );
 
-    expect(ordinary.selected[0]?.knowledgePageId).toBe(higher.id);
-    expect(withPin.selected.map((candidate) => candidate.knowledgePageId)).toEqual([
+    expect(ordinary.selected[0]?.reference.objectId).toBe(higher.id);
+    expect(withPin.selected.map((candidate) => candidate.reference.objectId)).toEqual([
       pinned.id,
       higher.id,
     ]);
@@ -137,23 +137,21 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
     const defaultTrace = await retrieveWorkspaceKnowledge({
       ...retrievalInput(fixture, 'state-marker'),
       limit: 20,
-      traceId: traceId(5),
     });
     const firstGeneration = onlyRetrievalGeneration(fixture);
     const explicitTrace = await retrieveWorkspaceKnowledge({
       ...retrievalInput(fixture, 'state-marker'),
       limit: 20,
       states: ['active', 'draft', 'archived', 'superseded'],
-      traceId: traceId(6),
     });
 
-    expect(defaultTrace.selected.map((candidate) => candidate.knowledgePageId)).toEqual([
+    expect(defaultTrace.selected.map((candidate) => candidate.reference.objectId)).toEqual([
       pages.active.id,
     ]);
-    expect(defaultTrace.excluded.map((candidate) => candidate.knowledgePageId).sort()).toEqual(
+    expect(defaultTrace.excluded.map((candidate) => candidate.reference.objectId).sort()).toEqual(
       [pages.archived.id, pages.draft.id, pages.superseded.id].sort()
     );
-    expect(explicitTrace.selected.map((candidate) => candidate.knowledgePageId).sort()).toEqual(
+    expect(explicitTrace.selected.map((candidate) => candidate.reference.objectId).sort()).toEqual(
       Object.values(pages)
         .map((page) => page.id)
         .sort()
@@ -164,7 +162,6 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
         ...retrievalInput(fixture, 'state-marker'),
         caller: 'assistant',
         states: ['archived'],
-        traceId: traceId(7),
       })
     ).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
   });
@@ -214,9 +211,8 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
     const before = await retrieveWorkspaceKnowledge({
       ...retrievalInput(fixture, 'audience-marker'),
       limit: 20,
-      traceId: traceId(8),
     });
-    expect(before.selected.map((candidate) => candidate.knowledgePageId)).toEqual(
+    expect(before.selected.map((candidate) => candidate.reference.objectId)).toEqual(
       expect.arrayContaining([sourcePage.id, control.id])
     );
 
@@ -224,16 +220,17 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
     const after = await retrieveWorkspaceKnowledge({
       ...retrievalInput(fixture, 'audience-marker'),
       limit: 20,
-      traceId: traceId(9),
     });
 
-    expect(after.selected.map((candidate) => candidate.knowledgePageId)).toEqual([control.id]);
+    expect(after.selected.map((candidate) => candidate.reference.objectId)).toEqual([control.id]);
     expect(JSON.stringify(after)).not.toContain(sourcePage.id);
     expect(JSON.stringify(after)).not.toContain('source-backed');
   });
 
   it('returns a typed failure and writes no trace when lexical enumeration exceeds 1000 matches', async () => {
     const fixture = createFixture('enumeration-incomplete');
+    const traceThread = fixture.store.createThread(fixture.workspaceId, 'Enumeration trace owner');
+    fixture.access.outputThreadId = traceThread.id;
     const seed = createEntry(fixture, 'Bulk seed', 'enumeration-overflow');
     const template = readPage(fixture, seed.id);
     for (let index = 0; index < 1000; index += 1) {
@@ -266,6 +263,8 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
       `before-change-marker\n${'x'.repeat(6 * 1024 * 1024)}`
     );
     const failedTraceId = traceId(11);
+    const traceThread = fixture.store.createThread(fixture.workspaceId, 'Concurrent trace owner');
+    fixture.access.outputThreadId = traceThread.id;
     const pending = retrieveWorkspaceKnowledge({
       ...retrievalInput(fixture, 'before-change-marker'),
       traceId: failedTraceId,
@@ -364,11 +363,15 @@ function retrievalInput(fixture: Fixture, query: string) {
   };
 }
 
+function pageReference(fixture: Fixture, objectId: string) {
+  return { scopeId: `page/workspace/${fixture.workspaceId}`, objectId };
+}
+
 function exclusionReasons(trace: {
-  excluded: Array<{ knowledgePageId: string; reason: string }>;
+  excluded: Array<{ reference: { objectId: string }; reason: string }>;
 }): Record<string, string> {
   return Object.fromEntries(
-    trace.excluded.map((candidate) => [candidate.knowledgePageId, candidate.reason])
+    trace.excluded.map((candidate) => [candidate.reference.objectId, candidate.reason])
   );
 }
 
@@ -379,9 +382,9 @@ function onlyRetrievalGeneration(fixture: Fixture): string {
 }
 
 function readTraceBytes(fixture: Fixture): string {
-  const root = join(fixture.workspaceRoot, 'knowledge', 'traces');
+  const root = join(fixture.workspaceRoot, 'threads');
   if (!existsSync(root)) return '';
-  return findNamedFiles(root, '.jsonl', true)
+  return findNamedFiles(root, '.json', true)
     .map((path) => readFileSync(path, 'utf8'))
     .join('\n');
 }

@@ -1,4 +1,11 @@
-import { ActorRefSchema, RequestIdSchema, TimestampSchema } from '@openkit/protocol';
+import {
+  ActorRefSchema,
+  PageReferenceSchema,
+  RequestIdSchema,
+  RetrievalTraceIdSchema,
+  RetrievalTraceReferenceSchema,
+  TimestampSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 
 const obviousKnowledgeProposalHostPathPattern =
@@ -360,40 +367,64 @@ export const KnowledgeDerivedIndexesResponseSchema = z.object({
   sourceReferences: KnowledgeSourceReferenceIndexSchema,
 });
 
-/** Request body for deterministic Knowledge Store retrieval with trace persistence. */
-export const RetrieveKnowledgeRequestSchema = z.object({
-  query: z.string().min(1),
-  limit: z.number().int().positive().max(20).default(5),
-  pinnedConceptIds: z.array(z.string().min(1)).default([]),
-  states: z
-    .array(z.enum(['active', 'draft', 'archived', 'superseded']))
-    .min(1)
-    .default(['active']),
+/** Safe stable notebook page selector; shared by retrieval and proposal boundaries. */
+const KnowledgePageObjectIdSchema = z
+  .string()
+  .max(240)
+  .regex(/^(?!(?:.*\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\/[a-z0-9][a-z0-9._-]{0,63})*$/)
+  .refine((value) => !value.endsWith('.md') && new TextEncoder().encode(value).length <= 240);
+
+/** Exact page identity admitted by the Knowledge owner. */
+export const KnowledgePageReferenceSchema = PageReferenceSchema.extend({
+  objectId: KnowledgePageObjectIdSchema,
 });
 
-/** Canonical server-generated identity of one governed Knowledge retrieval trace. */
-const KnowledgeRetrievalTraceIdSchema = z
-  .string()
-  .regex(/^krt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+/** Request may narrow context-derived sources; it carries no actor or query lineage. */
+export const RetrieveKnowledgeRequestSchema = z
+  .object({
+    query: z.string().min(1),
+    limit: z.number().int().positive().max(20).default(5),
+    pinnedReferences: z.array(KnowledgePageReferenceSchema).default([]),
+    states: z
+      .array(z.enum(['active', 'draft', 'archived', 'superseded']))
+      .min(1)
+      .default(['active']),
+    sourceScope: z.enum(['workspace', 'server']).optional(),
+  })
+  .strict();
 
-/** Selected Knowledge Store retrieval candidate. */
+/** Trusted query context, derived by NanoCore rather than supplied in a request. */
+export const KnowledgeQueryContextSchema = z
+  .object({
+    serverId: z.string().min(1),
+    workspaceId: z.string().min(1),
+    actor: ActorRefSchema,
+    threadId: z.string().min(1).optional(),
+    turnId: z.string().min(1).optional(),
+  })
+  .strict();
+
+/** Selected retrieval fact; its score is local to this source and is never persisted. */
 export const KnowledgeRetrievalCandidateSchema = z
   .object({
-    knowledgePageId: z.string().min(1),
+    reference: KnowledgePageReferenceSchema,
+    revision: z.string().min(1),
     contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     score: z.number().finite().nonnegative(),
     sourceReferences: z.array(z.string().min(1)),
   })
   .strict();
 
-/** Retrieval candidate excluded by one governed disposition. */
+/** Candidate excluded by one governed disposition without leaking denied bytes. */
 export const KnowledgeRetrievalExclusionSchema = z
   .object({
-    knowledgePageId: z.string().min(1),
+    reference: KnowledgePageReferenceSchema,
+    revision: z.string().min(1).nullable(),
     contentDigest: z
       .string()
       .regex(/^sha256:[a-f0-9]{64}$/)
       .nullable(),
+    sourceReferences: z.array(z.string().min(1)),
     reason: z.enum([
       'sensitive_content',
       'lower_conformance',
@@ -405,25 +436,60 @@ export const KnowledgeRetrievalExclusionSchema = z
   })
   .strict();
 
-/** Response and persisted trace returned by deterministic Knowledge Store retrieval. */
-export const KnowledgeRetrievalResponseSchema = z
-  .object({
-    traceId: KnowledgeRetrievalTraceIdSchema,
-    workspaceId: z.string().min(1),
-    caller: KnowledgeManagerCallerSchema,
-    requestDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-    retrievalParameters: z
-      .object({
-        limit: z.number().int().positive().max(20),
-        pinnedConceptIds: z.array(z.string().min(1)),
-        states: z.array(z.enum(['active', 'draft', 'archived', 'superseded'])).min(1),
-      })
-      .strict(),
-    selected: z.array(KnowledgeRetrievalCandidateSchema),
-    excluded: z.array(KnowledgeRetrievalExclusionSchema),
-    createdAt: z.string().min(1),
-  })
-  .strict();
+const RetrievalSelectionMetadataSchema = z.object({
+  queryContext: KnowledgeQueryContextSchema,
+  sourceScope: PageReferenceSchema.shape.scopeId,
+  // Current file-backed selection observes byte revisions, not a retained Git notebook commit.
+  notebookRevision: z.string().min(1).nullable(),
+  caller: KnowledgeManagerCallerSchema,
+  requestDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  retrievalParameters: z
+    .object({
+      limit: z.number().int().positive().max(20),
+      pinnedReferences: z.array(KnowledgePageReferenceSchema),
+      states: z.array(z.enum(['active', 'draft', 'archived', 'superseded'])).min(1),
+      sourceScope: z.enum(['workspace', 'server']),
+    })
+    .strict(),
+  createdAt: z.string().min(1),
+});
+
+/** Fresh selection result; threadless calls carry no trace id or reference. */
+export const KnowledgeRetrievalResponseSchema = RetrievalSelectionMetadataSchema.extend({
+  workspaceId: z.string().min(1),
+  selected: z.array(KnowledgeRetrievalCandidateSchema),
+  excluded: z.array(KnowledgeRetrievalExclusionSchema),
+  retrievalTraceRef: RetrievalTraceReferenceSchema.optional(),
+}).strict();
+
+/** Immutable query-owned evidence, distinct from the source-local scored response. */
+export const KnowledgeRetrievalTraceSchema = RetrievalSelectionMetadataSchema.extend({
+  traceId: RetrievalTraceIdSchema,
+  selected: z.array(KnowledgeRetrievalCandidateSchema.omit({ score: true })),
+  excluded: z.array(KnowledgeRetrievalExclusionSchema),
+}).strict();
+
+/** Descriptive additions are ignored on retained evidence reads; closed core values still fail. */
+export const KnowledgeRetrievalTraceReaderSchema = KnowledgeRetrievalTraceSchema.extend({
+  queryContext: KnowledgeQueryContextSchema.extend({
+    actor: z.union(ActorRefSchema.options.map((option) => option.strip())),
+  }).strip(),
+  retrievalParameters: RetrievalSelectionMetadataSchema.shape.retrievalParameters
+    .extend({
+      pinnedReferences: z.array(KnowledgePageReferenceSchema.strip()),
+    })
+    .strip(),
+  selected: z.array(
+    KnowledgeRetrievalTraceSchema.shape.selected.element
+      .extend({ reference: KnowledgePageReferenceSchema.strip() })
+      .strip()
+  ),
+  excluded: z.array(
+    KnowledgeRetrievalTraceSchema.shape.excluded.element
+      .extend({ reference: KnowledgePageReferenceSchema.strip() })
+      .strip()
+  ),
+}).strip();
 
 /** Request body for one bounded Knowledge Manager answer operation. */
 export const KnowledgeManagerAnswerRequestSchema = z
@@ -435,7 +501,7 @@ export const KnowledgeManagerAnswerRequestSchema = z
 
 /** Source citation returned by one Knowledge Manager answer. */
 export const KnowledgeManagerAnswerCitationSchema = z.object({
-  knowledgeEntryId: z.string().min(1),
+  reference: KnowledgePageReferenceSchema,
   kind: z.enum(['preference', 'project-context', 'task-summary']),
   title: z.string().min(1),
   excerpt: z.string().min(1),
@@ -447,7 +513,7 @@ export const KnowledgeManagerAnswerResponseSchema = z.object({
   operation: z.literal('answer'),
   workspaceId: z.string().min(1),
   caller: KnowledgeManagerCallerSchema,
-  retrievalTraceId: KnowledgeRetrievalTraceIdSchema,
+  retrievalTraceRef: RetrievalTraceReferenceSchema.optional(),
   query: z.string().min(1),
   outcome: z.enum(['answered', 'insufficient-evidence']),
   answer: z.string().min(1),
@@ -471,7 +537,7 @@ export const KnowledgeManagerPrepareContextResponseSchema = z
     operation: z.literal('prepare-context-material'),
     workspaceId: z.string().min(1),
     caller: KnowledgeManagerCallerSchema,
-    retrievalTraceId: KnowledgeRetrievalTraceIdSchema,
+    retrievalTraceRef: RetrievalTraceReferenceSchema.optional(),
     outcome: z.enum(['prepared', 'insufficient-evidence']),
     selected: z.array(KnowledgeRetrievalCandidateSchema),
     excluded: z.array(KnowledgeRetrievalExclusionSchema),
@@ -479,10 +545,7 @@ export const KnowledgeManagerPrepareContextResponseSchema = z
   .strict();
 
 /** Safe create-only Knowledge Page identity carried by proposal commands. */
-export const KnowledgeProposalPageIdSchema = z
-  .string()
-  .max(240)
-  .regex(/^(?!(?:.*\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\/[a-z0-9][a-z0-9._-]{0,63})*$/);
+export const KnowledgeProposalPageIdSchema = KnowledgePageObjectIdSchema;
 
 /** Lowercase SHA-256 digest over exact canonical Knowledge content bytes. */
 export const KnowledgeProposalContentDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -747,3 +810,6 @@ export type KnowledgeRetrievalCandidate = z.infer<typeof KnowledgeRetrievalCandi
 export type KnowledgeRetrievalExclusion = z.infer<typeof KnowledgeRetrievalExclusionSchema>;
 /** Response and persisted trace returned by deterministic Knowledge Store retrieval. */
 export type KnowledgeRetrievalResponse = z.infer<typeof KnowledgeRetrievalResponseSchema>;
+
+/** Persisted, source-content-free query selection evidence. */
+export type KnowledgeRetrievalTrace = z.infer<typeof KnowledgeRetrievalTraceSchema>;

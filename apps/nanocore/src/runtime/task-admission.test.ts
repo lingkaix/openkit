@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
@@ -374,6 +374,41 @@ it.each([
       expect(linked.tasks).toEqual([]);
       expect(startWorker).not.toHaveBeenCalled();
       return;
+    }
+    const retrievalTraceRoot = join(
+      root,
+      'workspaces',
+      ws.id,
+      'threads',
+      linked.tasks[0]!.threadId,
+      'retrieval-traces'
+    );
+    const retrievalTraceFiles = readdirSync(retrievalTraceRoot);
+    expect(retrievalTraceFiles).toHaveLength(1);
+    expect(retrievalTraceFiles[0]).toMatch(/^krt_.+\.json$/);
+    const retrievalTrace = JSON.parse(
+      readFileSync(join(retrievalTraceRoot, retrievalTraceFiles[0]!), 'utf8')
+    );
+    expect(retrievalTrace.queryContext).toMatchObject({
+      workspaceId: ws.id,
+      threadId: linked.tasks[0]!.threadId,
+    });
+    expect(retrievalTrace.queryContext).not.toHaveProperty('turnId');
+    for (const taskTurn of store.listThreadTurns(ws.id, linked.tasks[0]!.threadId)) {
+      expect(
+        existsSync(
+          join(
+            root,
+            'workspaces',
+            ws.id,
+            'threads',
+            linked.tasks[0]!.threadId,
+            'turns',
+            taskTurn.id,
+            'retrieval-traces'
+          )
+        )
+      ).toBe(false);
     }
     await vi.waitFor(() =>
       expect(connections.every((connection) => !connection.sqlite.open)).toBe(true)

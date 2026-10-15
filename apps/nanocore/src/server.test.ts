@@ -25,7 +25,7 @@ import {
   CapabilityUsageResponseSchema,
   DataRootBackupCreateResponseSchema,
   DataRootBackupVerifyResponseSchema,
-  KnowledgeRetrievalResponseSchema,
+  KnowledgeRetrievalTraceSchema,
   ListHumanAttentionResponseSchema,
   ListSchedulerAdmissionsResponseSchema,
   ListServerAuditEventsResponseSchema,
@@ -179,7 +179,6 @@ import {
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
 import { readWorkspaceImportSnapshot } from './storage/workspace-import.js';
-import { readWorkspaceKnowledgeRetrievalTrace } from './storage/workspace-portable-file-state.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import {
   createAppWithWorkspaceAuthority,
@@ -1770,7 +1769,7 @@ describe('nanocore server', () => {
     const body = WorkspaceExportResponseSchema.parse(await res.json());
     expect(body).toMatchObject({
       workspaceId: 'ws_demo',
-      fileCount: 24,
+      fileCount: 23,
       checkedFiles: [
         'records/agent-resource-catalog.json',
         'records/agent-sessions.jsonl',
@@ -1780,7 +1779,6 @@ describe('nanocore server', () => {
         'records/knowledge-claims.jsonl',
         'records/knowledge-conflicts.jsonl',
         'records/knowledge-observations.jsonl',
-        'records/knowledge-retrieval-traces.jsonl',
         'records/knowledge.jsonl',
         'records/thread-material-bindings.jsonl',
         'records/threads.jsonl',
@@ -1844,7 +1842,7 @@ describe('nanocore server', () => {
       sourceWorkspaceId: 'ws_demo',
       exportedWorkspaceId: 'ws_demo',
       collision: { status: 'collides', workspaceId: 'ws_demo' },
-      verification: { fileCount: 23 },
+      verification: { fileCount: 22 },
     });
     expect(store.listWorkspaces()).toHaveLength(beforeCount);
     expect(JSON.stringify(body)).not.toContain(dataRoot);
@@ -5159,30 +5157,50 @@ describe('nanocore server', () => {
           JSON.parse(workerInput?.type === 'user-message' ? workerInput.text : '')
         )
       ).toEqual(expectedWorkerRequest);
-      const month = new Date().toISOString().slice(0, 7).replace('-', '');
-      const retrievalTrace = KnowledgeRetrievalResponseSchema.parse(
-        JSON.parse(
-          readFileSync(
-            join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'traces', `${month}.jsonl`),
-            'utf8'
-          ).trim()
-        )
+      const retrievalTraceRef = launchedContextAssembly?.knowledgeSelectionInput.retrievalTraceRef;
+      expect(retrievalTraceRef).toEqual({
+        scopeId: 'retrieval-trace/thread/ws_demo/th_demo',
+        objectId: expect.stringMatching(
+          /^krt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+        ),
+      });
+      if (!retrievalTraceRef) throw new Error('Task Knowledge retrieval trace is missing.');
+      const retrievalTracePath = join(
+        coreDb.dataRoot,
+        'workspaces',
+        'ws_demo',
+        'threads',
+        'th_demo',
+        'retrieval-traces',
+        `${retrievalTraceRef.objectId}.json`
+      );
+      const retrievalTrace = KnowledgeRetrievalTraceSchema.parse(
+        JSON.parse(readFileSync(retrievalTracePath, 'utf8'))
       );
 
       expect(retrievalTrace).toEqual(
         expect.objectContaining({
           caller: 'task-mode',
-          retrievalParameters: { limit: 5, pinnedConceptIds: [], states: ['active'] },
-          traceId: expect.stringMatching(
-            /^krt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
-          ),
+          queryContext: expect.objectContaining({
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+          }),
+          retrievalParameters: {
+            limit: 5,
+            pinnedReferences: [],
+            states: ['active'],
+            sourceScope: 'workspace',
+          },
+          traceId: retrievalTraceRef.objectId,
           selected: expect.arrayContaining([
-            expect.objectContaining({ knowledgePageId: knowledge.id }),
+            expect.objectContaining({
+              reference: { scopeId: 'page/workspace/ws_demo', objectId: knowledge.id },
+            }),
           ]),
         })
       );
       expect(launchedContextAssembly).toMatchObject({
-        knowledgeSelectionInput: { retrievalTraceId: retrievalTrace.traceId },
+        knowledgeSelectionInput: { retrievalTraceRef },
       });
       const replayRes = await app.request(
         ...operationRequest(
@@ -5233,10 +5251,7 @@ describe('nanocore server', () => {
         code: 'idempotency_key_conflict',
       });
       expect(
-        readWorkspaceKnowledgeRetrievalTrace(
-          join(coreDb.dataRoot, 'workspaces', 'ws_demo'),
-          retrievalTrace.traceId
-        )
+        KnowledgeRetrievalTraceSchema.parse(JSON.parse(readFileSync(retrievalTracePath, 'utf8')))
       ).toEqual(retrievalTrace);
       expect(() => store.updateTurn(parsed.turn.id, { status: 'cancelled' })).toThrow(
         /is terminal and does not admit this write/

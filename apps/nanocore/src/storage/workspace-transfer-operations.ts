@@ -34,11 +34,13 @@ export function createWorkspaceTransferOperationImplementations(
           503
         );
       return createVerifiedWorkspaceExport({
+        authorityActor: context.actorRef,
         authorityUserId: actor.userId,
         administratorEligible: Boolean(coreDb && isCurrentDeploymentAdministrator(coreDb, actor)),
         coreDb,
         dataRoot,
         repositoryWorkspaceDb: repositoryWorkspaceDb!,
+        requestActor: actor,
         store: store!,
         workspaceId: input.workspaceId,
       }).response;

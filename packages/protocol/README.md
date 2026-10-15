@@ -37,3 +37,5 @@ Agent catalog `kind` is a role, with null for supply that does not declare one. 
 CapabilityCall admits optional namespaced extensions. `openkit.gateway/routeLineage` defines unavailable members and reached attempts with closed failure and terminal-result values; unknown extension namespaces are ignored, while unknown values in the recognized core fail validation. The canonical system-prompt digest restriction remains unchanged.
 
 `GitFailureExplanationReaderSchema` strips descriptive additions, including nested evidence, while preserving code/status/subprocess relationships. `GitFailureExplanationSchema` remains the exact producer assertion.
+
+`src/common/object-reference.ts` owns local `{scopeId,objectId}` references. Scope paths use fixed page or retrieval-trace owner forms and call the current per-kind checks in `common/ids.ts`; they add no identifier allocation. The separate UUID rollout must tighten those owner checks. Page selectors remain Knowledge-owned stable paths. A local reference resolves only in its trusted Server and grants no access.

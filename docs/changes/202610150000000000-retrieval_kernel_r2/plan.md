@@ -24,7 +24,7 @@ The bounded replacement is implemented. The old lexical JSON index, tokenizer, s
 
 The engineer's narrower scope still excludes the earlier notebook cutover, full S39 history and portability implementation. The 2026-10-15 direction now supersedes the union pin/trace questions: R2 has no private Memory-plus-Knowledge union. Phase A documents context-derived sources, separate recall/retrieval, qualified pins and query-act traces. The coordinator and Consultant accepted the final realization under the engineer's delegation; the coordinator authorized Phase B after the separate documentation revision commit. The upload maximum and Assistant history Tool still wait on Artifacts and Chat Mode. No pre-existing User/Server notebook implementation, source binding, connector or Workspace mount is added in Phase A.
 
-The branch is rebased onto origin/main `8acc9e3c09092762c50de19b1e904e6186974b4f`, which was 19 commits beyond the old base. The pre-Phase-A rebased HEAD is `4f50d8330476503ce43df098282aa42679b97d98`. Focused rebase checks passed as recorded below; the older whole-suite, package and image results remain historical observations, not reruns against the new design. The coordinator accepts ARM as no R2-specific regression, with native qualification later on a1 using the exact reviewed image. Next action is the accepted Phase A revision and then Phase B implementation; the original Phase A evidence below remains historical. No push, release or merge is authorized.
+The branch is rebased onto origin/main `8acc9e3c09092762c50de19b1e904e6186974b4f`, which was 19 commits beyond the old base. The pre-Phase-A rebased HEAD is `4f50d8330476503ce43df098282aa42679b97d98`. Focused rebase checks passed as recorded below; the older whole-suite, package and image results remain historical observations, not reruns against the new design. The coordinator accepts ARM as no R2-specific regression, with native qualification later on a1 using the exact reviewed image. Phase A revision is committed separately as `d7491e1aff7d532b26fd9a22e3aee24457c0aad0`; Editable Phase B implementation and verification are complete; the whole package gate remains blocked on the unchanged WP1 fixture, and coordinator review/native ARM qualification remain pending. The original Phase A and pre-Phase-B whole-suite/image evidence below remains historical. No push, release or merge is authorized.
 
 ## Evidence And Closeout
 
@@ -58,6 +58,32 @@ Source: the coordinator's 2026-10-15 Phase A acceptance dispatch. The coordinato
 
 Source: the coordinator's 2026-10-15 identifier dependency ruling. Keep UUIDv7 unification and its data wipe in their separate post-rc.6 work package. Scope paths validate strict structure and call each kind's identifier-owner validator for its current canonical form. If needed, add only the smallest prefix check in that owner. R2 depends on the identifier rollout for UUID grammar, merge order is free, and that work package must tighten the per-kind validator. No retrieval-local UUID rule or legacy reader is authorized. Continue Phase B.
 
+## Intent Revision 10
+
+Source: the coordinator's 2026-10-15 portable-import ruling, pending the Consultant's confirmation in its revision check. Import remints trace `queryContext.serverId` to the target Server and retains source query context in `importedFrom` as provenance only. Imported `page/server` and unmapped `page/user` references remain unavailable against the target even if a target path matches. Apply this in the existing resolver, preserve immutable stored evidence, add the same-path Server regression, and continue Phase B. No compatibility reader or second path is authorized.
+
+## Intent Revision 11
+
+Source: the coordinator's Consultant-confirmed 2026-10-15 import wording fix in the report's `Import serverId` section. Provenance remains solely the existing Workspace `importedFrom`; no trace-level provenance field is added. Cross-deployment means its source deployment differs from the current target. Only then do Server and unmapped User references remain unavailable against matching target paths; reminted Workspace references and same-deployment imports use ordinary current access. The trace Server context becomes the target. Continue Phase B.
+
+## Intent Revision 12
+
+Source: the coordinator's 2026-10-15 request-digest ruling after the builder and portability probe identified the unavailable query preimage. Imported traces preserve the immutable source `requestDigest` unchanged as evidence of the original request; it is excluded from remint and never checked against target context. Add one S51 owner sentence and import regression. No new digest contract or query-text export is authorized. Resume imported-trace publication and continue Phase B.
+
+## Intent Revision 13
+
+Source: the coordinator's 2026-10-15 clarification of accepted Round 1 B. Current Task preparation queries before Turn creation, so the existing Task Thread owns the write-once trace. S39 later consumes that exact qualified reference without moving, copying or re-scoping evidence. Failed admission leaves the Thread trace because its query happened. Do not move Turn creation or change admission failure semantics. Clarify only the S39 sentence, retain the existing-Turn regression and assert the pre-Turn Thread reference survives exactly into the Context Package.
+
+## Phase B Review Corrections
+
+Independent Codex review found and corrected the actual Phase B boundaries: current Better Auth User ids, nested descriptive Actor tolerance, source-scope invariants, selected-base pin admission before Server dependency checks, current page sensitivity, historical stored source access after page edits, exact work-history proof membership, nested Knowledge sensitivity and missing/unparseable core fields, and exclusion of ignored trace annotations from ordinary portable projections. The same page-bound source access helper serves current pages and retained evidence. A single canonical trace reader supplies two existing projections: full trace/export admits selected, excluded and pinned metadata; S39 admits only selected references and returns exact bytes. No compatibility reader, second trace store or new ledger is added.
+
+Consumer review added the exact pre-Turn S39 bridge regression and corrected stale Core Client and proposal-authority fixtures. Integration review reproduced deletion recovery export failure after registry `deleting`; the internal export now verifies the existing durable request, owner, registry revision and exact export id instead of using ordinary Workspace authority. Ordinary export keeps its full current-access check. Portable trace enumeration rejects temp-shaped symlinks and directories while ignoring only regular publisher-temporary files. Contract-derived regressions failed before each behavioral correction; no oracle, timeout or contract-derived assertion was weakened.
+
+Final focused observations include 11 query-context/privacy tests, 24 proposal-authority tests, 34 operation-projection tests, 24 deletion-route tests, and 5 portable-state plus 9 POSIX I/O tests, all passing. Deletion negative checks prove ordinary export and an unbound recovery request create no export root; its positive path verifies the retained normalized trace and exact recovery manifest after cleanup. The independent reviewer inspected the final source families, normalized portable projection, S39 bridge, S51 remint/source evidence, deletion authority and temporary-entry paths and reported no remaining actionable editable-code finding. Its independent Core Client and Web runs passed 100 and 143 tests. Interrupted broad attempts are partial observations only; final complete verification follows below.
+
+A fresh independent Consultant checked Intent Revisions 7–13, the checkpoint and actual Phase B diff after primary compaction. Verdict: Continue. The query file, S39 reference and S51 remint seams follow accepted intent; no notebook editor, historical tree reconstruction, new source engine or second durable trace owner was added. The access corrections protect the revised trace/export projection and do not absorb adjacent Knowledge work. The deciding exact-work-reference regression retained a valid page proof and injected different historical identities; it failed before the membership correction and the complete proposal-authority file then passed all 24 tests.
+
 ## Accepted Phase A Revision And Phase B Checkpoint
 
 The coordinator and Consultant agreed the realization details under the engineer's delegation. Round 1 A replaces item 2's JCS proposal with fixed scope paths. Round 1 B replaces item 6's manifest array with immutable query-owned files and retains S51 reminting. Round 1 C preserves threadless direct User App selection with no trace. All other accepted replacement rules are inserted in the owners. The former Phase A review hold is removed; Phase B starts after the separate revision commit. Existing quotation records remain unchanged.
@@ -68,7 +94,117 @@ Revision verification (Node 24.18.0): documentation lifecycle/model/index passed
 
 R2 depends on the separate identifier rollout for the UUID part of the grammar. Merge order with that work package is free. The coordinator ruled that strict scope paths use each kind's current canonical validator in the identifier owner, with the smallest owner-side prefix check if none exists. No retrieval-local UUID regex or alternate reader is permitted. The identifier work package must tighten the per-kind validator when UUIDv7 unification and its data wipe land after rc.6; it is not R2 allocation work.
 
-Next action: prove the context/reference/persistence seam with contract-derived regressions; replace plain pins and results, publish exactly one query-owned file when lineage exists, retain no trace for threadless calls, and align consumers and export/import. Verify exact observed results. No release, push or merge is authorized.
+Phase A revision commit: `d7491e1a`. Phase B names the context/reference/publication seam between Core Protocol, App API schemas, governed retrieval and query-owned files, plus the existing S39 and S51 consumers. A separate test-author owns only `apps/nanocore/src/retrieval-query-context.test.ts` for contract-derived tests. The primary owns schema/implementation edits. Separate writers own the runtime/S39 consumers, S51 portability files, Web consumer and existing regression fixtures. Each dispatch names disjoint paths; no writer expands its scope without coordination. No path has two writers. Expected observable: strict scoped pins and trusted lineage, exactly one immutable content-free trace for a Thread/Turn query, no trace for threadless direct User calls, and reminted/access-filtered export evidence. The former contract must fail these regressions before replacement.
+
+Next action: the coordinator reviews the committed diff, releases the two protected WP1 paths for their exact amendments, and schedules native a1 qualification with the reviewed image. The complete observed result set is below. No timeout or oracle was weakened, and no release, push or merge is authorized.
+
+## Phase B Verification And Remaining Integration
+
+Source writers froze after independent review found no remaining actionable editable-code finding. Complete disk-backed discovery then exposed one unprotected restart fixture with `thread_` ids, which prevented its intended busy-Thread oracle under the accepted current-kind validator. The exact failure was reproduced; only that coupled fixture family now uses `th_`, and the shared AEP fixture accepts its exact Thread id without changing unrelated consumers. All 116 restart tests passed after correction. Production validation was not loosened. All commands use Node 24.18.0 through Mise. Final NanoCore discovery has no file or test-name filter, uses four workers and retains the 30-second test timeout. Early interrupted broad attempts ended with exit 130 and supply no complete result. The final observed results below apply to the frozen Phase B source, unlike the historical pre-Phase-B tables later in this record. The initial disk-backed run is retained at `/tmp/openkit-r2-phase-b-full-disk-partial.log` and ended with exit 130; it is not a complete suite result. A direct 30-record probe measured file fsync, rename and directory fsync at 0.7946 seconds on the worktree disk versus 0.0009 seconds on `/tmp`. Shared `/tmp` had only 74931 free inodes. An independent Consultant returned Reframe: use a private task-owned 8 GiB tmpfs with 2000000 inodes, retain the same tests, four workers and 30-second timeout, keep logs outside it, then remove only disposable fixtures and unmount normally. No fstab, source, runner or oracle changes are made. This developer-host result does not qualify physical-disk latency or power-loss durability.
+
+| Check | Observed result |
+| --- | --- |
+| Complete NanoCore suite | 344 files: 343 passed, 1 failed. 6019 tests: 6014 passed, 5 failed, 0 skipped; 10 unhandled rejections; exit 1; 343.27 seconds. All five failures and all ten rejections are in unchanged WP1-owned `runtime/turn-executor-factory.test.ts`; every editable file passed. `/tmp/openkit-r2-phase-b-full-final.log` and the task `phase-b-full-final.json`. |
+| Query-context, proposal-authority and portable-state boundaries together | 4 files, 49 tests passed, 0 failed; 10.50 seconds; exit 0. `/tmp/openkit-r2-phase-b-final-boundaries.log`. |
+| Operation projections, deletion integration and restart recovery | 34, 24 and 116 tests passed respectively. Deletion verifies retained trace bytes and manifest identity and rejects ordinary/unbound internal grants without creating exports. |
+| Protocol, App API schemas, Core Client and CLI | 210, 211, 100 and 55 tests passed respectively; all exited 0. The CLI was regenerated from final schemas. |
+| Web | Full workspace file 143 tests passed, typecheck and production build passed, 2170 modules transformed; independent reviewer repeated all 143 tests. |
+| NanoCore typecheck | Exit 0 after final deletion and trace-reader corrections. `/tmp/openkit-r2-phase-b-typecheck-final.log`. |
+| Changed TypeScript/JSON lint and format | 49 files checked, no fixes, exit 0; 5 existing informational notices in unrelated Vault fixture lines. `/tmp/openkit-r2-phase-b-lint-final.log`. |
+| Cargo | 39 library and 6 executable-face tests passed; 0 failures/ignored; 0 doc tests. Format and Clippy with all targets/features and denied warnings exited 0. `/tmp/openkit-r2-phase-b-cargo-{test,lint}.log`. |
+| OpenAPI | Regeneration and validation exited 0; the generated artifact includes qualified references and conditional trace publication descriptions. |
+| Documentation | All seven lifecycle, story/model/index, reachability, terminology and governance validators exited 0 after the platform-placement correction: 482 documents, 10 stories, 5 reachability tests and 2 terminology tests. `/tmp/openkit-r2-phase-b-docs-final.log`. |
+| Final App image builds | Linux amd64 and arm64 builds both exited 0 using the unchanged Dockerfile. Local tags are `openkit/retrieval-r2-phase-b-app:amd64` and `:arm64`; logs are `/tmp/openkit-r2-phase-b-image-{amd64,arm64}.log`. |
+| Final amd64 packaged smoke | Exit 0: CLI, MCP, supervised service/restart, CJK, sidecar isolation, ranges, revocation, Linux limits, App health and SPA. `/tmp/openkit-r2-phase-b-smoke-amd64.log`. |
+| Final arm64 packaged smoke | The exact final image passed the admitted network-disabled full-system QEMU driver with the unchanged 60-second App health deadline. Retrieval and App both PASS, driver exit 0, guest return code 0, child reaped. The independent 3 GiB control and 2 GiB address-space denial passed. `/tmp/openkit-r2-phase-b-arm-vm.log` and task `phase-b-arm-vm/admitted-result.json`. This does not qualify the native ARM Docker profile. |
+
+After the complete run, the governance validator found an undeclared symlink interface in the cross-platform portable-state test. Only that new case moved unchanged into the existing POSIX I/O file; directory and regular-temporary-file cases remain cross-platform. Both whole files passed all 14 tests and the final four-file boundary run passed all 49. No production source or assertion changed, and no broad pragma or skip was added.
+
+The temporary filesystem was unmounted normally after the complete process exited; all disposable fixtures on that task-only mount were released, and logs plus the JSON result remain outside it. The full run is a failed package gate, not a pass with exceptions. The protected diagnostics file passed all 12 tests in this run; its older timing failures below remain historical observations.
+
+Final local image identities are amd64 `sha256:eb75419b5dffd8adada672e285e824b2e0654390dd06beecadc2b1517cdfeb32` and arm64 `sha256:a16fe1829903d2e516280d2cfceea54a06966b8c6da064c84eabcea6db0a9818`. The earlier ARM deadline failure remains historical evidence; this final observation is a pass, with no claim about its timing cause. Native qualification still requires the exact reviewed image on a1 under the coordinator's authority. No deployment host was contacted.
+
+Current WP1 integration dependencies are exactly these unchanged protected paths:
+
+- `apps/nanocore/README.md:194`: replace the portable full-text index and monthly `knowledge/traces` claims with the three non-lexical projections, supervised kernel retrieval, qualified pins and conditional query-owned files. Threadless direct calls return no trace; trusted Task preparation returns exactly `{retrievalTraceRef}`. Preserve the separate notebook-history gap.
+- `apps/nanocore/src/runtime/turn-executor-factory.test.ts:9409–9571`: consistently replace fixture `workspace_busy` and `thread_busy_*` with current canonical `ws_busy` and `th_busy_*` across package scopes, scheduler and store facts. Change the entries map to awaited `Promise.all` over an asynchronous callback; await retrieval with `pinnedReferences: []` and actual `{store,coreDb,actor:entry.triggerActor,outputThreadId:entry.threadId,outputTurnId:entry.turnId}`. The checkpoint carries `{retrievalTraceRef:{scopeId:retrieval-trace/turn/<workspace>/<thread>/<turn>,objectId:<traceId>}}`. No runtime factory production change or database migration is needed. The coordinator must release path ownership before this builder applies it.
+
+The image retains exact SPDX metadata and all available notices. Existing unmatched notice supply remains explicit in `apps/retrieval-kernel/notices/GAPS.json`: `htmlescape 0.3.1`, `kanaria 0.2.0`, and both `winapi-*-pc-windows-gnu 0.4.0` crates. No revision or omitted notice is guessed. The deferred notebook patch remains byte-identical at the recorded external path and SHA-256.
+
+The identifier rollout remains separate, with free merge order, and must tighten the per-kind canonical validators for UUIDv7. Current reference structure is strict and reads only each kind's present canonical forms. Upload acceptance remains blocked at Retrieval Kernel lines 33 and 270 and core-experience ruling 4 line 56. Assistant history Tool integration remains blocked at Retrieval Kernel lines 280 and 287 and Chat Mode line 108. Chat Mode owns the private Timeline/Thread Visibility alignment and separate Memory recall integration. Server/User notebooks and Git notebook history remain outside this bounded replacement. Cross-Workspace/User/Server bindings remain direction only. Historical imports that require unavailable notebook closure remain bounded refusals. Native ARM qualification must use the exact reviewed Phase B image on a1 later, under the coordinator's decision; no deployment host is contacted here.
+
+### Phase B Change Surface
+
+Phase B changes 64 paths and amends five owning specifications. Its seven directly consumed owner concerns are Core Protocol references, Retrieval Kernel integration, Knowledge Store, Knowledge Manager, S39 delivery linkage, S51 portability and Multi-User Workspace deletion recovery. The one shared path grammar has five fixed forms, and a Knowledge request has two source literals. No source-binding registry, second trace authority, database migration or new lifecycle state is added. Existing permissions, evidence and source owners remain binding. The five specification amendments align implementation status, conditional publication, qualified results, pre-Turn S39 linkage and the coordinator-confirmed import Server/provenance/request-digest rules.
+
+Changed paths relative to Phase A revision `d7491e1aff7d532b26fd9a22e3aee24457c0aad0`:
+
+```text
+apps/nanocore/openapi/app-api.openapi.json
+apps/nanocore/src/README.md
+apps/nanocore/src/app-search-operation-implementations.ts
+apps/nanocore/src/context/README.md
+apps/nanocore/src/context/worker-context-package.test.ts
+apps/nanocore/src/context/worker-context-package.ts
+apps/nanocore/src/knowledge-manager.test.ts
+apps/nanocore/src/knowledge-manager.ts
+apps/nanocore/src/knowledge-operation-projections.test.ts
+apps/nanocore/src/knowledge-operations.ts
+apps/nanocore/src/mode-entry-routes.ts
+apps/nanocore/src/operation-contract.ts
+apps/nanocore/src/quick-chat.test.ts
+apps/nanocore/src/retrieval-knowledge-adapter.ts
+apps/nanocore/src/retrieval-knowledge-governance.test.ts
+apps/nanocore/src/retrieval-knowledge.test.ts
+apps/nanocore/src/retrieval-query-context.test.ts
+apps/nanocore/src/runtime/README.md
+apps/nanocore/src/runtime/prepare-next-turn.ts
+apps/nanocore/src/runtime/scheduler-restart-recovery.test.ts
+apps/nanocore/src/runtime/task-admission.test.ts
+apps/nanocore/src/runtime/task-admission.ts
+apps/nanocore/src/runtime/worker-checkpoints.test.ts
+apps/nanocore/src/runtime/worker-checkpoints.ts
+apps/nanocore/src/runtime/worker-governance-turn-executor.test.ts
+apps/nanocore/src/runtime/worker-governance-turn-executor.ts
+apps/nanocore/src/server.test.ts
+apps/nanocore/src/storage/README.md
+apps/nanocore/src/storage/index-rebuild.test.ts
+apps/nanocore/src/storage/index-rebuild.ts
+apps/nanocore/src/storage/knowledge-proposal-authority.test.ts
+apps/nanocore/src/storage/retrieval-traces.ts
+apps/nanocore/src/storage/workspace-export-boundaries.test.ts
+apps/nanocore/src/storage/workspace-export-lineage.test.ts
+apps/nanocore/src/storage/workspace-export.test.ts
+apps/nanocore/src/storage/workspace-export.ts
+apps/nanocore/src/storage/workspace-import.ts
+apps/nanocore/src/storage/workspace-portable-file-state-io.test.ts
+apps/nanocore/src/storage/workspace-portable-file-state.test.ts
+apps/nanocore/src/storage/workspace-portable-file-state.ts
+apps/nanocore/src/storage/workspace-transfer-operations.ts
+apps/nanocore/src/storage/workspace-transfer-routes.ts
+apps/nanocore/src/test-support/agent-environment.ts
+apps/nanocore/src/workspace-deletion-operations.ts
+apps/nanocore/src/workspace-deletion-routes.test.ts
+apps/web/README.md
+apps/web/src/screens/workspace/KnowledgeScreen.tsx
+apps/web/src/screens/workspace/workspace.test.tsx
+docs/changes/202610150000000000-retrieval_kernel_r2/plan.md
+docs/specs/20260703-knowledge_store_implementation.md
+docs/specs/20260703-worker_context_package.md
+docs/specs/20260704-knowledge_manager_internal_agent_runtime.md
+docs/specs/20260704-workspace_backup_export_import.md
+docs/specs/20261014-retrieval_kernel.md
+packages/app-api-schemas/README.md
+packages/app-api-schemas/src/index.test.ts
+packages/app-api-schemas/src/knowledge-manager.ts
+packages/app-api-schemas/src/knowledge-operation-definitions.ts
+packages/core-client/src/client.test.ts
+packages/protocol/README.md
+packages/protocol/src/common/ids.ts
+packages/protocol/src/common/object-reference.ts
+packages/protocol/src/index.ts
+skills/openkit-ops/scripts/openkit
+```
 
 ## Phase A — Context, Sources, References And Query Acts
 
@@ -139,6 +275,8 @@ This is implementation evidence, not design authority or release approval. The a
 
 ### Delivered Scope
 
+This Builder Report preserves the pre-Phase-B delivery and observations. The later Phase B checkpoint and verification distinguish the revised contract and its current results.
+
 NanoCore supervises the target-native local kernel service with health, bounded requests, restart, shutdown and explicit uncertain-publication failure. Current product adapters admit conversation Items, Artifact text and saved Material revisions. The identity-only sidecar helper accepts a canonical owner's verified digest and has no body handle. Arbitrary-file admission and authored-description storage remain with their owners. The past-Thread Assistant Tool is blocked; no new operation or Tool was invented.
 
 Knowledge retrieval, answer, preparation, Task selection and the Knowledge part of App search use one asynchronous governed lexical pipeline. The old JSON lexical postings, tokenizer, scorer and public read model are deleted. Three non-lexical JSON projections remain. Complete kernel enumeration precedes dispositions and the product limit. Current source and destination authorization also applies to pins and exact selected-page reads. The product adapter declares searchable byte ranges for title/description/tags/body; the Rust kernel verifies full canonical bytes and knows no YAML or product domain. Existing Workspace digest-based traces remain; no notebook commits or retained-history claims are fabricated.
@@ -199,10 +337,10 @@ Current coordinator status: items 1 (union pins) and 2 (combined trace ledger) a
 
 | Gap and exact owner lines | Options and recommendation |
 | --- | --- |
-| Maximum-upload regression: [retrieval:33](../../specs/20261014-retrieval_kernel.md:33), [retrieval:268](../../specs/20261014-retrieval_kernel.md:268); [core-experience ruling 4:56](../202610140256550000-v0_1_0_core_experience/plan.md:56) sets only 1 GB per upload. | Wait for the Artifact/upload owner to define byte count, unit and arbitrary-file admission. Do not choose a number or add a maximum-upload test. This is the engineer's confirmed disposition. |
-| Assistant history Tool amendment: [retrieval:285](../../specs/20261014-retrieval_kernel.md:285), [Chat Mode:108](../../specs/20260704-chat_mode_assistant.md:108). The current Assistant has no history Tool implementation. | Bind the adapter after Chat Mode settles its intended Tool/operation, or explicitly amend that owner. Recommend the first option to keep history continuity and Tool admission under one owner. No Tool or operation id is added here. |
-| Item 1, former union-pin ambiguity; revised owner: [Knowledge retrieval pipeline](../../specs/20260703-knowledge_store_implementation.md#retrieval-pipeline). | Superseded by `(scope id, object id)` references and separate Memory/Knowledge invocations. The existing stable page path remains the object id; no first-scope fallback or private union remains in the target design. Implementation waits for Phase B. |
-| Item 2, former combined-trace ledger; revised owner: [scoped retrieval](../../specs/20260909-personal_memory_and_knowledge_learning.md#deterministic-retrieval-and-conflicts). | Superseded by one trace per querying act in its existing Thread/Turn. Assistant evidence stays in the private Timeline, Worker evidence in its Task/Goal Thread. Source reads reauthorize; no User ledger, combined trace owner or new ledger is selected. Implementation waits for Phase B. |
+| Maximum-upload regression: [retrieval:33](../../specs/20261014-retrieval_kernel.md:33), [retrieval:270](../../specs/20261014-retrieval_kernel.md:270); [core-experience ruling 4:56](../202610140256550000-v0_1_0_core_experience/plan.md:56) sets only 1 GB per upload. | Wait for the Artifact/upload owner to define byte count, unit and arbitrary-file admission. Do not choose a number or add a maximum-upload test. This is the engineer's confirmed disposition. |
+| Assistant history Tool amendment: [retrieval:287](../../specs/20261014-retrieval_kernel.md:287), [Chat Mode:108](../../specs/20260704-chat_mode_assistant.md:108). The current Assistant has no history Tool implementation. | Bind the adapter after Chat Mode settles its intended Tool/operation, or explicitly amend that owner. Recommend the first option to keep history continuity and Tool admission under one owner. No Tool or operation id is added here. |
+| Item 1, former union-pin ambiguity; revised owner: [Knowledge retrieval pipeline](../../specs/20260703-knowledge_store_implementation.md#retrieval-pipeline). | Superseded by `(scope id, object id)` references and separate Memory/Knowledge invocations. The existing stable page path remains the object id; no first-scope fallback or private union remains in the target design. Phase B implements this through qualified requests, results and query-owned traces. |
+| Item 2, former combined-trace ledger; revised owner: [scoped retrieval](../../specs/20260909-personal_memory_and_knowledge_learning.md#deterministic-retrieval-and-conflicts). | Superseded by one trace per querying act in its existing Thread/Turn. Assistant evidence stays in the private Timeline, Worker evidence in its Task/Goal Thread. Source reads reauthorize; no User ledger, combined trace owner or new ledger is selected. Phase B implements this through qualified requests, results and query-owned traces. |
 | Portable historical notebook closure: [S51:220–222](../../specs/20260704-workspace_backup_export_import.md:220), [S39:299](../../specs/20260703-worker_context_package.md:299), [Notebook:48](../../specs/20260909-knowledge_notebook_editing.md:48), [:50](../../specs/20260909-knowledge_notebook_editing.md:50), [:102](../../specs/20260909-knowledge_notebook_editing.md:102), [:104](../../specs/20260909-knowledge_notebook_editing.md:104). Import remints a page's Context Package digest, selected pages bind exact notebook commits, and changed bytes require new commits. Current export lacks complete historical trees. | Decision-batch item 3 is settled by coordinator–Consultant agreement, reported in Intent Revision 6: bounded fail-closed rejection of imports that need unavailable historical closure. No new project is opened. This replaces the earlier recommendation to define the closure. Assigning the reminted current commit to historical selections can create a digest cycle. Implementation remains pre-existing work outside R2; dependent import publication stays stopped. |
 
 ### Pre-existing Knowledge Gaps Outside R2
@@ -211,6 +349,7 @@ Current coordinator status: items 1 (union pins) and 2 (combined trace ledger) a
 - Complete canonical-byte deletion/forget confirmation and suppression remain separate work: [Notebook:76](../../specs/20260909-knowledge_notebook_editing.md:76), [:100](../../specs/20260909-knowledge_notebook_editing.md:100), [scoped learning:94](../../specs/20260909-personal_memory_and_knowledge_learning.md:94). No deletion behavior is changed here.
 - User/Server scoped notebooks, commit-tagged projections, pinned-commit reads and full scoped traces remain pre-existing requirements: [Knowledge Store:191](../../specs/20260703-knowledge_store_implementation.md:191), [:195](../../specs/20260703-knowledge_store_implementation.md:195), [:199](../../specs/20260703-knowledge_store_implementation.md:199), [:201](../../specs/20260703-knowledge_store_implementation.md:201), [:209](../../specs/20260703-knowledge_store_implementation.md:209), with the implementation gap recorded at [:262](../../specs/20260703-knowledge_store_implementation.md:262). R2 retains the existing one-Workspace current-digest trace.
 - Exact historical S39 notebook selections and portable closure remain separate work: [S39:299](../../specs/20260703-worker_context_package.md:299), [Notebook:102–104](../../specs/20260909-knowledge_notebook_editing.md:102), and the decision batch above. Current retrieval disclosure checks are added without changing S39's retained shape or import/export behavior.
+- Private-Thread deletion recovery export has a pre-existing admission limitation: its current export guard requires separate administrator eligibility, while the deletion caller does not supply that flag. [Multi-User Workspace:533](../../specs/20260715-multi_user_workspace_system.md:533) requires the exact internal recovery export, and [Thread Visibility:85](../../specs/20260909-thread_visibility_and_sharing.md:85) preserves private ownership on recovery. The R2 trace correction preserves that existing private-Thread guard and changes only trace admission under the already verified deletion request; broader recovery behavior remains a separate Workspace owner follow-up.
 - The pre-existing Server maintenance configuration is outside this replacement: [scoped learning:88](../../specs/20260909-personal_memory_and_knowledge_learning.md:88) and the notebook delegation owner. It is no longer an R2 WP1 dependency after the scope correction.
 
 The removed WIP is saved at `/home/simonx/AI/temp/rc6/r2-deferred/20261015-knowledge-notebook-cutover.patch`: 361884 bytes; SHA-256 `9ff2668082d155755f9f58055c2aaf5d4fc841993c3da58f4739c3c665e367fb`. It is incomplete and unreviewed. Commit `730e59a4` removes the earlier notebook primitive slice without rewriting history. No notebook implementation file remains in the final net diff.
