@@ -261,6 +261,10 @@ if (args[0] === 'image') console.log(JSON.stringify([{Config:{Labels:{
         }
       );
       assert.equal(result.status, fail ? 1 : 0, result.stdout + result.stderr);
+      assert.ok(
+        existsSync(log),
+        `Candidate driver must reach the smoke path: ${result.stdout}${result.stderr}`
+      );
       const calls = readFileSync(log, 'utf8')
         .trim()
         .split('\n')
