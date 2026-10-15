@@ -1,12 +1,69 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+// openkit-test-platform: posix
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { createRuntimeConfigManager, loadRuntimeConfig } from './runtime-config.js';
 import { RuntimeConfigFileService } from './runtime-config-files.js';
+
+const durability = vi.hoisted(() => ({
+  paths: new Map<number, string>(),
+  events: [] as Array<{
+    op: 'sync' | 'rename';
+    path: string;
+    from?: string;
+    directory?: boolean;
+    mode?: number;
+  }>,
+  fail: undefined as ((path: string, directory: boolean) => boolean) | undefined,
+}));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    openSync: ((...args: Parameters<typeof actual.openSync>) => {
+      const descriptor = actual.openSync(...args);
+      durability.paths.set(descriptor, String(args[0]));
+      return descriptor;
+    }) as typeof actual.openSync,
+    closeSync: ((descriptor: number) => {
+      durability.paths.delete(descriptor);
+      return actual.closeSync(descriptor);
+    }) as typeof actual.closeSync,
+    fsyncSync: ((descriptor: number) => {
+      const path = durability.paths.get(descriptor) ?? '<untracked>';
+      const directory = actual.fstatSync(descriptor).isDirectory();
+      durability.events.push({
+        op: 'sync',
+        path,
+        directory,
+        mode: actual.fstatSync(descriptor).mode & 0o777,
+      });
+      if (durability.fail?.(path, directory)) throw new Error('Injected publication sync failure');
+      return actual.fsyncSync(descriptor);
+    }) as typeof actual.fsyncSync,
+    renameSync: ((
+      from: Parameters<typeof actual.renameSync>[0],
+      to: Parameters<typeof actual.renameSync>[1]
+    ) => {
+      durability.events.push({ op: 'rename', from: String(from), path: String(to) });
+      return actual.renameSync(from, to);
+    }) as typeof actual.renameSync,
+  };
+});
 
 const MESSAGE =
   'Only credential-free remote Git sources can be materialized into a work slot in this release. Folder and other source kinds are not supported yet. Work without a source input still runs.';
@@ -414,5 +471,77 @@ describe('configuration-stage work-slot source refusal', () => {
     });
     expect(updated.file.exists).toBe(true);
     expect(f.files.readFile(id).content).toBe(content);
+  });
+});
+
+describe('authored configuration durability', () => {
+  it('syncs exact replacement bytes and mode before rename, then syncs its parent and reopens', () => {
+    const f = fixture();
+    const id = 'agents/durable.agent.jsonc';
+    const original = agent([], 'agent_durable_fixture');
+    const path = f.write(id, original);
+    chmodSync(path, 0o640);
+    const replacement = agent([], 'agent_durable_replacement');
+    durability.events.length = 0;
+    f.files.updateFile({
+      id,
+      kind: 'agent',
+      content: replacement,
+      expectedRevision: f.files.readFile(id).file.revision,
+    });
+    const renameAt = durability.events.findIndex(
+      (event) => event.op === 'rename' && event.path === path
+    );
+    expect(renameAt).toBeGreaterThan(0);
+    const staged = durability.events[renameAt].from;
+    expect(
+      durability.events
+        .slice(0, renameAt)
+        .some(
+          (event) =>
+            event.op === 'sync' && !event.directory && event.path === staged && event.mode === 0o640
+        )
+    ).toBe(true);
+    expect(
+      durability.events
+        .slice(renameAt + 1)
+        .some((event) => event.op === 'sync' && event.directory && event.path === dirname(path))
+    ).toBe(true);
+    expect(statSync(path).mode & 0o777).toBe(0o640);
+    expect(f.files.readFile(id).content).toBe(replacement);
+    expect(loadRuntimeConfig(f.dataRoot).agentManifests).toEqual(
+      expect.arrayContaining([expect.objectContaining(JSON.parse(replacement))])
+    );
+  });
+
+  it.each([
+    'before',
+    'after',
+  ] as const)('rejects success when synchronization fails %s the configuration rename', (boundary) => {
+    const f = fixture();
+    const id = 'agents/durable.agent.jsonc';
+    const original = agent([], 'agent_durable_fixture');
+    const path = f.write(id, original);
+    const replacement = agent([], 'agent_durable_replacement');
+    durability.events.length = 0;
+    durability.fail = (candidate, directory) =>
+      boundary === 'before'
+        ? !directory && dirname(candidate) === dirname(path)
+        : directory &&
+          candidate === dirname(path) &&
+          durability.events.some((event) => event.op === 'rename' && event.path === path);
+    try {
+      expect(() =>
+        f.files.updateFile({
+          id,
+          kind: 'agent',
+          content: replacement,
+          expectedRevision: f.files.readFile(id).file.revision,
+        })
+      ).toThrow();
+      expect(f.files.readFile(id).content).toBe(boundary === 'before' ? original : replacement);
+    } finally {
+      durability.fail = undefined;
+    }
   });
 });

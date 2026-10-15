@@ -7,7 +7,6 @@ import {
   open,
   readdir,
   readFile,
-  rename,
   rm,
   stat,
   writeFile,
@@ -30,6 +29,12 @@ import { z } from 'zod';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { recordWorkspaceEvidenceBundle } from '../evidence-bundles.js';
 import type { WorkspaceDb } from '../storage/db.js';
+import {
+  ensureCanonicalDirectoryAsync,
+  publishCanonicalPathAsync,
+  syncCanonicalDirectoryAsync,
+  syncCanonicalTreeAsync,
+} from '../storage/workspace-file-records.js';
 import { recordWorkerRuntimeProvenanceEvidence } from './runtime-evidence.js';
 
 const MAX_MANIFEST_BYTES = 1024 * 1024;
@@ -773,9 +778,12 @@ async function adoptEvidenceDirectory(
     if (!(await evidenceDirectoryMatches(targetRoot, files))) {
       throw new Error('Runtime provenance replay conflict.');
     }
+    // A prior rename can be visible even when its directory synchronization failed.
+    await syncCanonicalTreeAsync(targetRoot);
+    await syncCanonicalDirectoryAsync(dirname(targetRoot));
     return;
   }
-  await mkdir(dirname(targetRoot), { recursive: true });
+  await ensureCanonicalDirectoryAsync(dirname(targetRoot));
   const temporaryRoot = `${targetRoot}.tmp-${randomUUID()}`;
   try {
     for (const [relativePath, source] of files) {
@@ -791,10 +799,17 @@ async function adoptEvidenceDirectory(
         await writeFile(target, source);
       }
     }
-    await rename(temporaryRoot, targetRoot);
+    await publishCanonicalPathAsync(temporaryRoot, targetRoot);
   } catch (error) {
     await rm(temporaryRoot, { force: true, recursive: true });
-    if ((await pathExists(targetRoot)) && (await evidenceDirectoryMatches(targetRoot, files))) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (
+      (code === 'EEXIST' || code === 'ENOTEMPTY') &&
+      (await pathExists(targetRoot)) &&
+      (await evidenceDirectoryMatches(targetRoot, files))
+    ) {
+      await syncCanonicalTreeAsync(targetRoot);
+      await syncCanonicalDirectoryAsync(dirname(targetRoot));
       return;
     }
     throw error;

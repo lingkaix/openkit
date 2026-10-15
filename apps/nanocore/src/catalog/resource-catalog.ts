@@ -5,7 +5,6 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -37,7 +36,13 @@ import {
 import type { ZodError } from 'zod';
 
 import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
-import { writeFileAtomic } from '../storage/workspace-file-records.js';
+import {
+  ensureCanonicalDirectory,
+  publishCanonicalPath,
+  syncCanonicalDirectory,
+  syncCanonicalTree,
+  writeFileAtomic,
+} from '../storage/workspace-file-records.js';
 
 /** Compare-and-set failure against the catalog revision. */
 export class CatalogConflictError extends Error {
@@ -1119,10 +1124,14 @@ function inventoryFromEntries(
 /** Writes one immutable snapshot directory. */
 function materializeSnapshot(target: string, entries: readonly OpenKitTreeEntry[]): void {
   if (existsSync(target)) {
+    // A visible snapshot can be the result of a failed post-rename acknowledgement.
+    syncCanonicalTree(target);
+    syncCanonicalDirectory(dirname(target));
     return;
   }
   const staged = `${target}.staging`;
   rmSync(staged, { force: true, recursive: true });
+  ensureCanonicalDirectory(dirname(target), 0o777);
   mkdirSync(staged, { recursive: true });
   try {
     for (const entry of entries) {
@@ -1137,8 +1146,7 @@ function materializeSnapshot(target: string, entries: readonly OpenKitTreeEntry[
         chmodSync(path, 0o755);
       }
     }
-    mkdirSync(dirname(target), { recursive: true });
-    renameSync(staged, target);
+    publishCanonicalPath(staged, target);
   } catch (error) {
     rmSync(staged, { force: true, recursive: true });
     throw error;

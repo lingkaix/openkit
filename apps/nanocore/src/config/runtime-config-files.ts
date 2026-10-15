@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import {
-  chmodSync,
   cpSync,
   existsSync,
   lstatSync,
@@ -9,7 +8,6 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
-  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -54,6 +52,7 @@ import {
 import { type ParseError, parse, printParseErrorCode } from 'jsonc-parser';
 import { z } from 'zod';
 import { AuthoredAgentConfigSchema } from '../agents/manifest.js';
+import { ensureCanonicalDirectory, writeFileAtomic } from '../storage/workspace-file-records.js';
 import { VaultBackendError } from '../vault/vault-backend.js';
 import {
   diffRuntimeConfig,
@@ -812,7 +811,7 @@ export class RuntimeConfigFileService {
    * @param content Source content to write.
    */
   private writeFileAtomically(spec: RuntimeConfigFileSpec, content: string): void {
-    mkdirSync(dirname(spec.absolutePath), { recursive: true });
+    ensureCanonicalDirectory(dirname(spec.absolutePath), 0o777);
     if (isWorkspaceScopedKind(spec.kind)) {
       this.assertInsideWorkspaceConfigRoot(
         spec.workspaceId ?? '',
@@ -831,15 +830,7 @@ export class RuntimeConfigFileService {
         preservedMode = current.mode & 0o777;
       }
     }
-    const tempPath = join(
-      dirname(spec.absolutePath),
-      `.${basename(spec.absolutePath)}.${Date.now()}.tmp`
-    );
-    writeFileSync(tempPath, content);
-    if (preservedMode !== undefined) {
-      chmodSync(tempPath, preservedMode);
-    }
-    renameSync(tempPath, spec.absolutePath);
+    writeFileAtomic(spec.absolutePath, content, preservedMode ?? 0o666 & ~process.umask());
   }
 
   /**
