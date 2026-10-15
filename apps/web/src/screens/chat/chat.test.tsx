@@ -505,6 +505,8 @@ describe.each([
     expect(randomUUID).not.toHaveBeenCalled();
     expect(importWorkspaceArtifact).not.toHaveBeenCalled();
     expect(send).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Upload text file' })).toBeDisabled();
+    expect(document.querySelector('input[type="file"]')).toBeDisabled();
     await act(async () => read.resolve(content));
     await waitFor(() => expect(importWorkspaceArtifact).toHaveBeenCalledTimes(1));
     expect(randomUUID).toHaveBeenCalledTimes(1);
@@ -581,6 +583,11 @@ describe.each([
     expect(message).toHaveValue('Keep this draft');
     expect(input).toHaveValue('');
     expect(screen.getByRole('dialog', { name: 'Attachments' })).toBeInTheDocument();
+    const alert = within(screen.getByRole('dialog', { name: 'Attachments' })).getByRole('alert');
+    expect(alert).toHaveTextContent("Couldn't import this file.");
+    expect(alert).toHaveTextContent('Select a text file to try again.');
+    expect(alert).not.toHaveTextContent('Read unavailable');
+    expect(alert).not.toHaveTextContent('Import unavailable');
     await user.keyboard('{Escape}');
     expect(screen.getByRole('button', { name: 'Remove Existing brief' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Remove notes.txt' })).not.toBeInTheDocument();
@@ -594,6 +601,77 @@ describe.each([
             input: 'Keep this draft',
             artifactRefs: [{ artifactId: 'existing-brief', artifactVersion: 2 }],
           },
+        })
+      )
+    );
+  });
+
+  it('clears import errors only after success and preserves the conversation request through file selection retries', async () => {
+    const user = userEvent.setup();
+    const draftRequestId = '11111111-1111-4111-8111-111111111111';
+    vi.spyOn(crypto, 'randomUUID')
+      .mockReturnValueOnce(draftRequestId)
+      .mockReturnValue('22222222-2222-4222-8222-222222222222');
+    const importWorkspaceArtifact = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Private import failure details'))
+      .mockResolvedValue({ artifactId: 'uploaded-notes', artifactVersion: 3 });
+    const submitConversation = vi.fn().mockReturnValue(new Promise(() => {}));
+    renderApp(
+      path,
+      makeClient(
+        {
+          'artifact.list': vi.fn().mockResolvedValue({
+            items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
+          }),
+        },
+        { 'artifact.import': importWorkspaceArtifact, 'conversation.submit': submitConversation }
+      )
+    );
+    const message = await screen.findByRole('textbox', { name: 'Message' });
+    await user.type(message, 'Keep this draft');
+    const trigger = screen.getByRole('button', { name: 'Add artifact or upload attachment' });
+    await user.click(trigger);
+    await user.click(await screen.findByRole('button', { name: 'Existing brief' }));
+    const file = new File(['notes'], 'notes.txt', { type: 'text/plain' });
+    const text = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Private read failure details'))
+      .mockResolvedValue('notes');
+    Object.defineProperty(file, 'text', { value: text });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+
+    await user.upload(fileInput, file);
+    await waitFor(() => expect(trigger).toBeEnabled());
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't import this file.");
+    expect(importWorkspaceArtifact).not.toHaveBeenCalled();
+    await user.upload(fileInput, file);
+    await waitFor(() => expect(importWorkspaceArtifact).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(trigger).toBeEnabled());
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't import this file.");
+    expect(screen.getByRole('alert')).not.toHaveTextContent(/Private.*failure details/);
+    expect(message).toHaveValue('Keep this draft');
+
+    await user.upload(fileInput, file);
+    expect(await screen.findByRole('button', { name: 'Remove notes.txt' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove Existing brief' })).toBeInTheDocument();
+    expect(message).toHaveValue('Keep this draft');
+    expect(importWorkspaceArtifact).toHaveBeenCalledTimes(2);
+    await user.click(trigger);
+    expect(
+      within(screen.getByRole('dialog', { name: 'Attachments' })).queryByRole('alert')
+    ).not.toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() =>
+      expect(submitConversation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          requestId: draftRequestId,
+          input: 'Keep this draft',
+          artifactRefs: [
+            { artifactId: 'existing-brief', artifactVersion: 2 },
+            { artifactId: 'uploaded-notes', artifactVersion: 3 },
+          ],
         })
       )
     );
