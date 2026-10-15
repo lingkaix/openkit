@@ -1,0 +1,322 @@
+/** Bounded Worker release stage through the existing preparation and activation owners. */
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import {
+  ActivateWorkerEnvironmentRequestSchema,
+  ActivateWorkerEnvironmentResponseSchema,
+  AppUpdatePreflightResponseSchema,
+  NanoHostRuntimeTargetStatusResponseSchema,
+  PrepareWorkerEnvironmentResponseSchema,
+  WorkerEnvironmentPrepareInputSchema,
+} from '@openkit/app-api-schemas';
+import { createReleaseManifest } from '../release-record.mjs';
+import { canonical, noSecrets, once, save } from '../release-safety.mjs';
+
+/** Only locally authored refusal text may enter an update result or caller error. */
+class WorkerUpdateStop extends Error {}
+
+/** Refuse with a fixed diagnostic that cannot copy host errors or credential material. */
+function requireFact(condition, reason) {
+  if (!condition) throw new WorkerUpdateStop(`Worker update: ${reason}`);
+}
+
+/** Validate a public boundary without exposing parser issues or their input values. */
+function admit(schema, value, reason) {
+  const parsed = schema.safeParse(value);
+  requireFact(parsed.success, reason);
+  return parsed.data;
+}
+
+/** Reuse the release manifest owner rather than creating another image or assessment parser. */
+function releaseSelection(p) {
+  requireFact(p.manifest?.schemaVersion === 1, 'unsupported release manifest');
+  const m = p.manifest;
+  const manifest = createReleaseManifest({
+    repository: m.repository,
+    tag: m.tag,
+    sha: m.sourceCommit,
+    images: m.images.map((image) => ({
+      ...image,
+      prerelease: true,
+      tags: [m.tag, m.tag.slice(1), `sha-${m.sourceCommit.slice(0, 12)}`],
+    })),
+    checksums: m.assets.map((asset) => `${asset.sha256}  ${asset.name}`).join('\n'),
+    assertions: m.assertions,
+  });
+  requireFact(['linux/amd64', 'linux/arm64'].includes(p.platform), 'unsupported platform');
+  const image = manifest.images.find((item) => item.id === 'worker-runtimes');
+  const child = image?.platforms.find((item) => item.platform === p.platform);
+  const distribution = manifest.assets.find(
+    (asset) =>
+      asset.name === `openkit-nanohost-${manifest.tag}-${p.platform.replace('/', '-')}.tar.gz`
+  );
+  requireFact(child && distribution, 'missing release image or distribution');
+  return { manifest, image, child, distribution };
+}
+
+/** Admit the same retained staging binding used by the App update stage; ignore annotations. */
+function deploymentBinding(target, record) {
+  requireFact(
+    record?.origin === target &&
+      record.sshAlias === 'a1' &&
+      typeof record.reference === 'string' &&
+      record.reference.length > 0 &&
+      /^[a-f0-9]{32}$/.test(record.machineId ?? '') &&
+      /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(record.container ?? ''),
+    'retained staging deployment binding unavailable'
+  );
+  return Object.fromEntries(
+    ['reference', 'sshAlias', 'origin', 'machineId', 'container'].map((key) => [key, record[key]])
+  );
+}
+
+/** A manifest describes compatible bytes; only an independently read current grant admits effects. */
+function requireGrant(target, grant, binding) {
+  requireFact(
+    grant?.target === target &&
+      grant.environment === 'staging-test' &&
+      grant.revoked === false &&
+      typeof grant.reference === 'string' &&
+      grant.reference.length > 0 &&
+      grant.deploymentReference === binding.reference &&
+      grant.maintenance === 'idle-only' &&
+      Array.isArray(grant.operations) &&
+      grant.operations.includes('worker-environment'),
+    'current bounded Worker grant unavailable'
+  );
+  noSecrets(grant);
+}
+
+/** Inspect exact running distribution and authenticated readiness without inferring a physical Epoch. */
+function hostObservation(raw, binding, selection) {
+  const runtimeTarget = admit(
+    NanoHostRuntimeTargetStatusResponseSchema.strip(),
+    raw?.runtimeTarget,
+    'host readiness unavailable'
+  );
+  requireFact(
+    raw.machineId === binding.machineId &&
+      raw.sourceCommit === selection.manifest.sourceCommit &&
+      raw.distributionSha256 === selection.distribution.sha256 &&
+      /^[a-f0-9]{64}$/.test(raw.physicalEpoch ?? '') &&
+      runtimeTarget.ready &&
+      runtimeTarget.predecessorFenced,
+    'running host identity, distribution, Epoch or readiness unavailable'
+  );
+  return {
+    machineId: raw.machineId,
+    sourceCommit: raw.sourceCommit,
+    distributionSha256: raw.distributionSha256,
+    physicalEpoch: raw.physicalEpoch,
+    runtimeTarget,
+  };
+}
+
+/** Require all instantaneous work counts to be zero; the runtime owner still owns the drain fence. */
+function requireIdle(raw) {
+  const observation = admit(
+    AppUpdatePreflightResponseSchema.strip(),
+    raw,
+    'work preflight unavailable'
+  );
+  requireFact(
+    observation.state === 'idle' && Object.values(observation.counts).every((value) => value === 0),
+    'active work prevents the bounded update'
+  );
+  return observation;
+}
+
+/**
+ * Compose one fresh-Epoch Worker preparation and exact administrator activation.
+ * The trusted administrator adapter supplies independent observations and current authority.
+ * Existing operations retain image settlement, compatibility, drain, writer fencing and replay.
+ * A thrown or partial result stops this attempt; its evidence directory cannot be reused.
+ * @param {string} target Explicit authorized HTTPS origin with no default.
+ * @param {object} params Verified manifest, public preparation baseline, request IDs and grant.
+ * @param {string} evidenceDir New private evidence directory outside the product's canonical storage.
+ * @param {object} io Administrator operation caller and independent deployment, grant and host readers.
+ * @returns {Promise<object>} Separate preparation and activation observations, never runtime qualification.
+ */
+export async function updateWorkerEnvironment(target, params, evidenceDir, io) {
+  // Exclusive creation is also the local uncertainty fence: no read or mutation runs on reentry.
+  await fs.mkdir(evidenceDir, { mode: 0o700 });
+  const result = { domain: 'worker', outcome: 'stopped', stage: 'admission' };
+  try {
+    const url = new URL(target);
+    requireFact(
+      url.protocol === 'https:' &&
+        url.origin === target &&
+        !url.username &&
+        !url.password &&
+        url.hostname !== 'a2',
+      'explicit HTTPS staging origin required'
+    );
+    const p = structuredClone(params);
+    noSecrets(p);
+    requireFact(
+      p &&
+        Object.keys(p).every((key) =>
+          [
+            'manifest',
+            'platform',
+            'prepare',
+            'activationRequestId',
+            'grant',
+            'previousPhysicalEpoch',
+          ].includes(key)
+        ),
+      'unknown update instruction'
+    );
+    requireFact(
+      ['call', 'deploymentRecord', 'currentGrant', 'observeHost'].every(
+        (key) => typeof io?.[key] === 'function'
+      ),
+      'independent administrator adapters required'
+    );
+    const selection = releaseSelection(p);
+    requireFact(
+      /^[a-f0-9]{64}$/.test(p.previousPhysicalEpoch ?? '') &&
+        !Object.hasOwn(p.prepare ?? {}, 'declaration'),
+      'previous Epoch and release-derived declaration required'
+    );
+    const request = admit(
+      WorkerEnvironmentPrepareInputSchema,
+      {
+        ...p.prepare,
+        declaration: {
+          kind: 'reference',
+          ref: `${selection.image.image}@${selection.image.digest}`,
+          pullPolicy: 'always',
+        },
+      },
+      'invalid preparation request'
+    );
+    // Validate the independent activation ID with its real schema before dispatching preparation.
+    requireFact(
+      ActivateWorkerEnvironmentRequestSchema.shape.requestId.safeParse(p.activationRequestId)
+        .success && p.activationRequestId !== request.requestId,
+      'distinct valid activation request ID required'
+    );
+    const binding = deploymentBinding(target, await io.deploymentRecord());
+    requireGrant(target, p.grant, binding);
+    const grant = structuredClone(await io.currentGrant());
+    requireGrant(target, grant, binding);
+    requireFact(canonical(grant) === canonical(p.grant), 'grant changed before preparation');
+    const host = hostObservation(await io.observeHost(target), binding, selection);
+    requireFact(
+      host.physicalEpoch !== p.previousPhysicalEpoch && host.runtimeTarget.freshEmpty,
+      'fresh physical Epoch evidence required before registry preparation'
+    );
+    result.release = {
+      tag: selection.manifest.tag,
+      sourceCommit: selection.manifest.sourceCommit,
+      platform: p.platform,
+    };
+    result.host = host;
+    result.preflight = requireIdle(await io.call('app-update.preflight', {}));
+    result.stage = 'prepare';
+    result.outcome = 'unknown';
+    const callEffect = async (operation, input) => {
+      try {
+        const output = await io.call(operation, structuredClone(input));
+        return admit(
+          operation === 'worker-environment.prepare'
+            ? PrepareWorkerEnvironmentResponseSchema.strip()
+            : ActivateWorkerEnvironmentResponseSchema.strip(),
+          output,
+          `${operation === 'worker-environment.prepare' ? 'preparation' : 'activation'} observation invalid; inspection required`
+        );
+      } catch (error) {
+        if (error instanceof WorkerUpdateStop) throw error;
+        throw new WorkerUpdateStop(
+          'Worker update: operation outcome unknown; inspect the saved request ID'
+        );
+      }
+    };
+    const prepared = await once(evidenceDir, 'prepare', request, () =>
+      callEffect('worker-environment.prepare', request)
+    );
+    result.prepared = prepared;
+    requireFact(
+      prepared.requestId === request.requestId &&
+        canonical(prepared.configuration) === canonical(request.configuration) &&
+        canonical(prepared.target) === canonical(request.target) &&
+        canonical(prepared.replaceNow) === canonical(request.replaceNow ?? null) &&
+        prepared.image.digest === selection.child.digest &&
+        `${prepared.image.platform.os}/${prepared.image.platform.architecture}` === p.platform,
+      'prepared release, configuration or affected-work binding changed'
+    );
+    result.outcome = 'prepared';
+    result.stage = 'activation-admission';
+    const currentBinding = deploymentBinding(target, await io.deploymentRecord());
+    requireFact(
+      canonical(currentBinding) === canonical(binding),
+      'deployment binding changed before activation'
+    );
+    const currentGrant = await io.currentGrant();
+    requireGrant(target, currentGrant, currentBinding);
+    requireFact(canonical(currentGrant) === canonical(grant), 'grant changed before activation');
+    const currentHost = hostObservation(await io.observeHost(target), currentBinding, selection);
+    requireFact(
+      currentHost.physicalEpoch === host.physicalEpoch &&
+        currentHost.runtimeTarget.identityId === host.runtimeTarget.identityId &&
+        currentHost.runtimeTarget.deploymentId === host.runtimeTarget.deploymentId &&
+        currentHost.runtimeTarget.connectionGeneration >= host.runtimeTarget.connectionGeneration,
+      'host incarnation changed before activation'
+    );
+    result.preflightBeforeActivation = requireIdle(await io.call('app-update.preflight', {}));
+    const activationRequest = admit(
+      ActivateWorkerEnvironmentRequestSchema,
+      {
+        requestId: p.activationRequestId,
+        resolvedCandidate: prepared.resolvedCandidate,
+        configuration: prepared.configuration,
+        target: prepared.target,
+        replaceNow: prepared.replaceNow,
+        affectedStorage: prepared.affectedStorage,
+        confirmation: prepared.activationConfirmation,
+      },
+      'prepared activation confirmation unavailable'
+    );
+    result.stage = 'activate';
+    result.outcome = 'unknown';
+    const activation = await once(evidenceDir, 'activate', activationRequest, () =>
+      callEffect('worker-environment.activate', activationRequest)
+    );
+    result.activation = activation;
+    requireFact(
+      activation.requestId === activationRequest.requestId &&
+        canonical(activation.resolvedCandidate) === canonical(prepared.resolvedCandidate) &&
+        canonical(activation.target) === canonical(prepared.target) &&
+        canonical(activation.replaceNow) === canonical(prepared.replaceNow) &&
+        activation.configuration?.fileId === prepared.configuration.fileId &&
+        canonical(activation.affected.map(({ disposition: _, ...entry }) => entry)) ===
+          canonical(prepared.affectedStorage) &&
+        activation.affected.every((entry) => entry.disposition === 'reattached'),
+      'activation is partial, contradictory or unknown; inspect without retry'
+    );
+    result.stage = 'verification';
+    const afterHost = hostObservation(await io.observeHost(target), binding, selection);
+    requireFact(
+      afterHost.physicalEpoch === host.physicalEpoch &&
+        afterHost.runtimeTarget.identityId === host.runtimeTarget.identityId &&
+        afterHost.runtimeTarget.deploymentId === host.runtimeTarget.deploymentId &&
+        afterHost.runtimeTarget.connectionGeneration >=
+          currentHost.runtimeTarget.connectionGeneration,
+      'host incarnation changed after activation; inspection required'
+    );
+    result.hostAfterActivation = afterHost;
+    result.outcome = 'activated';
+    result.freshEpochPreparation = true;
+    return result;
+  } catch (error) {
+    // Keep transport, parser and adapter exception text out of evidence and callers.
+    result.reason =
+      error instanceof WorkerUpdateStop
+        ? error.message
+        : `Worker update: ${result.stage} observation unavailable; inspect retained evidence before any new effect.`;
+    throw new WorkerUpdateStop(result.reason);
+  } finally {
+    await save(path.join(evidenceDir, 'worker-result.json'), result);
+  }
+}

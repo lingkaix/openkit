@@ -1,0 +1,19 @@
+# Worker Update Orchestration
+
+This directory composes the existing Worker environment operations for an administrator-run release update. [Release Management](../../docs/specs/20260829-release_management.md#bounded-test-deployment-update) owns the bounded deployment grant and component order. [Persistent Worker Volumes](../../docs/specs/20260910-persistent_worker_volumes.md#planned-environment-replacement) owns preparation, confirmation, drain, fencing, activation, retained bytes, and result-only recovery. [NanoHost Runtime And Transport](../../docs/specs/20260802-nanohost_runtime_and_transport.md) owns physical Epoch and authenticated readiness evidence.
+
+Worker environment operations remain in NanoCore. P07 owns their implementation during rc.8 wave 1. This directory does not change that implementation, the App updater, NanoHost replacement, shared API schemas, or deployment grants. An App update result cannot stand for a NanoHost or Worker update result. Real-host effects and the identifier reset require their separate authorization.
+
+## First Slice
+
+`update-worker-environment.mjs` exports `updateWorkerEnvironment(target, params, evidenceDir, io)`. The caller supplies one explicit HTTPS origin, an already verified release manifest, the platform, the exact existing preparation input without its image declaration, separate prepare and activation request IDs, the bounded grant, and the previous physical Epoch witness. The script derives a registry reference from the manifest's `worker-runtimes` index digest and compares the prepared image with the platform digest.
+
+The administrator-run caller must supply independent `deploymentRecord()`, `currentGrant()`, and `observeHost(target)` readers, plus `call(operation, input)` for the existing public operations. A manifest or parameter snapshot cannot substitute for those readers. The host reader must observe the physical machine, running NanoHost source and distribution bytes, physical Epoch, and authenticated runtime-target readiness under existing host authority. The public runtime-target response alone does not expose physical Epoch or distribution identity. This slice supplies no live host adapter or CLI; missing observations refuse before dependent effects.
+
+A successful preparation requires a different physical Epoch and fresh-empty evidence. A greater connection generation or later timestamp on the same Epoch is insufficient. The script retains the complete prepared candidate and impact, then rechecks the current grant, deployment, host, and idle preflight before activation, and checks the same host identity and readiness again after activation. The existing activation operation performs any confirmed drain, fencing, and replacement. Configuration-only activation proves only the pinned configuration; it does not prove a mounted Worker or a successful qualification Turn.
+
+Evidence uses the existing private release `save` and single-shot `once` helpers. A new evidence directory is required. Reentry, transport interruption, unknown or partial activation, stale candidate, changed target, busy work, or missing evidence stops the composition. Inspect the saved operation IDs and owner records; there is no automatic recover, retry, rollback, reset, image fallback, or NanoHost restart. A successful Worker stage does not accept the separate App, NanoHost, retained-data, or runtime qualification stages.
+
+## Verification
+
+Run `node --test --test-concurrency=1 scripts/host-worker-update/update-worker-environment.test.mjs` with the pinned Node toolchain and built App API schema dependencies. During the shared builder round, use the dispatch brief's `run-slot.sh` wrapper. The tests exercise real public schemas and orchestration decisions with fixture adapters. They do not prove registry acquisition, writer termination, retained-byte continuity, or selected-host qualification. Shared gate inclusion belongs to P12 and is requested through the coordinator.
