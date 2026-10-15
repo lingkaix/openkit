@@ -115,15 +115,34 @@ it(
     mkdirSync(home);
     const localScript = join(root, 'local-mcp.cjs');
     const called = join(root, 'local-mcp-call.json');
+    const releaseDiscovery = join(root, 'release-local-discovery');
+    const nativeReady = join(root, 'native-ready');
+    const readinessPlugin = join(root, 'native-ready.cjs');
+    // ACP does not expose authored-plugin readiness. Observe the native launcher's completed startup in this fixture only.
+    writeFileSync(
+      readinessPlugin,
+      `const { writeFileSync } = require('node:fs');
+module.exports = {
+  name: 'fixture-ready',
+  inject: ['appReady'],
+  apply(ctx) {
+    ctx.effect(() => ctx.appReady.onReady(() => writeFileSync(${JSON.stringify(nativeReady)}, 'ready')));
+  },
+};`
+    );
     writeFileSync(
       localScript,
       `const { createInterface } = require('node:readline');
-const { writeFileSync } = require('node:fs');
-createInterface({ input: process.stdin }).on('line', (line) => {
+const { existsSync, writeFileSync } = require('node:fs');
+const { setTimeout } = require('node:timers/promises');
+createInterface({ input: process.stdin }).on('line', async (line) => {
   const request = JSON.parse(line);
   if (request.id === undefined) return;
   let result = {};
   if (request.method === 'initialize') result = { protocolVersion: '2025-11-25', capabilities: { tools: {} }, serverInfo: { name: 'local', version: '1' } };
+  if (request.method === 'tools/list') {
+    while (!existsSync(${JSON.stringify(releaseDiscovery)})) await setTimeout(10);
+  }
   if (request.method === 'tools/list') result = { tools: [{ name: 'local_echo', description: 'Local echo', inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } }] };
   if (request.method === 'tools/call') {
     writeFileSync(${JSON.stringify(called)}, JSON.stringify(request.params));
@@ -137,6 +156,10 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     const patch = JSON.stringify([
       {
         insert: [
+          {
+            id: 'native-readiness-marker',
+            name: readinessPlugin,
+          },
           {
             id: 'native-local-mcp',
             name: '@deepseek-ai/dsh-mcp-client',
@@ -165,7 +188,25 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     );
     closers.push(() => inference.close());
     const session = await open(inference, null, {}, managed.url);
-    const result = await (await session.startTurn(turn([], ['managed']))).settled;
+    const base = turn([], ['managed']);
+    const input: WorkerResidentTurnInput = {
+      ...base,
+      runtimeCapture: {
+        ...base.runtimeCapture,
+        emit: async (record) => {
+          if (record.fact.kind !== 'origin' || record.fact.phase !== 'started') return;
+          expect(inference.requests).toHaveLength(0);
+          expect(existsSync(nativeReady)).toBe(false);
+          writeFileSync(releaseDiscovery, 'release');
+          await vi.waitFor(() => expect(existsSync(nativeReady)).toBe(true), { timeout: 5_000 });
+        },
+      },
+    };
+    // Release a held native startup on assertion or admission failure so ordinary fixture cleanup can finish.
+    const started = await session
+      .startTurn(input)
+      .finally(() => writeFileSync(releaseDiscovery, 'release'));
+    const result = await started.settled;
     expect(result.status).toBe('completed');
     expect(inference.requests[0]?.body.tools?.map((tool) => tool.function.name)).toEqual(
       expect.arrayContaining(['mcp__local__local_echo', 'mcp__managed__managed_echo'])
