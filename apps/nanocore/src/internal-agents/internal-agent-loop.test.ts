@@ -4,6 +4,7 @@ import {
   type AgentAssistantMessage,
   type AgentMessage,
   type AgentTool,
+  type InternalAgentProviderRequest,
   runInternalAgentLoop,
 } from './internal-agent-loop.js';
 
@@ -222,6 +223,104 @@ describe('internal Agent loop', () => {
     expect(result.messages).not.toContainEqual(
       expect.objectContaining({ role: 'tool', content: [{ type: 'text', text: 'late' }] })
     );
+  });
+
+  it('discards a Provider result when the caller cancels before it settles', async () => {
+    const controller = new AbortController();
+    const initial = input();
+    const call = vi.fn(async () => {
+      // Cancel after the dependency race settles, before the loop consumes its result.
+      queueMicrotask(() => queueMicrotask(() => controller.abort()));
+      return { message: assistantMessage([{ type: 'text', text: 'Too late.' }]) };
+    });
+
+    const result = await runInternalAgentLoop({ ...initial, signal: controller.signal }, call);
+
+    expect(result).toEqual({ kind: 'aborted', messages: initial.messages });
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it('discards a Tool result when the closure cancels its run', async () => {
+    const controller = new AbortController();
+    const tool: AgentTool = {
+      name: 'environment.status',
+      description: 'Read status.',
+      inputSchema: { type: 'object' },
+      execute: async () => {
+        queueMicrotask(() => queueMicrotask(() => controller.abort()));
+        return { content: [{ type: 'text', text: 'Too late.' }] };
+      },
+    };
+    const message = assistantMessage([
+      { type: 'toolCall', callId: 'cancel', name: tool.name, arguments: {} },
+    ]);
+    const initial = input([tool]);
+    const call = vi.fn(async () => ({ message }));
+
+    const result = await runInternalAgentLoop({ ...initial, signal: controller.signal }, call);
+
+    expect(result).toEqual({ kind: 'aborted', messages: [...initial.messages, message] });
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['quiescent', 'failed', 'limit_reached'] as const)(
+    'ignores saved text callbacks after a %s exit',
+    async (kind) => {
+      let emit!: NonNullable<InternalAgentProviderRequest['onTextIncrement']>;
+      const onTextIncrement = vi.fn();
+      const call = vi.fn(async (request: InternalAgentProviderRequest) => {
+        emit = request.onTextIncrement!;
+        emit('Before exit.');
+        if (kind === 'failed') throw new Error('Provider failed.');
+        return {
+          message: assistantMessage(
+            kind === 'limit_reached'
+              ? [{ type: 'toolCall', callId: 'unknown', name: 'unavailable', arguments: {} }]
+              : [{ type: 'text', text: 'Done.' }]
+          ),
+        };
+      });
+      const initial = input();
+
+      const result = await runInternalAgentLoop(
+        { ...initial, limits: { ...initial.limits, maxModelTurns: 1 }, onTextIncrement },
+        call
+      );
+      emit('After exit.');
+
+      expect(result.kind).toBe(kind);
+      expect(call).toHaveBeenCalledTimes(1);
+      expect(onTextIncrement.mock.calls).toEqual([['Before exit.']]);
+    }
+  );
+
+  it('keeps the first cancellation cause when a deadline precedes caller cancellation', async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const initial = input();
+      const call = vi.fn(() => new Promise<never>(() => undefined));
+      const running = runInternalAgentLoop(
+        {
+          ...initial,
+          signal: controller.signal,
+          limits: { ...initial.limits, deadlineMs: 10 },
+        },
+        call
+      );
+      vi.advanceTimersByTime(10);
+      controller.abort();
+
+      expect(await running).toEqual({
+        kind: 'limit_reached',
+        limit: 'deadline',
+        messages: initial.messages,
+      });
+      expect(call).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('redacts model-visible tool text and ignores observer failures', async () => {
