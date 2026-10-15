@@ -16,6 +16,7 @@ import {
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { isAlreadyDecidedWorkerMcpItem } from '../worker-mcp-routes.js';
 import {
+  findNamedAgentEnvironmentPackageSnapshot,
   listExportableAgentEnvironmentPackageSnapshots,
   requireAgentEnvironmentPackageSnapshot,
 } from './aep-snapshot-ledger.js';
@@ -512,14 +513,22 @@ export function recoverWorkerCheckpointStopReason(
   if (stopReason && checkpoint.stage !== workerTurnStageForStopReason(stopReason)) {
     throw new Error('Worker checkpoint contradicts its recorded StopReason.');
   }
-  if (agentSession.environmentPackageSnapshotId) {
+  if (attempt.inputRef || agentSession.environmentPackageSnapshotId) {
+    if (!attempt.inputRef) {
+      throw new Error('Worker environment package contradicts its checkpoint lineage.');
+    }
     let environmentPackage: ReturnType<typeof requireAgentEnvironmentPackageSnapshot>['snapshot'];
     try {
-      environmentPackage = requireAgentEnvironmentPackageSnapshot(
+      // Sequential Turns can advance the AgentSession pointer. The exact attempt owns
+      // this checkpoint's immutable package; the current pointer cannot replace it.
+      const record = findNamedAgentEnvironmentPackageSnapshot(
         workspaceDb,
         checkpoint.workspaceId,
-        agentSession.environmentPackageSnapshotId
-      ).snapshot;
+        checkpoint.workerSessionId,
+        attempt.inputRef
+      );
+      if (!record) throw new Error('Missing original worker environment package.');
+      environmentPackage = record.snapshot;
     } catch {
       throw new Error('Worker checkpoint is missing its environment package.');
     }
@@ -671,9 +680,7 @@ export function recoverWorkerCheckpointStopReason(
       throw new Error('Worker AgentSession publication contradicts its checkpoint lineage.');
     }
     const retained =
-      !closedApprovalGate &&
-      Boolean(agentSession.environmentPackageSnapshotId) &&
-      publishedSession.status === 'idle';
+      !closedApprovalGate && Boolean(attempt.inputRef) && publishedSession.status === 'idle';
     if (publishedSession.status !== expectedAgentSessionStatus && !retained) {
       throw new Error('Worker generic closeout contradicts its canonical StopReason.');
     }
