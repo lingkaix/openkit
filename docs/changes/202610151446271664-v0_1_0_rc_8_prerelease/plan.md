@@ -17,6 +17,10 @@ Source: the coordinator selected a new rc.8 release after the rc.7 App smoke fai
 
 The coordinator will provide the exact reviewed fix head. Then apply these preparation commits on that head as patch-identical commits, freeze candidate P, obtain independent combined-P review and run `check:repo` through the machine-wide slot wrapper. The coordinator owns the exact-P full main-push gate and fast-forward of main. No release admission, tag push, scratch action or host effect is authorized by this drafting task.
 
+### Intent Revision 2 — 2026-10-16
+
+Source: the coordinator supplied the reviewed focused native-smoke head and successful final scratch rehearsal. Rebase the failure record and approved drafts onto that exact head, proving patch identity with range-diff. Update only final-fix facts, retain all other approved release scope and dispositions, check unused identities, run exact-P `check:repo` through the slot wrapper, obtain one fresh independent `gpt-6.1-sol` review of combined P and push only the preparation branch. The coordinator retains exact-P full CI, main integration, main-push gate, admission and the tag. No workflow edit, publication, CI dispatch, main change or new host action is authorized here.
+
 ## Preparation Checkpoint — Rewritable
 
 | Field | Current fact or missing gate |
@@ -24,17 +28,17 @@ The coordinator will provide the exact reviewed fix head. Then apply these prepa
 | Intended identity | `v0.1.0-rc.8`, non-draft prerelease, never GitHub Latest; GHCR Latest remains unchanged |
 | Last complete release | `v0.1.0-rc.6`, source `0aa3f9a24e4cd0fdbec36b8d5f72d374a0086b3c`. Assess cumulative product and story impact against this release and the actual deployed bytes |
 | Partial predecessor | `v0.1.0-rc.7`, immutable source `fcbb9978aa9f0967551da4a0d808d043e087075c`. Not a complete or installable predecessor |
-| Prep branch base | Failure-record commit `7d3cdf43d6644867a6dfb5ee3f94cb85c75deca5`; preserves the rc.7 failed boundary without changing its tag or published Worker identities |
-| Fix branch | `release/v0.1.0-rc.8-native-smoke`, based on rc.7 source; writer Release cadence v2, agent `8a8d63cf`. Exact final head and successful rehearsal are not yet supplied |
-| Tested T / publishing P | Not frozen. No previous run, including rc.7 CI, qualifies the future P. Any later commit changes P and requires exact-P review and candidate CI |
+| Prep branch base | Originally failure record `7d3cdf43d6644867a6dfb5ee3f94cb85c75deca5`; both preparation commits replayed patch-identically above focused fix `2225d3f432c768dc52244c86f4de79d035a39852`. Preserve rc.7 history and public identities |
+| Fix branch | `release/v0.1.0-rc.8-native-smoke`, exact reviewed head `2225d3f432c768dc52244c86f4de79d035a39852`. Successful scratch run 38778965188 proves the selected changed publication path |
+| Tested T / publishing P | Candidate P is the final committed prep HEAD after this factual update; its exact SHA is retained in the external combined review and handoff. Exact-P full and main-push CI remain for the coordinator. Earlier runs never qualify P |
 | Included scope | Cumulative rc.6-to-rc.7 product scope, focused native-smoke fix with regressions and required projections, rc.7 failure record and rc.8 release documents. Exclude the wider cadence-v2 implementation and train 1 |
 | Assets | Three catalog release images built for the new P; operations Skill archive; native amd64 and arm64 NanoHost archives; `SHA256SUMS`. Four portable attachments. No machine-readable manifest asset is added here |
 | Authority | Standing prerelease grant is conditional on current reviewed P in main, exact-P candidate evidence, publication-path proof, complete blocker reconciliation, unused identities, fixed flags and current private admission evidence |
 | Visibility | rc.7 observations recorded public repository and anonymous Worker-base access. Reobserve repository and package access before rc.8 admission; no visibility change is authorized |
 | Strict-risk dispositions | Existing 2026-10-15 engineer rulings admit disclosed #223 and #249 for prereleases, with closure required before first stable. Both stay unlabeled; this task makes no new strict-risk decision |
 | Host results | #248 source correction and #242 registry correction are included; published rc.8 positive readiness and registry-path observations remain unproved. R001 remains open |
-| Current frontier | Draft notes and plan approved by the independent reviewer; focused draft checks passed. Native fix, rehearsal, combined-P review, exact-P gate, admission, tag, publication verification and post-publication results remain pending |
-| Next action | Hand off the reviewed prep branch and await the coordinator's exact focused-fix head before integration |
+| Current frontier | Focused fix integrated; original failure record and drafts replayed unchanged; scratch publication inputs match. Freeze P, then retain exact-P local checks, independent combined review and unused-identity observations outside P |
+| Next action | Complete exact-P handoff, push only the prep branch and stop. The coordinator owns subsequent CI, main integration, admission and tag |
 
 ## Retained rc.7 Failure And Selected Correction
 
@@ -53,7 +57,7 @@ The following index digests are historical evidence copied from the rc.7 failure
 
 rc.8 builds and publishes its Worker images normally for new P with their own release tags and source attribution. Do not retag rc.7 images, require equal digests, or use rc.7 promotion as rc.8 qualification. Build-cache reuse is not immutable release proof.
 
-The coordinator selected a new P and rc.8 rather than a same-tag retry. The original rc.7 source and tag stay fixed. The independent review requires a focused native App smoke slice, actual host/daemon architecture validation outside the image, exact candidate/manifest binding and promotion only after both platforms pass. The cadence owner supplies its implementation, regressions and actual scratch proof. This record makes no claim that those pending results already exist.
+The coordinator selected a new P and rc.8 rather than a same-tag retry. The original rc.7 source and tag stay fixed. The independent review requires a focused native App smoke slice, actual host/daemon architecture validation outside the image, exact candidate/manifest binding and promotion only after both platforms pass. The cadence owner supplied the focused implementation and completed scratch proof recorded below. That proof establishes the changed publication path, not real rc.8 publication or host readiness.
 
 ## Cumulative Product Scope Since rc.6
 
@@ -64,7 +68,7 @@ Carry all [rc.7 product scope](../202610150713000000-v0_1_0_rc_7_prerelease/plan
 - NanoHost #248: `h2` ALPN with both verified trust sources, one absolute 120-second TCP/TLS/HTTP2/admission deadline and invalidation on initial TCP expiry. Fixed in source, pending positive ready generation from the published rc.8 artifacts.
 - R2 CI/build corrections: qualified-reference coverage, kernel build before NanoCore to correct the L5 Task Knowledge 409, and verified dictionary inputs in image fixtures. No lowered coverage threshold or retrieval fallback.
 - Shared-conversation decision and core-experience planning are records, not a delivered shared-conversation feature. #247 remains after `v0.1.0` and the private Timeline.
-- New correction relative to rc.7: native platform App smoke before promotion, preserving actual resource-limit enforcement assertions. Exact focused-fix commits and rehearsal will be recorded when supplied.
+- New correction relative to rc.7: native platform App smoke before promotion, preserving actual resource-limit enforcement assertions. The five exact focused-fix commits and qualifying rehearsal are recorded below.
 
 ## Known Issues And Reconciliation
 
@@ -121,4 +125,44 @@ Draft validation used Node `v24.18.0` and `/home/simonx/AI/temp/backlog-20261015
 - `git diff --cached --check`: exit 0, no output.
 - Mechanical identity guard: all three full Git commit references resolve with `git cat-file -e <sha>^{commit}`; every historical OCI digest matches the retained rc.7 record. All 81 known-issue references from rc.7 notes remain in rc.8 notes. Notes retain exactly the required two top-level sections; confidential-content guards passed.
 
-Independent `gpt-6.1-sol` draft review returned `APPROVED. No actionable findings.` External verdict alias: `reviews/RC8-drafts.md`. The reviewer inspected both actual draft files, exact known-issue retention, historical digests, commit identities, local link targets and staged whitespace. Approval covers the drafts only. Combined-P `check:repo` remains due after focused-fix integration. No native-smoke, scratch, combined-P, exact-P main-push, admission, publication or live result is claimed by a draft check. Preserve rc.7 notes, its failure record and all existing public identities unchanged. The only new repository paths in this preparation slice are this plan and `release-notes/v0.1.0-rc.8.md`.
+Independent `gpt-6.1-sol` draft review returned `APPROVED. No actionable findings.` External verdict alias: `reviews/RC8-drafts.md`. The reviewer inspected both actual draft files, exact known-issue retention, historical digests, commit identities, local link targets and staged whitespace. Approval covers the drafts only. Combined-P `check:repo` and review are recorded externally after P freezes, so retaining results does not change P. No native-smoke, scratch, combined-P, exact-P main-push, admission, publication or live result is claimed by a draft check. Preserve rc.7 notes, its failure record and all existing public identities unchanged. The only new repository paths in this preparation slice are this plan and `release-notes/v0.1.0-rc.8.md`.
+
+## Focused-Fix Integration And Publication Proof — 2026-10-16
+
+The coordinator selected exact fix head `2225d3f432c768dc52244c86f4de79d035a39852`. Its five commits over rc.7 source are listed below, resolved directly from Git. The independent fix review returned no actionable issues; its execution addendum accepted final scratch proof. Evidence aliases are `reviews/RC8FIX-2225d3f4.md` and `evidence/RC8FIX-2225d3f4-rehearsal.md`. The wider cadence branch and train 1 remain excluded.
+
+- `bee96ea2b93ab9d9122daadbd5ddfcf69dc4c4ff`: Native exact-manifest App smoke, outside-image host guard and refusal regressions.
+- `fdcb8dc43a9a2889f28102cfd344326ef01e6801`: Scripts-guide publication-proof projection.
+- `fe9190db5612120d6806983299cd5f115d2f8fc5`: Actual native-driver success and refusal admission tests.
+- `c94804bb9672946bcbd1a2c6a5b5b452c32f9952`: Exact per-job workflow target projection, preserving product assertions.
+- `2225d3f432c768dc52244c86f4de79d035a39852`: Exact rendered App names and strict baseline-name admission regressions.
+
+The original failure record and draft are patch-identical after replay. The retained range-diff is:
+
+```text
+1:  7d3cdf43 = 1:  b613fed8 docs(release): record rc7 partial publication failure
+2:  9d81be06 = 2:  5f46e336 docs: prepare rc.8 release drafts
+```
+
+The new follow-up commit changes only this rc.8 plan and the native-smoke description in rc.8 notes. The rc.7 record and notes stay unchanged. All other approved rc.8 content remains, including cumulative scope since rc.6, #223/#249 dispositions, R001, pending #248/#242 published-host observations and historical rc.7 Worker digests.
+
+Qualifying rehearsal: [run 38778965188](https://github.com/notrucked/openkit/actions/runs/38778965188), attempt 1, source `b5c72c3ca07ddb7865a08554b08e4f8693266f54`, scratch tag `v0.0.0-rc8-native.20261016.2`. Fresh read-only GitHub run/jobs observations confirmed a completed successful run on that exact source and one successful execution for each required name:
+
+| Execution | Job ID | Result |
+| --- | --- | --- |
+| Build app candidate | `116586407138` | success |
+| Smoke App native (linux/amd64) | `116624586681` | success |
+| Smoke App native (linux/arm64) | `116624586620` | success |
+| Publish app image | `116624998961` | success |
+| Publish worker-common image | `116586407004` | success |
+| Publish worker-runtimes image | `116586407149` | success |
+| Publish GitHub Release | `116625314489` | success |
+| Verify published release | `116625479527` | success |
+
+Both native legs proved the missing-AS fixture fails specifically at the unchanged assertion with unlimited inherited AS, then passed the unchanged full App smoke. The retained candidate and native observations passed the actual `verifyNativeEvidence` function locally. Source, tag, run, attempt, host, index and manifests bind the evidence; the published App record equals the same index and platform members. Normal Worker publication and final verification passed. These are scratch identities and results only, not rc.8 assets or Worker qualification.
+
+`publicationInputsAt` recomputed actual Git bytes for the integrated prep and successful scratch source. All seven job blocks and twelve invoked files match exactly, aggregate `10b593749b9e50c886d3448543fffe2758b05f790ca6627d44963052c3de45e8`. Per-input identities and complete actual objects are retained privately as `rc8-final-publication-inputs.json`; repeat the comparison on final committed P before handoff. The notes and record update changes none of those inputs. Missing or changed inputs would stop this handoff and leave the real tag blocked.
+
+Measured scratch basis for planning: exact-source main gate 53m53s; tag queue 18m09s; App candidate job 80m22s, including 79m21s build; native smoke steps 29s amd64 and 28s arm64; App promotion job 38s; final verification 1m32s. Gate creation to verified scratch publication was 2h45m13s, or 2h27m04s with only the observed queue removed. These are measured intervals, not promised rc.8 timings; parallel jobs are not summed. The focused fix does not deliver cadence-v2 speed changes.
+
+Final P receives its own local `check:repo` result, unused rc.8 tag/release and all nine immutable image-tag observations, final range-diff and independent `reviews/RC8-<short-sha>.md` verdict in the private handoff. The coordinator must refresh these observations for admission and obtain the exact-P full and main-push gates. No candidate CI, real tag, real publication, deployment update or post-publication pass is claimed here.
