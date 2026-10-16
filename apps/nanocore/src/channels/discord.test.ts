@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Actor } from '../auth/identity.js';
 import { OperationError } from '../operation-error.js';
 import { applyNativeScopeMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   createDiscordChannel,
   type DiscordPendingView,
@@ -13,7 +14,11 @@ import {
 
 const applicationId = '123456789012345678';
 const discordUserId = '223456789012345678';
-const actor: Actor = { userId: 'user_discord', kind: 'session' };
+const actor: Actor = { userId: testEntityId('usr', 'discord'), kind: 'session' };
+const workspaceId = testEntityId('ws', 'discord');
+const threadId = testEntityId('th', 'discord');
+const turnId = testEntityId('tu', 'discord');
+const requestLink = `https://openkit.invalid/tasks/${workspaceId}/${threadId}?requestId=ap_discord`;
 const keys = generateKeyPairSync('ed25519');
 const publicKey = keys.publicKey
   .export({ type: 'spki', format: 'der' })
@@ -43,10 +48,10 @@ function fixture() {
   let view: DiscordPendingView = {
     status: 'available',
     kind: 'approval',
-    workspaceId: 'ws_discord',
-    threadId: 'th_discord',
+    workspaceId,
+    threadId,
     pendingRequestId: 'ap_discord',
-    turnId: 'tu_discord',
+    turnId,
     content: 'Exact effect: publish the approved page.',
     responseAllowed: true,
   };
@@ -57,7 +62,7 @@ function fixture() {
     applicationId,
     publicKey,
     appBaseUrl: 'https://openkit.invalid',
-    requestLink: () => 'https://openkit.invalid/tasks/ws_discord/th_discord?requestId=ap_discord',
+    requestLink: () => requestLink,
     now: () => now,
     newRequestId: randomUUID,
     resolveActor: () => currentActor,
@@ -107,7 +112,7 @@ function fixture() {
     expect(content(await send('pair', { challenge: challenge.challenge }))).toContain('paired');
     return challenge;
   };
-  const target = { workspace: 'ws_discord', thread: 'th_discord', request: 'ap_discord' };
+  const target = { workspace: workspaceId, thread: threadId, request: 'ap_discord' };
   const disclose = async () => {
     const text = content(await send('inspect', target));
     const token = text.match(/Disclosure: ([A-Za-z0-9_-]+)/)?.[1];
@@ -241,7 +246,7 @@ describe('Discord signed transport and account binding', () => {
   it('cannot replace another active user binding and revocation also ends open challenges', async () => {
     const f = fixture();
     await f.pair();
-    const other: Actor = { kind: 'session', userId: 'user_other' };
+    const other: Actor = { kind: 'session', userId: testEntityId('usr', 'discord-other') };
     f.actor(other);
     const challenge = f.channel.beginPairing(other);
     expect(content(await f.send('pair', { challenge: challenge.challenge }))).toContain(
@@ -274,9 +279,7 @@ describe('Discord exact Pending Request projection', () => {
   it('returns grant requests to the App without reading protected content or dispatching an operation', async () => {
     const f = fixture();
     await f.pair();
-    expect(content(await f.send('approve', f.target))).toContain(
-      'https://openkit.invalid/tasks/ws_discord/th_discord?requestId=ap_discord'
-    );
+    expect(content(await f.send('approve', f.target))).toContain(requestLink);
     expect(f.inspectPending).not.toHaveBeenCalled();
     expect(f.invoke).not.toHaveBeenCalled();
   });
@@ -292,9 +295,9 @@ describe('Discord exact Pending Request projection', () => {
     expect(f.invoke).toHaveBeenCalledWith(
       'approval.respond',
       expect.objectContaining({
-        workspaceId: 'ws_discord',
-        threadId: 'th_discord',
-        turnId: 'tu_discord',
+        workspaceId,
+        threadId,
+        turnId,
         approvalRequestId: 'ap_discord',
         decision: 'denied',
         requestId: expect.any(String),
@@ -370,12 +373,18 @@ describe('Discord exact Pending Request projection', () => {
     await f.pair();
     const disclosure = await f.disclose();
     expect(
-      content(await f.send('deny', { ...f.target, thread: 'th_other', disclosure }))
+      content(
+        await f.send('deny', {
+          ...f.target,
+          thread: testEntityId('th', 'discord-other'),
+          disclosure,
+        })
+      )
     ).toContain('disclosure');
     f.actor({
       userId: actor.userId,
       kind: 'token',
-      tokenId: 'token_admin',
+      tokenId: testEntityId('tok', 'discord-admin'),
       tokenScope: 'server-admin',
     });
     await f.send('deny', { ...f.target, disclosure });
