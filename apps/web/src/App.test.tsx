@@ -162,10 +162,10 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(screen.queryByRole('button', { name: 'Components' })).not.toBeInTheDocument();
   });
 
-  it('keeps unpublished settings surfaces out of navigation', async () => {
+  it('shows published settings without concept demos', async () => {
     await renderAt('/settings');
     expect(screen.queryByText('Concept demos')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Channels' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Channels' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Gateway' })).toBeInTheDocument();
   });
 
