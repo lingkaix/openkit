@@ -418,8 +418,7 @@ export async function prepareWorkerTurnContextPackage(
       );
     }
     for (const page of pages) {
-      // S61 currently provides no notebook commit for a verified excerpt. Admit a complete
-      // page only within the independent preview allowance; never infer a token count.
+      // S61 currently provides no notebook commit for a verified excerpt. Admit a complete page only within the independent preview allowance; never infer a token count.
       const pageBytes = Buffer.byteLength(page.content, 'utf8');
       if (
         pageBytes > SOURCE_PREVIEW_LIMITS.bytes ||
