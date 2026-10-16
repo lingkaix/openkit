@@ -2,7 +2,7 @@ import type { CoreClient } from '@openkit/core-client';
 import { GenerativeUiReferenceItemSchema, ToolCallItemSchema } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { ReactNode } from 'react';
+import { type ReactNode, StrictMode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { GenerativePresentationView } from './GenerativePresentationView';
@@ -25,7 +25,9 @@ function Providers({ children, client }: { children: ReactNode; client: CoreClie
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return (
     <QueryClientProvider client={queryClient}>
-      <CoreClientProvider client={client}>{children}</CoreClientProvider>
+      <CoreClientProvider client={client}>
+        <StrictMode>{children}</StrictMode>
+      </CoreClientProvider>
     </QueryClientProvider>
   );
 }

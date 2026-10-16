@@ -11,10 +11,10 @@ import type { ThreadItem } from '../screens/chat/data';
 import { exactGenerativeSource, useGenerativeSourceGroups } from './source-groups';
 
 const source = {
-  id: 'source',
-  workspaceId: 'workspace',
-  threadId: 'thread',
-  turnId: 'turn',
+  id: 'it_00000000-0000-7000-8000-000000000001',
+  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  threadId: 'th_00000000-0000-7000-8000-000000000001',
+  turnId: 'tu_00000000-0000-7000-8000-000000000001',
   type: 'assistant-message',
   status: 'completed',
   text: 'Exact generated answer.',
@@ -23,14 +23,14 @@ const source = {
 } as const satisfies ThreadItem;
 const reference = {
   ...source,
-  id: 'reference',
+  id: 'it_00000000-0000-7000-8000-000000000002',
   type: 'generative-ui-reference',
-  presentationId: 'presentation',
+  presentationId: 'pres_00000000-0000-7000-8000-000000000001',
   title: 'Answer',
   fallbackText: source.text,
 } as const satisfies ThreadItem;
 const presentation = {
-  id: 'presentation',
+  id: 'pres_00000000-0000-7000-8000-000000000001',
   workspaceId: source.workspaceId,
   threadId: source.threadId,
   turnId: source.turnId,

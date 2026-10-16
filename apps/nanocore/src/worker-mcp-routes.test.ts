@@ -701,7 +701,7 @@ describe('worker MCP routes', () => {
       ).rejects.toMatchObject({ code: -32600, data: { code: 'conflict' } });
       coreDb.sqlite
         .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = ?")
-        .run(new Date().toISOString(), 'user_local');
+        .run(new Date().toISOString(), 'usr_00000000-0000-7000-8000-000000000001');
       try {
         await expect(
           sessionClient.callTool({
@@ -716,7 +716,7 @@ describe('worker MCP routes', () => {
       } finally {
         coreDb.sqlite
           .prepare("UPDATE users SET status = 'active', disabled_at = NULL WHERE id = ?")
-          .run('user_local');
+          .run('usr_00000000-0000-7000-8000-000000000001');
       }
       const readProof = await sessionClient.callTool({
         name: 'kernel_records_get',

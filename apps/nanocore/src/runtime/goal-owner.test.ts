@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { checkGoalCommandIntent, executeGoalOperation } from './goal-owner.js';
 import { reserveGoalTask } from './goal-task-admission.js';
 import { commandInputHash } from './idempotent-command.js';
@@ -756,7 +757,7 @@ describe('Proposed Plan eligibility', () => {
       await f.resolve(p.pendingRequestId);
       await f.consume(p.pendingRequestId);
       const evidence = f.store.createItem({
-        id: 'it_completion_evidence',
+        id: testEntityId('it', 'goal-completion-evidence'),
         workspaceId: f.scope.workspaceId,
         threadId: f.scope.threadId,
         turnId: f.coordinator.coordinatorTurnId,

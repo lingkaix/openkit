@@ -251,6 +251,12 @@ Select a Workspace or create clearly identifiable scenario state within the user
 
 Keep the user's objective open-ended. Discover the operations needed to accomplish it; do not use a hidden expected answer or prescribed call sequence. If acting as an acceptance Actor, do not inspect implementation files, judge instructions or private database state.
 
+## Use Native Generative Data And Views
+
+Use an admitted Assistant or selected Worker to create and update a Kernel app through the available native Kernel tools. A published native view in the same Thread can read and edit that same data. Expand Source history to inspect its admitted answer or Tool result.
+
+A reopened presentation shows historical values. Use its Refresh action to read current data. Save applies the form's explicit record update through Core. An error or stale-write conflict keeps the unsaved input visible; inspect the error and refresh before the next explicit save. Refresh does not save the draft. Unsaved input is local to the open browser view and does not survive a reload. Richer operators, destructive writes, HTML delegates and saved views retain their separate admission gates.
+
 ## Locate Results
 
 Search for `thread`, `turn`, `artifact`, `evidence`, `audit` and `usage` as needed, then describe the relevant operations. Retain the Workspace, Thread and Turn identifiers from the actual responses. Read the terminal result and meaningful output; use the existing evidence and audit operations to establish only the facts they expose. Preserve pagination, missing records and partial coverage in the report.
