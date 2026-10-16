@@ -26,6 +26,17 @@ export interface RetrievalDocument {
   content:
     | { kind: 'inline-text'; text: string }
     | { kind: 'text'; path: string; range?: { start: number; end: number } }
+    | {
+        kind: 'representation';
+        /** Confined source-owned text path; the kernel never opens its binary original. */
+        path: string;
+        digest: string;
+        size: number;
+        /** Version and output-changing configuration identity from the source processor. */
+        processor: string;
+        fragments: { start: number; end: number; locator: string }[];
+        complete: boolean;
+      }
     | { kind: 'unreadable' | 'unavailable' };
 }
 /** A complete current inventory in one exact read-eligibility partition. */
@@ -61,7 +72,7 @@ const resultSchema = z.object({
         digest,
         representation: z.enum(['text', 'sidecar']),
         representation_digest: digest,
-        processor: z.literal('identity-markdown-v1').nullable(),
+        processor: z.string().min(1).max(1024).nullable(),
         locator,
         chunk: count,
         score: z.number().finite().nullable(),

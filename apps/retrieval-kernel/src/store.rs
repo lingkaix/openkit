@@ -12,7 +12,7 @@ use tantivy::{Index, TantivyDocument};
 
 /// Output-changing machinery is part of every derived generation identity.
 pub(crate) fn machinery() -> String {
-    digest(format!("schema=4;text-ranges=disjoint-v1;word-filter=any-alnum;token-bytes=49152;sidecar=identity-markdown-v1;chunks={CHUNK_BYTES};score=max-bm25-title2-gram0.1;normalization=lowercase;grams=1-3;dictionary={DICTIONARY_SHA256};lock={}", digest(include_bytes!("../../../Cargo.lock"))).as_bytes())
+    digest(format!("schema=5;text-ranges=disjoint-v1;source-representation=v1;word-filter=any-alnum;token-bytes=49152;sidecar=identity-markdown-v1;chunks={CHUNK_BYTES};score=max-bm25-title2-gram0.1;normalization=lowercase;grams=1-3;dictionary={DICTIONARY_SHA256};lock={}", digest(include_bytes!("../../../Cargo.lock"))).as_bytes())
 }
 /// Identity-only phase-1 processor; changes require fresh representations.
 pub(crate) const PROCESSOR: &str = "identity-markdown-v1";
@@ -123,6 +123,8 @@ impl Kernel {
         for record in &manifest.documents {
             let ceiling = if record.sidecar.is_some() {
                 SIDECAR_BYTES as u64
+            } else if let Content::Representation { size, .. } = &record.document.content {
+                *size
             } else {
                 record.document.size
             };
@@ -138,7 +140,7 @@ impl Kernel {
                 || (record.sidecar.is_none()
                     && matches!(
                         record.document.content,
-                        Content::Text { .. } | Content::InlineText { .. }
+                        Content::Text { .. } | Content::InlineText { .. } | Content::Representation { .. }
                     )
                     && record.units != text_units(&record.document))
             {
@@ -337,6 +339,18 @@ impl Kernel {
                         let detected = detected_language(&mut source, &record.units, budget)?;
                         (source, detected)
                     }
+                    Content::Representation { path, digest, size, .. } => {
+                        let mut source = TextFile::new(open_source(&self.source, path)?, None)?;
+                        let (actual_digest, actual_size, _) = inspect(&mut source, budget)?;
+                        if actual_digest != *digest || actual_size != *size {
+                            return Err(error("conflict", "source representation integrity changed"));
+                        }
+                        record.representation_digest = actual_digest;
+                        record.units = text_units(&record.document);
+                        record.status = TextStatus::TextExtracted;
+                        let detected = detected_language(&mut source, &record.units, budget)?;
+                        (source, detected)
+                    }
                     Content::Unreadable => {
                         let (bytes, units) = sidecar(&record.document)?;
                         let hash = digest(&bytes);
@@ -428,6 +442,13 @@ impl Kernel {
                             "conflict",
                             "canonical source changed during indexing",
                         ));
+                    }
+                }
+                if let Content::Representation { path, digest, size, .. } = &record.document.content {
+                    let mut now = TextFile::new(open_source(&self.source, path)?, None)?;
+                    let (actual_digest, actual_size) = digest_reader(&mut now, budget)?;
+                    if actual_digest != *digest || actual_size != *size {
+                        return Err(error("conflict", "source representation changed during indexing"));
                     }
                 }
                 Ok(())
@@ -769,6 +790,21 @@ pub(crate) fn validate_view(view: &ScopeView, require_text: bool) -> Result<()> 
             && !["zh", "ja", "unicode"].contains(&language.as_str())
         {
             return Err(error("invalid-request", "unknown language hint"));
+        }
+        if let Content::Representation { path, digest, size, processor, fragments, .. } = &d.content {
+            if path.is_empty() || path.len() > 4096
+                || Path::new(path).components().any(|c| !matches!(c, std::path::Component::Normal(_)))
+                || *size > REPRESENTATION_BYTES
+                || digest.len() != 64
+                || !digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                || processor.is_empty() || processor.len() > 1024
+                || fragments.len() > 256
+                || fragments.iter().any(|fragment| fragment.start > fragment.end || fragment.end > *size
+                    || fragment.locator.is_empty() || fragment.locator.len() > 1024)
+                || fragments.windows(2).any(|pair| pair[0].end > pair[1].start)
+            {
+                return Err(error("invalid-request", "source representation exceeds its declared bounds"));
+            }
         }
         if let Content::Text { path, range } = &d.content
             && (Path::new(path)
