@@ -89,6 +89,50 @@ function download(state: ReturnType<typeof fixture>, artifactId: string, artifac
 }
 
 describe('exact Artifact file import and download', () => {
+  it('preserves exact originals through public Workspace archive transfer', async () => {
+    const source = fixture();
+    const originals = corpus.originals.filter(
+      ({ id }) => id === 'empty' || id === 'binary-invalid-utf8'
+    );
+    expect(originals).toHaveLength(2);
+    for (const original of originals) expect((await upload(source, original)).status).toBe(201);
+    const exported = await source.app.request(
+      ...operationRequest('workspace.export', { workspaceId: source.workspace.id })
+    );
+    expect(exported.status).toBe(200);
+    const { exportId } = await exported.json();
+    const archive = await source.app.request(
+      `/api/app/workspaces/${source.workspace.id}/exports/${exportId}/archive`
+    );
+    expect(archive.status).toBe(200);
+    const imported = await source.app.request('/api/app/workspace-archives/import', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/vnd.openkit.workspace-export+tar.zstd',
+        'x-openkit-request-id': randomUUID(),
+      },
+      body: await archive.arrayBuffer(),
+    });
+    expect(imported.status).toBe(200);
+    const { importedWorkspaceId } = await imported.json();
+    const retained = source.store.listArtifacts(importedWorkspaceId);
+    for (const original of originals) {
+      const artifact = retained.find(({ contentDigest }) => contentDigest === original.sha256);
+      expect(artifact).toBeDefined();
+      const response = await source.app.request(
+        `/api/app/operations/artifact.download?${new URLSearchParams({
+          workspaceId: importedWorkspaceId,
+          artifactId: artifact!.id,
+          artifactVersion: String(artifact!.version),
+        })}`
+      );
+      expect(response.status).toBe(200);
+      const bytes = Buffer.from(await response.arrayBuffer());
+      expect(bytes).toEqual(Buffer.from(original.patternHex.repeat(original.repeats), 'hex'));
+      expect(`sha256:${createHash('sha256').update(bytes).digest('hex')}`).toBe(original.sha256);
+    }
+  });
+
   it.each([
     'binary-file',
     'text-file',
