@@ -237,12 +237,12 @@ describe('Workspace sharing routes', () => {
       expiresAt: '2099-01-01T00:00:00.000Z',
       ownerUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       scope: 'server-admin',
-      tokenId: 'token_admin_list',
+      tokenId: testEntityId('tok', 'token_admin_list'),
       workspaceIds: [],
     });
     fixture.actorState.current = {
       kind: 'token',
-      tokenId: 'token_admin_list',
+      tokenId: testEntityId('tok', 'token_admin_list'),
       tokenScope: 'server-admin',
       tokenWorkspaceIds: [],
       userId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
@@ -256,7 +256,7 @@ describe('Workspace sharing routes', () => {
 
     expect(body.items).toEqual([
       expect.objectContaining({
-        ownerUserId: testEntityId('usr', 'user_owner'),
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         membershipStatus: null,
         accessCause: 'administrator',
         effectiveRole: null,

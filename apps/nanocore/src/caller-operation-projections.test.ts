@@ -561,7 +561,7 @@ describe('caller operation projections', () => {
     const threads = vi.spyOn(f.store, 'listThreads');
     const artifacts = vi.spyOn(f.store, 'listArtifacts');
     const bodies = [];
-    for (const id of ['ws_absent', f.foreign.id]) {
+    for (const id of [testEntityId('ws', 'ws_absent'), f.foreign.id]) {
       const response = await f.post(
         'caller.read',
         { workspaceId: id },

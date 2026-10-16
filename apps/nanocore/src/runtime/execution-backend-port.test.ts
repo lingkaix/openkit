@@ -242,7 +242,7 @@ function fixture(
     }),
   };
   const queue = (suffix: string, threadId = 'th_00000000-0000-7000-8000-000000000001') => {
-    const turnId = `turn_port_${suffix}`;
+    const turnId = testEntityId('tu', `turn_port_${suffix}`);
     if (threadId !== 'th_00000000-0000-7000-8000-000000000001')
       store.createThread('ws_00000000-0000-7000-8000-000000000001', suffix, threadId);
     store.createTurn(
@@ -347,7 +347,7 @@ describe('execution backend port through real Core coordination', () => {
       },
     });
     const first = f.queue('native-first');
-    const second = f.queue('native-second', 'thread_native_second');
+    const second = f.queue('native-second', testEntityId('th', 'thread_native_second'));
     const input = {
       ...f.dispatchInput,
       now: () => new Date().toISOString(),
@@ -601,9 +601,10 @@ describe('execution backend port through real Core coordination', () => {
         cause: 'turn-start-failed',
         noOutstandingEffects: true,
       });
-      expect(attempts(f.db).find((row) => row.attempt_id === 'control-attempt')?.phase).toBe(
-        'closed'
-      );
+      expect(
+        attempts(f.db).find((row) => row.attempt_id === testEntityId('attempt', 'control-attempt'))
+          ?.phase
+      ).toBe('closed');
       // Acquisition made this control admitted; retain that history after its no-effect close.
       expect(requireSchedulerAdmissionEntry(f.db, control.queueEntryId).status).toBe('admitted');
       const setup = createTestAgentSetup();

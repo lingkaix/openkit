@@ -517,12 +517,13 @@ describe('uncommitted header initialization recovery', () => {
       expect(() =>
         initializeOrVerifyEncryptedFileVaultStore({ storeDir, masterKey: Buffer.alloc(32, 8) })
       ).toThrow('Encrypted-file vault master key failed authentication.');
+      const recoveredReferenceId = 'vault_00000000-0000-7000-8000-0000000000aa';
       sealEncryptedFileVaultEntry({
         createdAt: '2026-07-05T00:10:00.000Z',
         masterKey,
         material: Buffer.from('retained test material'),
         metadata: { ownerScope: 'server' },
-        referenceId: 'vault_recovered',
+        referenceId: recoveredReferenceId,
         storeDir,
         version: 1,
       });
@@ -530,7 +531,7 @@ describe('uncommitted header initialization recovery', () => {
         Buffer.from(
           openEncryptedFileVaultEntry({
             storeDir,
-            referenceId: 'vault_recovered',
+            referenceId: recoveredReferenceId,
             version: 1,
             masterKey,
           })

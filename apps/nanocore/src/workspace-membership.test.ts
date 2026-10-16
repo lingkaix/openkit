@@ -188,8 +188,8 @@ describe('workspace membership foundation', () => {
       expect(
         listActiveWorkspaceIdsForActor(coreDb, 'usr_00000000-0000-7dce-aeaf-a1a2a6523aad')
       ).toEqual([
-        'ws_00000000-0000-7b56-b84d-e36c3b9e04dc',
         'ws_00000000-0000-764a-ac14-15573e6f8983',
+        'ws_00000000-0000-7b56-b84d-e36c3b9e04dc',
         'ws_00000000-0000-7f6f-8712-e3b3efe0bcb4',
       ]);
       expect(

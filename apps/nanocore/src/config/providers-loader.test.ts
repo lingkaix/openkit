@@ -228,9 +228,12 @@ describe('loadProviderProfiles', () => {
       true
     );
     expect(String(exampleParsed.secretRef).startsWith('vault://')).toBe(true);
-    const references = [...profiles.map((profile) => profile.secretRef), exampleParsed.secretRef];
+    const references = [
+      ...result.profiles.map((profile) => profile.secretRef),
+      exampleParsed.secretRef,
+    ];
     expect(new Set(references).size).toBe(references.length);
-    expect(loadProviderProfiles(dataRoot)).toEqual(profiles);
+    expect(loadProviderProfiles(dataRoot)).toEqual(result);
   });
 
   it('preserves published Provider candidates when a missing template cannot allocate', () => {
