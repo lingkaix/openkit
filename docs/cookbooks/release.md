@@ -207,7 +207,7 @@ git tag "${OPENKIT_RELEASE_TAG}"
 git push origin "${OPENKIT_RELEASE_TAG}"
 ```
 
-The tag push is the only publication trigger.
+The tag push is the only publication trigger. Prerelease tags run `ci.yml`; synthetic stable rehearsal tags run the separately bounded `release-promotion.yml` path. Production stable publication is refused while R001 remains open.
 
 The workflow then:
 
@@ -221,7 +221,7 @@ The workflow then:
 - smokes each exact candidate digest on every declared platform,
 - promotes the passed digest to immutable version and source-revision tags,
 - preserves `latest` for prereleases,
-- creates the GitHub prerelease with the three portable archives and their shared checksum attachment,
+- creates the GitHub prerelease with the three portable archives, machine-readable manifest and shared checksum attachment,
 - downloads and independently verifies the final assets and image digests,
 - logs out of GHCR and verifies the exact `worker-common` digest anonymously.
 
@@ -253,7 +253,16 @@ gh release view "${OPENKIT_RELEASE_TAG}" --json tagName,isDraft,isPrerelease,ass
 gh run view <run-id>
 ```
 
-Close the release change record only when the workflow is green, the GitHub Release is published with exactly the three archives and `SHA256SUMS` until manifest delivery is admitted, both downloaded NanoHost archives pass the shared contained staging verifier, and `worker-common` is anonymously inspectable by digest.
+Close the release change record only when the workflow is green, the GitHub Release is published with exactly the three archives, `openkit-release-<tag>.json` and `SHA256SUMS`, both downloaded NanoHost archives pass the shared contained staging verifier, and `worker-common` is anonymously inspectable by digest.
+
+
+### Synthetic Stable Promotion Rehearsal
+
+Use only the coordinator's [bounded exception](../decisions/20261016-bounded_stable_promotion_rehearsal.md). Select one unused synthetic stable version `v0.0.N` and a prerelease in that version, then prepare and publish the prerelease in `notrucked/openkit` through the actual candidate, manifest and download-verification path. A synthetic reviewed assessment belongs only to that fixture. Retain the production repository's releases, tags, image identities and Latest observations before and after the rehearsal and prove equality.
+
+After the source prerelease and its exact-P tag run pass, push the one authorized unused synthetic stable tag on that same commit. Watch `release-promotion.yml` through verified publication. The workflow checks the source run's current attempt and required native/publication jobs, the source manifest and reviewed notes, all platform indexes and immutable tags, and all five attachments before changing scratch pointers. It copies the same indexes and attachments without rebuilding or repacking. The stable title names the stable tag; attachment names and the manifest retain the source prerelease identity.
+
+Rerun the entire stable workflow once to prove complete immutable reuse. It must verify without image promotion or Release edits, and Latest must still identify that stable release. Run a separate no-write negative retry check against altered source or superseded-Latest observations and retain its refusal; do not move a live pointer to produce the negative case. A partial or unknown outcome stops for inspection. A rehearsal success authorizes no production stable release and closes no R001, story or Worker gate.
 
 ## Failure And Retry
 
@@ -289,7 +298,7 @@ node scripts/release-record.mjs --tag v0.1.0-rc.6 --draft-input /example/private
 
 The draft input has nonempty `changes` and `knownIssues` arrays. Commit only the reviewed two-section notes input. The primary owns release notes and change records.
 
-The workflow attachment remains blocked by the frozen publication jobs' exact four-asset list; do not add an asset through an alternate uploader. A publication-job amendment and scratch rehearsal are planned together with #225. The manifest is required only after both `github-release` and `verify-release` carry it; prereleases close with the existing four assets until that delivery is admitted. Generate the manifest from existing image JSON, portable checksums, and the explicit reviewed compatibility assessment:
+The existing uploader and verifier require the fifth manifest attachment. Commit `release-notes/<tag>.manifest.json` with the six reviewed compatibility/recovery facts before freezing P; see [Release Management](../specs/20260829-release_management.md#machine-readable-release-manifest). The tag preflight refuses missing or unassessed facts. Neither CI success nor an authorized reset is a compatibility assertion. The producer joins P and the observed App index digest instead of accepting authored substitutes. The manifest lists the three archive checksums; `SHA256SUMS` additionally checksums the manifest itself without a circular entry. Existing four-attachment releases remain immutable. Generate the manifest from existing image JSON, portable checksums, and the explicit reviewed compatibility assessment:
 
 ```bash
 node scripts/release-record.mjs --tag v0.1.0-rc.6 --sha FULL_COMMIT --repository example/project --records /example/private/image-records --checksum-file /example/private/SHA256SUMS --assertions /example/private/assertions.json --manifest-output /example/private/openkit-release-v0.1.0-rc.6.json
