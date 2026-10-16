@@ -167,22 +167,29 @@ export class RetrievalService {
     await this.search({ mode: 'lexical', query: 'health', scopes: [], limit: 1 });
   }
   /** Inspects the durable pointer; the adapter must re-enumerate truth before a retry. */
-  async inspect(scope: string): Promise<string | null> {
-    const value = await this.request({ op: 'inspect', scope });
+  async inspect(scope: string, signal?: AbortSignal): Promise<string | null> {
+    const value = await this.request({ op: 'inspect', scope }, signal);
     return this.decode(z.object({ generation: digest.nullable() }), value).generation;
   }
   /** Publishes fixed admitted revisions with explicit compare-and-set, with no replay. */
-  async publish(view: RetrievalScope, expectedGeneration: string | null): Promise<string> {
-    const value = await this.request({
-      op: 'publish',
-      view,
-      expected_generation: expectedGeneration,
-    });
+  async publish(
+    view: RetrievalScope,
+    expectedGeneration: string | null,
+    signal?: AbortSignal
+  ): Promise<string> {
+    const value = await this.request(
+      {
+        op: 'publish',
+        view,
+        expected_generation: expectedGeneration,
+      },
+      signal
+    );
     return this.decode(z.object({ generation: digest }), value).generation;
   }
   /** Searches only supplied scopes; all source and audience admission stays with adapters. */
-  async search(request: RetrievalQuery): Promise<RetrievalResult> {
-    const result = this.decode(resultSchema, await this.request({ op: 'search', request }));
+  async search(request: RetrievalQuery, signal?: AbortSignal): Promise<RetrievalResult> {
+    const result = this.decode(resultSchema, await this.request({ op: 'search', request }, signal));
     const admitted = new Set(request.scopes.map((scope) => scope.scope));
     if (
       result.mode !== request.mode ||
