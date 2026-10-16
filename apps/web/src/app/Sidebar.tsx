@@ -244,7 +244,7 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
                     </Button>
                   </div>
                 ) : null}
-                {conversations.map(({ thread, activity, state: serverState }) => {
+                {conversations.map(({ thread, activity, state: serverState, unreadCount }) => {
                   const awaitingReply = waiting.has(thread.id);
                   const state =
                     serverState === 'needs-you'
@@ -279,7 +279,7 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
                       key={thread.id}
                       icon={icons[activity]}
                       label={thread.name ?? thread.preview}
-                      description={`${labels[activity]} · ${status}`}
+                      description={`${labels[activity]} · ${status}${!navigation.isError && unreadCount > 0 ? ` · ${unreadCount} unread ${unreadCount === 1 ? 'reply' : 'replies'}` : ''}`}
                       iconBadge={
                         !navigation.isError && state !== 'idle' ? (
                           <span
