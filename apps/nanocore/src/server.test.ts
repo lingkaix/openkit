@@ -1,3 +1,4 @@
+import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import {
@@ -7274,11 +7275,13 @@ describe('nanocore server', () => {
     const executor = new FakeTurnExecutor();
     const prompts: string[] = [];
     const thread = store.createThread('ws_quick_chat', 'Live Goal Web report');
+    const reportBody = `# Maintenance report\n\n${LIVE_GOAL_WEB_REPORT_MARKER}\n`;
+    const reportBytes = Buffer.byteLength(reportBody, 'utf8');
     const artifact = createImportedMarkdownArtifact(store, {
       id: 'ar_live_goal_web_report',
       workspaceId: 'ws_quick_chat',
       title: '维护报告',
-      body: `# Maintenance report\n\n${LIVE_GOAL_WEB_REPORT_MARKER}\n`,
+      body: reportBody,
       requestId: 'artifact-import-live-goal-web-1',
     });
     const app = createApp({
@@ -7315,7 +7318,7 @@ describe('nanocore server', () => {
       expect(prompts).toEqual([expect.stringContaining(LIVE_GOAL_WEB_CHAT_PROMPT)]);
       expect(prompts[0]).toContain(LIVE_GOAL_WEB_REPORT_MARKER);
       expect(prompts[0]).toContain(
-        `Artifact ${artifact.title} (${artifact.id} v${artifact.version}):`
+        `Artifact ${artifact.title} (${artifact.id} v${artifact.version}, ${artifact.contentDigest}) (complete text, ${reportBytes} of ${reportBytes} bytes):\n${reportBody}`
       );
       expect(executor.startContexts).toHaveLength(0);
     } finally {
@@ -11312,13 +11315,17 @@ describe('nanocore server', () => {
     });
     const routeHandler = vi.fn(async () => ({ status: 200 }));
     const effectHandler = vi.fn(async () => ({ status: 'succeeded' }));
+    const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 0n);
     const dispatch = createNanoHostSessionDispatch({
+      coreDb,
+      fileAdmission,
       effectHandler,
       routeHandler,
       sessionAuthority: authority,
     });
     const app = createNanoCoreApp({
       coreDb,
+      fileAdmission,
       mode: 'server',
       nanohostTransportSessionAuthority: authority,
       nanoHostSessionDispatch: dispatch,
