@@ -1067,6 +1067,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     (options.turnExecutor || process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
       ? null
       : createConfiguredWorkerLifecycleRuntime({
+          fileAdmission,
           readRuntimeConfig: () => runtimeConfigManager.current(),
           coreDb: options.coreDb,
           ...(vaultUnlockState ? { vaultBackend: () => vaultUnlockState.backend() } : {}),
@@ -1078,6 +1079,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     options.turnExecutor ??
     configuredWorkerRuntime?.turnExecutor ??
     createConfiguredTurnExecutor({
+      fileAdmission,
       coreDb: options.coreDb,
       workerControlGateway,
       workspaceMutationAdmission,
