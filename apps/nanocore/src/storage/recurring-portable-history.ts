@@ -1,10 +1,13 @@
 import {
+  AutomationCadenceSchema,
   AutomationDefinitionSnapshotSchema,
   AutomationExpiredRangeSchema,
   AutomationOccurrenceSchema,
   AutomationRecordSchema,
 } from '@openkit/app-api-schemas';
+import { ReasoningEffortSchema } from '@openkit/protocol';
 import { z } from 'zod';
+import { recurringNominalMatches, recurringPrefixThrough, validateRecurringRangeCoverage } from '../lib/recurring-cadence.js';
 import type { CoreDb } from './db.js';
 import {
   ExpiredOccurrenceRangeSchema,
@@ -29,16 +32,17 @@ export const RECURRING_PORTABLE_PATHS = {
   expiredRanges: 'records/recurring-expired-ranges.jsonl',
 } as const;
 const requiredFeatures = z.array(z.never()).optional();
-const originActor = AutomationRecordSchema.shape.actor;
+const { actor: originActor, ...scheduleFields } = AutomationRecordSchema.shape;
 const portableSnapshot = AutomationDefinitionSnapshotSchema.omit({ actor: true }).extend({
   originActor,
   requiredFeatures,
 });
-const portableSchedule = AutomationRecordSchema.omit({ actor: true }).extend({
-  originScheduleId: z.string().min(1),
+const portableSchedule = z.object({
+  ...scheduleFields,
+  originScheduleId: AutomationRecordSchema.shape.id,
   originActor,
   requiredFeatures,
-});
+}).and(AutomationCadenceSchema);
 const portableOccurrence = AutomationOccurrenceSchema.omit({
   requestId: true,
   queueEntryId: true,
@@ -47,16 +51,22 @@ const portableOccurrence = AutomationOccurrenceSchema.omit({
   publicationIssue: true,
 }).extend({
   snapshot: portableSnapshot,
-  originRequestId: z.string().uuid(),
+  resolvedSelection: AutomationOccurrenceSchema.shape.resolvedSelection
+    .unwrap()
+    .extend({
+      reasoningEffort: ReasoningEffortSchema.optional(),
+    })
+    .nullable(),
+  originRequestId: AutomationOccurrenceSchema.shape.requestId,
   originQueueEntryId: z.string().min(1).nullable(),
-  originTurnId: z.string().min(1).nullable(),
-  turnExists: z.boolean(),
+  originTurnId: AutomationOccurrenceSchema.shape.turnId,
   requiredFeatures,
 });
-const portableRange = AutomationExpiredRangeSchema.extend({
+const portableRange = z.object({
+  ...AutomationExpiredRangeSchema.shape,
   snapshot: portableSnapshot,
   requiredFeatures,
-});
+}).and(AutomationCadenceSchema);
 const historySchema = z.object({
   schedules: z.array(portableSchedule),
   occurrences: z.array(portableOccurrence),
@@ -81,7 +91,8 @@ export function readRecurringPortableHistory(
   const schedules = new Map<string, RecurringPortableHistory['schedules'][number]>();
   const ids = new Set<string>();
   const tuples = new Set<string>();
-  const coverage = new Map<string, { first: number; last: number; step: number }[]>();
+  const linkedTurns = new Set<string>();
+  const coverage = new Map<string, RecurringPortableHistory['expiredRanges']>();
   const claimId = (id: string) => {
     if (ids.has(id)) throw new Error('Recurring portable history repeats an identity.');
     ids.add(id);
@@ -102,6 +113,7 @@ export function readRecurringPortableHistory(
       schedule.originActor.responsibleUserId !== schedule.responsibleUserId ||
       (schedule.status === 'deleted') !== (schedule.deletedAt !== null) ||
       (schedule.status === 'active') !== (schedule.nextScheduledAt !== null) ||
+      (schedule.nextScheduledAt !== null && !recurringNominalMatches(schedule, Date.parse(schedule.nextScheduledAt))) ||
       (schedule.nextScheduledAt !== null &&
         schedule.greatestAccountedScheduledAt !== null &&
         Date.parse(schedule.nextScheduledAt) <= Date.parse(schedule.greatestAccountedScheduledAt))
@@ -148,6 +160,7 @@ export function readRecurringPortableHistory(
       occurrence.originRequestId !==
         recurringRequestId(schedule.originScheduleId, occurrence.scheduledAt) ||
       Date.parse(occurrence.deadline) !== at + RECURRING_DEADLINE_MS ||
+      (occurrence.snapshot.monthlyUtc !== undefined && !recurringNominalMatches({ monthlyUtc: occurrence.snapshot.monthlyUtc }, at)) ||
       occurrence.attempts.some(
         (attempt, index) =>
           attempt.number !== index + 1 ||
@@ -161,10 +174,12 @@ export function readRecurringPortableHistory(
           occurrence.attempts.at(-1)?.code !== 'accepted' ||
           !occurrence.originQueueEntryId ||
           !occurrence.originTurnId ||
+          !occurrence.turnId ||
           !occurrence.resolvedSelection
         : acceptedAttempts.length !== 0 ||
           occurrence.originQueueEntryId !== null ||
-          occurrence.originTurnId !== null) ||
+          occurrence.originTurnId !== null ||
+          occurrence.turnId !== null) ||
       (occurrence.state === 'admission-failed' && occurrence.attempts.length !== 3) ||
       (occurrence.state === 'pending' && occurrence.attempts.length === 3) ||
       (occurrence.terminalAt !== null &&
@@ -172,11 +187,14 @@ export function readRecurringPortableHistory(
           Math.max(
             Date.parse(occurrence.createdAt),
             ...occurrence.attempts.map((attempt) => Date.parse(attempt.at))
-          )) ||
-      occurrence.turnExists !== (occurrence.turnId !== null) ||
-      (occurrence.turnExists && (!accepted || !occurrence.originTurnId))
+          ))
     )
       throw new Error('Recurring portable occurrence contradicts its bounded admission history.');
+    if (occurrence.turnId !== null) {
+      if (linkedTurns.has(occurrence.turnId))
+        throw new Error('Recurring portable occurrences share one retained Turn.');
+      linkedTurns.add(occurrence.turnId);
+    }
     if (
       references &&
       occurrence.turnId !== null &&
@@ -189,20 +207,14 @@ export function readRecurringPortableHistory(
     const first = Date.parse(range.firstScheduledAt);
     const last = Date.parse(range.lastScheduledAt);
     requireSchedule(range, last);
-    const step = range.intervalSeconds * 1000;
-    if (
-      last < first ||
-      !Number.isSafeInteger(step) ||
-      !Number.isSafeInteger(range.count) ||
-      last - first !== (range.count - 1) * step ||
-      Date.parse(range.terminalAt) < last + RECURRING_DEADLINE_MS
-    )
-      throw new Error('Recurring portable range has contradictory exact coverage.');
+    validateRecurringRangeCoverage(range);
+    if (Date.parse(range.terminalAt) < last + RECURRING_DEADLINE_MS)
+      throw new Error('Recurring portable range has contradictory terminal time.');
     const ranges = coverage.get(range.scheduleId) ?? [];
     // A schedule accounts time in ascending order, including across paused definition edits.
-    if (ranges.some((prior) => first <= prior.last && last >= prior.first))
+    if (ranges.some((prior) => first <= Date.parse(prior.lastScheduledAt) && last >= Date.parse(prior.firstScheduledAt)))
       throw new Error('Recurring portable ranges overlap.');
-    ranges.push({ first, last, step });
+    ranges.push(range);
     coverage.set(range.scheduleId, ranges);
   }
   for (const occurrence of graph.occurrences) {
@@ -211,7 +223,7 @@ export function readRecurringPortableHistory(
       coverage
         .get(occurrence.scheduleId)
         ?.some(
-          (range) => at >= range.first && at <= range.last && (at - range.first) % range.step === 0
+          (range) => at >= Date.parse(range.firstScheduledAt) && at <= Date.parse(range.lastScheduledAt) && recurringPrefixThrough(range, Date.parse(range.firstScheduledAt), at)?.last === at
         )
     )
       throw new Error('Recurring portable range overlaps an individual nominal instant.');
@@ -224,7 +236,7 @@ export function validateRecurringPortableHistory(text: string): void {
   readRecurringPortableHistory(JSON.parse(text));
 }
 
-/** Captures Core history and prior inert imports through the same deployment-safe whitelist. */
+/** Captures the whitelist under the caller's Workspace mutation fence and exact exported canonical Turn graph. */
 export function exportRecurringPortableHistory(
   coreDb: CoreDb | undefined,
   workspaceId: string,
@@ -257,6 +269,8 @@ export function exportRecurringPortableHistory(
     .map(readRecurringOccurrence)
     .map((row) => {
       const { actor, ...snapshot } = row.snapshot;
+      if (row.state === 'admission-accepted' && (!row.turnId || !turns.has(row.turnId)))
+        throw new Error('Recurring publication requires inspection before portable export.');
       if (row.turnId && turns.has(row.turnId) && turns.get(row.turnId) !== row.snapshot.threadId)
         throw new Error('Recurring source Turn contradicts its exported Thread.');
       return portableOccurrence.parse({
@@ -265,13 +279,15 @@ export function exportRecurringPortableHistory(
         originRequestId: row.requestId,
         originQueueEntryId: row.queueEntryId,
         originTurnId: row.turnId,
-        turnExists: row.turnId !== null && turns.has(row.turnId),
         turnId: row.turnId && turns.has(row.turnId) ? row.turnId : null,
         resolvedSelection: row.resolvedPayload
           ? {
               agentId: row.resolvedPayload.requestedAgentId,
               profileId: row.resolvedPayload.profileRef,
               modelId: row.resolvedPayload.modelId,
+              ...(row.resolvedPayload.reasoningEffort === undefined
+                ? {}
+                : { reasoningEffort: row.resolvedPayload.reasoningEffort }),
             }
           : null,
       });
