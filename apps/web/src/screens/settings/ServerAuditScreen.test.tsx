@@ -2,6 +2,7 @@ import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { SURFACE_ELEMENTS } from '../../app/routes';
@@ -31,7 +32,9 @@ function makeClient(app: Partial<CoreClient['operations']> = {}): CoreClient {
             action: 'server.inspect',
             outcome: 'succeeded',
             summary: `Inspection ${SECRET}`,
-            actor: { name: PRIVATE },
+            actor: { kind: 'user', id: 'user_recorded', name: PRIVATE },
+            workspaceId: 'ws_recorded',
+            threadId: 'th_recorded',
             payload: PRIVATE,
           },
         ],
@@ -63,7 +66,7 @@ function renderScreen(
   const rendered = render(
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
-        {SURFACE_ELEMENTS['server-audit'] ?? null}
+        <MemoryRouter>{SURFACE_ELEMENTS['server-audit'] ?? null}</MemoryRouter>
       </CoreClientProvider>
     </QueryClientProvider>
   );
@@ -71,6 +74,29 @@ function renderScreen(
 }
 
 describe('Server audit administration', () => {
+  it('shares recorded actor and exact Thread navigation without inventing missing lineage', async () => {
+    renderScreen(makeClient({
+      'audit.server-list': vi.fn().mockResolvedValue({
+        auditEvents: [
+          { id: 'recorded', category: 'command', action: 'turn.interrupt', outcome: 'succeeded',
+            summary: 'Stop accepted', actor: { kind: 'agent', id: 'agent_recorded', responsibleUserId: PRIVATE },
+            workspaceId: 'ws_recorded', threadId: 'th_recorded', turnId: 'turn_recorded', requestId: '019a0000-0000-7000-8000-000000000014' },
+          { id: 'historical', category: 'command', action: 'legacy.action', outcome: 'succeeded',
+            summary: 'Historical event', actor: null, workspaceId: null, threadId: 'unresolved_thread' },
+        ],
+      }),
+    }));
+    expect(await screen.findByText('Actor: agent · agent_recorded')).toBeVisible();
+    expect(screen.getByText('Actor not recorded')).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Open Thread th_recorded in Workspace ws_recorded' }))
+      .toHaveAttribute('href', '/chat/ws_recorded/th_recorded');
+    expect(screen.getAllByRole('link', { name: /^Open Thread / })).toHaveLength(1);
+    expect(screen.getByText('Turn: turn_recorded')).toBeVisible();
+    expect(screen.getByText('Request: 019a0000-0000-7000-8000-000000000014')).toBeVisible();
+    expect(document.body.textContent).not.toContain('unresolved_thread');
+    expect(document.body.textContent).not.toContain(PRIVATE);
+  });
+
   it('publishes a distinct Settings admin destination and loads both server APIs without Workspace arguments', async () => {
     expect(surfaceById('server-audit')).toMatchObject({
       path: '/settings/server-audit',
@@ -248,6 +274,8 @@ describe('Server audit administration', () => {
     const client = makeClient();
     const { container, queryClient } = renderScreen(client);
     expect(await screen.findByText('server.inspect')).toBeInTheDocument();
+    expect(screen.getByText('Actor: user · user_recorded')).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Open Thread th_recorded in Workspace ws_recorded' })).toBeVisible();
     vi.mocked(client.operations['audit.server-list']).mockRejectedValueOnce(
       new ApiCallError(status, PRIVATE, {
         code: PRIVATE,
@@ -264,6 +292,8 @@ describe('Server audit administration', () => {
       expect(await screen.findByText('Access denied')).toBeInTheDocument();
     }
     expect(screen.queryByText('server.inspect')).not.toBeInTheDocument();
+    expect(screen.queryByText('Actor: user · user_recorded')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Open Thread th_recorded in Workspace ws_recorded' })).not.toBeInTheDocument();
     expect(screen.queryByText('server.read [redacted]')).not.toBeInTheDocument();
     expect(container.innerHTML).not.toContain(PRIVATE);
     expect(container.querySelector('input')).toBeNull();

@@ -460,7 +460,7 @@ const CAPABILITY_USAGE = {
     {
       id: 'cap_1',
       workspaceId: WORKSPACE.id,
-      threadId: 'thread_1',
+      threadId: 'th_019a0000-0000-7000-8000-000000000021',
       turnId: 'turn_1',
       itemId: null,
       agentId: 'agent_1',
@@ -489,7 +489,7 @@ const CAPABILITY_USAGE = {
       id: 'usage_1',
       workspaceId: WORKSPACE.id,
       responsibleUserId: 'user_1',
-      threadId: 'thread_1',
+      threadId: 'th_019a0000-0000-7000-8000-000000000022',
       turnId: 'turn_1',
       itemId: null,
       capabilityCallId: 'cap_1',
@@ -594,7 +594,8 @@ const USAGE_FIELD_POISONS = [
 ] as const;
 
 const USAGE_NON_DISPLAY_FIELDS = [
-  'thread_1',
+  'th_019a0000-0000-7000-8000-000000000021',
+  'th_019a0000-0000-7000-8000-000000000022',
   'session_1',
   'provider_openai',
   'gateway-reported:input',
@@ -1590,6 +1591,44 @@ describe('Debug settings (board 11)', () => {
 });
 
 describe('Usage and audit settings (board 17)', () => {
+  it('shows only the recorded interrupter and exact audit lineage, with absent historical identity explicit', async () => {
+    const threadId = 'th_019a0000-0000-7000-8000-000000000012';
+    const turnId = 'turn_019a0000-0000-7000-8000-000000000013';
+    const requestId = '019a0000-0000-7000-8000-000000000014';
+    const client = makeClient({
+      operations: {
+        'audit.workspace-list': vi.fn().mockResolvedValue({
+          workspaceId: WORKSPACE.id,
+          auditEvents: [
+            {
+              ...WORKSPACE_AUDIT_EVENTS.auditEvents[0],
+              category: 'command',
+              action: 'turn.interrupt',
+              summary: 'The Stop request was accepted.',
+              actor: { kind: 'user', id: 'user_interrupter', displayName: POISON_SECRET },
+              triggerActor: { kind: 'user', id: 'user_initiator_not_the_interrupter' },
+              threadId,
+              turnId,
+              requestId,
+            },
+            { ...WORKSPACE_AUDIT_EVENTS.auditEvents[0], id: 'historical', threadId: null },
+          ],
+        }),
+      },
+    });
+    renderApp('/workspace/usage', client);
+    expect(await screen.findByText('Actor: user · user_interrupter')).toBeVisible();
+    expect(screen.getByText('Actor not recorded')).toBeVisible();
+    expect(screen.getByRole('link', { name: `Open Thread ${threadId} in Workspace ${WORKSPACE.id}` }))
+      .toHaveAttribute('href', `/chat/${WORKSPACE.id}/${threadId}`);
+    expect(screen.getByText(`Turn: ${turnId}`)).toBeVisible();
+    expect(screen.getByText(`Request: ${requestId}`)).toBeVisible();
+    expect(screen.getByText('Stop request accepted. Runtime cleanup is not confirmed by this event.')).toBeVisible();
+    expect(screen.getAllByRole('link', { name: /^Open Thread / })).toHaveLength(1);
+    expect(document.body.textContent).not.toContain('user_initiator_not_the_interrupter');
+    expect(document.documentElement.outerHTML).not.toContain(POISON_SECRET);
+  });
+
   it('labels recorded measurements and keeps capability details collapsed until opened', async () => {
     const user = userEvent.setup();
     const sources = ['input', 'output', 'cache_read', 'cache_write', 'total', 'cost_estimate'];
