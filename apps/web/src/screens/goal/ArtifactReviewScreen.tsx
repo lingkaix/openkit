@@ -89,13 +89,6 @@ export function ArtifactReviewScreen() {
       ? artifact.data
       : null;
 
-  if (review.decision === null && !exactArtifact && !sourceUnavailable) {
-    return (
-      <div className="mx-auto w-full max-w-[960px] px-6 py-8">
-        <ErrorBanner message="This review is unavailable. Recovery is required before a decision can be recorded." />
-      </div>
-    );
-  }
 
   return <ExactArtifactReview
     key={`${workspaceId}:${artifactId}:${review.artifactVersion}:${review.contentDigest}`}
@@ -135,6 +128,7 @@ function ExactArtifactReview({ workspaceId, routeWorkspaceId, threadId, artifact
   const proposalText = useMaterialProposalText(workspaceId, fileProposal ? exactArtifact : null);
   const conflict = decide.error instanceof ApiCallError && decide.error.status === 409 && decide.error.code === 'conflict';
   if (sourceUnavailable) return <div className="mx-auto w-full max-w-[960px] px-6 py-8"><ErrorBanner message="Couldn't load this artifact review." onRetry={onRefresh} /></div>;
+  if (review.decision === null && !exactArtifact) return <ErrorBanner message="This review is unavailable. Recovery is required before a decision can be recorded." />;
   if (proposal && base.isError) return <ErrorBanner message="Couldn't load the recorded Material base." onRetry={() => void base.refetch()} />;
   const exactBase = proposal && base.data && base.data.revision.materialId === proposal.materialId && base.data.revision.revisionId === proposal.baseRevisionId && base.data.revision.contentDigest === proposal.baseContentDigest ? base.data.revision : null;
   if (proposal && base.data && !exactBase) return <ErrorBanner message="The recorded Material base does not match this Review." onRetry={() => void base.refetch()} />;
@@ -287,7 +281,7 @@ function ExactArtifactReview({ workspaceId, routeWorkspaceId, threadId, artifact
           <TextField label="Selection reason" value={reason} onChange={setReason} isDisabled={writeBlocked || candidateUnavailable || select.isUncertain} description="Optional. Selection records a choice and starts no work." />
           <Button size="sm" variant="outline" isDisabled={writeBlocked || candidateUnavailable} onPress={() => select.mutate(reason.trim() || undefined)}>Select candidate</Button>
           {select.isPending ? <p role="status" className="text-sm text-fg-muted">Recording candidate choice.</p> : null}
-          {select.isError ? <ErrorBanner message={select.error instanceof ApiCallError && select.error.code === 'conflict' ? 'The Material base changed. Refresh before selecting this candidate.' : select.error instanceof ApiCallError && (select.error.code === 'stale' || select.error.status === 404) ? 'This exact candidate is unavailable. Refresh the review.' : 'Candidate selection could not be confirmed. Inspect the review or retry the same choice.'} onRetry={onRefresh} /> : null}
+          {select.isError ? <ErrorBanner message={select.error instanceof ApiCallError && (select.error.code === 'stale' || select.error.status === 404) ? 'This exact candidate is unavailable. Refresh the review.' : 'Candidate selection could not be confirmed. Inspect the review or retry the same choice.'} onRetry={onRefresh} /> : null}
           <Button size="sm" isDisabled={writeBlocked || !exactArtifact || !review.sourceThreadId || !(review.candidateSelections?.length)} onPress={() => {
             if (!review.sourceThreadId || !exactArtifact) return;
             navigate(chatThreadPath(workspaceId, review.sourceThreadId), { state: { candidateInput: { workspaceId, threadId: review.sourceThreadId, artifactId, artifactVersion: review.artifactVersion, contentDigest: review.contentDigest } } });
