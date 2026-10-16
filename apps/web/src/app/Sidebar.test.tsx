@@ -385,7 +385,11 @@ describe('conversation navigation sidebar', () => {
             {
               membershipStatus: 'active' as const,
               accessCause: 'membership' as const,
-              workspace: { id: 'ws_00000000-0000-706d-b903-72e27d4276af', name: 'My quick chat', kind: 'personal' },
+              workspace: {
+                id: 'ws_00000000-0000-706d-b903-72e27d4276af',
+                name: 'My quick chat',
+                kind: 'personal',
+              },
               effectiveRole: 'owner',
               membershipRevision: 2,
               ownerUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
@@ -394,7 +398,11 @@ describe('conversation navigation sidebar', () => {
             {
               membershipStatus: null,
               accessCause: 'administrator' as const,
-              workspace: { id: 'ws_00000000-0000-7934-b833-fdbc51d3c0a2', name: 'Someone else', kind: 'personal' },
+              workspace: {
+                id: 'ws_00000000-0000-7934-b833-fdbc51d3c0a2',
+                name: 'Someone else',
+                kind: 'personal',
+              },
               effectiveRole: null,
               membershipRevision: null,
               ownerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',

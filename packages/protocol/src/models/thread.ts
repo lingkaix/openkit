@@ -21,7 +21,6 @@ export const ThreadSchema = z
     entryPath: ThreadEntryPathSchema,
     /** Missing on retained records whose inception owner did not record classification. */
     threadSource: z.enum(['conversation', 'worker']).optional(),
-    parentThreadId: ThreadIdSchema.optional(),
     visibility: z.enum(['private', 'workspace']),
     privateOwnerUserId: UserIdSchema.optional(),
     createdAt: TimestampSchema,

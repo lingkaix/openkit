@@ -1,8 +1,9 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import type { Item } from '@openkit/protocol';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import {
@@ -53,7 +54,7 @@ function fixture(historyTurns = 8, durable = false, failedSource = false) {
   const workspace = store.createWorkspace('Rolling context');
   const thread = store.createThread(workspace.id, 'Conversation', undefined, 'conversation', {
     visibility: 'private',
-    privateOwnerUserId: 'user_local',
+    privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
   });
   const history: Item[] = [];
   for (let index = 0; index < historyTurns; index += 1) {
@@ -88,7 +89,7 @@ function admitTurn(store: FsStore, workspaceId: string, threadId: string) {
     workspaceId,
     threadId,
     'Continue.',
-    { kind: 'user', id: 'user_local' },
+    { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     null,
     {
       agentId: 'quick-chat',
@@ -107,7 +108,8 @@ function messageItem(
   type: 'user-message' | 'assistant-message',
   text: string
 ) {
-  const identities = itemIdsByTurn.get(turn.id) ?? [randomUUID(), randomUUID()].sort();
+  const identities =
+    itemIdsByTurn.get(turn.id) ?? [allocateEntityId('it'), allocateEntityId('it')].sort();
   itemIdsByTurn.set(turn.id, identities);
   return store.createItem({
     id: identities[type === 'user-message' ? 1 : 0]!,
@@ -119,7 +121,9 @@ function messageItem(
     status: 'completed',
     createdAt: timestamp,
     completedAt: timestamp,
-    ...(type === 'user-message' ? { actor: { kind: 'user' as const, id: 'user_local' } } : {}),
+    ...(type === 'user-message'
+      ? { actor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' } }
+      : {}),
   } as Item);
 }
 

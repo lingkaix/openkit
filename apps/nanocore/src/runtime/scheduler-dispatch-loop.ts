@@ -6,11 +6,7 @@ import type {
   WorkspaceDataSourceCatalog,
   WorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
-import {
-  allocateEntityId,
-  responsibleUserIdForActor,
-  type TurnSchema,
-} from '@openkit/protocol';
+import { allocateEntityId, responsibleUserIdForActor, type TurnSchema } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { AgentManifest } from '../agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from '../agents/readiness.js';

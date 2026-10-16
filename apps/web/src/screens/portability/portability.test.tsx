@@ -38,8 +38,16 @@ const VAULT_MATERIAL_BASE64 = btoa(
 );
 const ASCII_VAULT_MATERIAL = 'vault-material';
 const ASCII_VAULT_MATERIAL_BASE64 = btoa(ASCII_VAULT_MATERIAL);
-const WORKSPACE = { id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research', kind: 'general' } as const;
-const WORKSPACE_B = { id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6', name: 'Second workspace', kind: 'general' } as const;
+const WORKSPACE = {
+  id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  name: 'Market research',
+  kind: 'general',
+} as const;
+const WORKSPACE_B = {
+  id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+  name: 'Second workspace',
+  kind: 'general',
+} as const;
 const EXPORTED_ABSENT_ID = 'ws_00000000-0000-73f4-8366-3b35ef8cc8de';
 const PERSONAL_WORKSPACE = {
   id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',

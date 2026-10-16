@@ -1,5 +1,6 @@
 import { operationHttpPath } from '@openkit/app-api-schemas';
 import { createCoreClient } from '@openkit/core-client';
+import { allocateEntityId } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -11,13 +12,14 @@ import { workspaceKeys } from './data';
 import { KnowledgeScreen } from './KnowledgeScreen';
 
 const TIMESTAMP = '2026-10-16T00:00:00.000Z';
-const WORKSPACE_A = 'ws_source_a';
-const WORKSPACE_B = 'ws_source_b';
+const WORKSPACE_A = allocateEntityId('ws');
+const WORKSPACE_B = allocateEntityId('ws');
+const OWNER_USER_ID = allocateEntityId('usr');
 const CONTENT = 'The reading room opens at 09:00 on weekdays. Bring the blue access card.';
 // SHA-256 of CONTENT: equal captured bytes must not select a Source identity.
 const DIGEST = 'sha256:9426dd5546dcc43161aeef04bfa87967e8e6f41ece421019a0e7e19747fe8d96';
 const SOURCE_A = {
-  id: 'ks_00000000-0000-4000-8000-000000000001',
+  id: allocateEntityId('ks'),
   workspaceId: WORKSPACE_A,
   kind: 'document' as const,
   title: 'First registered reading-room document',
@@ -32,12 +34,12 @@ const SOURCE_A = {
 };
 const SELECTED_SOURCE = {
   ...SOURCE_A,
-  id: 'ks_00000000-0000-4000-8000-000000000002',
+  id: allocateEntityId('ks'),
   title: 'Selected reading-room document',
 };
 const SOURCE_B = {
   ...SOURCE_A,
-  id: 'ks_00000000-0000-4000-8000-000000000003',
+  id: allocateEntityId('ks'),
   workspaceId: WORKSPACE_B,
   title: 'Other Workspace reading-room document',
 };
@@ -84,7 +86,7 @@ function renderKnowledge({ failFirstCreate = false } = {}) {
               accessCause: 'membership',
               effectiveRole: 'owner',
               membershipRevision: 1,
-              ownerUserId: 'user_reader',
+              ownerUserId: OWNER_USER_ID,
               registryRevision: 1,
             })),
           };

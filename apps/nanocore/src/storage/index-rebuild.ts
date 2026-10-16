@@ -44,10 +44,7 @@ import {
 } from '../retrieval-knowledge-adapter.js';
 import { getRetrievalService } from '../retrieval-service.js';
 import { resolveDataRootPath } from './fs-layout.js';
-import {
-  publishRetrievalTrace,
-  readRetrievalTrace,
-} from './retrieval-traces.js';
+import { publishRetrievalTrace, readRetrievalTrace } from './retrieval-traces.js';
 import {
   assertCanonicalDirectory,
   listKnowledgePageIds,

@@ -4,9 +4,8 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SubmitConversationResponseSchema } from '@openkit/app-api-schemas';
-import { parseReferenceScope } from '@openkit/protocol';
+import { allocateEntityId, parseReferenceScope } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
 import type {
   OpenAICompatibleResponsesRequest,
@@ -20,9 +19,12 @@ import {
   RetrievalService,
 } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
-import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import {
+  ensureLocalUser,
+  FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
+} from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -66,7 +68,7 @@ function retainMessage(
 ) {
   const turn = store.createTurn(workspaceId, threadId, text, { kind: 'user', id: LOCAL_USER_ID });
   const item = store.createItem({
-    id: randomUUID(),
+    id: allocateEntityId('it'),
     workspaceId,
     threadId,
     turnId: turn.id,
@@ -98,7 +100,7 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
   for (const entry of [workspace, otherWorkspace]) {
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: entry.id, ownerUserId: LOCAL_USER_ID });
   }
-  const otherUserId = randomUUID();
+  const otherUserId = allocateEntityId('usr');
   const localUser = coreDb.sqlite
     .prepare('SELECT email FROM users WHERE id = ?')
     .get(LOCAL_USER_ID) as { email: string };
@@ -268,7 +270,7 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
     id: LOCAL_USER_ID,
   });
   const reasoning = store.createItem({
-    id: randomUUID(),
+    id: allocateEntityId('it'),
     workspaceId: workspace.id,
     threadId: shared.id,
     turnId: hiddenTurn.id,

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Item } from '@openkit/protocol';
-import { uuidv5 } from '../generative-kernel/uuid.js';
+import { deriveEntityId } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
 import { assertInternalAgentContextFits } from './gateway-provider.js';
 import {
@@ -372,14 +372,12 @@ export async function prepareInternalAgentContext(
     };
     const completedAt = new Date().toISOString();
     const next: Summary = {
-      id: uuidv5(
-        JSON.stringify({
-          kind: 'internal-context-summary',
-          turnId: input.turn.id,
-          environmentDigest,
-          sourceRange,
-        })
-      ),
+      id: deriveEntityId('it', {
+        kind: 'internal-context-summary',
+        turnId: input.turn.id,
+        environmentDigest,
+        sourceRange,
+      }),
       workspaceId: input.turn.workspaceId,
       threadId: input.turn.threadId,
       turnId: input.turn.id,

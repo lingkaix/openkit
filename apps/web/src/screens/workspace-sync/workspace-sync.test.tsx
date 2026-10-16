@@ -29,8 +29,16 @@ const TIMESTAMP = '2026-07-21T12:00:00.000Z';
 const HOST_PATH = '/Users/secret/openkit-staging';
 const RAW_HANDLE = 'sandbox-pid-9999-gateway-xyz';
 const POISON_SECRET = 'sk-secret-should-never-render';
-const WORKSPACE = { id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research', kind: 'general' } as const;
-const WORKSPACE_B = { id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6', name: 'Second workspace', kind: 'general' } as const;
+const WORKSPACE = {
+  id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  name: 'Market research',
+  kind: 'general',
+} as const;
+const WORKSPACE_B = {
+  id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+  name: 'Second workspace',
+  kind: 'general',
+} as const;
 const PERSONAL_WORKSPACE = {
   id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
   name: 'Personal',

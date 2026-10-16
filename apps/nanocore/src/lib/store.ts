@@ -74,7 +74,6 @@ import { type CoreDb, openWorkspaceDbAtRoot, type WorkspaceDb } from '../storage
 import {
   ensureLayoutDirectories,
   ensureWorkspaceLayout,
-  ensureWorkspaceLayoutRoot,
   resolveDataRootPath,
 } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';

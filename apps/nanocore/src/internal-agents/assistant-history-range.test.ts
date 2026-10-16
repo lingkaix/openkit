@@ -3,13 +3,17 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Item, RetrievalTraceReference } from '@openkit/protocol';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
-import { type Actor, ensureLocalUser } from '../auth/identity.js';
+import type { Actor } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb } from '../storage/db.js';
-import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { readRetrievalTrace } from '../storage/retrieval-traces.js';
+import {
+  ensureLocalUser,
+  FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
+} from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   assertConversationRetrievalTraceReadable,
@@ -51,7 +55,7 @@ function fixture(
   const store = new FsStore({ dataRoot });
   const workspace = store.createWorkspace('Exact source-bound history');
   // The querying member must be removable without violating canonical owner continuity.
-  const ownerUserId = randomUUID();
+  const ownerUserId = allocateEntityId('usr');
   coreDb.sqlite
     .prepare(`INSERT INTO users
     (id, display_name, email, email_verified, created_at, updated_at, kind, status)
@@ -121,7 +125,7 @@ function message(
   text: string
 ): MessageItem {
   return store.createItem({
-    id: randomUUID(),
+    id: allocateEntityId('it'),
     workspaceId: turn.workspaceId,
     threadId: turn.threadId,
     turnId: turn.id,
@@ -206,7 +210,7 @@ describe('Assistant exact source-bound history ranges', () => {
   it('returns failed Tool evidence as inert canonical JSON without changing its source Item', async () => {
     const f = fixture([]);
     const item = f.store.createItem({
-      id: randomUUID(),
+      id: allocateEntityId('it'),
       workspaceId: f.workspace.id,
       threadId: f.source.id,
       turnId: f.sourceTurn.id,
@@ -353,7 +357,7 @@ describe('Assistant exact source-bound history ranges', () => {
         'conversation',
         {
           visibility: 'private',
-          privateOwnerUserId: fault === 'foreign private' ? randomUUID() : LOCAL_USER_ID,
+          privateOwnerUserId: fault === 'foreign private' ? allocateEntityId('usr') : LOCAL_USER_ID,
         }
       );
       const turn = f.store.createTurn(workspace.id, source.id, 'Private source.', {
@@ -365,7 +369,7 @@ describe('Assistant exact source-bound history ranges', () => {
       requestedRange = { ...requestedRange, sourceDigest: `sha256:${'0'.repeat(64)}` };
     else if (fault === 'hidden reasoning' || fault === 'hidden summary') {
       const base = {
-        id: randomUUID(),
+        id: allocateEntityId('it'),
         workspaceId: f.workspace.id,
         threadId: f.source.id,
         turnId: f.sourceTurn.id,
@@ -394,7 +398,7 @@ describe('Assistant exact source-bound history ranges', () => {
       requestedRange = range(f, [item]);
     } else {
       cursor = {
-        itemId: fault === 'unknown cursor' ? randomUUID() : f.items[0]!.id,
+        itemId: fault === 'unknown cursor' ? allocateEntityId('it') : f.items[0]!.id,
         offset:
           fault === 'cursor past end'
             ? Buffer.byteLength(f.items[0]!.text) + 1

@@ -77,7 +77,9 @@ export function assistantPendingHandoffResultItemId(
 }
 
 /** Derives the receiving tuple from the immutable admitted outcome, never from model correlation. */
-export function assistantPendingHandoffIds(outcomeScope: ReturnType<typeof assistantPendingOutcomeSource>) {
+export function assistantPendingHandoffIds(
+  outcomeScope: ReturnType<typeof assistantPendingOutcomeSource>
+) {
   const sourceHash = commandInputHash(outcomeScope);
   return {
     requestId: uuidv5(JSON.stringify({ kind: 'assistant-handoff-request', sourceHash })),

@@ -30,10 +30,18 @@ function workspace(id: string, name: string, kind: WorkspaceRecord['kind'] = 'ge
   };
 }
 
-const FOREIGN_QUICK_CHAT = workspace('ws_00000000-0000-7f53-b5e9-3e693166a2dc', 'Foreign Personal Workspace', 'personal');
+const FOREIGN_QUICK_CHAT = workspace(
+  'ws_00000000-0000-7f53-b5e9-3e693166a2dc',
+  'Foreign Personal Workspace',
+  'personal'
+);
 const FOREIGN_PROJECT = workspace('ws_00000000-0000-7ddd-a7d6-01ec32964976', 'Foreign project');
 const REMOVED_PROJECT = workspace('ws_00000000-0000-761c-962b-efd73f3a20f2', 'Former membership');
-const OWN_QUICK_CHAT = workspace('ws_00000000-0000-7cf3-8a92-8b574e4c1bf2', 'My Personal Workspace', 'personal');
+const OWN_QUICK_CHAT = workspace(
+  'ws_00000000-0000-7cf3-8a92-8b574e4c1bf2',
+  'My Personal Workspace',
+  'personal'
+);
 const OWN_PROJECT = workspace('ws_00000000-0000-7288-a428-32334d5b78c6', 'My project');
 const SHARED_EDITOR = workspace('ws_00000000-0000-7836-b93a-c6c5ddad2cea', 'Shared editor project');
 const SHARED_VIEWER = workspace('ws_00000000-0000-7fa2-b563-755762707b95', 'Shared viewer project');

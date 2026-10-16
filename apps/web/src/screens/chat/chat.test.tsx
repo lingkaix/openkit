@@ -678,7 +678,10 @@ describe.each([
     const importWorkspaceArtifact = vi
       .fn()
       .mockRejectedValueOnce(new Error('Private import failure details'))
-      .mockResolvedValue({ artifactId: 'ar_00000000-0000-7c8d-af4c-2980db144abf', artifactVersion: 3 });
+      .mockResolvedValue({
+        artifactId: 'ar_00000000-0000-7c8d-af4c-2980db144abf',
+        artifactVersion: 3,
+      });
     const submitConversation = vi.fn().mockReturnValue(new Promise(() => {}));
     renderApp(
       path,
@@ -907,7 +910,11 @@ describe('chat starter (board 01)', () => {
       {
         'workspace.list': vi.fn().mockResolvedValue({
           items: [
-            { id: 'ws_00000000-0000-7d15-8bb9-5d57f3c7a053', name: 'Project Workspace', kind: 'general' },
+            {
+              id: 'ws_00000000-0000-7d15-8bb9-5d57f3c7a053',
+              name: 'Project Workspace',
+              kind: 'general',
+            },
             { id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28', name: 'Quick Chat', kind: 'personal' },
           ].map((workspace) => ({
             membershipStatus: 'active' as const,

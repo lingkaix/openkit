@@ -50,10 +50,6 @@
         "worker"
       ]
     },
-    "parentThreadId": {
-      "type": "string",
-      "minLength": 1
-    },
     "visibility": {
       "type": "string",
       "enum": [

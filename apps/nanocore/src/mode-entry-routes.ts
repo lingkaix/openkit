@@ -522,7 +522,7 @@ function replayConversationCommand(
       };
     }
     const userItemId = deriveEntityId('it', ['chat-user', currentTurn.id]);
-    let resultItemId = deriveEntityId('it', [CONVERSATION_RESULT_ITEM_ROLE[metadata.resultKind], currentTurn.id]);
+    let resultItemId: string;
     if (metadata.resultKind === 'clarification') {
       const db = repositoryWorkspaceDb(workspaceId);
       try {
@@ -543,6 +543,11 @@ function replayConversationCommand(
       } finally {
         db.sqlite.close();
       }
+    } else {
+      resultItemId = deriveEntityId('it', [
+        CONVERSATION_RESULT_ITEM_ROLE[metadata.resultKind],
+        currentTurn.id,
+      ]);
     }
     const userItem = itemRevisions.find((item) => item.id === userItemId);
     const resultItem = itemRevisions.find((item) => item.id === resultItemId);
