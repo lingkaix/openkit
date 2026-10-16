@@ -121,20 +121,56 @@ describe('scope-qualified reference contract', () => {
 
 it('resolves exact file scopes without treating versions or input ordinals as new entity ids', () => {
   for (const [scopeId, expected] of [
-    ['artifact/workspace/ws_current', { family: 'artifact', kind: 'workspace', workspaceId: 'ws_current' }],
-    ['material/workspace/ws_current', { family: 'material', kind: 'workspace', workspaceId: 'ws_current' }],
-    ['input/turn/ws_current/th_current/tu_current', { family: 'input', kind: 'turn', workspaceId: 'ws_current', threadId: 'th_current', turnId: 'tu_current' }],
+    [
+      'artifact/workspace/ws_current',
+      { family: 'artifact', kind: 'workspace', workspaceId: 'ws_current' },
+    ],
+    [
+      'material/workspace/ws_current',
+      { family: 'material', kind: 'workspace', workspaceId: 'ws_current' },
+    ],
+    [
+      'input/turn/ws_current/th_current/tu_current',
+      {
+        family: 'input',
+        kind: 'turn',
+        workspaceId: 'ws_current',
+        threadId: 'th_current',
+        turnId: 'tu_current',
+      },
+    ],
   ] as const) {
     expect(parseReferenceScope(scopeId)).toEqual(expected);
-    expect(ScopeQualifiedReferenceSchema.safeParse({scopeId, objectId: scopeId.startsWith('input/') ? '0' : 'opaque-current-id'}).success).toBe(true);
+    expect(
+      ScopeQualifiedReferenceSchema.safeParse({
+        scopeId,
+        objectId: scopeId.startsWith('input/') ? '0' : 'opaque-current-id',
+      }).success
+    ).toBe(true);
   }
-  for (const scopeId of ['artifact/server', 'artifact/workspace/th_current', 'material/workspace/ws_current/extra', 'input/thread/ws_current/th_current', 'input/turn/ws_current/th_current/th_current']) {
+  for (const scopeId of [
+    'artifact/server',
+    'artifact/workspace/th_current',
+    'material/workspace/ws_current/extra',
+    'input/thread/ws_current/th_current',
+    'input/turn/ws_current/th_current/th_current',
+  ]) {
     expect(parseReferenceScope(scopeId)).toBeNull();
   }
   for (const objectId of ['', '-1', '+1', '01', '1.0', '1e2', '0/1', '9007199254740992']) {
-    expect(ScopeQualifiedReferenceSchema.safeParse({scopeId:'input/turn/ws_current/th_current/tu_current',objectId}).success).toBe(false);
+    expect(
+      ScopeQualifiedReferenceSchema.safeParse({
+        scopeId: 'input/turn/ws_current/th_current/tu_current',
+        objectId,
+      }).success
+    ).toBe(false);
   }
   for (const family of ['artifact', 'material']) {
-    expect(ScopeQualifiedReferenceSchema.safeParse({scopeId:`${family}/workspace/ws_current`,objectId:'a/b'}).success).toBe(false);
+    expect(
+      ScopeQualifiedReferenceSchema.safeParse({
+        scopeId: `${family}/workspace/ws_current`,
+        objectId: 'a/b',
+      }).success
+    ).toBe(false);
   }
 });

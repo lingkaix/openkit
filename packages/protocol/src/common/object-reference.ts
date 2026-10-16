@@ -1,5 +1,12 @@
 import { z } from 'zod';
-import { ArtifactIdSchema, MaterialIdSchema, isThreadId, isTurnId, isUserId, isWorkspaceId } from './ids.js';
+import {
+  ArtifactIdSchema,
+  isThreadId,
+  isTurnId,
+  isUserId,
+  isWorkspaceId,
+  MaterialIdSchema,
+} from './ids.js';
 
 /** Logical collection identified by the fixed local reference grammar. */
 export type ReferenceScope =
@@ -29,9 +36,25 @@ export function parseReferenceScope(value: string): ReferenceScope | null {
     if (kind === 'workspace' && parts.length === 3 && a && isWorkspaceId(a))
       return { family, kind, workspaceId: a };
   }
-  if ((family === 'artifact' || family === 'material') && kind === 'workspace' && parts.length === 3 && a && isWorkspaceId(a))
+  if (
+    (family === 'artifact' || family === 'material') &&
+    kind === 'workspace' &&
+    parts.length === 3 &&
+    a &&
+    isWorkspaceId(a)
+  )
     return { family, kind, workspaceId: a };
-  if (family === 'input' && kind === 'turn' && parts.length === 5 && a && b && c && isWorkspaceId(a) && isThreadId(b) && isTurnId(c))
+  if (
+    family === 'input' &&
+    kind === 'turn' &&
+    parts.length === 5 &&
+    a &&
+    b &&
+    c &&
+    isWorkspaceId(a) &&
+    isThreadId(b) &&
+    isTurnId(c)
+  )
     return { family, kind, workspaceId: a, threadId: b, turnId: c };
   if (family === 'retrieval-trace' && a && b && isWorkspaceId(a) && isThreadId(b)) {
     if (kind === 'thread' && parts.length === 4)
@@ -56,14 +79,21 @@ export const ScopeQualifiedReferenceSchema = z
     objectId: z.string().min(1),
   })
   .strict()
-  .superRefine(({scopeId, objectId}, context) => {
+  .superRefine(({ scopeId, objectId }, context) => {
     const family = parseReferenceScope(scopeId)?.family;
-    const valid = family === 'artifact'
-      ? !objectId.includes('/') && ArtifactIdSchema.safeParse(objectId).success
-      : family === 'material'
-        ? !objectId.includes('/') && MaterialIdSchema.safeParse(objectId).success
-        : family !== 'input' || (/^(0|[1-9][0-9]*)$/.test(objectId) && Number.isSafeInteger(Number(objectId)));
-    if (!valid) context.addIssue({code:'custom',path:['objectId'],message:'Invalid object selector for this reference kind.'});
+    const valid =
+      family === 'artifact'
+        ? !objectId.includes('/') && ArtifactIdSchema.safeParse(objectId).success
+        : family === 'material'
+          ? !objectId.includes('/') && MaterialIdSchema.safeParse(objectId).success
+          : family !== 'input' ||
+            (/^(0|[1-9][0-9]*)$/.test(objectId) && Number.isSafeInteger(Number(objectId)));
+    if (!valid)
+      context.addIssue({
+        code: 'custom',
+        path: ['objectId'],
+        message: 'Invalid object selector for this reference kind.',
+      });
   });
 
 /** Page reference keeps page-path validation with the Knowledge owner. */
@@ -93,13 +123,17 @@ export type RetrievalTraceReference = z.infer<typeof RetrievalTraceReferenceSche
 
 /** Existing immutable Artifact selection; version and original digest are separate evidence. */
 export const ArtifactReferenceSchema = ScopeQualifiedReferenceSchema.safeExtend({
-  scopeId: ReferenceScopeIdSchema.refine((value) => parseReferenceScope(value)?.family === 'artifact'),
+  scopeId: ReferenceScopeIdSchema.refine(
+    (value) => parseReferenceScope(value)?.family === 'artifact'
+  ),
   objectId: ArtifactIdSchema,
 });
 
 /** Existing Workspace Material selection; revisions remain under the Material owner. */
 export const MaterialReferenceSchema = ScopeQualifiedReferenceSchema.safeExtend({
-  scopeId: ReferenceScopeIdSchema.refine((value) => parseReferenceScope(value)?.family === 'material'),
+  scopeId: ReferenceScopeIdSchema.refine(
+    (value) => parseReferenceScope(value)?.family === 'material'
+  ),
   objectId: MaterialIdSchema,
 });
 
