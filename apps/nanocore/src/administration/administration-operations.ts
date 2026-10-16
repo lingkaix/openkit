@@ -47,7 +47,7 @@ import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
-import type { CoreDb } from '../storage/db.js';
+import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
   type AdministrationEnvironmentTools,
   createAdministrationTools,
@@ -78,6 +78,7 @@ interface AdministrationEnvironmentToolContext {
 
 /** Dependencies for the private administration family; all request facts arrive in admitted context. */
 interface AdministrationDependencies {
+  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly coreDb: CoreDb | undefined;
   readonly environmentToolsForTurn: (
     context: AdministrationEnvironmentToolContext
@@ -109,6 +110,8 @@ export function createAdministrationOperationImplementations(input: Administrati
       files: input.runtimeConfigFiles(actor),
       reload: input.reloadRuntimeConfig,
       inflightCommands: input.inflightCommands,
+      runtimeConfig: input.runtimeConfig,
+      repositoryWorkspaceDb: input.repositoryWorkspaceDb,
     });
   }
   return {
@@ -273,6 +276,12 @@ export function createAdministrationOperationImplementations(input: Administrati
                         threadId: thread.id,
                         turnId: turn.id,
                         requestId: request.requestId,
+                      }),
+                    applyDelegated: (value, context) =>
+                      catalog.applyDelegated(value, {
+                        threadId: thread.id,
+                        turnId: turn.id,
+                        signal: context.signal,
                       }),
                   }
                 ),

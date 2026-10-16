@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Partial
 kind: concept
 date: 2026-09-22
 ---
@@ -20,7 +20,7 @@ General Permissions, a new grant store, the internal agent loop, policy language
 
 ## Summary
 
-Simon accepted bounded delegated worker policy maintenance on 2026-09-22: an internal operator may choose and apply ordinary non-secret corrections within explicit administrator-defined workload/resource limits without per-candidate human confirmation. On 2026-10-15, [D06 accepted the first finite apply scope](../decisions/20261015-cleanup_pinning_and_delegated_apply_rulings.md): registered Worker network-policy Git-read corrections only. This owner and the administration owners admit that exact exception. Implementation remains Not Started; acceptance is not a claim that a Tool already exists.
+Simon accepted bounded delegated worker policy maintenance on 2026-09-22: an internal operator may choose and apply ordinary non-secret corrections within explicit administrator-defined workload/resource limits without per-candidate human confirmation. On 2026-10-15, [D06 accepted the first finite apply scope](../decisions/20261015-cleanup_pinning_and_delegated_apply_rulings.md): registered Worker network-policy Git-read corrections only. This owner and the administration owners admit that exact exception. The finite candidate, Policy and application path is implemented; real Sandbox enforcement qualification remains separate.
 
 ## Goals / Non-goals
 
@@ -56,6 +56,14 @@ Recheck that context, exact candidate and source revision immediately before the
 
 This is the finite [D06 ruling](../decisions/20261015-cleanup_pinning_and_delegated_apply_rulings.md), not general configuration or host authority.
 
+### Finite Candidate And Failure Evidence
+
+The Agent proposal branch names `targetFamily: agent`, the exact registered `targetId`, `expectedRevision`, `failure: { workspaceId, threadId, turnId }` and `changes: { networkGrantId, rules }`. The rule list is the complete prospective rule list of that existing explicit REST grant, not a replacement Agent document. Endpoint, binary, TLS, credentials and all other change keys are excluded. Existing shorthand grants are outside this first correction shape. Existing non-Git rules retain their exact order and values; eligible Git-read rules are replaced with the failed input repository's GET `info/refs*` and POST `git-upload-pack` pair. The current boundary does not enforce query values, so this contract makes no service-query inspection claim. Unknown authored descriptive sibling fields are preserved in the source.
+
+NanoCore resolves the audience-checked terminal failed Turn, its registered Agent, its exact AgentSession and named retained AEP snapshot. The snapshot must match that Turn, Thread, Agent and AgentSession. Its Git input must be unique because the shared failure record does not identify which of several inputs failed. The input must use an exact credential-free HTTPS repository URL without query, fragment or path aliases. Missing, mismatched or ambiguous lineage refuses the candidate; model selection cannot supply missing causal evidence. The existing structured Git explanation proves an observed failed fetch only, with enforcement cause unavailable. The candidate retains `failureEvidence: { agentSessionId, snapshotId, snapshotDigest, repositoryInputId, explanationDigest }`; the digests bind the retained snapshot and normalized known-field explanation. No failure registry is created.
+
+Candidate preparation requires current administrator, source and private destination authority and the finite correction shape. It does not grant application authority. Application revalidates that same failure evidence, source identity, exact base and semantic after-view; the private projection additionally requires the current loaded finite Policy assignment and trusted current invocation. The Artifact's origin remains source evidence and cannot substitute for the current invocation Turn. Provider and Gateway candidates sent to the private apply projection refuse before dispatch. A human-confirmed Agent candidate uses the same bounded validation and sole writer through the public command, with explicit human authority instead of delegated authority.
+
 ### Candidate And Application Lifecycle
 
 Creation records a candidate against an exact registered target and base revision, with its originating failure, permitted purpose and semantic comparison. Validation resolves current target and authority, checks the candidate against the delegated ceiling and binds exact candidate identity to the permission decision. Application uses the existing revision-protected configuration command owner, not a direct file write by a Tool. Existing command receipts, AuditEvents and evidence retain actor, scope, base/candidate/template identities, semantic diff, permission decision, persisted result and reload outcome. Projections do not become a second durable authority.
@@ -68,7 +76,7 @@ No running AEP, process environment or historical failed Turn is rewritten. Veri
 
 ### Executable Policy Assignment Dependency
 
-Implementation of delegated application depends on the existing Permissions/Policy assignment owner providing an executable assignment and evaluation path for this exact actor, registered target, full affected scope, `git-read` purpose, action, rule bounds, and validity/revocation conditions. That mechanism is not implemented or defined by this amendment. Until the owning mechanism can produce the exact current allow, delegated apply fails closed. Administrator status, ordinary `api.call`, a template comparison, model prose, and a parallel grant store are not substitutes.
+Implementation of delegated application depends on the existing Permissions/Policy assignment owner providing an executable assignment and evaluation path for this exact actor, registered target, full affected scope, `git-read` purpose, action, rule bounds, and validity/revocation conditions. The executable assignment and adapter are owned by [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md#finite-worker-git-read-maintenance-assignment), not by this amendment. Until the owning mechanism can produce the exact current allow, delegated apply fails closed. Administrator status, ordinary `api.call`, a template comparison, model prose, and a parallel grant store are not substitutes.
 
 P12 owns shared schema/operation composition, P01 owns configuration persistence, and the administration caller owner owns its entry assembly. Register the bounded Worker candidate branch and its full-source validation in those existing owners before enabling the Tool. Existing Provider/Gateway candidates retain human confirmation. This named dependency blocks delegated execution only; diagnosis and candidate preparation may proceed through their current contracts.
 
@@ -78,7 +86,7 @@ Admit finite inspect, compare, validate and apply capabilities into the existing
 
 ## Current Implementation Projection
 
-No delegated maintenance apply Tool is implemented. The accepted target above now admits its finite Git-read projection; current code still provides diagnosis and candidate preparation. Other administration application remains human-confirmed.
+The fixed private administration set includes the finite Git-read apply Tool. It uses the existing configuration candidate and command owners, current loaded finite Server assignment, existing NGAC evaluator, immutable PermissionDecision, linked Audit and revision-protected file writer. Retained-failure, assignment, source, cancellation, receipt replay and reload outcomes have local regression coverage. Real in-Sandbox materialization is still required before claiming enforcement qualification. Other administration application remains human-confirmed.
 
 ## Alternatives Considered
 
