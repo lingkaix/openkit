@@ -15,6 +15,7 @@ import { FsStore } from './lib/store.js';
 import {
   collectKnowledgeInventory,
   type KnowledgeRetrievalAccess,
+  knowledgePageReadable,
   knowledgeSourceAudienceReadable,
   readAuthorizedWorkspaceNotebookPages,
 } from './retrieval-knowledge-adapter.js';
@@ -105,20 +106,22 @@ describe('published Workspace notebook reads', () => {
   it('uses current selected administrator credential admission without requiring membership and denies its revocation', () => {
     const f = fixture();
     publish(f, { 'page.md': page('Administrator inspection') });
+    const administratorId = addMember(f);
     const issued = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: LOCAL_USER_ID,
+      ownerUserId: administratorId,
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    f.coreDb.sqlite
-      .prepare(
-        "UPDATE workspace_members SET status = 'removed' WHERE workspace_id = ? AND user_id = ?"
-      )
-      .run(f.workspaceId, LOCAL_USER_ID);
+    removeMember(f, administratorId);
     const access: KnowledgeRetrievalAccess = {
       ...f.access,
-      requestActor: { kind: 'session', userId: LOCAL_USER_ID, adminTokenId: issued.record.tokenId },
+      actor: { kind: 'user', id: administratorId },
+      requestActor: {
+        kind: 'session',
+        userId: administratorId,
+        adminTokenId: issued.record.tokenId,
+      },
     };
     expect(
       readAuthorizedWorkspaceNotebookPages({ ...f, access }).pages.map((entry) => entry.id)
@@ -154,6 +157,32 @@ describe('published Workspace notebook reads', () => {
     expect(readAuthorizedWorkspaceNotebookPages(f).pages.map((entry) => entry.id)).toEqual([
       'public',
     ]);
+  });
+
+  it('rechecks source audience immediately after a direct selected material read', async () => {
+    const f = fixture();
+    const thread = f.store.createThread(
+      f.workspaceId,
+      'Current private audience',
+      undefined,
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId: LOCAL_USER_ID,
+      }
+    );
+    const source = await registerSource(f, thread.id);
+    const content = page('Direct page read', [`source:${source.id}@${source.contentDigest}`]);
+    const revision = publish(f, { 'selected.md': content });
+    const read = f.store.readKnowledgeSourceMaterial.bind(f.store);
+    vi.spyOn(f.store, 'readKnowledgeSourceMaterial').mockImplementation((workspaceId, sourceId) => {
+      const bytes = read(workspaceId, sourceId);
+      Object.assign(thread, { privateOwnerUserId: randomUUID() });
+      return bytes;
+    });
+    expect(knowledgePageReadable({ ...f, notebookRevision: revision }, 'selected', content)).toBe(
+      false
+    );
   });
 
   it('does not turn raw acceptance or imported history into missing live source authority', () => {
@@ -245,6 +274,7 @@ describe('published Workspace notebook reads', () => {
       { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
     );
     const source = await registerSource(f, sourceThread.id);
+    const destination = f.store.createThread(f.workspaceId, 'Shared destination');
     const secret = page(
       'DENIED-TITLE-MARKER',
       [`source:${source.id}@${source.contentDigest}`],
@@ -298,7 +328,6 @@ describe('published Workspace notebook reads', () => {
         message: 'Knowledge page is unavailable.',
       })
     );
-    const destination = f.store.createThread(f.workspaceId, 'Shared destination');
     Object.assign(sourceThread, { privateOwnerUserId: LOCAL_USER_ID });
     expect(
       readAuthorizedWorkspaceNotebookPages({
@@ -314,17 +343,19 @@ describe('published Workspace notebook reads', () => {
     'disabled-user',
   ] as const)('rechecks current %s after a page was selected', (condition) => {
     const f = fixture();
+    const memberId = addMember(f);
     const issued = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: LOCAL_USER_ID,
+      ownerUserId: memberId,
       scope: 'workspace',
       workspaceIds: [f.workspaceId],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
     const access: KnowledgeRetrievalAccess = {
       ...f.access,
+      actor: { kind: 'user', id: memberId },
       requestActor: {
         kind: 'token',
-        userId: LOCAL_USER_ID,
+        userId: memberId,
         tokenId: issued.record.tokenId,
         tokenScope: 'workspace',
         tokenWorkspaceIds: issued.record.workspaceIds,
@@ -332,18 +363,10 @@ describe('published Workspace notebook reads', () => {
     };
     publish(f, { 'selected.md': page('Selected') });
     const selected = readAuthorizedWorkspaceNotebookPages({ ...f, access });
-    if (condition === 'membership')
-      f.coreDb.sqlite
-        .prepare(
-          "UPDATE workspace_members SET status = 'removed' WHERE workspace_id = ? AND user_id = ?"
-        )
-        .run(f.workspaceId, LOCAL_USER_ID);
+    if (condition === 'membership') removeMember(f, memberId);
     else if (condition === 'credential')
       revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
-    else
-      f.coreDb.sqlite
-        .prepare("UPDATE users SET status = 'disabled' WHERE id = ?")
-        .run(LOCAL_USER_ID);
+    else f.coreDb.sqlite.prepare("UPDATE users SET status = 'disabled' WHERE id = ?").run(memberId);
     expect(() =>
       readAuthorizedWorkspaceNotebookPages({
         ...f,
@@ -370,6 +393,11 @@ describe('published Workspace notebook reads', () => {
         : [
             `source:${source.id}@${condition === 'pin' ? `sha256:${'f'.repeat(64)}` : source.contentDigest}`,
           ];
+    const other =
+      condition === 'turn-chain' ? f.store.createThread(f.workspaceId, 'Other Thread') : null;
+    const contradictoryTurn = other
+      ? f.store.createTurn(f.workspaceId, other.id, 'Other Turn', f.access.actor)
+      : null;
     publish(f, { 'selected.md': page('Denied source page', refs), 'origin.md': origin });
     if (condition === 'captured-bytes')
       writeFileSync(
@@ -385,9 +413,7 @@ describe('published Workspace notebook reads', () => {
         'CHANGED-SOURCE-BYTES'
       );
     if (condition === 'turn-chain') {
-      const other = f.store.createThread(f.workspaceId, 'Other Thread');
-      const turn = f.store.createTurn(f.workspaceId, other.id, 'Other Turn', f.access.actor);
-      Object.assign(source, { originatingTurnId: turn.id });
+      Object.assign(source, { originatingTurnId: contradictoryTurn!.id });
     }
     expect(readAuthorizedWorkspaceNotebookPages(f).pages.map((entry) => entry.id)).toEqual([
       'origin',
@@ -506,4 +532,14 @@ function addMember(f: ReturnType<typeof fixture>): string {
     )
     .run(f.workspaceId, id, now, now, now);
   return id;
+}
+
+/** Current membership revocation retains the required tombstone and lifecycle timestamps. */
+function removeMember(f: ReturnType<typeof fixture>, userId: string): void {
+  const now = new Date().toISOString();
+  f.coreDb.sqlite
+    .prepare(
+      "UPDATE workspace_members SET status = 'removed', removed_at = ?, updated_at = ?, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
+    )
+    .run(now, now, f.workspaceId, userId);
 }

@@ -134,6 +134,14 @@ describe('KnowledgeNotebook real Git content publication', () => {
     );
   });
 
+  it('preserves a selected reserved page leading UTF-8 byte-order mark and CRLF bytes', async () => {
+    const content = '\uFEFF# Nested index\r\nExact retained bytes.\r\n';
+    const { notebook, revision } = await fixture({ 'nested/index.md': content });
+    expect(notebook.readRevision(revision, ['nested/index.md']).files['nested/index.md']).toBe(
+      content
+    );
+  });
+
   it('returns bounded metadata history without reading any page body', async () => {
     const { notebook, revision } = await fixture({ 'a.md': page('A', 'BODY-MUST-STAY-UNREAD') });
     const versions = [revision];
