@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+import { createHash } from 'node:crypto';
 import {
   cpSync,
   mkdtempSync,
@@ -21,6 +22,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import * as workspaceFiles from '../storage/workspace-file-records.js';
 import { readPublishedTurnFileRecords } from '../storage/workspace-file-records.js';
+import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { startRecurringScheduleService } from './recurring-schedule-service.js';
@@ -231,7 +233,7 @@ it.each([
   'contradictory',
   'incomplete',
   'unreadable',
-] as const)('preserves uncertain initial Turn files against later writes: %s', (fault) => {
+] as const)('preserves uncertain initial Turn files against later writes: %s', async (fault) => {
   const root = mkdtempSync(join(tmpdir(), 'recurring-uncertain-publication-'));
   try {
     const store = new FsStore({ dataRoot: root });
@@ -252,6 +254,29 @@ it.each([
       text: 'Retain earlier annotation',
       createdAt: '2026-10-16T00:00:00.000Z',
       completedAt: '2026-10-16T00:00:00.000Z',
+    });
+    const artifactBody = 'Retain request-owned output.';
+    const artifact = store.createArtifact({
+      id: 'ar_existing_output',
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: earlier.id,
+      kind: 'summary',
+      title: 'Earlier output',
+      status: 'draft',
+      summary: null,
+      version: 1,
+      content: { format: 'text', body: artifactBody },
+      contentDigest: `sha256:${createHash('sha256').update(artifactBody).digest('hex')}`,
+      lastMutationRequestId: 'earlier-output',
+      origin: {
+        kind: 'turn-output',
+        threadId: thread.id,
+        turnId: earlier.id,
+        requestId: 'earlier-output',
+      },
+      createdAt: '2026-10-16T00:00:00.000Z',
+      updatedAt: '2026-10-16T00:00:00.000Z',
     });
     const earlierItems = join(
       root,
@@ -299,9 +324,11 @@ it.each([
     ).toThrow('Initial Turn publication interrupted');
     failed.mockRestore();
     const snapshot = () =>
-      readdirSync(turnRoot)
+      readdirSync(turnRoot, { recursive: true, withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => join(entry.parentPath, entry.name))
         .sort()
-        .map((name) => [name, readFileSync(join(turnRoot, name), 'utf8')]);
+        .map((path) => [path, readFileSync(path, 'utf8')]);
     const bytes = snapshot();
     if (fault === 'unreadable') {
       // A later successful read does not clear the Store's unresolved write refusal.
@@ -319,6 +346,41 @@ it.each([
       /recovery_required/
     );
     expect(readFileSync(earlierItems, 'utf8')).toBe(earlierBytes);
+    expect(() => store.rollbackArtifactCreation(artifact.id)).toThrow(/recovery_required/);
+    expect(readFileSync(earlierItems, 'utf8')).toBe(earlierBytes);
+    expect(store.getArtifact(workspace.id, artifact.id)).toEqual(artifact);
+    expect(store.listThreadItems(workspace.id, thread.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'artifact-reference', artifactId: artifact.id }),
+      ])
+    );
+    const app = createAppWithWorkspaceAuthority({ store, dataRoot: root });
+    const invoke = (operation: string, input: unknown) =>
+      app.request(`/api/app/operations/${operation}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+      });
+    expect(
+      (await invoke('turn.read', { workspaceId: workspace.id, threadId: thread.id, turnId })).status
+    ).toBe(500);
+    expect(
+      (await invoke('thread.dashboard', { workspaceId: workspace.id, threadId: thread.id })).status
+    ).toBe(500);
+    expect(
+      (
+        await invoke('turn.read', {
+          workspaceId: workspace.id,
+          threadId: thread.id,
+          turnId: earlier.id,
+        })
+      ).status
+    ).toBe(200);
+    // Internal cache access still supplies conservative single-flight and comparison evidence.
+    expect(store.listThreadTurns(workspace.id, thread.id).some((turn) => turn.id === turnId)).toBe(
+      true
+    );
+    expect(store.getTurnById(turnId).id).toBe(turnId);
     expect(() =>
       store.createItem({
         id: 'it_no_retry',

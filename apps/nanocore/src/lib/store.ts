@@ -2872,6 +2872,9 @@ export class FsStore {
     if (!turn || turn.workspaceId !== workspaceId || turn.threadId !== threadId) {
       throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
     }
+    if (this.interruptedTurnPublication.get(workspaceId) === turnId) {
+      this.assertWorkspaceFilePersistenceAvailable(workspaceId);
+    }
 
     return turn;
   }
@@ -3507,6 +3510,7 @@ export class FsStore {
   public rollbackArtifactCreation(artifactId: string): void {
     const artifact = this.artifacts.get(artifactId);
     if (!artifact) return;
+    this.assertWorkspaceFilePersistenceAvailable(artifact.workspaceId);
     if (artifact.version !== 1)
       throw new ArtifactAuthorityError(
         'recovery_required',
