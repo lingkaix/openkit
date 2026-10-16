@@ -193,7 +193,11 @@ export function RecoveryScreen() {
     if (!query) return false;
     const updatesBeforeRead = query.state.dataUpdateCount;
     // Keep the command-owned read observed across Workspace changes; enabled:false starts no automatic read.
-    const observer = new QueryObserver(queryClient, { ...query.options, enabled: false });
+    const observer = new QueryObserver(queryClient, {
+      ...query.options,
+      queryKey: query.queryKey,
+      enabled: false,
+    });
     const release = observer.subscribe(() => {});
     try {
       await observer.refetch();
