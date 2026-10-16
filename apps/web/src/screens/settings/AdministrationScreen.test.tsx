@@ -1400,6 +1400,7 @@ describe('Administration', () => {
       })
     );
     expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: kind === 'environment' ? 'Activate candidate' : 'Apply configuration' })).toBeEnabled();
     const keys = {
       access: ['settings', 'administration', 'access'],
       thread: ['settings', 'administration', 'thread', QUICK_CHAT.id, ADMIN_THREAD.id],
@@ -1440,6 +1441,13 @@ describe('Administration', () => {
             : { fetchStatus: state === 'paused' ? 'paused' : 'fetching' }
         )
       );
+      await waitFor(() => {
+        const currentConfirmation = screen.queryByRole('button', {
+          name: kind === 'environment' ? 'Activate candidate' : 'Apply configuration',
+        });
+        if (currentConfirmation) expect(currentConfirmation).toBeDisabled();
+        else expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      });
       const confirmation = screen.queryByRole('button', {
         name: kind === 'environment' ? 'Activate candidate' : 'Apply configuration',
       });
@@ -1524,9 +1532,9 @@ describe('Administration', () => {
       await waitFor(() =>
         expect(queryClient.getQueryState(queryKey)?.error).toMatchObject({ status: 500 })
       );
-      await waitFor(() =>
-        expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument()
-      );
+      expect(await screen.findByText("Couldn't load this thread.")).toBeInTheDocument();
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
       let restoreItems!: () => void;
       vi.mocked(client.operations['thread.items']).mockImplementation(
         () =>
