@@ -142,5 +142,59 @@ if [[ "${ready}" -ne 1 ]]; then
   exit 1
 fi
 cat "${smoke_root}/health.json"
-curl -fsS --max-time 5 "http://127.0.0.1:${CADDY_HTTP_PORT:-8080}/" >/dev/null
+node --input-type=module <<'NODE'
+import assert from 'node:assert/strict';
+const origin = `http://127.0.0.1:${process.env.CADDY_HTTP_PORT || '8080'}`;
+const request = (path, method = 'GET') => fetch(`${origin}${path}`, {
+  method,
+  signal: AbortSignal.timeout(5000),
+});
+const index = await request('/');
+assert.equal(index.status, 200);
+assert.match(index.headers.get('content-type'), /^text\/html\b/);
+const html = await index.text();
+assert.ok(html.length > 0);
+for (const path of ['/workspaces/proxy-smoke', '/v1-like-web-route']) {
+  const response = await request(path);
+  assert.equal(response.status, 200, path);
+  assert.equal(await response.text(), html, path);
+}
+const head = await request('/workspaces/proxy-smoke', 'HEAD');
+assert.equal(head.status, 200);
+assert.match(head.headers.get('content-type'), /^text\/html\b/);
+assert.equal(await head.text(), '');
+
+// The public proxy must reject these paths without exposing the Gateway listener.
+for (const path of ['/v1', '/v1/models', '/v1/responses', '/v1/chat/completions', '/v1/unknown', '/v1?model=proxy-smoke', '/v1/models?limit=1', '/v1/responses?stream=true', '/v1/chat/completions?stream=true', '/v1/unknown?probe=1', '/api', '/internal', '/mcp/unknown']) {
+  for (const method of ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD']) {
+    const response = await request(path, method);
+    assert.equal(response.status, 404, `${method} ${path}`);
+    assert.match(response.headers.get('content-type'), /^application\/json\b/, `${method} ${path}`);
+    if (method === 'HEAD') {
+      assert.equal(await response.text(), '');
+    } else {
+      assert.deepEqual(await response.json(), {
+        error: { type: 'invalid_request_error', code: 'not_found', message: 'API route not found.' },
+      }, `${method} ${path}`);
+    }
+  }
+}
+for (const path of ['/', '/workspaces/proxy-smoke']) {
+  for (const method of ['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']) {
+    const response = await request(path, method);
+    assert.equal(response.status, 405, `${method} ${path}`);
+    assert.equal(response.headers.get('allow'), 'GET, HEAD');
+    assert.match(response.headers.get('content-type'), /^application\/json\b/);
+    assert.deepEqual(await response.json(), {
+      error: { type: 'invalid_request_error', code: 'method_not_allowed', message: 'Method not allowed.' },
+    });
+  }
+}
+for (const path of ['/api/proxy-smoke-unknown', '/internal/proxy-smoke-unknown']) {
+  const response = await request(path, 'POST');
+  assert.equal(response.status, 404, path);
+  assert.doesNotMatch(response.headers.get('content-type') || '', /text\/html/);
+}
+console.log('App proxy smoke OK: API errors, method rejection, and Web GET/HEAD fallback.');
+NODE
 echo "OpenKit app image smoke OK"
