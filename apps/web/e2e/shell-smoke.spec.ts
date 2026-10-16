@@ -25,6 +25,7 @@ test('contains long conversation previews and keeps the next row clickable', asy
           },
           activity: 'chat',
           state: 'idle',
+          unreadCount: 0,
           lastActivityAt: '2026-09-18T00:00:00.000Z',
         })),
       },
