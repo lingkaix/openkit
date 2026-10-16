@@ -12,6 +12,10 @@ const definition = {
 describe('fixed recurrence public contract', () => {
   it('admits only fixed integer intervals and an existing Thread selector', () => {
     expect(CreateAutomationRequestSchema.strict().parse(definition)).toEqual(definition);
+    expect(
+      CreateAutomationRequestSchema.parse({ ...definition, intervalSeconds: 2_147_483_648 })
+        .intervalSeconds
+    ).toBe(2_147_483_648);
     for (const input of [
       { ...definition, intervalSeconds: 4 },
       { ...definition, intervalSeconds: 5.5 },

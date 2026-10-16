@@ -168,11 +168,27 @@ describe('serialized recurring scanner', () => {
     );
     const { service } = start(prepare);
     const scan = service.runOnce();
-    db.sqlite
-      .prepare(
-        "UPDATE workspace_members SET status = 'removed' WHERE workspace_id = ? AND user_id = 'user_local'"
-      )
-      .run(workspace.id);
+    db.sqlite.transaction(() => {
+      const timestamp = '2026-10-16T00:00:00.000Z';
+      db.sqlite
+        .prepare(`INSERT INTO users
+        (id, display_name, email, email_verified, created_at, updated_at, kind)
+        VALUES ('user_replacement', 'Replacement', 'recurrence-replacement@example.com', false, ?, ?, 'human')`)
+        .run(Date.parse(timestamp), Date.parse(timestamp));
+      db.sqlite
+        .prepare(`INSERT INTO workspace_members
+        (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
+        VALUES (?, 'user_replacement', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`)
+        .run(workspace.id, timestamp, timestamp, timestamp);
+      db.sqlite
+        .prepare(`UPDATE workspace_registry SET owner_user_id = 'user_replacement', revision = revision + 1, updated_at = ?
+        WHERE workspace_id = ?`)
+        .run(timestamp, workspace.id);
+      db.sqlite
+        .prepare(`UPDATE workspace_members SET status = 'removed', removed_at = ?, revision = revision + 1, updated_at = ?
+        WHERE workspace_id = ? AND user_id = 'user_local'`)
+        .run(timestamp, timestamp, workspace.id);
+    })();
     release(structuredClone(ready));
     await scan;
     expect(schedules.listHistory(schedule.id).items[0]!.record).toMatchObject({

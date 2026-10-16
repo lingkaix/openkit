@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { openCoreDb, type CoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
 import { initializeRecurringScheduleStorage } from '../storage/recurring-schema.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { AutomationStore } from './automation-store.js';
@@ -518,13 +519,15 @@ it('verifies the retained queue bytes as well as its stored hash before publishi
   });
   const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   const accepted = store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload })!;
-  expect(store.findAcceptedOccurrenceForQueue(accepted.queueEntryId!)).toEqual(accepted);
+  expect(findAcceptedRecurringOccurrenceForQueue(db, accepted.queueEntryId!)).toEqual(accepted);
   db.sqlite
     .prepare(
       "UPDATE scheduler_admission_entries SET turn_input = 'changed bytes' WHERE queue_entry_id = ?"
     )
     .run(accepted.queueEntryId);
-  expect(() => store.findAcceptedOccurrenceForQueue(accepted.queueEntryId!)).toThrow('contradicts');
+  expect(() => findAcceptedRecurringOccurrenceForQueue(db, accepted.queueEntryId!)).toThrow(
+    'contradicts'
+  );
   db.sqlite
     .prepare("UPDATE recurring_occurrences SET state = 'pending', record_json = ? WHERE id = ?")
     .run(JSON.stringify({ ...accepted, state: 'pending', terminalAt: null }), accepted.id);
