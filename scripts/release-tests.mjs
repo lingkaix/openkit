@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Execute deterministic suites once; inventory-only proves collection equivalence before recipe admission. */
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -61,9 +61,27 @@ export function compareInventory(unit, covered) {
 /** Either prove inventory admission or execute the admitted coverage recipe with the existing skip guard. */
 export function coveredSuite(
   owner,
-  { inventoryOnly = false, reportFile, spawn = spawnSync, run = guardedExecution } = {}
+  {
+    inventoryOnly = false,
+    reportFile,
+    partition,
+    blobFile,
+    spawn = spawnSync,
+    run = guardedExecution,
+  } = {}
 ) {
   const cli = join(owner.cwd, 'node_modules/vitest/vitest.mjs');
+  if (
+    partition &&
+    (!Number.isSafeInteger(partition.index) ||
+      !Number.isSafeInteger(partition.count) ||
+      partition.index < 1 ||
+      partition.count < 2 ||
+      partition.index > partition.count ||
+      (!inventoryOnly && (!reportFile || !blobFile)))
+  )
+    throw Error('Test Strategy: invalid coverage partition');
+  const partitionArgs = partition ? [`--shard=${partition.index}/${partition.count}`] : [];
   const collect = (coverage, filesOnly = false) => {
     const r = spawn(
       process.execPath,
@@ -75,6 +93,7 @@ export function coveredSuite(
         '--pool=threads',
         ...(coverage ? ['--coverage'] : []),
         ...(filesOnly ? ['--filesOnly'] : []),
+        ...partitionArgs,
       ],
       { cwd: owner.cwd, encoding: 'utf8', timeout: 600000, maxBuffer: 64 * 1024 * 1024 }
     );
@@ -84,9 +103,20 @@ export function coveredSuite(
       );
     return JSON.parse(r.stdout);
   };
-  const count = inventoryOnly ? compareInventory(collect(false), collect(true)) : undefined;
+  // Vitest 4's file-only list ignores --shard. Collect cases for each partition instead.
+  const expectedPartition = partition ? collect(false) : undefined;
+  const coveredPartition = partition ? collect(true) : undefined;
+  const count = partition
+    ? compareInventory(expectedPartition, coveredPartition)
+    : inventoryOnly
+      ? compareInventory(collect(false), collect(true))
+      : undefined;
   if (!inventoryOnly) {
-    const expected = reportFile ? collect(true, true) : undefined;
+    const expected = partition ? coveredPartition : reportFile ? collect(true, true) : undefined;
+    if (partition) {
+      mkdirSync(resolve(blobFile, '..'), { recursive: true });
+      writeFileSync(`${reportFile}.inventory`, JSON.stringify({ partition, expected }));
+    }
     const errors = run({
       cwd: owner.cwd,
       command: [
@@ -96,6 +126,19 @@ export function coveredSuite(
         '--coverage',
         '--reporter=tap-flat',
         ...(reportFile ? ['--reporter=json', `--outputFile.json=${reportFile}`] : []),
+        ...partitionArgs,
+        ...(partition
+          ? [
+              '--reporter=blob',
+              `--outputFile.blob=${blobFile}`,
+              '--coverage.thresholds.lines=0',
+              '--coverage.thresholds.functions=0',
+              '--coverage.thresholds.branches=0',
+              '--coverage.thresholds.statements=0',
+              '--coverage.thresholds.100=false',
+              '--coverage.reporter=json',
+            ]
+          : []),
       ],
     });
     if (errors.length) throw Error(`${owner.name}: ${errors.join('; ')}`);
@@ -107,10 +150,106 @@ export function coveredSuite(
   return {
     name: owner.name,
     cases: count,
-    inventory: inventoryOnly ? 'equal' : reportFile ? 'execution files equal' : 'not collected',
+    inventory: partition
+      ? 'partition cases equal'
+      : inventoryOnly
+        ? 'equal'
+        : reportFile
+          ? 'execution files equal'
+          : 'not collected',
     execution: inventoryOnly ? 'not run' : 'coverage passed',
   };
 }
+/** Refuse an incomplete or overlapping partition set before admitting whole-owner coverage. */
+export function verifyCoveragePartitions(partitions, expectedFiles, count) {
+  if (
+    !Array.isArray(partitions) ||
+    partitions.length !== count ||
+    !Number.isSafeInteger(count) ||
+    count < 2
+  )
+    throw Error('Test Strategy: incomplete coverage partitions');
+  const cases = [],
+    files = [];
+  for (let index = 1; index <= count; index++) {
+    const matches = partitions.filter(
+      (entry) => entry.partition?.index === index && entry.partition?.count === count
+    );
+    if (matches.length !== 1) throw Error('Test Strategy: missing or duplicate coverage partition');
+    const entry = matches[0];
+    compareInventory(entry.expected, entry.expected);
+    verifyExecutionInventory(entry.expected, entry.report);
+    for (const file of entry.report.testResults) {
+      if (
+        file.status !== 'passed' ||
+        file.assertionResults.some((result) => result.status !== 'passed')
+      )
+        throw Error('Test Strategy: non-passing coverage partition case');
+      files.push(file.name);
+      cases.push(
+        ...file.assertionResults.map((a) => ({
+          file: file.name,
+          name: [...a.ancestorTitles, a.title].join(' > '),
+        }))
+      );
+    }
+  }
+  if (
+    JSON.stringify(files.sort()) !== JSON.stringify(expectedFiles.map((entry) => entry.file).sort())
+  )
+    throw Error('Test Strategy: coverage partition union differs from complete file inventory');
+  return cases;
+}
+
+/** Merge actual Vitest blob coverage and enforce the owner's unchanged coverage configuration once. */
+export function mergeCoveredSuite(
+  owner,
+  { directory, reportFile, count = 8, spawn = spawnSync, run = guardedExecution } = {}
+) {
+  const cli = join(owner.cwd, 'node_modules/vitest/vitest.mjs');
+  const collected = spawn(
+    process.execPath,
+    [cli, 'list', '--json', '--filesOnly', '--maxWorkers=4', '--pool=threads', '--coverage'],
+    { cwd: owner.cwd, encoding: 'utf8', timeout: 600000, maxBuffer: 64 * 1024 * 1024 }
+  );
+  if (collected.error || collected.signal || collected.status !== 0)
+    throw Error('Test Strategy: complete coverage file collection failed');
+  const names = readdirSync(directory).filter((name) =>
+    name.endsWith('-execution.report.inventory')
+  );
+  const partitions = names.map((name) => ({
+    ...JSON.parse(readFileSync(join(directory, name), 'utf8')),
+    report: JSON.parse(readFileSync(join(directory, name.slice(0, -'.inventory'.length)), 'utf8')),
+  }));
+  const cases = verifyCoveragePartitions(partitions, JSON.parse(collected.stdout), count);
+  const blobs = readdirSync(join(directory, 'blobs'));
+  if (
+    blobs.length !== count ||
+    names.some((name) => !blobs.includes(name.replace('-execution.report.inventory', '.json')))
+  )
+    throw Error('Test Strategy: missing or extra coverage blob');
+  const errors = run({
+    cwd: owner.cwd,
+    command: [
+      process.execPath,
+      cli,
+      `--merge-reports=${join(directory, 'blobs')}`,
+      '--coverage',
+      '--reporter=tap-flat',
+      '--reporter=json',
+      `--outputFile.json=${reportFile}`,
+    ],
+  });
+  if (errors.length) throw Error(`${owner.name}: merged coverage failed: ${errors.join('; ')}`);
+  verifyExecutionInventory(cases, JSON.parse(readFileSync(reportFile, 'utf8')));
+  return {
+    name: owner.name,
+    files: new Set(cases.map((entry) => entry.file)).size,
+    cases: cases.length,
+    execution: 'merged original coverage thresholds passed',
+  };
+}
+
 /** Compare collected case and file cardinality with the actual JSON reporter, including duplicate names. */
 export function verifyExecutionInventory(expected, report) {
   if (report?.success !== true || !Array.isArray(report.testResults))
