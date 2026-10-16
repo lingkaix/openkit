@@ -1,12 +1,14 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { checkGoalCommandIntent, executeGoalOperation } from './goal-owner.js';
 import { reserveGoalTask } from './goal-task-admission.js';
+import { commandInputHash } from './idempotent-command.js';
 import { respondRecordedApproval } from './pending-request-flow.js';
 import { readPendingRequest } from './pending-requests.js';
 
@@ -658,18 +660,119 @@ describe('Proposed Plan eligibility', () => {
       f.db.sqlite.close();
     }
   });
-  it('captures an exact completion candidate without accepting, then accepts only its unchanged current intent', async () => {
+  it('refuses a Plan grant through completion acceptance without consuming it', async () => {
+    const f = await fixture();
+    try {
+      const plan = await f.propose();
+      await f.resolve(plan.pendingRequestId);
+      await expect(
+        executeGoalOperation(
+          'goal.completion.accept',
+          {
+            ...f.scope,
+            requestId: f.requestId(),
+            pendingRequestId: plan.pendingRequestId,
+            decision: 'granted',
+          },
+          f.coordinator,
+          f.store,
+          f.db
+        )
+      ).rejects.toMatchObject({ code: 'approval_conflict' });
+      expect(readPendingRequest(f.db.sqlite, plan.pendingRequestId)).toMatchObject({
+        claim: 'unclaimed',
+        disposition: null,
+      });
+      const unchanged = await executeGoalOperation('goal.read', f.scope, f.human, f.store, f.db);
+      expect(unchanged.goal).toMatchObject({ activePlanVersionId: null, disposition: null });
+      expect((await f.consume(plan.pendingRequestId)).goal!.activePlanVersionId).toBe(
+        plan.planVersionId
+      );
+    } finally {
+      f.db.sqlite.close();
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+  it('refuses a completion grant through Plan approval and leaves the Goal open', async () => {
+    const f = await fixture();
+    try {
+      const plan = await f.propose();
+      await f.resolve(plan.pendingRequestId);
+      await f.consume(plan.pendingRequestId);
+      const raised = await executeGoalOperation(
+        'goal.completion.accept',
+        {
+          ...f.scope,
+          requestId: f.requestId(),
+          candidate: {
+            intentRevision: 0,
+            intent: 'Produce a design',
+            planVersionId: plan.planVersionId,
+            evidence: [],
+            unresolvedWork: ['Human review remains'],
+            summary: 'Review this exact candidate.',
+          },
+        },
+        f.coordinator,
+        f.store,
+        f.db
+      );
+      const request = raised.requests.find((row) => row.operation === 'goal.completion.accept')!;
+      await executeGoalOperation(
+        'goal.completion.accept',
+        {
+          ...f.scope,
+          requestId: f.requestId(),
+          pendingRequestId: request.requestId,
+          decision: 'granted',
+        },
+        f.human,
+        f.store,
+        f.db
+      );
+      await expect(f.consume(request.requestId)).rejects.toMatchObject({
+        code: 'approval_conflict',
+      });
+      expect(readPendingRequest(f.db.sqlite, request.requestId)).toMatchObject({
+        claim: 'unclaimed',
+        disposition: null,
+      });
+      const unchanged = await executeGoalOperation('goal.read', f.scope, f.human, f.store, f.db);
+      expect(unchanged.goal).toMatchObject({
+        activePlanVersionId: plan.planVersionId,
+        disposition: null,
+      });
+    } finally {
+      f.db.sqlite.close();
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+  it.each([
+    false,
+    true,
+  ])('captures evidence and unresolved work, then rechecks current intent before completion (revised=%s)', async (revised) => {
     const f = await fixture();
     try {
       const p = await f.propose();
       await f.resolve(p.pendingRequestId);
       await f.consume(p.pendingRequestId);
+      const evidence = f.store.createItem({
+        id: testEntityId('it', 'goal-completion-evidence'),
+        workspaceId: f.scope.workspaceId,
+        threadId: f.scope.threadId,
+        turnId: f.coordinator.coordinatorTurnId,
+        type: 'assistant-message',
+        text: 'The schema review is retained. Publication is still pending.',
+        status: 'completed',
+        createdAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+      });
       const candidate = {
         intentRevision: 0,
         intent: 'Produce a design',
         planVersionId: p.planVersionId,
-        evidence: [],
-        unresolvedWork: ['No report retained'],
+        evidence: [{ kind: 'item' as const, id: evidence.id, digest: commandInputHash(evidence) }],
+        unresolvedWork: ['Publication remains'],
         summary: 'Review unresolved work explicitly.',
       };
       const raised = await executeGoalOperation(
@@ -694,7 +797,20 @@ describe('Proposed Plan eligibility', () => {
         f.store,
         f.db
       );
-      const ended = await executeGoalOperation(
+      if (revised)
+        await executeGoalOperation(
+          'goal.intent.revise',
+          {
+            ...f.scope,
+            requestId: f.requestId(),
+            expectedRevision: 0,
+            intent: 'Produce a design and a publication plan',
+          },
+          f.human,
+          f.store,
+          f.db
+        );
+      const completion = executeGoalOperation(
         'goal.completion.accept',
         {
           ...f.scope,
@@ -706,13 +822,26 @@ describe('Proposed Plan eligibility', () => {
         f.store,
         f.db
       );
-      expect(ended.goal!.disposition).toMatchObject({
-        kind: 'accepted',
-        candidate,
-        actorId: 'usr_00000000-0000-7000-8000-000000000001',
-      });
+      if (revised) {
+        await expect(completion).rejects.toMatchObject({ code: 'grant_conflict' });
+        expect(
+          (await executeGoalOperation('goal.read', f.scope, f.human, f.store, f.db)).goal!
+            .disposition
+        ).toBeNull();
+        expect(readPendingRequest(f.db.sqlite, request.requestId)).toMatchObject({
+          disposition: 'denied-not-executed',
+          claim: 'unclaimed',
+        });
+      } else {
+        expect((await completion).goal!.disposition).toMatchObject({
+          kind: 'accepted',
+          candidate,
+          actorId: f.human.actor.userId,
+        });
+      }
     } finally {
       f.db.sqlite.close();
+      rmSync(f.root, { recursive: true, force: true });
     }
   });
 });

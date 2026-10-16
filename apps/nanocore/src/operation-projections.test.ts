@@ -1782,9 +1782,13 @@ describe('Goal definition projections', () => {
                 (definition.credentials as readonly string[]).includes('coordinator')
               )
               .map(([id]) => operationToolName(id)),
-            ...['thread.items', 'artifact.read', 'turn.read', 'evidence.runtime-list'].map(
-              operationToolName
-            ),
+            ...[
+              'thread.items',
+              'artifact.read',
+              'turn.read',
+              'evidence.runtime-list',
+              'agent.list',
+            ].map(operationToolName),
           ].sort()
         );
         const read = await tools.find((tool) => tool.name === 'goal_read')!.execute({});
