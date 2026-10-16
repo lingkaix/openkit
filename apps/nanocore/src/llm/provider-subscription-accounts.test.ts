@@ -4807,19 +4807,21 @@ describe('inference route same-credential rejection', () => {
         const reject = async (_context: unknown, options: StreamOptions | undefined) => {
           // This controlled native source emits only a framing event before its classified rejection.
           // Invoke the installed pre-conversion hook so the Worker can prove its complete empty output.
-          const model = f.handle.models.getModel(
-            subscriptionProviderId,
-            f.providerModel.replace('openai-codex/', '')
-          )!;
-          await options?.onProviderStreamEvent?.(
-            subscriptionProviderId === 'openai-codex'
-              ? {
-                  type: 'response.created',
-                  response: { id: 'resp_observed_rejection', output: [] },
-                }
-              : { id: 'chatcmpl_observed_rejection', choices: [] },
-            model
-          );
+          if (route.worker) {
+            const model = f.handle.models.getModel(
+              subscriptionProviderId,
+              f.providerModel.replace('openai-codex/', '')
+            )!;
+            await options?.onProviderStreamEvent?.(
+              subscriptionProviderId === 'openai-codex'
+                ? {
+                    type: 'response.created',
+                    response: { id: 'resp_observed_rejection', output: [] },
+                  }
+                : { id: 'chatcmpl_observed_rejection', choices: [] },
+              model
+            );
+          }
           bearer = options?.apiKey;
           if (scenario === 'predecessor')
             await f.handle.credentials.modify(subscriptionProviderId, async (current) => current!);
