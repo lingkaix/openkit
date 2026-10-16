@@ -237,7 +237,11 @@ export async function previewMcpDiscovery(
       'succeeded',
       'Explicit temporary MCP discovery started; no tool execution is authorized.'
     );
-    const gateway = createDefaultWorkerMcpGateway();
+    const gateway = createDefaultWorkerMcpGateway(coreDb, {
+      actor: context.actorRef,
+      workspaceId,
+      requestId: previewId,
+    });
     let temporaryDirectory: string | undefined;
     let delivered = false;
     let cleanupProved = false;
@@ -306,7 +310,7 @@ export async function previewMcpDiscovery(
       if (transport.kind === 'stdio')
         temporaryDirectory = mkdtempSync(join(tmpdir(), 'openkit-mcp-preview-'));
       const connection: WorkerMcpGatewayServerInput = {
-        workspaceId: workspaceId ?? 'server',
+        workspaceId: workspaceId ?? previewId,
         server: {
           id: input.mcpId,
           ...(scope.kind === 'server' ? { scope: 'server' } : {}),
@@ -396,7 +400,20 @@ export async function previewMcpDiscovery(
         for (const item of injections) {
           const grant = getVaultGrant(coreDb, item.grantId);
           const reference = getVaultReference(coreDb, item.referenceId);
+          const deliveryAudit = recordServerAuditEvent({
+            coreDb,
+            actor: context.actorRef,
+            workspaceId,
+            requestId: previewId,
+            vaultGrantId: item.grantId,
+            action: 'administration.mcp-discovery-preview.delivery',
+            resource: `vault-injection-plan:${item.planId}`,
+            outcome: 'succeeded',
+            summary:
+              'Gateway-only material reached the temporary MCP transport; this does not prove preview success or tool execution.',
+          });
           createVaultInjectionReceipt(coreDb, {
+            auditEventId: deliveryAudit.id,
             receiptId: item.receiptId,
             planId: item.planId,
             grantId: item.grantId,
