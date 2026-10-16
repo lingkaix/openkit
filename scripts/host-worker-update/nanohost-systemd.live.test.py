@@ -47,10 +47,19 @@ def write(path, data, mode=0o644):
     path.chmod(mode)
 
 
-def command(argv, timeout=15):
+def command(argv, timeout=15, *, cgroup=None):
     """Bound a fixed fixture command; its output is never a public diagnostic."""
+    def enter_owned_group():
+        """Move before exec so namespace-local scope migration and cleanup are contained."""
+        fd = os.open(cgroup / "cgroup.procs", os.O_WRONLY | os.O_CLOEXEC)
+        try:
+            need(os.write(fd, b"0") == 1, "observer_cgroup_move_incomplete")
+        finally:
+            os.close(fd)
+
     child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, env=ENV, start_new_session=True)
+                             stderr=subprocess.PIPE, env=ENV, start_new_session=True,
+                             preexec_fn=enter_owned_group if cgroup is not None else None)
     try:
         stdout, stderr = child.communicate(timeout=timeout)
         return subprocess.CompletedProcess(argv, child.returncode, stdout, stderr)
@@ -83,7 +92,7 @@ def load_maintenance():
 
 def state(unit=UNIT):
     """Read independent actual process and activation facts from the private manager."""
-    result = command(["/usr/bin/systemctl", "show", "--no-pager", "--property=MainPID,ActiveState,SubState,Restart", unit])
+    result = command(["/usr/bin/systemctl", "show", "--no-pager", "--property=MainPID,ActiveState,SubState,Restart,Result,ExecMainStatus", unit])
     need(result.returncode == 0, "service_query_failed")
     return dict(line.split("=", 1) for line in result.stdout.decode("ascii").splitlines())
 
@@ -337,7 +346,11 @@ class PrivateManager:
 
     def start(self):
         """Start PID1 with a fresh tmpfs /run and the exact owned cgroup namespace root."""
-        bootstrap = "import os;f=open('/sys/fs/cgroup/cgroup.procs','w');f.write('0');f.close();os.execv('/usr/bin/unshare',['unshare','--cgroup','/usr/lib/systemd/systemd','--system','--unit=openkit-fixture.target','--log-target=console','--log-level=warning'])"
+        # The canonical InaccessiblePaths rule needs a private socket inode to mask.
+        bootstrap = ("import os,socket;s=socket.socket(socket.AF_UNIX);s.bind('/run/docker.sock');s.close();"
+                     "f=open('/sys/fs/cgroup/cgroup.procs','w');f.write('0');f.close();"
+                     "os.execv('/usr/bin/unshare',['unshare','--cgroup','/usr/lib/systemd/systemd','--system',"
+                     "'--unit=openkit-fixture.target','--log-target=console','--log-level=warning'])")
         argv = ["/usr/bin/bwrap", "--unshare-user", "--cap-add", "CAP_SYS_ADMIN", "--uid", "0", "--gid", "0",
                 "--unshare-pid", "--as-pid-1", "--unshare-net", "--unshare-uts", "--hostname", "openkit-qualification",
                 "--die-with-parent", "--new-session", "--clearenv", "--setenv", "PATH", "/usr/bin:/bin",
@@ -424,8 +437,11 @@ class PrivateManager:
         """Enter only the observed private manager's namespaces and filesystem root."""
         current = self.group.stat()
         need((current.st_dev, current.st_ino) == (self.identity.st_dev, self.identity.st_ino), "owned_cgroup_substituted")
+        observer = self.group / "openkit-fixture-observer"
+        observer.mkdir(exist_ok=True)
         return command(["/usr/bin/nsenter", "--target", str(self.pid), "--user", "--preserve-credentials",
-                        "--mount", "--pid", "--net", "--uts", "--cgroup", "--root", "--wdns=/", "--", *argv], timeout=timeout)
+                        "--mount", "--pid", "--net", "--uts", "--cgroup", "--root", "--wdns=/", "--", *argv],
+                       timeout=timeout, cgroup=observer)
 
     def phase(self, name, case):
         """Require a terminal structured observation from the actual namespaced recipe."""
@@ -492,6 +508,10 @@ def outer():
             failure = str(error) if isinstance(error, FixtureFailure) else "fixture_setup_or_execution_failed"
             if fixture is not None:
                 facts.update(fixture.failure_facts)
+                if (root / "manager.log").exists():
+                    raw = (root / "manager.log").read_bytes()[:65536]
+                    facts["managerReportedNamespaceFailure"] = b"NAMESPACE" in raw
+                    facts["managerReportedFixtureDockerPath"] = b"/run/docker.sock" in raw
         finally:
             group_removed = fixture is None
             if fixture is not None and fixture.identity is not None:
@@ -531,7 +551,8 @@ if __name__ == "__main__":
             try:
                 observed = state()
                 facts = {"mainPidAbsent": observed["MainPID"] == "0", "activeState": observed["ActiveState"],
-                         "subState": observed["SubState"], "domainEmpty": domain_empty()}
+                         "subState": observed["SubState"], "serviceResult": observed["Result"],
+                         "serviceExitStatus": int(observed["ExecMainStatus"]), "domainEmpty": domain_empty()}
                 for name, signature in (("UnitPath", "as"), ("Job", "(uo)"), ("Conditions", "a(sbbsi)")):
                     manager = name == "UnitPath"
                     result = command(["/usr/bin/busctl", "--system", "--json=short", "get-property", "org.freedesktop.systemd1",
