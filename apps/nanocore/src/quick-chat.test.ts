@@ -889,6 +889,7 @@ describe('quick chat app API', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-mode-answer-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     onTestFinished(() => coreDb.sqlite.close());
     const calls: Array<{
       providerId: string;
@@ -1050,6 +1051,7 @@ describe('quick chat app API', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
     const otherThread = store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
@@ -1214,6 +1216,7 @@ describe('quick chat app API', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-mode-handoff-summary-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     onTestFinished(() => coreDb.sqlite.close());
     const store = createDemoStore({ dataRoot });
     const calls: Array<{
@@ -1304,6 +1307,7 @@ describe('quick chat app API', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-mode-usage-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
 
     try {
       const store = createDemoStore({ dataRoot });
@@ -1648,6 +1652,7 @@ describe('quick chat app API', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-artifact-source-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     try {
       const prompts: string[] = [];
       const app = createAppWithWorkspaceAuthority({
@@ -2246,6 +2251,7 @@ describe('quick chat app API', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-goal-handoff-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
 
     try {
       const store = createDemoStore({ dataRoot });
@@ -2331,6 +2337,7 @@ describe('quick chat app API', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'goal-private-handoff-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     try {
       const store = createDemoStore({ dataRoot });
       const thread = store.createThread(
@@ -2343,7 +2350,7 @@ describe('quick chat app API', () => {
           privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         }
       );
-      const artifactId = 'artifact_private_goal';
+      const artifactId = testEntityId('ar', 'artifact_private_goal');
       if (source === 'private-artifact') {
         const turn = store.createTurn(
           'ws_00000000-0000-7000-8000-000000000001',
@@ -2758,6 +2765,7 @@ describe('quick chat app API', () => {
 
     try {
       applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
       vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 6) });
       vaultUnlockState.backend().store({
         material: 'sk-vault-quick-chat',
@@ -2879,6 +2887,7 @@ describe('quick chat app API', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-quick-chat-usage-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
 
     try {
       const app = createAppWithWorkspaceAuthority({
