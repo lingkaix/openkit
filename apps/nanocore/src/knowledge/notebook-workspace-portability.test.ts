@@ -145,8 +145,9 @@ describe('canonical Notebook Workspace portability', () => {
     const backupRoot = join(destination, 'backup');
     const restoredRoot = join(destination, 'restored');
     const originalDb = openWorkspaceDb(f.dataRoot, f.workspace.id);
-    const originalAudit = originalDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY id').all();
+    const originalAudit = originalDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY audit_event_id').all();
     originalDb.sqlite.close();
+    expect(originalAudit).toHaveLength(2);
     const timestamp = '2026-10-16T00:00:00.000Z';
     await writeHotDataRootBackup({
       dataRoot: f.dataRoot, backupRoot, backupId: randomUUID(),
@@ -157,10 +158,10 @@ describe('canonical Notebook Workspace portability', () => {
     const restored = new KnowledgeNotebook({ repositoryPath: join(restoredRoot, 'workspaces', f.workspace.id, 'knowledge', 'notebook.git') });
     expect(restored.validateRetainedGraph().publishedRevision).toBe(f.revision);
     expect(restored.readRevision(f.revision).files['notes/portable.md']).toBe(f.content);
-    expect(restored.inspectRevision(unpublished).files['notes/portable.md']).toBe(`${f.content}Unpublished candidate bytes.\n`);
+    expect(restored.readRevision(unpublished).files['notes/portable.md']).toBe(`${f.content}Unpublished candidate bytes.\n`);
     const restoredDb = openWorkspaceDb(restoredRoot, f.workspace.id);
     try {
-      expect(restoredDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY id').all()).toEqual(originalAudit);
+      expect(restoredDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY audit_event_id').all()).toEqual(originalAudit);
     } finally {
       restoredDb.sqlite.close();
     }
