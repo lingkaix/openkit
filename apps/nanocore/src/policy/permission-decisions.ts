@@ -958,9 +958,35 @@ export function recordBootPolicySelfCheckDecisions(
       const row = existing[0];
       if (row) {
         const linkedAudit = input.coreDb.sqlite
-          .prepare(`SELECT 1 FROM audit_events
-          WHERE audit_event_id = ? AND permission_decision_id = ? AND action = 'permission.decision'`)
-          .get(row.audit_event_id, row.decision_id);
+          .prepare('SELECT * FROM audit_events WHERE audit_event_id = ?')
+          .get(row.audit_event_id) as Record<string, unknown> | undefined;
+        // Compare the known immutable core and leave additive storage columns untouched.
+        const expectedAudit = {
+          audit_event_id: row.audit_event_id,
+          permission_decision_id: row.decision_id,
+          workspace_id: null,
+          protocol_version: null,
+          thread_id: null,
+          turn_id: null,
+          item_id: null,
+          capability_call_id: null,
+          vault_grant_id: null,
+          request_id: null,
+          actor_json: null,
+          subject_json: null,
+          agent_id: null,
+          agent_session_id: null,
+          category: 'approval',
+          action: 'permission.decision',
+          resource: `permission:${request.operation}`,
+          resource_revision: null,
+          outcome: permissionAuditOutcome(row.result),
+          severity: permissionAuditSeverity(row.result),
+          summary: `Permission decision ${row.result}: ${request.operation}`,
+          error_code: null,
+          created_at: row.created_at,
+          occurred_at: row.created_at,
+        };
         if (
           !isEntityId('pd', row.decision_id) ||
           row.decision_id.split('_')[1]?.[14] !== '7' ||
@@ -978,7 +1004,8 @@ export function recordBootPolicySelfCheckDecisions(
             request.resourceKind ||
           JSON.parse(row.context_summary_json).boot !== true ||
           !isEntityId('aud', row.audit_event_id) ||
-          !linkedAudit
+          !linkedAudit ||
+          Object.entries(expectedAudit).some(([key, value]) => linkedAudit[key] !== value)
         )
           throw new Error('Boot policy self-check record is contradictory.');
         continue;

@@ -230,6 +230,55 @@ describe('permission decision recorder', () => {
     }
   });
 
+  it.each([
+    ['outcome', 'denied'],
+    ['resource', 'permission:vault.use'],
+    ['actor_json', '{"kind":"user","userId":"usr_00000000-0000-7000-8000-000000000001"}'],
+    ['workspace_id', 'ws_00000000-0000-7000-8000-000000000001'],
+    ['thread_id', 'th_00000000-0000-7000-8000-000000000001'],
+    ['severity', 'warning'],
+    ['error_code', 'contradictory'],
+    ['occurred_at', '2026-07-05T00:01:00.000Z'],
+  ])('refuses boot retry with contradictory linked Audit %s without changing retained rows', (field, value) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-boot-audit-'));
+    const coreDb = openCoreDb(dataRoot);
+    const input = {
+      bootId: 'boot_audit_contradiction',
+      coreDb,
+      kernel: loadBootPolicyKernel(),
+      now: new Date('2026-07-05T00:00:00.000Z'),
+    };
+    try {
+      applyMigrations(coreDb);
+      recordBootPolicySelfCheckDecisions(input);
+      const decision = listServerPermissionDecisions(coreDb).find(
+        (row) => row.action === 'api.call'
+      )!;
+      // The column comes only from the closed fixture table above.
+      coreDb.sqlite
+        .prepare(`UPDATE audit_events SET ${field} = ? WHERE audit_event_id = ?`)
+        .run(value, decision.auditEventId);
+      const decisions = coreDb.sqlite
+        .prepare('SELECT * FROM permission_decisions ORDER BY decision_id')
+        .all();
+      const audits = coreDb.sqlite
+        .prepare('SELECT * FROM audit_events ORDER BY audit_event_id')
+        .all();
+      expect(() => recordBootPolicySelfCheckDecisions(input)).toThrow(
+        'Boot policy self-check record is contradictory.'
+      );
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM permission_decisions ORDER BY decision_id').all()
+      ).toEqual(decisions);
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY audit_event_id').all()
+      ).toEqual(audits);
+    } finally {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('publishes neither boot decision nor Audit when the second decision lacks entropy', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-boot-entropy-'));
     const coreDb = openCoreDb(dataRoot);
@@ -348,22 +397,24 @@ describe('permission decision recorder', () => {
         result: string;
       }>;
 
-      expect(rows).toEqual([
-        {
-          approval_id: 'ap_policy_1',
-          decision_id: 'pd_00000000-0000-7d59-952b-a37801be80df',
-          reason_code: 'approval_required',
-          required_approval_kind: 'permission',
-          result: 'require_approval',
-        },
-        {
-          approval_id: null,
-          decision_id: 'pd_00000000-0000-7d04-af43-41da70aefdc8',
-          reason_code: 'higher_authority_required',
-          required_approval_kind: null,
-          result: 'require_escalation',
-        },
-      ]);
+      expect(rows).toEqual(
+        [
+          {
+            approval_id: 'ap_policy_1',
+            decision_id: 'pd_00000000-0000-7d59-952b-a37801be80df',
+            reason_code: 'approval_required',
+            required_approval_kind: 'permission',
+            result: 'require_approval',
+          },
+          {
+            approval_id: null,
+            decision_id: 'pd_00000000-0000-7d04-af43-41da70aefdc8',
+            reason_code: 'higher_authority_required',
+            required_approval_kind: null,
+            result: 'require_escalation',
+          },
+        ].sort((left, right) => left.decision_id.localeCompare(right.decision_id))
+      );
     } finally {
       coreDb.sqlite.close();
     }
