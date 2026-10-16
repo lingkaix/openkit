@@ -14,6 +14,8 @@ Use `openkit --help`, `openkit help [command]`, or a command's `--help` for loca
 
 Use a currently usable administrator credential for online administration. NanoCore owns authority, private audience, restricted Material delivery, human decisions, workflow, audit and durable state. Credentials remain in endpoint/named keychain or explicitly permitted encrypted fallback storage; retirement changes no storage identity or retained data. Stable network audit labels remain openkit-cli and agent-skill. Ordinary session-only bearer refusals and administrator eligibility follow credential owners. No cookie jar, arbitrary route, SSH, generic shell, daemon or host control is part of this CLI.
 
+`openkit ops call administration.cleanup-read --input -` accepts `{}` and reads bounded observations from six current canonical cleanup sources. It requires current administrator authority. Source coverage and explicit unknown evidence remain visible; the read performs no cleanup and grants no mutation authority. Discover its shared response with `openkit ops search cleanup --schema`.
+
 ## Maintenance And Packaging
 
 Keep one maintained source per topic in the existing six references. docs/manual provides discovery pointers. The complete operations tree, executable mode and license ship under one tag with SHA256SUMS. The release verifier checks extracted references and runs local discovery under Node.js 24 outside the checkout. Install or replace the complete package as one unit; installation starts no service and grants no authority. Host-only recovery remains usable when NanoCore is unavailable and explicitly acquires source/image prerequisites where needed.
