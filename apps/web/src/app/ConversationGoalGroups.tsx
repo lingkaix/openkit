@@ -66,7 +66,7 @@ export function ConversationGoalGroups({
     return (
       <div key={row.thread.id} className="flex flex-col gap-0.5">
         <div className="flex items-center">
-          {renderConversation(row)}
+          <div className="min-w-0 flex-1">{renderConversation(row)}</div>
           <Button
             variant="quiet"
             size="sm"
