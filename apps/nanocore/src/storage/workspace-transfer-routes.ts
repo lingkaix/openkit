@@ -10,7 +10,8 @@ import {
 } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { PassThrough, Readable } from 'node:stream';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { createZstdCompress } from 'node:zlib';
 import {
   WorkspaceExportResponseSchema,
@@ -398,74 +399,56 @@ function workspaceArchiveHeader(path: string, type: 'directory' | 'file', size: 
   return header;
 }
 
-/** Writes one archive chunk and waits for the destination to accept it. */
-function writeWorkspaceArchiveBytes(
-  archive: PassThrough,
-  bytes: Uint8Array<ArrayBufferLike>
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    archive.write(bytes, (error) => (error ? reject(error) : resolve()));
-  });
-}
-
-/** Appends one strict POSIX USTAR entry. */
-async function appendWorkspaceArchiveEntry(
-  archive: PassThrough,
+/** Yields one strict POSIX USTAR entry from already bounded metadata bytes. */
+function* workspaceArchiveEntry(
   path: string,
   type: 'directory' | 'file',
   content: Buffer<ArrayBufferLike> = Buffer.alloc(0)
-): Promise<void> {
-  await writeWorkspaceArchiveBytes(archive, workspaceArchiveHeader(path, type, content.byteLength));
-  if (content.byteLength > 0) {
-    await writeWorkspaceArchiveBytes(archive, content);
-  }
+): Generator<Buffer<ArrayBufferLike>> {
+  yield workspaceArchiveHeader(path, type, content.byteLength);
+  if (content.byteLength > 0) yield content;
   const padding = (512 - (content.byteLength % 512)) % 512;
-  if (padding > 0) {
-    await writeWorkspaceArchiveBytes(archive, Buffer.alloc(padding));
-  }
+  if (padding > 0) yield Buffer.alloc(padding);
 }
 
-/** Streams one path-backed original through the existing archive writer and verifies its inventoried bytes. */
-async function appendWorkspaceArchiveOriginal(
-  archive: PassThrough,
+/** Streams an inventoried original; cancellation closes its handle without a nested stream lifetime. */
+async function* workspaceArchiveOriginal(
   path: string,
   source: string,
   expected: { readonly bytes: number; readonly digest: string }
-): Promise<void> {
+): AsyncGenerator<Buffer<ArrayBufferLike>> {
   const file = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const metadata = await file.stat();
     if (!metadata.isFile() || metadata.size !== expected.bytes)
       throw new Error('Workspace archive original size is inconsistent.');
-    await writeWorkspaceArchiveBytes(archive, workspaceArchiveHeader(path, 'file', expected.bytes));
+    yield workspaceArchiveHeader(path, 'file', expected.bytes);
     const digest = createHash('sha256');
     let observed = 0;
-    for await (const chunk of file.createReadStream({ highWaterMark: 65_536, autoClose: false })) {
-      observed += chunk.length;
+    while (true) {
+      const bytes = Buffer.allocUnsafe(65_536);
+      const { bytesRead } = await file.read(bytes, 0, bytes.length, null);
+      if (bytesRead === 0) break;
+      observed += bytesRead;
       if (observed > expected.bytes)
         throw new Error('Workspace archive original exceeds its inventoried size.');
+      const chunk = bytes.subarray(0, bytesRead);
       digest.update(chunk);
-      await writeWorkspaceArchiveBytes(archive, chunk);
+      yield chunk;
     }
     if (observed !== expected.bytes || `sha256:${digest.digest('hex')}` !== expected.digest)
       throw new Error('Workspace archive original integrity is inconsistent.');
     const padding = (512 - (expected.bytes % 512)) % 512;
-    if (padding > 0) await writeWorkspaceArchiveBytes(archive, Buffer.alloc(padding));
+    if (padding > 0) yield Buffer.alloc(padding);
   } finally {
     await file.close();
   }
 }
 
-/**
- * Streams one verified export tree into a canonical tar pack.
- *
- * @param archive Destination tar pack.
- * @param verified Export bytes returned by one completed verification.
- */
-async function writeWorkspaceArchive(
-  archive: PassThrough,
+/** Yields the identical verified export tree in bytewise path order, with bounded original reads. */
+async function* workspaceArchiveChunks(
   verified: VerifiedWorkspaceExportTree
-): Promise<void> {
+): AsyncGenerator<Buffer<ArrayBufferLike>> {
   const files = new Map<string, Buffer>([
     [WORKSPACE_EXPORT_MANIFEST_FILE, Buffer.from(verified.manifestText)],
     ...[...verified.fileContents].map(([path, text]) => [path, Buffer.from(text)] as const),
@@ -484,17 +467,14 @@ async function writeWorkspaceArchive(
   }
   const comparePaths = (left: string, right: string) =>
     Buffer.compare(Buffer.from(left), Buffer.from(right));
-  for (const directory of [...directories].sort(comparePaths)) {
-    await appendWorkspaceArchiveEntry(archive, directory, 'directory');
-  }
+  for (const directory of [...directories].sort(comparePaths))
+    yield* workspaceArchiveEntry(directory, 'directory');
   for (const path of filePaths.sort(comparePaths)) {
     const original = verified.artifactPayloadFiles.get(path);
-    if (original)
-      await appendWorkspaceArchiveOriginal(archive, path, original, inventory.get(path)!);
-    else await appendWorkspaceArchiveEntry(archive, path, 'file', files.get(path)!);
+    if (original) yield* workspaceArchiveOriginal(path, original, inventory.get(path)!);
+    else yield* workspaceArchiveEntry(path, 'file', files.get(path)!);
   }
-  await writeWorkspaceArchiveBytes(archive, Buffer.alloc(1024));
-  archive.end();
+  yield Buffer.alloc(1024);
 }
 
 /**
@@ -1468,13 +1448,14 @@ export function registerWorkspaceTransferRoutes({
         );
       }
 
-      const archive = new PassThrough();
-      const compressed = createZstdCompress();
-      archive.pipe(compressed);
-      void writeWorkspaceArchive(archive, verified).catch((error: Error) => {
-        archive.destroy(error);
-        compressed.destroy(error);
+      const archive = Readable.from(workspaceArchiveChunks(verified), {
+        objectMode: false,
+        highWaterMark: 65_536,
       });
+      const compressed = createZstdCompress();
+      // Cancellation returns the producer's iterator and closes its original file.
+      // Pipeline errors already terminate the response stream.
+      void pipeline(archive, compressed).catch(() => undefined);
       return new Response(Readable.toWeb(compressed) as ReadableStream, {
         headers: {
           'content-disposition': `attachment; filename="${workspaceId}-${exportId}.openkit-workspace.tar.zst"`,
