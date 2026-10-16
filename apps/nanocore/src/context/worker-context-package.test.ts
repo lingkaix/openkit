@@ -729,7 +729,7 @@ describe('worker request source selector projection', () => {
         JSON.stringify({
           kind: 'artifact-review-follow-up',
           workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
-          reviewId: 'review_selected',
+          reviewId: deriveEntityId('arev', ['context-review-selected']),
           artifactId: 'ar_00000000-0000-7000-8000-0000000003ea',
           artifactVersion: 7,
           contentDigest: sha256(artifactContent),
