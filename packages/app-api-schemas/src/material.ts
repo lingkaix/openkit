@@ -77,22 +77,30 @@ export const ArtifactMaterialProposalSchema = z
   .strict();
 
 /** Exact original-source UTF-16 range on one immutable Material proposal base. */
-export const ArtifactReviewRangeFeedbackSchema = z.object({
-  materialId: MaterialIdSchema,
-  revisionId: MaterialRevisionIdSchema,
-  contentDigest: contentDigestSchema,
-  start: z.number().int().nonnegative(),
-  end: z.number().int().positive(),
-  originalText: z.string().min(1),
-}).strict().refine((range) => range.start < range.end, { message: 'The range end must follow its start.', path: ['end'] });
+export const ArtifactReviewRangeFeedbackSchema = z
+  .object({
+    materialId: MaterialIdSchema,
+    revisionId: MaterialRevisionIdSchema,
+    contentDigest: contentDigestSchema,
+    start: z.number().int().nonnegative(),
+    end: z.number().int().positive(),
+    originalText: z.string().min(1),
+  })
+  .strict()
+  .refine((range) => range.start < range.end, {
+    message: 'The range end must follow its start.',
+    path: ['end'],
+  });
 
 /** Attributable choice evidence retained on its exact version-owned Review. */
-export const ArtifactReviewCandidateSelectionSchema = z.object({
-  actorId: opaqueIdSchema,
-  requestId: opaqueIdSchema,
-  reason: z.string().min(1).nullable(),
-  selectedAt: TimestampSchema,
-}).strict();
+export const ArtifactReviewCandidateSelectionSchema = z
+  .object({
+    actorId: opaqueIdSchema,
+    requestId: opaqueIdSchema,
+    reason: z.string().min(1).nullable(),
+    selectedAt: TimestampSchema,
+  })
+  .strict();
 
 /** Closed public projection of one version-keyed Artifact Review. */
 export const ArtifactReviewViewSchema = z
@@ -133,10 +141,19 @@ export const ArtifactReviewViewSchema = z
     if (value.rangeFeedback != null) {
       const range = value.rangeFeedback;
       const proposal = value.materialProposal;
-      if (proposal === null || range.materialId !== proposal.materialId || range.revisionId !== proposal.baseRevisionId || range.contentDigest !== proposal.baseContentDigest) {
-        addDecisionIssue('Range feedback must identify the recorded Material proposal base.', 'rangeFeedback');
+      if (
+        proposal === null ||
+        range.materialId !== proposal.materialId ||
+        range.revisionId !== proposal.baseRevisionId ||
+        range.contentDigest !== proposal.baseContentDigest
+      ) {
+        addDecisionIssue(
+          'Range feedback must identify the recorded Material proposal base.',
+          'rangeFeedback'
+        );
       }
-      if (value.decision === null) addDecisionIssue('Range feedback requires a decision.', 'rangeFeedback');
+      if (value.decision === null)
+        addDecisionIssue('Range feedback requires a decision.', 'rangeFeedback');
     }
 
     if (value.decision === null) {
@@ -326,23 +343,33 @@ export const SubmitArtifactReviewDecisionResponseSchema = z
   });
 
 /** Request payload for choosing one exact available Artifact candidate. */
-export const SelectArtifactReviewCandidateRequestSchema = z.object({
-  requestId: requestIdSchema,
-  contentDigest: contentDigestSchema,
-  reason: z.string().min(1).optional(),
-}).strict();
+export const SelectArtifactReviewCandidateRequestSchema = z
+  .object({
+    requestId: requestIdSchema,
+    contentDigest: contentDigestSchema,
+    reason: z.string().min(1).optional(),
+  })
+  .strict();
 
 /** Response payload retaining all choice facts on the same version-owned Review. */
-export const SelectArtifactReviewCandidateResponseSchema = z.object({ review: ArtifactReviewViewSchema }).strict();
+export const SelectArtifactReviewCandidateResponseSchema = z
+  .object({ review: ArtifactReviewViewSchema })
+  .strict();
 
 /** Exact Material source range retained with a Review decision. */
 export type ArtifactReviewRangeFeedback = z.infer<typeof ArtifactReviewRangeFeedbackSchema>;
 /** One attributable choice of the Review's exact Artifact candidate. */
-export type ArtifactReviewCandidateSelection = z.infer<typeof ArtifactReviewCandidateSelectionSchema>;
+export type ArtifactReviewCandidateSelection = z.infer<
+  typeof ArtifactReviewCandidateSelectionSchema
+>;
 /** Request for an exact candidate choice without starting work. */
-export type SelectArtifactReviewCandidateRequest = z.infer<typeof SelectArtifactReviewCandidateRequestSchema>;
+export type SelectArtifactReviewCandidateRequest = z.infer<
+  typeof SelectArtifactReviewCandidateRequestSchema
+>;
 /** Updated existing Review after an exact candidate choice. */
-export type SelectArtifactReviewCandidateResponse = z.infer<typeof SelectArtifactReviewCandidateResponseSchema>;
+export type SelectArtifactReviewCandidateResponse = z.infer<
+  typeof SelectArtifactReviewCandidateResponseSchema
+>;
 
 /** Request payload for creating one Workspace Material. */
 export const CreateWorkspaceMaterialRequestSchema = z
