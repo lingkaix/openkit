@@ -29,7 +29,7 @@ export const GenerativeUiKernelRecordsSourceSchema = z
   })
   .strict();
 
-/** Source bound to one completed assistant-message Item. */
+/** Source bound to exact retained text from a completed assistant-message or tool-call Item. */
 export const GenerativeUiItemSourceSchema = z
   .object({
     kind: z.literal('item'),
@@ -86,6 +86,28 @@ export const GenerativeUiA2uiActionSchema = z
   })
   .strict();
 
+/** Publish-only shorthand for bounded model-authored text with no actions. */
+export const GenerativeUiAnswerSourceSchema = z
+  .object({
+    kind: z.literal('answer'),
+    text: z
+      .string()
+      .min(1)
+      .max(2 * 1024 * 1024)
+      .refine(
+        (text) => new TextEncoder().encode(text).byteLength <= 2 * 1024 * 1024,
+        'Generated answer text exceeds 2 MiB.'
+      ),
+  })
+  .strict();
+
+/** Publish sources normalize generated text to an ordinary retained Item binding. */
+export const GenerativeUiPublishSourceSchema = z.discriminatedUnion('kind', [
+  GenerativeUiKernelRecordsSourceSchema,
+  GenerativeUiItemSourceSchema,
+  GenerativeUiAnswerSourceSchema,
+]);
+
 /** Publish input: producer messages plus source and static actions. */
 export const PublishGenerativePresentationRequestSchema = z
   .object({
@@ -94,10 +116,14 @@ export const PublishGenerativePresentationRequestSchema = z
     title: z.string().min(1).max(256),
     fallbackText: z.string().min(1).max(8192),
     messages: z.array(z.unknown()).min(2).max(2),
-    source: GenerativeUiSourceSchema,
+    source: GenerativeUiPublishSourceSchema,
     actions: z.array(GenerativeUiActionSchema).max(8),
   })
-  .strict();
+  .strict()
+  .refine((input) => input.source.kind !== 'answer' || input.actions.length === 0, {
+    message: 'Generated answer sources accept no actions.',
+    path: ['actions'],
+  });
 
 /** Derived Item publication condition. */
 export const GenerativePresentationPublicationSchema = z.enum([
