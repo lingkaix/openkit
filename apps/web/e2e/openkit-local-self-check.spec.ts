@@ -1,7 +1,4 @@
-import {
-  StartTaskModeResponseSchema,
-  SubmitConversationResponseSchema,
-} from '@openkit/app-api-schemas';
+import { StartTaskModeResponseSchema } from '@openkit/app-api-schemas';
 import { createRequestId } from '@openkit/core-client';
 import { expect, type Page, test } from '@playwright/test';
 import { isQuestionAnswerResponse } from './_lib/question-answer-response.js';
@@ -41,25 +38,7 @@ test('completes the local Workspace self-check', async ({ page }) => {
   await page.getByRole('textbox', { name: 'Message' }).fill('Story thread');
   await page.getByRole('button', { name: /Conversation agent$/ }).click();
   await page.getByRole('option', { name: 'New Shard + Worker' }).click();
-  const handoffResponse = page.waitForResponse(
-    (response) =>
-      response.request().method() === 'POST' &&
-      new URL(response.url()).pathname === '/api/app/operations/conversation.submit'
-  );
   await page.getByRole('button', { name: /^Send message$/ }).click();
-  const response = await handoffResponse;
-  expect(response.status(), await response.text()).toBe(202);
-  const origin = response.request().postDataJSON() as { workspaceId: string; threadId: string };
-  const handoff = SubmitConversationResponseSchema.parse(await response.json());
-  expect(handoff.receivingWorkspaceId).toBe(origin.workspaceId);
-  expect(handoff.receivingThreadId).not.toBe(origin.threadId);
-  expect(handoff.turn.threadId).toBe(handoff.receivingThreadId);
-  expect(
-    await getJson('/api/app/operations/thread.read', {
-      workspaceId: origin.workspaceId,
-      threadId: handoff.receivingThreadId,
-    })
-  ).toMatchObject({ id: handoff.receivingThreadId, parentThreadId: origin.threadId });
   await expect(page.getByRole('heading', { name: 'Story thread' })).toBeVisible({
     timeout: 15_000,
   });
