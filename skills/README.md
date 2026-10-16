@@ -1,6 +1,6 @@
 # OpenKit Skills
 
-OpenKit distributes one independently installable [openkit-ops Skill](openkit-ops/SKILL.md) for installation, configuration, upgrade, diagnosis, recovery and the generated administrator CLI under [Agent Operator Skill](../docs/specs/20260910-agent_operator_skill.md). Ordinary product work uses [remote MCP](../docs/specs/20261002-remote_mcp_interface.md) guide, search, describe and call or Web. The former user-facing package is absent; no fallback, alias or separate CLI package is shipped.
+OpenKit distributes one independently installable operations package, the [openkit-ops Skill](openkit-ops/SKILL.md) for installation, configuration, upgrade, diagnosis, recovery and the generated administrator CLI under [Agent Operator Skill](../docs/specs/20260910-agent_operator_skill.md). Ordinary product work uses [remote MCP](../docs/specs/20261002-remote_mcp_interface.md) guide, search, describe and call or Web. The former user-facing package is absent; no fallback, alias or separate CLI package is shipped.
 
 ## Administrator CLI
 
@@ -27,3 +27,7 @@ Run `pnpm build:openkit` and `node --test tests/openkit-skill-interface.test.mjs
 Worker-side MCP, product Skill Catalog/version/candidate operations, Agent Plugins and AEP supply remain separate owners. The removed user-facing stdio and setup/loop/developer variants remain absent. Worker publication uses selected vendor MCP through its Gateway; the administrator CLI gains no worker tunnel or bearer.
 
 Doctor reports service availability separately from product-work readiness, update qualification and content-free maintenance safety. Unknown evidence stays unknown. The operations archive includes reviewed App-update helper bytes outside the Skill tree, and the operator verifies and replaces them before preparation. See the operations reference for checksum, atomic installation, status identity, refusal and recovery steps.
+
+## BWM Authoring Skill
+
+The ordinary product Skill openkit-bwm-author creates a reviewable domain Skill candidate from explicitly authorized Workspace information. It uses the existing Task/Goal, Artifact and versioned Skill owners and adds no operations CLI or learning runner. The engineer requires implementation with synthetic and fake-backed regressions now; BWM acceptance is deferred until the engineer adds ideas and the resulting work is complete. This package does not restore the retired developer, setup or loop-only operations variants.

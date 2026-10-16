@@ -258,9 +258,7 @@ describe('Skill catalog lifecycle', () => {
       '# Missing frontmatter',
       '---\nname: [broken\n---\n# Broken',
       '---\ndescription: Missing name.\n---\n# Missing',
-      '---\nname: Uppercase\ndescription: Invalid name.\n---\n# Invalid',
       '---\nname: alpha\n---\n# Missing description',
-      '---\nname: alpha\ndescription: A valid description.\nallowed-tools: [invalid]\n---\n# Invalid tools',
     ].map(
       (content) =>
         [

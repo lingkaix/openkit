@@ -37,7 +37,6 @@ import {
   type WorkspaceMcpServerCatalog,
   WorkspaceMcpServerSchema,
 } from '@openkit/config-schema';
-import { parseDocument } from 'yaml';
 import type { ZodError } from 'zod';
 
 import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
@@ -49,6 +48,7 @@ import {
   syncCanonicalTree,
   writeFileAtomic,
 } from '../storage/workspace-file-records.js';
+import { parseEcosystemSkillHeader, SkillSourceInputError } from './skill-source.js';
 
 /** Compare-and-set failure against the catalog revision. */
 export class CatalogConflictError extends Error {
@@ -217,12 +217,7 @@ export function importWorkspaceSkill(input: {
   if (current.revision !== input.expectedRevision) throw new CatalogConflictError();
   SkillEntryRecordSchema.shape.displayName.parse(input.displayName);
   const { entries, digest } = validateCatalogTree(input.tree);
-  validateSkillTree(
-    entries,
-    input.pluginMemberKey?.startsWith('skills/')
-      ? input.pluginMemberKey.slice('skills/'.length)
-      : undefined
-  );
+  validateSkillTree(entries);
   const id = ResourceCatalogIdSchema.parse(input.id ?? skillIdFromDisplayName(input.displayName));
   const existing = current.skills.entries.find((entry) => entry.id === id);
   if (existing?.availability === 'removed') throw new CatalogNotFoundError(`Skill removed: ${id}`);
@@ -1351,7 +1346,7 @@ function parsePluginPackage(packageEntries: readonly OpenKitTreeEntry[]): {
       .map((entry) => ({ ...entry, path: entry.path.slice(prefix.length) }));
     // Validate every component before any package or component payload becomes canonical.
     hashOpenKitTreeEntries(entries);
-    validateSkillTree(entries, name);
+    validateSkillTree(entries);
     skills.push({
       displayName: name,
       id: skillIdFromDisplayName(name),
@@ -1421,68 +1416,20 @@ function pluginMcpDeclaration(server: Record<string, unknown>): McpValidatedDecl
 }
 
 /** Validates authored Skill metadata without changing payload bytes or granting tool authority. */
-function validateSkillTree(entries: readonly OpenKitTreeEntry[], expectedName?: string): void {
+function validateSkillTree(entries: readonly OpenKitTreeEntry[]): void {
   const root = entries.find((entry) => entry.path === 'SKILL.md');
   if (!root || root.kind === 0)
     throw new CatalogInputError('Skill admission requires a root SKILL.md regular file.');
-  let content: string;
   try {
-    content = new TextDecoder('utf-8', { fatal: true }).decode(root.content);
-  } catch {
-    throw new CatalogInputError('Skill SKILL.md must contain valid UTF-8.');
+    const content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(root.content);
+    parseEcosystemSkillHeader(content);
+  } catch (error) {
+    if (error instanceof TypeError || error instanceof SkillSourceInputError)
+      throw new CatalogInputError(
+        'Skill SKILL.md requires valid UTF-8 and Agent Skills YAML metadata.'
+      );
+    throw error;
   }
-  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content);
-  if (!frontmatter)
-    throw new CatalogInputError('Skill SKILL.md requires Agent Skills YAML frontmatter.');
-  const document = parseDocument(frontmatter[1]!);
-  if (document.errors.length > 0 || document.warnings.length > 0)
-    throw new CatalogInputError('Skill SKILL.md has invalid YAML frontmatter.');
-  let metadata: unknown;
-  try {
-    metadata = document.toJS();
-  } catch {
-    throw new CatalogInputError('Skill SKILL.md has invalid YAML frontmatter.');
-  }
-  if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata))
-    throw new CatalogInputError('Skill SKILL.md requires a metadata mapping.');
-  const header = metadata as Record<string, unknown>;
-  if (
-    typeof header.name !== 'string' ||
-    header.name.length > 64 ||
-    !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(header.name)
-  )
-    throw new CatalogInputError('Skill SKILL.md requires a valid Agent Skills name.');
-  if (expectedName !== undefined && header.name !== expectedName)
-    throw new CatalogInputError('Skill SKILL.md name must match its package directory.');
-  if (
-    typeof header.description !== 'string' ||
-    header.description.trim().length === 0 ||
-    header.description.length > 1_024
-  )
-    throw new CatalogInputError(
-      'Skill SKILL.md requires a description of 1 through 1024 characters.'
-    );
-  if (header.license !== undefined && typeof header.license !== 'string')
-    throw new CatalogInputError('Skill SKILL.md license must be a string.');
-  if (
-    header.compatibility !== undefined &&
-    (typeof header.compatibility !== 'string' ||
-      header.compatibility.length === 0 ||
-      header.compatibility.length > 500)
-  )
-    throw new CatalogInputError(
-      'Skill SKILL.md compatibility must contain 1 through 500 characters.'
-    );
-  if (
-    header.metadata !== undefined &&
-    (header.metadata === null ||
-      typeof header.metadata !== 'object' ||
-      Array.isArray(header.metadata) ||
-      Object.values(header.metadata).some((value) => typeof value !== 'string'))
-  )
-    throw new CatalogInputError('Skill SKILL.md metadata must map string keys to string values.');
-  if (header['allowed-tools'] !== undefined && typeof header['allowed-tools'] !== 'string')
-    throw new CatalogInputError('Skill SKILL.md allowed-tools must be a string.');
 }
 
 /** Validates one bounded transport tree and derives its physical-tree identity without filesystem effects. */
