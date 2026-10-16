@@ -164,7 +164,11 @@ Web MUST project included operations through product workflows such as account a
 
 A workflow MAY satisfy several operations when each operation's user-visible behavior, authoritative state, or named supporting read is reachable through that workflow. The coverage check records that mapping. Web MUST NOT add a generic operation runner, an operation-id index as a product destination, or a dedicated published page whose only purpose is to expose one catalog key.
 
-Conversation surfaces expose only continuing the current Thread or creating a new Thread. AgentSession is a hidden runtime-continuity item and MUST NOT appear in Web or ordinary App API as a picker, creation or restart action, navigation object, identifier, history, active-session object, or native handle.
+Ordinary Assistant navigation opens the backend-owned private User/Workspace Timeline through thread.create and follows the exact returned Thread identity. Opening creates no Turn and submits no message. It does not offer another private conversation, choose a Timeline by date or identifier, rename an existing Timeline, or implicitly restore an archived one. An archived result opens its retained history with the existing archive status and explicit restoration path. Pending or failed opening is visible, with explicit retry of the same frozen request. A result for a departed selected Workspace must not redirect the current Workspace. This binding ships only with the accepted private Timeline backend.
+
+The Members navigation entry uses the existing selected-project-Workspace Account surface at /settings/account. It creates no member route or membership authority. Personal Workspace selection offers no member-management entry. Current account and membership reads continue to govern visible facts and effects.
+
+AgentSession is a hidden runtime-continuity item and MUST NOT appear in Web or ordinary App API as a picker, creation or restart action, navigation object, identifier, history, active-session object, or native handle.
 
 ### Disposition lifecycle
 
