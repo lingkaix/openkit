@@ -129,3 +129,44 @@ test('retained reads cannot call secret or effect operations through annotations
   await assert.rejects(io.call('provider-account.import', {}), /Operator API unavailable/);
   assert.equal(fetched, false);
 });
+
+test('cold preparation outlives reads but remains bounded without replay', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let signal;
+  let requests = 0;
+  const io = createOperatorApi(origin, {
+    resolve: () => credential,
+    fetch: async (_url, options) => {
+      requests++;
+      signal = options.signal;
+      return new Promise(() => {});
+    },
+  });
+  const pending = io.call('worker-environment.prepare', {
+    administrationThreadId: 'synthetic-administration-thread',
+    requestId: '11111111-1111-4111-8111-111111111111',
+    configuration: {
+      expectedRevision: 'sha256:' + 'a'.repeat(64),
+      fileId: 'agents/worker.agent.jsonc',
+    },
+    declaration: {
+      kind: 'reference',
+      ref: 'registry.example.test/worker@sha256:' + 'b'.repeat(64),
+      pullPolicy: 'always',
+    },
+    target: { kind: 'agent', agentId: 'worker' },
+    replaceNow: null,
+  });
+  const rejection = assert.rejects(pending, /Operator API unavailable/);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(requests, 1);
+  t.mock.timers.tick(90_000);
+  assert.equal(signal.aborted, false, 'cold acquisition must outlive ordinary reads');
+  t.mock.timers.tick(1_710_000 - 1);
+  assert.equal(signal.aborted, false);
+  t.mock.timers.tick(1);
+  await rejection;
+  assert.equal(signal.aborted, true);
+  assert.equal(requests, 1, 'an unknown preparation cannot be replayed');
+});

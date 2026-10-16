@@ -23,7 +23,8 @@ const operations = new Set([
 
 /**
  * Keep authority resolution with the administrator CLI's credential owner.
- * Each operation has one thirty-second request including bounded body collection.
+ * Image preparation waits up to thirty minutes for synchronous cold acquisition;
+ * other operations have thirty seconds, including bounded body collection.
  * A rejected or lost mutation remains unknown; this adapter never retries it.
  * @param {string} target Explicit HTTPS origin selected from the protected staging binding.
  * @param {object} adapters Optional in-process boundaries for contained verification.
@@ -96,10 +97,13 @@ export function createOperatorApi(target, adapters = {}) {
               return await Promise.race([
                 request,
                 new Promise((_, reject) => {
-                  timer = setTimeout(() => {
-                    controller.abort();
-                    reject(Error(unavailable));
-                  }, 30_000);
+                  timer = setTimeout(
+                    () => {
+                      controller.abort();
+                      reject(Error(unavailable));
+                    },
+                    operation === 'worker-environment.prepare' ? 1_800_000 : 30_000
+                  );
                 }),
               ]);
             } catch {
