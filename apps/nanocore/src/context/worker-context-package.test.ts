@@ -38,6 +38,7 @@ import {
   createWorkerContextPackagePolicyDigest,
   createWorkerContextPackageTrace,
   parseWorkerContextPackageTrace,
+  projectWorkerContextRequest,
   readPortableWorkerContextPackageTrace,
   readWorkerContextPackageTrace,
   serializeWorkerContextPackageTrace,
@@ -635,6 +636,84 @@ async function createLiveNullKnowledgeFixture(
     trace: rewriteTrace(fixture.trace, { goalId: null, taskId: null }),
   };
 }
+
+describe('worker request source selector projection', () => {
+  it('projects ordered exact Artifact selectors without interpreting resource display strings', () => {
+    const request = JSON.parse(WORKER_REQUEST_BYTES);
+    request.contextRefs.push(
+      { kind: 'artifact', id: 'ar_selected', artifactVersion: 7 },
+      { kind: 'artifact', id: 'ar_current' }
+    );
+    request.resources = [
+      { kind: 'artifact', reference: 'ar_display:v99', reason: 'Display only.' },
+    ];
+    expect(projectWorkerContextRequest(JSON.stringify(request))).toEqual({
+      contextBudgetTokens: 4096,
+      requestKind: 'structured-delegation',
+      requestedItemIds: ['it_prior', 'it_gate_request', 'it_gate_response'],
+      requestedArtifactRefs: [
+        { artifactId: 'ar_selected', artifactVersion: 7 },
+        { artifactId: 'ar_current' },
+      ],
+    });
+  });
+
+  it('projects the exact Artifact Review follow-up version', () => {
+    const artifactContent = 'Exact original content.';
+    expect(
+      projectWorkerContextRequest(
+        JSON.stringify({
+          kind: 'artifact-review-follow-up',
+          workspaceId: 'ws_context',
+          reviewId: 'review_selected',
+          artifactId: 'ar_selected',
+          artifactVersion: 7,
+          contentDigest: sha256(artifactContent),
+          artifactContent,
+          artifactMediaType: 'text/plain',
+          sourceThreadId: 'th_context',
+          sourceTurnId: 'tu_prior',
+          sourceAgentId: 'agent_selected',
+          materialProposal: null,
+          decision: 'redo',
+          feedback: 'Revise the selected version.',
+          decisionRequestId: 'req_decision',
+          workerRequestId: 'req_follow_up',
+        })
+      )
+    ).toEqual({
+      contextBudgetTokens: 240000,
+      requestKind: 'artifact-review',
+      requestedItemIds: [],
+      requestedArtifactRefs: [{ artifactId: 'ar_selected', artifactVersion: 7 }],
+    });
+  });
+
+  it('projects no Artifact selector from a frozen pending outcome', () => {
+    expect(
+      projectWorkerContextRequest(
+        JSON.stringify({
+          triggerInput: 'Continue with the answered request.',
+          pendingOutcomes: [
+            {
+              requestId: 'req_pending',
+              requestItemId: 'it_pending',
+              publicationTurnId: 'tu_prior',
+              kind: 'user-input',
+              resolution: 'answered',
+              ending: null,
+            },
+          ],
+        })
+      )
+    ).toEqual({
+      contextBudgetTokens: 240000,
+      requestKind: 'pending-outcomes',
+      requestedItemIds: [],
+      requestedArtifactRefs: [],
+    });
+  });
+});
 
 describe('worker Context Package owner', () => {
   it.each([

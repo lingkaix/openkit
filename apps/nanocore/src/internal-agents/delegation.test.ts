@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createStructuredWorkerDelegationRequest,
   StructuredWorkerDelegationRequestSchema,
+  serializeStructuredWorkerDelegationRequest,
 } from './delegation.js';
 
 describe('structured worker delegation requests', () => {
@@ -13,6 +14,8 @@ describe('structured worker delegation requests', () => {
       contextRefs: [
         { kind: 'workspace', id: 'ws_demo' },
         { kind: 'thread', id: 'th_demo' },
+        { kind: 'artifact', id: 'ar_selected', artifactVersion: 7 },
+        { kind: 'artifact', id: 'ar_current' },
       ],
       resources: [
         {
@@ -55,6 +58,8 @@ describe('structured worker delegation requests', () => {
       contextRefs: [
         { kind: 'workspace', id: 'ws_demo' },
         { kind: 'thread', id: 'th_demo' },
+        { kind: 'artifact', id: 'ar_selected', artifactVersion: 7 },
+        { kind: 'artifact', id: 'ar_current' },
       ],
       resources: [
         {
@@ -89,6 +94,17 @@ describe('structured worker delegation requests', () => {
       escalationConditions: ['Escalate if repository setup is invalid.'],
       reviewContext: null,
     });
+    expect(JSON.parse(serializeStructuredWorkerDelegationRequest(request))).toEqual(request);
+  });
+
+  it('allows positive Artifact versions only on Artifact context references', () => {
+    const refs = StructuredWorkerDelegationRequestSchema.shape.contextRefs;
+    expect(
+      refs.safeParse([{ kind: 'artifact', id: 'ar_selected', artifactVersion: 0 }]).success
+    ).toBe(false);
+    expect(refs.safeParse([{ kind: 'item', id: 'it_selected', artifactVersion: 7 }]).success).toBe(
+      false
+    );
   });
 
   it('rejects malformed or oversized structured worker delegation requests', () => {

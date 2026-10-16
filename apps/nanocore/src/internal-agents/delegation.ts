@@ -18,8 +18,13 @@ const ContextRefSchema = z
   .object({
     kind: z.enum(['workspace', 'thread', 'artifact', 'knowledge', 'item']),
     id: z.string().min(1),
+    artifactVersion: z.number().int().positive().optional(),
   })
-  .strict();
+  .strict()
+  .refine((reference) => reference.artifactVersion === undefined || reference.kind === 'artifact', {
+    message: 'Only Artifact context references can select an Artifact version.',
+    path: ['artifactVersion'],
+  });
 const WorkerDelegationTargetSchema = z
   .object({
     agentId: z.string().min(1),
@@ -71,7 +76,7 @@ const StructuredWorkerDelegationReviewContextSchema = z.discriminatedUnion('verd
 ]);
 
 /**
- * Source reference used by delegation preparation records.
+ * Source selector used by delegation preparation; only Artifact references may pin an immutable version.
  */
 export type DelegationContextRef = z.infer<typeof ContextRefSchema>;
 
