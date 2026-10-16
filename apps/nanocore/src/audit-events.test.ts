@@ -13,6 +13,7 @@ import {
 import { AutomationStore } from './lib/automation-store.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /**
@@ -27,14 +28,15 @@ function createDataRoot(): string {
 describe('workspace audit events', () => {
   it('joins Core-homed Workspace Audit only after exact Workspace selection', () => {
     const dataRoot = createDataRoot();
+    const workspaceId = testEntityId('ws', 'audit-selected-workspace');
     const coreDb = openCoreDb(dataRoot);
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     try {
       applyMigrations(coreDb);
       applyScopedMigrations(workspaceDb);
       const local = recordWorkspaceAuditEvent({
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId,
         action: 'workspace.inspect',
         outcome: 'succeeded',
         summary: 'Workspace inspected.',
@@ -42,8 +44,12 @@ describe('workspace audit events', () => {
       });
       const recurring = recordServerAuditEvent({
         coreDb,
-        workspaceId: 'ws_demo',
-        actor: { kind: 'automation', id: 'auto_test', responsibleUserId: 'user_local' },
+        workspaceId,
+        actor: {
+          kind: 'automation',
+          id: testEntityId('auto', 'audit-automation'),
+          responsibleUserId: testEntityId('usr', 'audit-user'),
+        },
         action: 'automation.trigger',
         outcome: 'succeeded',
         summary: 'Recurring occurrence accepted.',
@@ -51,16 +57,21 @@ describe('workspace audit events', () => {
       });
       const foreign = recordServerAuditEvent({
         coreDb,
-        workspaceId: 'ws_foreign',
+        workspaceId: testEntityId('ws', 'audit-foreign-workspace'),
         action: 'automation.trigger',
         outcome: 'failed',
         summary: 'Foreign history.',
       });
-      coreDb.sqlite
-        .prepare('UPDATE audit_events SET actor_json = ? WHERE audit_event_id = ?')
-        .run('{"kind":"unsupported"}', foreign.id);
-      expect(listWorkspaceAuditEvents(workspaceDb, 'ws_demo', coreDb)).toEqual([recurring, local]);
-      expect(listWorkspaceAuditEvents(workspaceDb, 'ws_demo')).toEqual([local]);
+      expect(
+        coreDb.sqlite
+          .prepare('UPDATE audit_events SET actor_json = ? WHERE audit_event_id = ?')
+          .run('{"kind":"unsupported"}', foreign.id).changes
+      ).toBe(1);
+      expect(listWorkspaceAuditEvents(workspaceDb, workspaceId, coreDb)).toEqual([
+        recurring,
+        local,
+      ]);
+      expect(listWorkspaceAuditEvents(workspaceDb, workspaceId)).toEqual([local]);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -70,8 +81,9 @@ describe('workspace audit events', () => {
 
   it('exports only exact recurring actions with retained subjects before decoding Core content', () => {
     const dataRoot = createDataRoot();
+    const workspaceId = testEntityId('ws', 'audit-selected-workspace');
     const coreDb = openCoreDb(dataRoot);
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     try {
       applyMigrations(coreDb);
       applyScopedMigrations(workspaceDb);
@@ -80,9 +92,9 @@ describe('workspace audit events', () => {
         new WorkspaceMutationAdmission(),
         () => '2026-10-16T00:00:00.000Z'
       );
-      const schedule = schedules.createAutomation('user_local', {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+      const schedule = schedules.createAutomation(testEntityId('usr', 'audit-user'), {
+        workspaceId,
+        threadId: testEntityId('th', 'audit-thread'),
         name: 'Portable',
         prompt: 'Inspect',
         intervalSeconds: 5,
@@ -91,34 +103,36 @@ describe('workspace audit events', () => {
       expect(created).toMatchObject({ action: 'recurring.schedule.create', resource: schedule.id });
       const local = recordWorkspaceAuditEvent({
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId,
         action: 'workspace.inspect',
         outcome: 'succeeded',
         summary: 'Local history.',
       });
-      for (const [workspaceId, action, resource] of [
-        ['ws_foreign', 'recurring.schedule.create', schedule.id],
-        ['ws_demo', 'deployment.access', schedule.id],
-        ['ws_demo', 'recurring.schedule.create', 'auto_missing'],
-        ['ws_demo', 'recurring.occurrence.terminal', schedule.id],
+      for (const [sourceWorkspaceId, action, resource] of [
+        [testEntityId('ws', 'audit-foreign-workspace'), 'recurring.schedule.create', schedule.id],
+        [workspaceId, 'deployment.access', schedule.id],
+        [workspaceId, 'recurring.schedule.create', testEntityId('auto', 'audit-missing-schedule')],
+        [workspaceId, 'recurring.occurrence.terminal', schedule.id],
       ]) {
         const excluded = recordServerAuditEvent({
           coreDb,
-          workspaceId,
+          workspaceId: sourceWorkspaceId,
           action: action!,
           resource,
           outcome: 'succeeded',
           summary: 'Excluded Core source.',
         });
-        coreDb.sqlite
-          .prepare('UPDATE audit_events SET actor_json = ? WHERE audit_event_id = ?')
-          .run('{"kind":"unsupported"}', excluded.id);
+        expect(
+          coreDb.sqlite
+            .prepare('UPDATE audit_events SET actor_json = ? WHERE audit_event_id = ?')
+            .run('{"kind":"unsupported"}', excluded.id).changes
+        ).toBe(1);
       }
-      expect(listPortableWorkspaceAuditEvents(workspaceDb, 'ws_demo', coreDb)).toEqual([
+      expect(listPortableWorkspaceAuditEvents(workspaceDb, workspaceId, coreDb)).toEqual([
         created,
         local,
       ]);
-      expect(listPortableWorkspaceAuditEvents(workspaceDb, 'ws_demo')).toEqual([local]);
+      expect(listPortableWorkspaceAuditEvents(workspaceDb, workspaceId)).toEqual([local]);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
