@@ -716,10 +716,7 @@ function shutdown(signal: NodeJS.Signals): void {
   bootReadiness = createShutdownReadinessSnapshot(bootReadiness);
   schedulerDispatchRetry?.stop();
   schedulerAttemptMaintenance?.stop();
-  const stepsCompleted = [
-    'scheduler.dispatch-retry.stop',
-    'scheduler.attempt-maintenance.stop',
-  ];
+  const stepsCompleted = ['scheduler.dispatch-retry.stop', 'scheduler.attempt-maintenance.stop'];
   closeWithDeadline({
     close: closeNanoCoreListeners,
     deadlineMs: SHUTDOWN_DEADLINE_MS,
