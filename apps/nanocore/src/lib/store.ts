@@ -273,6 +273,7 @@ export type CommandRequestName =
   | 'artifact.introduce'
   | 'artifact.submit'
   | 'artifact.review.decide'
+  | 'artifact.review.select'
   | 'material.create'
   | 'material.save'
   | 'material.bind'

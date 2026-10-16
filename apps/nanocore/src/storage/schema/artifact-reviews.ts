@@ -1,3 +1,4 @@
+import type { ArtifactReviewCandidateSelection, ArtifactReviewRangeFeedback } from '@openkit/app-api-schemas';
 import { sql } from 'drizzle-orm';
 import {
   check,
@@ -50,6 +51,10 @@ export const artifactReviews = sqliteTable(
     decisionRequestId: text('decision_request_id'),
     /** Optional non-empty reviewer feedback. */
     feedback: text('feedback'),
+    /** Exact original-source range owned by the accepted decision. */
+    rangeFeedback: text('range_feedback', { mode: 'json' }).$type<ArtifactReviewRangeFeedback>(),
+    /** Ordered attributable choices; choosing never changes decision authority. */
+    candidateSelections: text('candidate_selections', { mode: 'json' }).$type<ArtifactReviewCandidateSelection[]>().notNull().default(sql`'[]'`),
     /** ISO timestamp shared by every decision effect. */
     decidedAt: text('decided_at'),
     /** Deterministic follow-up Turn reserved by refinement or redo. */
