@@ -706,6 +706,7 @@ function importLineage(input: WriteWorkspaceExportTreeInput) {
  * Builds one complete source Material, Review, and S39 portability graph.
  *
  * @param followUp Optional exact Artifact Review follow-up fixture.
+ * @param sourceSnapshotRoot Optional original snapshot fixture root.
  * @returns Complete export fixture covering the accepted work-resource lineage.
  * @throws Error when the structured worker request or package fixture cannot be built.
  */
@@ -845,7 +846,14 @@ function createWorkResourceLineageExportInput(followUp?: {
     originalSnapshotPath: materialOriginalPath,
   };
   const inputOriginalPath = 'originals/turn-inputs/0/payload';
-  const inputDescriptor = 'Text representation unavailable.';
+  const inputDescriptor = JSON.stringify({
+    status: 'unavailable',
+    reason: 'unsupported',
+    source: { scopeId: `input/turn/${source.workspaceId}/${source.threadId}/${source.turnId}`, objectId: '0' },
+    originalDigest: binaryDigest,
+    byteLength: binaryOriginal.byteLength,
+    mediaType: 'application/octet-stream',
+  });
   if (sourceSnapshotRoot) {
     input.sourceWorkspaceRoot = sourceSnapshotRoot;
     input.turns = input.turns.map((turn) => ({
@@ -908,8 +916,8 @@ function createWorkResourceLineageExportInput(followUp?: {
         originalSnapshotPath: inputOriginalPath,
         packagePath: 'sources/turn-inputs/0.txt',
         projection: {
-          kind: 'descriptor' as const, sourceRevision: '0', representationId: 'unavailable-text-v1',
-          representationDigest: binaryDigest, representationByteLength: 0,
+          kind: 'descriptor' as const, sourceRevision: '0', representationId: 'unavailable-original-view-v1',
+          representationDigest: binaryDigest, representationByteLength: binaryOriginal.byteLength,
           deliveredDigest: `sha256:${createHash('sha256').update(inputDescriptor).digest('hex')}`,
           ranges: [], byteLength: Buffer.byteLength(inputDescriptor), truncated: true,
           availability: 'unavailable' as const, originalSnapshotPath: inputOriginalPath,
@@ -2170,10 +2178,12 @@ describe('workspace auxiliary lineage reminting', () => {
 
   it('round trips binary source originals and a Material excerpt without expanding its preview', () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-source-snapshot-portability-'));
+    let fixtureParent: string | undefined;
     try {
       const sourceRoot = join(root, 'source');
       mkdirSync(sourceRoot);
       const input = createWorkResourceLineageExportInput(undefined, sourceRoot);
+      fixtureParent = dirname(input.exportRoot);
       input.exportRoot = join(root, 'export');
       writeWorkspacePortableFileState(sourceRoot, input.portableFileState!);
       input.portableFileState = readWorkspacePortableFileState(sourceRoot, {
@@ -2206,14 +2216,17 @@ describe('workspace auxiliary lineage reminting', () => {
       expect(material.source).toMatchObject({ reference: { scopeId: `material/workspace/${targetWorkspaceId}`, objectId: imported.workspaceMaterials[0]!.materialId }, revisionId: imported.workspaceMaterialRevisions[0]!.revisionId });
       expect(binary.source).toMatchObject({ reference: { scopeId: `input/turn/${targetWorkspaceId}/${trace.threadId}/${trace.turnId}`, objectId: '0' } });
       expect(material.originalSnapshotPath).not.toContain('mat_source');
-      expect(binary.originalSnapshotPath).not.toContain(source.turnId);
       expect(material.packagePath).not.toContain('mat_source');
-      expect(binary.packagePath).not.toContain(source.turnId);
+      const descriptorText = readFileSync(join(packageRoot, binary.packagePath), 'utf8');
+      expect(JSON.parse(descriptorText).source).toEqual(binary.source.reference);
+      expect(binary.projection.deliveredDigest).toBe(`sha256:${createHash('sha256').update(descriptorText).digest('hex')}`);
+      expect(binary.projection.representationDigest).toBe(binary.originalDigest);
       expect(material.projection.ranges).toEqual([{ start: 0, end: 10 }]);
       rmSync(join(packageRoot, binary.originalSnapshotPath));
       expect(() => verifyImportedWorkerContextPackageSnapshot(imported, stagedRoot)).toThrow();
     } finally {
       rmSync(root, { recursive: true, force: true });
+      if (fixtureParent) rmSync(fixtureParent, { recursive: true, force: true });
     }
   });
 
