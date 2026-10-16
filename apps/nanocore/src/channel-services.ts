@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { CHANNEL_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import type { OpenKitConfig } from '@openkit/config-schema';
-import type { Actor } from './auth/identity.js';
+import { type Actor, getLocalUserId } from './auth/identity.js';
 import { currentWorkspaceAuthority } from './auth/operation-authorizer.js';
 import { isThreadIdVisible } from './auth/thread-visibility.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
@@ -29,7 +29,6 @@ import {
   type PendingRequestRecord,
 } from './runtime/pending-requests.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
-import { LOCAL_USER_ID } from './storage/fs-layout.js';
 
 /** Private Discord transport injected by startup or deterministic external-boundary tests. */
 export type DiscordAttentionTransport = ReturnType<typeof createDiscordRestTransport>;
@@ -50,8 +49,10 @@ export function createChannelServices(input: {
   ) => Promise<unknown>;
 }) {
   const { coreDb, store } = input;
+  // The local User owner retains this identity; each channel action still checks its active state.
+  const localUserId = input.mode === 'local' ? getLocalUserId(coreDb) : undefined;
   const ordinaryActor = (userId: string): Actor | null =>
-    isCanonicalUserActive(coreDb, userId) && (input.mode !== 'local' || userId === LOCAL_USER_ID)
+    isCanonicalUserActive(coreDb, userId) && (input.mode !== 'local' || userId === localUserId)
       ? { kind: input.mode === 'local' ? 'local' : 'session', userId }
       : null;
 
