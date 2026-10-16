@@ -158,6 +158,7 @@ import {
   type FileStorageAdmission,
 } from './storage/artifacts/file-admission.js';
 import { readArtifactFileText } from './storage/artifacts/file-records.js';
+import { withCanonicalFileWriteAdmission } from './storage/canonical-write-capacity.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { resolveDataRootPath } from './storage/fs-layout.js';
 import { applyScopedMigrations } from './storage/migrate.js';
@@ -3130,50 +3131,64 @@ export function createConversationService({
        * @returns Created turn.
        */
       const createChatTurn = (completedAt: string, turnId?: string, ownsFiles = true) => {
-        const turn = store.createTurn(workspaceId, threadId, chatInput.input, triggerActor, null, {
-          ...(ownsFiles ? fileOptions : {}),
-          ...(turnId ? { turnId } : {}),
-          ...(chatInput.reasoningEffort !== undefined
-            ? { reasoningEffort: chatInput.reasoningEffort }
-            : {}),
-        });
-        store.updateTurn(turn.id, {
-          agentId:
-            acceptedTarget.kind === 'knowledge-manager' ? 'knowledge-manager' : QUICK_CHAT_AGENT_ID,
-        });
+        const writeTurnAndItems = () => {
+          const turn = store.createTurn(
+            workspaceId,
+            threadId,
+            chatInput.input,
+            triggerActor,
+            null,
+            {
+              ...(ownsFiles ? fileOptions : {}),
+              ...(turnId ? { turnId } : {}),
+              ...(chatInput.reasoningEffort !== undefined
+                ? { reasoningEffort: chatInput.reasoningEffort }
+                : {}),
+            }
+          );
+          store.updateTurn(turn.id, {
+            agentId:
+              acceptedTarget.kind === 'knowledge-manager'
+                ? 'knowledge-manager'
+                : QUICK_CHAT_AGENT_ID,
+          });
 
-        store.createItem({
-          id: `it_chat_user_${turn.id}`,
-          workspaceId,
-          threadId,
-          turnId: turn.id,
-          type: 'user-message',
-          status: 'completed',
-          actor: triggerActor,
-          text: chatInput.input,
-          createdAt: turn.startedAt ?? completedAt,
-          completedAt,
-        });
-
-        for (const artifact of artifacts) {
           store.createItem({
-            id: artifactReferenceItemId(artifact.id, turn.id),
+            id: `it_chat_user_${turn.id}`,
             workspaceId,
             threadId,
             turnId: turn.id,
-            type: 'artifact-reference',
+            type: 'user-message',
             status: 'completed',
-            artifactId: artifact.id,
-            artifactVersion: artifact.version,
-            title: artifact.title,
-            summary: artifact.summary,
-            lastMutationRequestId: chatInput.requestId,
+            actor: triggerActor,
+            text: chatInput.input,
             createdAt: turn.startedAt ?? completedAt,
             completedAt,
           });
-        }
 
-        return store.getTurn(workspaceId, threadId, turn.id);
+          for (const artifact of artifacts) {
+            store.createItem({
+              id: artifactReferenceItemId(artifact.id, turn.id),
+              workspaceId,
+              threadId,
+              turnId: turn.id,
+              type: 'artifact-reference',
+              status: 'completed',
+              artifactId: artifact.id,
+              artifactVersion: artifact.version,
+              title: artifact.title,
+              summary: artifact.summary,
+              lastMutationRequestId: chatInput.requestId,
+              createdAt: turn.startedAt ?? completedAt,
+              completedAt,
+            });
+          }
+
+          return store.getTurn(workspaceId, threadId, turn.id);
+        };
+        return fileOptions.fileWriteAdmission
+          ? withCanonicalFileWriteAdmission(fileOptions.fileWriteAdmission, writeTurnAndItems)
+          : writeTurnAndItems();
       };
 
       /**

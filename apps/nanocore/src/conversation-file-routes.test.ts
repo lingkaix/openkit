@@ -244,6 +244,45 @@ describe('Turn-owned conversation originals', () => {
     ).toBe(false);
   });
 
+  it('admits the submitted user-message append through the same shared file-capacity owner', async () => {
+    let available = 2_000_000_000n;
+    const state = fixture(() => available);
+    const bytes = new Uint8Array();
+    const input = {
+      workspaceId: state.workspaceId,
+      threadId: state.thread.id,
+      requestId: randomUUID(),
+      input: 'x'.repeat(300_000),
+      targetRef: 'internal-role:assistant',
+      artifactRefs: [],
+      fileInputs: [metadata(bytes)],
+    };
+    const create = state.store.createItem.bind(state.store);
+    const append = vi.spyOn(state.store, 'createItem').mockImplementation((item, ...rest) => {
+      if (item.type === 'user-message' && item.text === input.input) available = 1_250_000n;
+      return create(item, ...rest);
+    });
+    const run = vi.spyOn(assistantCommandOwners, 'runAssistantCommand').mockResolvedValue({
+      id: 'answer',
+      content: 'Must not execute.',
+      providerId: 'fixture',
+    });
+    const response = await state.app.request('/api/app/operations/conversation.submit', {
+      method: 'POST',
+      headers: {
+        'content-type': CONVERSATION_FILE_MEDIA_TYPE,
+        'x-openkit-request-id': input.requestId,
+      },
+      body: frame(input, [bytes]),
+    });
+    expect(append).toHaveBeenCalled();
+    expect(response.status).toBe(507);
+    expect(run).not.toHaveBeenCalled();
+    expect(
+      state.store.listCommandRequests().some((receipt) => receipt.requestId === input.requestId)
+    ).toBe(false);
+  });
+
   it('exposes no input inventory after a proved unpublished Turn failure and permits the exact retry', async () => {
     const state = fixture();
     const before = state.store.getThread(state.workspaceId, state.thread.id);
