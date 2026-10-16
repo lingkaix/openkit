@@ -15,6 +15,7 @@ import {
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -32,7 +33,7 @@ import {
 
 const sandboxId = 'nh-1111111111111111';
 const backendSessionId = `${sandboxId}-2222222222222222`;
-const leaseId = 'lease_backend_session';
+const leaseId = testEntityId('attempt', 'lease_backend_session');
 const packageSnapshotId = 'aepsnap_backend_session';
 const deletePath = '/api/nanohost/transport/effects/sandbox.delete';
 const deleteInput = { backendSessionId, leaseId, packageSnapshotId, sandboxId };
@@ -137,7 +138,7 @@ async function createFixture() {
     profileRef: 'profile_worker',
     queueEntryId: 'queue_backend_session',
     requestedAgentId: 'agent_codex_host',
-    threadId: 'thread_backend_session',
+    threadId: testEntityId('th', 'thread_backend_session'),
     turnId: 'tu_00000000-0000-7a07-9f58-6d0e7a18a11c',
     turnInput: 'Run worker',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -145,7 +146,7 @@ async function createFixture() {
   });
   recordTestExecutionAttempt(coreDb, {
     entry,
-    attemptId: 'lease_backend_session',
+    attemptId: testEntityId('attempt', 'lease_backend_session'),
     agentSessionId: 'as_00000000-0000-741c-b104-26abc3a228bc',
     inputRef: 'aepsnap_backend_session',
     bindingRef: 'lease-binding:lease_backend_session',
@@ -166,7 +167,7 @@ async function createFixture() {
       transientProviderInstanceId: null,
     },
     lineage: {
-      threadId: 'thread_backend_session',
+      threadId: testEntityId('th', 'thread_backend_session'),
       turnId: 'tu_00000000-0000-7a07-9f58-6d0e7a18a11c',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     },

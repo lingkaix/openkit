@@ -9,6 +9,7 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -78,8 +79,8 @@ function workerAuthority(dataRoot: string, turnId: string) {
   });
   recordTestExecutionAttempt(coreDb, {
     entry,
-    attemptId: 'lease_test',
-    agentSessionId: 'session_demo',
+    attemptId: testEntityId('attempt', 'lease_test'),
+    agentSessionId: testEntityId('as', 'session_demo'),
     inputRef: 'package_test',
     bindingRef: 'binding_test',
     sessionCompatibilityKey: 'generative-test',
@@ -128,7 +129,7 @@ describe('openkit-generative MCP', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
-        agentSessionId: 'session_demo',
+        agentSessionId: testEntityId('as', 'session_demo'),
         triggerActor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
       },
     };
@@ -187,7 +188,7 @@ describe('openkit-generative MCP', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
-        agentSessionId: 'session_demo',
+        agentSessionId: testEntityId('as', 'session_demo'),
         triggerActor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
       },
     };

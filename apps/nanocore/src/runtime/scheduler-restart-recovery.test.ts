@@ -428,6 +428,8 @@ async function createFailedStartFixture(
   return {
     coreDb: restartedCore,
     store: restartedStore,
+    attemptId: testEntityId('attempt', `lease_${suffix}`),
+    requestId: `request_${suffix}`,
     dataRoot,
     threadId,
     turnId,
@@ -490,8 +492,8 @@ function countRecoverySqlExecutions(coreDb: ReturnType<typeof openCoreDb>) {
 /** Records one safe busy refusal through its owners, then copies that exact history shape in one transaction. */
 function seedRecoveryBusyHistory(f: FailedStartFixture, count: number): string | null {
   if (count === 0) return null;
-  const attemptId = `lease_${f.turnId.slice('turn_'.length)}`;
-  const firstId = `busy_${f.turnId}_0`;
+  const attemptId = f.attemptId;
+  const firstId = testEntityId('attempt', `busy_${f.turnId}_0`);
   f.coreDb.sqlite
     .prepare("UPDATE scheduler_admission_entries SET status = 'queued' WHERE turn_id = ?")
     .run(f.turnId);
@@ -504,7 +506,7 @@ function seedRecoveryBusyHistory(f: FailedStartFixture, count: number): string |
   });
   attempts.bindSchedulerExecutionAttemptSession(f.coreDb, {
     attemptId: firstId,
-    agentSessionId: `as_${firstId}`,
+    agentSessionId: testEntityId('as', `as_${firstId}`),
   });
   attempts.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
     attemptId: firstId,
@@ -522,8 +524,8 @@ function seedRecoveryBusyHistory(f: FailedStartFixture, count: number): string |
     FROM scheduler_execution_attempts WHERE attempt_id = ?`);
   f.coreDb.sqlite.transaction(() => {
     for (let index = 1; index < count; index++) {
-      const id = `busy_${f.turnId}_${index}`;
-      copy.run(id, `as_${id}`, firstId);
+      const id = testEntityId('attempt', `busy_${f.turnId}_${index}`);
+      copy.run(id, testEntityId('as', `as_${id}`), firstId);
     }
   })();
   return firstId;
@@ -531,17 +533,16 @@ function seedRecoveryBusyHistory(f: FailedStartFixture, count: number): string |
 
 /** Freezes the already-decided product outcome before repeated maintenance revalidates its proof. */
 function terminalizeRecoveryCostFixture(f: FailedStartFixture): void {
-  const suffix = f.turnId.slice('turn_'.length);
   f.coreDb.sqlite
     .prepare(
       "UPDATE scheduler_execution_attempts SET disposition = 'not_accepted', operation_id = NULL, deadline = NULL WHERE attempt_id = ?"
     )
-    .run(`lease_${suffix}`);
+    .run(f.attemptId);
   terminalizeGovernedWorkerTurn({
     store: f.store,
     turnId: f.turnId,
     agentSessionId: f.agentSessionId,
-    requestId: `request_${suffix}`,
+    requestId: f.requestId,
     completedAt: '2026-07-05T00:00:08.000Z',
     outcome: 'failed',
     errorCode: 'worker_governance_turn_failed',
@@ -624,14 +625,16 @@ function recordRecoverySiblingBinding(
     (agent_session_runtime_binding_id, harness_instance_id, agent_session_id, workspace_id, thread_id,
      agent_session_compatibility_key, effective_setup_generation, native_handle_state, lifecycle_state,
      current_turn_id, current_attempt_id, next_turn_sequence, cleanup_state, created_at, updated_at, image_digest)
-    VALUES ('binding_cost', 'harness_cost', ?, 'ws_00000000-0000-7000-8000-000000000001', 'th_binding_cost', ?, 1, ?, ?, ?, ?, 1, 'unknown', ?, ?, ?)`)
+    VALUES ('binding_cost', 'harness_cost', ?, 'ws_00000000-0000-7000-8000-000000000001', 'th_00000000-0000-7000-8000-000000000164', ?, 1, ?, ?, ?, ?, 1, 'unknown', ?, ?, ?)`)
     .run(
-      match === 'session' ? `as_${siblingId}` : 'as_unrelated_binding',
+      match === 'session'
+        ? testEntityId('as', `as_${siblingId}`)
+        : testEntityId('as', 'as_unrelated_binding'),
       'a'.repeat(64),
       state === 'malformed' ? '' : 'absent',
       state === 'malformed' ? 'closed' : state,
-      match === 'turn' ? f.turnId : 'turn_unrelated_binding',
-      match === 'attempt' ? siblingId : 'attempt_unrelated_binding',
+      match === 'turn' ? f.turnId : testEntityId('tu', 'turn_unrelated_binding'),
+      match === 'attempt' ? siblingId : testEntityId('attempt', 'attempt_unrelated_binding'),
       timestamp,
       timestamp,
       'a'.repeat(64)
@@ -812,7 +815,7 @@ describe('failed-start busy-history proof cost (#164)', () => {
     }>;
     const replacements: Record<string, string> = {
       attempt_id: siblingId,
-      agent_session_id: `as_${siblingId}`,
+      agent_session_id: testEntityId('as', `as_${siblingId}`),
       package_snapshot_id: 'package_sibling_backend',
       staging_directory_ref: 'server/runtime/worker-backend-sessions/sibling',
       backend_session_id: testNanoHostBackendSessionId('sibling'),
@@ -825,7 +828,7 @@ describe('failed-start busy-history proof cost (#164)', () => {
       .prepare(`INSERT INTO worker_backend_sessions (${columns.map(({ name }) => name).join(', ')})
       SELECT ${columns.map(({ name }) => (name in replacements ? '?' : name)).join(', ')}
       FROM worker_backend_sessions WHERE attempt_id = ?`)
-      .run(...keys.map((name) => replacements[name]), `lease_${f.turnId.slice('turn_'.length)}`);
+      .run(...keys.map((name) => replacements[name]), f.attemptId);
     const before = recoveryProofSnapshot(f);
     const recovery = recoveryCostInput(f);
     const log = vi.spyOn(console, 'warn').mockImplementation(() => {});

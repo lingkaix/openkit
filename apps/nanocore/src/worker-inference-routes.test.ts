@@ -55,6 +55,7 @@ import { readWorkObservations } from './storage/work-observations.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
@@ -455,13 +456,13 @@ function createWorkerInferenceRouteFixture(
     });
     const submittedAttempt = recordTestExecutionAttempt(appCoreDb, {
       entry,
-      attemptId: `lease_${turn.id}`,
+      attemptId: testEntityId('attempt', `lease_${turn.id}`),
       agentSessionId: environmentPackage.scope.agentSessionId,
       inputRef: environmentPackage.snapshotId,
       bindingRef: sandboxBindingRef,
       sessionCompatibilityKey: 'fixture-compatibility',
       now: () => new Date().toISOString(),
-      operationId: `fixture-submit:${`lease_${turn.id}`}`,
+      operationId: `fixture-submit:${testEntityId('attempt', `lease_${turn.id}`)}`,
     });
     expect(
       acceptSchedulerExecutionObservation(appCoreDb, {
@@ -475,7 +476,7 @@ function createWorkerInferenceRouteFixture(
   }
   if (options.durableAuthority && appCoreDb) {
     bindNanoHostAttemptRouteTokenHashes(appCoreDb, {
-      attemptId: `lease_${turn.id}`,
+      attemptId: testEntityId('attempt', `lease_${turn.id}`),
       sandboxBindingRef,
       workerCapabilityTokenHash: hashWorkerRouteToken(workerCapabilityToken),
       workerControlTokenHash: hashWorkerRouteToken(workerControlToken),
