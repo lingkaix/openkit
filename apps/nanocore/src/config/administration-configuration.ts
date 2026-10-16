@@ -4,6 +4,7 @@ import {
   ApplyAdministrationConfigurationRequestSchema,
   type ApplyAdministrationConfigurationResponse,
   ApplyAdministrationConfigurationResponseSchema,
+  ApplyDelegatedAdministrationConfigurationRequestSchema,
   ConfigurationCandidateArtifactSchema,
   type ProposeAdministrationConfigurationRequest,
   ProposeAdministrationConfigurationRequestSchema,
@@ -25,17 +26,20 @@ import {
   type FsStore,
   quickChatWorkspaceIdForUser,
 } from '../lib/store.js';
+import { recordPermissionDecision } from '../policy/permission-decisions.js';
+import { evaluateWorkerGitReadMaintenance } from '../policy/worker-git-read-maintenance.js';
 import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
-import type { CoreDb } from '../storage/db.js';
+import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { parseJsoncObject } from './jsonc.js';
-import type { RuntimeConfigManager } from './runtime-config.js';
+import type { RuntimeConfigManager, RuntimeConfigSnapshot } from './runtime-config.js';
 import {
   type RuntimeConfigFileService,
   RuntimeConfigFileServiceError,
 } from './runtime-config-files.js';
+import { prepareWorkerGitReadCorrection } from './worker-git-read-correction.js';
 
 const providerChanges = z
   .object({
@@ -62,6 +66,8 @@ export interface AdministrationConfigurationOptions {
     'listFiles' | 'readFile' | 'validate' | 'updateFile'
   >;
   readonly reload: () => ReturnType<RuntimeConfigManager['reload']>;
+  readonly runtimeConfig: () => RuntimeConfigSnapshot;
+  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
 }
 
@@ -101,6 +107,23 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
 
   /** Validates one exact revision and merged candidate using the existing whole-config loader. */
   function prepare(request: ProposeAdministrationConfigurationRequest) {
+    if (request.targetFamily === 'agent') {
+      const prepared = prepareWorkerGitReadCorrection({
+        request,
+        actor,
+        coreDb,
+        store,
+        files,
+        snapshot: options.runtimeConfig(),
+        repositoryWorkspaceDb: options.repositoryWorkspaceDb,
+      });
+      const validation = files.validate({
+        files: [{ id: prepared.current.read.file.id, content: prepared.content }],
+        mode: 'safe',
+      });
+      if (!validation.valid) fail('configuration_validation_failed');
+      return { ...prepared, restartRequired: validation.plan.requiresRestart.length > 0 };
+    }
     const current = source(request.targetFamily, request.targetId);
     if (current.read.file.revision !== request.expectedRevision) fail('config_revision_conflict');
     const changes = changeSchema(request.targetFamily).parse(request.changes);
@@ -174,6 +197,200 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
     };
   }
 
+  /** Applies one exact candidate through the shared receipt and sole file writer. */
+  async function applyCandidate(
+    request:
+      | ApplyAdministrationConfigurationRequest
+      | z.infer<typeof ApplyDelegatedAdministrationConfigurationRequestSchema>,
+    invocation?: { threadId: string; turnId: string; signal?: AbortSignal }
+  ): Promise<ApplyAdministrationConfigurationResponse> {
+    requireCurrentDeploymentAdmin(coreDb, actor);
+    const artifact = store.getArtifact(workspaceId, request.candidate.artifactId);
+    if (artifact.origin.kind !== 'turn-output') fail('configuration_candidate_conflict');
+    const { threadId } = artifact.origin;
+    const turnId = invocation?.turnId ?? artifact.origin.turnId;
+    if (invocation && invocation.threadId !== threadId) fail('configuration_candidate_conflict');
+    requireHome(artifact.origin.threadId, artifact.origin.turnId);
+    if (invocation?.signal?.aborted) fail('configuration_cancelled');
+    requireHome(threadId, turnId);
+    if (
+      artifact.version !== 1 ||
+      artifact.contentDigest !== request.candidate.contentDigest ||
+      digest(artifact.content.body) !== artifact.contentDigest
+    )
+      fail('configuration_candidate_conflict');
+    const body = ConfigurationCandidateArtifactSchema.parse(JSON.parse(artifact.content.body));
+    if (invocation && body.targetFamily !== 'agent') fail('configuration_delegation_required');
+    const outcomeId = deriveEntityId('ar', [
+      'configuration_result',
+      { userId: actor.userId, request },
+    ]);
+    return runIdempotentCommand({
+      store,
+      inflightCommands: options.inflightCommands,
+      command: 'administration.configuration.apply',
+      requestId: request.requestId,
+      scope: { actorId: actor.userId, workspaceId, threadId },
+      input: request,
+      responseKind: 'artifact',
+      responseId: () => outcomeId,
+      replay: (record) => {
+        const outcome = store.getArtifact(workspaceId, record.response.id);
+        if (
+          record.response.id !== outcomeId ||
+          outcome.version !== 1 ||
+          digest(outcome.content.body) !== outcome.contentDigest
+        )
+          fail('configuration_recovery_required');
+        const result = ApplyAdministrationConfigurationResponseSchema.parse(
+          JSON.parse(outcome.content.body)
+        );
+        if (JSON.stringify(result.candidate) !== JSON.stringify(request.candidate))
+          fail('configuration_recovery_required');
+        return result;
+      },
+      execute: () => {
+        requireHome(threadId, turnId);
+        const markerId = deriveEntityId('it', [
+          'configuration_apply',
+          { actorId: actor.userId, requestId: request.requestId },
+        ]);
+        if (store.listThreadItems(workspaceId, threadId).some((item) => item.id === markerId))
+          fail('configuration_recovery_required');
+        const prepared = prepare(body);
+        if (
+          JSON.stringify(prepared.after) !== JSON.stringify(body.after) ||
+          prepared.restartRequired !== body.restartRequired
+        )
+          fail('configuration_candidate_conflict');
+        if (
+          body.targetFamily === 'agent' &&
+          (!('failureEvidence' in prepared) ||
+            JSON.stringify(prepared.failureEvidence) !== JSON.stringify(body.failureEvidence))
+        )
+          fail('configuration_candidate_conflict');
+        let permissionDecisionId: string | null = null;
+        if (invocation) {
+          if (
+            !('failureEvidence' in prepared) ||
+            body.targetFamily !== 'agent' ||
+            JSON.stringify(prepared.failureEvidence) !== JSON.stringify(body.failureEvidence)
+          )
+            fail('configuration_candidate_conflict');
+          requireHome(invocation.threadId, invocation.turnId);
+          if (
+            store.getTurn(workspaceId, invocation.threadId, invocation.turnId).status !==
+              'running' ||
+            invocation.signal?.aborted
+          )
+            fail('configuration_cancelled');
+          const snapshot = options.runtimeConfig();
+          const now = new Date();
+          const decision = evaluateWorkerGitReadMaintenance(
+            snapshot.openKitConfig.policy?.workerGitReadMaintenance ?? [],
+            { ...prepared.facts, now }
+          );
+          permissionDecisionId = allocateEntityId('pd');
+          recordPermissionDecision({
+            coreDb,
+            decisionId: permissionDecisionId,
+            ownerScope: 'server',
+            policyDecision: decision,
+            policyEngineVersion: 'nanocore-worker-git-read-maintenance:v1',
+            policySnapshotId: snapshot.contentHash,
+            subjectSummary: { userId: actor.userId },
+            action: body.command,
+            resourceSummary: { targetFamily: 'agent', targetId: body.targetId, scope: 'server' },
+            contextSummary: {
+              threadId,
+              turnId,
+              requestId: request.requestId,
+              candidate: request.candidate,
+              baseRevision: body.expectedRevision,
+              failure: body.failure,
+              failureEvidence: body.failureEvidence,
+              purpose: 'git-read',
+              configVersion: snapshot.version,
+              configContentHash: snapshot.contentHash,
+              entry: 'administration',
+              effectScope: 'server',
+              effectFacts: prepared.facts,
+              assignments: (snapshot.openKitConfig.policy?.workerGitReadMaintenance ?? []).filter(
+                (entry) =>
+                  entry.responsibleUserId === actor.userId &&
+                  entry.agentId === body.targetId &&
+                  entry.networkGrantId === prepared.facts.networkGrantId
+              ),
+            },
+            enforcementPoint: 'administration.configuration.apply',
+            auditActor: { kind: 'user', id: actor.userId },
+            now,
+          });
+          if (decision.effect !== 'allow') fail('configuration_delegation_required');
+        }
+        const timestamp = new Date().toISOString();
+        store.createItem(
+          {
+            id: markerId,
+            workspaceId,
+            threadId,
+            turnId,
+            type: 'status',
+            status: 'completed',
+            level: 'info',
+            title: 'Configuration application started',
+            summary: `Request ${request.requestId} admitted candidate ${request.candidate.contentDigest}.`,
+            createdAt: timestamp,
+            completedAt: timestamp,
+          },
+          CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION
+        );
+        let persisted = false;
+        let revision: string | null = null;
+        let reload: ApplyAdministrationConfigurationResponse['reload'] = 'not-attempted';
+        let restartRequired = body.restartRequired;
+        try {
+          requireCurrentDeploymentAdmin(coreDb, actor);
+          const written = files.updateFile({
+            id: prepared.current.read.file.id,
+            kind: body.targetFamily,
+            content: prepared.content,
+            expectedRevision: body.expectedRevision,
+          });
+          persisted = true;
+          revision = written.file.revision;
+          reload = 'failed';
+          const result = options.reload();
+          reload = result.status === 'dry-run' ? 'failed' : result.status;
+          restartRequired = result.plan.requiresRestart.length > 0;
+        } catch {
+          // An interrupted write has no verified result; its start Item fences retries.
+          if (!persisted) fail('configuration_recovery_required');
+        }
+        const result = ApplyAdministrationConfigurationResponseSchema.parse({
+          candidate: request.candidate,
+          persisted,
+          revision,
+          reload,
+          restartRequired,
+        });
+        recordServerAuditEvent({
+          coreDb,
+          actor: { kind: 'user', id: actor.userId },
+          requestId: request.requestId,
+          ...(permissionDecisionId ? { permissionDecisionId } : {}),
+          action: body.command,
+          category: 'system',
+          resource: `${body.targetFamily}:${body.targetId}`,
+          outcome: persisted && reload === 'applied' ? 'succeeded' : 'failed',
+          summary: `Candidate ${request.candidate.contentDigest}; base ${body.expectedRevision}; persisted ${persisted}; reload ${reload}; restart required ${restartRequired}.`,
+        });
+        publish(result, threadId, turnId, request.requestId, outcomeId);
+        return result;
+      },
+    });
+  }
+
   return {
     /** Reads only editable, non-secret catalog fields and exact source revisions. */
     read(targetFamily: 'provider' | 'gateway', targetId?: string) {
@@ -232,11 +449,15 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
         ...request,
         changes: prepared.changes,
         kind: 'administration-configuration-candidate',
-        before: project(request.targetFamily, prepared.current.value),
+        before:
+          'before' in prepared
+            ? prepared.before
+            : project(request.targetFamily as 'provider' | 'gateway', prepared.current.value),
         after: prepared.after,
         restartRequired: prepared.restartRequired,
         command: 'administration.configuration.apply',
         operation: 'update',
+        ...('failureEvidence' in prepared ? { failureEvidence: prepared.failureEvidence } : {}),
       });
       const candidate = publish(body, home.threadId, home.turnId, home.requestId);
       return {
@@ -245,125 +466,19 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
         confirmation: { action: body.command, contentDigest: candidate.contentDigest },
       };
     },
-    /** Applies one exact human-confirmed candidate and refuses uncertain-effect retries. */
-    async apply(
-      unsafeRequest: ApplyAdministrationConfigurationRequest
-    ): Promise<ApplyAdministrationConfigurationResponse> {
-      requireCurrentDeploymentAdmin(coreDb, actor);
-      const request = ApplyAdministrationConfigurationRequestSchema.parse(unsafeRequest);
-      const artifact = store.getArtifact(workspaceId, request.candidate.artifactId);
-      if (artifact.origin.kind !== 'turn-output') fail('configuration_candidate_conflict');
-      const { threadId, turnId } = artifact.origin;
-      requireHome(threadId, turnId);
-      if (
-        artifact.version !== 1 ||
-        artifact.contentDigest !== request.candidate.contentDigest ||
-        digest(artifact.content.body) !== artifact.contentDigest
-      )
-        fail('configuration_candidate_conflict');
-      const body = ConfigurationCandidateArtifactSchema.parse(JSON.parse(artifact.content.body));
-      const outcomeId = deriveEntityId('ar', [
-        'configuration_result',
-        { userId: actor.userId, request },
-      ]);
-      return runIdempotentCommand({
-        store,
-        inflightCommands: options.inflightCommands,
-        command: 'administration.configuration.apply',
-        requestId: request.requestId,
-        scope: { actorId: actor.userId, workspaceId, threadId },
-        input: request,
-        responseKind: 'artifact',
-        responseId: () => outcomeId,
-        replay: (record) => {
-          const outcome = store.getArtifact(workspaceId, record.response.id);
-          if (
-            record.response.id !== outcomeId ||
-            outcome.version !== 1 ||
-            digest(outcome.content.body) !== outcome.contentDigest
-          )
-            fail('configuration_recovery_required');
-          const result = ApplyAdministrationConfigurationResponseSchema.parse(
-            JSON.parse(outcome.content.body)
-          );
-          if (JSON.stringify(result.candidate) !== JSON.stringify(request.candidate))
-            fail('configuration_recovery_required');
-          return result;
-        },
-        execute: () => {
-          requireHome(threadId, turnId);
-          const markerId = deriveEntityId('it', [
-            'configuration_apply',
-            { actorId: actor.userId, requestId: request.requestId },
-          ]);
-          if (store.listThreadItems(workspaceId, threadId).some((item) => item.id === markerId))
-            fail('configuration_recovery_required');
-          const prepared = prepare(body);
-          if (
-            JSON.stringify(prepared.after) !== JSON.stringify(body.after) ||
-            prepared.restartRequired !== body.restartRequired
-          )
-            fail('configuration_candidate_conflict');
-          const timestamp = new Date().toISOString();
-          store.createItem(
-            {
-              id: markerId,
-              workspaceId,
-              threadId,
-              turnId,
-              type: 'status',
-              status: 'completed',
-              level: 'info',
-              title: 'Configuration application started',
-              summary: `Request ${request.requestId} confirmed candidate ${request.candidate.contentDigest}.`,
-              createdAt: timestamp,
-              completedAt: timestamp,
-            },
-            CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION
-          );
-          let persisted = false;
-          let revision: string | null = null;
-          let reload: ApplyAdministrationConfigurationResponse['reload'] = 'not-attempted';
-          let restartRequired = body.restartRequired;
-          try {
-            requireCurrentDeploymentAdmin(coreDb, actor);
-            const written = files.updateFile({
-              id: prepared.current.read.file.id,
-              kind: body.targetFamily,
-              content: prepared.content,
-              expectedRevision: body.expectedRevision,
-            });
-            persisted = true;
-            revision = written.file.revision;
-            reload = 'failed';
-            const result = options.reload();
-            reload = result.status === 'dry-run' ? 'failed' : result.status;
-            restartRequired = result.plan.requiresRestart.length > 0;
-          } catch {
-            // An interrupted write has no verified result; its start Item fences retries.
-            if (!persisted) fail('configuration_recovery_required');
-          }
-          const result = ApplyAdministrationConfigurationResponseSchema.parse({
-            candidate: request.candidate,
-            persisted,
-            revision,
-            reload,
-            restartRequired,
-          });
-          recordServerAuditEvent({
-            coreDb,
-            actor: { kind: 'user', id: actor.userId },
-            requestId: request.requestId,
-            action: body.command,
-            category: 'system',
-            resource: `${body.targetFamily}:${body.targetId}`,
-            outcome: persisted && reload === 'applied' ? 'succeeded' : 'failed',
-            summary: `Candidate ${request.candidate.contentDigest}; base ${body.expectedRevision}; persisted ${persisted}; reload ${reload}; restart required ${restartRequired}.`,
-          });
-          publish(result, threadId, turnId, request.requestId, outcomeId);
-          return result;
-        },
-      });
+    /** Applies one exact human-confirmed candidate through the native shared command. */
+    async apply(unsafeRequest: ApplyAdministrationConfigurationRequest) {
+      return applyCandidate(ApplyAdministrationConfigurationRequestSchema.parse(unsafeRequest));
+    },
+    /** Applies only a finite Worker candidate from a trusted current private invocation. */
+    async applyDelegated(
+      unsafeRequest: unknown,
+      invocation: { threadId: string; turnId: string; signal?: AbortSignal }
+    ) {
+      return applyCandidate(
+        ApplyDelegatedAdministrationConfigurationRequestSchema.parse(unsafeRequest),
+        invocation
+      );
     },
   };
 }

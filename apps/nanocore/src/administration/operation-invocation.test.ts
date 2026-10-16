@@ -54,7 +54,7 @@ describe('real administration assembly through invocation', () => {
         threadId: 'th_00000000-0000-7764-bf98-8c8f63c68605',
         turnId: 'tu_00000000-0000-798e-b4ef-6a6d0f668d1c',
       };
-      const unaffected = ADMINISTRATION_TOOL_NAMES.slice(0, 7).map(
+      const unaffected = ADMINISTRATION_TOOL_NAMES.slice(0, 8).map(
         (name): AgentTool => ({
           name,
           description: name,
@@ -64,8 +64,8 @@ describe('real administration assembly through invocation', () => {
       );
       const tools = createAdministrationTools({
         requireCurrentAdministrator: () => undefined,
-        configurationTools: unaffected.slice(0, 3) as unknown as AdministrationConfigurationTools,
-        environmentTools: unaffected.slice(3) as unknown as AdministrationEnvironmentTools,
+        configurationTools: unaffected.slice(0, 4) as unknown as AdministrationConfigurationTools,
+        environmentTools: unaffected.slice(4) as unknown as AdministrationEnvironmentTools,
         runtimeTargetTool: createAdministrationNanoHostRuntimeTargetTool({
           coreDb,
           mode: 'server',
@@ -74,7 +74,7 @@ describe('real administration assembly through invocation', () => {
           lineage,
         }),
       });
-      const tool = tools[7]!;
+      const tool = tools[8]!;
       const result = await tool.execute(
         {},
         { callId: 'call_real_admin', signal: new AbortController().signal }

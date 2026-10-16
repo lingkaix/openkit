@@ -111,7 +111,18 @@ function fixture() {
   });
   const reload = vi.fn(() => manager.reload({ mode: 'safe', dryRun: false }));
   const inflightCommands = new WeakMap();
-  const options = { actor, coreDb, store, files, reload, inflightCommands };
+  const options = {
+    actor,
+    coreDb,
+    store,
+    files,
+    reload,
+    inflightCommands,
+    runtimeConfig: () => manager.current(),
+    repositoryWorkspaceDb: () => {
+      throw new Error('Catalog tests use no retained Worker snapshot.');
+    },
+  };
   const service = createAdministrationConfiguration(options);
   const request = {
     targetFamily: 'provider' as const,
@@ -186,6 +197,8 @@ describe('administration catalog configuration', () => {
     const tools = createAdministrationConfigurationTools(f.manager.current(), f.files, {
       ...f.service,
       propose: (value) => f.service.propose(value, f.home),
+      applyDelegated: (value, context) =>
+        f.service.applyDelegated(value, { ...f.home, signal: context.signal }),
     });
     const result = await tools[2].execute(f.request, {
       callId: 'provider',
