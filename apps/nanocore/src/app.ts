@@ -114,7 +114,7 @@ import {
   markSchedulerAttemptForTerminalTurn,
   markSchedulerExecutionAttemptClosing,
 } from './runtime/execution-attempt-records.js';
-import { createGoalCoordinator } from './runtime/goal-coordinator.js';
+import { createGoalCoordinator, type GoalWorkerCandidate } from './runtime/goal-coordinator.js';
 import {
   advanceGoalForThread,
   checkGoalCommandIntent,
@@ -1580,6 +1580,25 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     providerCredentialConfigured,
     ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
     services: goalServices,
+    workerCandidates: (workspaceId, userId) => {
+      const snapshot = runtimeConfig();
+      return currentWorkerCoordinatorCandidates(sharedStore, workspaceId, {
+        userId,
+      }).flatMap<GoalWorkerCandidate>((candidate) => {
+        const runtime = snapshot.agentManifests.find(
+          (manifest) => manifest.id === candidate.agentId
+        )?.runtime.kind;
+        if (runtime !== 'codex' && runtime !== 'opencode') return [];
+        return [
+          {
+            agentId: candidate.agentId,
+            runtime,
+            readiness: candidate.readiness,
+            reasons: candidate.readiness === 'ready' ? [] : ['Current Worker setup is not ready.'],
+          },
+        ];
+      });
+    },
     taskTool: (goalId, coordinatorTurnId) =>
       createCoordinatorTaskTool({
         store: sharedStore,
