@@ -144,7 +144,7 @@ The engineer chose an ordinary personal Workspace over the former lightweight Qu
 
 ## Testing Strategy / Acceptance Criteria
 
-Check ordinary work admission, owner-only membership, initial selection, exact provisioning retry, and the migration/restart predicates above. Preserve invalid-credential, wrong-owner, tombstone, no-reset, current-authority, disclosure, and command-replay checks. The shared loop remains required for model-backed Chat; personal placement grants no direct Provider exception.
+Check ordinary work admission, owner-only membership, initial selection, exact provisioning retry, and the fresh initialization and restart predicates above. Preserve invalid-credential, wrong-owner, tombstone, no-reset, current-authority, disclosure, and command-replay checks. The shared loop remains required for model-backed Chat; personal placement grants no direct Provider exception.
 
 ## Open Questions
 
