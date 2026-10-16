@@ -220,6 +220,8 @@ function AutomationRow({
 }) {
   const command = useAutomationCommand(record.workspaceId);
   const [mode, setMode] = useState<'edit' | 'resume' | null>(null);
+  // A refreshed definition must not rebase a human draft onto an unseen revision.
+  const [formRevision, setFormRevision] = useState(record.revision);
   const [fields, setFields] = useState<Fields>(() => fieldsFor(record));
   const [scheduledAt, setScheduledAt] = useState('');
   const [showHistory, setShowHistory] = useState(false);
@@ -298,6 +300,8 @@ function AutomationRow({
               aria-label={`Resume ${record.name}`}
               isDisabled={blocked}
               onPress={() => {
+                setFormRevision(record.revision);
+                setFields(fieldsFor(record));
                 setScheduledAt('');
                 setMode('resume');
               }}
@@ -310,6 +314,7 @@ function AutomationRow({
               aria-label={`Edit ${record.name}`}
               isDisabled={blocked}
               onPress={() => {
+                setFormRevision(record.revision);
                 setFields(fieldsFor(record));
                 setMode('edit');
               }}
@@ -387,7 +392,7 @@ function AutomationRow({
                     kind: 'update',
                     input: {
                       automationId: record.id,
-                      expectedRevision: record.revision,
+                      expectedRevision: formRevision,
                       ...authoredFields(fields),
                       agentId: fields.agentId.trim() || null,
                       profileId: fields.profileId.trim() || null,
@@ -413,18 +418,18 @@ function AutomationRow({
             value={scheduledAt}
             onChange={setScheduledAt}
             isDisabled={blocked}
-            description="Use an explicit UTC instant, for example 2026-10-16T12:00:00.000Z. It must be current or future and later than all accounted instants."
+            description={`Use an explicit UTC instant, for example 2026-10-16T12:00:00.000Z. It must be current or future and later than all accounted instants.${fields.cadence === 'monthly' ? ` Match day ${fields.monthlyDay} at ${fields.monthlyTime} UTC with zero milliseconds.` : ''}`}
           />
           <div className="flex gap-2">
             <Button
-              isDisabled={blocked || !validInstant(scheduledAt)}
+              isDisabled={blocked || !validResume(scheduledAt, fields)}
               onPress={() =>
                 submit(
                   {
                     kind: 'update',
                     input: {
                       automationId: record.id,
-                      expectedRevision: record.revision,
+                      expectedRevision: formRevision,
                       status: 'active',
                       scheduledAt,
                     },
@@ -800,6 +805,17 @@ function validInstant(value: string) {
   return (
     /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value) &&
     Number.isFinite(Date.parse(value))
+  );
+}
+/** Matches the rule captured when resume opened; newer revisions remain a server conflict. */
+function validResume(value: string, fields: Fields) {
+  if (!validInstant(value)) return false;
+  if (fields.cadence === 'fixed') return true;
+  const instant = new Date(value);
+  return (
+    instant.getUTCDate() === Number(fields.monthlyDay) &&
+    instant.toISOString().slice(11, 19) === fields.monthlyTime &&
+    instant.getUTCMilliseconds() === 0
   );
 }
 /** Admission outcomes are distinct from scheduler and execution outcomes. */
