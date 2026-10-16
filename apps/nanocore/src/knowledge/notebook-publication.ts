@@ -22,6 +22,7 @@ const OPERATION = 'knowledge.notebook.update';
 /** Existing public commands share one content publisher and retain their own command identity. */
 export type NotebookPublicationOperation =
   | typeof OPERATION
+  | 'knowledge.notebook.restore'
   | 'knowledge.create'
   | 'knowledge.update'
   | 'knowledge.proposal.decide'
@@ -82,7 +83,7 @@ export interface NotebookPublicationDependencies {
 }
 
 /** A direct human edit cannot inherit or invent a content-bound human Review label. */
-function humanPageBytes(path: string, content: string, workspaceId: string): string {
+export function humanPageBytes(path: string, content: string, workspaceId: string): string {
   const parsed = parseOkfDocument({ path, content });
   if (!parsed.ok) throw new NotebookError('invalid_request');
   if (parsed.document.reserved) return content;
