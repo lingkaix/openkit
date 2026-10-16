@@ -161,26 +161,42 @@ export function AdministrationScreen() {
 
   const access = useQuery({
     queryKey: administrationKeys.access,
-    queryFn: () => client.operations['token.list']({}),
+    queryFn: async ({ signal }) => {
+      const result = await client.operations['token.list']({});
+      signal.throwIfAborted();
+      return result;
+    },
+    refetchOnMount: 'always',
     retry: false,
   });
+  const currentAccess =
+    access.isFetchedAfterMount && access.isSuccess && access.fetchStatus === 'idle';
   const administrationThread = useQuery({
     queryKey: ['settings', 'administration', 'thread', quickChat?.id ?? '', threadId ?? ''],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const thread = await client.operations['thread.read']({
         workspaceId: quickChat?.id as string,
         threadId: threadId as string,
       });
+      signal.throwIfAborted();
       if (thread.entryPath !== 'administration') {
         throw new Error('This Thread is not an administration conversation.');
       }
       return thread;
     },
-    enabled: Boolean(quickChat && threadId && access.isSuccess),
+    enabled: Boolean(quickChat && threadId && currentAccess),
+    refetchOnMount: 'always',
+    staleTime: 0,
     retry: false,
   });
+  const currentParent =
+    administrationThread.isFetchedAfterMount &&
+    administrationThread.isSuccess &&
+    administrationThread.fetchStatus === 'idle';
+  // Keep the admitted source key through access failures so dispatched candidate observers retain outcomes.
+  // Current access and parent reads still gate private output and every new candidate effect.
   const administrationItems = useThreadItems(
-    threadId && quickChat && access.isSuccess ? quickChat.id : null,
+    threadId && quickChat && access.data !== undefined ? quickChat.id : null,
     threadId ?? ''
   );
   const artifactReferences = useMemo(
@@ -204,18 +220,42 @@ export function AdministrationScreen() {
       threadId ?? '',
       candidateFingerprint,
     ],
-    queryFn: () =>
-      discoverAdministrationCandidates(
+    queryFn: async ({ signal }) => {
+      const result = await discoverAdministrationCandidates(
         client,
         quickChat?.id as string,
         threadId as string,
         artifactReferences
-      ),
+      );
+      signal.throwIfAborted();
+      return result;
+    },
+    refetchOnMount: 'always',
+    staleTime: 0,
     enabled: Boolean(
-      quickChat && threadId && administrationThread.isSuccess && artifactReferences.length
+      quickChat && threadId && currentAccess && currentParent && artifactReferences.length
     ),
     retry: false,
   });
+  // Cached private facts do not establish this mount's authority. Keep command owners mounted while hidden.
+  const candidateHidden =
+    !access.isFetchedAfterMount ||
+    !access.isSuccess ||
+    !administrationThread.isFetchedAfterMount ||
+    !administrationThread.isSuccess ||
+    [access.failureReason, administrationThread.failureReason].some(isAccessDenied) ||
+    administrationItems.isError ||
+    administrationItems.failureReason !== null ||
+    threadCandidates.isError ||
+    threadCandidates.failureReason !== null;
+  const candidateBlocked =
+    connection.failed ||
+    !currentAccess ||
+    !currentParent ||
+    !administrationItems.isSuccess ||
+    administrationItems.fetchStatus !== 'idle' ||
+    (artifactReferences.length > 0 &&
+      (!threadCandidates.isSuccess || threadCandidates.fetchStatus !== 'idle'));
   const conversation = useMutation({
     mutationFn: (request: { input: string; requestId: string; threadId?: string }) =>
       client.operations['administration.conversation-submit'](request),
@@ -249,7 +289,7 @@ export function AdministrationScreen() {
         title="Administration"
         subtitle="Use a private administrator conversation to prepare technical changes, then inspect the retained Worker environments for the selected Workspace."
       />
-      {access.isLoading ? (
+      {!access.isFetchedAfterMount || access.isPending ? (
         <Skeleton lines={7} />
       ) : denied ? (
         <EmptyState
@@ -263,83 +303,92 @@ export function AdministrationScreen() {
           message="Couldn't verify administrator authority."
           onRetry={() => void access.refetch()}
         />
-      ) : (
+      ) : null}
+      {access.data !== undefined && access.isFetchedAfterMount ? (
         <>
-          <AdministratorWorkspaces />
-          <section className="flex flex-col gap-3" aria-labelledby="administration-conversation">
-            <div>
-              <h2
-                id="administration-conversation"
-                className="text-lg font-extrabold text-fg-strong"
+          {currentAccess ? (
+            <>
+              <AdministratorWorkspaces />
+              <section
+                className="flex flex-col gap-3"
+                aria-labelledby="administration-conversation"
               >
-                Private conversation
-              </h2>
-              <p className="text-sm text-fg-muted">
-                This conversation stays in your Quick Chat Workspace. It can prepare and inspect an
-                exact change; activation and deletion still require your explicit action.
-              </p>
-            </div>
-            {administrationThread.isError ? (
-              <ErrorBanner
-                message="This private administration Thread is unavailable."
-                onRetry={() => setSearchParams({}, { replace: true })}
-              />
-            ) : null}
-            {threadId && quickChat && administrationThread.isSuccess ? (
-              <Card className="max-h-[420px] overflow-y-auto">
-                <ThreadStream
-                  workspaceId={quickChat.id}
-                  threadId={threadId}
-                  readOnly={connection.failed}
-                  emptyTitle="No administration messages yet"
-                />
-              </Card>
-            ) : null}
-            {conversation.isError ? (
-              <ErrorBanner message="Couldn't send that administration request." />
-            ) : null}
-            <form
-              className="rounded-ok-lg border border-border bg-card p-3 shadow-ok-card"
-              onSubmit={submit}
-            >
-              <textarea
-                aria-label="Administration message"
-                value={input}
-                disabled={conversation.isPending || connection.failed}
-                onChange={(event) => setInput(event.target.value)}
-                placeholder="Describe the technical change or inspection you need"
-                rows={3}
-                className="w-full resize-y bg-transparent text-sm text-fg outline-none placeholder:text-fg-muted disabled:cursor-not-allowed"
-              />
-              <div className="mt-2 flex items-center justify-between gap-3">
-                <span className="text-xs text-fg-muted">
-                  {threadId ? 'Continuing this private Thread' : 'A private Thread will be created'}
-                </span>
-                <Button
-                  type="submit"
-                  isDisabled={
-                    !input.trim() ||
-                    conversation.isPending ||
-                    connection.failed ||
-                    Boolean(threadId && !administrationThread.isSuccess)
-                  }
+                <div>
+                  <h2
+                    id="administration-conversation"
+                    className="text-lg font-extrabold text-fg-strong"
+                  >
+                    Private conversation
+                  </h2>
+                  <p className="text-sm text-fg-muted">
+                    This conversation stays in your Quick Chat Workspace. It can prepare and inspect
+                    an exact change; activation and deletion still require your explicit action.
+                  </p>
+                </div>
+                {administrationThread.isError ? (
+                  <ErrorBanner
+                    message="This private administration Thread is unavailable."
+                    onRetry={() => void administrationThread.refetch()}
+                  />
+                ) : null}
+                {threadId &&
+                quickChat &&
+                administrationThread.isFetchedAfterMount &&
+                administrationThread.isSuccess ? (
+                  <Card className="max-h-[420px] overflow-y-auto">
+                    <ThreadStream
+                      workspaceId={quickChat.id}
+                      threadId={threadId}
+                      readOnly={connection.failed}
+                      emptyTitle="No administration messages yet"
+                    />
+                  </Card>
+                ) : null}
+                {conversation.isError ? (
+                  <ErrorBanner message="Couldn't send that administration request." />
+                ) : null}
+                <form
+                  className="rounded-ok-lg border border-border bg-card p-3 shadow-ok-card"
+                  onSubmit={submit}
                 >
-                  Send to administration
-                </Button>
-              </div>
-            </form>
-          </section>
+                  <textarea
+                    aria-label="Administration message"
+                    value={input}
+                    disabled={conversation.isPending || connection.failed}
+                    onChange={(event) => setInput(event.target.value)}
+                    placeholder="Describe the technical change or inspection you need"
+                    rows={3}
+                    className="w-full resize-y bg-transparent text-sm text-fg outline-none placeholder:text-fg-muted disabled:cursor-not-allowed"
+                  />
+                  <div className="mt-2 flex items-center justify-between gap-3">
+                    <span className="text-xs text-fg-muted">
+                      {threadId
+                        ? 'Continuing this private Thread'
+                        : 'A private Thread will be created'}
+                    </span>
+                    <Button
+                      type="submit"
+                      isDisabled={
+                        !input.trim() ||
+                        conversation.isPending ||
+                        connection.failed ||
+                        Boolean(threadId && !administrationThread.isSuccess)
+                      }
+                    >
+                      Send to administration
+                    </Button>
+                  </div>
+                </form>
+              </section>
+            </>
+          ) : null}
 
           {threadCandidates.data?.configuration && quickChat && threadId ? (
             <AdministrationConfigurationReview
               key={`${quickChat.id}:${threadId}:${threadCandidates.data.configuration.candidate.artifactId}:${threadCandidates.data.configuration.candidate.artifactVersion}:${threadCandidates.data.configuration.candidate.contentDigest}`}
               candidate={threadCandidates.data.configuration}
-              confirmationBlocked={
-                connection.failed ||
-                threadCandidates.isError ||
-                administrationItems.isError ||
-                !administrationThread.isSuccess
-              }
+              confirmationBlocked={candidateBlocked}
+              hidden={candidateHidden}
               threadId={threadId}
               workspaceId={quickChat.id}
             />
@@ -347,9 +396,12 @@ export function AdministrationScreen() {
 
           <WorkerEnvironmentSection
             key={workspaceId ?? 'no-workspace'}
+            administrationVisible={currentAccess}
             administrationThreadId={threadId}
             administrationWorkspaceId={quickChat?.id ?? null}
             candidate={threadCandidates.data?.environment ?? null}
+            candidateBlocked={candidateBlocked}
+            candidateHidden={candidateHidden}
             candidateError={threadCandidates.isError}
             candidateLoading={threadCandidates.isLoading && artifactReferences.length > 0}
             disconnected={connection.failed}
@@ -358,16 +410,19 @@ export function AdministrationScreen() {
             workspaceName={workspace?.name ?? null}
           />
         </>
-      )}
+      ) : null}
     </Page>
   );
 }
 
 /** Target-scoped environment state; changing the global Workspace invalidates every pending review. */
 function WorkerEnvironmentSection({
+  administrationVisible,
   administrationThreadId,
   administrationWorkspaceId,
   candidate,
+  candidateBlocked,
+  candidateHidden,
   candidateError,
   candidateLoading,
   disconnected,
@@ -375,9 +430,12 @@ function WorkerEnvironmentSection({
   workspaceId,
   workspaceName,
 }: {
+  administrationVisible: boolean;
   administrationThreadId: string | null;
   administrationWorkspaceId: string | null;
   candidate: EnvironmentCandidate | null;
+  candidateBlocked: boolean;
+  candidateHidden: boolean;
   candidateError: boolean;
   candidateLoading: boolean;
   disconnected: boolean;
@@ -454,104 +512,125 @@ function WorkerEnvironmentSection({
 
   return (
     <section className="flex flex-col gap-3" aria-labelledby="worker-environments">
-      <div>
-        <h2 id="worker-environments" className="text-lg font-extrabold text-fg-strong">
-          Worker environments
-        </h2>
-        <p className="text-sm font-bold text-fg">Target Workspace: {workspaceName ?? 'None'}</p>
-        <p className="text-xs text-fg-muted">
-          The global Workspace selection controls this list. Retained files remain private execution
-          storage and are not a browsable volume catalog.
-        </p>
-      </div>
+      {administrationVisible ? (
+        <div>
+          <h2 id="worker-environments" className="text-lg font-extrabold text-fg-strong">
+            Worker environments
+          </h2>
+          <p className="text-sm font-bold text-fg">Target Workspace: {workspaceName ?? 'None'}</p>
+          <p className="text-xs text-fg-muted">
+            The global Workspace selection controls this list. Retained files remain private
+            execution storage and are not a browsable volume catalog.
+          </p>
+        </div>
+      ) : null}
       <EnvironmentPreparation
+        administrationVisible={administrationVisible}
         administrationThreadId={administrationThreadId}
         administrationWorkspaceId={administrationWorkspaceId}
         candidate={candidate}
+        candidateBlocked={candidateBlocked}
+        candidateHidden={candidateHidden}
         candidateError={candidateError}
         candidateLoading={candidateLoading}
         disconnected={disconnected}
         onRetryCandidate={onRetryCandidate}
         workspaceId={workspaceId}
       />
-      {!workspaceId ? (
-        <EmptyState
-          icon="folder"
-          title="Select a Workspace"
-          hint="Choose one of your workspaces in the sidebar, or open another person's workspace above."
-        />
-      ) : environments.isLoading ? (
-        <Skeleton lines={4} />
-      ) : environments.isError ? (
-        <ErrorBanner
-          message="Couldn't load Worker environments."
-          onRetry={() => void environments.refetch()}
-        />
-      ) : environments.data?.items.length ? (
+      {administrationVisible ? (
         <>
-          <Card>
-            {environments.data.items.map((environment) => (
-              <EnvironmentRow
-                key={environment.storageRef}
-                environment={environment}
-                pending={
-                  (status.isPending && status.variables === environment.storageRef) ||
-                  (purge.isPending &&
-                    purge.variables?.environment.storageRef === environment.storageRef)
-                }
-                purgeBlocked={
-                  environment.state !== 'idle' ||
-                  (status.data?.storage.state === 'unknown' &&
-                    status.variables === environment.storageRef) ||
-                  (purgeHistory.findLast(
-                    (entry) => entry.variables?.environment.storageRef === environment.storageRef
-                  )?.data?.outcome === 'unknown' &&
-                    !(
-                      status.data !== undefined &&
-                      status.variables === environment.storageRef &&
-                      status.data?.storage.state !== 'unknown'
-                    ))
-                }
-                onInspect={() => status.mutate(environment.storageRef)}
-                onPurge={() => purge.mutate({ environment, requestId: createRequestId() })}
-              />
-            ))}
-          </Card>
-          {environments.data.nextCursor ? (
-            <p className="text-xs text-fg-muted">
-              More retained environments exist than this bounded view can display.
-            </p>
-          ) : null}
+          {!workspaceId ? (
+            <EmptyState
+              icon="folder"
+              title="Select a Workspace"
+              hint="Choose one of your workspaces in the sidebar, or open another person's workspace above."
+            />
+          ) : environments.isLoading ? (
+            <Skeleton lines={4} />
+          ) : environments.isError ? (
+            <ErrorBanner
+              message="Couldn't load Worker environments."
+              onRetry={() => void environments.refetch()}
+            />
+          ) : environments.data?.items.length ? (
+            <>
+              <Card>
+                {environments.data.items.map((environment) => (
+                  <EnvironmentRow
+                    key={environment.storageRef}
+                    environment={environment}
+                    pending={
+                      (status.isPending && status.variables === environment.storageRef) ||
+                      (purge.isPending &&
+                        purge.variables?.environment.storageRef === environment.storageRef)
+                    }
+                    purgeBlocked={
+                      environment.state !== 'idle' ||
+                      (status.data?.storage.state === 'unknown' &&
+                        status.variables === environment.storageRef) ||
+                      (purgeHistory.findLast(
+                        (entry) =>
+                          entry.variables?.environment.storageRef === environment.storageRef
+                      )?.data?.outcome === 'unknown' &&
+                        !(
+                          status.data !== undefined &&
+                          status.variables === environment.storageRef &&
+                          status.data?.storage.state !== 'unknown'
+                        ))
+                    }
+                    onInspect={() => {
+                      if (administrationVisible) status.mutate(environment.storageRef);
+                    }}
+                    onPurge={() => {
+                      if (administrationVisible)
+                        purge.mutate({ environment, requestId: createRequestId() });
+                    }}
+                  />
+                ))}
+              </Card>
+              {environments.data.nextCursor ? (
+                <p className="text-xs text-fg-muted">
+                  More retained environments exist than this bounded view can display.
+                </p>
+              ) : null}
+            </>
+          ) : (
+            <EmptyState
+              icon="agents"
+              title="No retained environments"
+              hint="New Worker work creates retained storage when no environment is selected."
+            />
+          )}
+          {status.isError ? <ErrorBanner message="Couldn't inspect that environment." /> : null}
+          {purge.isError ? <ErrorBanner message="Couldn't delete that environment." /> : null}
+          {purge.data ? <PurgeResult outcome={purge.data.outcome} /> : null}
+          {status.data ? <EnvironmentStatus status={status.data} /> : null}
         </>
-      ) : (
-        <EmptyState
-          icon="agents"
-          title="No retained environments"
-          hint="New Worker work creates retained storage when no environment is selected."
-        />
-      )}
-      {status.isError ? <ErrorBanner message="Couldn't inspect that environment." /> : null}
-      {purge.isError ? <ErrorBanner message="Couldn't delete that environment." /> : null}
-      {purge.data ? <PurgeResult outcome={purge.data.outcome} /> : null}
-      {status.data ? <EnvironmentStatus status={status.data} /> : null}
+      ) : null}
     </section>
   );
 }
 
 /** Direct preparation and result-only recovery rooted in one private administration Thread. */
 function EnvironmentPreparation({
+  administrationVisible,
   administrationThreadId,
   administrationWorkspaceId,
   candidate,
+  candidateBlocked,
+  candidateHidden,
   candidateError,
   candidateLoading,
   disconnected,
   onRetryCandidate,
   workspaceId,
 }: {
+  administrationVisible: boolean;
   administrationThreadId: string | null;
   administrationWorkspaceId: string | null;
   candidate: EnvironmentCandidate | null;
+  candidateBlocked: boolean;
+  candidateHidden: boolean;
   candidateError: boolean;
   candidateLoading: boolean;
   disconnected: boolean;
@@ -684,12 +763,27 @@ function EnvironmentPreparation({
     );
 
   function submitPrepare() {
-    if (!prepareInput || prepare.isPending || sameSource || preparationAttempted) return;
+    if (
+      candidateBlocked ||
+      candidateHidden ||
+      !prepareInput ||
+      prepare.isPending ||
+      sameSource ||
+      preparationAttempted
+    )
+      return;
     prepare.mutate({ ...prepareInput, requestId: createRequestId() });
   }
 
   function submitRecovery(recoverable: RecoverableCandidate) {
-    if (!administrationThreadId || prepare.isPending) return;
+    if (
+      candidateBlocked ||
+      candidateHidden ||
+      recoveryAttempted ||
+      !administrationThreadId ||
+      prepare.isPending
+    )
+      return;
     prepare.mutate({
       administrationThreadId,
       mode: 'recover',
@@ -700,148 +794,169 @@ function EnvironmentPreparation({
 
   return (
     <Card className="flex flex-col gap-3">
-      <div>
-        <h3 className="font-bold text-fg-strong">Prepare an Agent environment</h3>
-        <p className="mt-1 text-xs text-fg-muted">
-          The selected Server Agent manifest supplies its actual runtime image. Activating a
-          candidate changes later admissions using that Agent across every Workspace and profile.
-        </p>
-      </div>
-      {configFiles.isError ? (
-        <ErrorBanner
-          message="Couldn't load Server Agent configuration files."
-          onRetry={() => void configFiles.refetch()}
-        />
-      ) : agentFiles.length ? (
-        <div className="grid gap-3 md:grid-cols-2">
-          <Select
-            label="Server Agent configuration"
-            items={agentFiles.map((file) => ({ id: file.id, label: file.path }))}
-            selectedKey={selectedFileId}
-            isDisabled={prepare.isPending}
-            onSelectionChange={(key) => setSelectedFileId(String(key))}
-          />
-          <Select
-            label="Activation impact"
-            items={[
-              { id: 'later', label: 'Later Agent admissions' },
-              { id: 'now', label: 'Replace current Thread now' },
-            ]}
-            selectedKey={replaceMode}
-            isDisabled={prepare.isPending}
-            onSelectionChange={(key) => setReplaceMode(key === 'now' ? 'now' : 'later')}
-          />
-        </div>
-      ) : configFiles.isSuccess ? (
-        <p className="text-sm text-fg-muted">
-          No published Server Agent configuration is available.
-        </p>
-      ) : (
-        <Skeleton lines={2} />
-      )}
-      {configFile.isError ? (
-        <ErrorBanner
-          message="Couldn't read the selected Server Agent configuration."
-          onRetry={() => void configFile.refetch()}
-        />
-      ) : null}
-      {configFile.isSuccess && !source ? (
-        <p className="text-sm font-bold text-negative-fg">
-          The selected file does not contain a usable Agent id and runtime image declaration.
-        </p>
-      ) : null}
-      {source && configFile.data?.file.revision ? (
-        <div className="text-xs text-fg-muted">
-          <p>Agent {source.agentId}</p>
-          <p className="break-all">Configuration revision {configFile.data.file.revision}</p>
-        </div>
-      ) : null}
-      {replaceMode === 'now' ? (
-        <div className="flex flex-col gap-3 rounded-ok border border-border bg-sunken p-3">
-          {!workspaceId ? (
+      {administrationVisible ? (
+        <>
+          <div>
+            <h3 className="font-bold text-fg-strong">Prepare an Agent environment</h3>
+            <p className="mt-1 text-xs text-fg-muted">
+              The selected Server Agent manifest supplies its actual runtime image. Activating a
+              candidate changes later admissions using that Agent across every Workspace and
+              profile.
+            </p>
+          </div>
+          {configFiles.isError ? (
+            <ErrorBanner
+              message="Couldn't load Server Agent configuration files."
+              onRetry={() => void configFiles.refetch()}
+            />
+          ) : agentFiles.length ? (
+            <div className="grid gap-3 md:grid-cols-2">
+              <Select
+                label="Server Agent configuration"
+                items={agentFiles.map((file) => ({ id: file.id, label: file.path }))}
+                selectedKey={selectedFileId}
+                isDisabled={prepare.isPending}
+                onSelectionChange={(key) => setSelectedFileId(String(key))}
+              />
+              <Select
+                label="Activation impact"
+                items={[
+                  { id: 'later', label: 'Later Agent admissions' },
+                  { id: 'now', label: 'Replace current Thread now' },
+                ]}
+                selectedKey={replaceMode}
+                isDisabled={prepare.isPending}
+                onSelectionChange={(key) => setReplaceMode(key === 'now' ? 'now' : 'later')}
+              />
+            </div>
+          ) : configFiles.isSuccess ? (
             <p className="text-sm text-fg-muted">
-              Select one of your workspaces in the sidebar, or open another person's workspace
-              above.
+              No published Server Agent configuration is available.
             </p>
           ) : (
-            <Select
-              label="Current Thread to replace"
-              items={(threads.data ?? []).map((thread) => ({
-                id: thread.id,
-                label: thread.name ?? thread.id,
-              }))}
-              selectedKey={selectedThreadId}
-              isDisabled={prepare.isPending || threads.isLoading}
-              onSelectionChange={(key) => setSelectedThreadId(String(key))}
-            />
+            <Skeleton lines={2} />
           )}
-          <label className="flex flex-col gap-1 text-xs font-bold text-fg">
-            Successor Turn prompt
-            <textarea
-              aria-label="Successor Turn prompt"
-              value={prompt}
-              disabled={prepare.isPending}
-              onChange={(event) => setPrompt(event.target.value)}
-              placeholder="Write the exact prompt for the ordinary successor Turn"
-              rows={3}
-              className="w-full resize-y rounded-ok border border-border bg-card px-3 py-2 text-sm font-normal text-fg outline-none placeholder:text-fg-muted focus:border-accent focus:ring-2 focus:ring-focus disabled:cursor-not-allowed"
+          {configFile.isError ? (
+            <ErrorBanner
+              message="Couldn't read the selected Server Agent configuration."
+              onRetry={() => void configFile.refetch()}
             />
-          </label>
-        </div>
+          ) : null}
+          {configFile.isSuccess && !source ? (
+            <p className="text-sm font-bold text-negative-fg">
+              The selected file does not contain a usable Agent id and runtime image declaration.
+            </p>
+          ) : null}
+          {source && configFile.data?.file.revision ? (
+            <div className="text-xs text-fg-muted">
+              <p>Agent {source.agentId}</p>
+              <p className="break-all">Configuration revision {configFile.data.file.revision}</p>
+            </div>
+          ) : null}
+          {replaceMode === 'now' ? (
+            <div className="flex flex-col gap-3 rounded-ok border border-border bg-sunken p-3">
+              {!workspaceId ? (
+                <p className="text-sm text-fg-muted">
+                  Select one of your workspaces in the sidebar, or open another person's workspace
+                  above.
+                </p>
+              ) : (
+                <Select
+                  label="Current Thread to replace"
+                  items={(threads.data ?? []).map((thread) => ({
+                    id: thread.id,
+                    label: thread.name ?? thread.id,
+                  }))}
+                  selectedKey={selectedThreadId}
+                  isDisabled={prepare.isPending || threads.isLoading}
+                  onSelectionChange={(key) => setSelectedThreadId(String(key))}
+                />
+              )}
+              <label className="flex flex-col gap-1 text-xs font-bold text-fg">
+                Successor Turn prompt
+                <textarea
+                  aria-label="Successor Turn prompt"
+                  value={prompt}
+                  disabled={prepare.isPending}
+                  onChange={(event) => setPrompt(event.target.value)}
+                  placeholder="Write the exact prompt for the ordinary successor Turn"
+                  rows={3}
+                  className="w-full resize-y rounded-ok border border-border bg-card px-3 py-2 text-sm font-normal text-fg outline-none placeholder:text-fg-muted focus:border-accent focus:ring-2 focus:ring-focus disabled:cursor-not-allowed"
+                />
+              </label>
+            </div>
+          ) : null}
+          {!administrationThreadId ? (
+            <p className="text-sm text-fg-muted">
+              Start the private administration conversation before preparing an environment.
+            </p>
+          ) : null}
+          {prepare.isError ? (
+            <ErrorBanner message="Preparation did not produce a resolved candidate. Inspect the private Thread for a recoverable authored candidate." />
+          ) : null}
+          <div className="flex justify-end">
+            <Button
+              isDisabled={
+                candidateBlocked ||
+                candidateHidden ||
+                disconnected ||
+                prepare.isPending ||
+                !prepareInput ||
+                sameSource ||
+                preparationAttempted ||
+                (replaceMode === 'now' && !replaceNow)
+              }
+              onPress={submitPrepare}
+            >
+              {prepare.isPending ? 'Preparing…' : 'Prepare candidate'}
+            </Button>
+          </div>
+        </>
       ) : null}
-      {!administrationThreadId ? (
-        <p className="text-sm text-fg-muted">
-          Start the private administration conversation before preparing an environment.
-        </p>
-      ) : null}
-      {prepare.isError ? (
-        <ErrorBanner message="Preparation did not produce a resolved candidate. Inspect the private Thread for a recoverable authored candidate." />
-      ) : null}
-      <div className="flex justify-end">
-        <Button
-          isDisabled={
-            disconnected ||
-            prepare.isPending ||
-            !prepareInput ||
-            sameSource ||
-            preparationAttempted ||
-            (replaceMode === 'now' && !replaceNow)
-          }
-          onPress={submitPrepare}
-        >
-          {prepare.isPending ? 'Preparing…' : 'Prepare candidate'}
-        </Button>
-      </div>
-      {candidateLoading ? (
+      {administrationVisible && candidateLoading ? (
         <Skeleton lines={5} />
-      ) : candidateError ? (
+      ) : administrationVisible && candidateError ? (
         <ErrorBanner
           message="Couldn't inspect the prepared candidate."
           onRetry={onRetryCandidate}
         />
-      ) : displayedCandidate?.kind === 'resolved' &&
-        displayedCandidate.details.replaceNow &&
-        displayedCandidate.details.replaceNow.workspaceId !== workspaceId ? (
-        <div className="rounded-ok border border-border bg-sunken p-3">
-          <p className="text-sm font-bold text-fg-strong">
-            Prepared replacement targets another Workspace
-          </p>
-          <p className="mt-1 break-all text-xs text-fg-muted">
-            Select Workspace {displayedCandidate.details.replaceNow.workspaceId} with the global
-            switcher to review its exact Thread, storage group, and successor prompt.
-          </p>
-        </div>
+      ) : null}
+      {displayedCandidate?.kind === 'resolved' &&
+      displayedCandidate.details.replaceNow &&
+      displayedCandidate.details.replaceNow.workspaceId !== workspaceId ? (
+        candidateHidden ? null : (
+          <div className="rounded-ok border border-border bg-sunken p-3">
+            <p className="text-sm font-bold text-fg-strong">
+              Prepared replacement targets another Workspace
+            </p>
+            <p className="mt-1 break-all text-xs text-fg-muted">
+              Select Workspace {displayedCandidate.details.replaceNow.workspaceId} with the global
+              switcher to review its exact Thread, storage group, and successor prompt.
+            </p>
+          </div>
+        )
       ) : displayedCandidate?.kind === 'resolved' ? (
-        <PreparedCandidateReview candidate={displayedCandidate} disconnected={disconnected} />
-      ) : displayedCandidate?.kind === 'authored' ? (
-        <RecoverableCandidateCard
+        <PreparedCandidateReview
           candidate={displayedCandidate}
-          disabled={
-            disconnected || prepare.isPending || !administrationThreadId || recoveryAttempted
-          }
-          onRecover={() => submitRecovery(displayedCandidate)}
+          disconnected={disconnected}
+          confirmationBlocked={candidateBlocked}
+          hidden={candidateHidden}
         />
-      ) : (
+      ) : displayedCandidate?.kind === 'authored' ? (
+        candidateHidden ? null : (
+          <RecoverableCandidateCard
+            candidate={displayedCandidate}
+            disabled={
+              candidateBlocked ||
+              disconnected ||
+              prepare.isPending ||
+              !administrationThreadId ||
+              recoveryAttempted
+            }
+            onRecover={() => submitRecovery(displayedCandidate)}
+          />
+        )
+      ) : candidateHidden || candidateLoading || candidateError ? null : (
         <div className="rounded-ok border border-border bg-sunken p-3">
           <p className="text-sm font-bold text-fg-strong">No environment candidate</p>
           <p className="mt-1 text-xs text-fg-muted">
@@ -896,9 +1011,13 @@ function RecoverableCandidateCard({
 /** Human review and one-shot activation for an exact structured candidate Artifact. */
 function PreparedCandidateReview({
   candidate,
+  confirmationBlocked,
+  hidden,
   disconnected,
 }: {
   candidate: PreparedCandidate;
+  confirmationBlocked: boolean;
+  hidden: boolean;
   disconnected: boolean;
 }) {
   const client = useCoreClient();
@@ -938,6 +1057,9 @@ function PreparedCandidateReview({
     select: (mutation) => mutation.state.status,
   });
   const attempted = priorAttempts.length > 0;
+  const blocked = hidden || confirmationBlocked || disconnected || attempted;
+  // Keep the mutation observer and its outcome while private candidate output is unavailable.
+  if (hidden) return null;
 
   return (
     <div className="flex flex-col gap-3 rounded-ok border border-border bg-card p-3">
@@ -956,7 +1078,7 @@ function PreparedCandidateReview({
             {candidate.details.configuration.expectedRevision}
           </p>
         </div>
-        <Modal trigger={<Button isDisabled={disconnected || attempted}>Review activation</Button>}>
+        <Modal trigger={<Button isDisabled={blocked}>Review activation</Button>}>
           <Dialog title="Activate prepared candidate?">
             <CandidateFacts candidate={candidate} />
             <p className="break-all text-xs text-fg-muted">
@@ -975,7 +1097,11 @@ function PreparedCandidateReview({
               <Button
                 slot="close"
                 variant="negative"
-                onPress={() => activate.mutate(createRequestId())}
+                isDisabled={blocked}
+                onPress={() => {
+                  if (blocked) return;
+                  activate.mutate(createRequestId());
+                }}
               >
                 Activate candidate
               </Button>
