@@ -2079,3 +2079,47 @@ fn answer_analysis_shares_selected_dictionary_and_chunk_tokenization() {
     assert!(title.title_terms.contains(&"测试".to_string()));
     assert!(crate::analyze("x", "", "", Some("unknown")).is_err());
 }
+
+/// Source-owned text retains the original identity, page coordinates and incomplete coverage.
+#[test]
+fn preprocessed_representation_preserves_source_and_fragment_provenance() {
+    let f = Fixture::new();
+    let text = b"first needle\nsecond needle\n";
+    fs::write(f.root.path().join("representation.md"), text).unwrap();
+    let content: Content = serde_json::from_value(serde_json::json!({
+        "kind": "representation",
+        "path": "representation.md",
+        "digest": digest(text),
+        "size": 27,
+        "processor": "fixture-extractor-v1:fixed-output-profile",
+        "fragments": [
+            { "start": 0, "end": 13, "locator": "page:1" },
+            { "start": 13, "end": 27, "locator": "page:2" }
+        ],
+        "complete": false
+    }))
+    .expect("the service must admit one source-owned text representation");
+    let original = [0, 255, 1];
+    let doc = document("original.pdf", &original, content);
+    let view = f.view("selected-source", vec![doc]);
+    f.kernel.publish(view.clone(), None).unwrap();
+    let result = f.search(Mode::Exact, "needle", vec![view.clone()], 20);
+    assert!(!result.complete);
+    assert!(!result.coverage.representations_complete);
+    assert_eq!(result.coverage.reasons.get("partial"), Some(&1));
+    assert_eq!(result.hits.len(), 2);
+    for (hit, (start, end, page)) in result.hits.iter().zip([
+        (6, 12, "page:1"),
+        (20, 26, "page:2"),
+    ]) {
+        assert_eq!(hit.digest, digest(&original));
+        assert_eq!(hit.representation, "sidecar");
+        assert_eq!(hit.representation_digest, digest(text));
+        assert_eq!(hit.processor.as_deref(), Some("fixture-extractor-v1:fixed-output-profile"));
+        assert_eq!(hit.locator, Locator::Text { start, end, original: Some(page.into()) });
+    }
+    fs::write(f.root.path().join("representation.md"), b"different representation").unwrap();
+    let stale = f.search(Mode::Exact, "needle", vec![view], 20);
+    assert!(stale.hits.is_empty());
+    assert!(!stale.coverage.representations_complete);
+}
