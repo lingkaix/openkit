@@ -883,7 +883,8 @@ test('cleans every stack-owned root when fixture initialization rejects before s
 });
 
 test('kills a SIGTERM-ignoring Web child and NanoCore before removing the data root', async () => {
-  test.setTimeout(45_000);
+  // Allow Core startup, the intentional 30s Web readiness failure, and TERM/KILL cleanup.
+  test.setTimeout(90_000);
   const harnessRoot = mkdtempSync(join(tmpdir(), 'openkit-web-sigterm-cleanup-'));
   const fakeBin = join(harnessRoot, 'bin');
   const dataRoot = join(harnessRoot, 'data-root');
@@ -982,7 +983,8 @@ setInterval(() => {}, 1000);
 });
 
 test('kills a SIGTERM-ignoring Web descendant after its leader exits during failed startup cleanup', async () => {
-  test.setTimeout(15_000);
+  // Allow Core startup before advancing the Web readiness clock and checking cleanup.
+  test.setTimeout(45_000);
   const harnessRoot = mkdtempSync(join(tmpdir(), 'openkit-web-descendant-cleanup-'));
   const fakeBin = join(harnessRoot, 'bin');
   const dataRoot = join(harnessRoot, 'data-root');
@@ -1035,7 +1037,7 @@ setInterval(() => {}, 1000);
   );
 
   try {
-    const markerDeadline = Date.now() + 10_000;
+    const markerDeadline = Date.now() + 30_000;
     while (
       Date.now() < markerDeadline &&
       (descendantPid === undefined || leaderPid === undefined || nanoCorePid === undefined)
