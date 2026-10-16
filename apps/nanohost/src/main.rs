@@ -8,6 +8,7 @@ mod credential_slots;
 mod epoch_coordinator;
 #[cfg(not(test))]
 mod epoch_evidence;
+mod filesystem_capacity;
 mod image_acquisition;
 mod image_store;
 mod image_store_cli;
@@ -936,6 +937,7 @@ async fn run_sessions(
                     }
                 }
                 Err(reason) => {
+                    coordinator.invalidate_startup();
                     return Err(terminal_connect(reason).into());
                 }
             }
@@ -1351,6 +1353,9 @@ fn main() {
 
 #[cfg(test)]
 mod openshell_upgrade_tests;
+
+#[cfg(test)]
+mod startup_tls_tests;
 
 #[cfg(test)]
 mod tests {

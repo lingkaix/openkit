@@ -650,8 +650,7 @@ where
                     Poll::Pending
                 };
             }
-            // Read even under write backpressure; the peer may need input consumed
-            // before it can receive the rest of our handshake flight.
+            // Read even under write backpressure; the peer may need input consumed before it can receive the rest of our handshake flight.
             match self.poll_receive_tls(cx) {
                 Poll::Ready(Ok(())) => {}
                 other => return other,
@@ -843,8 +842,7 @@ pub async fn connect_verified_session_transport(
     .await
     .map_err(|_| "nanohost NanoCore rendezvous timed out")?
     .map_err(|error| {
-        // Keep certificate and endpoint details inside rustls. The outer H2 driver
-        // otherwise reduces this definite trust failure to a retryable close.
+        // Keep certificate and endpoint details inside rustls. The outer H2 driver otherwise reduces this definite trust failure to a retryable close.
         if matches!(
             error
                 .get_ref()
@@ -2915,7 +2913,7 @@ impl OuterSessionState {
 
 #[cfg(test)]
 #[path = "nanocore_tls_tests.rs"]
-mod native_tls_tests;
+pub(crate) mod native_tls_tests;
 
 #[cfg(test)]
 mod tests {

@@ -2018,10 +2018,10 @@ impl WorkspaceCollector {
         if unsafe { libc::statvfs(path.as_ptr(), &mut facts) } != 0 {
             return Err(ScanFault::Failed);
         }
-        let free = (facts.f_bavail as u64).saturating_mul(facts.f_frsize as u64);
+        let free = facts.f_bavail.saturating_mul(facts.f_frsize);
         if used.saturating_add(growth) > self.limits.store_bytes
             || free.saturating_sub(growth) < 64 * 1024 * 1024
-            || (facts.f_favail as u64).saturating_sub(inodes) < 1024
+            || !crate::filesystem_capacity::inode_reserve_available(&facts, inodes, 1024)
         {
             return Err(ScanFault::Failed);
         }
@@ -6324,6 +6324,63 @@ mod tests {
         );
         assert!(entries.is_empty());
         assert!(collector.hooks.attempt_objects.is_empty());
+    }
+
+    /// Reads the real store filesystem without substituting a capacity-measurement failure.
+    fn collection_capacity_facts(store: &Path) -> libc::statvfs {
+        let path = CString::new(store.as_os_str().as_bytes()).unwrap();
+        // SAFETY: statvfs has only integer fields, and zero is valid for each field.
+        let mut facts = unsafe { std::mem::zeroed::<libc::statvfs>() };
+        // SAFETY: path is NUL-terminated and facts is writable for one complete result.
+        assert_eq!(unsafe { libc::statvfs(path.as_ptr(), &mut facts) }, 0);
+        facts
+    }
+
+    #[test]
+    fn filesystem_capacity_collection_writes_under_the_observed_inode_accounting() {
+        let fixture = Fixture::new();
+        fs::create_dir_all(fixture.worktree()).unwrap();
+        let facts = collection_capacity_facts(&fixture.root);
+        let available = facts.f_bavail.saturating_mul(facts.f_frsize);
+        let inodes_unreported = facts.f_files == 0 && facts.f_ffree == 0 && facts.f_favail == 0;
+        let bytes = b"collection capacity sample";
+        let can_initialize = available >= 64 * 1024 * 1024 + 1024 * 1024
+            && (inodes_unreported || facts.f_favail >= 1040);
+        let result = WorkspaceCollector::open(
+            Path::new("/usr/bin/git"),
+            &fixture.store(),
+            &fixture.worktree(),
+        );
+        if can_initialize {
+            let mut collector = result.expect(
+                "sufficient bytes and absent or sufficient inode counts must allow store initialization",
+            );
+            let oid = collector.write_blob(bytes).expect(
+                "sufficient bytes and absent or sufficient inode counts must allow collection writes",
+            );
+            assert_eq!(collector.read_blob(&oid).unwrap(), bytes);
+        } else {
+            assert!(
+                result.is_err(),
+                "measured capacity shortage must refuse store initialization"
+            );
+            assert!(!fixture.store().join("git/HEAD").exists());
+        }
+    }
+
+    #[test]
+    fn filesystem_capacity_collection_keeps_byte_reserve_and_overflow_refusals() {
+        let fixture = Fixture::new();
+        let mut collector = fixture.open();
+        let facts = collection_capacity_facts(&fixture.store());
+        let available = facts.f_bavail.saturating_mul(facts.f_frsize);
+        // Isolate the filesystem byte reserve from the independent private-store byte ceiling.
+        collector.limits.store_bytes = u64::MAX;
+        assert!(
+            collector.check_capacity(available, 0).is_err(),
+            "growth equal to all available bytes must preserve the filesystem byte reserve"
+        );
+        assert!(collector.check_capacity(u64::MAX, 0).is_err());
     }
 
     #[test]
