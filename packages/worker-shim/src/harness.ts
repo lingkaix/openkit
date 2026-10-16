@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { isEntityId } from '@openkit/protocol';
 
 import {
   HARNESS_DEFAULT_MAX_ACTIVE_TURNS,
@@ -52,8 +53,6 @@ const HARNESS_RESULT_PATH = '/worker-control/harness/result';
 const HARNESS_OUTAGE_BUDGET_MS = 300_000;
 /** Minimum resident binding capacity; authored active capacity can require more resident bindings. */
 const HARNESS_MAX_OPEN_SESSIONS = 8;
-/** Canonical AgentSession identity, which also names its input and reference slots. */
-const AGENT_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 /** Fixed non-retained scratch root granted by the compiled Worker policy. */
 const NATIVE_SCRATCH_ROOT = '/tmp/openkit-bootstrap';
 /** Image environment a resident host inherits from the Harness. */
@@ -261,7 +260,7 @@ export class WorkerHarness {
     if (
       !adapter ||
       (this.adapterId !== null && this.adapterId !== body.adapterId) ||
-      !AGENT_SESSION_ID_PATTERN.test(body.agentSessionId)
+      !isEntityId('as', body.agentSessionId)
     ) {
       throw harnessError('unsupported');
     }
@@ -675,7 +674,7 @@ export class WorkerHarness {
     threadId: string,
     adapterId: string
   ) {
-    if (!AGENT_SESSION_ID_PATTERN.test(resume.locator)) {
+    if (!isEntityId('as', resume.locator)) {
       throw harnessError('missing');
     }
     let reference: Buffer;

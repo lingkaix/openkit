@@ -51,7 +51,7 @@ function createCoreDb(): CoreDb {
 }
 
 /** Creates one empty storage association on the fixture target. */
-function createBinding(coreDb: CoreDb, workspaceId = 'ws_1') {
+function createBinding(coreDb: CoreDb, workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201') {
   return createWorkerStorageBinding(coreDb, {
     deploymentId: 'deployment_1',
     layout: LAYOUT,
@@ -73,10 +73,10 @@ function selection(binding: ReturnType<typeof createBinding>) {
     expectedRevision: binding.revision,
     layout: LAYOUT,
     purpose: 'work' as const,
-    responsibleUserId: 'user_1',
+    responsibleUserId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
     storageRef: binding.storageRef,
     threadId: 'thread_1',
-    workspaceId: 'ws_1',
+    workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
   };
 }
 
@@ -224,9 +224,9 @@ describe('Worker storage bindings', () => {
         contributors: [],
         layoutDigest: `sha256:${createHash('sha256').update(canonical).digest('hex')}`,
         revision: 1,
-        scopeDigest: workerStorageScopeDigest('ws_1'),
+        scopeDigest: workerStorageScopeDigest('ws_00000000-0000-73c3-900f-8d310e4ba201'),
         state: 'idle',
-        workspaceId: 'ws_1',
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
       });
       expect(workerStorageLayoutDigest(LAYOUT)).toBe(binding.layoutDigest);
       expect(binding.targets.map(({ initialized, target }) => ({ initialized, target }))).toEqual([
@@ -242,13 +242,13 @@ describe('Worker storage bindings', () => {
       expect(
         listWorkerStorageBindings(coreDb, {
           authorizeContributor: allowContributor,
-          workspaceId: 'ws_1',
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         })
       ).toHaveLength(1);
       expect(
         listWorkerStorageBindings(coreDb, {
           authorizeContributor: () => false,
-          workspaceId: 'ws_1',
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         })
       ).toEqual([]);
       expect(reserved.contributors).toHaveLength(1);
@@ -284,7 +284,7 @@ describe('Worker storage bindings', () => {
       expect(() =>
         selectWorkerStorageBinding(coreDb, {
           ...selection(idle),
-          workspaceId: 'ws_2',
+          workspaceId: 'ws_00000000-0000-7fee-b878-266b367d3b31',
         })
       ).toThrow('cannot cross Workspaces');
       expect(() =>
@@ -343,15 +343,17 @@ describe('Worker storage bindings', () => {
       expect(() =>
         selectWorkerStorageBinding(coreDb, {
           ...selection(idle),
-          authorizeContributor: (contributor) => contributor.responsibleUserId === 'user_2',
-          responsibleUserId: 'user_2',
+          authorizeContributor: (contributor) =>
+            contributor.responsibleUserId === 'usr_00000000-0000-7a71-a8b1-dcc65a83481f',
+          responsibleUserId: 'usr_00000000-0000-7a71-a8b1-dcc65a83481f',
           threadId: 'thread_2',
         })
       ).toThrow('audience is no longer authorized');
       expect(
         listWorkerStorageBindings(coreDb, {
-          authorizeContributor: (contributor) => contributor.responsibleUserId === 'user_2',
-          workspaceId: 'ws_1',
+          authorizeContributor: (contributor) =>
+            contributor.responsibleUserId === 'usr_00000000-0000-7a71-a8b1-dcc65a83481f',
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         })
       ).toEqual([]);
     } finally {
@@ -449,10 +451,10 @@ describe('Worker storage bindings', () => {
             goalId: null,
             taskId: null,
           },
-          'ws_1',
+          'ws_00000000-0000-73c3-900f-8d310e4ba201',
           'thread_3',
           coreDb,
-          'user_1'
+          'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b'
         )
       ).toBe(first.currentWorkSlotRef);
     } finally {

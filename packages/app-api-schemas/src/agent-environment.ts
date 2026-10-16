@@ -1,15 +1,21 @@
 import { NativeEnvironmentRecordSchema } from '@openkit/config-schema/native-environment';
-import { TimestampSchema } from '@openkit/protocol';
+import {
+  AgentSessionIdSchema,
+  ThreadIdSchema,
+  TimestampSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 
 /** Product-safe redacted Agent Environment Package snapshot record. */
 export const AgentEnvironmentPackageSnapshotRecordSchema = z
   .object({
     snapshotId: z.string().min(1),
-    workspaceId: z.string().min(1),
-    turnId: z.string().min(1),
-    threadId: z.string().min(1),
-    agentSessionId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    turnId: TurnIdSchema,
+    threadId: ThreadIdSchema,
+    agentSessionId: AgentSessionIdSchema,
     agentId: z.string().min(1),
     packageId: z.string().min(1),
     runtimeKind: z.string().min(1),

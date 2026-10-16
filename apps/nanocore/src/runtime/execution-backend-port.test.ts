@@ -2,8 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { createApp, createDefaultWorkerControlGateway } from '../app.js';
-import { ensureLocalUser } from '../auth/identity.js';
+import { createDefaultWorkerControlGateway } from '../app.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import {
   cancelSchedulerAdmissionEntry,
@@ -17,8 +16,13 @@ import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
-import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
+import {
+  createAppWithLocalIdentity as createApp,
+  createAppWithWorkspaceAuthority,
+} from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -83,7 +87,11 @@ function fixture(
   applyMigrations(db);
   ensureLocalUser(db);
   const store = createDemoStore({ dataRoot: db.dataRoot });
-  recordWorkspaceOwnerMembership({ coreDb: db, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({
+    coreDb: db,
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
 
   const setup = createTestAgentSetup();
   admitTestNativeEnvironment(db, setup.manifest);
@@ -233,14 +241,15 @@ function fixture(
       status: store.getTurnById(subject.turnId).status as 'failed',
     }),
   };
-  const queue = (suffix: string, threadId = 'th_demo') => {
+  const queue = (suffix: string, threadId = 'th_00000000-0000-7000-8000-000000000001') => {
     const turnId = `turn_port_${suffix}`;
-    if (threadId !== 'th_demo') store.createThread('ws_demo', suffix, threadId);
+    if (threadId !== 'th_00000000-0000-7000-8000-000000000001')
+      store.createThread('ws_00000000-0000-7000-8000-000000000001', suffix, threadId);
     store.createTurn(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       threadId,
       'Execute exactly once.',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       {
         turnId,
@@ -256,17 +265,17 @@ function fixture(
       queueEntryId: `queue_port_${suffix}`,
       requestId: `request_port_${suffix}`,
       turnId,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId,
       turnInput: 'Execute exactly once.',
       requestedAgentId: setup.manifest.id,
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       now: dispatchInput.now!,
     };
     store.recordCommandRequest({
       command: 'turn.start',
       requestId: admissionInput.requestId!,
-      scope: { workspaceId: 'ws_demo', threadId },
+      scope: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId },
       inputHash: 'fixture',
       response: { kind: 'turn', id: turnId },
     });
@@ -358,7 +367,9 @@ describe('execution backend port through real Core coordination', () => {
       expect(overlap.startedTurns).toEqual([]);
       expect(effects).toHaveBeenCalledOnce();
       expect(f.store.getTurnById(second.turnId)).toMatchObject({ status: 'pending' });
-      expect(f.store.listThreadAgentSessions('ws_demo', second.threadId)).toEqual([]);
+      expect(
+        f.store.listThreadAgentSessions('ws_00000000-0000-7000-8000-000000000001', second.threadId)
+      ).toEqual([]);
       held.resolve();
       expect(await preparing).toBeInstanceOf(Error);
       expect(requireSchedulerAdmissionEntry(f.db, first.queueEntryId).status).toBe('admitted');
@@ -427,9 +438,14 @@ describe('execution backend port through real Core coordination', () => {
       await f.dispatch();
       expect(f.port.submit).toHaveBeenCalledOnce();
       expect(f.effectCalls[0]!.attemptId).not.toBe(first.attempt_id);
-      expect(f.store.listThreadTurns('ws_demo', 'th_demo').map((turn) => turn.id)).toContain(
-        entry.turnId
-      );
+      expect(
+        f.store
+          .listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
+          .map((turn) => turn.id)
+      ).toContain(entry.turnId);
       expect(
         f.db.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_admission_entries').get()
       ).toEqual({ count: 1 });
@@ -525,16 +541,23 @@ describe('execution backend port through real Core coordination', () => {
         'function'
       );
       // Positive control prevents a missing prerequisite or unconditional refusal from proving exclusion.
-      const control = f.queue('control', 'th_control');
+      const control = f.queue('control', 'th_00000000-0000-7a11-83a9-10eb8b400194');
       const candidateFor = (entry: typeof control, attemptId: string, sessionId: string) => ({
         entry,
         attemptId,
         agentSessionId: sessionId,
       });
-      await acquire(f.db, candidateFor(control, 'control-attempt', 'control-session'));
+      await acquire(
+        f.db,
+        candidateFor(
+          control,
+          testEntityId('attempt', 'control-attempt'),
+          testEntityId('as', 'control-session')
+        )
+      );
       expect(attempts(f.db)).toContainEqual(
         expect.objectContaining({
-          attempt_id: 'control-attempt',
+          attempt_id: testEntityId('attempt', 'control-attempt'),
           phase: 'open',
           turn_id: control.turnId,
         })
@@ -546,12 +569,14 @@ describe('execution backend port through real Core coordination', () => {
             ? a
             : f.queue(
                 `collision-${collision}`,
-                collision === 'thread' ? a.threadId : 'th_collision_session'
+                collision === 'thread' ? a.threadId : 'th_00000000-0000-751d-bedc-6ab13a59afef'
               );
         const candidate = candidateFor(
           entry,
-          `competing-${collision}`,
-          collision === 'session' ? String(held.agent_session_id) : `other-session-${collision}`
+          testEntityId('attempt', `competing-${collision}`),
+          collision === 'session'
+            ? String(held.agent_session_id)
+            : testEntityId('as', `other-session-${collision}`)
         );
         const before = attempts(f.db);
         expect(() => acquire(f.db, candidate)).toThrow(
@@ -572,7 +597,7 @@ describe('execution backend port through real Core coordination', () => {
       const close = attemptRecords.closeSchedulerExecutionAttemptWithoutEffects;
       expect(close).toBeTypeOf('function');
       await close(f.db, {
-        attemptId: 'control-attempt',
+        attemptId: testEntityId('attempt', 'control-attempt'),
         cause: 'turn-start-failed',
         noOutstandingEffects: true,
       });
@@ -582,7 +607,11 @@ describe('execution backend port through real Core coordination', () => {
       // Acquisition made this control admitted; retain that history after its no-effect close.
       expect(requireSchedulerAdmissionEntry(f.db, control.queueEntryId).status).toBe('admitted');
       const setup = createTestAgentSetup();
-      f.store.createThread('ws_demo', 'Independent', 'th_independent');
+      f.store.createThread(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'Independent',
+        'th_00000000-0000-7034-bb1e-225363d49699'
+      );
       const appInput: Parameters<typeof createAppWithWorkspaceAuthority>[0] = {
         coreDb: f.db,
         store: f.store,
@@ -600,7 +629,7 @@ describe('execution backend port through real Core coordination', () => {
       const delayed = vi
         .spyOn(f.executor, 'prepareAgentSessionForTurn')
         .mockImplementation(async (store, input) => {
-          if (input.turn.threadId === 'th_independent') await gate.promise;
+          if (input.turn.threadId === 'th_00000000-0000-7034-bb1e-225363d49699') await gate.promise;
           return prepare(store, input);
         });
       const post = (app: ReturnType<typeof createAppWithWorkspaceAuthority>) =>
@@ -610,8 +639,8 @@ describe('execution backend port through real Core coordination', () => {
             {},
             {
               body: JSON.stringify({
-                workspaceId: 'ws_demo',
-                threadId: 'th_independent',
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                threadId: 'th_00000000-0000-7034-bb1e-225363d49699',
                 agentId: setup.manifest.id,
                 input: 'Independent bounded work.',
                 requestId: '00000000-0000-4000-8000-00000000c303',
@@ -719,7 +748,9 @@ describe('execution backend port through real Core coordination', () => {
       const original = f.effectCalls[0]!;
       const correlation = {
         ...original,
-        ...(kind === 'stale-attempt' ? { attemptId: 'stale-attempt' } : {}),
+        ...(kind === 'stale-attempt'
+          ? { attemptId: testEntityId('attempt', 'stale-attempt') }
+          : {}),
         ...(kind === 'wrong-operation' ? { operationId: 'wrong-operation' } : {}),
         ...(kind === 'wrong-backend' ? { backendId: 'other-backend' } : {}),
         ...(kind === 'wrong-binding' ? { bindingRef: 'other-binding' } : {}),

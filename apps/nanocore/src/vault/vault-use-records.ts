@@ -1,3 +1,4 @@
+import { isEntityId } from '@openkit/protocol';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type {
   VaultUseBackendKind,
@@ -113,6 +114,7 @@ export function createVaultUseRecord(
   db: VaultUseDb,
   input: CreateVaultUseRecordInput
 ): VaultUseRecord {
+  assertVaultUseIdentifiers(input);
   assertVaultUseScope(db, input);
   assertVaultUseResolution(input);
 
@@ -323,7 +325,7 @@ function vaultUseSelectSql(): string {
  * @returns Vault use record.
  */
 function mapVaultUseRow(row: VaultUseRow): VaultUseRecord {
-  return {
+  const record: VaultUseRecord = {
     agentSessionId: row.agent_session_id,
     auditEventId: row.audit_event_id,
     backendKind: row.backend_kind,
@@ -341,4 +343,25 @@ function mapVaultUseRow(row: VaultUseRow): VaultUseRecord {
     vaultReferenceId: row.vault_reference_id,
     workspaceId: row.workspace_id,
   };
+  assertVaultUseIdentifiers(record);
+  return record;
+}
+
+/** Checks only the named entity links; plan and receipt selectors retain their owners. */
+function assertVaultUseIdentifiers(record: CreateVaultUseRecordInput): void {
+  if (
+    !isEntityId('vu', record.useId) ||
+    !isEntityId('vault', record.vaultReferenceId) ||
+    (
+      [
+        ['ws', record.workspaceId],
+        ['grant', record.grantId],
+        ['as', record.agentSessionId],
+        ['cap', record.capabilityCallId],
+        ['aud', record.auditEventId],
+      ] as const
+    ).some(([kind, id]) => id != null && !isEntityId(kind, id))
+  ) {
+    throw new Error('VaultUse identifiers are not canonical.');
+  }
 }

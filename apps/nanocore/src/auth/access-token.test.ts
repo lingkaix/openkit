@@ -36,13 +36,17 @@ describe('OpenKit access token helpers', () => {
       scope: 'server-admin',
       workspaceIds: [],
     });
-    expect(normalizeOpenKitAccessTokenScope('workspace-readonly', ['ws_demo'])).toEqual({
+    expect(
+      normalizeOpenKitAccessTokenScope('workspace-readonly', [
+        'ws_00000000-0000-7000-8000-000000000001',
+      ])
+    ).toEqual({
       scope: 'workspace-readonly',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
     });
-    expect(() => normalizeOpenKitAccessTokenScope('server-admin', ['ws_demo'])).toThrow(
-      /workspace bindings/
-    );
+    expect(() =>
+      normalizeOpenKitAccessTokenScope('server-admin', ['ws_00000000-0000-7000-8000-000000000001'])
+    ).toThrow(/workspace bindings/);
     expect(() => normalizeOpenKitAccessTokenScope('workspace', [])).toThrow(/workspace id/);
   });
 

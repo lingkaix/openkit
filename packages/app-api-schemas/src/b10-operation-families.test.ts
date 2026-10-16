@@ -22,12 +22,16 @@ describe('B10 family declarations', () => {
     const requestId = '11111111-1111-4111-8111-111111111111';
     const digest = `sha256:${'a'.repeat(64)}`;
     const recover = {
-      administrationThreadId: 'thread_admin',
+      administrationThreadId: 'th_00000000-0000-79b7-9009-e76cfeceddee',
       requestId,
-      recoverFrom: { artifactId: 'artifact_authored', artifactVersion: 1, contentDigest: digest },
+      recoverFrom: {
+        artifactId: 'ar_00000000-0000-765f-9e4b-f410cda62de6',
+        artifactVersion: 1,
+        contentDigest: digest,
+      },
     };
     const prepare = {
-      administrationThreadId: 'thread_admin',
+      administrationThreadId: 'th_00000000-0000-79b7-9009-e76cfeceddee',
       requestId,
       configuration: { fileId: 'agents/codex.agent.jsonc', expectedRevision: digest },
       declaration: { kind: 'reference', pullPolicy: 'never', ref: digest },
@@ -71,11 +75,18 @@ describe('B10 family declarations', () => {
         ...recover,
         recoverFrom: { ...recover.recoverFrom, artifactId: fixtureLiteral },
       }).success
-    ).toBe(true);
+    ).toBe(false);
     expect(
       operationModelInput(recoverSchema, ['requestId']).safeParse({
-        administrationThreadId: 'thread_admin',
+        administrationThreadId: 'th_00000000-0000-79b7-9009-e76cfeceddee',
         recoverFrom: { ...recover.recoverFrom, artifactId: fixtureLiteral },
+      }).success
+    ).toBe(false);
+    expect(recoverSchema.safeParse(recover).success).toBe(true);
+    expect(
+      operationModelInput(recoverSchema, ['requestId']).safeParse({
+        administrationThreadId: recover.administrationThreadId,
+        recoverFrom: recover.recoverFrom,
       }).success
     ).toBe(true);
   });

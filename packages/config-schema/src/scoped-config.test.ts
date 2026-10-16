@@ -65,18 +65,24 @@ describe('scoped runtime config schemas', () => {
         schemaVersion: 1,
         workspaces: [
           {
-            workspaceId: 'ws_a',
+            workspaceId: 'ws_00000000-0000-7159-b04f-df2eaa9abaf0',
             agentId: 'agent_codex',
             profileId: 'review',
             logicalModelId: 'reasoning',
           },
         ],
       }).workspaces[0]
-    ).toMatchObject({ agentId: 'agent_codex', workspaceId: 'ws_a' });
+    ).toMatchObject({
+      agentId: 'agent_codex',
+      workspaceId: 'ws_00000000-0000-7159-b04f-df2eaa9abaf0',
+    });
     expect(() =>
       UserConfigSchema.parse({
         schemaVersion: 1,
-        workspaces: [{ workspaceId: 'ws_a' }, { workspaceId: 'ws_a' }],
+        workspaces: [
+          { workspaceId: 'ws_00000000-0000-7159-b04f-df2eaa9abaf0' },
+          { workspaceId: 'ws_00000000-0000-7159-b04f-df2eaa9abaf0' },
+        ],
       })
     ).toThrow();
   });

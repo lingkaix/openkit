@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { CancelledNotificationSchema } from '@modelcontextprotocol/core';
 import {
@@ -14,7 +14,9 @@ import type { AgentEnvironmentPackage, OpenKitConfig } from '@openkit/config-sch
 import { resolveWorkspaceMcpServer, WorkspaceMcpToolNameSchema } from '@openkit/config-schema';
 import {
   type ActorRef,
+  allocateEntityId,
   CapabilityCallStatusSchema,
+  deriveEntityId,
   ItemSchema,
   responsibleUserIdForActor,
 } from '@openkit/protocol';
@@ -205,7 +207,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
         agentId: environmentPackage.agent.agentId,
         agentSessionId: environmentPackage.scope.agentSessionId,
         authorityActor: environmentPackage.scope.triggerActor,
-        callId: `cap_mcp_${randomUUID()}`,
+        callId: allocateEntityId('cap'),
         capabilityId: 'mcp.list_servers',
         family: 'mcp',
         itemId: environmentPackage.scope.itemId ?? null,
@@ -1107,12 +1109,15 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     input.toolName,
     input.protocolRequestId
   );
-  const requestCallId = `cap_mcp_${mcpRequestIdentity(
-    input.environmentPackage,
-    input.serverId,
-    'mcp.call_tool',
-    input.protocolRequestId
-  )}`;
+  const requestCallId = deriveEntityId(
+    'cap',
+    mcpRequestName(
+      input.environmentPackage,
+      input.serverId,
+      'mcp.call_tool',
+      input.protocolRequestId
+    )
+  );
   const now = new Date().toISOString();
   const identity = createHash('sha256').update(requestCallId).digest('hex').slice(0, 24);
   const { title, description } = approvalCardCopy(
@@ -1127,7 +1132,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
           workspaceId: approvalEffect.workspaceId,
           threadId: approvalEffect.threadId,
           raisingTurnId: input.environmentPackage.scope.turnId,
-          requestItemId: `it_mcp_approval_${identity}`,
+          requestItemId: deriveEntityId('it', [`ap_mcp_${identity}`, 'request']),
           kind: 'approval',
           requesterKind: 'worker',
           agentId: approvalEffect.agentId,
@@ -1570,7 +1575,7 @@ function recordMcpToolUseDecision(
       turnId: input.environmentPackage.scope.turnId,
       workspaceId: input.environmentPackage.scope.workspaceId,
     },
-    decisionId: `pd_${randomUUID()}`,
+    decisionId: allocateEntityId('pd'),
     enforcementPoint: 'worker_capability.mcp.call_tool',
     ownerScope: 'workspace',
     policyEngineVersion: 'nanocore-workspace-role-policy:v1',
@@ -1931,6 +1936,9 @@ export function assertCurrentMcpVaultAuthority(
   if (
     !grant ||
     !reference ||
+    grant.issuance !== 'target' ||
+    (grant.approvalId !== null &&
+      (!isTargetIssuedEffectAuthority(grant.approvalId) || grant.policyDecisionId === null)) ||
     grant.status !== 'active' ||
     !isTargetIssuedEffectAuthority(grant.grantId) ||
     (grant.approvalId !== null &&
@@ -2105,7 +2113,7 @@ function startMcpCapabilityCall(input: {
   readonly toolName?: string;
   readonly workspaceDb: WorkspaceDb;
 }): StartedCapabilityCall {
-  const identity = mcpRequestIdentity(
+  const name = mcpRequestName(
     input.environmentPackage,
     input.serverId,
     input.operation,
@@ -2115,7 +2123,7 @@ function startMcpCapabilityCall(input: {
     agentId: input.environmentPackage.agent.agentId,
     agentSessionId: input.environmentPackage.scope.agentSessionId,
     authorityActor: input.environmentPackage.scope.triggerActor,
-    callId: input.callId ?? `cap_mcp_${identity}`,
+    callId: input.callId ?? deriveEntityId('cap', name),
     capabilityId: input.capabilityId,
     family: 'mcp',
     itemId: input.itemId,
@@ -2287,22 +2295,20 @@ function workerMcpItemId(
   toolName: string,
   protocolRequestId: string | number
 ): string {
-  return `it_mcp_${mcpRequestIdentity(environmentPackage, serverId, toolName, protocolRequestId)}`;
+  return deriveEntityId(
+    'it',
+    mcpRequestName(environmentPackage, serverId, toolName, protocolRequestId)
+  );
 }
 
 /** Returns one deterministic identity for a request inside its immutable AEP lineage. */
-function mcpRequestIdentity(
+function mcpRequestName(
   environmentPackage: AgentEnvironmentPackage,
   serverId: string,
   operation: string,
   protocolRequestId: string | number
-): string {
-  return createHash('sha256')
-    .update(
-      `${environmentPackage.snapshotId}\n${serverId}\n${operation}\n${JSON.stringify(protocolRequestId)}`
-    )
-    .digest('hex')
-    .slice(0, 24);
+): readonly unknown[] {
+  return ['mcp', environmentPackage.snapshotId, serverId, operation, protocolRequestId];
 }
 
 /** Returns the stable unavailable-server failure without catalog disclosure. */

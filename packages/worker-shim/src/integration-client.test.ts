@@ -131,14 +131,14 @@ describe('Sandbox Integration', () => {
     bridge.emit('connection', supervisorSocket);
     try {
       await integration.ready;
-      integration.registerSessionLoopback('as-mapping', {
+      integration.registerSessionLoopback('as_00000000-0000-7e21-a5ac-a39ca3d5f979', {
         capabilityCredential: 'C'.repeat(43),
         inferenceCredential: 'I'.repeat(43),
         ...(mapped
           ? { inferenceRuntimeHintMapping: WORKER_ADAPTERS.codex?.inferenceRuntimeHintMapping }
           : {}),
       });
-      integration.bindTurnRouteTokens('as-mapping', {
+      integration.bindTurnRouteTokens('as_00000000-0000-7e21-a5ac-a39ca3d5f979', {
         capabilityToken: 'capability',
         controlToken: 'control',
         inferenceToken: 'inference',
@@ -353,11 +353,11 @@ describe('Sandbox Integration', () => {
           method: 'POST',
         })
       ).rejects.toThrow('credential-free');
-      integration.registerSessionLoopback('as_route', {
+      integration.registerSessionLoopback('as_00000000-0000-70f4-ad2c-38b33b7fd38c', {
         capabilityCredential: 'c'.repeat(43),
         inferenceCredential: 'i'.repeat(43),
       });
-      integration.bindTurnRouteTokens('as_route', {
+      integration.bindTurnRouteTokens('as_00000000-0000-70f4-ad2c-38b33b7fd38c', {
         capabilityToken,
         controlToken,
         inferenceToken,
@@ -407,7 +407,7 @@ describe('Sandbox Integration', () => {
         { authorization: `Bearer ${inferenceToken}`, path: '/inference/v1/responses' },
       ]);
 
-      integration.clearTurnRouteTokens('as_route');
+      integration.clearTurnRouteTokens('as_00000000-0000-70f4-ad2c-38b33b7fd38c');
       await expect(
         integration.workerControlFetch('/worker-control/heartbeat', {
           body: '{}',
@@ -415,7 +415,7 @@ describe('Sandbox Integration', () => {
           method: 'POST',
         })
       ).rejects.toThrow('not bound');
-      integration.bindTurnRouteTokens('as_route', {
+      integration.bindTurnRouteTokens('as_00000000-0000-70f4-ad2c-38b33b7fd38c', {
         capabilityToken,
         controlToken,
         inferenceToken,
@@ -671,11 +671,11 @@ describe('Sandbox Integration', () => {
       });
 
     try {
-      integration.registerSessionLoopback('as_native', {
+      integration.registerSessionLoopback('as_00000000-0000-7926-9f77-df66eb3f42ca', {
         capabilityCredential,
         inferenceCredential,
       });
-      integration.bindTurnRouteTokens('as_native', {
+      integration.bindTurnRouteTokens('as_00000000-0000-7926-9f77-df66eb3f42ca', {
         capabilityToken,
         controlToken,
         inferenceToken,
@@ -1021,26 +1021,28 @@ describe('Sandbox Integration', () => {
     try {
       await integration.ready;
       expect(() =>
-        integration.registerSessionLoopback('as_bad', {
+        integration.registerSessionLoopback('as_00000000-0000-7b98-96b8-96ffa0be3631', {
           capabilityCredential: 'short',
           inferenceCredential: 'x'.repeat(43),
         })
       ).toThrow();
       expect(() =>
-        integration.registerSessionLoopback('as_bad', {
+        integration.registerSessionLoopback('as_00000000-0000-7b98-96b8-96ffa0be3631', {
           capabilityCredential: 'x'.repeat(43),
           inferenceCredential: 'x'.repeat(43),
         })
       ).toThrow();
-      integration.registerSessionLoopback('as_a', a);
-      expect(() => integration.registerSessionLoopback('as_a', b)).toThrow();
+      integration.registerSessionLoopback('as_00000000-0000-75c4-8f9b-15087ed5df6e', a);
       expect(() =>
-        integration.registerSessionLoopback('as_reuse', {
+        integration.registerSessionLoopback('as_00000000-0000-75c4-8f9b-15087ed5df6e', b)
+      ).toThrow();
+      expect(() =>
+        integration.registerSessionLoopback('as_00000000-0000-731a-87e0-a001469aa2a0', {
           capabilityCredential: a.inferenceCredential,
           inferenceCredential: 'z'.repeat(43),
         })
       ).toThrow();
-      integration.registerSessionLoopback('as_b', b);
+      integration.registerSessionLoopback('as_00000000-0000-7740-893b-01cca0bea5fd', b);
 
       // Idle supplies no authority; an unknown bearer is not a loopback credential.
       expect(await native(a.inferenceCredential, '/inference/v1/responses')).toMatchObject({
@@ -1051,7 +1053,7 @@ describe('Sandbox Integration', () => {
       });
       expect(upstream).toEqual([]);
 
-      integration.bindTurnRouteTokens('as_a', tokens('turn-a'));
+      integration.bindTurnRouteTokens('as_00000000-0000-75c4-8f9b-15087ed5df6e', tokens('turn-a'));
       expect(await native(a.inferenceCredential, '/inference/v1/responses')).toEqual({
         body: 'Bearer turn-a-inference-token',
         status: 200,
@@ -1064,24 +1066,24 @@ describe('Sandbox Integration', () => {
       expect(await native(b.inferenceCredential, '/inference/v1/responses')).toMatchObject({
         status: 403,
       });
-      integration.bindTurnRouteTokens('as_b', tokens('turn-b'));
+      integration.bindTurnRouteTokens('as_00000000-0000-7740-893b-01cca0bea5fd', tokens('turn-b'));
       expect(await native(b.inferenceCredential, '/inference/v1/responses')).toEqual({
         body: 'Bearer turn-b-inference-token',
         status: 200,
       });
 
       // A request that completes inside the drain bound is not cut.
-      expect(await integration.drainTurn('as_b')).toBe(0);
+      expect(await integration.drainTurn('as_00000000-0000-7740-893b-01cca0bea5fd')).toBe(0);
       expect(await native(b.inferenceCredential, '/inference/v1/responses')).toMatchObject({
         status: 403,
       });
-      integration.clearTurnRouteTokens('as_b');
+      integration.clearTurnRouteTokens('as_00000000-0000-7740-893b-01cca0bea5fd');
 
       // The short window exercises incomplete drain: held requests are cut at the barrier.
       const inflight = native(a.inferenceCredential, '/inference/v1/hold');
       await vi.waitFor(() => expect(held.size).toBe(1));
       const drainStarted = Date.now();
-      const drain = integration.drainTurn('as_a', 300);
+      const drain = integration.drainTurn('as_00000000-0000-75c4-8f9b-15087ed5df6e', 300);
       expect(await native(a.inferenceCredential, '/inference/v1/responses')).toMatchObject({
         status: 403,
       });
@@ -1089,7 +1091,7 @@ describe('Sandbox Integration', () => {
       expect(Date.now() - drainStarted).toBeGreaterThanOrEqual(250);
       expect(await inflight).toBe('cut');
       await vi.waitFor(() => expect(held.size).toBe(0));
-      integration.clearTurnRouteTokens('as_a');
+      integration.clearTurnRouteTokens('as_00000000-0000-75c4-8f9b-15087ed5df6e');
       expect(await native(a.inferenceCredential, '/inference/v1/responses')).toMatchObject({
         status: 403,
       });
@@ -1097,25 +1099,33 @@ describe('Sandbox Integration', () => {
       // The short window exercises incomplete drain of an upload; none of it goes upstream.
       const openRequests = () =>
         (integration as unknown as { nativeRequests: Set<unknown> }).nativeRequests.size;
-      integration.bindTurnRouteTokens('as_a', tokens('turn-a-upload'));
+      integration.bindTurnRouteTokens(
+        'as_00000000-0000-75c4-8f9b-15087ed5df6e',
+        tokens('turn-a-upload')
+      );
       const upstreamBefore = upstream.length;
       const uploadingAtBarrier = uploading(a.inferenceCredential, '/inference/v1/responses');
       await vi.waitFor(() => expect(openRequests()).toBe(1));
-      expect(await integration.drainTurn('as_a', 20)).toBe(1);
+      expect(await integration.drainTurn('as_00000000-0000-75c4-8f9b-15087ed5df6e', 20)).toBe(1);
       expect(await uploadingAtBarrier).toBe('cut');
       await vi.waitFor(() => expect(openRequests()).toBe(0));
-      integration.clearTurnRouteTokens('as_a');
+      integration.clearTurnRouteTokens('as_00000000-0000-75c4-8f9b-15087ed5df6e');
 
       // The production barrier bound is ten seconds.
-      integration.bindTurnRouteTokens('as_a', tokens('turn-a-bound'));
+      integration.bindTurnRouteTokens(
+        'as_00000000-0000-75c4-8f9b-15087ed5df6e',
+        tokens('turn-a-bound')
+      );
       const uploadingAtDefault = uploading(a.inferenceCredential, '/inference/v1/responses');
       await vi.waitFor(() => expect(openRequests()).toBe(1));
       vi.useFakeTimers({ toFake: ['setTimeout', 'performance'] });
       let defaultCut: number | null = null;
       try {
-        const drainAtDefault = integration.drainTurn('as_a').then((count) => {
-          defaultCut = count;
-        });
+        const drainAtDefault = integration
+          .drainTurn('as_00000000-0000-75c4-8f9b-15087ed5df6e')
+          .then((count) => {
+            defaultCut = count;
+          });
         await vi.advanceTimersByTimeAsync(9_900);
         expect(defaultCut).toBeNull();
         await vi.advanceTimersByTimeAsync(200);
@@ -1125,28 +1135,36 @@ describe('Sandbox Integration', () => {
       }
       expect(defaultCut).toBe(1);
       expect(await uploadingAtDefault).toBe('cut');
-      integration.clearTurnRouteTokens('as_a');
+      integration.clearTurnRouteTokens('as_00000000-0000-75c4-8f9b-15087ed5df6e');
 
       // Destroying the credentials cuts a request still uploading its body.
-      integration.bindTurnRouteTokens('as_a', tokens('turn-a-destroy'));
+      integration.bindTurnRouteTokens(
+        'as_00000000-0000-75c4-8f9b-15087ed5df6e',
+        tokens('turn-a-destroy')
+      );
       const uploadingAtClose = uploading(a.capabilityCredential, '/capabilities/mcp/echo');
       await vi.waitFor(() => expect(openRequests()).toBe(1));
-      integration.destroySessionLoopback('as_a');
+      integration.destroySessionLoopback('as_00000000-0000-75c4-8f9b-15087ed5df6e');
       expect(await uploadingAtClose).toBe('cut');
       await vi.waitFor(() => expect(openRequests()).toBe(0));
       expect(upstream).toHaveLength(upstreamBefore);
-      integration.registerSessionLoopback('as_a', a);
+      integration.registerSessionLoopback('as_00000000-0000-75c4-8f9b-15087ed5df6e', a);
 
       // Close destroys the credentials and cuts what is still in flight.
-      integration.bindTurnRouteTokens('as_a', tokens('turn-a2'));
+      integration.bindTurnRouteTokens('as_00000000-0000-75c4-8f9b-15087ed5df6e', tokens('turn-a2'));
       const beforeClose = native(a.capabilityCredential, '/capabilities/mcp/hold');
       await vi.waitFor(() => expect(held.size).toBe(1));
-      integration.destroySessionLoopback('as_a');
+      integration.destroySessionLoopback('as_00000000-0000-75c4-8f9b-15087ed5df6e');
       expect(await beforeClose).toBe('cut');
       expect(await native(a.inferenceCredential, '/inference/v1/responses')).toMatchObject({
         status: 401,
       });
-      expect(() => integration.bindTurnRouteTokens('as_a', tokens('turn-a3'))).toThrow();
+      expect(() =>
+        integration.bindTurnRouteTokens(
+          'as_00000000-0000-75c4-8f9b-15087ed5df6e',
+          tokens('turn-a3')
+        )
+      ).toThrow();
       expect(upstream.map(({ authorization }) => authorization)).not.toContain(
         `Bearer ${a.inferenceCredential}`
       );

@@ -7,7 +7,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { readCodexCloseRollout, requireCodexCloseHistory } from './codex-retaining-close.js';
 
 const THREAD = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
-const terminal = { id: 'turn-one', input: 'prompt', status: 'completed', texts: ['answer'] };
+const terminal = {
+  id: 'tu_00000000-0000-7192-9c2f-3de3c7c493db',
+  input: 'prompt',
+  status: 'completed',
+  texts: ['answer'],
+};
 const frames = [
   {
     ordinal: 0,
@@ -75,7 +80,12 @@ function encode(value: unknown[] = frames): Buffer {
 
 describe('Codex retaining close context proof', () => {
   it('reconciles an interrupted text Turn and its exact native abort marker', () => {
-    const aborted = { ...terminal, id: 'turn-aborted', status: 'interrupted', texts: [] };
+    const aborted = {
+      ...terminal,
+      id: 'tu_00000000-0000-72e4-a0d5-cdb28dd18a21',
+      status: 'interrupted',
+      texts: [],
+    };
     const turn = {
       id: aborted.id,
       status: aborted.status,

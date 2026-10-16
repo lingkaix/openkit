@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { recordServerAuditEvent } from './audit-events.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { createVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultInjectionPlan } from './vault-injection-plans.js';
@@ -44,9 +45,9 @@ describe('injection receipts', () => {
       const created = createVaultInjectionReceipt(coreDb, {
         agentSessionId: 'session_1',
         auditEventId: 'audit_1',
-        backendSummary: 'encrypted-file:vault_github:v1',
+        backendSummary: 'encrypted-file:vault_00000000-0000-7f73-bffa-d96a61ee4d70:v1',
         expiresAt: '2026-07-05T01:00:00.000Z',
-        grantId: 'grant_github_turn',
+        grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
         injectedAt: '2026-07-05T00:10:00.000Z',
         planId: 'plan_github_file',
         receiptId: 'receipt_github_file',
@@ -74,9 +75,9 @@ describe('injection receipts', () => {
       expect(created).toMatchObject({
         agentSessionId: 'session_1',
         auditEventId: 'audit_1',
-        backendSummary: 'encrypted-file:vault_github:v1',
+        backendSummary: 'encrypted-file:vault_00000000-0000-7f73-bffa-d96a61ee4d70:v1',
         expiresAt: '2026-07-05T01:00:00.000Z',
-        grantId: 'grant_github_turn',
+        grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
         injectedAt: '2026-07-05T00:10:00.000Z',
         planId: 'plan_github_file',
         receiptId: 'receipt_github_file',
@@ -96,22 +97,22 @@ describe('injection receipts', () => {
     const coreDb = createCoreDb();
     try {
       createVaultReference(coreDb, {
-        referenceId: 'preview_reference',
+        referenceId: testEntityId('vault', 'preview-reference'),
         ownerScope: 'server',
         backendKind: 'encrypted-file',
         secretKind: 'mcp-token',
         displayName: 'Preview',
       });
       createVaultGrant(coreDb, {
-        grantId: 'preview_grant',
-        vaultReferenceId: 'preview_reference',
+        grantId: testEntityId('grant', 'preview-grant'),
+        vaultReferenceId: testEntityId('vault', 'preview-reference'),
         ownerScope: 'server',
         lifetime: 'server',
         allowedInjectionPaths: ['gateway-only'],
       });
       createVaultInjectionPlan(coreDb, {
         planId: 'preview_plan',
-        grantId: 'preview_grant',
+        grantId: testEntityId('grant', 'preview-grant'),
         capabilityId: 'mcp.list_tools',
         injectionVisibility: 'gateway-only',
         expirationBehavior: 'grant-lifetime',
@@ -122,17 +123,17 @@ describe('injection receipts', () => {
       const receipt = {
         receiptId: 'preview_receipt',
         planId: 'preview_plan',
-        grantId: 'preview_grant',
+        grantId: testEntityId('grant', 'preview-grant'),
         backendSummary: 'mcp-gateway:http:preview',
         injectedAt: '2026-07-05T00:10:00.000Z',
         revocationStatus: 'active' as const,
       };
       const delivery = {
         coreDb,
-        actor: { kind: 'user' as const, id: 'administrator' },
+        actor: { kind: 'user' as const, id: testEntityId('usr', 'preview-administrator') },
         workspaceId: null,
         requestId: randomUUID(),
-        vaultGrantId: 'preview_grant',
+        vaultGrantId: testEntityId('grant', 'preview-grant'),
         action: 'administration.mcp-discovery-preview.delivery',
         resource: 'vault-injection-plan:preview_plan',
         outcome: 'succeeded' as const,
@@ -142,9 +143,15 @@ describe('injection receipts', () => {
         { action: 'administration.mcp-discovery-preview' },
         { outcome: 'failed' as const },
         { resource: 'vault-injection-plan:another_plan' },
-        { vaultGrantId: 'another_grant' },
+        { vaultGrantId: testEntityId('grant', 'another-preview-grant') },
         { requestId: null },
-        { actor: { kind: 'system' as const, id: 'system', responsibleUserId: 'administrator' } },
+        {
+          actor: {
+            kind: 'system' as const,
+            id: 'system',
+            responsibleUserId: testEntityId('usr', 'preview-administrator'),
+          },
+        },
       ]) {
         const event = recordServerAuditEvent({ ...delivery, ...patch });
         expect(() =>
@@ -153,7 +160,10 @@ describe('injection receipts', () => {
         expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
       }
       expect(() =>
-        createVaultInjectionReceipt(coreDb, { ...receipt, auditEventId: 'missing_audit' })
+        createVaultInjectionReceipt(coreDb, {
+          ...receipt,
+          auditEventId: testEntityId('aud', 'missing-preview-audit'),
+        })
       ).toThrow();
       const audit = recordServerAuditEvent(delivery);
       const created = createVaultInjectionReceipt(coreDb, { ...receipt, auditEventId: audit.id });
@@ -173,9 +183,9 @@ describe('injection receipts', () => {
     try {
       expect(() =>
         createVaultInjectionReceipt(coreDb, {
-          backendSummary: 'encrypted-file:vault_github:v1',
+          backendSummary: 'encrypted-file:vault_00000000-0000-7f73-bffa-d96a61ee4d70:v1',
           capabilityCallId: 'call_1',
-          grantId: 'grant_missing',
+          grantId: 'grant_00000000-0000-7278-b714-46e2d53cb316',
           injectedAt: '2026-07-05T00:10:00.000Z',
           planId: 'plan_missing',
           receiptId: 'receipt_missing',
@@ -187,9 +197,9 @@ describe('injection receipts', () => {
 
       expect(() =>
         createVaultInjectionReceipt(coreDb, {
-          backendSummary: 'encrypted-file:vault_github:v1',
+          backendSummary: 'encrypted-file:vault_00000000-0000-7f73-bffa-d96a61ee4d70:v1',
           capabilityCallId: 'call_1',
-          grantId: 'grant_other',
+          grantId: 'grant_00000000-0000-7cdc-be0b-b3cce2871c66',
           injectedAt: '2026-07-05T00:10:00.000Z',
           planId: 'plan_github_file',
           receiptId: 'receipt_wrong_grant',
@@ -198,8 +208,8 @@ describe('injection receipts', () => {
       ).toThrow('Injection receipt grant id must match the injection plan grant id.');
       expect(() =>
         createVaultInjectionReceipt(coreDb, {
-          backendSummary: 'encrypted-file:vault_github:v1',
-          grantId: 'grant_github_turn',
+          backendSummary: 'encrypted-file:vault_00000000-0000-7f73-bffa-d96a61ee4d70:v1',
+          grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
           injectedAt: '2026-07-05T00:10:00.000Z',
           planId: 'plan_github_file',
           receiptId: 'receipt_no_actor',
@@ -222,21 +232,21 @@ function createPlan(coreDb: CoreDb): void {
     backendKind: 'encrypted-file',
     displayName: 'GitHub token',
     ownerScope: 'server',
-    referenceId: 'vault_github',
+    referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     secretKind: 'repository-token',
   });
   createVaultGrant(coreDb, {
     allowedInjectionPaths: ['runtime-file'],
-    grantId: 'grant_github_turn',
+    grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
     lifetime: 'turn',
     ownerScope: 'workspace',
-    vaultReferenceId: 'vault_github',
-    workspaceId: 'ws_1',
+    vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
+    workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
   });
   createVaultInjectionPlan(coreDb, {
     backendCapabilityRequirement: 'encrypted-file:resolve',
     expirationBehavior: 'delete-on-turn-end',
-    grantId: 'grant_github_turn',
+    grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
     injectionVisibility: 'runtime-file',
     planId: 'plan_github_file',
     redactionRule: 'path-only',

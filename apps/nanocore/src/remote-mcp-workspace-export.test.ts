@@ -4,13 +4,13 @@ import { join } from 'node:path';
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { FsStore } from './lib/store.js';
 import { registerRemoteMcpRoutes } from './remote-mcp-routes.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -29,7 +29,7 @@ describe('Remote MCP Workspace export retained snapshot refusal', () => {
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: workspace.id,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       });
       const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
       try {
@@ -38,7 +38,7 @@ describe('Remote MCP Workspace export retained snapshot refusal', () => {
         workspaceDb.sqlite.close();
       }
       const token = createOpenKitAccessTokenRecord(coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'workspace',
         workspaceIds: [workspace.id],
         expiresAt: '2099-01-01T00:00:00.000Z',
@@ -47,7 +47,7 @@ describe('Remote MCP Workspace export retained snapshot refusal', () => {
       // Supply the durable Token actor locally; bearer HTTP authentication is outside this seam.
       app.use('*', async (c, next) => {
         c.set('actor', {
-          userId: 'user_local',
+          userId: 'usr_00000000-0000-7000-8000-000000000001',
           kind: 'token',
           tokenId: token.tokenId,
           tokenScope: 'workspace',
@@ -70,7 +70,7 @@ describe('Remote MCP Workspace export retained snapshot refusal', () => {
         workspace.id,
         'runtime',
         'agent-sessions',
-        'as_corrupt',
+        'as_00000000-0000-7903-b33d-ca8a08f35a67',
         'aep-snapshots'
       );
       mkdirSync(snapshotsRoot, { recursive: true });

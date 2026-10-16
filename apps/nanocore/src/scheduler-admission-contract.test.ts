@@ -23,7 +23,7 @@ function command(index = 0) {
     requiredPoolConstraints: [],
     serverAdminTokenId: null as string | null,
     threadId: `thread_contract_${index}`,
-    triggerActor: { kind: 'user' as const, id: 'user_local' },
+    triggerActor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
     turnId: `turn_contract_${index}`,
     turnInput: '  Preserve the exact instruction.\nRun its focused checks.  ',
     workspaceId: 'workspace_contract',
@@ -125,7 +125,7 @@ describe('route B exact admission (Durable Scheduler Design: Admission And Launc
       goalId: null,
       kind: 'selected' as const,
       purpose: 'work' as const,
-      storageRef: `wst_${'1'.repeat(32)}`,
+      storageRef: 'wst_00000000-0000-7ac8-9f6c-13552db6aa87',
       taskId: null,
     },
   ])('reads inert stored storage-choice additions without changing $kind identity', (choice) => {
@@ -164,7 +164,7 @@ describe('route B exact admission (Durable Scheduler Design: Admission And Launc
       taskId: null,
       expectedRevision: 0,
       purpose: 'work',
-      storageRef: `wst_${'1'.repeat(32)}`,
+      storageRef: 'wst_00000000-0000-7ac8-9f6c-13552db6aa87',
     },
   ])('refuses unknown or invalid required stored selection semantics %#', (choice) => {
     const db = database();

@@ -166,7 +166,10 @@ async function fixture(t) {
       retainedReads: [
         {
           operation: 'thread.read',
-          input: { workspaceId: 'retained-workspace', threadId: 'retained-thread' },
+          input: {
+            workspaceId: 'ws_0190f4c8-0000-7000-8000-000000000007',
+            threadId: 'th_0190f4c8-0000-7000-8000-000000000008',
+          },
         },
       ],
       pollAttempts: 1,
@@ -212,7 +215,7 @@ async function fixture(t) {
   };
   const runtime = () => ({
     identityId: 'configured-host',
-    deploymentId: 'configured-deployment',
+    deploymentId: 'dep_0190f4c8-0000-7000-8000-000000000001',
     connectionGeneration: started && controls.pending-- <= 0 ? 8 : 7,
     physicalEpoch: started && controls.pending < 0 ? 'b'.repeat(64) : 'a'.repeat(64),
     ready: !started || controls.pending < 0,

@@ -58,10 +58,10 @@ it('acknowledges metadata before exact content chunks without copying restricted
   const body = Buffer.from(`  ${'💡 tool result\n'.repeat(9000)}  `);
   const writer = new WorkerTranscriptWriter({
     lineage: {
-      workspaceId: 'ws_test',
-      threadId: 'th_test',
-      turnId: 'turn_test',
-      agentSessionId: 'as_test',
+      workspaceId: 'ws_00000000-0000-796a-8af7-97608a790532',
+      threadId: 'th_00000000-0000-7264-9729-c1391de4f71e',
+      turnId: 'tu_00000000-0000-721a-a80b-ea39a8900478',
+      agentSessionId: 'as_00000000-0000-7645-9bc1-276baec9cf48',
       packageSnapshotId: 'aep_test',
     },
     sessionDir,
@@ -384,10 +384,10 @@ it('carries expected-only metadata through the real transcript writer before a u
   const accepted: WorkerCanonicalEventRecord[] = [];
   const writer = new WorkerTranscriptWriter({
     lineage: {
-      workspaceId: 'ws_test',
-      threadId: 'th_test',
-      turnId: 'turn_test',
-      agentSessionId: 'as_test',
+      workspaceId: 'ws_00000000-0000-796a-8af7-97608a790532',
+      threadId: 'th_00000000-0000-7264-9729-c1391de4f71e',
+      turnId: 'tu_00000000-0000-721a-a80b-ea39a8900478',
+      agentSessionId: 'as_00000000-0000-7645-9bc1-276baec9cf48',
       packageSnapshotId: 'aep_test',
     },
     sessionDir,

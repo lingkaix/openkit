@@ -11,12 +11,13 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
-import { type Actor, ensureLocalUser } from '../auth/identity.js';
+import type { Actor } from '../auth/identity.js';
 import { loadResourceCatalog } from '../catalog/resource-catalog.js';
 import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { createMcpHttpStub } from '../test-support/mcp-http-stub.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { listVaultUseRecords } from '../vault/vault-use-records.js';
@@ -38,14 +39,14 @@ function fixture() {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const token = createOpenKitAccessTokenRecord(coreDb, {
-    ownerUserId: 'user_local',
+    ownerUserId: FIXTURE_LOCAL_USER_ID,
     scope: 'server-admin',
     workspaceIds: [],
     expiresAt: '2999-01-01T00:00:00Z',
   });
   const actor: Actor = {
     kind: 'token',
-    userId: 'user_local',
+    userId: FIXTURE_LOCAL_USER_ID,
     tokenScope: 'server-admin',
     tokenId: token.tokenId,
   };
@@ -142,7 +143,7 @@ describe('explicit administrator MCP discovery preview', () => {
     recordWorkspaceOwnerMembership({
       coreDb: f.coreDb,
       workspaceId: workspace.id,
-      ownerUserId: 'user_local',
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
     });
     const upstream = await createMcpHttpStub();
     cleanup.push(() => upstream.close());
@@ -496,7 +497,7 @@ describe('explicit administrator MCP discovery preview', () => {
     expect(starting).toHaveLength(1);
     expect(starting[0]).toMatchObject({
       workspaceId: null,
-      actor: { kind: 'user', id: 'user_local' },
+      actor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
       outcome: 'succeeded',
     });
     expect(starting[0]?.requestId).toBeTruthy();

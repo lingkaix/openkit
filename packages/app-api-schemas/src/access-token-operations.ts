@@ -1,3 +1,4 @@
+import { AccessTokenIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import {
   ConsumeOpenKitBootstrapTokenRequestSchema,
@@ -70,7 +71,7 @@ export const ACCESS_TOKEN_OPERATION_DEFINITIONS = {
   },
   'token.rotate': {
     description: 'Rotate an OpenKit access token for one-time secret delivery.',
-    inputSchema: RotateOpenKitAccessTokenRequestSchema.safeExtend({ tokenId: z.string().min(1) }),
+    inputSchema: RotateOpenKitAccessTokenRequestSchema.safeExtend({ tokenId: AccessTokenIdSchema }),
     outputSchema: RotateOpenKitAccessTokenResponseSchema,
     credentials: ['local-user', 'user-session', 'deployment-administrator'],
     scope: { kind: 'server' },
@@ -83,7 +84,7 @@ export const ACCESS_TOKEN_OPERATION_DEFINITIONS = {
   },
   'token.revoke': {
     description: 'Revoke one OpenKit access token.',
-    inputSchema: z.object({ tokenId: z.string().min(1) }).strict(),
+    inputSchema: z.object({ tokenId: AccessTokenIdSchema }).strict(),
     outputSchema: RevokeOpenKitAccessTokenResponseSchema,
     credentials: ['local-user', 'user-session', 'deployment-administrator'],
     scope: { kind: 'server' },

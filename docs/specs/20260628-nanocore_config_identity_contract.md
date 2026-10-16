@@ -255,3 +255,7 @@ They remain useful for implementation background, but this spec and the core ide
 - [Single-Deployment Multi-User Workspace System](./20260715-multi_user_workspace_system.md)
 - [NanoHost Runtime And Transport](./20260802-nanohost_runtime_and_transport.md)
 - [Remote MCP Interface](./20261002-remote_mcp_interface.md)
+
+## Default Provider Reference Candidates
+
+The first publication of each default Provider template, including an inactive example, replaces its Vault placeholder with one independent canonical vault UUIDv7 candidate. The runtime-config Provider file template uses the same identity rule. Each resulting secretRef is stored in the authored file and is retained across reads, reload and restart. Existing files are not overwritten, and copying a template grants no secret or Vault authority. Different Provider templates receive distinct candidates. Allocation failure refuses publication of that file; an ordinary later retry retains files already published and allocates only missing candidates. No derivation from Provider names or conversion of existing configuration is admitted.

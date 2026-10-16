@@ -44,7 +44,7 @@ describe('workspace data source catalog schema', () => {
           locator: { url: 'https://github.com/acme/app.git', defaultRef: 'main' },
           access: 'read-write',
           sensitivity: 'internal',
-          vaultGrantRef: 'vg_github_ci',
+          vaultGrantRef: 'grant_00000000-0000-7e99-a28a-bfc3f4b6a7ed',
           allowedSlotKinds: ['worktree'],
           syncHints: { strategy: 'checkout' },
           status: 'active',
@@ -192,7 +192,7 @@ describe('workspace data source catalog schema', () => {
           locator: { url: 'https://github.com/acme/app.git', defaultRef: 'main' },
           access: 'read-write',
           sensitivity: 'internal',
-          vaultGrantRef: 'grant_github_read',
+          vaultGrantRef: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
           allowedSlotKinds: ['worktree'],
           status: 'active',
         },
@@ -211,7 +211,7 @@ describe('workspace data source catalog schema', () => {
       locator: { url: 'https://github.com/acme/app.git', defaultRef: 'main' },
       sourceId: 'main-repo',
       sourceKind: 'git',
-      vaultGrantRef: 'grant_github_read',
+      vaultGrantRef: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
     });
     expect(
       resolveWorkspaceDataSourceReference({
