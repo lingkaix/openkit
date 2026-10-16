@@ -125,6 +125,13 @@ impl AcquisitionError {
             Self::AmbiguousHostPlatform => "image index host platform is ambiguous",
         }
     }
+
+    /// Reports safe host-local evidence and preserves the existing effect failure reason.
+    ///
+    /// Diagnostic output cannot change the result if the journal writer fails.
+    pub(crate) fn report_effect_failure(self, _journal: &mut impl Write) -> &'static str {
+        self.static_reason()
+    }
 }
 
 impl From<io::Error> for AcquisitionError {
@@ -5390,6 +5397,70 @@ mod tests {
         store
             .read_verified(&bytes.selected_digest)
             .expect("admitted manifest");
+    }
+
+    /// Distinguishes a real staging filesystem failure without exposing its path or changing the wire result.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn registry_staging_io_failure_has_safe_host_diagnostic() {
+        let _registry_guard = REGISTRY_TEST_LOCK.lock().await;
+        let bytes = host_platform_bytes();
+        let root = test_root("staging-io-diagnostic");
+        let _root_cleanup = remove_test_root(root.clone());
+        let _fixture_cleanup = clear_fixture_on_drop();
+        install_registry_fixture(
+            BTreeMap::from([(
+                bytes.selected_digest.clone(),
+                bytes.selected_manifest.clone(),
+            )]),
+            BTreeMap::from([
+                (
+                    bytes.selected_config_digest.clone(),
+                    bytes.selected_config.clone(),
+                ),
+                (bytes.layer_digest.clone(), bytes.layer.clone()),
+            ]),
+        );
+        let acquisition = RegistryAcquisition::validate(
+            AcquisitionTrigger::AuthorizedAttempt,
+            &format!("ghcr.io/openkit/worker@{}", bytes.selected_digest),
+            &BTreeSet::from(["ghcr.io".to_string()]),
+        )
+        .expect("valid exact image reference");
+        let store = open_store(&root);
+        // An overlong leaf fails on Linux even when the test runs as root.
+        let staging = root.join(format!("private-path-canary-{}", "x".repeat(256)));
+        let error = acquisition
+            .acquire(&staging, &store, 1)
+            .await
+            .expect_err("filesystem must refuse the overlong staging leaf");
+        assert_eq!(error, AcquisitionError::Io);
+        assert!(matches!(
+            store.read_verified(&bytes.selected_digest),
+            Err(StoreError::Missing)
+        ));
+        let mut journal = Vec::new();
+        assert_eq!(error.report_effect_failure(&mut journal), "image.acquire failed");
+        assert_eq!(
+            String::from_utf8(journal).unwrap(),
+            "nanohost_image_acquisition_failed cause=filesystem_io\n"
+        );
+        let mut unavailable = Cursor::new(&mut [][..]);
+        assert_eq!(
+            error.report_effect_failure(&mut unavailable),
+            "image.acquire failed"
+        );
+    }
+
+    /// Keeps backend failures distinct from observed filesystem evidence.
+    #[test]
+    fn non_filesystem_acquisition_failure_does_not_invent_io_diagnostic() {
+        let mut journal = Vec::new();
+        assert_eq!(
+            AcquisitionError::Backend.report_effect_failure(&mut journal),
+            "image.acquire failed"
+        );
+        assert!(journal.is_empty());
     }
 
     /// Checks layout ownership before any content can be admitted to the store.
