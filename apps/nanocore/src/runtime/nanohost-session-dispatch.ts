@@ -38,7 +38,10 @@ import {
   upsertNanoHostRuntimeTarget,
 } from './nanohost-runtime-target.js';
 import { listWorkerBackendSessions } from './worker-backend-sessions.js';
-import { WorkerSandboxPolicyIntentSchema } from './worker-governance-backend.js';
+import {
+  type NanoHostFileImportSource,
+  WorkerSandboxPolicyIntentSchema,
+} from './worker-governance-backend.js';
 import {
   readWorkerImageSettlement,
   type WorkerImageSettlement,
@@ -1688,8 +1691,8 @@ export function registerNanoHostSessionEffectRoutes(
         const command = await input.dispatch.poll(physicalConnection, operation);
         if (operation === 'reference.import' && command) {
           const file = requireReferenceImportCommand(command, readRequestId(command));
-          return createChunkedFileDataResponse(
-            file.body,
+          return createStreamedFileDataResponse(
+            file,
             {
               'content-length': String(file.byteLength),
               'content-type': FILE_DATA_CONTENT_TYPE,
@@ -2142,6 +2145,62 @@ function createChunkedFileDataResponse(
   }
 }
 
+/** Streams one exact private source under backpressure. The receiving Host still verifies the same size and digest before publication. Cancellation closes the current source and releases only this transfer's carriage slot. */
+function createStreamedFileDataResponse(
+  file: ReturnType<typeof requireReferenceImportCommand>,
+  headers: Readonly<Record<string, string>>,
+  release: () => void
+): Response {
+  if (file.body) return createChunkedFileDataResponse(file.body, headers, release);
+  const controller = new AbortController();
+  let iterator: AsyncIterator<Uint8Array> | undefined;
+  const hash = createHash('sha256');
+  let received = 0;
+  let released = false;
+  const finish = async () => {
+    if (released) return;
+    released = true;
+    controller.abort();
+    try {
+      await iterator?.return?.();
+    } finally {
+      release();
+    }
+  };
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      async pull(output) {
+        try {
+          iterator ??= file.source!.open(controller.signal)[Symbol.asyncIterator]();
+          const next = await iterator.next();
+          if (next.done) {
+            if (received !== file.byteLength || `sha256:${hash.digest('hex')}` !== file.sha256)
+              throw effectTransportError(409, 'NanoHost import bytes do not match their identity.');
+            output.close();
+            await finish();
+            return;
+          }
+          if (
+            !(next.value instanceof Uint8Array) ||
+            !next.value.byteLength ||
+            next.value.byteLength > FILE_DATA_CHUNK_BYTES ||
+            received + next.value.byteLength > file.byteLength
+          )
+            throw effectTransportError(409, 'NanoHost import source exceeded its admitted range.');
+          received += next.value.byteLength;
+          hash.update(next.value);
+          output.enqueue(next.value);
+        } catch {
+          output.error(effectTransportError(500, 'NanoHost import source is unavailable.'));
+          await finish();
+        }
+      },
+      cancel: finish,
+    }),
+    { headers, status: 200 }
+  );
+}
+
 /**
  * Validates one raw import command and preserves its exact bytes.
  * @param value Internal fixed-effect input.
@@ -2153,7 +2212,8 @@ function requireReferenceImportCommand(
   value: Readonly<Record<string, unknown>>,
   requestId: string
 ): Readonly<{
-  body: Buffer;
+  body?: Buffer;
+  source?: NanoHostFileImportSource;
   byteLength: number;
   relativePath: string;
   requestId: string;
@@ -2167,6 +2227,7 @@ function requireReferenceImportCommand(
         ![
           'backendSessionId',
           'body',
+          'source',
           'byteLength',
           'leaseId',
           'packageSnapshotId',
@@ -2194,13 +2255,32 @@ function requireReferenceImportCommand(
   const sandboxId = readBoundedIdentity(value.sandboxId, 'sandbox');
   const sha256 = readSha256(value.sha256);
   const slot = readSlot(value.slot);
+  const source = value.source;
+  if (source !== undefined) {
+    if (
+      bodyValue !== undefined ||
+      !source ||
+      typeof source !== 'object' ||
+      Object.keys(source).length !== 1 ||
+      typeof (source as NanoHostFileImportSource).open !== 'function'
+    )
+      throw effectTransportError(400, 'NanoHost import source is invalid.');
+    return {
+      source: source as NanoHostFileImportSource,
+      byteLength,
+      relativePath,
+      requestId,
+      sandboxId,
+      sha256,
+      slot,
+    };
+  }
   if (
     !body ||
     body.byteLength !== byteLength ||
     `sha256:${createHash('sha256').update(body).digest('hex')}` !== sha256
-  ) {
+  )
     throw effectTransportError(409, 'NanoHost import bytes do not match their identity.');
-  }
   return { body, byteLength, relativePath, requestId, sandboxId, sha256, slot };
 }
 
