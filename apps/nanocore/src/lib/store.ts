@@ -568,6 +568,8 @@ interface CreateTurnOptions {
   turnId?: string;
   /** Immutable explicit or composed effort captured when the Turn is admitted. */
   reasoningEffort?: Turn['reasoningEffort'];
+  /** Exact per-run Skill input captured on the canonical admitted Turn. */
+  skillSelections?: Turn['skillSelections'];
   /** Command-owned start time when a Core-local Turn must share one accepted timestamp. */
   startedAt?: string;
   /** Admission-time capture pair when the caller already resolved the effective setting. */
@@ -2734,6 +2736,9 @@ export class FsStore {
       durationMs: null,
       ...(options.reasoningEffort !== undefined
         ? { reasoningEffort: options.reasoningEffort }
+        : {}),
+      ...(options.skillSelections !== undefined
+        ? { skillSelections: options.skillSelections }
         : {}),
       ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
       ...(options.agentSessionId !== undefined ? { agentSessionId: options.agentSessionId } : {}),

@@ -484,7 +484,7 @@ export const AgentEnvironmentSkillSchema = z
       })
       .strict()
       .optional(),
-    selectionSource: z.enum(['current', 'pin', 'setup']).optional(),
+    selectionSource: z.enum(['current', 'pin', 'setup', 'run']).optional(),
   })
   .strict();
 
