@@ -18,7 +18,7 @@ import {
   writeSync,
 } from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
   KnowledgeManagerDraftedProposalSchema,
@@ -56,8 +56,8 @@ import Database from 'better-sqlite3';
 import { applyEdits, modify } from 'jsonc-parser';
 import { z } from 'zod';
 import { parseJsoncObject } from '../config/jsonc.js';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import {
-  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION,
   parseOkfDocument,
   REQUIRED_SCOPED_KNOWLEDGE_FEATURES,
@@ -726,90 +726,26 @@ export function assertSafeWorkspacePathSegment(value: string, label: string): vo
 }
 
 /**
- * Resolves one schema-valid Knowledge Page id below the canonical pages root.
+ * Reads exact canonical Knowledge Page bytes from one published immutable notebook revision.
  *
  * @param workspaceRoot Published workspace root.
  * @param knowledgePageId Slash-separated Knowledge Page id.
- * @param createParents Whether missing safe parent directories may be created.
- * @returns Canonical page path, or null when a read-only parent is absent.
- */
-function resolveWorkspaceKnowledgePagePath(
-  workspaceRoot: string,
-  knowledgePageId: string,
-  createParents: boolean
-): string | null {
-  const parsedId = KnowledgeProposalPageIdSchema.parse(knowledgePageId);
-  const segments = parsedId.split('/');
-  const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
-
-  for (const path of [workspaceRoot, join(workspaceRoot, 'knowledge'), pagesRoot]) {
-    assertCanonicalDirectory(path);
-  }
-  for (const segment of segments) {
-    assertSafeWorkspacePathSegment(segment, 'Knowledge Page id segment');
-  }
-
-  const target = resolve(pagesRoot, ...segments.slice(0, -1), `${segments.at(-1)!}.md`);
-  const targetRelative = relative(resolve(pagesRoot), target);
-  if (
-    targetRelative === '..' ||
-    targetRelative.startsWith(`..${sep}`) ||
-    isAbsolute(targetRelative)
-  ) {
-    throw new Error('Knowledge Page path escapes the canonical pages root.');
-  }
-
-  let parent = pagesRoot;
-  for (const segment of segments.slice(0, -1)) {
-    parent = join(parent, segment);
-    const metadata = lstatSync(parent, { throwIfNoEntry: false });
-    if (!metadata) {
-      if (!createParents) {
-        return null;
-      }
-      ensureCanonicalDirectory(parent);
-      continue;
-    }
-    assertCanonicalDirectory(parent);
-  }
-
-  return target;
-}
-
-/**
- * Reads one canonical Knowledge Page without following symbolic links.
- *
- * @param workspaceRoot Published workspace root.
- * @param knowledgePageId Slash-separated Knowledge Page id.
+ * @param notebookRevision Exact published revision, or the revision pinned at this read.
  * @returns Exact UTF-8 page bytes, or null when the page is absent.
  */
 export function readWorkspaceKnowledgePage(
   workspaceRoot: string,
-  knowledgePageId: string
+  knowledgePageId: string,
+  notebookRevision?: string
 ): string | null {
-  const path = resolveWorkspaceKnowledgePagePath(workspaceRoot, knowledgePageId, false);
-  if (!path || !lstatSync(path, { throwIfNoEntry: false })) {
-    return null;
-  }
-  return readCanonicalTextFile(path);
-}
-
-/**
- * Deletes one canonical knowledge page before its in-memory owner is removed.
- *
- * @param workspaceRoot Published workspace root.
- * @param knowledgeEntryId Knowledge entry id to delete.
- */
-export function deleteWorkspaceKnowledgeRecord(
-  workspaceRoot: string,
-  knowledgeEntryId: string
-): void {
-  const path = resolveWorkspaceKnowledgePagePath(workspaceRoot, knowledgeEntryId, false);
-  if (!path || !lstatSync(path, { throwIfNoEntry: false })) {
-    return;
-  }
-  assertCanonicalRegularFile(path);
-  rmSync(path);
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+  });
+  const pinned = notebookRevision ?? notebook.publishedRevision();
+  if (notebookRevision !== undefined) notebook.history({ revision: pinned, limit: 1 });
+  const path = `${knowledgePageId}.md`;
+  if (!Object.hasOwn(notebook.inspectRevision(pinned).entries, path)) return null;
+  return notebook.readRevision(pinned, [path]).files[path] ?? null;
 }
 
 /**
@@ -1124,24 +1060,19 @@ export function loadWorkspaceFileRecords(dataRoot: string): WorkspaceFileRecords
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.
  * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
- * @param exactKnowledgePageBytes Final validated direct-edit bytes keyed by Page id.
  */
 export function writeWorkspaceFileRecords(
   workspaceRoot: string,
   records: WorkspaceFileRecords,
-  updateWorkspaceConfigName = false,
-  exactKnowledgePageBytes: ReadonlyMap<string, string> = new Map()
+  updateWorkspaceConfigName = false
 ): void {
   assertSafeWorkspaceFileRecordIds(records);
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
   ensureWorkspaceLayoutRoot(workspaceRoot);
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
-  const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
-  ensureCanonicalDirectory(pagesRoot);
-  ensureRootKnowledgeIndex(pagesRoot);
   writeWorkspaceMetadata(workspaceRoot, records.workspace, updateWorkspaceConfigName);
   writeThreads(workspaceRoot, records);
-  writeKnowledge(workspaceRoot, records, exactKnowledgePageBytes);
+  writeKnowledge(workspaceRoot, records);
   writeSources(workspaceRoot, records);
   writeArtifacts(workspaceRoot, records);
   writeAgentSessions(workspaceRoot, records);
@@ -1358,7 +1289,7 @@ function loadWorkspace(
   const threadIds = new Set(threads.map((thread) => thread.id));
   const turnsById = new Map(turns.map((turn) => [turn.id, turn]));
   const artifacts = loadArtifacts(workspaceRoot, workspaceId, threadIds, turnsById);
-  const knowledge = loadKnowledge(workspaceRoot);
+  const knowledge = readWorkspaceKnowledgeEntries(workspaceRoot);
   const knowledgeProposals = loadKnowledgeProposals(workspaceRoot, workspaceId);
   const knowledgeProposalReviews = loadKnowledgeProposalReviews(
     workspaceRoot,
@@ -1683,7 +1614,11 @@ export function parseOwnedKnowledgeEntry(
   const parsed = parseOkfDocument({ path, content });
   const id = parsed.document ? stringFrontmatterField(parsed.document, 'openkit_entry_id') : null;
 
-  if (!parsed.ok || id !== knowledgePageId || parsed.document.conceptId !== knowledgePageId) {
+  if (
+    !parsed.ok ||
+    (id !== null && id !== knowledgePageId) ||
+    parsed.document.conceptId !== knowledgePageId
+  ) {
     throw new Error(`Knowledge page ${knowledgePageId} is not a valid owned record.`);
   }
 
@@ -1692,8 +1627,9 @@ export function parseOwnedKnowledgeEntry(
     throw new Error(`Knowledge page ${knowledgePageId} has invalid source_refs.`);
   }
   return KnowledgeEntrySchema.parse({
-    id,
-    kind: requiredFrontmatterString(parsed.document, 'openkit_entry_kind', path),
+    id: knowledgePageId,
+    // General OKF pages project into the existing Workspace entry view without adding managed metadata to their bytes.
+    kind: stringFrontmatterField(parsed.document, 'openkit_entry_kind') ?? 'project-context',
     title: requiredFrontmatterString(parsed.document, 'title', path),
     content: trimCanonicalMarkdownBody(parsed.document.body),
     ...(sourceReferences && sourceReferences.length > 0 ? { sourceReferences } : {}),
@@ -1749,28 +1685,19 @@ export function listKnowledgePageIds(pagesRoot: string, prefix = ''): string[] {
 }
 
 /**
- * Loads owned protocol knowledge pages.
+ * Projects the current immutable notebook into the existing protocol entry view.
  *
  * @param workspaceRoot Published workspace root.
  * @returns Knowledge entries in file-name order.
  */
-function loadKnowledge(workspaceRoot: string): KnowledgeEntry[] {
-  const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
-  const entries: KnowledgeEntry[] = [];
-
-  for (const knowledgePageId of listKnowledgePageIds(pagesRoot)) {
-    const path = join(pagesRoot, `${knowledgePageId}.md`);
-    const content = readCanonicalTextFile(path);
-    const parsed = parseOkfDocument({ path, content });
-    const id = parsed.document ? stringFrontmatterField(parsed.document, 'openkit_entry_id') : null;
-
-    if (!id) {
-      continue;
-    }
-    entries.push(parseOwnedKnowledgeEntry(path, knowledgePageId, content));
-  }
-
-  return entries;
+export function readWorkspaceKnowledgeEntries(workspaceRoot: string): KnowledgeEntry[] {
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+  });
+  const revision = notebook.publishedRevision();
+  return Object.entries(notebook.readRevision(revision).files)
+    .filter(([path]) => !['index.md', 'log.md'].includes(path.split('/').at(-1)!))
+    .map(([path, content]) => parseOwnedKnowledgeEntry(path, path.slice(0, -3), content));
 }
 
 /**
@@ -2542,56 +2469,26 @@ export function updateUserAuthoredKnowledgePage(
 }
 
 /**
- * Writes owned knowledge pages, proposals, and reviews.
+ * Writes separate Knowledge Proposal and Review owners without changing notebook content.
  *
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.
- * @param exactKnowledgePageBytes Final validated direct-edit bytes keyed by Page id.
  */
-function writeKnowledge(
-  workspaceRoot: string,
-  records: WorkspaceFileRecords,
-  exactKnowledgePageBytes: ReadonlyMap<string, string>
-): void {
-  const schemaRoot = join(workspaceRoot, 'knowledge', 'schema');
-  const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
+function writeKnowledge(workspaceRoot: string, records: WorkspaceFileRecords): void {
   const proposalsRoot = join(workspaceRoot, 'knowledge', 'proposals');
   const reviewsRoot = join(workspaceRoot, 'knowledge', 'reviews');
-  const expectedPages = new Set(records.knowledge.map((entry) => entry.id));
   const expectedProposals = new Set(records.knowledgeProposals.map((record) => `${record.id}.md`));
   const expectedReviews = new Set(
     records.knowledgeProposalReviews.map((record) => `${record.proposalId}.json`)
   );
-  const proposalsById = new Map(records.knowledgeProposals.map((record) => [record.id, record]));
-  const acceptedProposalByPage = new Map<string, KnowledgeProposalRecord>();
   const reviewsByProposal = new Map<string, KnowledgeProposalReviewRecord[]>();
-
-  for (const review of records.knowledgeProposalReviews) {
+  for (const review of records.knowledgeProposalReviews)
     reviewsByProposal.set(review.proposalId, [
       ...(reviewsByProposal.get(review.proposalId) ?? []),
       review,
     ]);
-    if (review.decision === 'accepted') {
-      const proposal = proposalsById.get(review.proposalId);
-      if (proposal) {
-        acceptedProposalByPage.set(proposal.knowledgePageId, proposal);
-      }
-    }
-  }
-
-  ensureCanonicalDirectory(schemaRoot);
-  ensureCanonicalDirectory(pagesRoot);
   ensureCanonicalDirectory(proposalsRoot);
   ensureCanonicalDirectory(reviewsRoot);
-  const schemaPath = join(schemaRoot, 'workspace-schema.yaml');
-  const schemaMetadata = lstatSync(schemaPath, { throwIfNoEntry: false });
-
-  if (schemaMetadata) {
-    assertCanonicalRegularFile(schemaPath);
-  } else {
-    writeFileAtomic(schemaPath, DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT);
-  }
-
   removeStaleFiles(proposalsRoot, expectedProposals, '.md');
   const existingProposals = new Map(
     loadKnowledgeProposals(workspaceRoot, records.workspace.id).map((proposal) => [
@@ -2616,70 +2513,13 @@ function writeKnowledge(
       serializeKnowledgeProposalRecord(proposal)
     );
   }
-
   removeStaleFiles(reviewsRoot, expectedReviews, '.json');
-  for (const [proposalId, decisions] of reviewsByProposal) {
+  for (const [proposalId, decisions] of reviewsByProposal)
     writeOwnedDescriptiveJson(
       join(reviewsRoot, `${proposalId}.json`),
       { proposalId, workspaceId: decisions[0]!.workspaceId, decisions },
       KnowledgeProposalReviewFileSchema
     );
-  }
-
-  for (const knowledgePageId of listKnowledgePageIds(pagesRoot)) {
-    if (expectedPages.has(knowledgePageId)) {
-      continue;
-    }
-    const path = join(pagesRoot, `${knowledgePageId}.md`);
-    const parsed = parseOkfDocument({ path, content: readCanonicalTextFile(path) });
-    if (parsed.document && stringFrontmatterField(parsed.document, 'openkit_entry_id')) {
-      deleteWorkspaceKnowledgeRecord(workspaceRoot, knowledgePageId);
-    }
-  }
-
-  for (const entry of records.knowledge) {
-    const exactContent = exactKnowledgePageBytes.get(entry.id);
-    const path = resolveWorkspaceKnowledgePagePath(workspaceRoot, entry.id, true);
-    if (!path) {
-      throw new Error(`Knowledge Page parent could not be created: ${entry.id}.`);
-    }
-    if (exactContent !== undefined) {
-      writeFileAtomic(path, exactContent);
-      continue;
-    }
-
-    const proposal = acceptedProposalByPage.get(entry.id);
-    const currentPageBytes = readWorkspaceKnowledgePage(workspaceRoot, entry.id);
-    let currentEntry: KnowledgeEntry | null = null;
-    if (currentPageBytes !== null) {
-      try {
-        currentEntry = parseOwnedKnowledgeEntry(
-          `knowledge/pages/${entry.id}.md`,
-          entry.id,
-          currentPageBytes
-        );
-      } catch {
-        currentEntry = null;
-      }
-    }
-    const proposalEntry = proposal
-      ? parseOwnedKnowledgeEntry(
-          `knowledge/pages/${proposal.knowledgePageId}.md`,
-          proposal.knowledgePageId,
-          proposal.canonicalPageBytes
-        )
-      : null;
-    const content =
-      currentEntry && knowledgeEntriesEqual(currentEntry, entry)
-        ? currentPageBytes!
-        : proposalEntry && knowledgeEntriesEqual(proposalEntry, entry) && currentPageBytes === null
-          ? proposal!.canonicalPageBytes
-          : serializeUserAuthoredKnowledgePage(entry, {
-              kind: 'workspace',
-              workspaceId: records.workspace.id,
-            });
-    writeFileAtomic(path, content);
-  }
 }
 
 /** Normalizes a Proposal without losing its already verified immutable source bytes. */
@@ -2690,42 +2530,6 @@ function parseRetainedKnowledgeProposal(value: unknown): KnowledgeProposalRecord
     if (retained) Object.defineProperty(proposal, retainedProposal, { value: retained });
   }
   return proposal;
-}
-
-/** Ensures the bundle-root v0.2 index without maintaining human-authored navigation. */
-function ensureRootKnowledgeIndex(pagesRoot: string): void {
-  const path = join(pagesRoot, 'index.md');
-  const metadata = lstatSync(path, { throwIfNoEntry: false });
-  if (!metadata) {
-    const links = [
-      ...listFileNames(pagesRoot)
-        .filter((name) => name.endsWith('.md') && name !== 'index.md' && name !== 'log.md')
-        .map((name) => [name.slice(0, -3), name] as const),
-      ...listDirectoryNames(pagesRoot).map((name) => [name, `${name}/`] as const),
-    ].map(
-      ([title, target]) =>
-        `* [${title.replaceAll('\\', '\\\\').replaceAll('[', '\\[').replaceAll(']', '\\]')}](<${encodeURI(target)}>)`
-    );
-    writeFileAtomic(
-      path,
-      `---\nokf_version: "0.2"\n---\n# Knowledge${links.length > 0 ? `\n\n${links.join('\n')}` : ''}\n`
-    );
-    return;
-  }
-  assertCanonicalRegularFile(path);
-  const content = readCanonicalTextFile(path);
-  if (!content.startsWith('---')) {
-    const candidate = `---\nokf_version: "0.2"\n---\n${content}`;
-    if (!parseOkfDocument({ path: 'knowledge/pages/index.md', content: candidate }).ok) {
-      throw new Error('Knowledge bundle root index body is invalid.');
-    }
-    writeFileAtomic(path, candidate);
-    return;
-  }
-  const parsed = parseOkfDocument({ path: 'knowledge/pages/index.md', content });
-  if (!parsed.ok || parsed.document.frontmatter.okf_version !== '0.2') {
-    throw new Error('Knowledge bundle root index must declare okf_version "0.2".');
-  }
 }
 
 /**

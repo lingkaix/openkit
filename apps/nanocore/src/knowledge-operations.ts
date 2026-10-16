@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import type { KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS, OperationId } from '@openkit/app-api-schemas';
 import {
   KNOWLEDGE_OPERATION_DEFINITIONS,
@@ -36,6 +37,9 @@ import {
   recordUsage,
   startCapabilityCall,
 } from './capability/usage-ledger.js';
+import { KnowledgeNotebook, NotebookError } from './knowledge/notebook.js';
+import { publishWorkspaceNotebook } from './knowledge/notebook-publication.js';
+import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
 import {
   answerKnowledgeManager,
@@ -65,6 +69,7 @@ import {
   retrieveWorkspaceKnowledge,
 } from './storage/index-rebuild.js';
 import { applyScopedMigrations } from './storage/migrate.js';
+import { parseOwnedKnowledgeEntry } from './storage/workspace-file-records.js';
 
 /** Projects known Knowledge command, record and decoder refusals; arbitrary exceptions escape. */
 function commandFailure(error: unknown, code: string, status = 404): OperationError {
@@ -284,7 +289,12 @@ type KnowledgeImplementations = Pick<
 export function createKnowledgeOperationImplementations(
   dependencies: Pick<
     OperationInvocationDependencies,
-    'coreDb' | 'store' | 'inflightCommands' | 'repositoryWorkspaceDb'
+    | 'coreDb'
+    | 'store'
+    | 'inflightCommands'
+    | 'repositoryWorkspaceDb'
+    | 'runtimeConfigManager'
+    | 'workspaceMutationAdmission'
   >
 ) {
   const store = dependencies.store!;
@@ -293,6 +303,84 @@ export function createKnowledgeOperationImplementations(
   const repositoryWorkspaceDb = dependencies.repositoryWorkspaceDb!;
 
   return {
+    'knowledge.notebook.update': async (input, context) => {
+      const dataRoot = store.getDataRoot();
+      const { runtimeConfigManager, workspaceMutationAdmission } = dependencies;
+      if (!coreDb || !dataRoot || !runtimeConfigManager || !workspaceMutationAdmission)
+        throw new OperationError(
+          'operation_storage_unavailable',
+          'Notebook publication storage is unavailable.',
+          503
+        );
+      const requestActor = publicOperationActor(context);
+      const actor = context.actorRef;
+      if (actor.kind !== 'user')
+        throw new OperationError(
+          'workspace_access_denied',
+          'Notebook publication access denied.',
+          403
+        );
+      const workspaceDb = repositoryWorkspaceDb(input.workspaceId);
+      try {
+        const notebook = new KnowledgeNotebook({
+          repositoryPath: join(
+            dataRoot,
+            'workspaces',
+            input.workspaceId,
+            'knowledge',
+            'notebook.git'
+          ),
+        });
+        return await publishWorkspaceNotebook(
+          {
+            store,
+            workspaceDb,
+            notebook,
+            producer: actor,
+            inflightCommands,
+            revalidate: () =>
+              readWorkspaceNotebookAdmission({
+                store,
+                coreDb,
+                workspaceDb,
+                notebook,
+                request: input,
+                requestActor,
+                actor,
+                runtimeConfigManager,
+                workspaceMutationAdmission,
+              }),
+          },
+          input
+        );
+      } catch (error) {
+        if (error instanceof OperationError) throw error;
+        if (
+          error instanceof IdempotencyKeyConflictError ||
+          error instanceof KnowledgePageValidationError
+        )
+          throw commandFailure(error, 'invalid_request', 400);
+        if (error instanceof NotebookError)
+          throw new OperationError(
+            error.code,
+            error.message,
+            error.code === 'invalid_request' ? 400 : 409,
+            {
+              ...(error.currentRevision
+                ? { details: { currentRevision: error.currentRevision } }
+                : {}),
+            }
+          );
+        throw new OperationError(
+          'recovery_required',
+          'Notebook publication evidence is unavailable.',
+          503,
+          { cause: error }
+        );
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    },
     'knowledge.answer': async (input, context) => {
       const actor = context.actorRef;
       const { workspaceId, ...commandInput } = input;
@@ -1247,8 +1335,23 @@ export function createKnowledgeOperationImplementations(
       const { workspaceId } = input;
 
       try {
+        const dataRoot = store.getDataRoot();
+        if (!dataRoot)
+          throw new OperationError(
+            'operation_storage_unavailable',
+            'Notebook storage is unavailable.',
+            503
+          );
+        const notebook = new KnowledgeNotebook({
+          repositoryPath: join(dataRoot, 'workspaces', workspaceId, 'knowledge', 'notebook.git'),
+        });
+        const notebookRevision = notebook.publishedRevision();
+        const snapshot = notebook.readRevision(notebookRevision);
         return ListKnowledgeEntriesResponseSchema.parse({
-          items: store.listKnowledge(workspaceId),
+          notebookRevision,
+          items: Object.entries(snapshot.files)
+            .filter(([path]) => !['index.md', 'log.md'].includes(path.split('/').at(-1)!))
+            .map(([path, content]) => parseOwnedKnowledgeEntry(path, path.slice(0, -3), content)),
         });
       } catch (error) {
         throw commandFailure(error, 'not_found');

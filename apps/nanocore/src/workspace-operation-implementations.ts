@@ -92,7 +92,13 @@ async function createWorkspace(
       input: input,
       responseKind: 'workspace',
       execute: () => {
-        const workspace = WorkspaceRecordSchema.parse(store.createWorkspace(input.name));
+        const workspace = WorkspaceRecordSchema.parse(
+          store.createWorkspace(input.name, {
+            requestId: input.requestId,
+            producer: { kind: 'user', id: actor.userId },
+            instructionReference: `workspace.create:${input.requestId}`,
+          })
+        );
         if (coreDb) {
           recordWorkspaceOwnerMembership({
             coreDb,

@@ -57,5 +57,6 @@ export const DeleteKnowledgeEntryRequestSchema = z.object({
  * Workspace knowledge list response.
  */
 export const ListKnowledgeEntriesResponseSchema = z.object({
+  notebookRevision: z.string().min(1),
   items: z.array(KnowledgeEntrySchema),
 });

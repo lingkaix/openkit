@@ -3,6 +3,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 import { z } from 'zod';
 import { AuthoredAgentMcpEntrySchema, AuthoredAgentSandboxSchema } from './agent.js';
+import { KnowledgeMaintenanceSchema } from './knowledge-maintenance.js';
 import { AuthoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
 
 /** Workspace grant bound to one reusable Agent credential requirement. */
@@ -89,6 +90,7 @@ export const WorkspaceRootSchema = z
 export const WorkspaceConfigWorkspaceSchema = z
   .object({
     name: z.string().trim().min(1),
+    knowledgeMaintenance: KnowledgeMaintenanceSchema.optional(),
     defaultAgentId: z.string().min(1).nullable().optional(),
     agents: z.array(WorkspaceAgentBindingSchema).default([]),
     internalRoles: z.array(WorkspaceInternalRoleBindingSchema).default([]),

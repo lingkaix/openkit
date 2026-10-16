@@ -1,5 +1,7 @@
+import { randomUUID } from 'node:crypto';
 import { createDemoWorkspaceForUser, FsStore, type FsStoreOptions } from '../lib/store.js';
 import { LOCAL_USER_ID } from '../storage/fs-layout.js';
+import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 
 /**
  * Imports the Demo Workspace fixture into a store when it is absent.
@@ -23,6 +25,20 @@ export function seedDemoWorkspace(store: FsStore, userId = LOCAL_USER_ID): void 
       artifacts: [],
       agentSessions: [],
       turnEvents: [],
+      notebookInitialization: {
+        requestId: randomUUID(),
+        producer: { kind: 'user', id: userId },
+        instructionReference: 'test-fixture:demo-workspace',
+      },
+      initialNotebookFiles: Object.fromEntries(
+        demo.knowledge.map((entry) => [
+          `${entry.id}.md`,
+          serializeUserAuthoredKnowledgePage(entry, {
+            kind: 'workspace',
+            workspaceId: demo.workspace.id,
+          }),
+        ])
+      ),
     });
   }
 }

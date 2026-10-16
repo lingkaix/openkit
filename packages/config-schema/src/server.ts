@@ -2,6 +2,7 @@ import { isAbsolute } from 'node:path';
 
 import { HARNESS_DEFAULT_MAX_ACTIVE_TURNS } from '@openkit/worker-protocol';
 import { z } from 'zod';
+import { KnowledgeMaintenanceSchema } from './knowledge-maintenance.js';
 import { AuthoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
 
 /** Exact HTTP or HTTPS origin accepted by browser-facing server configuration. */
@@ -232,6 +233,7 @@ export const OpenKitAppUpdateConfigSchema = z
  */
 export const OpenKitConfigSchema = z
   .object({
+    knowledgeMaintenance: KnowledgeMaintenanceSchema.optional(),
     appUpdate: OpenKitAppUpdateConfigSchema.optional(),
     auth: OpenKitAuthConfigSchema.optional(),
     defaults: OpenKitConfigDefaultsSchema.optional(),

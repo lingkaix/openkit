@@ -43,6 +43,10 @@ import {
   ResolveKnowledgeConflictResponseSchema,
   RetrieveKnowledgeRequestSchema,
 } from './knowledge-manager.js';
+import {
+  UpdateKnowledgeNotebookRequestSchema,
+  UpdateKnowledgeNotebookResponseSchema,
+} from './knowledge-notebook.js';
 import type { OperationDefinition } from './operation-contract.js';
 
 /** Credentials already used by the public Workspace, Thread and Turn families. */
@@ -325,6 +329,19 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
 
 /** Sole public contracts for the retained minimal Knowledge Entry family; records stay with the protocol owner. */
 export const KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS = {
+  'knowledge.notebook.update': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description: 'Publish one fixed-base Workspace notebook changeset.',
+    inputSchema: UpdateKnowledgeNotebookRequestSchema.safeExtend({ ...workspaceSelector }).strict(),
+    outputSchema: UpdateKnowledgeNotebookResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'knowledge.write',
+    mutating: true,
+  },
   'knowledge.list': {
     binding: 'json',
     returnsOneTimeSecret: false,

@@ -49,6 +49,11 @@ import { loadOpenKitConfig } from '../config/openkit-config.js';
 import { captureCoverageBindingFromOpenKitConfig } from '../config/runtime-config.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import {
+  initializeWorkspaceNotebook,
+  type NotebookInitialization,
+} from '../knowledge/notebook-initialization.js';
+import {
+  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
   type KnowledgePageReferenceProof,
   KnowledgePageValidationError,
   parseOkfDocument,
@@ -87,7 +92,6 @@ import {
   assertTurnEventPayloadLineage,
   type CaptureCoverageBinding,
   CaptureCoverageBindingSchema,
-  deleteWorkspaceKnowledgeRecord,
   isCurrentAgentSessionStatus,
   KnowledgeProposalRecordSchema,
   KnowledgeProposalReviewFileSchema,
@@ -96,6 +100,7 @@ import {
   parseOwnedKnowledgeEntry,
   publishCanonicalPath,
   readCanonicalTextFile,
+  readWorkspaceKnowledgeEntries,
   readWorkspaceKnowledgePage,
   readWorkspaceTurnEvents,
   serializeKnowledgeProposalRecord,
@@ -1406,24 +1411,14 @@ export class FsStore {
    *
    * @param workspaceId Workspace to persist.
    * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
-   * @param exactKnowledgePageBytes Final validated direct-edit bytes keyed by Page id.
    */
-  private persist(
-    workspaceId: string,
-    updateWorkspaceConfigName = false,
-    exactKnowledgePageBytes: ReadonlyMap<string, string> = new Map()
-  ): void {
+  private persist(workspaceId: string, updateWorkspaceConfigName = false): void {
     if (!this.dataRoot) {
       return;
     }
 
     const workspaceRoot = ensureWorkspaceLayout(this.dataRoot, workspaceId).root;
-    this.writeWorkspaceFileRecordsToRoot(
-      workspaceId,
-      workspaceRoot,
-      updateWorkspaceConfigName,
-      exactKnowledgePageBytes
-    );
+    this.writeWorkspaceFileRecordsToRoot(workspaceId, workspaceRoot, updateWorkspaceConfigName);
   }
 
   /**
@@ -1431,13 +1426,23 @@ export class FsStore {
    *
    * @param records Complete canonical records to publish.
    * @param stageWorkspace Optional side-effect writer that runs under the staging root.
+   * @param notebookInitialization Actual native creation attribution, required for file-backed publication.
+   * @param initialNotebookFiles Exact admitted root tree; retained imports must not be regenerated from entry projections.
    */
   private persistNewWorkspaceAtomically(
     records: WorkspaceFileRecords,
-    stageWorkspace?: (stage: ImportWorkspaceStage) => void
+    stageWorkspace?: (stage: ImportWorkspaceStage) => void,
+    notebookInitialization?: NotebookInitialization,
+    initialNotebookFiles?: Readonly<Record<string, string>>
   ): void {
     if (!this.dataRoot) {
       return;
+    }
+    if (!notebookInitialization) {
+      throw new Error('Fresh Workspace publication requires native notebook attribution.');
+    }
+    if (records.knowledge.length && !initialNotebookFiles) {
+      throw new Error('Workspace import requires exact admitted notebook bytes.');
     }
 
     ensureLayoutDirectories(this.dataRoot);
@@ -1467,6 +1472,21 @@ export class FsStore {
       });
       try {
         applyScopedMigrations(workspaceDb);
+        // Initial history belongs to this actual creation/import, not to invented predecessor edits.
+        initializeWorkspaceNotebook({
+          workspaceRoot: stagingRoot,
+          workspaceId,
+          workspaceDb,
+          initialization: notebookInitialization,
+          files: initialNotebookFiles ?? {},
+          revalidate: () => ({
+            scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+            registeredSources: new Map(
+              records.knowledgeSources.map((source) => [source.id, source.contentDigest])
+            ),
+            resolvedReferences: new Map(),
+          }),
+        });
       } finally {
         // Publish a complete main database rather than depending on an open handle or WAL sidecar.
         workspaceDb.sqlite.close();
@@ -1486,13 +1506,11 @@ export class FsStore {
    * @param workspaceId Workspace to write.
    * @param workspaceRoot Resolved workspace root.
    * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
-   * @param exactKnowledgePageBytes Final validated direct-edit bytes keyed by Page id.
    */
   private writeWorkspaceFileRecordsToRoot(
     workspaceId: string,
     workspaceRoot: string,
-    updateWorkspaceConfigName = false,
-    exactKnowledgePageBytes: ReadonlyMap<string, string> = new Map()
+    updateWorkspaceConfigName = false
   ): void {
     const workspace = this.getWorkspace(workspaceId);
     const turnIds = new Set(
@@ -1529,8 +1547,7 @@ export class FsStore {
           [...this.turnCaptureCoverage.entries()].filter(([turnId]) => turnIds.has(turnId))
         ),
       },
-      updateWorkspaceConfigName,
-      exactKnowledgePageBytes
+      updateWorkspaceConfigName
     );
   }
 
@@ -2035,16 +2052,27 @@ export class FsStore {
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    this.persistNewWorkspaceAtomically(emptyWorkspaceFileRecords(workspace));
+    this.persistNewWorkspaceAtomically(emptyWorkspaceFileRecords(workspace), undefined, {
+      requestId: uuidv5(`openkit:personal-workspace-initialize:${workspaceId}`),
+      producer: { kind: 'user', id: userId },
+      instructionReference: `personal-workspace-initialize:${workspaceId}`,
+    });
     this.workspaces.set(workspace.id, workspace);
     this.workspaceResources.set(workspace.id, createWorkspaceResources());
     return workspace;
   }
 
-  public createWorkspace(name: string): WorkspaceRecord {
+  /** Creates a fresh Workspace with actual native attribution before publishing its canonical root. */
+  public createWorkspace(
+    name: string,
+    notebookInitialization?: NotebookInitialization
+  ): WorkspaceRecord {
     const timestamp = now();
     const workspace: WorkspaceRecord = {
-      id: workspaceIdForUser(LOCAL_USER_ID, String(this.workspaces.size + 1)),
+      id: workspaceIdForUser(
+        notebookInitialization?.producer.id ?? LOCAL_USER_ID,
+        String(this.workspaces.size + 1)
+      ),
       name,
       kind: 'general',
       status: 'active',
@@ -2057,7 +2085,11 @@ export class FsStore {
       updatedAt: timestamp,
     };
     const resources = createWorkspaceResources();
-    this.persistNewWorkspaceAtomically(emptyWorkspaceFileRecords(workspace));
+    this.persistNewWorkspaceAtomically(
+      emptyWorkspaceFileRecords(workspace),
+      undefined,
+      notebookInitialization
+    );
     this.workspaces.set(workspace.id, workspace);
     this.workspaceResources.set(workspace.id, resources);
     return workspace;
@@ -2081,6 +2113,10 @@ export class FsStore {
     turnEvents: readonly (readonly [string, readonly SseEventEnvelope[]])[];
     knowledgeSources?: readonly KnowledgeSourceRecord[];
     knowledgeSourceMaterials?: readonly KnowledgeSourceMaterialRecord[];
+    /** Actual importer/fixture creator; file-backed publication must not invent a responsible actor. */
+    notebookInitialization?: NotebookInitialization;
+    /** Exact admitted imported tree, including unknown OKF metadata and reserved navigation bytes. */
+    initialNotebookFiles?: Readonly<Record<string, string>>;
     /** Immutable capture admission for imported Turns; absence remains unknown history. */
     turnCaptureCoverage?: ReadonlyMap<string, CaptureCoverageBinding>;
     stageWorkspace?: (stage: ImportWorkspaceStage) => void;
@@ -2176,14 +2212,19 @@ export class FsStore {
       streamEvents: history.turnEvents,
     };
 
-    this.persistNewWorkspaceAtomically(records, (stage) => {
-      this.writeKnowledgeSourceMaterialsToRoot(
-        stage.workspaceRoot,
-        input.knowledgeSourceMaterials ?? [],
-        history.knowledgeSources
-      );
-      input.stageWorkspace?.(stage);
-    });
+    this.persistNewWorkspaceAtomically(
+      records,
+      (stage) => {
+        this.writeKnowledgeSourceMaterialsToRoot(
+          stage.workspaceRoot,
+          input.knowledgeSourceMaterials ?? [],
+          history.knowledgeSources
+        );
+        input.stageWorkspace?.(stage);
+      },
+      input.notebookInitialization,
+      input.initialNotebookFiles
+    );
 
     this.workspaces.set(workspace.id, workspace);
     this.workspaceResources.set(workspace.id, createWorkspaceResources([...input.knowledge]));
@@ -2351,7 +2392,10 @@ export class FsStore {
     const resources = this.storedWorkspaceResources(workspaceId);
     const project = this.workspaceAgentCatalogProjection;
 
-    return project ? { ...resources, agents: project() } : resources;
+    const knowledge = this.dataRoot
+      ? readWorkspaceKnowledgeEntries(this.workspaceRootPath(workspaceId))
+      : resources.knowledge;
+    return { ...resources, knowledge, ...(project ? { agents: project() } : {}) };
   }
 
   public updateWorkspace(
@@ -2512,6 +2556,12 @@ export class FsStore {
       sourceReferences?: string[] | undefined;
     }
   ): KnowledgeEntry {
+    if (this.dataRoot)
+      throw new OperationError(
+        'recovery_required',
+        'File-backed Knowledge changes require the notebook publisher.',
+        409
+      );
     const resources = this.storedWorkspaceResources(workspaceId);
     const entry: KnowledgeEntry = {
       id: `mem_${resources.knowledge.length + 1}`,
@@ -2537,6 +2587,12 @@ export class FsStore {
    * @param knowledgeEntryId Knowledge entry identifier.
    */
   public deleteKnowledgeEntry(workspaceId: string, knowledgeEntryId: string): void {
+    if (this.dataRoot)
+      throw new OperationError(
+        'recovery_required',
+        'File-backed Knowledge changes require the notebook publisher.',
+        409
+      );
     const resources = this.storedWorkspaceResources(workspaceId);
     const knowledge = resources.knowledge.filter((entry) => entry.id !== knowledgeEntryId);
 
@@ -2544,9 +2600,6 @@ export class FsStore {
       throw new StoreRecordNotFoundError(`Knowledge entry not found: ${knowledgeEntryId}`);
     }
 
-    if (this.dataRoot) {
-      deleteWorkspaceKnowledgeRecord(this.workspaceRootPath(workspaceId), knowledgeEntryId);
-    }
     this.workspaceResources.set(workspaceId, {
       ...resources,
       knowledge,
@@ -2563,6 +2616,12 @@ export class FsStore {
       content?: KnowledgeEntry['content'] | undefined;
     }
   ): KnowledgeEntry {
+    if (this.dataRoot)
+      throw new OperationError(
+        'recovery_required',
+        'File-backed Knowledge changes require the notebook publisher.',
+        409
+      );
     const resources = this.storedWorkspaceResources(workspaceId);
     const existing = resources.knowledge.find((entry) => entry.id === knowledgeEntryId);
 
@@ -2591,7 +2650,7 @@ export class FsStore {
       knowledge,
     });
     this.refreshWorkspaceCounts(workspaceId);
-    this.persist(workspaceId, false, new Map([[knowledgeEntryId, candidatePageBytes]]));
+    this.persist(workspaceId);
     return updated;
   }
 
@@ -3768,6 +3827,8 @@ export class FsStore {
   public recordKnowledgeProposalReviewDecision(
     input: RecordKnowledgeProposalReviewDecisionInput
   ): SubmitKnowledgeProposalDecisionResponse {
+    if (this.dataRoot && input.decision === 'accepted')
+      throw knowledgeProposalAuthorityError('recovery_required');
     const proposal = this.knowledgeProposals.get(input.proposalId);
 
     if (!proposal || proposal.workspaceId !== input.workspaceId) {
@@ -4099,6 +4160,7 @@ export class FsStore {
   public reverseKnowledgeProposalApplication(
     input: ReverseKnowledgeProposalApplicationInput
   ): ReverseKnowledgeProposalResponse {
+    if (this.dataRoot) throw knowledgeProposalAuthorityError('recovery_required');
     const proposal = this.knowledgeProposals.get(input.proposalId);
     if (!proposal || proposal.workspaceId !== input.workspaceId) {
       throw knowledgeProposalAuthorityError('not_found');
@@ -4126,12 +4188,6 @@ export class FsStore {
       throw knowledgeProposalAuthorityError('conflict');
     }
 
-    if (this.dataRoot) {
-      deleteWorkspaceKnowledgeRecord(
-        this.workspaceRootPath(proposal.workspaceId),
-        proposal.knowledgePageId
-      );
-    }
     const resources = this.storedWorkspaceResources(proposal.workspaceId);
     this.workspaceResources.set(proposal.workspaceId, {
       ...resources,
