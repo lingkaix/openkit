@@ -19,7 +19,12 @@ import { describe, expect, it, onTestFinished } from 'vitest';
 import { createApp } from '../app.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
-import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT, updateOkfFrontmatter } from '../knowledge/okf.js';
+import { assertPortableWorkspaceNotebookDisclosure } from '../knowledge/notebook-workspace-portability.js';
+import {
+  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+  parseOkfDocument,
+  updateOkfFrontmatter,
+} from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
@@ -89,7 +94,7 @@ function workspaceFixture() {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Portable Workspace', {
+  const workspace = store.createWorkspace('Demo Workspace', {
     requestId: randomUUID(),
     producer: { kind: 'user', id: LOCAL_USER_ID },
     instructionReference: 'test:portable-workspace',
@@ -616,7 +621,7 @@ describe('workspace portable file state', () => {
   });
 
   it('fails export before publication when a retained trace source is no longer readable', async () => {
-    const { dataRoot, coreDb, store, workspaceId, notebook } = workspaceFixture();
+    const { dataRoot, coreDb, store, workspaceId, workspaceRoot, notebook } = workspaceFixture();
     const thread = store.createThread(workspaceId, 'Trace owner', undefined, 'conversation', {
       visibility: 'workspace',
     });
@@ -658,6 +663,25 @@ describe('workspace portable file state', () => {
       ],
       createdAt: '2026-07-06T00:00:00.000Z',
     });
+    const portableState = readWorkspacePortableFileState(workspaceRoot, {
+      workspaceId,
+      threads: [{ threadId: thread.id }],
+      turns: [],
+    });
+    expect(() =>
+      assertPortableWorkspaceNotebookDisclosure({
+        dataRoot,
+        workspaceId,
+        notebookRevision: portableState.notebookRevision!,
+        pages: portableState.nativeKnowledgePages,
+        access: {
+          store,
+          coreDb,
+          actor: { kind: 'user', id: LOCAL_USER_ID },
+          requestActor: { kind: 'local', userId: LOCAL_USER_ID },
+        },
+      })
+    ).not.toThrow();
     const app = createApp({ coreDb, dataRoot, store });
     const response = await app.request(
       ...operationRequest('workspace.export', { workspaceId }, { method: 'POST' })
@@ -713,20 +737,31 @@ describe('workspace portable file state', () => {
       retrievalTraceRelativePath(result.retrievalTraceRef!)
     );
     const originalTrace = readFileSync(tracePath, 'utf8');
-    publishFixturePages(notebook, {
+    const selectedRevision = notebook.publishedRevision();
+    expect(result.selected).toEqual([expect.objectContaining({ content: page.content })]);
+    expect(readWorkspaceKnowledgePage(workspaceRoot, page.id)).toBe(pageBytes);
+    const restrictedRevision = publishFixturePages(notebook, {
       [`${page.id}.md`]: updateOkfFrontmatter({
         path: `${page.id}.md`,
         content: readWorkspaceKnowledgePage(workspaceRoot, page.id)!,
         updates: { sensitivity: 'restricted' },
       }),
     });
+    const restrictedBytes = readWorkspaceKnowledgePage(workspaceRoot, page.id)!;
+    const restrictedPage = parseOkfDocument({ path: `${page.id}.md`, content: restrictedBytes });
+    expect(restrictedRevision).not.toBe(selectedRevision);
+    expect(notebook.publishedRevision()).toBe(restrictedRevision);
+    expect(restrictedBytes).not.toBe(pageBytes);
+    expect(restrictedPage.ok).toBe(true);
+    if (!restrictedPage.ok) throw new Error('Restricted fixture page must remain valid OKF.');
+    expect(restrictedPage.document.frontmatter.sensitivity).toBe('restricted');
     const app = createApp({ coreDb, dataRoot, store });
     const response = await app.request(
       ...operationRequest('workspace.export', { workspaceId }, { method: 'POST' })
     );
     const body = await response.text();
 
-    expect(response.status).toBe(403);
+    expect(response.status, body).toBe(403);
     expect(JSON.parse(body)).toMatchObject({ code: 'workspace_access_denied' });
     expect(body).not.toContain(page.id);
     expect(body).not.toContain('This content must not leave after revocation.');
