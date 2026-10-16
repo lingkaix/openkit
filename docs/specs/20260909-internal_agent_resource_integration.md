@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Partial
 kind: boundary
 date: 2026-09-09
 updated: 2026-09-30
@@ -163,7 +163,7 @@ A timeout, cancellation, process crash or lost result after contact is not evide
 
 Selection errors fail before model projection; per-call denial/stale/schema failure returns bounded correction evidence; an approval-required call returns its pending result and does not exit the run through a Gate; provider/deadline failures map through existing Assistant failure semantics. A final Assistant answer is not proof that every Tool succeeded, and conversation replay never redispatches accepted Tool effects. Restart reconstructs from durable Items, command/capability evidence, current catalogs and current authority; it does not restore an internal session, Tool array or incomplete MCP call.
 
-Initial implementation proceeds through the existing NanoCore `internal-agents` assembly, Gateway, Assistant mode service and exact resource command owners. Remove the direct `callQuickChatProvider` bypass when the shared loop lands; keep deterministic non-model routing where already owned. Existing selected-Worker MCP and native Kernel/UI code are foundations, not implementation of this internal caller. Do not add a package or generic adapter interface merely to wrap one caller. This specification remains Not Started until these contracts are implemented and verified.
+Initial implementation proceeds through the existing NanoCore `internal-agents` assembly, Gateway, Assistant mode service and exact resource command owners. Remove the direct `callQuickChatProvider` bypass when the shared loop lands; keep deterministic non-model routing where already owned. Existing selected-Worker MCP and native Kernel/UI code are foundations, not implementation of this internal caller. Do not add a package or generic adapter interface merely to wrap one caller. The fixed native Kernel/UI family is implemented through that existing entry, loop and operation invocation path. This partial slice does not claim completion of the other selected-resource and external MCP acceptance predicates below.
 
 ## Acceptance Predicates
 
