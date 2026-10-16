@@ -16,7 +16,7 @@ test('test image jobs reap orphaned processes through Docker init', () => {
   const jobs = Object.entries(workflow.jobs).filter(
     ([, job]) => job.container?.image === actionExpression('needs.test-image.outputs.image')
   );
-  assert.equal(jobs.length, 9);
+  assert.equal(jobs.length, 10);
   for (const [name, job] of jobs) {
     assert.equal(job.container.options, '--init', `${name} must reap orphaned processes`);
   }
@@ -560,9 +560,10 @@ const candidateJobBaseline = {
 };
 
 const shardJobBaseline = {
-  'l0-l2-plan': '3403258929b8dd4591044849751e483d55299489e41bb9e50a3c61fd0359631c',
-  'l0-l2-shards': '24a9881c67ec645ccdc157b400814d6f90f475f999f1080dde01efac520aa886',
-  'l0-l2': '3425b1ab09142a2a670502a5ae6d9d271b67a10fcdb0d86b29bec30fb6d43bfc',
+  'l0-l2-plan': '23d1b0909aa51ceafd306c2ff3471183a8dafdeaa3f6303b4ecac741be066f63',
+  'l0-l2-shards': '368fc0314a47da15771a82b025fa6b00dd203cc688f06ed47a6b498deb6c517f',
+  'l0-l2-coverage': '8c87089f4b629f9ac761e3ea2240fd15c0f4463f94f4ba035339db102cad2896',
+  'l0-l2': 'b6457a2076a878e997a3416dc226a006e9e97098170798e9167edeb6f59eb1e0',
 };
 
 test('publication and complete job graphs match their frozen implementation baselines', () => {
@@ -591,8 +592,8 @@ test('publication and complete job graphs match their frozen implementation base
   }
 });
 
-test('only complete L0-L2 shards and NanoCore e2e can read exact-commit reuse evidence', () => {
-  const selected = ['l0-l2-shards', 'nano-core-e2e'];
+test('only complete L0-L2 shards, whole-owner coverage and NanoCore e2e read exact-job reuse evidence', () => {
+  const selected = ['l0-l2-shards', 'l0-l2-coverage', 'nano-core-e2e'];
   for (const [name, job] of Object.entries(workflow.jobs)) {
     if (!selected.includes(name)) {
       assert.equal(
@@ -605,10 +606,15 @@ test('only complete L0-L2 shards and NanoCore e2e can read exact-commit reuse ev
       assert.ok(!job.steps?.some((entry) => entry.id === 'reuse'), name);
       continue;
     }
+    const l0l2 = name !== 'nano-core-e2e';
     assert.deepEqual(job.permissions, { contents: 'read', packages: 'read', actions: 'read' });
     assert.deepEqual(
       job.needs,
-      name === 'l0-l2-shards' ? ['test-image', 'l0-l2-plan'] : 'test-image'
+      name === 'l0-l2-shards'
+        ? ['test-image', 'l0-l2-plan']
+        : name === 'l0-l2-coverage'
+          ? ['test-image', 'l0-l2-plan', 'l0-l2-shards']
+          : 'test-image'
     );
     assert.equal(job.container.image, actionExpression('needs.test-image.outputs.image'));
     assert.equal(job.steps[0].name, 'Checkout');
@@ -616,13 +622,13 @@ test('only complete L0-L2 shards and NanoCore e2e can read exact-commit reuse ev
     assert.equal(reuse.id, 'reuse');
     assert.equal(
       reuse.if,
-      name === 'l0-l2-shards'
+      l0l2
         ? "github.event_name == 'push'"
         : "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')"
     );
     assert.deepEqual(
       reuse.env,
-      name === 'l0-l2-shards'
+      l0l2
         ? {
             GITHUB_TOKEN: actionExpression('secrets.GITHUB_TOKEN'),
             SHARD_ID: actionExpression('matrix.id'),
@@ -637,12 +643,16 @@ test('only complete L0-L2 shards and NanoCore e2e can read exact-commit reuse ev
       reuse.run,
       name === 'l0-l2-shards'
         ? /--job "L0-L2 shard \(\$\{SHARD_ID\}\)"/u
-        : /--job "\$\{REUSE_JOB_NAME\}"/u
+        : name === 'l0-l2-coverage'
+          ? /--job "L0-L2 coverage \(\$\{SHARD_ID\}\)"/u
+          : /--job "\$\{REUSE_JOB_NAME\}"/u
     );
     for (const later of job.steps.slice(2)) {
-      if (later.name === 'Retain successful shard evidence') {
+      if (later.name.startsWith('Retain successful')) {
         assert.equal(later.if, undefined);
         assert.equal(later.with['if-no-files-found'], 'error');
+      } else if (later.name === 'Restore exact-commit execution evidence') {
+        assert.equal(later.if, "steps.reuse.outputs.reused == 'true'");
       } else assert.equal(later.if, "steps.reuse.outputs.reused != 'true'", later.name);
     }
   }
@@ -656,12 +666,14 @@ test('reuse shell succeeds for proof and falls back on either unavailable or err
       '#!/bin/sh\nprintf "%s\\n" "$REUSE_RESULT"\nexit "$REUSE_STATUS"\n',
       { mode: 0o755 }
     );
-    for (const name of ['l0-l2-shards', 'nano-core-e2e']) {
+    for (const name of ['l0-l2-shards', 'l0-l2-coverage', 'nano-core-e2e']) {
       const reuse = step(
         workflow.jobs[name],
         name === 'l0-l2-shards'
           ? 'Reuse exact-commit candidate shard'
-          : 'Reuse exact-commit candidate job'
+          : name === 'l0-l2-coverage'
+            ? 'Reuse exact-commit candidate coverage'
+            : 'Reuse exact-commit candidate job'
       );
       for (const status of [0, 1, 2]) {
         const output = join(directory, 'output');
@@ -685,8 +697,55 @@ test('reuse shell succeeds for proof and falls back on either unavailable or err
           encoding: 'utf8',
         });
         assert.equal(result.status, 0, result.stderr);
-        assert.equal(readFileSync(output, 'utf8'), `reused=${status === 0}\n`);
+        assert.equal(
+          readFileSync(output, 'utf8'),
+          status === 0 && name !== 'nano-core-e2e'
+            ? 'reused=true\nrun_id=10\nattempt=2\n'
+            : `reused=${status === 0}\n`
+        );
         assert.equal(readFileSync(summary, 'utf8'), status === 0 ? `${proof}\n` : '');
+      }
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('artifact reuse refuses malformed or ambiguous successful proof before publishing outputs', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'openkit-artifact-reuse-proof-'));
+  try {
+    writeFileSync(join(directory, 'node'), '#!/bin/sh\nprintf "%s\\n" "$REUSE_RESULT"\n', {
+      mode: 0o755,
+    });
+    for (const id of ['l0-l2-shards', 'l0-l2-coverage']) {
+      const reuse = workflow.jobs[id].steps.find((entry) => entry.id === 'reuse');
+      for (const proof of [
+        'Reused run 0 attempt 2 job 20',
+        'Reused run 10 attempt 0 job 20',
+        'Reused run 10 attempt 2 job x',
+        'Reused run 10 attempt 2 job 20\nextra',
+      ]) {
+        const output = join(directory, 'output'),
+          summary = join(directory, 'summary');
+        writeFileSync(output, '');
+        writeFileSync(summary, '');
+        const result = spawnSync('sh', ['-eu', '-c', reuse.run], {
+          env: {
+            ...process.env,
+            PATH: `${directory}:${process.env.PATH}`,
+            GITHUB_OUTPUT: output,
+            GITHUB_STEP_SUMMARY: summary,
+            GITHUB_REPOSITORY: 'example/openkit',
+            GITHUB_SHA: 'a'.repeat(40),
+            SHARD_ID: 'nanocore-1',
+            REUSE_RESULT: proof,
+          },
+          encoding: 'utf8',
+        });
+        assert.notEqual(result.status, 0, proof);
+        assert.match(result.stderr, /Invalid exact-job reuse proof/u);
+        assert.equal(readFileSync(output, 'utf8'), '');
+        assert.equal(readFileSync(summary, 'utf8'), '');
       }
     }
   } finally {
@@ -723,6 +782,9 @@ test('every main push runs the complete nonpublishing candidate gate without pub
   assert.equal(workflow.on.push['paths-ignore'], undefined);
   assert.equal(workflow.on.push.paths, undefined);
   const gate = [
+    'l0-l2-plan',
+    'l0-l2-shards',
+    'l0-l2-coverage',
     'l0-l2',
     'nano-core-e2e',
     'workspace-portability-source',
@@ -762,11 +824,11 @@ test('L0-L2 runs complete package coverage and native/root suites through a fail
   assert.match(command.run, /runuser -u node/u);
   assert.match(command.run, /node scripts\/ci-l0-l2\.mjs --run "\$\{SHARD_ID\}"/u);
   assert.equal(command.env.SHARD_ID, actionExpression('matrix.id'));
-  assert.deepEqual(workflow.jobs['l0-l2'].needs, ['l0-l2-plan', 'l0-l2-shards']);
+  assert.deepEqual(workflow.jobs['l0-l2'].needs, ['l0-l2-plan', 'l0-l2-shards', 'l0-l2-coverage']);
   assert.match(workflow.jobs['l0-l2'].if, /always\(\)/u);
   assert.match(
     step(workflow.jobs['l0-l2'], 'Require every shard job').run,
-    /SHARDS_RESULT.*success/u
+    /SHARDS_RESULT.*success.*COVERAGE_RESULT.*success/u
   );
   assert.match(
     step(workflow.jobs['l0-l2'], 'Require exactly one successful observation per shard').run,
@@ -1245,4 +1307,77 @@ test('stable rehearsal is tag-only, scratch-only, serialized and has no construc
   );
   for (const entry of job.steps) if (entry.uses) assert.match(entry.uses, /^[^@]+@[a-f0-9]{40}$/u);
   assert.match(readFileSync('scripts/release-preflight.mjs', 'utf8'), /requirePrerelease: true/u);
+});
+
+test('partitioned coverage merges the complete current-attempt reports without a product build', () => {
+  const plan = workflow.jobs['l0-l2-plan'];
+  assert.equal(plan.outputs.coverage, actionExpression('steps.plan.outputs.coverage'));
+  assert.match(step(plan, 'Derive complete deterministic owners').run, /--coverage-matrix/u);
+  const merge = workflow.jobs['l0-l2-coverage'];
+  assert.ok(merge, 'whole-owner coverage is a required job');
+  assert.equal(merge.name, `L0-L2 coverage (${actionExpression('matrix.id')})`);
+  assert.deepEqual(merge.needs, ['test-image', 'l0-l2-plan', 'l0-l2-shards']);
+  assert.equal(
+    merge.strategy.matrix,
+    actionExpression('fromJSON(needs.l0-l2-plan.outputs.coverage)')
+  );
+  assert.equal(merge.container.image, actionExpression('needs.test-image.outputs.image'));
+  assert.equal(merge.permissions.actions, 'read');
+  assert.equal(merge.if, workflow.jobs['l0-l2-shards'].if);
+  const download = step(merge, 'Download current-attempt coverage partitions');
+  assert.equal(
+    download.with.pattern,
+    `l0-l2-${actionExpression('matrix.id')}-*-attempt-${actionExpression('github.run_attempt')}`
+  );
+  assert.equal(download.with.path, 'temp/ci-shards');
+  assert.equal(download.with['merge-multiple'], true);
+  const commands = merge.steps.map((entry) => entry.run ?? '').join('\n');
+  assert.match(commands, /pnpm install --frozen-lockfile/u);
+  assert.match(
+    commands,
+    /runuser -u node -- env HOME="\$\{HOME\}" node scripts\/ci-l0-l2\.mjs --merge-coverage/u
+  );
+  assert.doesNotMatch(commands, /pnpm[^\n]*\bbuild\b|--run /u);
+  const retained = step(merge, 'Retain successful coverage evidence');
+  assert.equal(
+    retained.with.name,
+    `l0-l2-${actionExpression('matrix.id')}-coverage-attempt-${actionExpression('github.run_attempt')}`
+  );
+  assert.match(retained.with.path, /-coverage\.json/u);
+  assert.match(retained.with.path, /-merged-execution\.report/u);
+  assert.doesNotMatch(retained.with.path, /blobs|\*|inventory/u);
+  assert.deepEqual(workflow.jobs['l0-l2'].needs, ['l0-l2-plan', 'l0-l2-shards', 'l0-l2-coverage']);
+});
+
+test('exact-job reuse restores attempt-bound reports instead of manufacturing success', () => {
+  for (const [id, artifact] of [
+    ['l0-l2-shards', ''],
+    ['l0-l2-coverage', '-coverage'],
+  ]) {
+    const job = workflow.jobs[id];
+    assert.ok(job);
+    const reuse = job.steps.find((entry) => entry.id === 'reuse');
+    assert.doesNotMatch(reuse.run, /writeFileSync|mkdir|conclusion|rootNodeInventory/u);
+    assert.match(reuse.run, /run_id=/u);
+    assert.match(reuse.run, /attempt=/u);
+    const restored = step(job, 'Restore exact-commit execution evidence');
+    assert.equal(restored.if, "steps.reuse.outputs.reused == 'true'");
+    assert.equal(restored.with['run-id'], actionExpression('steps.reuse.outputs.run_id'));
+    assert.equal(restored.with['github-token'], actionExpression('secrets.GITHUB_TOKEN'));
+    assert.equal(
+      restored.with.name,
+      `l0-l2-${actionExpression('matrix.id')}${artifact}-attempt-${actionExpression('steps.reuse.outputs.attempt')}`
+    );
+    assert.equal(restored.with.path, 'temp/ci-shards');
+  }
+  const cache = step(workflow.jobs['l0-l2-shards'], 'Cache locked build inputs and outputs');
+  assert.match(cache.uses, /^actions\/cache\/restore@[a-f0-9]{40}$/u);
+  assert.equal(
+    step(workflow.jobs['l0-l2-shards'], 'Retain successful shard evidence').with.name,
+    `l0-l2-${actionExpression('matrix.id')}-attempt-${actionExpression('github.run_attempt')}`
+  );
+  assert.equal(
+    step(workflow.jobs['l0-l2'], 'Download complete shard observations').with.pattern,
+    `l0-l2-*-attempt-${actionExpression('github.run_attempt')}`
+  );
 });
