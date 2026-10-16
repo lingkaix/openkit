@@ -85,7 +85,7 @@ The public declaration name is intentionally backend-neutral because future sand
 
 `docs/specs/20260616-agent_environment_package.md` owns the resolved AEP envelope and cross-boundary invariants passed to worker governance backends; this specification owns the credential declarations projected into that envelope.
 
-The implementation currently has narrow credential paths with fixed ids such as `vault_github_read`, `grant_github_read`, `vault_codex_auth_json`, and `grant_codex_auth_json`.
+Credential access declarations name the recorded canonical Vault reference and grant ids. Authored access names remain selectors and do not supply well-known entity identities.
 
 Those fixed ids are useful proof points, but they are not a scalable product contract.
 

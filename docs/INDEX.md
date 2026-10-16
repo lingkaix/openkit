@@ -99,7 +99,7 @@ and are not listed here.
 - `docs/specs/20260704-workspace_data_source_catalog.md` — Accepted, Partial — The workspace-owned catalog of named external and local data sources available to agent work in one workspace.
 - `docs/specs/20260708-container_image_packaging.md` — Accepted, Partial — The canonical OpenKit container image taxonomy.
 - `docs/specs/20260708-pi_ai_unified_llm_backend.md` — Accepted, Partial — This spec is the sole owner of NanoCore LLM provider transport and routing through `@earendil-works/pi-ai`, including request, response, streaming, provider-er…
-- `docs/specs/20260709-quick_chat_workspace.md` — Accepted, Partial — The default personal Workspace, its owner-only provisioning, and the one-way migration from the former Quick Chat kind.
+- `docs/specs/20260709-quick_chat_workspace.md` — Accepted, Partial — The default personal Workspace and its owner-only fresh provisioning under the pre-stable reset boundary.
 - `docs/specs/20260709-worker_credential_access_declarations.md` — Accepted, Partial — The generic resolved worker credential declaration contract that replaces hard-coded worker credential use cases with list-driven launch-time resolution.
 - `docs/specs/20260709-worker_sandbox_freedom_policy.md` — Accepted, Partial — Worker sandbox freedom principles for process execution, filesystem access, network access, and user-provided secret injection.
 - `docs/specs/20260710-self_improvement_evaluation_loop.md` — Accepted, Partial — The V1 composition by which an authorized agent explicitly reviews exact completed Workspace work and may create one existing source-linked pending Knowledge P…
@@ -265,6 +265,7 @@ Decision records are not indexed. Owners link them; list `docs/decisions/` to se
 - `docs/cookbooks/docker-app.md` — Docker App Image
 - `docs/cookbooks/docker-test-env.md` — Test Execution Image
 - `docs/cookbooks/go-setup.md` — Go Setup Cookbook
+- `docs/cookbooks/identifier-cutover.md` — Identifier Cutover And Protected Accounts
 - `docs/cookbooks/nanohost-real-use-host.md` — NanoHost Real-Use Host
 - `docs/cookbooks/openshell-upgrade.md` — OpenShell Upgrade
 - `docs/cookbooks/persistent-live-acceptance.md` — Persistent Live Acceptance

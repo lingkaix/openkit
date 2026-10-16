@@ -10,6 +10,7 @@ import {
   type PrepareWorkerEnvironmentResponse,
   WORKER_ENVIRONMENT_OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
+import { entityIdPattern } from '@openkit/protocol';
 import { z } from 'zod';
 
 import type { Actor } from '../auth/identity.js';
@@ -55,7 +56,7 @@ export function createAdministrationEnvironmentTools(
         additionalProperties: false,
         properties: {
           workspaceId: { type: 'string', minLength: 1 },
-          after: { type: 'string', pattern: '^wst_[a-f0-9]{32}$' },
+          after: { type: 'string', pattern: entityIdPattern('wst').source },
           limit: { type: 'integer', minimum: 1, maximum: 100 },
         },
         required: ['workspaceId'],
@@ -78,7 +79,7 @@ export function createAdministrationEnvironmentTools(
         additionalProperties: false,
         properties: {
           workspaceId: { type: 'string', minLength: 1 },
-          storageRef: { type: 'string', pattern: '^wst_[a-f0-9]{32}$' },
+          storageRef: { type: 'string', pattern: entityIdPattern('wst').source },
         },
         required: ['workspaceId', 'storageRef'],
       },

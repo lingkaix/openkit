@@ -25,6 +25,8 @@ App image attribution compares the exact selected OCI child manifest's `config.d
 Each component has its own private evidence subdirectory. The parent result distinguishes passed, unknown and unrun stages. A lost command or response stops dependent work without another start, retry, payload restoration, reset or automatic resume. Retain the exact App and Worker request IDs, persistent guard/attempt artifacts, old payload custody and private archive custody for explicit inspection. A new invocation or existing artifact supplies no recovery authority. Successful orchestration proves configuration and activation, not a Worker Turn, retained-work continuation or release qualification.
 
 
+Fixtures that cross the shared App API use canonical per-kind Core identifiers for Deployment, Workspace, Thread, Artifact and Worker storage records. Native machine, process, runtime-target and harness selectors remain opaque. The native inspection fixture binds the same canonical Deployment ID in the measured producer and the stored consumer witness.
+
 ## Worker Stage
 
 `update-worker-environment.mjs` exports `updateWorkerEnvironment(target, params, evidenceDir, io)`. The caller supplies one explicit HTTPS origin, an already verified release manifest, the platform, the exact existing preparation input without its image declaration, separate prepare and activation request IDs, the bounded grant, the expected preceding NanoHost stage reference, and the asserted previous physical Epoch witness. The script derives a registry reference from the manifest's `worker-runtimes` index digest and compares the prepared image with the platform digest.

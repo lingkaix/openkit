@@ -67,8 +67,8 @@ describe('Light App portability', () => {
       store,
       inflightCommands: new WeakMap(),
       dataRoot,
-      workspaceId: 'ws_demo',
-      actor: { kind: 'user', id: 'user_local' },
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       requestId: randomUUID(),
     };
     const created = await createLightApp(context, MAPPING_SCHEMA);
@@ -84,18 +84,21 @@ describe('Light App portability', () => {
         active: true,
       }
     );
-    const exported = listExportableLightAppFamilies(dataRoot, 'ws_demo');
+    const exported = listExportableLightAppFamilies(
+      dataRoot,
+      'ws_00000000-0000-7000-8000-000000000001'
+    );
     expect(exported.apps).toHaveLength(1);
     expect(exported.records).toHaveLength(1);
     expect(Object.values(exported.records[0]!.record.values)).toEqual(
       expect.arrayContaining(['mem_1', 'crm_1', 'needs review', true])
     );
 
-    const targetWorkspaceId = 'ws_imported';
+    const targetWorkspaceId = 'ws_00000000-0000-7a88-ae6e-4c70ca9fabb5';
     const targetRoot = ensureWorkspaceLayout(dataRoot, targetWorkspaceId).root;
     const reminted = importLightAppFamilies({
       workspaceRoot: targetRoot,
-      sourceWorkspaceId: 'ws_demo',
+      sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       targetWorkspaceId,
       apps: exported.apps,
       definitions: exported.definitions,
@@ -126,24 +129,27 @@ describe('Light App portability', () => {
       store,
       inflightCommands: new WeakMap(),
       dataRoot,
-      workspaceId: 'ws_demo',
-      actor: { kind: 'user', id: 'user_local' },
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       requestId: randomUUID(),
     };
     await createLightApp(context, MAPPING_SCHEMA);
-    const exported = listExportableLightAppFamilies(dataRoot, 'ws_demo');
+    const exported = listExportableLightAppFamilies(
+      dataRoot,
+      'ws_00000000-0000-7000-8000-000000000001'
+    );
     const staleDigest = `sha256:${'ab'.repeat(32)}`;
     const definitions = exported.definitions.map((definition) => ({
       ...definition,
       contentDigest: staleDigest,
       definition: { ...definition.definition, digest: staleDigest },
     }));
-    const targetWorkspaceId = 'ws_imported';
+    const targetWorkspaceId = 'ws_00000000-0000-7a88-ae6e-4c70ca9fabb5';
     const targetRoot = ensureWorkspaceLayout(dataRoot, targetWorkspaceId).root;
     expect(() =>
       importLightAppFamilies({
         workspaceRoot: targetRoot,
-        sourceWorkspaceId: 'ws_demo',
+        sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         targetWorkspaceId,
         apps: exported.apps,
         definitions,
@@ -159,8 +165,8 @@ describe('Light App portability', () => {
       store,
       inflightCommands: new WeakMap(),
       dataRoot,
-      workspaceId: 'ws_demo',
-      actor: { kind: 'user', id: 'user_local' },
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       requestId: randomUUID(),
     };
     const created = await createLightApp(context, MAPPING_SCHEMA);
@@ -176,19 +182,22 @@ describe('Light App portability', () => {
         active: true,
       }
     );
-    const exported = listExportableLightAppFamilies(dataRoot, 'ws_demo');
+    const exported = listExportableLightAppFamilies(
+      dataRoot,
+      'ws_00000000-0000-7000-8000-000000000001'
+    );
     const record = exported.records[0]!;
     const values = { ...record.record.values };
     const boolFieldId = Object.entries(values).find(([, value]) => value === true)?.[0];
     expect(boolFieldId).toBeTruthy();
     values[boolFieldId!] = 'yes';
     const digest = `sha256:${createHash('sha256').update(JSON.stringify(values), 'utf8').digest('hex')}`;
-    const targetWorkspaceId = 'ws_imported';
+    const targetWorkspaceId = 'ws_00000000-0000-7a88-ae6e-4c70ca9fabb5';
     const targetRoot = ensureWorkspaceLayout(dataRoot, targetWorkspaceId).root;
     expect(() =>
       importLightAppFamilies({
         workspaceRoot: targetRoot,
-        sourceWorkspaceId: 'ws_demo',
+        sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         targetWorkspaceId,
         apps: exported.apps,
         definitions: exported.definitions,
@@ -210,8 +219,8 @@ describe('Light App portability', () => {
       store,
       inflightCommands: new WeakMap(),
       dataRoot,
-      workspaceId: 'ws_demo',
-      actor: { kind: 'user', id: 'user_local' },
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       requestId: randomUUID(),
     };
     const schema: LightAppSchemaInput = {
@@ -262,7 +271,10 @@ describe('Light App portability', () => {
         count: 1,
       }
     );
-    const exported = listExportableLightAppFamilies(dataRoot, 'ws_demo');
+    const exported = listExportableLightAppFamilies(
+      dataRoot,
+      'ws_00000000-0000-7000-8000-000000000001'
+    );
     const exportedRecord = exported.records[0]!;
     const noteId = Object.entries(exportedRecord.record.values).find(
       ([, value]) => value === 'ok'
@@ -279,14 +291,14 @@ describe('Light App portability', () => {
       { ...exportedRecord.record.values, [dateId!]: 'not-a-date' },
       { ...exportedRecord.record.values, [countId!]: 9007199254740992 },
     ];
-    const targetWorkspaceId = 'ws_imported';
+    const targetWorkspaceId = 'ws_00000000-0000-7a88-ae6e-4c70ca9fabb5';
     const targetRoot = ensureWorkspaceLayout(dataRoot, targetWorkspaceId).root;
     for (const values of invalids) {
       const digest = `sha256:${createHash('sha256').update(JSON.stringify(values), 'utf8').digest('hex')}`;
       expect(() =>
         importLightAppFamilies({
           workspaceRoot: targetRoot,
-          sourceWorkspaceId: 'ws_demo',
+          sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           targetWorkspaceId,
           apps: exported.apps,
           definitions: exported.definitions,

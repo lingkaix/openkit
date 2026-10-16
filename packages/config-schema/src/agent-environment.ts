@@ -1,7 +1,17 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { isIP } from 'node:net';
-import { ActorRefSchema, ReasoningEffortSchema } from '@openkit/protocol';
+import {
+  ActorRefSchema,
+  AgentSessionIdSchema,
+  ItemIdSchema,
+  ReasoningEffortSchema,
+  ThreadIdSchema,
+  TurnIdSchema,
+  VaultGrantIdSchema,
+  VaultReferenceIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import {
   type CaptureCoverageBinding as AgentEnvironmentCaptureCoverage,
   CaptureCoverageBindingSchema as AgentEnvironmentCaptureCoverageSchema,
@@ -174,11 +184,11 @@ export const WorkerGovernanceBackendCapabilitiesSchema = z
  */
 export const AgentEnvironmentScopeSchema = z
   .object({
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
-    itemId: z.string().min(1).nullable().optional(),
-    agentSessionId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
+    itemId: ItemIdSchema.nullable().optional(),
+    agentSessionId: AgentSessionIdSchema,
     triggerActor: ActorRefSchema,
     requestId: z.string().min(1).nullable().optional(),
   })
@@ -484,7 +494,7 @@ export const AgentEnvironmentSkillSchema = z
       })
       .strict()
       .optional(),
-    selectionSource: z.enum(['current', 'pin']).optional(),
+    selectionSource: z.enum(['current', 'pin', 'setup', 'run']).optional(),
   })
   .strict();
 
@@ -682,7 +692,7 @@ export const AgentEnvironmentCredentialProviderSchema = z
 const RESOLVED_CREDENTIAL_DECLARATION_BASE = {
   id: z.string().min(1),
   requirementId: z.string().min(1).optional(),
-  vaultGrantId: z.string().min(1),
+  vaultGrantId: VaultGrantIdSchema,
 };
 
 const CREDENTIAL_REQUIREMENT_BASE = {
@@ -900,7 +910,7 @@ export const WorkerSandboxAccessSchema = z
  */
 export const AgentEnvironmentVaultReferenceSchema = z
   .object({
-    id: z.string().min(1),
+    id: VaultReferenceIdSchema,
     providerInstanceId: z.string().min(1).optional(),
     kind: z.enum(['secret-ref', 'runtime-ref', 'grant-ref']),
     secretRef: z.string().min(1).optional(),
@@ -913,8 +923,8 @@ export const AgentEnvironmentVaultReferenceSchema = z
  */
 export const AgentEnvironmentVaultGrantSchema = z
   .object({
-    id: z.string().min(1),
-    vaultRefId: z.string().min(1),
+    id: VaultGrantIdSchema,
+    vaultRefId: VaultReferenceIdSchema,
     scope: z.enum(['agent-session', 'turn', 'workspace']),
     expiresAt: z.string().datetime().nullable().optional(),
   })
@@ -1337,10 +1347,7 @@ export const RetainedAgentEnvironmentPackageSchema = z.preprocess(
   },
   AgentEnvironmentPackageSchema.safeExtend({
     scope: AgentEnvironmentScopeSchema.safeExtend({
-      triggerActor: z.discriminatedUnion('kind', [
-        ActorRefSchema.options[0].strip(),
-        ActorRefSchema.options[1].strip(),
-      ]),
+      triggerActor: z.union(ActorRefSchema.options.map((schema) => schema.strip())),
     }).strip(),
     agent: AgentEnvironmentAgentSchema.safeExtend({
       instructions: z

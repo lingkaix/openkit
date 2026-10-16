@@ -22,7 +22,7 @@ describe('deployment model extension catalog', () => {
     { cost: { input: -1 } },
     { reasoning: 'high' },
     { limit: { output: 1.5 } },
-    { secretRef: 'vault://x' },
+    { secretRef: 'vault://vault_00000000-0000-70b0-a7ed-4b8dade2f4d0' },
   ])('rejects malformed metadata %j', (metadata) => {
     expect(
       ModelCatalogSchema.safeParse({

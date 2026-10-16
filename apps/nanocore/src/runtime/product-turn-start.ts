@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-
 import type { ActorRef, SubmitTurnInputRequestSchema, TurnSchema } from '@openkit/protocol';
+import { deriveEntityId } from '@openkit/protocol';
 import type { z } from 'zod';
 import { computeReadiness } from '../agents/readiness.js';
 import { selectAgent } from '../agents/selector.js';
@@ -21,6 +21,7 @@ import {
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
+import { assertRunSkillSelectionsIncluded } from './agent-environment.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import { assertAgentManifestSupportsModel, TurnStartValidationError } from './orchestrator.js';
 import {
@@ -153,7 +154,15 @@ export async function startProductTurn(input: StartProductTurnInput) {
     input.reservedTurnId
   );
   const queueEntryId = `queue_${input.input.requestId}_${suffix}`;
-  const turnId = input.reservedTurnId ?? `turn_${input.input.requestId}_${suffix}`;
+  const turnId =
+    input.reservedTurnId ??
+    deriveEntityId('tu', [
+      JSON.stringify(canonicalTriggerActor),
+      input.input.workspaceId,
+      input.input.threadId,
+      input.input.requestId,
+      null,
+    ]);
   // Product pending state is real nonterminal ownership, before any backend acquisition.
   if (
     input.store
@@ -211,6 +220,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
       setup.diagnostics.map((diagnostic) => diagnostic.message).join(' '),
       409
     );
+  assertRunSkillSelectionsIncluded(setup.setup.manifest.skills ?? [], input.input.skillSelections);
   const reasoningEffort =
     input.input.reasoningEffort ?? setup.setup.manifest.models.reasoningEffort;
   try {
@@ -256,6 +266,9 @@ export async function startProductTurn(input: StartProductTurnInput) {
         agentId: requestedAgentId,
         executorKind: 'worker',
         ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+        ...(input.input.skillSelections !== undefined
+          ? { skillSelections: input.input.skillSelections }
+          : {}),
       }
     );
   // This listener observes the existing product owner; it grants neither execution nor recovery.
@@ -483,7 +496,9 @@ export function validateLiveProductTurnAdmission(input: {
       (!attempt && admission.status !== 'queued')
     )
       throw new Error('Live Turn admission contradicts its exact request or attempt.');
-    const initiatingItem = turn.items.find((item) => item.id === `it_user_${turn.id}`);
+    const initiatingItem = turn.items.find(
+      (item) => item.id === deriveEntityId('it', ['task-user', turn.id])
+    );
     if (
       initiatingItem &&
       (initiatingItem.type !== 'user-message' ||

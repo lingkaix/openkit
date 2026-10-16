@@ -70,7 +70,7 @@ function parameters(platform = 'linux/arm64') {
     previousPhysicalEpoch,
     nanoHostReplacementReference: replacementReference,
     prepare: {
-      administrationThreadId: 'private-administration-thread',
+      administrationThreadId: 'th_0190f4c8-0000-7000-8000-00000000000a',
       requestId: '11111111-1111-4111-8111-111111111111',
       configuration: { expectedRevision: revision, fileId: 'agents/worker.agent.jsonc' },
       target: { kind: 'agent', agentId: 'worker' },
@@ -112,7 +112,7 @@ async function fixture(t, platform) {
     runtimeTarget: {
       physicalEpoch: currentPhysicalEpoch,
       identityId: 'configured-nanohost',
-      deploymentId: 'configured-deployment',
+      deploymentId: 'dep_0190f4c8-0000-7000-8000-000000000001',
       connectionGeneration: 8,
       predecessorFenced: true,
       ready: true,
@@ -255,15 +255,15 @@ async function fixture(t, platform) {
           configuration: request.configuration,
           replaceNow: request.replaceNow ?? null,
           affectedStorage: request.replaceNow
-            ? [{ storageRef: `wst_${'4'.repeat(32)}`, expectedRevision: 3 }]
+            ? [{ storageRef: 'wst_0190f4c8-0000-7000-8000-000000000004', expectedRevision: 3 }]
             : [],
           authoredCandidate: {
-            artifactId: 'artifact-authored',
+            artifactId: 'ar_0190f4c8-0000-7000-8000-000000000005',
             artifactVersion: 1,
             contentDigest: revision,
           },
           resolvedCandidate: {
-            artifactId: 'artifact-resolved',
+            artifactId: 'ar_0190f4c8-0000-7000-8000-000000000006',
             artifactVersion: 1,
             contentDigest: indexDigest,
           },
@@ -365,8 +365,8 @@ for (const platform of Object.keys(children)) {
 test('passes the exact successor prompt and affected storage revisions to ordinary activation', async (t) => {
   const f = await fixture(t);
   f.p.prepare.replaceNow = {
-    workspaceId: 'workspace-one',
-    threadId: 'worker-thread',
+    workspaceId: 'ws_0190f4c8-0000-7000-8000-000000000007',
+    threadId: 'th_0190f4c8-0000-7000-8000-000000000008',
     prompt: 'Continue the admitted task.',
   };
   const result = await run(f);
@@ -470,7 +470,7 @@ for (const [name, change] of [
   [
     'wrong grant deployment',
     (f) => {
-      f.p.grant.deploymentReference = 'other-deployment';
+      f.p.grant.deploymentReference = 'dep_0190f4c8-0000-7000-8000-000000000002';
     },
   ],
   [
@@ -688,8 +688,8 @@ for (const [name, change] of [
 test('unknown per-storage activation disposition remains failure with no later effects', async (t) => {
   const f = await fixture(t);
   f.p.prepare.replaceNow = {
-    workspaceId: 'workspace-one',
-    threadId: 'worker-thread',
+    workspaceId: 'ws_0190f4c8-0000-7000-8000-000000000007',
+    threadId: 'th_0190f4c8-0000-7000-8000-000000000008',
     prompt: 'Continue the admitted task.',
   };
   f.controls.activation = (body) => {
@@ -745,7 +745,7 @@ for (const [name, change] of [
   [
     'runtime deployment',
     (host) => {
-      host.runtimeTarget.deploymentId = 'other-deployment';
+      host.runtimeTarget.deploymentId = 'dep_0190f4c8-0000-7000-8000-000000000002';
     },
   ],
   [
@@ -959,7 +959,7 @@ for (const [name, change] of [
   [
     'another predecessor deployment',
     (_f, record) => {
-      record.before.runtimeTarget.deploymentId = 'another-deployment';
+      record.before.runtimeTarget.deploymentId = 'dep_0190f4c8-0000-7000-8000-000000000003';
     },
   ],
   [

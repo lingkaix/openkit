@@ -89,7 +89,7 @@ function snapshotFixture(kind: 'import' | 'portability', withCatalogAuthority = 
       catalog: EMPTY_RESOURCE_CATALOG,
       dataRoot,
       expectedRevision: 0,
-      workspaceId: 'ws_durable',
+      workspaceId: 'ws_00000000-0000-7ca8-a881-c3c5386365fe',
     });
   const input = {
     activate: true,
@@ -97,25 +97,29 @@ function snapshotFixture(kind: 'import' | 'portability', withCatalogAuthority = 
     dataRoot,
     displayName: 'Durable Skill',
     expectedRevision: withCatalogAuthority ? 1 : 0,
-    producer: { id: 'user_local', kind: 'user' as const },
+    producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' as const },
     tree,
-    workspaceId: 'ws_durable',
+    workspaceId: 'ws_00000000-0000-7ca8-a881-c3c5386365fe',
   };
   if (kind === 'import') {
     durability.events.length = 0;
     return {
       dataRoot,
       publish: () => importWorkspaceSkill(input),
-      read: () => projectWorkspaceCatalogExport(dataRoot, 'ws_durable'),
+      read: () =>
+        projectWorkspaceCatalogExport(dataRoot, 'ws_00000000-0000-7ca8-a881-c3c5386365fe'),
     };
   }
   importWorkspaceSkill(input);
-  const projection = projectWorkspaceCatalogExport(dataRoot, 'ws_durable');
+  const projection = projectWorkspaceCatalogExport(
+    dataRoot,
+    'ws_00000000-0000-7ca8-a881-c3c5386365fe'
+  );
   const catalog = reconstructImportedWorkspaceCatalog(
     projection.catalog,
     new Map(projection.payloads.map(({ path, payload }) => [path, payload]))
   );
-  const targetRoot = join(dataRoot, 'workspaces', 'ws_imported');
+  const targetRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000099');
   durability.events.length = 0;
   return {
     dataRoot,
@@ -125,7 +129,7 @@ function snapshotFixture(kind: 'import' | 'portability', withCatalogAuthority = 
         catalog,
         projection.payloads.map(({ payload }) => payload)
       ),
-    read: () => projectWorkspaceCatalogExport(dataRoot, 'ws_imported'),
+    read: () => projectWorkspaceCatalogExport(dataRoot, 'ws_00000000-0000-7000-8000-000000000099'),
   };
 }
 
@@ -139,10 +143,16 @@ describe('resource catalog durable publication', () => {
         catalog: EMPTY_RESOURCE_CATALOG,
         dataRoot,
         expectedRevision: 0,
-        workspaceId: 'ws_durable',
+        workspaceId: 'ws_00000000-0000-7ca8-a881-c3c5386365fe',
       }).revision
     ).toBe(1);
-    const path = join(dataRoot, 'workspaces', 'ws_durable', 'catalog', 'catalog.json');
+    const path = join(
+      dataRoot,
+      'workspaces',
+      'ws_00000000-0000-7ca8-a881-c3c5386365fe',
+      'catalog',
+      'catalog.json'
+    );
     const renameAt = durability.events.findIndex(
       (event) => event.op === 'rename' && event.path === path
     );
@@ -294,7 +304,13 @@ describe('resource snapshot acknowledgement recovery', () => {
     durability.events.length = 0;
     durability.fail = undefined;
     f.publish();
-    const catalogPath = join(f.dataRoot, 'workspaces', 'ws_durable', 'catalog', 'catalog.json');
+    const catalogPath = join(
+      f.dataRoot,
+      'workspaces',
+      'ws_00000000-0000-7ca8-a881-c3c5386365fe',
+      'catalog',
+      'catalog.json'
+    );
     const catalogAt = durability.events.findIndex(
       (event) => event.op === 'rename' && event.path === catalogPath
     );

@@ -8,14 +8,15 @@ import {
   type OperationId,
 } from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
-import { createApp } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { computeBootReadinessSnapshot } from '../bootstrap/readiness.js';
 import { FsStore, StoreRecordNotFoundError } from '../lib/store.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import * as catalogOwner from './resource-catalog.js';
@@ -32,7 +33,11 @@ function fixture(
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
   const workspace = store.createWorkspace('B5 projection');
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: workspace.id });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: workspace.id,
+  });
   const app = createApp({
     coreDb,
     dataRoot,
@@ -525,7 +530,7 @@ function mutations(workspaceId: string) {
     },
     'catalog.skill-candidate-decide': {
       workspaceId,
-      candidateId: 'candidate',
+      candidateId: testEntityId('cand', 'candidate'),
       decision: 'promoted',
       expectedCurrentDigest: digest,
       expectedRevision: 0,
@@ -603,7 +608,7 @@ it.each([
   let readiness = computeBootReadinessSnapshot({ bootId: 'boot_b5' });
   const f = fixture(() => readiness, 'server');
   const token = createOpenKitAccessTokenRecord(f.coreDb, {
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: reason === 'readonly' ? 'workspace-readonly' : 'workspace',
     workspaceIds: [f.workspace.id],
     expiresAt: '2099-01-01T00:00:00.000Z',
@@ -705,7 +710,7 @@ it('preserves missing-record classifications and lets unexpected family failures
 it('keeps real catalog conflict, missing-version and host-execution refusals exact through HTTP and remote MCP without publication', async () => {
   const f = fixture(undefined, 'server');
   const token = createOpenKitAccessTokenRecord(f.coreDb, {
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: 'workspace',
     workspaceIds: [f.workspace.id],
     expiresAt: '2099-01-01T00:00:00.000Z',

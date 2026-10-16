@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -10,7 +10,6 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
-
 import {
   type CatalogProducer,
   digestMcpConfig,
@@ -37,6 +36,7 @@ import {
   type WorkspaceMcpServerCatalog,
   WorkspaceMcpServerSchema,
 } from '@openkit/config-schema';
+import { allocateEntityId } from '@openkit/protocol';
 import type { ZodError } from 'zod';
 
 import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
@@ -320,7 +320,7 @@ export function submitWorkspaceSkillCandidate(input: {
   }
   if (entry && input.baseDigest === null)
     throw new CatalogInputError('An existing Skill requires an exact candidate base digest.');
-  const candidateId = `cand_${randomUUID().replaceAll('-', '').slice(0, 16)}`;
+  const candidateId = allocateEntityId('cand');
   const imported = importWorkspaceSkill({
     activate: false,
     baseCatalog: current,

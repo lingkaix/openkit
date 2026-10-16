@@ -6,12 +6,12 @@ import type { AppUpdateStatusResponse } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import type { BetterAuthServer } from '../auth/middleware.js';
 import { PUBLIC_OPERATION_ACCESS } from '../auth/operation-access.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import type { AppUpdateHostCommand } from './host-request.js';
 import type { AppUpdateHostResult, AppUpdateHostTransport } from './host-transport.js';
@@ -259,12 +259,12 @@ describe('app-update routes', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    insertSessionUser(coreDb, 'user_app_update_member');
+    insertSessionUser(coreDb, 'usr_00000000-0000-73e7-9746-362a4fae6001');
     const workspaceToken = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
     });
     const startBody = JSON.stringify({
       maintenanceConsent: true,
@@ -272,7 +272,7 @@ describe('app-update routes', () => {
     });
     const sessionApp = createApp({
       appUpdateHostTransport: createMemoryTransport(),
-      auth: createSignedInAuthStub('user_app_update_member'),
+      auth: createSignedInAuthStub('usr_00000000-0000-73e7-9746-362a4fae6001'),
       coreDb,
       dataRoot,
       mode: 'server',

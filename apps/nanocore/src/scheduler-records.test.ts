@@ -2,7 +2,6 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import * as attemptActionOwners from './runtime/execution-attempt-records.js';
 import {
@@ -33,7 +32,9 @@ import {
 } from './scheduler-records';
 import { openCoreDb } from './storage/db';
 import { applyMigrations } from './storage/migrate';
+import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
@@ -45,7 +46,11 @@ function createMigratedCoreDb() {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-scheduler-')));
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
   return coreDb;
 }
 
@@ -68,16 +73,25 @@ function seedBackendRuntimeTarget(coreDb: ReturnType<typeof createMigratedCoreDb
   });
 }
 
-/** Establishes prepared and submitted Native authority for record-owner regressions. */
-function createPreparedAttempt(coreDb: ReturnType<typeof createMigratedCoreDb>, attemptId: string) {
-  const suffix = attemptId.replace('lease_', '');
+/**
+ * Establishes prepared and submitted Native authority for record-owner regressions.
+ * @param coreDb Database owning the admission and attempt.
+ * @param fixtureKey Fixture label used to allocate and retain exact canonical lineage.
+ * @returns Prepared attempt with its admitted Native binding.
+ */
+function createPreparedAttempt(
+  coreDb: ReturnType<typeof createMigratedCoreDb>,
+  fixtureKey: string
+) {
+  const attemptId = testEntityId('attempt', fixtureKey);
+  const suffix = fixtureKey.replace('lease_', '');
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
-    triggerActor: { kind: 'user', id: 'user_local' },
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     queueEntryId: `queue_${suffix}`,
-    workspaceId: 'ws_demo',
-    threadId: `thread_${suffix}`,
-    turnId: `turn_${suffix}`,
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: testEntityId('th', `thread_${suffix}`),
+    turnId: testEntityId('tu', `turn_${suffix}`),
     turnInput: `Run Native attempt ${suffix}`,
     requestedAgentId: 'agent_worker',
     now: () => '2026-07-05T00:00:00.000Z',
@@ -85,7 +99,7 @@ function createPreparedAttempt(coreDb: ReturnType<typeof createMigratedCoreDb>, 
   recordTestExecutionAttempt(coreDb, {
     entry,
     attemptId,
-    agentSessionId: `session_${suffix}`,
+    agentSessionId: testEntityId('as', `session_${suffix}`),
     inputRef: 'pkg_demo',
     bindingRef: `lease-binding:${attemptId}`,
     sessionCompatibilityKey: `sha256:${suffix}`,
@@ -105,7 +119,7 @@ function terminalAccountingSnapshot(
       .prepare('SELECT * FROM scheduler_admission_entries WHERE queue_entry_id = ?')
       .get(`queue_${suffix}`),
     attempt: observeExecutionAttempts(coreDb).find(
-      (attempt) => attempt.attempt_id === `lease_${suffix}`
+      (attempt) => attempt.attempt_id === testEntityId('attempt', `lease_${suffix}`)
     ),
   };
 }
@@ -165,10 +179,10 @@ describe('scheduler records', () => {
         backendId: 'nanohost',
         queueEntryId: 'queue_admin_token',
         serverAdminTokenId: 'token_admin_1',
-        triggerActor: { kind: 'user' as const, id: 'user_admin' },
-        workspaceId: 'ws_1',
-        threadId: 'th_1',
-        turnId: 'turn_1',
+        triggerActor: { kind: 'user' as const, id: 'usr_00000000-0000-768a-8658-44c33d82c1f5' },
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+        threadId: 'th_00000000-0000-7267-800d-a65e1b6a22d7',
+        turnId: testEntityId('tu', 'turn_1'),
         turnInput: 'Run task',
         requestedAgentId: 'assistant',
       };
@@ -186,7 +200,7 @@ describe('scheduler records', () => {
     try {
       expect(listQueuedSchedulerAdmissionEntries(reopened)[0]).toMatchObject({
         serverAdminTokenId: 'token_admin_1',
-        triggerActor: { kind: 'user', id: 'user_admin' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-768a-8658-44c33d82c1f5' },
       });
       expect(
         reopened.sqlite
@@ -204,11 +218,11 @@ describe('scheduler records', () => {
     try {
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId: 'queue_automation',
-        workspaceId: 'ws_b',
-        threadId: 'thread_b',
-        turnId: 'turn_b',
+        workspaceId: 'ws_00000000-0000-7b97-bc3d-37f962735158',
+        threadId: testEntityId('th', 'thread_b'),
+        turnId: testEntityId('tu', 'turn_b'),
         turnInput: 'Run automation work',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -217,10 +231,10 @@ describe('scheduler records', () => {
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: 'queue_goal_fresh',
-        triggerActor: { kind: 'user', id: 'user_local' },
-        workspaceId: 'ws_goal',
-        threadId: 'thread_goal',
-        turnId: 'turn_goal',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        workspaceId: 'ws_00000000-0000-7509-8702-098e8909b075',
+        threadId: testEntityId('th', 'thread_goal'),
+        turnId: testEntityId('tu', 'turn_goal'),
         turnInput: 'Run fresh Goal work',
         requestedAgentId: 'agent_worker',
         workerStorageChoice: {
@@ -235,12 +249,12 @@ describe('scheduler records', () => {
         queueEntryId: 'queue_interactive',
         triggerActor: {
           kind: 'automation',
-          id: 'automation_interactive',
-          responsibleUserId: 'user_interactive',
+          id: 'auto_00000000-0000-7618-af97-ff26fae216d4',
+          responsibleUserId: 'usr_00000000-0000-7852-8b54-762f114b9c0a',
         },
-        workspaceId: 'ws_a',
-        threadId: 'thread_a',
-        turnId: 'turn_a',
+        workspaceId: 'ws_00000000-0000-7159-b04f-df2eaa9abaf0',
+        threadId: testEntityId('th', 'thread_a'),
+        turnId: testEntityId('tu', 'turn_a'),
         turnInput: 'Run interactive work',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -255,24 +269,24 @@ describe('scheduler records', () => {
           },
         ],
         workerStorageChoice: {
-          adjudicatedThreadIds: ['thread_predecessor'],
+          adjudicatedThreadIds: [testEntityId('th', 'thread_predecessor')],
           expectedRevision: 7,
           goalId: 'goal_a',
           kind: 'selected',
           purpose: 'work',
           reuseWorkSlotRef: 'wsl_predecessor',
-          storageRef: 'wst_selected',
+          storageRef: 'wst_00000000-0000-77ec-b7e9-3fa6a72e99a1',
           taskId: 'task_a',
         },
         now: () => '2026-07-05T00:00:03.000Z',
       });
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId: 'queue_maintenance',
-        workspaceId: 'ws_c',
-        threadId: 'thread_c',
-        turnId: 'turn_c',
+        workspaceId: 'ws_00000000-0000-7700-9168-e31a19301e5a',
+        threadId: testEntityId('th', 'thread_c'),
+        turnId: testEntityId('tu', 'turn_c'),
         turnInput: 'Run maintenance work',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -293,8 +307,8 @@ describe('scheduler records', () => {
         )?.triggerActor
       ).toEqual({
         kind: 'automation',
-        id: 'automation_interactive',
-        responsibleUserId: 'user_interactive',
+        id: 'auto_00000000-0000-7618-af97-ff26fae216d4',
+        responsibleUserId: 'usr_00000000-0000-7852-8b54-762f114b9c0a',
       });
       expect(
         listQueuedSchedulerAdmissionEntries(coreDb).find(
@@ -319,13 +333,13 @@ describe('scheduler records', () => {
           (entry) => entry.queueEntryId === 'queue_interactive'
         )?.workerStorageChoice
       ).toEqual({
-        adjudicatedThreadIds: ['thread_predecessor'],
+        adjudicatedThreadIds: [testEntityId('th', 'thread_predecessor')],
         expectedRevision: 7,
         goalId: 'goal_a',
         kind: 'selected',
         purpose: 'work',
         reuseWorkSlotRef: 'wsl_predecessor',
-        storageRef: 'wst_selected',
+        storageRef: 'wst_00000000-0000-77ec-b7e9-3fa6a72e99a1',
         taskId: 'task_a',
       });
       expect(
@@ -344,11 +358,11 @@ describe('scheduler records', () => {
     try {
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId: 'queue_bad_storage_choice',
-        workspaceId: 'ws_demo',
-        threadId: 'thread_bad_storage_choice',
-        turnId: 'turn_bad_storage_choice',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: testEntityId('th', 'thread_bad_storage_choice'),
+        turnId: testEntityId('tu', 'turn_bad_storage_choice'),
         turnInput: 'Reject malformed storage choice',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -361,7 +375,7 @@ describe('scheduler records', () => {
            WHERE queue_entry_id = ?`
         )
         .run(
-          JSON.stringify({ kind: 'fresh', storageRef: 'wst_smuggled' }),
+          JSON.stringify({ kind: 'fresh', storageRef: 'wst_00000000-0000-74af-9710-256527cd7cc8' }),
           'queue_bad_storage_choice'
         );
 
@@ -379,11 +393,11 @@ describe('scheduler records', () => {
     try {
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId: 'queue_one',
-        workspaceId: 'ws_demo',
-        threadId: 'thread_demo',
-        turnId: 'turn_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: testEntityId('th', 'thread_demo'),
+        turnId: testEntityId('tu', 'turn_demo'),
         turnInput: 'Run first queued turn',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -393,11 +407,11 @@ describe('scheduler records', () => {
       expect(() =>
         createSchedulerAdmissionEntry(coreDb, {
           backendId: 'nanohost',
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           queueEntryId: 'queue_two',
-          workspaceId: 'ws_demo',
-          threadId: 'thread_demo',
-          turnId: 'turn_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: testEntityId('th', 'thread_demo'),
+          turnId: testEntityId('tu', 'turn_demo'),
           turnInput: 'Run duplicate queued turn',
           requestedAgentId: 'agent_worker',
           profileRef: null,
@@ -415,11 +429,11 @@ describe('scheduler records', () => {
     try {
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId: 'queue_denied',
-        workspaceId: 'ws_demo',
-        threadId: 'thread_demo',
-        turnId: 'turn_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: testEntityId('th', 'thread_demo'),
+        turnId: testEntityId('tu', 'turn_demo'),
         turnInput: 'Run denied turn',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -446,10 +460,10 @@ describe('scheduler records', () => {
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: 'queue_retry_denied',
-        triggerActor: { kind: 'user', id: 'user_original_trigger' },
-        workspaceId: 'ws_demo',
-        threadId: 'thread_demo',
-        turnId: 'turn_demo',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7814-ae85-578d000c895b' },
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: testEntityId('th', 'thread_demo'),
+        turnId: testEntityId('tu', 'turn_demo'),
         turnInput: 'Run denied turn again',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -462,7 +476,7 @@ describe('scheduler records', () => {
 
       const retried = retryDeniedSchedulerAdmissionEntry(coreDb, {
         queueEntryId: 'queue_retry_denied',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       expect(retried.status).toBe('queued');
@@ -472,12 +486,12 @@ describe('scheduler records', () => {
       ).toEqual(['queue_retry_denied']);
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           statuses: ['queued'],
         })
       ).toEqual([
         expect.objectContaining({
-          triggerActor: { kind: 'user', id: 'user_original_trigger' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7814-ae85-578d000c895b' },
         }),
       ]);
     } finally {
@@ -492,10 +506,10 @@ describe('scheduler records', () => {
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: 'queue_cancel',
-        triggerActor: { kind: 'user', id: 'user_original_trigger' },
-        workspaceId: 'ws_demo',
-        threadId: 'thread_demo',
-        turnId: 'turn_demo',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7814-ae85-578d000c895b' },
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: testEntityId('th', 'thread_demo'),
+        turnId: testEntityId('tu', 'turn_demo'),
         turnInput: 'Cancel this turn',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -504,7 +518,7 @@ describe('scheduler records', () => {
 
       const cancelled = cancelSchedulerAdmissionEntry(coreDb, {
         queueEntryId: 'queue_cancel',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       expect(cancelled.status).toBe('cancelled');
@@ -522,14 +536,14 @@ describe('scheduler records', () => {
       createPreparedAttempt(coreDb, 'lease_heartbeat');
 
       const lease = acceptNanoHostAttemptHeartbeat(coreDb, {
-        attemptId: 'lease_heartbeat',
+        attemptId: testEntityId('attempt', 'lease_heartbeat'),
         workerSequence: 4,
         heartbeatTimeoutMs: 30_000,
         now: () => '2026-07-05T00:00:10.000Z',
       });
 
       expect(lease).toMatchObject({
-        attemptId: 'lease_heartbeat',
+        attemptId: testEntityId('attempt', 'lease_heartbeat'),
         lastAcceptedHeartbeatAt: '2026-07-05T00:00:10.000Z',
         lastWorkerSequence: 4,
         heartbeatDeadline: '2026-07-05T00:00:40.000Z',
@@ -546,13 +560,13 @@ describe('scheduler records', () => {
       createPreparedAttempt(coreDb, 'lease_heartbeat_retry');
       const first = acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        attemptId: 'lease_heartbeat_retry',
+        attemptId: testEntityId('attempt', 'lease_heartbeat_retry'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 4,
       });
       const retry = acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        attemptId: 'lease_heartbeat_retry',
+        attemptId: testEntityId('attempt', 'lease_heartbeat_retry'),
         now: () => '2026-07-05T00:00:20.000Z',
         workerSequence: 4,
       });
@@ -571,11 +585,11 @@ describe('scheduler records', () => {
       let winner: ReturnType<typeof acceptNanoHostAttemptHeartbeat> | null = null;
       const retry = acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        attemptId: 'lease_heartbeat_concurrent_retry',
+        attemptId: testEntityId('attempt', 'lease_heartbeat_concurrent_retry'),
         now: () => {
           winner = acceptNanoHostAttemptHeartbeat(coreDb, {
             heartbeatTimeoutMs: 30_000,
-            attemptId: 'lease_heartbeat_concurrent_retry',
+            attemptId: testEntityId('attempt', 'lease_heartbeat_concurrent_retry'),
             now: () => '2026-07-05T00:00:10.000Z',
             workerSequence: 4,
           });
@@ -599,11 +613,11 @@ describe('scheduler records', () => {
       expect(() =>
         acceptNanoHostAttemptHeartbeat(coreDb, {
           heartbeatTimeoutMs: 30_000,
-          attemptId: 'lease_heartbeat_concurrent_newer',
+          attemptId: testEntityId('attempt', 'lease_heartbeat_concurrent_newer'),
           now: () => {
             acceptNanoHostAttemptHeartbeat(coreDb, {
               heartbeatTimeoutMs: 30_000,
-              attemptId: 'lease_heartbeat_concurrent_newer',
+              attemptId: testEntityId('attempt', 'lease_heartbeat_concurrent_newer'),
               now: () => '2026-07-05T00:00:10.000Z',
               workerSequence: 5,
             });
@@ -624,7 +638,7 @@ describe('scheduler records', () => {
       createPreparedAttempt(coreDb, 'lease_heartbeat_stale_sequence');
       const accepted = acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        attemptId: 'lease_heartbeat_stale_sequence',
+        attemptId: testEntityId('attempt', 'lease_heartbeat_stale_sequence'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 4,
       });
@@ -632,13 +646,16 @@ describe('scheduler records', () => {
       expect(() =>
         acceptNanoHostAttemptHeartbeat(coreDb, {
           heartbeatTimeoutMs: 30_000,
-          attemptId: 'lease_heartbeat_stale_sequence',
+          attemptId: testEntityId('attempt', 'lease_heartbeat_stale_sequence'),
           now: () => '2026-07-05T00:00:20.000Z',
           workerSequence: 3,
         })
       ).toThrow();
       expect(
-        requireNanoHostExecutionAttempt(coreDb, 'lease_heartbeat_stale_sequence')
+        requireNanoHostExecutionAttempt(
+          coreDb,
+          testEntityId('attempt', 'lease_heartbeat_stale_sequence')
+        )
       ).toMatchObject({
         heartbeatDeadline: accepted.heartbeatDeadline,
         lastAcceptedHeartbeatAt: accepted.lastAcceptedHeartbeatAt,
@@ -656,7 +673,7 @@ describe('scheduler records', () => {
       createPreparedAttempt(coreDb, 'lease_heartbeat_newer_sequence');
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        attemptId: 'lease_heartbeat_newer_sequence',
+        attemptId: testEntityId('attempt', 'lease_heartbeat_newer_sequence'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 4,
       });
@@ -664,7 +681,7 @@ describe('scheduler records', () => {
       expect(
         acceptNanoHostAttemptHeartbeat(coreDb, {
           heartbeatTimeoutMs: 30_000,
-          attemptId: 'lease_heartbeat_newer_sequence',
+          attemptId: testEntityId('attempt', 'lease_heartbeat_newer_sequence'),
           now: () => '2026-07-05T00:00:20.000Z',
           workerSequence: 5,
         })
@@ -687,10 +704,10 @@ describe('scheduler records', () => {
       expect(() =>
         acceptNanoHostAttemptHeartbeat(coreDb, {
           heartbeatTimeoutMs: 30_000,
-          attemptId: 'lease_heartbeat_race',
+          attemptId: testEntityId('attempt', 'lease_heartbeat_race'),
           now: () => {
             beginOwnedAttemptCloseout(coreDb, {
-              attemptId: 'lease_heartbeat_race',
+              attemptId: testEntityId('attempt', 'lease_heartbeat_race'),
               firstTerminalCause: 'worker-final-status',
             });
             return '2026-07-05T00:00:10.000Z';
@@ -700,7 +717,7 @@ describe('scheduler records', () => {
       ).toThrow('cannot accept heartbeat');
       expect(
         observeExecutionAttempts(coreDb).find(
-          (attempt) => attempt.attempt_id === 'lease_heartbeat_race'
+          (attempt) => attempt.attempt_id === testEntityId('attempt', 'lease_heartbeat_race')
         )?.phase
       ).toBe('closing');
     } finally {
@@ -714,30 +731,42 @@ describe('scheduler records', () => {
       createPreparedAttempt(coreDb, 'lease_expired');
       createPreparedAttempt(coreDb, 'lease_terminal');
       acceptNanoHostAttemptHeartbeat(coreDb, {
-        attemptId: 'lease_expired',
+        attemptId: testEntityId('attempt', 'lease_expired'),
         heartbeatTimeoutMs: 30_000,
         workerSequence: 1,
         now: () => '2026-07-05T00:00:10.000Z',
       });
       beginOwnedAttemptCloseout(coreDb, {
-        attemptId: 'lease_terminal',
+        attemptId: testEntityId('attempt', 'lease_terminal'),
         firstTerminalCause: 'turn-completed',
       });
-      await releaseModeledAttempt(coreDb, 'lease_terminal');
-      expect(resolveAttemptRoute(coreDb, 'lease_expired', '2026-07-05T00:01:00.000Z')).toEqual({
+      await releaseModeledAttempt(coreDb, testEntityId('attempt', 'lease_terminal'));
+      expect(
+        resolveAttemptRoute(
+          coreDb,
+          testEntityId('attempt', 'lease_expired'),
+          '2026-07-05T00:01:00.000Z'
+        )
+      ).toEqual({
         status: 'rejected',
         reason: 'attempt-not-live',
       });
       expect(
-        attemptActionOwners.requireSchedulerExecutionAttempt(coreDb, 'lease_expired')
+        attemptActionOwners.requireSchedulerExecutionAttempt(
+          coreDb,
+          testEntityId('attempt', 'lease_expired')
+        )
       ).toMatchObject({
         phase: 'open',
         disposition: 'unknown',
         fenceRef: null,
-        operationId: 'fixture-submit:lease_expired',
+        operationId: `fixture-submit:${testEntityId('attempt', 'lease_expired')}`,
       });
       expect(
-        attemptActionOwners.requireSchedulerExecutionAttempt(coreDb, 'lease_terminal').phase
+        attemptActionOwners.requireSchedulerExecutionAttempt(
+          coreDb,
+          testEntityId('attempt', 'lease_terminal')
+        ).phase
       ).toBe('closed');
     } finally {
       coreDb.sqlite.close();
@@ -764,7 +793,10 @@ describe('scheduler records', () => {
       await expect(
         backend.inspect(
           attemptActionOwners.schedulerExecutionCorrelation(
-            attemptActionOwners.requireSchedulerExecutionAttempt(coreDb, `lease_${suffix}`)
+            attemptActionOwners.requireSchedulerExecutionAttempt(
+              coreDb,
+              testEntityId('attempt', `lease_${suffix}`)
+            )
           )
         )
       ).rejects.toThrow(expectedError);
@@ -784,7 +816,7 @@ describe('scheduler records', () => {
         backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
         backendVersion: '0.0.99',
         identity: {
-          agentSessionId: 'session_cleanup_barrier',
+          agentSessionId: testEntityId('as', 'session_cleanup_barrier'),
           backendKind: 'openshell',
           backendSessionId: 'openkit-session_cleanup_barrier',
           deploymentId: 'deployment-test',
@@ -794,75 +826,75 @@ describe('scheduler records', () => {
           transientProviderInstanceId: null,
         },
         lineage: {
-          threadId: 'thread_cleanup_barrier',
-          turnId: 'turn_cleanup_barrier',
-          workspaceId: 'ws_demo',
+          threadId: testEntityId('th', 'thread_cleanup_barrier'),
+          turnId: testEntityId('tu', 'turn_cleanup_barrier'),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
         now: () => '2026-07-05T00:00:03.000Z',
-        sandboxBindingRef: 'lease-binding:lease_cleanup_barrier',
+        sandboxBindingRef: `lease-binding:${testEntityId('attempt', 'lease_cleanup_barrier')}`,
       });
 
       expect(
         await closeOwnedExecutionAttempt(coreDb, {
-          attemptId: 'lease_cleanup_barrier',
+          attemptId: testEntityId('attempt', 'lease_cleanup_barrier'),
           firstTerminalCause: 'turn-failed',
           outcome: 'failed',
         })
       ).toMatchObject({ state: 'pending', fenceRef: null });
       completeTerminalAttempt(coreDb, {
-        id: 'turn_cleanup_barrier',
+        id: testEntityId('tu', 'turn_cleanup_barrier'),
         status: 'failed',
-        threadId: 'thread_cleanup_barrier',
-        workspaceId: 'ws_demo',
+        threadId: testEntityId('th', 'thread_cleanup_barrier'),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(['open', 'closing']).toContain(
         observeExecutionAttempts(coreDb).find(
-          (attempt) => attempt.attempt_id === 'lease_cleanup_barrier'
+          (attempt) => attempt.attempt_id === testEntityId('attempt', 'lease_cleanup_barrier')
         )?.phase
       );
 
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materializing',
-        attemptId: 'lease_cleanup_barrier',
+        attemptId: testEntityId('attempt', 'lease_cleanup_barrier'),
         toState: 'cleanup-pending',
       });
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'cleanup-pending',
-        attemptId: 'lease_cleanup_barrier',
+        attemptId: testEntityId('attempt', 'lease_cleanup_barrier'),
         toState: 'physical-cleaned',
       });
       completeTerminalAttempt(coreDb, {
-        id: 'turn_cleanup_barrier',
+        id: testEntityId('tu', 'turn_cleanup_barrier'),
         status: 'failed',
-        threadId: 'thread_cleanup_barrier',
-        workspaceId: 'ws_demo',
+        threadId: testEntityId('th', 'thread_cleanup_barrier'),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(['open', 'closing']).toContain(
         observeExecutionAttempts(coreDb).find(
-          (attempt) => attempt.attempt_id === 'lease_cleanup_barrier'
+          (attempt) => attempt.attempt_id === testEntityId('attempt', 'lease_cleanup_barrier')
         )?.phase
       );
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'physical-cleaned',
-        attemptId: 'lease_cleanup_barrier',
+        attemptId: testEntityId('attempt', 'lease_cleanup_barrier'),
         toState: 'cleaned',
       });
       completeTerminalAttempt(coreDb, {
-        id: 'turn_cleanup_barrier',
+        id: testEntityId('tu', 'turn_cleanup_barrier'),
         status: 'failed',
-        threadId: 'thread_cleanup_barrier',
-        workspaceId: 'ws_demo',
+        threadId: testEntityId('th', 'thread_cleanup_barrier'),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(
         await closeOwnedExecutionAttempt(coreDb, {
-          attemptId: 'lease_cleanup_barrier',
+          attemptId: testEntityId('attempt', 'lease_cleanup_barrier'),
           firstTerminalCause: 'turn-failed',
           outcome: 'failed',
         })
       ).toMatchObject({ state: 'released' });
       expect(
         observeExecutionAttempts(coreDb).find(
-          (attempt) => attempt.attempt_id === 'lease_cleanup_barrier'
+          (attempt) => attempt.attempt_id === testEntityId('attempt', 'lease_cleanup_barrier')
         )?.phase
       ).toBe('closed');
     } finally {
@@ -881,13 +913,13 @@ describe('scheduler records', () => {
       if (status === 'active') {
         acceptNanoHostAttemptHeartbeat(coreDb, {
           heartbeatTimeoutMs: 30_000,
-          attemptId: `lease_missing_anchor_${status}`,
+          attemptId: testEntityId('attempt', `lease_missing_anchor_${status}`),
           now: () => '2026-07-05T00:00:10.000Z',
           workerSequence: 1,
         });
       } else {
         beginOwnedAttemptCloseout(coreDb, {
-          attemptId: `lease_missing_anchor_${status}`,
+          attemptId: testEntityId('attempt', `lease_missing_anchor_${status}`),
           now: () => '2026-07-05T00:00:10.000Z',
           firstTerminalCause: 'worker-final-status',
         });
@@ -895,14 +927,15 @@ describe('scheduler records', () => {
 
       expect(
         await closeOwnedExecutionAttempt(coreDb, {
-          attemptId: `lease_missing_anchor_${status}`,
+          attemptId: testEntityId('attempt', `lease_missing_anchor_${status}`),
           firstTerminalCause: 'turn-failed',
           outcome: 'failed',
         })
       ).toMatchObject({ state: 'pending', fenceRef: null });
       expect(['open', 'closing']).toContain(
         observeExecutionAttempts(coreDb).find(
-          (attempt) => attempt.attempt_id === `lease_missing_anchor_${status}`
+          (attempt) =>
+            attempt.attempt_id === testEntityId('attempt', `lease_missing_anchor_${status}`)
         )?.phase
       );
     } finally {
@@ -920,7 +953,7 @@ describe('scheduler records', () => {
         backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
         backendVersion: '0.0.99',
         identity: {
-          agentSessionId: 'session_cleanup_grace',
+          agentSessionId: testEntityId('as', 'session_cleanup_grace'),
           backendKind: 'openshell',
           backendSessionId: 'openkit-session_cleanup_grace',
           deploymentId: 'deployment-test',
@@ -930,15 +963,15 @@ describe('scheduler records', () => {
           transientProviderInstanceId: null,
         },
         lineage: {
-          threadId: 'thread_cleanup_grace',
-          turnId: 'turn_cleanup_grace',
-          workspaceId: 'ws_demo',
+          threadId: testEntityId('th', 'thread_cleanup_grace'),
+          turnId: testEntityId('tu', 'turn_cleanup_grace'),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
         now: () => '2026-07-05T00:00:03.000Z',
-        sandboxBindingRef: 'lease-binding:lease_cleanup_grace',
+        sandboxBindingRef: `lease-binding:${testEntityId('attempt', 'lease_cleanup_grace')}`,
       });
       beginOwnedAttemptCloseout(coreDb, {
-        attemptId: 'lease_cleanup_grace',
+        attemptId: testEntityId('attempt', 'lease_cleanup_grace'),
         now: () => '2026-07-05T00:00:10.000Z',
         firstTerminalCause: 'worker-final-status',
       });
@@ -951,17 +984,17 @@ describe('scheduler records', () => {
       });
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materializing',
-        attemptId: 'lease_cleanup_grace',
+        attemptId: testEntityId('attempt', 'lease_cleanup_grace'),
         toState: 'cleanup-pending',
       });
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'cleanup-pending',
-        attemptId: 'lease_cleanup_grace',
+        attemptId: testEntityId('attempt', 'lease_cleanup_grace'),
         toState: 'physical-cleaned',
       });
       transitionWorkerBackendSessionState(coreDb, {
         fromState: 'physical-cleaned',
-        attemptId: 'lease_cleanup_grace',
+        attemptId: testEntityId('attempt', 'lease_cleanup_grace'),
         toState: 'cleaned',
       });
       await runSchedulerRecoveryMaintenance(coreDb, {
@@ -972,7 +1005,7 @@ describe('scheduler records', () => {
       });
       expect(
         observeExecutionAttempts(coreDb).find(
-          (attempt) => attempt.attempt_id === 'lease_cleanup_grace'
+          (attempt) => attempt.attempt_id === testEntityId('attempt', 'lease_cleanup_grace')
         )?.phase
       ).toBe('closing');
     } finally {
@@ -992,30 +1025,33 @@ describe('scheduler records', () => {
     try {
       createPreparedAttempt(coreDb, `lease_${suffix}`);
       completeTerminalAttempt(coreDb, {
-        id: `turn_${suffix}`,
-        workspaceId: 'ws_demo',
-        threadId: `thread_${suffix}`,
+        id: testEntityId('tu', `turn_${suffix}`),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: testEntityId('th', `thread_${suffix}`),
         status: turnStatus,
       });
 
-      await releaseModeledAttempt(coreDb, `lease_${suffix}`);
+      await releaseModeledAttempt(coreDb, testEntityId('attempt', `lease_${suffix}`));
       expect(
-        observeExecutionAttempts(coreDb).find((attempt) => attempt.attempt_id === `lease_${suffix}`)
-          ?.phase
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === testEntityId('attempt', `lease_${suffix}`)
+        )?.phase
       ).toBe('closed');
       const first = observeExecutionAttempts(coreDb).find(
-        (row) => row.attempt_id === `lease_${suffix}`
+        (row) => row.attempt_id === testEntityId('attempt', `lease_${suffix}`)
       )!;
       expect(first.terminal_cause).toEqual(expect.any(String));
-      expect(first.outcome_ref).toBe(`turn:turn_${suffix}:${turnStatus}`);
+      expect(first.outcome_ref).toBe(`turn:${testEntityId('tu', `turn_${suffix}`)}:${turnStatus}`);
       /** Projects only closed-core facts; evidence, diagnostics and timestamps may refine. */
       const protectedFacts = (db: typeof coreDb) => {
         const rows = observeExecutionAttempts(db);
         const row = rows.find((candidate) => candidate.attempt_id === first.attempt_id);
         expect(row).toBeDefined();
         expect(row!.disposition).toBe('unknown');
-        expect(row!.operation_id).toBe(`fixture-submit:lease_${suffix}`);
-        expect(row!.fence_ref).toBe(`self-check:lease_${suffix}`);
+        expect(row!.operation_id).toBe(
+          `fixture-submit:${testEntityId('attempt', `lease_${suffix}`)}`
+        );
+        expect(row!.fence_ref).toBe(`self-check:${testEntityId('attempt', `lease_${suffix}`)}`);
         expect(rows.filter((candidate) => candidate.phase !== 'closed')).toEqual([]);
         expect(rows.map((candidate) => candidate.attempt_id)).toEqual([first.attempt_id]);
         return {
@@ -1032,9 +1068,9 @@ describe('scheduler records', () => {
       for (const lateStatus of [turnStatus, turnStatus === 'completed' ? 'failed' : 'completed']) {
         try {
           completeTerminalAttempt(coreDb, {
-            id: `turn_${suffix}`,
-            workspaceId: 'ws_demo',
-            threadId: `thread_${suffix}`,
+            id: testEntityId('tu', `turn_${suffix}`),
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: testEntityId('th', `thread_${suffix}`),
             status: lateStatus,
           });
         } catch (error) {
@@ -1050,9 +1086,9 @@ describe('scheduler records', () => {
         ]) {
           try {
             completeTerminalAttempt(reopened, {
-              id: `turn_${suffix}`,
-              workspaceId: 'ws_demo',
-              threadId: `thread_${suffix}`,
+              id: testEntityId('tu', `turn_${suffix}`),
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: testEntityId('th', `thread_${suffix}`),
               status: lateStatus,
             });
           } catch (error) {
@@ -1074,15 +1110,15 @@ describe('scheduler records', () => {
     try {
       createPreparedAttempt(coreDb, 'lease_turn_running');
       completeTerminalAttempt(coreDb, {
-        id: 'turn_turn_running',
-        workspaceId: 'ws_demo',
-        threadId: 'thread_turn_running',
+        id: testEntityId('tu', 'turn_turn_running'),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: testEntityId('th', 'thread_turn_running'),
         status: 'running',
       });
 
       expect(['open', 'closing']).toContain(
         observeExecutionAttempts(coreDb).find(
-          (attempt) => attempt.attempt_id === 'lease_turn_running'
+          (attempt) => attempt.attempt_id === testEntityId('attempt', 'lease_turn_running')
         )?.phase
       );
     } finally {
@@ -1097,10 +1133,17 @@ describe('scheduler records', () => {
       createPreparedAttempt(coreDb, 'lease_startup_timeout');
 
       expect(
-        resolveAttemptRoute(coreDb, 'lease_startup_timeout', '2026-07-05T00:26:00.000Z')
+        resolveAttemptRoute(
+          coreDb,
+          testEntityId('attempt', 'lease_startup_timeout'),
+          '2026-07-05T00:26:00.000Z'
+        )
       ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
       expect(
-        attemptActionOwners.requireSchedulerExecutionAttempt(coreDb, 'lease_startup_timeout')
+        attemptActionOwners.requireSchedulerExecutionAttempt(
+          coreDb,
+          testEntityId('attempt', 'lease_startup_timeout')
+        )
       ).toMatchObject({ phase: 'open', disposition: 'unknown', fenceRef: null });
     } finally {
       coreDb.sqlite.close();
@@ -1117,7 +1160,7 @@ describe('scheduler records', () => {
         backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
         backendVersion: '0.0.99',
         identity: {
-          agentSessionId: 'session_anchored_startup_timeout',
+          agentSessionId: testEntityId('as', 'session_anchored_startup_timeout'),
           backendKind: 'openshell',
           backendSessionId: 'openkit-session_anchored_startup_timeout',
           deploymentId: 'deployment-test',
@@ -1127,21 +1170,25 @@ describe('scheduler records', () => {
           transientProviderInstanceId: null,
         },
         lineage: {
-          threadId: 'thread_anchored_startup_timeout',
-          turnId: 'turn_anchored_startup_timeout',
-          workspaceId: 'ws_demo',
+          threadId: testEntityId('th', 'thread_anchored_startup_timeout'),
+          turnId: testEntityId('tu', 'turn_anchored_startup_timeout'),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
         now: () => '2026-07-05T00:00:03.000Z',
-        sandboxBindingRef: 'lease-binding:lease_anchored_startup_timeout',
+        sandboxBindingRef: `lease-binding:${testEntityId('attempt', 'lease_anchored_startup_timeout')}`,
       });
 
       expect(
-        resolveAttemptRoute(coreDb, 'lease_anchored_startup_timeout', '2026-07-05T00:26:00.000Z')
+        resolveAttemptRoute(
+          coreDb,
+          testEntityId('attempt', 'lease_anchored_startup_timeout'),
+          '2026-07-05T00:26:00.000Z'
+        )
       ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
       expect(
         attemptActionOwners.requireSchedulerExecutionAttempt(
           coreDb,
-          'lease_anchored_startup_timeout'
+          testEntityId('attempt', 'lease_anchored_startup_timeout')
         )
       ).toMatchObject({ phase: 'open', disposition: 'unknown', fenceRef: null });
     } finally {
@@ -1155,7 +1202,7 @@ describe('scheduler records', () => {
     try {
       createPreparedAttempt(coreDb, 'lease_started');
       acceptNanoHostAttemptHeartbeat(coreDb, {
-        attemptId: 'lease_started',
+        attemptId: testEntityId('attempt', 'lease_started'),
         workerSequence: 1,
         heartbeatTimeoutMs: 30_000,
         now: () => '2026-07-05T00:00:10.000Z',
@@ -1163,7 +1210,7 @@ describe('scheduler records', () => {
 
       for (let sequence = 2; sequence <= 78; sequence += 1) {
         acceptNanoHostAttemptHeartbeat(coreDb, {
-          attemptId: 'lease_started',
+          attemptId: testEntityId('attempt', 'lease_started'),
           workerSequence: sequence,
           heartbeatTimeoutMs: 30_000,
           now: () =>
@@ -1173,11 +1220,16 @@ describe('scheduler records', () => {
         });
       }
       expect(
-        resolveAttemptRoute(coreDb, 'lease_started', '2026-07-05T00:26:00.000Z')
+        resolveAttemptRoute(
+          coreDb,
+          testEntityId('attempt', 'lease_started'),
+          '2026-07-05T00:26:00.000Z'
+        )
       ).toMatchObject({ status: 'accepted' });
       expect(['open', 'closing']).toContain(
-        observeExecutionAttempts(coreDb).find((attempt) => attempt.attempt_id === 'lease_started')
-          ?.phase
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === testEntityId('attempt', 'lease_started')
+        )?.phase
       );
     } finally {
       coreDb.sqlite.close();
@@ -1191,23 +1243,24 @@ describe('scheduler records', () => {
       createPreparedAttempt(coreDb, 'lease_releasing');
 
       beginOwnedAttemptCloseout(coreDb, {
-        attemptId: 'lease_releasing',
+        attemptId: testEntityId('attempt', 'lease_releasing'),
         now: () => '2026-07-05T00:00:10.000Z',
         firstTerminalCause: 'worker-final-status',
       });
       expect(
-        observeExecutionAttempts(coreDb).find((attempt) => attempt.attempt_id === 'lease_releasing')
-          ?.phase
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === testEntityId('attempt', 'lease_releasing')
+        )?.phase
       ).toBe('closing');
       expect(
         resolveNanoHostAttemptTokenBinding(coreDb, {
-          sandboxBindingRef: 'lease-binding:lease_releasing',
+          sandboxBindingRef: `lease-binding:${testEntityId('attempt', 'lease_releasing')}`,
           lineage: {
-            agentSessionId: 'session_releasing',
+            agentSessionId: testEntityId('as', 'session_releasing'),
             packageSnapshotId: 'pkg_demo',
-            threadId: 'thread_releasing',
-            turnId: 'turn_releasing',
-            workspaceId: 'ws_demo',
+            threadId: testEntityId('th', 'thread_releasing'),
+            turnId: testEntityId('tu', 'turn_releasing'),
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
         })
       ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
@@ -1225,15 +1278,19 @@ describe('scheduler records', () => {
       createPreparedAttempt(coreDb, 'lease_recovery_startup');
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        attemptId: 'lease_recovery_stale',
+        attemptId: testEntityId('attempt', 'lease_recovery_stale'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
       expect(
-        resolveAttemptRoute(coreDb, 'lease_recovery_stale', '2026-07-05T00:26:00.000Z')
+        resolveAttemptRoute(
+          coreDb,
+          testEntityId('attempt', 'lease_recovery_stale'),
+          '2026-07-05T00:26:00.000Z'
+        )
       ).toMatchObject({ status: 'rejected' });
       beginOwnedAttemptCloseout(coreDb, {
-        attemptId: 'lease_recovery_release',
+        attemptId: testEntityId('attempt', 'lease_recovery_release'),
         now: () => '2026-07-05T00:00:10.000Z',
         firstTerminalCause: 'worker-final-status',
       });
@@ -1244,11 +1301,15 @@ describe('scheduler records', () => {
         now: () => '2026-07-05T00:26:00.000Z',
       });
       expect(
-        resolveAttemptRoute(coreDb, 'lease_recovery_startup', '2026-07-05T00:26:00.000Z')
+        resolveAttemptRoute(
+          coreDb,
+          testEntityId('attempt', 'lease_recovery_startup'),
+          '2026-07-05T00:26:00.000Z'
+        )
       ).toMatchObject({ status: 'rejected' });
       expect(
         observeExecutionAttempts(coreDb).find(
-          (attempt) => attempt.attempt_id === 'lease_recovery_release'
+          (attempt) => attempt.attempt_id === testEntityId('attempt', 'lease_recovery_release')
         )?.phase
       ).toBe('closing');
     } finally {
@@ -1263,25 +1324,27 @@ describe('scheduler records', () => {
       createPreparedAttempt(coreDb, 'lease_binding');
 
       const resolution = resolveNanoHostAttemptTokenBinding(coreDb, {
-        sandboxBindingRef: 'lease-binding:lease_binding',
+        sandboxBindingRef: `lease-binding:${testEntityId('attempt', 'lease_binding')}`,
         now: () => '2026-07-05T00:00:10.000Z',
         lineage: {
-          agentSessionId: 'session_binding',
+          agentSessionId: testEntityId('as', 'session_binding'),
           packageSnapshotId: 'pkg_demo',
-          threadId: 'thread_binding',
-          turnId: 'turn_binding',
-          workspaceId: 'ws_demo',
+          threadId: testEntityId('th', 'thread_binding'),
+          turnId: testEntityId('tu', 'turn_binding'),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
       });
 
       expect(resolution).toMatchObject({ status: 'accepted' });
       expect(
-        observeExecutionAttempts(coreDb).find((attempt) => attempt.attempt_id === 'lease_binding')
+        observeExecutionAttempts(coreDb).find(
+          (attempt) => attempt.attempt_id === testEntityId('attempt', 'lease_binding')
+        )
       ).toMatchObject({
         phase: 'open',
-        turn_id: 'turn_binding',
-        agent_session_id: 'session_binding',
-        binding_ref: 'lease-binding:lease_binding',
+        turn_id: testEntityId('tu', 'turn_binding'),
+        agent_session_id: testEntityId('as', 'session_binding'),
+        binding_ref: `lease-binding:${testEntityId('attempt', 'lease_binding')}`,
       });
     } finally {
       coreDb.sqlite.close();
@@ -1297,14 +1360,14 @@ describe('scheduler records', () => {
       expect(
         resolveNanoHostAttemptTokenBinding(coreDb, {
           lineage: {
-            agentSessionId: 'session_binding_expired',
+            agentSessionId: testEntityId('as', 'session_binding_expired'),
             packageSnapshotId: 'pkg_demo',
-            threadId: 'thread_binding_expired',
-            turnId: 'turn_binding_expired',
-            workspaceId: 'ws_demo',
+            threadId: testEntityId('th', 'thread_binding_expired'),
+            turnId: testEntityId('tu', 'turn_binding_expired'),
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
           now: () => '2026-07-05T02:01:00.000Z',
-          sandboxBindingRef: 'lease-binding:lease_binding_expired',
+          sandboxBindingRef: `lease-binding:${testEntityId('attempt', 'lease_binding_expired')}`,
         })
       ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
     } finally {
@@ -1321,14 +1384,14 @@ describe('scheduler records', () => {
       expect(
         resolveNanoHostAttemptTokenBinding(coreDb, {
           lineage: {
-            agentSessionId: 'session_binding_startup_timeout',
+            agentSessionId: testEntityId('as', 'session_binding_startup_timeout'),
             packageSnapshotId: 'pkg_demo',
-            threadId: 'thread_binding_startup_timeout',
-            turnId: 'turn_binding_startup_timeout',
-            workspaceId: 'ws_demo',
+            threadId: testEntityId('th', 'thread_binding_startup_timeout'),
+            turnId: testEntityId('tu', 'turn_binding_startup_timeout'),
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
           now: () => '2026-07-05T00:26:00.000Z',
-          sandboxBindingRef: 'lease-binding:lease_binding_startup_timeout',
+          sandboxBindingRef: `lease-binding:${testEntityId('attempt', 'lease_binding_startup_timeout')}`,
         })
       ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
     } finally {
@@ -1343,7 +1406,7 @@ describe('scheduler records', () => {
       createPreparedAttempt(coreDb, 'lease_binding_heartbeat_timeout');
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        attemptId: 'lease_binding_heartbeat_timeout',
+        attemptId: testEntityId('attempt', 'lease_binding_heartbeat_timeout'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
@@ -1351,14 +1414,14 @@ describe('scheduler records', () => {
       expect(
         resolveNanoHostAttemptTokenBinding(coreDb, {
           lineage: {
-            agentSessionId: 'session_binding_heartbeat_timeout',
+            agentSessionId: testEntityId('as', 'session_binding_heartbeat_timeout'),
             packageSnapshotId: 'pkg_demo',
-            threadId: 'thread_binding_heartbeat_timeout',
-            turnId: 'turn_binding_heartbeat_timeout',
-            workspaceId: 'ws_demo',
+            threadId: testEntityId('th', 'thread_binding_heartbeat_timeout'),
+            turnId: testEntityId('tu', 'turn_binding_heartbeat_timeout'),
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
           now: () => '2026-07-05T00:00:41.000Z',
-          sandboxBindingRef: 'lease-binding:lease_binding_heartbeat_timeout',
+          sandboxBindingRef: `lease-binding:${testEntityId('attempt', 'lease_binding_heartbeat_timeout')}`,
         })
       ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
     } finally {
@@ -1372,11 +1435,11 @@ describe('scheduler records', () => {
     try {
       createPreparedAttempt(coreDb, 'lease_binding_rejected');
       const lineage = {
-        agentSessionId: 'session_binding_rejected',
+        agentSessionId: testEntityId('as', 'session_binding_rejected'),
         packageSnapshotId: 'pkg_demo',
-        threadId: 'thread_binding_rejected',
-        turnId: 'turn_binding_rejected',
-        workspaceId: 'ws_demo',
+        threadId: testEntityId('th', 'thread_binding_rejected'),
+        turnId: testEntityId('tu', 'turn_binding_rejected'),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       };
 
       expect(
@@ -1387,20 +1450,20 @@ describe('scheduler records', () => {
       ).toEqual({ status: 'rejected', reason: 'binding-not-found' });
       expect(
         resolveNanoHostAttemptTokenBinding(coreDb, {
-          sandboxBindingRef: 'lease-binding:lease_binding_rejected',
-          lineage: { ...lineage, threadId: 'thread_other' },
+          sandboxBindingRef: `lease-binding:${testEntityId('attempt', 'lease_binding_rejected')}`,
+          lineage: { ...lineage, threadId: testEntityId('th', 'thread_other') },
         })
       ).toEqual({ status: 'rejected', reason: 'lineage-mismatch' });
 
       beginOwnedAttemptCloseout(coreDb, {
-        attemptId: 'lease_binding_rejected',
+        attemptId: testEntityId('attempt', 'lease_binding_rejected'),
         outcome: 'completed',
         firstTerminalCause: 'completed',
       });
 
       expect(
         resolveNanoHostAttemptTokenBinding(coreDb, {
-          sandboxBindingRef: 'lease-binding:lease_binding_rejected',
+          sandboxBindingRef: `lease-binding:${testEntityId('attempt', 'lease_binding_rejected')}`,
           lineage,
         })
       ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
@@ -1415,12 +1478,12 @@ describe('scheduler records', () => {
     try {
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId: 'queue_thread_first',
         requestId: 'request_first',
-        workspaceId: 'ws_demo',
-        threadId: 'thread_shared',
-        turnId: 'turn_thread_first',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: testEntityId('th', 'thread_shared'),
+        turnId: testEntityId('tu', 'turn_thread_first'),
         turnInput: 'Run first shared-thread turn',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -1431,17 +1494,17 @@ describe('scheduler records', () => {
       expect(first.queueEntryId).toBe('queue_thread_first');
       attemptActionOwners.createSchedulerExecutionAttempt(coreDb, {
         entry: first,
-        attemptId: 'attempt_thread_first',
+        attemptId: 'attempt_00000000-0000-7fb6-b1e2-8a89e0747cd8',
         preparationInput: { admission: first },
       });
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId: 'queue_thread_second',
         requestId: 'request_second',
-        workspaceId: 'ws_demo',
-        threadId: 'thread_shared',
-        turnId: 'turn_thread_second',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: testEntityId('th', 'thread_shared'),
+        turnId: testEntityId('tu', 'turn_thread_second'),
         turnInput: 'Run second shared-thread turn',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -1449,11 +1512,11 @@ describe('scheduler records', () => {
       });
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId: 'queue_thread_other',
-        workspaceId: 'ws_demo',
-        threadId: 'thread_other',
-        turnId: 'turn_thread_other',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: testEntityId('th', 'thread_other'),
+        turnId: testEntityId('tu', 'turn_thread_other'),
         turnInput: 'Run other thread turn',
         requestedAgentId: 'agent_worker',
         profileRef: null,
@@ -1464,7 +1527,7 @@ describe('scheduler records', () => {
       expect(second.queueEntryId).toBe('queue_thread_other');
       attemptActionOwners.createSchedulerExecutionAttempt(coreDb, {
         entry: second,
-        attemptId: 'attempt_thread_other',
+        attemptId: 'attempt_00000000-0000-7513-9184-4604f787d87e',
         preparationInput: { admission: second },
       });
       expect(

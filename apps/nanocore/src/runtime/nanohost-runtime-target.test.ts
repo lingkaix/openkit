@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   fenceNanoHostRuntimeTargetAfterRestart,
@@ -248,7 +249,10 @@ describe('configured NanoHost RuntimeTarget redacted status', () => {
 
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-nanohost-status-')));
     applyMigrations(coreDb);
-    const config = { deploymentId: 'deployment-test', identityId: 'nanohost-test' };
+    const config = {
+      deploymentId: testEntityId('dep', 'deployment-test'),
+      identityId: 'nanohost-test',
+    };
     expect(readConfiguredNanoHostRuntimeTargetStatus({ coreDb, mode: 'server' })).toMatchObject({
       code: 'nanohost_transport_config_unavailable',
       ok: false,

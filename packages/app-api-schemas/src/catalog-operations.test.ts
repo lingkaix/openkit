@@ -41,7 +41,7 @@ describe('Agent, Worker and resource catalog definitions', () => {
         tree,
       },
       'catalog.skill-candidate-decide': {
-        candidateId: 'candidate_proof',
+        candidateId: 'cand_00000000-0000-755a-9cf1-f372129db2e4',
         decision: 'promoted',
         expectedCurrentDigest: digest,
         expectedRevision: 1,
@@ -103,7 +103,7 @@ describe('Agent, Worker and resource catalog definitions', () => {
 
   it('admits null pin removal and refuses null default selection through complete and model inputs', () => {
     const input = {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       skillId: 'proof',
       digest: null,
       expectedPinDigest: null,

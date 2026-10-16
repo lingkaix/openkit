@@ -56,7 +56,7 @@ describe('nanocore metadata', () => {
       const parsed = MetaResponseSchema.parse(await res.json());
 
       expect(parsed).toMatchObject({
-        protocolVersion: '0.5.0',
+        protocolVersion: '0.6.0',
         capabilities: [
           'core.interrupt',
           'core.artifacts',

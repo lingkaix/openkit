@@ -127,6 +127,8 @@ The current transport defaults admit four capability exchanges on each session w
 
 Nested peer reset or connection closure cancels an outer readiness, upload, header, or body wait and drops the outer exchange, propagating its reset and releasing both the nested and outer family permits promptly. The outer projection shares its four control, eight inference, and four capability permits across all nested bridges on the authoritative physical session; the two existing effect reservations remain available. The H2 client builder's `max_concurrent_streams` setting limits remote-initiated streams and does not enforce this outgoing partition.
 
+The [shared-network-socket operator guidance](../../skills/openkit-ops/references/nanocore-operations.en.md#diagnose-shared-network-sockets) describes the selected stock identity refusal, supported descriptor ownership and the pre-CONNECT diagnostic limit. A generic native failure cannot establish historical package-request causality.
+
 ## Commands
 
 The native TLS transport offers only `h2` with both trust sources. Fresh roots, connection startup, TLS/HTTP2 admission, and the complete readiness acknowledgement share the Epoch owner's 120-second deadline, capped by any remaining rebuild deadline. A ready session has no startup timer. Each successor connection attempt gets one deadline, while an outage preserves the already admitted healthy Epoch.

@@ -10,9 +10,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DataRootBackupCreateResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
-import { createApp } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
-import { ensureLocalUser } from '../auth/identity.js';
+import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
@@ -27,34 +27,34 @@ describe('data-root admin routes', () => {
       .prepare(
         `INSERT INTO users
           (id, display_name, email, email_verified, created_at, updated_at, kind)
-         VALUES ('user_data_root_admin', 'Data Root User',
+         VALUES ('usr_00000000-0000-7a32-be12-523efe7f4c43', 'Data Root User',
                  'data-root-user@example.com', false, ?, ?, 'human')`
       )
       .run(Date.now(), Date.now());
     const serverAdmin = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'server-admin',
       workspaceIds: [],
     });
     const workspace = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
     });
     const readonly = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace-readonly',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
     });
     const app = createApp({
       auth: {
         api: {
           getSession: async () => ({
             session: { id: 'session_data_root_admin' },
-            user: { id: 'user_data_root_admin' },
+            user: { id: 'usr_00000000-0000-7a32-be12-523efe7f4c43' },
           }),
         },
         handler: async () => Response.json({ status: 'auth-ok' }),
@@ -152,13 +152,18 @@ describe('data-root admin routes', () => {
       ensureLocalUser(coreDb);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'server-admin',
         workspaceIds: [],
       });
       const app = createApp({ coreDb, dataRoot, mode: 'server' });
       // Corruption is introduced after startup so the real request reaches the layout reader's SQLite failure.
-      const damagedDbDirectory = join(dataRoot, 'users', 'user_storage_failure', 'db');
+      const damagedDbDirectory = join(
+        dataRoot,
+        'users',
+        'usr_00000000-0000-7605-b21c-e43512128d3c',
+        'db'
+      );
       mkdirSync(damagedDbDirectory, { recursive: true });
       const damagedDb = join(damagedDbDirectory, 'user.sqlite');
       const damagedBytes = Buffer.from('retained malformed SQLite fixture');

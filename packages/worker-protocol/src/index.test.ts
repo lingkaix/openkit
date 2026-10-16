@@ -36,10 +36,10 @@ import {
 } from './index.js';
 
 const lineage = {
-  workspaceId: 'ws_demo',
-  threadId: 'th_demo',
-  turnId: 'turn_demo',
-  agentSessionId: 'as_demo',
+  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  threadId: 'th_00000000-0000-7000-8000-000000000001',
+  turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+  agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
   packageSnapshotId: 'aep_demo',
   requestId: 'req_demo',
 };
@@ -367,9 +367,9 @@ describe('worker protocol schemas', () => {
 
     expect(() =>
       WorkerLineageSchema.parse({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         packageSnapshotId: 'aep_demo',
       })
     ).toThrow();
@@ -384,7 +384,7 @@ describe('worker protocol schemas', () => {
       event: {
         type: 'item.delta',
         data: {
-          itemId: 'it_candidate',
+          itemId: 'it_00000000-0000-7d5b-9c1d-16cfb8b14ed9',
           delta: 'hello',
         },
       },
@@ -564,7 +564,7 @@ describe('worker protocol schemas', () => {
       schemaVersion: 1,
       lineage,
       sequence: 9,
-      capabilityCallId: 'cap_1',
+      capabilityCallId: 'cap_00000000-0000-7d4f-884e-ab4fdf8dc968',
       family: 'knowledge.search',
       status: 'succeeded',
       inputSummary: 'search workspace knowledge',
@@ -580,7 +580,7 @@ describe('worker protocol schemas', () => {
         schemaVersion: 1,
         lineage,
         sequence: 10,
-        capabilityCallId: 'cap_2',
+        capabilityCallId: 'cap_00000000-0000-7626-ad5b-b16f996351d7',
         family: 'vault.raw_secret',
         status: 'succeeded',
         inputSummary: 'read raw secret',
@@ -876,7 +876,7 @@ describe('worker protocol schemas', () => {
       { ...entry, byteLength: 0 },
       { ...entry, frameSha256: 'sha256:not-a-digest' },
       { ...entry, runtimeDepth: -1 },
-      { ...entry, nativeWorkspaceId: 'ws_spoofed' },
+      { ...entry, nativeWorkspaceId: 'ws_00000000-0000-7ef6-aa1e-a9ec7a042daa' },
     ]) {
       expect(() => WorkerRuntimeNativeOriginIndexEntrySchema.parse(candidate)).toThrow();
     }
@@ -1007,7 +1007,7 @@ describe('descriptive reader extensions', () => {
         schemaVersion: 1,
         lineage,
         sequence: 1,
-        capabilityCallId: 'cap_1',
+        capabilityCallId: 'cap_00000000-0000-7d4f-884e-ab4fdf8dc968',
         family: 'knowledge.search',
         status: 'succeeded',
         inputSummary: 'search',
@@ -1149,9 +1149,17 @@ describe('descriptive reader extensions', () => {
         body: { status: 'running' },
       };
       expect(
-        schema.safeParse({ ...value, actor: { kind: 'user', id: 'user_spoofed' } }).success
+        schema.safeParse({
+          ...value,
+          actor: { kind: 'user', id: 'usr_00000000-0000-70fb-a9cd-a5e029325fda' },
+        }).success
       ).toBe(false);
-      expect(schema.safeParse({ ...value, responsibleUserId: 'user_spoofed' }).success).toBe(false);
+      expect(
+        schema.safeParse({
+          ...value,
+          responsibleUserId: 'usr_00000000-0000-70fb-a9cd-a5e029325fda',
+        }).success
+      ).toBe(false);
     }
   });
   it.each(cases)('keeps exact producer assertions for $name', ({ emitter, value }) => {

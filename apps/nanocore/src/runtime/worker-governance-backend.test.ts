@@ -31,7 +31,7 @@ describe('NanoHost worker governance helpers', () => {
     });
     for (const candidate of [
       '/workspace/outputs/report.md',
-      '/openkit/sessions/as_sibling/outputs/report.md',
+      '/openkit/sessions/as_00000000-0000-7340-a2c1-1f85dfa9bafb/outputs/report.md',
     ]) {
       expect(() => resolveNanoHostExportPath(environmentPackage, candidate)).toThrow(
         'outside every declared output slot'
@@ -166,17 +166,22 @@ describe('NanoHost worker governance helpers', () => {
     applyMigrations(coreDb);
     try {
       const store = createDemoStore();
-      const turn = store.createTurn('ws_demo', 'th_demo', 'Use catalog skill', {
-        kind: 'user',
-        id: 'user_local',
-      });
+      const turn = store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Use catalog skill',
+        {
+          kind: 'user',
+          id: 'usr_00000000-0000-7000-8000-000000000001',
+        }
+      );
       const created = importWorkspaceSkill({
         activate: true,
         createdAt: '2026-09-08T00:00:00.000Z',
         dataRoot,
         displayName: 'Repo guidelines',
         expectedRevision: 0,
-        producer: { id: 'user_local', kind: 'user' },
+        producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
         tree: [
           {
             contentBase64: Buffer.from(skillBody, 'utf8').toString('base64'),
@@ -190,14 +195,14 @@ describe('NanoHost worker governance helpers', () => {
         resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
           agentSetup: createTestAgentSetup({ skillIds: ['repo-guidelines'] }),
-          agentSessionId: 'as_nanohost_1',
+          agentSessionId: 'as_00000000-0000-79c6-aae9-aedf5075fd1f',
           backend: { kind: 'openshell' },
           coreDb,
           createdAt: '2026-06-16T00:00:00.000Z',
           requestId: 'req_nanohost_skill_1',
           turn,
           triggerActor: turn.triggerActor,
-          userId: 'user_local',
+          userId: 'usr_00000000-0000-7000-8000-000000000001',
           workspaceCwd: process.cwd(),
           workspaceRoots: [],
         })
@@ -210,7 +215,7 @@ describe('NanoHost worker governance helpers', () => {
       expect(imports[1]).toMatchObject({
         body: Buffer.from(skillBody, 'utf8'),
         byteLength: Buffer.byteLength(skillBody),
-        relativePath: 'as_nanohost_1/supply/inputs/repo-guidelines/SKILL.md',
+        relativePath: 'as_00000000-0000-79c6-aae9-aedf5075fd1f/supply/inputs/repo-guidelines/SKILL.md',
         slot: 'worker-supply',
       });
       expect(imports[1]?.contentDigest).toBe(
@@ -226,10 +231,15 @@ describe('NanoHost worker governance helpers', () => {
 /** Creates one canonical NanoHost AEP from the shared authored-manifest fixture. */
 function createNanoHostPackage(): AgentEnvironmentPackage {
   const store = createDemoStore();
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Materialize NanoHost backend', {
-    kind: 'user',
-    id: 'user_local',
-  });
+  const turn = store.createTurn(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
+    'Materialize NanoHost backend',
+    {
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    }
+  );
 
   return AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
@@ -237,9 +247,9 @@ function createNanoHostPackage(): AgentEnvironmentPackage {
       agentSetup: createTestAgentSetup({
         imageRef: 'ghcr.io/openkit/codex-worker:test',
       }),
-      agentSessionId: 'as_nanohost_1',
+      agentSessionId: 'as_00000000-0000-79c6-aae9-aedf5075fd1f',
       triggerActor: turn.triggerActor,
-      userId: 'user_local',
+      userId: 'usr_00000000-0000-7000-8000-000000000001',
       backend: {
         kind: 'openshell',
       },

@@ -11,8 +11,8 @@ describe('structured worker delegation requests', () => {
       objective: 'Fix the failing projection test.',
       acceptanceCriteria: ['The focused test passes.', 'No unrelated files are changed.'],
       contextRefs: [
-        { kind: 'workspace', id: 'ws_demo' },
-        { kind: 'thread', id: 'th_demo' },
+        { kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' },
+        { kind: 'thread', id: 'th_00000000-0000-7000-8000-000000000001' },
       ],
       resources: [
         {
@@ -53,8 +53,8 @@ describe('structured worker delegation requests', () => {
       objective: 'Fix the failing projection test.',
       acceptanceCriteria: ['The focused test passes.', 'No unrelated files are changed.'],
       contextRefs: [
-        { kind: 'workspace', id: 'ws_demo' },
-        { kind: 'thread', id: 'th_demo' },
+        { kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' },
+        { kind: 'thread', id: 'th_00000000-0000-7000-8000-000000000001' },
       ],
       resources: [
         {
@@ -96,7 +96,7 @@ describe('structured worker delegation requests', () => {
       createStructuredWorkerDelegationRequest({
         objective: 'x',
         acceptanceCriteria: [],
-        contextRefs: [{ kind: 'workspace', id: 'ws_demo' }],
+        contextRefs: [{ kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' }],
         resources: [],
         expectedArtifacts: [],
         constraints: {

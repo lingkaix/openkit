@@ -10,11 +10,10 @@ import {
   StartTaskModeResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage, WorkspaceDataSourceCatalog } from '@openkit/config-schema';
+import { AgentSessionIdSchema, deriveEntityId } from '@openkit/protocol';
 import type { WorkerContextPackageTrace } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createApp } from '../app.js';
 import { getArtifactReview } from '../artifact-reviews.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
@@ -37,7 +36,10 @@ import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
+import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { SimulatedTurnExecutor } from './simulator.js';
@@ -55,8 +57,8 @@ function createCoreDb(): CoreDb {
   ensureLocalUser(coreDb);
   recordWorkspaceOwnerMembership({
     coreDb,
-    ownerUserId: 'user_local',
-    workspaceId: 'ws_demo',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   configureNativeRuntimeTarget(coreDb);
   return coreDb;
@@ -105,14 +107,17 @@ async function linkRepository(app: ReturnType<typeof createApp>): Promise<string
     cwd: repositoryPath,
     stdio: 'ignore',
   });
-  await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-    method: 'PUT',
-    body: JSON.stringify({
-      displayName: 'Simulator repository',
-      localPath: repositoryPath,
-    }),
-    headers: { 'content-type': 'application/json' },
-  });
+  await app.request(
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/repositories/default',
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        displayName: 'Simulator repository',
+        localPath: repositoryPath,
+      }),
+      headers: { 'content-type': 'application/json' },
+    }
+  );
   return repositoryPath;
 }
 
@@ -165,7 +170,12 @@ function createRemoteGitProductFixture(
       },
     ],
   };
-  const canaryPath = join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'invalid-source-canary');
+  const canaryPath = join(
+    coreDb.dataRoot,
+    'workspaces',
+    'ws_00000000-0000-7000-8000-000000000001',
+    'invalid-source-canary'
+  );
   const runtimeConfigManager = createRuntimeConfigManager({
     dataRoot: coreDb.dataRoot,
     initialSnapshot: createInMemoryRuntimeConfigSnapshot({
@@ -192,16 +202,28 @@ function createRemoteGitProductFixture(
                   ],
                 },
               },
-              path: join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'config', 'workspace.jsonc'),
-              workspaceId: 'ws_demo',
+              path: join(
+                coreDb.dataRoot,
+                'workspaces',
+                'ws_00000000-0000-7000-8000-000000000001',
+                'config',
+                'workspace.jsonc'
+              ),
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             },
           ]
         : [],
       workspaceDataSourceCatalogs: [
         {
           catalog,
-          path: join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'config', 'data-sources.jsonc'),
-          workspaceId: 'ws_demo',
+          path: join(
+            coreDb.dataRoot,
+            'workspaces',
+            'ws_00000000-0000-7000-8000-000000000001',
+            'config',
+            'data-sources.jsonc'
+          ),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
       ],
     }),
@@ -247,8 +269,8 @@ describe('SimulatedTurnExecutor', () => {
           {
             method: 'POST',
             body: JSON.stringify({
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               requestId: '0190f4c8-0000-7000-8000-000000000211',
               input: 'Simulated scheduled worker run',
             }),
@@ -265,22 +287,32 @@ describe('SimulatedTurnExecutor', () => {
         agentId: 'agent_codex_host',
         agentProfileId: 'default',
         agentSessionId: expect.stringMatching(
-          /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+          /^as_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
         ),
         status: 'completed',
       });
       expect(
         store
-          .listThreadItems('ws_demo', 'th_demo')
+          .listThreadItems(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
           .some((item) => item.turnId === turn.id && item.type === 'user-input-request')
       ).toBe(true);
-      expect(executor.getAgentSession(store, 'ws_demo', 'th_demo').id).toBe(
-        storedTurn.agentSessionId
-      );
+      expect(
+        executor.getAgentSession(
+          store,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        ).id
+      ).toBe(storedTurn.agentSessionId);
 
       expect(
         store
-          .listThreadItems('ws_demo', 'th_demo')
+          .listThreadItems(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
           .filter((item) => item.turnId === turn.id)
           .map((item) => item.type)
       ).toEqual([
@@ -296,7 +328,7 @@ describe('SimulatedTurnExecutor', () => {
           .listAllItems()
           .filter(
             (item) =>
-              item.workspaceId === 'ws_demo' &&
+              item.workspaceId === 'ws_00000000-0000-7000-8000-000000000001' &&
               (item.type === 'approval-request' || item.type === 'approval-decision')
           )
       ).toEqual([]);
@@ -310,16 +342,21 @@ describe('SimulatedTurnExecutor', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new SimulatedTurnExecutor({ coreDb });
     const agentSetup = createTestAgentSetup();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Reject a mismatched lease key', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Reject a mismatched lease key',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     store.updateTurn(turn.id, { agentId: agentSetup.manifest.id });
 
     try {
       await expect(
         executor.startTurn(store, turn.id, 'Reject a mismatched lease key', {
-          agentSessionId: 'as_mismatched_lease_key',
+          agentSessionId: 'as_00000000-0000-7387-ba49-b05a73884e0c',
           agentSetup,
           requestId: '0190f4c8-0000-7000-8000-000000000220',
           sessionCompatibilityKey: `sha256:${'f'.repeat(64)}`,
@@ -328,9 +365,17 @@ describe('SimulatedTurnExecutor', () => {
         })
       ).rejects.toThrow('execution attempt SessionCompatibilityKey');
       expect(listWorkerBackendSessions(coreDb)).toEqual([]);
-      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+      const workspaceDb = openWorkspaceDb(
+        coreDb.dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       try {
-        expect(listExportableAgentEnvironmentPackageSnapshots(workspaceDb, 'ws_demo')).toEqual([]);
+        expect(
+          listExportableAgentEnvironmentPackageSnapshots(
+            workspaceDb,
+            'ws_00000000-0000-7000-8000-000000000001'
+          )
+        ).toEqual([]);
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -366,7 +411,10 @@ describe('SimulatedTurnExecutor', () => {
       const firstResponse = await app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: JSON.stringify({
@@ -404,7 +452,10 @@ describe('SimulatedTurnExecutor', () => {
       const secondResponse = await app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: JSON.stringify({
@@ -422,7 +473,10 @@ describe('SimulatedTurnExecutor', () => {
         expect(store.getTurnById(acceptedSecond.turn.id).status).toBe('completed')
       );
       const secondTurn = store
-        .listThreadTurns('ws_demo', 'th_demo')
+        .listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
         .find((turn) => turn.id !== first.turn.id && turn.agentId === 'agent_codex_host');
       expect.soft(secondTurn).toMatchObject({
         agentSessionId,
@@ -490,7 +544,10 @@ describe('SimulatedTurnExecutor', () => {
       const firstResponse = await firstApp.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: JSON.stringify({
@@ -525,11 +582,14 @@ describe('SimulatedTurnExecutor', () => {
         status: 'idle',
       });
 
-      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+      const workspaceDb = openWorkspaceDb(
+        coreDb.dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       try {
         const firstSnapshots = listExportableAgentEnvironmentPackageSnapshots(
           workspaceDb,
-          'ws_demo'
+          'ws_00000000-0000-7000-8000-000000000001'
         );
         const predecessorSnapshot = firstSnapshots.find(
           (record) => record.agentSessionId === predecessorId
@@ -542,7 +602,10 @@ describe('SimulatedTurnExecutor', () => {
         const secondResponse = await secondApp.request(
           ...operationRequest(
             'task.start',
-            { workspaceId: 'ws_demo', threadId: 'th_demo' },
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+            },
             {
               method: 'POST',
               body: JSON.stringify({
@@ -561,7 +624,10 @@ describe('SimulatedTurnExecutor', () => {
         );
 
         const secondTurn = store
-          .listThreadTurns('ws_demo', 'th_demo')
+          .listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
           .find((turn) => turn.id !== first.turn.id && turn.agentId === 'agent_codex_host');
         const successorId =
           secondTurn?.agentSessionId && secondTurn.agentSessionId !== predecessorId
@@ -576,7 +642,10 @@ describe('SimulatedTurnExecutor', () => {
           .toBe(false);
 
         const currentSessions = store
-          .listThreadAgentSessions('ws_demo', 'th_demo')
+          .listThreadAgentSessions(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
           .filter((session) => isCurrentAgentSessionStatus(session.status));
         expect.soft(currentSessions.map((session) => session.id)).toEqual([successorId]);
         const successor = successorId ? store.getAgentSession(successorId) : undefined;
@@ -589,7 +658,7 @@ describe('SimulatedTurnExecutor', () => {
 
         const laterSnapshots = listExportableAgentEnvironmentPackageSnapshots(
           workspaceDb,
-          'ws_demo'
+          'ws_00000000-0000-7000-8000-000000000001'
         );
         const successorSnapshot = laterSnapshots.find(
           (record) => record.agentSessionId === successorId
@@ -614,8 +683,8 @@ describe('SimulatedTurnExecutor', () => {
           .prepare(
             `SELECT agent_session_id AS agentSessionId, state
              FROM worker_backend_sessions
-             WHERE workspace_id = 'ws_demo'
-               AND thread_id = 'th_demo'
+             WHERE workspace_id = 'ws_00000000-0000-7000-8000-000000000001'
+               AND thread_id = 'th_00000000-0000-7000-8000-000000000001'
                AND state NOT IN ('cleaned', 'physical-cleaned')`
           )
           .all() as Array<{ agentSessionId: string; state: string }>;
@@ -677,7 +746,7 @@ describe('SimulatedTurnExecutor', () => {
       const createResponse = await app.request(
         ...operationRequest(
           'material.create',
-          { workspaceId: 'ws_demo' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -695,7 +764,10 @@ describe('SimulatedTurnExecutor', () => {
       const revisionResponse = await app.request(
         ...operationRequest(
           'material.revision-save',
-          { workspaceId: 'ws_demo', materialId: material.materialId },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            materialId: material.materialId,
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -715,7 +787,11 @@ describe('SimulatedTurnExecutor', () => {
       const bindResponse = await app.request(
         ...operationRequest(
           'material.bind',
-          { workspaceId: 'ws_demo', threadId: 'th_demo', materialId: material.materialId },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            materialId: material.materialId,
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -732,7 +808,10 @@ describe('SimulatedTurnExecutor', () => {
       const turnResponse = await app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -752,7 +831,10 @@ describe('SimulatedTurnExecutor', () => {
         status: 'completed',
       });
       const dashboardResponse = await app.request(
-        ...operationRequest('thread.dashboard', { workspaceId: 'ws_demo', threadId: 'th_demo' })
+        ...operationRequest('thread.dashboard', {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        })
       );
       expect(dashboardResponse.status).toBe(200);
       const dashboard = await dashboardResponse.json();
@@ -760,12 +842,15 @@ describe('SimulatedTurnExecutor', () => {
         expect.objectContaining({ state: 'pending', resolution: null, canRespond: true }),
       ]);
       const question = store
-        .listThreadItems('ws_demo', 'th_demo')
+        .listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
         .find((item) => item.type === 'user-input-request' && item.turnId === workerTurn.id);
       expect(question?.type).toBe('user-input-request');
       if (question?.type !== 'user-input-request') throw new Error('Simulator question missing.');
       expect(dashboard.pendingRequests[0].requestId).toBe(question.userInputRequestId);
-      const pendingDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+      const pendingDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         expect(readPendingRequest(pendingDb.sqlite, question.userInputRequestId)).toMatchObject({
           kind: 'user-input',
@@ -780,10 +865,13 @@ describe('SimulatedTurnExecutor', () => {
       } finally {
         pendingDb.sqlite.close();
       }
-      const proposals = store.listArtifacts('ws_demo');
+      const proposals = store.listArtifacts('ws_00000000-0000-7000-8000-000000000001');
       expect(proposals).toHaveLength(3);
       expect(new Set(proposals.map((artifact) => artifact.contentDigest)).size).toBe(3);
-      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+      const workspaceDb = openWorkspaceDb(
+        coreDb.dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       try {
         const reviewedProposals = proposals.filter((artifact) => {
           try {
@@ -830,7 +918,10 @@ describe('SimulatedTurnExecutor', () => {
       const projectionResponse = await app.request(
         ...operationRequest(
           'material.thread-read',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {}
         )
       );
@@ -849,9 +940,9 @@ describe('SimulatedTurnExecutor', () => {
           join(
             coreDb.dataRoot,
             'workspaces',
-            'ws_demo',
+            'ws_00000000-0000-7000-8000-000000000001',
             'threads',
-            'th_demo',
+            'th_00000000-0000-7000-8000-000000000001',
             'turns',
             workerTurn.id,
             'context-package.json'
@@ -869,26 +960,30 @@ describe('SimulatedTurnExecutor', () => {
         requestId,
         turnId: workerTurn.id,
       });
-      const replayDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+      const replayDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
-        const snapshot = listExportableAgentEnvironmentPackageSnapshots(replayDb, 'ws_demo').find(
-          (record) => record.snapshot.scope.turnId === workerTurn.id
-        )!.snapshot;
+        const snapshot = listExportableAgentEnvironmentPackageSnapshots(
+          replayDb,
+          'ws_00000000-0000-7000-8000-000000000001'
+        ).find((record) => record.snapshot.scope.turnId === workerTurn.id)!.snapshot;
         const retained = proposals.filter((artifact) =>
           artifact.origin.requestId?.startsWith('simulator-material-')
         );
         const historyPath = join(
           coreDb.dataRoot,
           'workspaces',
-          'ws_demo',
+          'ws_00000000-0000-7000-8000-000000000001',
           'threads',
-          'th_demo',
+          'th_00000000-0000-7000-8000-000000000001',
           'turns',
           workerTurn.id,
           'items.jsonl'
         );
         const history = readFileSync(historyPath);
-        const references = store.listThreadItems('ws_demo', 'th_demo');
+        const references = store.listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        );
         const reviews = retained.map((artifact) =>
           getArtifactReview(replayDb, artifact.id, artifact.version)
         );
@@ -920,8 +1015,13 @@ describe('SimulatedTurnExecutor', () => {
             '2099-01-01T00:00:00.000Z'
           )
         ).toThrow();
-        expect(store.listArtifacts('ws_demo')).toEqual(proposals);
-        expect(store.listThreadItems('ws_demo', 'th_demo')).toEqual(references);
+        expect(store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual(proposals);
+        expect(
+          store.listThreadItems(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
+        ).toEqual(references);
         expect(readFileSync(historyPath)).toEqual(history);
         expect(
           retained.map((artifact) => getArtifactReview(replayDb, artifact.id, artifact.version))
@@ -937,8 +1037,8 @@ describe('SimulatedTurnExecutor', () => {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               userInputRequestId: question.userInputRequestId,
               requestId: '0190f4c8-0000-7000-8000-000000000242',
               answers: { tone: ['Detailed'] },
@@ -947,7 +1047,12 @@ describe('SimulatedTurnExecutor', () => {
         )
       );
       expect(answerResponse.status, await answerResponse.clone().text()).toBe(200);
-      const deliveringTurn = store.listThreadTurns('ws_demo', 'th_demo').at(-1)!;
+      const deliveringTurn = store
+        .listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+        .at(-1)!;
       expect(deliveringTurn.id).not.toBe(workerTurn.id);
       if (deliveringTurn.status !== 'completed' && deliveringTurn.status !== 'failed') {
         await new Promise<void>((resolve) => {
@@ -960,9 +1065,12 @@ describe('SimulatedTurnExecutor', () => {
         });
       }
       expect(store.getTurnById(workerTurn.id).status).toBe('completed');
-      expect(store.getArtifact('ws_demo', `ar_${deliveringTurn.id}`).content?.body).toBe(
-        'Simulator answer: Detailed'
-      );
+      expect(
+        store.getArtifact(
+          'ws_00000000-0000-7000-8000-000000000001',
+          deriveEntityId('ar', deliveringTurn.id)
+        ).content?.body
+      ).toBe('Simulator answer: Detailed');
       expect(store.getTurnById(deliveringTurn.id)).toMatchObject({
         status: 'completed',
         agentId: workerTurn.agentId,
@@ -970,7 +1078,10 @@ describe('SimulatedTurnExecutor', () => {
       });
       expect(
         store
-          .listThreadItems('ws_demo', 'th_demo')
+          .listThreadItems(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
           .filter(
             (item) =>
               item.turnId === deliveringTurn.id &&
@@ -981,7 +1092,10 @@ describe('SimulatedTurnExecutor', () => {
       const outcomeMaterialResponse = await app.request(
         ...operationRequest(
           'material.thread-read',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {}
         )
       );
@@ -990,8 +1104,8 @@ describe('SimulatedTurnExecutor', () => {
       );
       const outcomeTurnResponse = await app.request(
         ...operationRequest('turn.read', {
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: deliveringTurn.id,
         })
       );
@@ -1000,7 +1114,10 @@ describe('SimulatedTurnExecutor', () => {
       );
       expect(
         store
-          .listThreadItems('ws_demo', 'th_demo')
+          .listThreadItems(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
           .filter((item) => item.type === 'user-input-response')
       ).toEqual([
         expect.objectContaining({
@@ -1009,7 +1126,10 @@ describe('SimulatedTurnExecutor', () => {
           answers: { tone: ['Detailed'] },
         }),
       ]);
-      const deliveredDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+      const deliveredDb = openWorkspaceDb(
+        coreDb.dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       try {
         expect(readPendingRequest(deliveredDb.sqlite, question.userInputRequestId)).toMatchObject({
           state: 'resolved',
@@ -1022,7 +1142,7 @@ describe('SimulatedTurnExecutor', () => {
         });
         const snapshot = listExportableAgentEnvironmentPackageSnapshots(
           deliveredDb,
-          'ws_demo'
+          'ws_00000000-0000-7000-8000-000000000001'
         ).find((record) => record.snapshot.scope.turnId === deliveringTurn.id);
         const workerInput = (snapshot!.snapshot.extensions.openkit as { turnInput: string })
           .turnInput;
@@ -1050,10 +1170,15 @@ describe('SimulatedTurnExecutor', () => {
       provider: null,
       requiredCapabilities: [],
     });
-    const firstTurn = store.createTurn('ws_demo', 'th_demo', 'Use the default agent', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const firstTurn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Use the default agent',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
 
     store.updateTurn(firstTurn.id, { agentId: 'agent_codex_host' });
     await executor.startTurn(store, firstTurn.id, 'Use the default agent', {
@@ -1061,7 +1186,9 @@ describe('SimulatedTurnExecutor', () => {
       triggerActor: firstTurn.triggerActor,
       workspaceRoots: [],
     });
-    const firstSession = store.getAgentSession(`session_sim_turn_${firstTurn.id}`);
+    const firstSession = store.getAgentSession(
+      AgentSessionIdSchema.parse(store.getTurnById(firstTurn.id).agentSessionId)
+    );
     const selectedAgentSetup = createTestAgentSetup({
       agentId: 'agent_manifest_selected',
       provider: null,
@@ -1072,11 +1199,19 @@ describe('SimulatedTurnExecutor', () => {
       { id: 'draft', instructionsRef: 'draft', skills: [] },
       { id: 'review', instructionsRef: 'review', skills: [] },
     ];
-    const selectedThread = store.createThread('ws_demo', 'Selected agent thread');
-    const turn = store.createTurn('ws_demo', selectedThread.id, 'Use the selected agent', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const selectedThread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Selected agent thread'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      selectedThread.id,
+      'Use the selected agent',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
 
     store.updateTurn(turn.id, { agentId: selectedAgentSetup.manifest.id });
     await executor.startTurn(store, turn.id, 'Use the selected agent', {
@@ -1085,29 +1220,41 @@ describe('SimulatedTurnExecutor', () => {
       workspaceRoots: [],
     });
 
+    const selectedSession = store.getAgentSession(
+      AgentSessionIdSchema.parse(store.getTurnById(turn.id).agentSessionId)
+    );
     expect(store.getTurnById(turn.id)).toMatchObject({
       agentId: selectedAgentSetup.manifest.id,
       agentProfileId: 'review',
-      agentSessionId: `session_sim_turn_${turn.id}`,
+      agentSessionId: selectedSession.id,
     });
-    expect(store.getAgentSession(`session_sim_turn_${turn.id}`).agentId).toBe(
-      selectedAgentSetup.manifest.id
-    );
+    expect(selectedSession.agentId).toBe(selectedAgentSetup.manifest.id);
     expect(store.getAgentSession(firstSession.id).agentId).toBe('agent_codex_host');
     expect(store.getTurnById(firstTurn.id).agentSessionId).not.toBe(
       store.getTurnById(turn.id).agentSessionId
     );
 
-    expect(executor.getAgentSession(store, 'ws_demo', 'th_demo').id).toBe(firstSession.id);
+    expect(
+      executor.getAgentSession(
+        store,
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      ).id
+    ).toBe(firstSession.id);
   });
 
   it('fails closed when the resolved agent setup is missing', async () => {
     const store = createDemoStore();
     const executor = new SimulatedTurnExecutor();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Missing setup', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Missing setup',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
 
     store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
 
@@ -1115,15 +1262,25 @@ describe('SimulatedTurnExecutor', () => {
       'Simulator execution requires one resolved agent setup.'
     );
     expect(store.getTurnById(turn.id).agentSessionId).toBeUndefined();
-    expect(store.listThreadAgentSessions('ws_demo', 'th_demo')).toEqual([]);
+    expect(
+      store.listThreadAgentSessions(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toEqual([]);
   });
 
   it('commits one ready version-one Artifact with exact turn-output proof', async () => {
     const store = createDemoStore();
     const executor = new SimulatedTurnExecutor();
     const agentSetup = createTestAgentSetup({ provider: null, requiredCapabilities: [] });
-    const actor = { kind: 'user', id: 'user_local' } as const;
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Create one simulator Artifact', actor);
+    const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Create one simulator Artifact',
+      actor
+    );
     const artifactRequestId = '0190f4c8-0000-7000-8000-000000000230';
     const body = 'Simulator answer: Concise';
 
@@ -1140,7 +1297,7 @@ describe('SimulatedTurnExecutor', () => {
     ).rejects.toThrow('Simulator user-input request is not active');
     expect(store.getTurnById(turn.id).status).toBe('completed');
 
-    expect(store.listArtifacts('ws_demo')).toEqual([
+    expect(store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual([
       expect.objectContaining({
         content: { body, format: 'markdown' },
         contentDigest: `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`,
@@ -1156,7 +1313,12 @@ describe('SimulatedTurnExecutor', () => {
         version: 1,
       }),
     ]);
-    expect(store.listThreadItems('ws_demo', 'th_demo')).toEqual(
+    expect(
+      store.listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ type: 'user-message', actor }),
         expect.objectContaining({
@@ -1167,7 +1329,10 @@ describe('SimulatedTurnExecutor', () => {
     );
     expect(
       store
-        .listThreadItems('ws_demo', 'th_demo')
+        .listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
         .some((item) => item.type === 'user-input-response')
     ).toBe(false);
     expect(
@@ -1221,8 +1386,8 @@ describe('SimulatedTurnExecutor', () => {
           {
             method: 'POST',
             body: JSON.stringify({
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               requestId: '0190f4c8-0000-7000-8000-000000000240',
               input: 'Exercise simulated command output.',
             }),
@@ -1233,13 +1398,16 @@ describe('SimulatedTurnExecutor', () => {
       const turn = (await turnResponse.json()) as { id: string };
       expect(turnResponse.status, JSON.stringify(turn)).toBe(202);
       await vi.waitFor(() => expect(store.getTurnById(turn.id).status).toBe('completed'));
-      const commandItemId = `it_command_${turn.id}`;
+      const commandItemId = deriveEntityId('it', ['command', turn.id]);
       const commandEvents = store.getTurnEvents(turn.id).filter((event) => {
         const data = event.data as { item?: { id: string }; itemId?: string };
         return (data.itemId ?? data.item?.id) === commandItemId;
       });
       const commandItem = store
-        .listThreadItems('ws_demo', 'th_demo')
+        .listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
         .find((item) => item.id === commandItemId);
 
       expect(turnResponse.status, JSON.stringify(turn)).toBe(202);
@@ -1289,8 +1457,8 @@ describe('SimulatedTurnExecutor', () => {
           {
             method: 'POST',
             body: JSON.stringify({
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               requestId: '0190f4c8-0000-7000-8000-000000000314',
               input: 'Use the exact remote Git source',
             }),
@@ -1307,7 +1475,7 @@ describe('SimulatedTurnExecutor', () => {
            FROM scheduler_admission_entries
            WHERE workspace_id = ?`
         )
-        .all('ws_demo') as Array<{ workspaceCwd: string | null }>;
+        .all('ws_00000000-0000-7000-8000-000000000001') as Array<{ workspaceCwd: string | null }>;
       const prepareContext = prepareSpy.mock.calls[0]?.[1] as {
         workspaceCwd?: string | null;
         workspaceRoots?: Array<Record<string, unknown>>;
@@ -1372,7 +1540,7 @@ describe('SimulatedTurnExecutor', () => {
       kind: 'credential-bearing',
       locator: { commit: REMOTE_GIT_COMMIT, url: REMOTE_GIT_URL },
       requestId: '0190f4c8-0000-7000-8000-000000000318',
-      vaultGrantRef: 'grant_git_read',
+      vaultGrantRef: 'grant_00000000-0000-7899-9b3f-8965fec90404',
     },
   ])('rejects a $kind remote Git source before product admission or runtime effects', async ({
     forbiddenPayloadFragment,
@@ -1387,8 +1555,18 @@ describe('SimulatedTurnExecutor', () => {
     );
     const prepareSpy = vi.spyOn(executor, 'prepareAgentSessionForTurn');
     const startSpy = vi.spyOn(executor, 'startTurn');
-    const turnsBefore = structuredClone(store.listThreadTurns('ws_demo', 'th_demo'));
-    const itemsBefore = structuredClone(store.listThreadItems('ws_demo', 'th_demo'));
+    const turnsBefore = structuredClone(
+      store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    );
+    const itemsBefore = structuredClone(
+      store.listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    );
 
     try {
       expect(existsSync(canaryPath)).toBe(false);
@@ -1399,8 +1577,8 @@ describe('SimulatedTurnExecutor', () => {
           {
             method: 'POST',
             body: JSON.stringify({
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               requestId,
               input: 'Reject an invalid remote Git source',
             }),
@@ -1418,20 +1596,36 @@ describe('SimulatedTurnExecutor', () => {
         .soft(
           coreDb.sqlite
             .prepare(`SELECT * FROM scheduler_admission_entries WHERE workspace_id = ?`)
-            .all('ws_demo')
+            .all('ws_00000000-0000-7000-8000-000000000001')
         )
         .toEqual([]);
       expect
         .soft(
           coreDb.sqlite
             .prepare(`SELECT * FROM scheduler_execution_attempts WHERE workspace_id = ?`)
-            .all('ws_demo')
+            .all('ws_00000000-0000-7000-8000-000000000001')
         )
         .toEqual([]);
-      expect.soft(store.listWorkspaceAgentSessions('ws_demo')).toEqual([]);
+      expect
+        .soft(store.listWorkspaceAgentSessions('ws_00000000-0000-7000-8000-000000000001'))
+        .toEqual([]);
       expect.soft(listWorkerBackendSessions(coreDb)).toEqual([]);
-      expect.soft(store.listThreadTurns('ws_demo', 'th_demo')).toEqual(turnsBefore);
-      expect.soft(store.listThreadItems('ws_demo', 'th_demo')).toEqual(itemsBefore);
+      expect
+        .soft(
+          store.listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
+        )
+        .toEqual(turnsBefore);
+      expect
+        .soft(
+          store.listThreadItems(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
+        )
+        .toEqual(itemsBefore);
       expect.soft(existsSync(canaryPath)).toBe(false);
       expect.soft(JSON.stringify(payload)).not.toContain('/srv/private/repository');
       if (forbiddenPayloadFragment) {

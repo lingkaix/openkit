@@ -3,12 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AppDiagnosticsResponseSchema } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
 import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 
 const roots: string[] = [];
@@ -161,7 +161,7 @@ describe('Gateway settings active diagnostics', () => {
         api: {
           getSession: async () => ({
             session: { id: 'private-session' },
-            user: { id: 'user_local' },
+            user: { id: 'usr_00000000-0000-7000-8000-000000000001' },
           }),
         },
         handler: async () => new Response(),

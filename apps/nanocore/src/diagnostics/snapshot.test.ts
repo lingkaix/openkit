@@ -33,7 +33,7 @@ describe('createDiagnosticsSnapshot', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const snapshot = createDiagnosticsSnapshot({
-      actor: { kind: 'local', userId: 'user_local' },
+      actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
       coreDb,
       dataRoot,
       mode: 'local',

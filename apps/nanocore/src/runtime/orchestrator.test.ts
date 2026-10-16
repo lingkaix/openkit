@@ -112,6 +112,37 @@ function localProviderRegistry(): ProviderRegistry {
 }
 
 describe('startTurn orchestrator', () => {
+  it('reports conflicting exact Skill setup before creating a Turn or starting its executor', async () => {
+    const store = createDemoStore();
+    const turnExecutor = new RecordingTurnExecutor();
+    const configured = manifest('agent_codex_host');
+    configured.skills = [{ id: 'review-skill', digest: `sha256:${'a'.repeat(64)}` }];
+    configured.profiles = [
+      {
+        id: 'default',
+        skills: [{ id: 'review-skill', digest: `sha256:${'b'.repeat(64)}` }],
+        mcp: [],
+      },
+    ];
+    const before = store.listThreadTurns('ws_demo', 'th_demo');
+    await expect(
+      startTurn({
+        gatewayConfig: createTestGatewayConfig(),
+        defaultAgentId: configured.id,
+        agentManifests: [configured],
+        input: 'Run tests',
+        providerRegistry: localProviderRegistry(),
+        store,
+        threadId: 'th_demo',
+        workspaceId: 'ws_demo',
+        turnExecutor,
+        triggerActor: { kind: 'user', id: 'user_local' },
+      })
+    ).rejects.toMatchObject({ code: 'conflict', status: 409 });
+    expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual(before);
+    expect(turnExecutor.calls).toEqual([]);
+  });
+
   it.each([
     'agent_pi',
     'agent_fourth_runtime',
@@ -122,15 +153,15 @@ describe('startTurn orchestrator', () => {
     const handle = await startTurn({
       gatewayConfig: createTestGatewayConfig(),
       defaultAgentId: 'agent_codex_host',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       agentId,
       agentManifests: [configuredManifest],
       input: 'Run tests',
       providerRegistry: localProviderRegistry(),
       store,
-      threadId: 'th_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnExecutor,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     expect(handle.agent).toBe(configuredManifest);
@@ -146,21 +177,21 @@ describe('startTurn orchestrator', () => {
       input: 'Run tests',
       providerRegistry: localProviderRegistry(),
       store,
-      threadId: 'th_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       triggerActor: {
         kind: 'automation',
-        id: 'automation_orchestrator_test',
+        id: 'auto_00000000-0000-7777-982f-d84c91f64eec',
         responsibleUserId: null,
       },
       turnExecutor,
       agentManifests: [manifest('agent_codex_host')],
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     expect(handle.turn.status).toBe('running');
     expect(handle.turn.triggerActor).toEqual({
       kind: 'automation',
-      id: 'automation_orchestrator_test',
+      id: 'auto_00000000-0000-7777-982f-d84c91f64eec',
       responsibleUserId: null,
     });
     expect(handle.agent.id).toBe('agent_codex_host');
@@ -175,7 +206,7 @@ describe('startTurn orchestrator', () => {
           requestId: null,
           triggerActor: {
             kind: 'automation',
-            id: 'automation_orchestrator_test',
+            id: 'auto_00000000-0000-7777-982f-d84c91f64eec',
             responsibleUserId: null,
           },
           workspaceCwd: null,
@@ -199,7 +230,7 @@ describe('startTurn orchestrator', () => {
       startTurn({
         gatewayConfig: createTestGatewayConfig(),
         defaultAgentId: 'agent_codex_host',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         agentManifests: [
           {
             ...manifest('agent_codex_host'),
@@ -209,9 +240,9 @@ describe('startTurn orchestrator', () => {
         input: 'Run tests',
         providerRegistry: localProviderRegistry(),
         store,
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnExecutor,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
     ).rejects.toMatchObject({
       code: 'agent_not_ready',
@@ -219,7 +250,12 @@ describe('startTurn orchestrator', () => {
       status: 409,
     });
     expect(turnExecutor.calls).toEqual([]);
-    expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
+    expect(
+      store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toEqual([]);
   });
 
   it('rejects generic degraded readiness before creating a turn or starting the executor', async () => {
@@ -230,7 +266,7 @@ describe('startTurn orchestrator', () => {
       startTurn({
         gatewayConfig: createTestGatewayConfig(),
         defaultAgentId: 'agent_codex_host',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         agentManifests: [
           {
             ...manifest('agent_codex_host'),
@@ -240,9 +276,9 @@ describe('startTurn orchestrator', () => {
         input: 'Run tests',
         providerRegistry: localProviderRegistry(),
         store,
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnExecutor,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
     ).rejects.toMatchObject({
       code: 'agent_not_ready',
@@ -250,7 +286,12 @@ describe('startTurn orchestrator', () => {
       status: 409,
     });
     expect(turnExecutor.calls).toEqual([]);
-    expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
+    expect(
+      store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toEqual([]);
   });
 
   it('applies a per-turn model override only to the explicitly selected Agent', async () => {
@@ -271,15 +312,15 @@ describe('startTurn orchestrator', () => {
     const handle = await startTurn({
       agentId: 'agent_opencode_host',
       gatewayConfig: gatewayConfigFor('model_codex', 'model_opencode'),
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       input: 'Run tests',
       modelId: 'model_opencode',
       providerRegistry,
       store,
-      threadId: 'th_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnExecutor,
       agentManifests: [codexManifest, opencodeManifest],
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     expect(handle.modelId).toBe('model_opencode');
@@ -316,15 +357,15 @@ describe('startTurn orchestrator', () => {
       startTurn({
         defaultAgentId: 'agent_disabled_default',
         gatewayConfig: gatewayConfigFor('model_shared'),
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         agentManifests: [disabledDefault, readyAlternative],
         input: 'Run tests',
         modelId: 'model_shared',
         providerRegistry,
         store,
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnExecutor,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
     ).rejects.toMatchObject({ code: 'agent_not_ready', status: 409 });
   });
@@ -350,20 +391,25 @@ describe('startTurn orchestrator', () => {
     await expect(
       startTurn({
         gatewayConfig: gatewayConfigFor('model_codex', 'model_opencode'),
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         agentId: 'agent_codex_host',
         agentManifests: configuredManifests,
         input: 'Run tests',
         modelId: 'model_opencode',
         providerRegistry,
         store,
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnExecutor,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
     ).rejects.toThrow('Agent agent_codex_host does not support model override: model_opencode.');
     expect(turnExecutor.calls).toEqual([]);
-    expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
+    expect(
+      store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toEqual([]);
   });
 
   it('runs selector, creates the turn, then starts the executor in order', async () => {
@@ -400,7 +446,7 @@ describe('startTurn orchestrator', () => {
     await startTurn({
       gatewayConfig: createTestGatewayConfig(),
       defaultAgentId: 'agent_codex_host',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       dependencies: {
         selectAgent: (defaults, override, manifests) => {
           sequence.push('selector.selectAgent');
@@ -412,10 +458,10 @@ describe('startTurn orchestrator', () => {
       input: 'Run tests',
       providerRegistry: localProviderRegistry(),
       store,
-      threadId: 'th_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnExecutor,
       agentManifests: [manifest('agent_codex_host')],
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     expect(sequence).toEqual(['selector.selectAgent', 'store.createTurn', 'executor.startTurn']);
@@ -429,15 +475,15 @@ describe('startTurn orchestrator', () => {
       startTurn({
         gatewayConfig: createTestGatewayConfig(),
         defaultAgentId: 'agent_codex_host',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         agentId: 'agent_missing',
         input: 'Run tests',
         providerRegistry: localProviderRegistry(),
         store,
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnExecutor,
         agentManifests: [manifest('agent_other')],
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
     ).rejects.toThrow('Agent manifest not found: agent_missing.');
     expect(turnExecutor.calls).toEqual([]);
@@ -450,15 +496,15 @@ describe('startTurn orchestrator', () => {
     const handle = await startTurn({
       gatewayConfig: createTestGatewayConfig(),
       defaultAgentId: 'agent_codex_host',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       dependencies: { providerCredentialResolver: () => 'secret' },
       input: 'Run tests',
       providerRegistry: localProviderRegistry(),
       store,
-      threadId: 'th_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnExecutor,
       agentManifests: [configuredManifest],
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     expect(handle.agentSetup?.manifest).toEqual(configuredManifest);
@@ -478,8 +524,8 @@ describe('startTurn orchestrator', () => {
     const configuredManifest = manifest('agent_codex_host', {});
     const workspaceDb = openWorkspaceDb(
       mkdtempSync(join(tmpdir(), 'openkit-orchestrator-setup-ledger-')),
-      'user_local',
-      'ws_demo'
+      'usr_00000000-0000-7000-8000-000000000001',
+      'ws_00000000-0000-7000-8000-000000000001'
     );
     applyScopedMigrations(workspaceDb);
 
@@ -487,24 +533,28 @@ describe('startTurn orchestrator', () => {
       const handle = await startTurn({
         gatewayConfig: createTestGatewayConfig(),
         defaultAgentId: 'agent_codex_host',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         dependencies: { providerCredentialResolver: () => 'secret' },
         input: 'Run tests',
         providerRegistry: localProviderRegistry(),
         store,
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnExecutor,
         agentManifests: [configuredManifest],
         agentSetupWorkspaceDb: workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
       expect(handle.agentSetupRecordId).toBe(`ras_${handle.turn.id}`);
       expect(
-        requireResolvedAgentSetup(workspaceDb, 'ws_demo', `ras_${handle.turn.id}`)
+        requireResolvedAgentSetup(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          `ras_${handle.turn.id}`
+        )
       ).toMatchObject({
         id: `ras_${handle.turn.id}`,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         turnId: handle.turn.id,
         requestId: null,
         agentId: 'agent_codex_host',
@@ -524,15 +574,15 @@ describe('startTurn orchestrator', () => {
     const handle = await startTurn({
       gatewayConfig: createTestGatewayConfig(),
       defaultAgentId: 'agent_codex_host',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       dependencies: { providerCredentialResolver: () => 'secret' },
       input: 'Run tests',
       providerRegistry: localProviderRegistry(),
       store,
-      threadId: 'th_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnExecutor,
       agentManifests: [configuredManifest],
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     expect(handle.agentSetup?.manifest.sandbox?.backend).toEqual({
@@ -581,12 +631,12 @@ describe('startTurn orchestrator', () => {
     const handle = await startTurn({
       gatewayConfig: createTestGatewayConfig(),
       defaultAgentId: 'agent_codex_host',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       dependencies: { providerCredentialResolver: () => 'secret' },
       input: 'Run tests',
       providerRegistry: localProviderRegistry(),
       store,
-      threadId: 'th_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnExecutor,
       agentManifests: [config],
       workspaceDataSourceCatalog: catalog,
@@ -599,7 +649,7 @@ describe('startTurn orchestrator', () => {
           workerPath: '/workspace/repo',
         },
       ],
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     expect(turnExecutor.calls).toEqual([
@@ -607,7 +657,7 @@ describe('startTurn orchestrator', () => {
         context: {
           agentSetup: expect.objectContaining({ manifest: config, profileId: 'default' }),
           requestId: null,
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           workspaceCwd: null,
           workspaceDataSourceCatalog: catalog,
           workspaceRoots: [
@@ -647,12 +697,12 @@ describe('startTurn orchestrator', () => {
       startTurn({
         gatewayConfig: createTestGatewayConfig(),
         defaultAgentId: 'agent_codex_host',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         dependencies: { providerCredentialResolver: () => 'secret' },
         input: 'Run tests',
         providerRegistry: localProviderRegistry(),
         store,
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnExecutor,
         agentManifests: [config],
         workspaceDataSourceCatalog: parseWorkspaceDataSourceCatalog({
@@ -668,7 +718,7 @@ describe('startTurn orchestrator', () => {
             workerPath: '/workspace/repo',
           },
         ],
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
     ).rejects.toMatchObject({
       code: 'workspace_data_source_blocked',
@@ -676,7 +726,12 @@ describe('startTurn orchestrator', () => {
       status: 409,
     });
     expect(turnExecutor.calls).toEqual([]);
-    expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
+    expect(
+      store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toEqual([]);
   });
 
   it('passes scheduler lease lineage into the executor start context', async () => {
@@ -685,29 +740,29 @@ describe('startTurn orchestrator', () => {
     const handle = await startTurn({
       gatewayConfig: createTestGatewayConfig(),
       defaultAgentId: 'agent_codex_host',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       input: 'Run with lease binding',
-      agentSessionId: 'as_orchestrator_1',
+      agentSessionId: 'as_00000000-0000-7c5f-a3e8-352c51cbebad',
       providerRegistry: localProviderRegistry(),
       sandboxBindingRef: 'lease-binding:orchestrator_1',
       store,
-      threadId: 'th_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnExecutor,
       agentManifests: [manifest('agent_codex_host')],
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     expect(turnExecutor.calls).toEqual([
       {
         context: {
-          agentSessionId: 'as_orchestrator_1',
+          agentSessionId: 'as_00000000-0000-7c5f-a3e8-352c51cbebad',
           agentSetup: expect.objectContaining({
             manifest: manifest('agent_codex_host'),
             profileId: 'default',
           }),
           requestId: null,
           sandboxBindingRef: 'lease-binding:orchestrator_1',
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           workspaceCwd: null,
           workspaceRoots: [],
         },

@@ -25,16 +25,22 @@ describe('Workspace JSON transfer definitions', () => {
   it('keeps strict inputs, safe handles and trusted identity exclusions in the model view', () => {
     const model = operationModelInput(WorkspaceImportRequestSchema, ['requestId']);
     expect(model.shape.exportId).toBe(WorkspaceImportRequestSchema.shape.exportId);
-    expect(model.safeParse({ sourceWorkspaceId: 'ws_demo', exportId: 'wsexp_demo' }).success).toBe(
-      true
-    );
-    for (const exportId of ['.', '..', '../foreign', '/server/path'])
-      expect(model.safeParse({ sourceWorkspaceId: 'ws_demo', exportId }).success).toBe(false);
     expect(
       model.safeParse({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: 'wsexp_demo',
-        ownerUserId: 'other',
+        sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+      }).success
+    ).toBe(true);
+    for (const exportId of ['.', '..', '../foreign', '/server/path'])
+      expect(
+        model.safeParse({ sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001', exportId })
+          .success
+      ).toBe(false);
+    expect(
+      model.safeParse({
+        sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+        ownerUserId: 'usr_00000000-0000-7c5f-9771-5ca3abba3303',
       }).success
     ).toBe(false);
   });

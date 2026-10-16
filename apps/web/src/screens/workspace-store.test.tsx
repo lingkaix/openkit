@@ -7,22 +7,22 @@ import { chatKeys, useCurrentWorkspaceId } from './chat/data';
 import { useWorkspaceStore, WORKSPACE_SELECTION_STORAGE_KEY } from './workspace-store';
 
 const USER_A_QUICK_CHAT = {
-  id: 'ws_quick_a',
+  id: 'ws_00000000-0000-737c-9c81-84e684e8ce40',
   name: 'Quick Chat',
   kind: 'personal',
 } as const;
 const USER_B_QUICK_CHAT = {
-  id: 'ws_quick_b',
+  id: 'ws_00000000-0000-7e52-8632-71d920cde3ce',
   name: 'Quick Chat',
   kind: 'personal',
 } as const;
 const PROJECT_WORKSPACE = {
-  id: 'ws_project',
+  id: 'ws_00000000-0000-7d15-8bb9-5d57f3c7a053',
   name: 'Project Workspace',
   kind: 'general',
 } as const;
 const OTHER_WORKSPACE = {
-  id: 'ws_other',
+  id: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
   name: 'Other Workspace',
   kind: 'general',
 } as const;
@@ -54,7 +54,7 @@ function renderCurrentWorkspace(
           workspace,
           effectiveRole: 'owner',
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       }),
@@ -110,7 +110,13 @@ describe('workspace switcher persistence', () => {
       await queryClient.cancelQueries({ queryKey: chatKeys.workspaces });
       queryClient.removeQueries({ queryKey: chatKeys.workspaceSummaries, exact: true });
       finishDiscovery({
-        items: [{ workspace: USER_A_QUICK_CHAT, ownerUserId: 'user_a', effectiveRole: 'owner' }],
+        items: [
+          {
+            workspace: USER_A_QUICK_CHAT,
+            ownerUserId: 'usr_00000000-0000-7902-a898-949cc6057d36',
+            effectiveRole: 'owner',
+          },
+        ],
       });
     });
     expect(queryClient.getQueryData(chatKeys.workspaceSummaries)).toBeUndefined();
@@ -177,7 +183,7 @@ describe('workspace switcher persistence', () => {
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         }),
@@ -222,7 +228,7 @@ describe('workspace switcher persistence', () => {
               workspace: USER_A_QUICK_CHAT,
               effectiveRole: null,
               membershipRevision: null,
-              ownerUserId: 'user_a',
+              ownerUserId: 'usr_00000000-0000-7902-a898-949cc6057d36',
               registryRevision: 1,
             },
             {
@@ -231,7 +237,7 @@ describe('workspace switcher persistence', () => {
               workspace: USER_B_QUICK_CHAT,
               effectiveRole: 'owner',
               membershipRevision: 1,
-              ownerUserId: 'user_b',
+              ownerUserId: 'usr_00000000-0000-7dff-9455-dee1cc5eb86f',
               registryRevision: 1,
             },
           ],

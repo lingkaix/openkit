@@ -1,5 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
-
+import { createHash } from 'node:crypto';
 import {
   type ApplyAdministrationConfigurationRequest,
   ApplyAdministrationConfigurationRequestSchema,
@@ -16,6 +15,7 @@ import {
   ProviderModelMetadataSchema,
   ProviderProfileSchema,
 } from '@openkit/config-schema';
+import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
 import { z } from 'zod';
 
 import { recordServerAuditEvent } from '../audit-events.js';
@@ -169,7 +169,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
     threadId: string,
     turnId: string,
     requestId: string,
-    id = `artifact_configuration_${randomUUID()}`
+    id = allocateEntityId('ar')
   ) {
     const timestamp = new Date().toISOString();
     const text = JSON.stringify(body);
@@ -221,7 +221,10 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
       fail('configuration_candidate_conflict');
     const body = ConfigurationCandidateArtifactSchema.parse(JSON.parse(artifact.content.body));
     if (invocation && body.targetFamily !== 'agent') fail('configuration_delegation_required');
-    const outcomeId = `artifact_configuration_result_${digest(JSON.stringify({ userId: actor.userId, request })).slice(7)}`;
+    const outcomeId = deriveEntityId('ar', [
+      'configuration_result',
+      { userId: actor.userId, request },
+    ]);
     return runIdempotentCommand({
       store,
       inflightCommands: options.inflightCommands,
@@ -248,7 +251,10 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
       },
       execute: () => {
         requireHome(threadId, turnId);
-        const markerId = `it_configuration_apply_${digest(JSON.stringify({ actorId: actor.userId, requestId: request.requestId })).slice(7)}`;
+        const markerId = deriveEntityId('it', [
+          'configuration_apply',
+          { actorId: actor.userId, requestId: request.requestId },
+        ]);
         if (store.listThreadItems(workspaceId, threadId).some((item) => item.id === markerId))
           fail('configuration_recovery_required');
         const prepared = prepare(body);
@@ -284,7 +290,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
             snapshot.openKitConfig.policy?.workerGitReadMaintenance ?? [],
             { ...prepared.facts, now }
           );
-          permissionDecisionId = randomUUID();
+          permissionDecisionId = allocateEntityId('pd');
           recordPermissionDecision({
             coreDb,
             decisionId: permissionDecisionId,

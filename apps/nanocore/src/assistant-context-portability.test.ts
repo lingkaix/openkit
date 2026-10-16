@@ -3,8 +3,9 @@ import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Item } from '@openkit/protocol';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { type Actor, ensureLocalUser } from './auth/identity.js';
+import type { Actor } from './auth/identity.js';
 import {
   assertConversationRetrievalTraceReadable,
   createAssistantHistory,
@@ -18,7 +19,7 @@ import {
 } from './internal-agents/rolling-context.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
-import { LOCAL_USER_ID, readDataRootLayoutMarker } from './storage/fs-layout.js';
+import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { readTurnRetrievalTraces, retrievalTraceRelativePath } from './storage/retrieval-traces.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
@@ -27,6 +28,10 @@ import {
   importVerifiedWorkspace,
 } from './storage/workspace-transfer-routes.js';
 import { createApp } from './test-support/app.js';
+import {
+  ensureLocalUser,
+  FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
+} from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -85,7 +90,7 @@ function message(
   text: string
 ) {
   return f.store.createItem({
-    id: randomUUID(),
+    id: allocateEntityId('it'),
     workspaceId: turn.workspaceId,
     threadId: turn.threadId,
     turnId: turn.id,
@@ -272,7 +277,7 @@ async function seedTiedOrderSummaryChain() {
       { kind: 'user', id: LOCAL_USER_ID },
       null,
       {
-        turnId: `tu_source_${String(index).padStart(2, '0')}`,
+        turnId: `tu_00000000-0000-7000-8000-${String(index).padStart(12, '0')}`,
         agentId: 'quick-chat',
         executorKind: 'assistant',
         startedAt: timestamp,
@@ -284,7 +289,7 @@ async function seedTiedOrderSummaryChain() {
       const covered = originals.slice(0, index === 11 ? 4 : 10);
       const previous = summaries.at(-1);
       const summary = f.store.createItem({
-        id: randomUUID(),
+        id: allocateEntityId('it'),
         workspaceId: f.workspace.id,
         threadId: thread.id,
         turnId: turn.id,
@@ -322,7 +327,28 @@ describe('Assistant conversation context portability', () => {
   it('rejects a corrupt original predecessor before publication when tied source order changes on import', async () => {
     const source = await seedTiedOrderSummaryChain();
     const control = deployment();
-    const imported = importVerifiedWorkspace({
+    // Control only clock and entropy; import validation and canonical publication stay real.
+    const importReordered = (input: Parameters<typeof importVerifiedWorkspace>[0]) => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(timestamp));
+      let ordinal = 0;
+      const entropy = vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation((array) => {
+        if (!array) throw new Error('Missing UUID entropy target.');
+        const bytes = new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
+        bytes.fill(0);
+        ordinal += 1;
+        const turn = ordinal - 1; // One imported Thread precedes the twelve Turn allocations.
+        bytes[15] = turn === 10 ? 2 : turn >= 2 && turn <= 9 ? turn + 1 : turn > 0 ? turn : ordinal;
+        return array;
+      });
+      try {
+        return importVerifiedWorkspace(input);
+      } finally {
+        entropy.mockRestore();
+        vi.useRealTimers();
+      }
+    };
+    const imported = importReordered({
       authorityUserId: LOCAL_USER_ID,
       coreDb: control.coreDb,
       dataRoot: control.dataRoot,
@@ -393,7 +419,7 @@ describe('Assistant conversation context portability', () => {
     }
     expect
       .soft(() =>
-        importVerifiedWorkspace({
+        importReordered({
           authorityUserId: LOCAL_USER_ID,
           coreDb: target.coreDb,
           dataRoot: target.dataRoot,
@@ -414,6 +440,22 @@ describe('Assistant conversation context portability', () => {
   it('exports and imports real archive bytes, remints source evidence, and reuses the summary chain after target restart', async () => {
     const source = await seed();
     const target = deployment();
+    // P14 uses independent Workspace identities; explicitly occupy the exported id to test reminting.
+    target.store.importWorkspaceSnapshot({
+      workspace: source.workspace,
+      threads: [],
+      knowledge: [],
+      turns: [],
+      itemRevisions: [],
+      artifacts: [],
+      agentSessions: [],
+      turnEvents: [],
+    });
+    recordWorkspaceOwnerMembership({
+      coreDb: target.coreDb,
+      workspaceId: source.workspace.id,
+      ownerUserId: LOCAL_USER_ID,
+    });
     const archive = await source.app.request(
       `/api/app/workspaces/${source.workspace.id}/exports/${source.exportId}/archive`
     );

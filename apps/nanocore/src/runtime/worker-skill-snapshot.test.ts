@@ -134,6 +134,28 @@ describe('exact retained Worker Skill delivery', () => {
     rmSync(coreDb.dataRoot, { recursive: true, force: true });
   });
 
+  it('uses the composed setup exact version before a Workspace pin without changing shared selection', async () => {
+    const next = advanceDefault();
+    setWorkspaceSkillPin({
+      dataRoot: coreDb.dataRoot,
+      workspaceId: turn.workspaceId,
+      entryId: 'repo-guidelines',
+      digest: next.version.digest,
+      expectedRevision: next.catalog.revision,
+    });
+    const prior = loadWorkspaceResourceCatalog(coreDb.dataRoot, turn.workspaceId);
+    const exactSetup = createTestAgentSetup({ skillIds: ['repo-guidelines'] });
+    exactSetup.manifest.skills = [{ id: 'repo-guidelines', digest: first.version.digest }];
+    const exact = resolvePackage(exactSetup);
+    expect(exact.supply.skills[0]).toMatchObject({
+      integrity: { sha256: first.version.digest },
+      selectionSource: 'setup',
+    });
+    await prepare(exact);
+    expect(loadWorkspaceResourceCatalog(coreDb.dataRoot, turn.workspaceId)).toEqual(prior);
+    expect(resolvePackage().supply.skills[0]?.integrity?.sha256).toBe(next.version.digest);
+  });
+
   it.each([
     'current',
     'pin',

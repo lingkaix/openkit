@@ -4,8 +4,8 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { createApp } from '../app.js';
-import { ensureLocalUser } from '../auth/identity.js';
+import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { openCoreDb } from './db.js';
 import { coreDbPath } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
@@ -43,17 +43,32 @@ describe('NanoCore startup storage layout', () => {
         join(dataRoot, 'server', 'db'),
         join(dataRoot, 'server', 'evidence'),
         join(dataRoot, 'server', 'exports'),
-        join(dataRoot, 'users', 'user_local', 'db'),
-        join(dataRoot, 'workspaces', 'ws_quick_chat', 'workspace-record.json'),
-        join(dataRoot, 'workspaces', 'ws_quick_chat', 'config', 'workspace.jsonc'),
-        join(dataRoot, 'workspaces', 'ws_quick_chat', 'knowledge'),
-        join(dataRoot, 'workspaces', 'ws_quick_chat', 'sources'),
-        join(dataRoot, 'workspaces', 'ws_quick_chat', 'indexes'),
+        join(dataRoot, 'users', 'usr_00000000-0000-7000-8000-000000000001', 'db'),
+        join(
+          dataRoot,
+          'workspaces',
+          'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+          'workspace-record.json'
+        ),
+        join(
+          dataRoot,
+          'workspaces',
+          'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+          'config',
+          'workspace.jsonc'
+        ),
+        join(dataRoot, 'workspaces', 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28', 'knowledge'),
+        join(dataRoot, 'workspaces', 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28', 'sources'),
+        join(dataRoot, 'workspaces', 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28', 'indexes'),
       ]) {
         expect(existsSync(path)).toBe(true);
       }
 
-      expect(existsSync(join(dataRoot, 'workspaces', 'ws_quick_chat', 'memory'))).toBe(false);
+      expect(
+        existsSync(
+          join(dataRoot, 'workspaces', 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28', 'memory')
+        )
+      ).toBe(false);
     } finally {
       coreDb.sqlite.close();
     }

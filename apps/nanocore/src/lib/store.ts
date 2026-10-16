@@ -34,6 +34,8 @@ import {
   type AgentSessionSchema,
   type ApprovalRequestSchema,
   ArtifactSchema,
+  allocateEntityId,
+  deriveEntityId,
   ItemSchema,
   isSealedTurnTerminal,
   PROTOCOL_VERSION,
@@ -72,7 +74,6 @@ import { type CoreDb, openWorkspaceDbAtRoot, type WorkspaceDb } from '../storage
 import {
   ensureLayoutDirectories,
   ensureWorkspaceLayout,
-  LOCAL_USER_ID,
   resolveDataRootPath,
 } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -568,6 +569,8 @@ interface CreateTurnOptions {
   turnId?: string;
   /** Immutable explicit or composed effort captured when the Turn is admitted. */
   reasoningEffort?: Turn['reasoningEffort'];
+  /** Exact per-run Skill input captured on the canonical admitted Turn. */
+  skillSelections?: Turn['skillSelections'];
   /** Command-owned start time when a Core-local Turn must share one accepted timestamp. */
   startedAt?: string;
   /** Admission-time capture pair when the caller already resolved the effective setting. */
@@ -925,14 +928,14 @@ function contentDigest(content: string): string {
 }
 
 /**
- * Derives one deterministic Proposal or Review id from its canonical tuple.
+ * Derives one Knowledge-owned Proposal id from its canonical tuple; entity Review ids use Protocol.
  *
  * @param prefix Closed owner-family prefix.
  * @param tuple Canonical tuple with fields already in required order.
  * @returns Stable owner id.
  */
 export function knowledgeAuthorityId(
-  prefix: 'kp_' | 'kr_',
+  prefix: 'kp_',
   tuple: Readonly<Record<string, string>>
 ): string {
   return `${prefix}${createHash('sha256').update(JSON.stringify(tuple), 'utf8').digest('hex')}`;
@@ -1021,49 +1024,13 @@ function isCommandRequestExpired(record: CommandRequestRecord, referenceTime: st
 }
 
 /**
- * Builds a stable non-secret id namespace for one store owner.
- *
- * @param userId Store owner id.
- * @returns Empty local namespace or a short hashed user namespace.
- */
-function resourceIdNamespace(userId: string): string {
-  if (userId === LOCAL_USER_ID) {
-    return '';
-  }
-
-  return `u_${createHash('sha256').update(userId).digest('hex').slice(0, 12)}_`;
-}
-
-/**
- * Builds a workspace id in the current store namespace.
- *
- * @param userId Store owner id.
- * @param suffix Resource suffix.
- * @returns Workspace id.
- */
-function workspaceIdForUser(userId: string, suffix: string): string {
-  return `ws_${resourceIdNamespace(userId)}${suffix}`;
-}
-
-/**
  * Derives the built-in owner-only personal Workspace id for one canonical user.
  *
  * @param userId Canonical user id.
  * @returns Stable personal Workspace id.
  */
 export function quickChatWorkspaceIdForUser(userId: string): string {
-  return workspaceIdForUser(userId, 'quick_chat');
-}
-
-/**
- * Builds a thread id in the current store namespace.
- *
- * @param userId Store owner id.
- * @param suffix Resource suffix.
- * @returns Thread id.
- */
-function threadIdForUser(userId: string, suffix: string): string {
-  return `th_${resourceIdNamespace(userId)}${suffix}`;
+  return deriveEntityId('ws', ['quick_chat', userId]);
 }
 
 /**
@@ -1116,64 +1083,6 @@ function emptyWorkspaceFileRecords(workspace: WorkspaceRecord): WorkspaceFileRec
     agentSessions: [],
     streamEvents: [],
   };
-}
-
-/**
- * Demo workspace fixture for tests and local development tools.
- */
-export interface DemoWorkspaceFixture {
-  /** Project workspace record. */
-  readonly workspace: WorkspaceRecord;
-  /** Starter thread owned by the project workspace. */
-  readonly thread: Thread;
-  /** Starter knowledge entries owned by the project workspace. */
-  readonly knowledge: readonly KnowledgeEntry[];
-}
-
-/**
- * Creates the legacy Demo Workspace fixture for one user without mutating a store.
- *
- * @param userId User id that should own the fixture ids.
- * @returns Demo workspace snapshot pieces that can be imported into a store.
- */
-export function createDemoWorkspaceForUser(userId: string): DemoWorkspaceFixture {
-  const timestamp = now();
-  const workspace: WorkspaceRecord = {
-    id: workspaceIdForUser(userId, 'demo'),
-    name: 'Demo Workspace',
-    kind: 'code',
-    status: 'active',
-    counts: {
-      threadCount: 1,
-      artifactCount: 0,
-      knowledgeEntryCount: 1,
-    },
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  };
-  const knowledge: KnowledgeEntry[] = [
-    {
-      id: 'mem_project',
-      kind: 'project-context',
-      title: 'Product focus',
-      content: 'Drive the workspace protocol through a real Codex-backed local agent adapter.',
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    },
-  ];
-  const thread: Thread = {
-    id: threadIdForUser(userId, 'demo'),
-    workspaceId: workspace.id,
-    name: 'Protocol design review',
-    preview: 'Review the UI-first workspace protocol slice and tighten payload boundaries.',
-    status: 'active',
-    entryPath: 'conversation',
-    visibility: 'workspace',
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  };
-
-  return { workspace, thread, knowledge };
 }
 
 /**
@@ -2045,7 +1954,7 @@ export class FsStore {
   public createWorkspace(name: string): WorkspaceRecord {
     const timestamp = now();
     const workspace: WorkspaceRecord = {
-      id: workspaceIdForUser(LOCAL_USER_ID, String(this.workspaces.size + 1)),
+      id: allocateEntityId('ws'),
       name,
       kind: 'general',
       status: 'active',
@@ -2613,14 +2522,13 @@ export class FsStore {
       parentThreadId?: string;
     }
   ): Thread {
-    const id = threadId ?? threadIdForUser(LOCAL_USER_ID, String(this.threads.size + 1));
+    const id = threadId ?? allocateEntityId('th');
     if (this.threads.has(id)) {
       throw new Error(`Thread already exists: ${id}`);
     }
-    audience ??=
-      entryPath === 'administration'
-        ? { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
-        : { visibility: 'workspace' };
+    if (!audience && entryPath === 'administration')
+      throw new Error('Private Thread creation requires its explicit canonical User audience.');
+    audience ??= { visibility: 'workspace' };
     if (
       this.getWorkspace(workspaceId).kind === 'personal' &&
       audience.visibility === 'private' &&
@@ -2628,6 +2536,8 @@ export class FsStore {
     ) {
       throw new Error('Personal Workspace private Threads require their owner.');
     }
+    if (audience.parentThreadId === id)
+      throw new Error('A receiving Thread must differ from its parent.');
     const thread = ThreadSchema.parse({
       id,
       workspaceId,
@@ -2713,7 +2623,7 @@ export class FsStore {
     options: CreateTurnOptions = {}
   ): Turn {
     const timestamp = options.startedAt ?? now();
-    const turnId = options.turnId ?? `tu_${this.turns.size + 1}`;
+    const turnId = options.turnId ?? allocateEntityId('tu');
 
     if (this.turns.has(turnId)) {
       throw new Error(`Turn already exists: ${turnId}`);
@@ -2734,6 +2644,9 @@ export class FsStore {
       durationMs: null,
       ...(options.reasoningEffort !== undefined
         ? { reasoningEffort: options.reasoningEffort }
+        : {}),
+      ...(options.skillSelections !== undefined
+        ? { skillSelections: options.skillSelections }
         : {}),
       ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
       ...(options.agentSessionId !== undefined ? { agentSessionId: options.agentSessionId } : {}),
@@ -3864,8 +3777,8 @@ export class FsStore {
     let review: KnowledgeProposalReviewRecord;
     try {
       review = KnowledgeProposalReviewSchema.parse({
-        reviewId: knowledgeAuthorityId('kr_', {
-          workspaceId: proposal.workspaceId,
+        reviewId: deriveEntityId('kr', {
+          ownerScope: { kind: 'workspace', workspaceId: proposal.workspaceId },
           proposalId: proposal.id,
           requestId: command.requestId,
         }),
