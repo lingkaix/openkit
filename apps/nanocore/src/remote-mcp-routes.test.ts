@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -164,7 +164,7 @@ async function fixture(
 afterEach(() => vi.restoreAllMocks());
 
 describe('remote MCP App endpoint', () => {
-  it('refuses all retained archive streams before processing and omits support discovery', async () => {
+  it('refuses Artifact and archive streams before processing and omits support discovery', async () => {
     const f = await fixture();
     const admin = createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -182,7 +182,10 @@ describe('remote MCP App endpoint', () => {
     const workspaceDirectories = readdirSync(join(f.dataRoot, 'workspaces')).sort();
     const native = vi.spyOn(invocation, 'createOperationInvocation');
     try {
+      const artifactsBefore = f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001');
       for (const operation of [
+        'artifact.import',
+        'artifact.download',
         'workspace.archive-download',
         'workspace.archive-import-dry-run',
         'workspace.archive-import',
@@ -214,12 +217,15 @@ describe('remote MCP App endpoint', () => {
           expect(JSON.parse(result.content[0].text)).toEqual({
             code: 'mcp_streaming_operation',
             message:
-              'Streaming operations are unavailable over MCP. Use the retained archive transfer interface.',
+              'Streaming operations are unavailable over MCP. Use Web or the administrator CLI file-transfer interface.',
             status: 400,
           });
         }
       }
       expect(native).not.toHaveBeenCalled();
+      expect(f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual(
+        artifactsBefore
+      );
       expect(existsSync(join(f.dataRoot, 'server', 'files', 'workspace-archive-requests'))).toBe(
         false
       );
@@ -240,10 +246,17 @@ describe('remote MCP App endpoint', () => {
         });
       }
       const guide = await f.call('guide', {}, admin.secret);
-      expect(guide.content[0].text).toContain('ordinary users use Web Portability');
+      expect(guide.content[0].text).toContain('ordinary users use their Web file controls');
+      expect(guide.content[0].text).toContain(
+        'Workspace archives and Artifact import/download are streaming-only'
+      );
+      expect(guide.content[0].text).toContain(
+        'File bytes never enter a JSON MCP argument or result'
+      );
       expect(guide.content[0].text).toContain('administrator CLI');
     } finally {
       f.coreDb.sqlite.close();
+      rmSync(f.dataRoot, { recursive: true, force: true });
     }
   });
 
@@ -1052,6 +1065,8 @@ describe('remote MCP App endpoint', () => {
         .map(([id]) => id)
         .sort();
       expect(excluded).toEqual([
+        'artifact.download',
+        'artifact.import',
         'bootstrap.consume',
         'token.create',
         'token.rotate',
@@ -1100,6 +1115,7 @@ describe('remote MCP App endpoint', () => {
     } finally {
       f.coreDb.sqlite.exec('ROLLBACK');
       f.coreDb.sqlite.close();
+      rmSync(f.dataRoot, { recursive: true, force: true });
     }
   });
 
@@ -1125,7 +1141,7 @@ describe('remote MCP App endpoint', () => {
       'Action Center',
       'exact proposal',
       'requestId',
-      'Web Portability',
+      'Web file controls',
       'openkit-ops',
       'bootstrap',
       'knowledge',

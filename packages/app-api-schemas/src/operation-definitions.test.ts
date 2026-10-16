@@ -41,20 +41,21 @@ describe('operation definitions', () => {
   });
 });
 
-it('derives Artifact model views with bound identity omitted and content and feedback refinements retained', () => {
+it('derives Artifact metadata views with bound identity omitted and feedback refinements retained', () => {
   const imported = operationModelInput(
     ARTIFACT_OPERATION_DEFINITIONS['artifact.import'].inputSchema,
     ['workspaceId', 'requestId']
   );
-  expect(imported.shape.content).toBe(
-    ARTIFACT_OPERATION_DEFINITIONS['artifact.import'].inputSchema.shape.content
+  expect(imported.shape.byteLength).toBe(
+    ARTIFACT_OPERATION_DEFINITIONS['artifact.import'].inputSchema.shape.byteLength
   );
+  expect(imported.shape).not.toHaveProperty('content');
   expect(imported.shape.requestId).toBeUndefined();
   expect(
     imported.safeParse({
       title: 'Exact JSON',
       mediaType: 'application/json',
-      content: 'invalid json',
+      byteLength: -1,
       contentDigest: `sha256:${'a'.repeat(64)}`,
     }).success
   ).toBe(false);
@@ -62,7 +63,7 @@ it('derives Artifact model views with bound identity omitted and content and fee
     imported.safeParse({
       title: 'Exact JSON',
       mediaType: 'application/json',
-      content: '{"ok":true}',
+      byteLength: 11,
       contentDigest: `sha256:${'a'.repeat(64)}`,
     }).success
   ).toBe(true);

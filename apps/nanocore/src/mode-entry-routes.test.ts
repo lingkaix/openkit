@@ -2219,6 +2219,8 @@ describe('Task durable admission response', () => {
     let turnId: string | undefined;
     try {
       await vi.waitFor(() => expect(responseObserved).toBe(true));
+      const response = await pending;
+      expect(response.status, await response.clone().text()).toBe(token ? 200 : 202);
       turnId = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
@@ -2233,8 +2235,6 @@ describe('Task durable admission response', () => {
       expect(receiptAtResponse).toMatchObject({ command, requestId });
       expect(publicationEvents).toEqual(['publication', 'response']);
       expect(completionObserved).toBe(false);
-      const response = await pending;
-      expect(response.status, await response.clone().text()).toBe(token ? 200 : 202);
       const wire = await response.json();
       const result = token ? JSON.parse(wire.result.content[0].text) : wire;
       if (entry === 'assistant') {

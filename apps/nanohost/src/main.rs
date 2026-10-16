@@ -8,6 +8,7 @@ mod credential_slots;
 mod epoch_coordinator;
 #[cfg(not(test))]
 mod epoch_evidence;
+mod file_transfer;
 mod filesystem_capacity;
 mod image_acquisition;
 mod image_store;
@@ -594,7 +595,7 @@ fn execute_effect_command(
                 .input
                 .get("maxByteLength")
                 .and_then(serde_json::Value::as_u64)
-                .filter(|value| *value >= 1 && *value <= FILE_EFFECT_MAX_BYTES)
+                .filter(|value| *value >= 1 && *value <= file_transfer::FILE_BYTES + 1)
                 .ok_or("file.export maximum invalid")?;
             let presence = match string("presence")? {
                 "required" => FileEffectPresence::Required,
@@ -612,7 +613,7 @@ fn execute_effect_command(
             };
             if live
                 && (presence != FileEffectPresence::Optional
-                    || max_byte_length > 16 * 1024 * 1024 + 1
+                    || max_byte_length > file_transfer::FILE_BYTES + 1
                     || [
                         "submissionRequestId",
                         "turnId",
@@ -684,7 +685,7 @@ fn execute_effect_command(
                 &file_data.relative_path,
                 &file_data.sha256,
                 file_data.byte_length,
-                &file_data.bytes,
+                &file_data.file,
             )?;
             let result: Result<serde_json::Value, &'static str> = Ok(serde_json::json!({
                 "byteLength": carriage.byte_length(),
@@ -1051,12 +1052,14 @@ async fn run_sessions(
                         }
                         let poll_kind = nanocore_session::effect_kind_for_cursor(cursor);
                         let poll_operation = OuterSessionOperation::from(poll_kind);
+                        let file_staging_root = coordinator.file_staging_root().to_path_buf();
                         let polled_command = tokio::select! {
                             command = nanocore_session::poll_effect_command(
                                 authority,
                                 &mut sender,
                                 &mut cursor,
                                 coordinator.has_live_bridge(),
+                                &file_staging_root,
                             ) => command,
                             fault = coordinator.wait() => {
                                 return Err(attach_member_failure(

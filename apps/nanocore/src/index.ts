@@ -96,6 +96,7 @@ import type { WorkerControlFinalStatusAcceptedInput } from './runtime/worker-con
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from './scheduler-records.js';
+import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import {
   type CoreDb,
   isFreshCoreInitializationScope,
@@ -114,6 +115,7 @@ import { rebuildInvalidExistingWorkspaceDerivedIndexes } from './storage/index-r
 import { applyMigrations, listAppliedMigrationIds } from './storage/migrate.js';
 import { appendRecoveredTurnObservation } from './storage/work-observation-recovery.js';
 import { cleanupWorkspaceArchiveRequestStaging } from './storage/workspace-archive.js';
+import { discardAbandonedWorkspaceStaging } from './storage/workspace-file-records.js';
 import { shutdownTelemetry, startTelemetry } from './telemetry.js';
 import type { VaultUnlockState } from './vault/vault-unlock-state.js';
 import { reconcileWorkerMcpItems } from './worker-mcp-routes.js';
@@ -149,7 +151,12 @@ let sharedStore: FsStore | undefined;
 const restartCloseoutPackageSnapshots = new Set<string>();
 const nanohostTransportSessionAuthority = createNanoHostTransportSessionAuthority();
 const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+// Recovery can stage files before the live configuration manager is assembled.
+let readFileReserveBytes = () =>
+  runtimeConfigSnapshot?.openKitConfig.server?.fileReserveBytes ?? 1_000_000_000;
+const fileAdmission = new FileStorageAdmission(dataRoot, () => BigInt(readFileReserveBytes()));
 const nanoHostSessionDispatch = createNanoHostSessionDispatch({
+  fileAdmission,
   get coreDb() {
     return coreDb;
   },
@@ -329,6 +336,9 @@ const bootResult = await runBootPhases({
           workspaceMutationAdmission,
         });
         fenceNanoHostRuntimeTargetAfterRestart(recoveryCoreDb, new Date().toISOString());
+        // Startup owns abandoned private staging before dispatch and upload admission open.
+        // A later read-only Store construction must not remove another live request's bytes.
+        discardAbandonedWorkspaceStaging(dataRoot);
         sharedStore ??= new FsStore({ dataRoot });
         const recoveryStore = sharedStore;
         bootWorkerControlGateway = createDefaultWorkerControlGateway(
@@ -336,6 +346,7 @@ const bootResult = await runBootPhases({
           scheduleCommittedFinalStatusCloseout
         );
         workerLifecycleRuntime = createConfiguredWorkerLifecycleRuntime({
+          fileAdmission,
           coreDb: recoveryCoreDb,
           // Defer snapshot reads until admission, after the shared manager is initialized below.
           readRuntimeConfig: () => runtimeConfigManager.current(),
@@ -556,7 +567,10 @@ const auth =
       })
     : undefined;
 
+readFileReserveBytes = () =>
+  runtimeConfigManager.current().openKitConfig.server?.fileReserveBytes ?? 1_000_000_000;
 const app = createApp({
+  fileAdmission,
   ...(auth ? { auth } : {}),
   bootReadiness,
   coreDb,

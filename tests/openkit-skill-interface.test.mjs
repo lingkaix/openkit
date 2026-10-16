@@ -591,6 +591,8 @@ test('one catalog covers the checked App API and public Core projection', async 
       .map(([id]) => id)
       .sort(),
     [
+      'artifact.download',
+      'artifact.import',
       'bootstrap.consume',
       'token.create',
       'token.rotate',
@@ -785,7 +787,7 @@ test('one catalog covers the checked App API and public Core projection', async 
       );
       const localFields =
         definition.binding === 'streaming'
-          ? [entry.id === 'workspace.archive-download' ? 'destinationPath' : 'sourcePath']
+          ? [entry.id.endsWith('download') ? 'destinationPath' : 'sourcePath']
           : [];
       assert.deepEqual(
         Object.keys(sharedShape).sort(),
@@ -1459,6 +1461,7 @@ test('the catalog projects the approved Artifact, Material, and Goal steering op
   const { operationCatalog } = await operations();
   const expectedMappings = {
     'artifact.import': 'artifact.import',
+    'artifact.download': 'artifact.download',
     'artifact.introduce': 'artifact.introduce',
     'artifact.review.decide': 'artifact.review.decide',
     'artifact.review-list': 'artifact.review-list',
@@ -1973,6 +1976,198 @@ for (const [label, executable] of [
     assert.equal(JSON.parse(aliasCall.stdout).error.code, 'operation_not_found');
   });
 }
+
+test('Artifact CLI transfers import and download originals through the bundled command', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-cli-artifact-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const original = JSON.parse(
+    readFileSync(join(repoRoot, 'tests/fixtures/large-context/cases.json'), 'utf8')
+  ).originals.find((entry) => entry.id === 'binary-invalid-utf8');
+  const bytes = Buffer.from(original.patternHex.repeat(original.repeats), 'hex');
+  const sourcePath = join(root, 'source.bin');
+  const destinationPath = join(root, 'original.bin');
+  writeFileSync(sourcePath, bytes);
+  const env = {
+    OPENKIT_NANOCORE_URL: 'http://127.0.0.1:3456',
+    OPENKIT_NANOCORE_TOKEN: 'okt_artifact_fixture',
+  };
+  const fetchModule = dataModule(`
+    globalThis.fetch = async (url, options) => {
+      const parsed = new URL(url);
+      const headers = new Headers(options.headers);
+      if (headers.get('authorization') !== 'Bearer okt_artifact_fixture') throw new Error('missing credential');
+      if (parsed.searchParams.has('sourcePath') || parsed.searchParams.has('destinationPath')) throw new Error('local path leaked');
+      if (parsed.pathname === '/api/app/operations/artifact.import') {
+        if (options.method !== 'POST') throw new Error('unexpected upload method');
+        if (headers.get('x-openkit-request-id') !== 'cli-raw-import') throw new Error('request identity changed');
+        const body = Buffer.from(await new Response(options.body).arrayBuffer());
+        if (!body.equals(Buffer.from('${bytes.toString('hex')}', 'hex'))) throw new Error('original changed');
+        return Response.json({ artifactId: 'ar_cli', artifactVersion: 1 }, { status: 201 });
+      }
+      if (parsed.pathname !== '/api/app/operations/artifact.download' || options.method !== 'GET') throw new Error('unexpected download');
+      if (parsed.searchParams.get('artifactVersion') !== '1' || parsed.searchParams.has('requestId')) throw new Error('selector changed');
+      return new Response(Buffer.from('${bytes.toString('hex')}', 'hex'), { headers: { 'content-type': 'application/octet-stream', 'content-length': '${original.size}', 'x-openkit-content-digest': '${original.sha256}' } });
+    };
+  `);
+  const uploaded = await runCli(
+    ['ops', 'call', 'artifact.import', '--input', '-'],
+    env,
+    JSON.stringify({
+      workspaceId: 'ws_demo',
+      requestId: 'cli-raw-import',
+      title: 'Original',
+      mediaType: 'application/octet-stream',
+      byteLength: original.size,
+      contentDigest: original.sha256,
+      sourcePath,
+    }),
+    [fetchModule]
+  );
+  assert.equal(uploaded.code, 0, uploaded.stdout + uploaded.stderr);
+  assert.deepEqual(JSON.parse(uploaded.stdout).data, { artifactId: 'ar_cli', artifactVersion: 1 });
+  const downloaded = await runCli(
+    ['ops', 'call', 'artifact.download', '--input', '-'],
+    env,
+    JSON.stringify({
+      workspaceId: 'ws_demo',
+      artifactId: 'ar_cli',
+      artifactVersion: 1,
+      destinationPath,
+    }),
+    [fetchModule]
+  );
+  assert.equal(downloaded.code, 0, downloaded.stdout + downloaded.stderr);
+  assert.deepEqual(JSON.parse(downloaded.stdout).data, { downloaded: true });
+  assert.deepEqual(readFileSync(destinationPath), bytes);
+  assert.equal(statSync(destinationPath).mode & 0o777, 0o600);
+  assert.doesNotMatch(
+    uploaded.stdout + downloaded.stdout + uploaded.stderr + downloaded.stderr,
+    /okt_artifact_fixture/
+  );
+});
+
+test('Artifact CLI transfers use file bindings, exact bytes, and exclusive local destinations', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-skill-artifact-'));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const original = JSON.parse(
+    readFileSync(join(repoRoot, 'tests/fixtures/large-context/cases.json'), 'utf8')
+  ).originals.find((entry) => entry.id === 'binary-invalid-utf8');
+  const bytes = Buffer.from(original.patternHex.repeat(original.repeats), 'hex');
+  const sourcePath = join(root, 'source.bin');
+  const destinationPath = join(root, 'download.bin');
+  writeFileSync(sourcePath, bytes);
+  const { operationCatalog } = await operations();
+  const upload = operationCatalog.find((entry) => entry.id === 'artifact.import');
+  const download = operationCatalog.find((entry) => entry.id === 'artifact.download');
+  assert.equal(upload.clientMethod, 'artifactFiles.import');
+  assert.equal(download.clientMethod, 'artifactFiles.download');
+  assert.equal(download.mutating, true, 'writing the destination is a local mutation');
+  const metadata = {
+    workspaceId: 'ws_demo',
+    requestId: 'artifact-cli-import',
+    title: 'Exact binary',
+    mediaType: 'application/octet-stream',
+    byteLength: original.size,
+    contentDigest: original.sha256,
+  };
+  const selector = { workspaceId: 'ws_demo', artifactId: 'ar_binary', artifactVersion: 1 };
+  const client = createCoreClient({
+    baseUrl: 'http://127.0.0.1',
+    fetch: async (input, init) => {
+      const url = new URL(String(input));
+      const headers = new Headers(init.headers);
+      if (url.pathname === '/api/app/operations/artifact.import') {
+        assert.equal(init.method, 'POST');
+        assert.equal(headers.get('x-openkit-request-id'), metadata.requestId);
+        assert.deepEqual(Object.fromEntries(url.searchParams), {
+          workspaceId: metadata.workspaceId,
+          title: metadata.title,
+          mediaType: metadata.mediaType,
+          byteLength: String(original.size),
+          contentDigest: original.sha256,
+        });
+        assert.deepEqual(Buffer.from(await new Response(init.body).arrayBuffer()), bytes);
+        return Response.json(
+          { artifactId: selector.artifactId, artifactVersion: 1 },
+          { status: 201 }
+        );
+      }
+      assert.equal(url.pathname, '/api/app/operations/artifact.download');
+      assert.equal(init.method, 'GET');
+      assert.deepEqual(Object.fromEntries(url.searchParams), { ...selector, artifactVersion: '1' });
+      return new Response(bytes, {
+        headers: {
+          'content-length': String(original.size),
+          'content-type': 'application/octet-stream',
+          'x-openkit-content-digest': original.sha256,
+        },
+      });
+    },
+  });
+  assert.equal(Object.hasOwn(client.operations, 'artifact.import'), false);
+  assert.equal(Object.hasOwn(client.operations, 'artifact.download'), false);
+  assert.deepEqual(
+    await upload.handler({ client }, upload.inputSchema.parse({ ...metadata, sourcePath })),
+    { artifactId: 'ar_binary', artifactVersion: 1 }
+  );
+  assert.deepEqual(
+    await download.handler(
+      { client },
+      download.inputSchema.parse({ ...selector, destinationPath })
+    ),
+    { downloaded: true }
+  );
+  assert.deepEqual(readFileSync(destinationPath), bytes);
+  assert.equal(statSync(destinationPath).mode & 0o777, 0o600);
+  await assert.rejects(
+    download.handler({ client }, { ...selector, destinationPath }),
+    (error) => error.code === 'artifact_destination_exists'
+  );
+  assert.deepEqual(readFileSync(destinationPath), bytes);
+  const linkedSource = join(root, 'source-link');
+  symlinkSync(sourcePath, linkedSource);
+  for (const path of [linkedSource, root]) {
+    await assert.rejects(
+      async () => upload.handler({ client }, { ...metadata, sourcePath: path }),
+      (error) => error.code === 'invalid_artifact_source'
+    );
+  }
+  const linkedDestination = join(root, 'download-link');
+  symlinkSync(sourcePath, linkedDestination);
+  await assert.rejects(
+    download.handler({ client }, { ...selector, destinationPath: linkedDestination }),
+    (error) => error.code === 'artifact_destination_exists'
+  );
+  assert.deepEqual(readFileSync(sourcePath), bytes);
+  for (const failure of ['digest', 'length', 'stream']) {
+    const path = join(root, `${failure}.bin`);
+    const failedClient = {
+      artifactFiles: {
+        async download() {
+          return {
+            body:
+              failure === 'stream'
+                ? new ReadableStream({
+                    start(controller) {
+                      controller.error(new Error('Fixture interrupted stream.'));
+                    },
+                  })
+                : new Response(bytes).body,
+            byteLength: failure === 'length' ? bytes.length + 1 : bytes.length,
+            contentDigest: failure === 'digest' ? `sha256:${'0'.repeat(64)}` : original.sha256,
+            mediaType: 'application/octet-stream',
+          };
+        },
+      },
+    };
+    await assert.rejects(
+      download.handler({ client: failedClient }, { ...selector, destinationPath: path }),
+      (error) => error.code === 'artifact_download_failed'
+    );
+    // The exclusive destination may retain partial bytes after a failed transfer. It is never an accepted download.
+    if (existsSync(path)) assert.equal(statSync(path).mode & 0o777, 0o600);
+  }
+});
 
 test('portable archive operations stream bytes and refuse local path replacement', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'openkit-skill-archive-'));

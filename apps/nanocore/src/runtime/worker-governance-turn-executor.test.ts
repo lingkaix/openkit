@@ -14,6 +14,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   CapabilityUsageResponseSchema,
@@ -68,6 +69,8 @@ import type {
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
@@ -105,6 +108,7 @@ import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
 import {
   bindThreadMaterial,
   createWorkspaceMaterial,
+  getWorkspaceMaterialRevision,
   saveWorkspaceMaterialRevision,
   selectQueuedThreadMaterialRevision,
 } from '../workspace-materials.js';
@@ -689,7 +693,7 @@ async function prepareNullKnowledgeTaskContext(name: string, turnId: string) {
         fixture.turn.id
       )!,
       {
-        agentSessionId: testEntityId('as', 'as_context'),
+        agentSessionId: testEntityId('as', 'as_00000000-0000-77fe-a8c9-41ee91fa0b94'),
         requestId: fixture.requestId,
         threadId: fixture.turn.threadId,
         turnId: fixture.turn.id,
@@ -2525,7 +2529,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     store.createThread(
       predecessorTurn.workspaceId,
       'Foreign thread',
-      testEntityId('th', 'th_other')
+      testEntityId('th', 'th_00000000-0000-78ce-b458-8347d12d1da2')
     );
     const turn = createAssignedTurn(
       store,
@@ -2536,7 +2540,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const foreignTurn = createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
-      testEntityId('th', 'th_other'),
+      testEntityId('th', 'th_00000000-0000-78ce-b458-8347d12d1da2'),
       'Foreign thread work'
     );
     store.createAgentSession({
@@ -2782,16 +2786,30 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(withBoth.capabilities.interrupts).toBe(true);
   });
 
-  it('preserves the first exact terminal report after cancellation and closes the Turn as interrupted', async () => {
+  it.each([
+    { reason: undefined, cause: 'turn-cancelled', status: 'interrupted', stopReason: 'aborted' },
+    {
+      reason: 'budget_exhausted',
+      cause: 'raw-output-exhausted',
+      status: 'completed',
+      stopReason: 'budget_exhausted',
+    },
+    { reason: 'error', cause: 'raw-output-unavailable', status: 'failed', stopReason: 'error' },
+  ] as const)('preserves exact native stop evidence for $cause and closes as $stopReason', async ({
+    reason,
+    cause,
+    status,
+    stopReason,
+  }) => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime('2026-07-15T00:00:10.000Z');
     const f = await launchFinalReviewWorker('cancel');
     try {
       expect(f.executor.isTurnExecutionActive(f.turn.id)).toBe(true);
-      await f.executor.interruptTurn(f.store, f.turn.id);
+      await f.executor.interruptTurn(f.store, f.turn.id, reason ? { stopReason: reason } : {});
       expect(attempts.requireSchedulerExecutionAttempt(f.coreDb, f.attemptId)).toMatchObject({
         phase: 'closing',
-        terminalCause: 'turn-cancelled',
+        terminalCause: cause,
       });
       // The cancellation-only first final preserves exact evidence without overriding the interrupted Turn.
       f.backend.eventsJsonlFactory = () =>
@@ -2835,12 +2853,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
       });
       expect(await Promise.race([f.execution, delay(2000, 'completion-timeout')])).toBeNull();
       const terminal = f.store.getTurnById(f.turn.id);
-      expect(terminal.status).toBe('interrupted');
+      expect(terminal.status).toBe(status);
       expect(f.store.getTurnEvents(f.turn.id)).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             event: 'turn.completed',
-            data: expect.objectContaining({ type: 'turn-completed', stopReason: 'aborted' }),
+            data: expect.objectContaining({ type: 'turn-completed', stopReason }),
           }),
         ])
       );
@@ -3213,8 +3231,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
             store,
             workspaceDb,
             environmentPackage,
+            fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
             captureArtifact: async () => ({
-              bytes: artifactBytes,
+              byteLength: artifactBytes.byteLength,
+              contentDigest: turnRuntimeSha256(artifactBytes),
+              source: Readable.from([artifactBytes]),
+              remove: async () => {},
               credentialCheckValues: (await backend.collectTranscript()).credentialCheckValues!,
             }),
           },
@@ -3263,7 +3285,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(packageSnapshotId).toBeTruthy();
       expect(artifactId).toEqual(expect.any(String));
       expect(store.getArtifact(turn.workspaceId, artifactId!)).toMatchObject({
-        content: { body: artifactBytes.toString('utf8'), format: 'markdown' },
+        content: {
+          format: 'file',
+          mediaType: 'text/markdown',
+          byteLength: artifactBytes.byteLength,
+        },
         contentDigest: turnRuntimeSha256(artifactBytes),
         origin: {
           kind: 'turn-output',
@@ -3274,6 +3300,15 @@ describe('WorkerGovernanceTurnExecutor', () => {
         status: 'ready',
         version: 1,
       });
+      expect(
+        readFileSync(
+          artifactFilePayloadPath(
+            join(coreDb.dataRoot, 'workspaces', turn.workspaceId),
+            artifactId!,
+            1
+          )
+        )
+      ).toEqual(artifactBytes);
       const workspaceDb = openTestWorkspaceDb(coreDb);
       expect(getArtifactReview(workspaceDb, artifactId!, 1)).toMatchObject({
         artifactId,
@@ -3289,6 +3324,41 @@ describe('WorkerGovernanceTurnExecutor', () => {
         sourceTurnId: turn.id,
       });
       workspaceDb.sqlite.close();
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: LOCAL_USER_ID,
+        workspaceId: turn.workspaceId,
+      });
+      const app = createAppWithWorkspaceAuthority({ coreDb, dataRoot: coreDb.dataRoot, store });
+      const applied = await app.request('/api/app/operations/artifact.review.decide', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-openkit-request-id': 'apply_exact_file_proposal',
+        },
+        body: JSON.stringify({
+          workspaceId: turn.workspaceId,
+          artifactId,
+          artifactVersion: 1,
+          decision: 'accepted',
+        }),
+      });
+      expect(applied.status, await applied.clone().text()).toBe(200);
+      const verifyDb = openTestWorkspaceDb(coreDb);
+      try {
+        const appliedReview = getArtifactReview(verifyDb, artifactId!, 1);
+        expect(appliedReview.appliedMaterialRevisionId).not.toBeNull();
+        expect(
+          getWorkspaceMaterialRevision(
+            verifyDb,
+            material.materialId,
+            appliedReview.appliedMaterialRevisionId!
+          ).content
+        ).toBe(artifactBytes.toString('utf8'));
+      } finally {
+        verifyDb.sqlite.close();
+      }
     } finally {
       coreDb.sqlite.close();
     }
@@ -5509,15 +5579,23 @@ describe('WorkerGovernanceTurnExecutor', () => {
           request: { model: string; prompt_cache_key?: string },
           context: LLMGatewayDispatchContext
         ) => {
-          workerRequests.push(request);
-          context.onUsage?.({ input_tokens: 3, output_tokens: 1, total_tokens: 4 });
-          return {
-            id: 'resp_provenance_blackbox',
-            model: request.model,
-            object: 'response' as const,
-            output: [],
-            status: 'completed' as const,
-          };
+          // This controlled Provider has a complete empty native output before public conversion.
+          const source = context.transport?.rawOutput;
+          const settle = source?.sourceStarted();
+          try {
+            source?.sourceEvent();
+            workerRequests.push(request);
+            context.onUsage?.({ input_tokens: 3, output_tokens: 1, total_tokens: 4 });
+            return {
+              id: 'resp_provenance_blackbox',
+              model: request.model,
+              object: 'response' as const,
+              output: [],
+              status: 'completed' as const,
+            };
+          } finally {
+            settle?.();
+          }
         }
       ),
     } as unknown as LLMGatewayProviderDispatcher;
@@ -8876,7 +8954,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         'conversation.submit.task',
         LOCAL_USER_ID,
         'ws_00000000-0000-7000-8000-000000000001',
-        testEntityId('th', 'th_other'),
+        testEntityId('th', 'th_00000000-0000-78ce-b458-8347d12d1da2'),
         '00000000-0000-4000-8000-000000000270'
       ),
     },

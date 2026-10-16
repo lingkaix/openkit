@@ -156,6 +156,26 @@ export function collectProductRetrievalScopes(
         (artifact.threadId && !permittedThread(artifact.threadId))
       )
         continue;
+      if (artifact.content.format === 'file') {
+        const document = unreadableFileDocument({
+          key: { namespace: 'artifact', id: artifact.id },
+          revision: hash(JSON.stringify(artifact)),
+          digest: artifact.contentDigest,
+          size: artifact.content.byteLength,
+          name: artifact.title,
+          title: artifact.title,
+          mediaType: artifact.content.mediaType,
+          metadata: {
+            workspaceId,
+            artifactId: artifact.id,
+            version: String(artifact.version),
+            ...(artifact.threadId ? { threadId: artifact.threadId } : {}),
+            ...(artifact.turnId ? { turnId: artifact.turnId } : {}),
+          },
+        });
+        if (document) add('artifact', artifact.threadId, document);
+        continue;
+      }
       const text = artifact.content.body;
       if (hash(text) !== canonicalDigest(artifact.contentDigest))
         throw new OperationError(

@@ -262,3 +262,9 @@ The Agent host may separately have SSH, browser, repository or deployment tools.
 Report the goal, actual identifiers, observed outcome, relevant evidence and unresolved limitations. A benchmark additionally identifies its inputs/checks, model/configuration, budget and sample count; a single sample is an observation, not a demonstrated performance improvement. Use existing tasks and Artifacts rather than a private test database.
 
 Remove only attempt-owned temporary resources when cleanup is requested and safe. Keep the deployment and its Provider configuration available for the next task. Report unrelated discoveries without expanding the work or closing untested plans.
+
+## Exact Original Artifact Files
+
+Use the Artifact screen to import an arbitrary file as an immutable original. The limit is 1,000,000,000 decimal bytes per upload submission; available disk capacity can refuse an earlier upload. File-backed inspection shows its media type, byte length and SHA-256 digest. **Download original** selects that exact version and checks current access. A failed or uncertain import retains its request identity for **Try again**; do not infer acceptance from a selected filename or an upload progress indicator. Existing text, Markdown and JSON Artifacts retain their original stored representations.
+
+The raw App API binding for `artifact.import` sends bounded query metadata with the original byte body and `X-OpenKit-Request-Id`. `artifact.download` streams one exact id and version. Binary bodies do not belong in JSON operation or model Tool payloads. Use the Web screen or the Core Client `artifactFiles` methods for this binding. `server.fileReserveBytes` in server configuration sets the shared Data Root free-space reserve, default 1,000,000,000 bytes. Current uploads, publication and pending file writes share that reserve. Reducing it changes later admission only and does not remove accepted originals.

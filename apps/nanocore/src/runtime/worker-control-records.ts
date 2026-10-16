@@ -54,11 +54,13 @@ export type AcceptedWorkerFinalStatus = Pick<
  * Validates one accepted worker status against the closed Core stop-reason mapping.
  *
  * @param accepted Durable worker-control terminal facts.
+ * @param terminalCause Durable native-stop cause from the exact execution attempt, when present.
  * @returns Canonical Core stop reason.
  * @throws Error when the raw stop reason is unknown or incompatible with the worker status.
  */
 export function canonicalStopReasonForAcceptedWorkerFinalStatus(
-  accepted: AcceptedWorkerFinalStatus
+  accepted: AcceptedWorkerFinalStatus,
+  terminalCause?: string | null
 ): StopReason {
   if (accepted.stopReason === 'ask_user') {
     throw new Error('recovery_required');
@@ -83,7 +85,13 @@ export function canonicalStopReasonForAcceptedWorkerFinalStatus(
   if (!compatible) {
     throw new Error('Accepted worker final status has no canonical Core StopReason.');
   }
-  return stopReason;
+  return terminalCause === 'turn-cancelled'
+    ? 'aborted'
+    : terminalCause === 'raw-output-exhausted'
+      ? 'budget_exhausted'
+      : terminalCause === 'raw-output-unavailable'
+        ? 'error'
+        : stopReason;
 }
 
 /**
@@ -477,7 +485,9 @@ export async function waitForWorkerControlFinalStatus(
     }
     const cancelled =
       lease.phase === 'closing' &&
-      lease.terminalCause === 'turn-cancelled' &&
+      ['turn-cancelled', 'raw-output-exhausted', 'raw-output-unavailable'].includes(
+        lease.terminalCause ?? ''
+      ) &&
       lease.recoveryState === null &&
       lease.workerDeadline !== null &&
       lease.workerDeadline > new Date().toISOString();
@@ -530,7 +540,9 @@ export function hasPendingWorkerCancellationFinal(
   const now = Date.parse(timestamp);
   return (
     attempt.phase === 'closing' &&
-    attempt.terminalCause === 'turn-cancelled' &&
+    ['turn-cancelled', 'raw-output-exhausted', 'raw-output-unavailable'].includes(
+      attempt.terminalCause ?? ''
+    ) &&
     attempt.recoveryState === null &&
     attempt.fenceRef === null &&
     Boolean(attempt.workerControlTokenHash) &&
