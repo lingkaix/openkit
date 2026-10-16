@@ -1804,7 +1804,10 @@ describe('workspace auxiliary lineage reminting', () => {
     };
     input.portableFileState!.nativeKnowledgePages.set(
       `knowledge/pages/${knowledge.id}.md`,
-      serializeUserAuthoredKnowledgePage(knowledge)
+      serializeUserAuthoredKnowledgePage(knowledge, {
+        kind: 'workspace',
+        workspaceId: input.workspace.id,
+      })
         .replace(
           `source_refs: ${JSON.stringify(knowledge.sourceReferences)}`,
           `source_refs:\n  - ${JSON.stringify(knowledge.sourceReferences[0])}`

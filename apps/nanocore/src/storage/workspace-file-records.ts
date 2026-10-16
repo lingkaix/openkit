@@ -38,6 +38,8 @@ import {
   GitFailureExplanationReaderSchema,
   ItemSchema,
   KnowledgeEntrySchema,
+  type KnowledgeOwnerScope,
+  KnowledgeOwnerScopeSchema,
   SseEventEnvelopeSchema,
   ThreadSchema,
   TurnSchema,
@@ -58,6 +60,7 @@ import {
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION,
   parseOkfDocument,
+  REQUIRED_SCOPED_KNOWLEDGE_FEATURES,
   stringFrontmatterField,
   stringListFrontmatterField,
   updateOkfFrontmatter,
@@ -2482,9 +2485,14 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
  * Serializes one direct user-authored Knowledge Page into its canonical bytes.
  *
  * @param entry Knowledge entry projection to serialize.
+ * @param ownerScope Exact trusted owner of the new page, independent of its bytes.
  * @returns Exact canonical Markdown bytes written to the Knowledge Store.
  */
-export function serializeUserAuthoredKnowledgePage(entry: KnowledgeEntry): string {
+export function serializeUserAuthoredKnowledgePage(
+  entry: KnowledgeEntry,
+  ownerScope: KnowledgeOwnerScope
+): string {
+  const scope = KnowledgeOwnerScopeSchema.parse(ownerScope);
   return [
     '---',
     'type: "KnowledgePage"',
@@ -2492,7 +2500,8 @@ export function serializeUserAuthoredKnowledgePage(entry: KnowledgeEntry): strin
     `schema_version: ${JSON.stringify(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION)}`,
     'openkit_status: "active"',
     'status: "stable"',
-    'scope: "workspace"',
+    `scope: ${JSON.stringify(scope)}`,
+    `requiredFeatures: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
     `source_refs: ${JSON.stringify(entry.sourceReferences ?? [])}`,
     'review_state: "user-authored"',
     'sensitivity: "normal"',
@@ -2665,7 +2674,10 @@ function writeKnowledge(
         ? currentPageBytes!
         : proposalEntry && knowledgeEntriesEqual(proposalEntry, entry) && currentPageBytes === null
           ? proposal!.canonicalPageBytes
-          : serializeUserAuthoredKnowledgePage(entry);
+          : serializeUserAuthoredKnowledgePage(entry, {
+              kind: 'workspace',
+              workspaceId: records.workspace.id,
+            });
     writeFileAtomic(path, content);
   }
 }

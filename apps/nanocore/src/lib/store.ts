@@ -1560,7 +1560,10 @@ export class FsStore {
     workspaceId: string,
     candidate: KnowledgeEntry,
     knowledge: readonly KnowledgeEntry[],
-    candidateContent = serializeUserAuthoredKnowledgePage(candidate)
+    candidateContent = serializeUserAuthoredKnowledgePage(candidate, {
+      kind: 'workspace',
+      workspaceId,
+    })
   ): void {
     let scopeSchemaText: string | undefined;
     let resolvedReferences: ReadonlySet<string> = new Set();
@@ -1758,7 +1761,9 @@ export class FsStore {
           ? readWorkspaceKnowledgePage(this.workspaceRootPath(workspaceId), ownerId!)
           : (() => {
               const entry = knowledge.find((candidate) => candidate.id === ownerId);
-              return entry ? serializeUserAuthoredKnowledgePage(entry) : null;
+              return entry
+                ? serializeUserAuthoredKnowledgePage(entry, { kind: 'workspace', workspaceId })
+                : null;
             })();
       } catch {
         throw new KnowledgePageValidationError();
@@ -1963,7 +1968,10 @@ export class FsStore {
       );
       return JSON.stringify(entry) === JSON.stringify(proposalEntry)
         ? proposal.canonicalPageBytes
-        : serializeUserAuthoredKnowledgePage(entry);
+        : serializeUserAuthoredKnowledgePage(entry, {
+            kind: 'workspace',
+            workspaceId: proposal.workspaceId,
+          });
     }
 
     try {
@@ -2572,8 +2580,8 @@ export class FsStore {
     const path = `knowledge/pages/${knowledgeEntryId}.md`;
     const currentPageBytes = this.dataRoot
       ? (readWorkspaceKnowledgePage(this.workspaceRootPath(workspaceId), knowledgeEntryId) ??
-        serializeUserAuthoredKnowledgePage(existing))
-      : serializeUserAuthoredKnowledgePage(existing);
+        serializeUserAuthoredKnowledgePage(existing, { kind: 'workspace', workspaceId }))
+      : serializeUserAuthoredKnowledgePage(existing, { kind: 'workspace', workspaceId });
     const candidatePageBytes = updateUserAuthoredKnowledgePage(path, currentPageBytes, updated);
     this.assertValidKnowledgeEntryCandidate(workspaceId, updated, knowledge, candidatePageBytes);
     this.workspaceResources.set(workspaceId, {
