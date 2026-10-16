@@ -277,6 +277,71 @@ describe('pi-ai real-provider L3 test policy', () => {
     });
   }
 
+  it('accepts current logical-model diagnostics and attributes both calls to its selected profile', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-pi-ai-logical-model-'));
+    const evidenceDir = join(tempRoot, 'evidence');
+    const requests = [];
+    const profileId = 'xai-selected';
+    const physicalModel = 'grok-4';
+    try {
+      const result = await runPiAiRealProviderTest({
+        env: {
+          OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
+          OPENKIT_L6_EVIDENCE_DIR: evidenceDir,
+          OPENKIT_L6_GATEWAY_BASE_URL: 'http://127.0.0.1:54001',
+          OPENKIT_L6_GATEWAY_MODEL: 'Smart',
+          OPENKIT_L6_GATEWAY_PROVIDER_ID: profileId,
+          OPENKIT_L6_GATEWAY_WORKSPACE_ID: 'ws_0190f4c8-0000-7000-8000-000000000701',
+          OPENKIT_L6_REAL_PROVIDER: '1',
+        },
+        fetchImpl: async (url, init) => {
+          if (url.endsWith('/health')) {
+            return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+          }
+          if (url.endsWith('/api/app/operations/diagnostics.app')) {
+            return new Response(JSON.stringify({
+              gateway: {
+                status: 'ok',
+                endpoints: ['/health', '/v1/chat/completions'],
+                defaultModelId: 'Smart',
+                models: [{
+                  id: 'Smart',
+                  displayName: 'Smart',
+                  capabilities: ['chat-completions'],
+                  routes: [{ id: 'selected', providerProfileId: profileId, providerModel: physicalModel, available: true, unavailableReason: null }],
+                }],
+              },
+              providers: { diagnostics: [], registry: [{ id: profileId, kind: 'oauth', models: [physicalModel] }] },
+            }), { status: 200 });
+          }
+          if (url.endsWith('/v1/chat/completions')) {
+            const body = JSON.parse(init.body);
+            requests.push(body);
+            return body.stream
+              ? new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { status: 200 })
+              : new Response(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok' } }] }), { status: 200 });
+          }
+          assert.ok(url.endsWith('/api/app/operations/usage.read'));
+          return new Response(JSON.stringify({
+            capabilityCalls: requests.map((request) => ({
+              capabilityId: 'llm.chat_completions',
+              providerRef: profileId,
+              requestId: request.metadata.openkit.requestId,
+              status: 'succeeded',
+            })),
+            usageRecords: [],
+          }), { status: 200 });
+        },
+        stdout: () => {},
+      });
+      assert.equal(result.status, 'passed');
+      assert.deepEqual(requests.map((request) => request.model), ['Smart', 'Smart']);
+      assert.equal(result.assertions.successfulCapabilityCallCount, 2);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
   it('stays default-off without touching the gateway', async () => {
     const result = await runPiAiRealProviderTest({
       env: {},
