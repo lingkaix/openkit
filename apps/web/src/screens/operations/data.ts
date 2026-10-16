@@ -6,7 +6,7 @@ import { projectSafeValue } from '../settings/secret-safe';
 
 /** Stable TanStack Query keys for recovery reads and shell search. */
 export const operationsKeys = {
-  workers: ['operations', 'interrupted-workers'] as const,
+  workers: (workspaceId: string) => ['operations', 'interrupted-workers', workspaceId] as const,
   admissions: (workspaceId: string) => ['operations', 'scheduler-admissions', workspaceId] as const,
   search: (query: string) => ['operations', 'search', query] as const,
 };
@@ -171,7 +171,7 @@ export function pathForSearchHit(hit: AppSearchHit): string {
 }
 
 /**
- * Rechecks interrupted workers on mount through `client.operations['recovery.worker-list']` and discards denied observations.
+ * Reads selected-Workspace worker observations through `client.operations['recovery.worker-list']` and discards denied observations.
  *
  * @param workspaceId Validated selected Workspace, or null before discovery settles.
  * @returns TanStack query of product-safe worker rows.
@@ -179,7 +179,7 @@ export function pathForSearchHit(hit: AppSearchHit): string {
 export function useInterruptedWorkers(workspaceId: string | null) {
   const client = useCoreClient();
   const queryClient = useQueryClient();
-  const queryKey = operationsKeys.workers;
+  const queryKey = operationsKeys.workers(workspaceId ?? '');
   return useQuery({
     queryKey,
     queryFn: async ({ signal }): Promise<RecoveryWorkerRow[]> => {
@@ -192,7 +192,7 @@ export function useInterruptedWorkers(workspaceId: string | null) {
           const rowWorkspaceId = safeText(item.workspaceId);
           const threadId = safeText(item.threadId);
           const turnId = safeText(item.turnId);
-          if (!checkpointId || !rowWorkspaceId || !threadId || !turnId) return [];
+          if (!checkpointId || rowWorkspaceId !== workspaceId || !threadId || !turnId) return [];
           const choices = (item.choices ?? []).flatMap((choice) => {
             const label = safeText(choice.label);
             if (!label) return [];
@@ -235,7 +235,7 @@ export function useInterruptedWorkers(workspaceId: string | null) {
     },
     enabled: Boolean(workspaceId),
     retry: false,
-    refetchOnMount: 'always',
+    staleTime: 0,
   });
 }
 

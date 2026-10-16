@@ -1,4 +1,4 @@
-import { useQueryClient } from '@tanstack/react-query';
+import { QueryObserver, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useConnection } from '../../app/core-client';
 import {
@@ -38,6 +38,8 @@ const ADMISSION_STATUS = {
 type WorkerOwner = {
   lock: { workspaceId: string; checkpointId: string };
   frozen: FrozenWorkerRelease;
+  /** The exact mutation promise settled; this is not proof of its effect outcome. */
+  settled: boolean;
   recoveryRequired: boolean;
   message: string | null;
 };
@@ -46,6 +48,8 @@ type WorkerOwner = {
 type SchedulerOwner = {
   target: SchedulerAdmissionTarget;
   status: RecoveryAdmissionRow['status'];
+  /** The exact mutation promise settled; this is not proof of its effect outcome. */
+  settled: boolean;
   message: string | null;
 };
 
@@ -169,7 +173,7 @@ export function RecoveryScreen() {
     workspaceId,
   ]);
 
-  const workers = (workersQuery.data ?? []).filter((row) => row.workspaceId === workspaceId);
+  const workers = workersQuery.data ?? [];
   const admissions = admissionsQuery.data ?? [];
   const workersLoading =
     Boolean(workspaceId) && workersQuery.data === undefined && !workersQuery.isError;
@@ -185,16 +189,36 @@ export function RecoveryScreen() {
   }
 
   async function refetchExact(queryKey: readonly unknown[]) {
-    await queryClient.refetchQueries({ queryKey, exact: true, type: 'all' });
-    return queryClient.getQueryState(queryKey)?.status === 'success';
+    const query = queryClient.getQueryCache().find({ queryKey, exact: true });
+    if (!query) return false;
+    const updatesBeforeRead = query.state.dataUpdateCount;
+    // Keep the command-owned read observed across Workspace changes; enabled:false starts no automatic read.
+    const observer = new QueryObserver(queryClient, { ...query.options, enabled: false });
+    const release = observer.subscribe(() => {});
+    try {
+      await observer.refetch();
+      // Cancellation can restore cached success; only this retained query's completed new read settles.
+      return (
+        queryClient.getQueryCache().find({ queryKey, exact: true }) === query &&
+        query.state.status === 'success' &&
+        query.state.fetchStatus === 'idle' &&
+        query.state.dataUpdateCount > updatesBeforeRead
+      );
+    } finally {
+      release();
+    }
   }
 
   async function settleWorkerRead(originWorkspaceId: string, checkpointId: string) {
     if (!matchesWorkerOrigin(originWorkspaceId, checkpointId)) return;
+    // A pre-result refresh must not settle a promise that completes during that read.
+    const ownerAtStart = workerOwnersRef.current.get(originWorkspaceId);
+    const eligibleOwner = ownerAtStart?.settled ? ownerAtStart : null;
     try {
-      const ok = await refetchExact(operationsKeys.workers);
+      const ok = await refetchExact(operationsKeys.workers(originWorkspaceId));
       if (!matchesWorkerOrigin(originWorkspaceId, checkpointId)) return;
-      if (!ok) return;
+      if (!ok || !eligibleOwner || workerOwnersRef.current.get(originWorkspaceId) !== eligibleOwner)
+        return;
       // A read cannot settle an unknown command result or replace its exact retry identity.
       if (workerOwnersRef.current.get(originWorkspaceId)?.message) return;
       writeWorkerOwner(originWorkspaceId, null);
@@ -205,10 +229,18 @@ export function RecoveryScreen() {
 
   async function settleAdmissionRead(originWorkspaceId: string, queueEntryId: string) {
     if (!matchesSchedulerOrigin(originWorkspaceId, queueEntryId)) return;
+    // A pre-result refresh must not settle a promise that completes during that read.
+    const ownerAtStart = schedulerOwnersRef.current.get(originWorkspaceId);
+    const eligibleOwner = ownerAtStart?.settled ? ownerAtStart : null;
     try {
       const ok = await refetchExact(operationsKeys.admissions(originWorkspaceId));
       if (!matchesSchedulerOrigin(originWorkspaceId, queueEntryId)) return;
-      if (!ok) return;
+      if (
+        !ok ||
+        !eligibleOwner ||
+        schedulerOwnersRef.current.get(originWorkspaceId) !== eligibleOwner
+      )
+        return;
       const owner = schedulerOwnersRef.current.get(originWorkspaceId);
       const rows = queryClient.getQueryData<RecoveryAdmissionRow[]>(
         operationsKeys.admissions(originWorkspaceId)
@@ -226,7 +258,7 @@ export function RecoveryScreen() {
   }
 
   const workersReadAvailable =
-    workersVerified && workersQuery.isSuccess && !workersQuery.isFetching;
+    workersVerified && workersQuery.isSuccess && workersQuery.fetchStatus === 'idle';
 
   function workerReleaseLocked() {
     if (disconnected || !workersReadAvailable) return true;
@@ -243,7 +275,7 @@ export function RecoveryScreen() {
     !workspaceId ||
     !verifiedAdmissionWorkspaces.has(workspaceId) ||
     !admissionsQuery.isSuccess ||
-    admissionsQuery.isFetching ||
+    admissionsQuery.fetchStatus !== 'idle' ||
     Boolean(
       workspaceId &&
         ((schedulerLock?.workspaceId === workspaceId ? schedulerLock : null) ??
@@ -289,6 +321,7 @@ export function RecoveryScreen() {
     writeWorkerOwner(row.workspaceId, {
       lock: { workspaceId: row.workspaceId, checkpointId: row.checkpointId },
       frozen: next,
+      settled: false,
       recoveryRequired: false,
       message: null,
     });
@@ -297,6 +330,9 @@ export function RecoveryScreen() {
     void retryWorker.mutateAsync(next).then(
       () => {
         if (!matchesWorkerOrigin(originWorkspaceId, originCheckpointId)) return;
+        const owner = workerOwnersRef.current.get(originWorkspaceId);
+        if (!owner) return;
+        writeWorkerOwner(originWorkspaceId, { ...owner, settled: true });
         void settleWorkerRead(originWorkspaceId, originCheckpointId);
       },
       (error) => {
@@ -306,6 +342,7 @@ export function RecoveryScreen() {
         if (isRecoveryRequired(error)) {
           writeWorkerOwner(originWorkspaceId, {
             ...owner,
+            settled: true,
             recoveryRequired: true,
             message: null,
           });
@@ -314,6 +351,7 @@ export function RecoveryScreen() {
         }
         writeWorkerOwner(originWorkspaceId, {
           ...owner,
+          settled: true,
           recoveryRequired: false,
           message: workerActionMessage(error),
         });
@@ -333,6 +371,7 @@ export function RecoveryScreen() {
     writeSchedulerOwner(row.workspaceId, {
       target: { workspaceId: row.workspaceId, queueEntryId: row.queueEntryId },
       status: row.status,
+      settled: false,
       message: null,
     });
     const originWorkspaceId = row.workspaceId;
@@ -342,6 +381,9 @@ export function RecoveryScreen() {
       .then(
         () => {
           if (!matchesSchedulerOrigin(originWorkspaceId, originQueueEntryId)) return;
+          const owner = schedulerOwnersRef.current.get(originWorkspaceId);
+          if (!owner) return;
+          writeSchedulerOwner(originWorkspaceId, { ...owner, settled: true });
           void settleAdmissionRead(originWorkspaceId, originQueueEntryId);
         },
         (error) => {
@@ -350,6 +392,7 @@ export function RecoveryScreen() {
           if (!owner) return;
           writeSchedulerOwner(originWorkspaceId, {
             ...owner,
+            settled: true,
             message: schedulerActionMessage(error, 'retry'),
           });
         }
@@ -361,6 +404,7 @@ export function RecoveryScreen() {
     writeSchedulerOwner(row.workspaceId, {
       target: { workspaceId: row.workspaceId, queueEntryId: row.queueEntryId },
       status: row.status,
+      settled: false,
       message: null,
     });
     const originWorkspaceId = row.workspaceId;
@@ -370,6 +414,9 @@ export function RecoveryScreen() {
       .then(
         () => {
           if (!matchesSchedulerOrigin(originWorkspaceId, originQueueEntryId)) return;
+          const owner = schedulerOwnersRef.current.get(originWorkspaceId);
+          if (!owner) return;
+          writeSchedulerOwner(originWorkspaceId, { ...owner, settled: true });
           void settleAdmissionRead(originWorkspaceId, originQueueEntryId);
         },
         (error) => {
@@ -378,6 +425,7 @@ export function RecoveryScreen() {
           if (!owner) return;
           writeSchedulerOwner(originWorkspaceId, {
             ...owner,
+            settled: true,
             message: schedulerActionMessage(error, 'cancel'),
           });
         }
@@ -402,10 +450,7 @@ export function RecoveryScreen() {
     void admissionsQuery.refetch();
   }
 
-  const workerQueryErrorVisible =
-    workersQuery.isError &&
-    workspaceId !== null &&
-    (workerOwnersRef.current.size === 0 || workerOwnersRef.current.has(workspaceId));
+  const workerQueryErrorVisible = workersQuery.isError && workspaceId !== null;
 
   const workersAlert = workerQueryErrorVisible
     ? {
@@ -420,10 +465,14 @@ export function RecoveryScreen() {
       : workerMessage && frozenWorker
         ? {
             message: workerMessage,
-            onRetry: () => {
-              const row = workers.find((item) => item.checkpointId === frozenWorker.checkpointId);
-              if (row) retryInterrupted(row, frozenWorker);
-            },
+            onRetry: workersReadAvailable
+              ? () => {
+                  const row = workers.find(
+                    (item) => item.checkpointId === frozenWorker.checkpointId
+                  );
+                  if (row) retryInterrupted(row, frozenWorker);
+                }
+              : undefined,
           }
         : null;
 
@@ -450,7 +499,7 @@ export function RecoveryScreen() {
             <ErrorBanner message={workersAlert.message} onRetry={workersAlert.onRetry} />
           ) : null}
           {!workersQuery.isError &&
-          !workersQuery.isFetching &&
+          workersQuery.fetchStatus === 'idle' &&
           !workersLoading &&
           workers.length === 0 ? (
             <p className="text-sm text-fg-muted">No interrupted workers</p>
@@ -529,7 +578,7 @@ export function RecoveryScreen() {
           ) : null}
           {admissionsLoading ? <Skeleton lines={2} /> : null}
           {!admissionsQuery.isError &&
-          !admissionsQuery.isFetching &&
+          admissionsQuery.fetchStatus === 'idle' &&
           !admissionsLoading &&
           admissions.length === 0 ? (
             <p className="text-sm text-fg-muted">No scheduler admissions</p>
