@@ -34,6 +34,7 @@ describe('storage layout report', () => {
       expect(report.serverDb.appliedMigrations).toEqual([
         'core_0000_setup',
         'core_0001_concurrent_turn_capacity',
+        'core_0002_durable_recurring_schedules',
       ]);
       expect(report.users).toEqual(
         expect.arrayContaining([
