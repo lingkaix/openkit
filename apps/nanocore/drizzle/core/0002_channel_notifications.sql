@@ -9,7 +9,9 @@ CREATE TABLE notification_attention (
   created_at TEXT NOT NULL,
   UNIQUE (workspace_id, thread_id, source_kind, request_id, recipient_user_id)
 );
+--> statement-breakpoint
 CREATE INDEX notification_attention_recipient ON notification_attention (recipient_user_id, created_at DESC, id DESC);
+--> statement-breakpoint
 CREATE TABLE notification_delivery_attempts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   attention_id TEXT NOT NULL REFERENCES notification_attention(id) ON DELETE CASCADE,
@@ -23,14 +25,18 @@ CREATE TABLE notification_delivery_attempts (
     OR (status = 'failed-no-send' AND finished_at IS NOT NULL AND failure_code IN ('authority-unavailable', 'transport-refused'))
     OR (status = 'delivery-unknown' AND finished_at IS NOT NULL AND failure_code IN ('transport-unknown', 'restart')))
 );
+--> statement-breakpoint
 CREATE INDEX notification_attempt_attention ON notification_delivery_attempts (attention_id, id DESC);
+--> statement-breakpoint
 CREATE UNIQUE INDEX notification_one_active_attempt ON notification_delivery_attempts (attention_id) WHERE status = 'sending';
+--> statement-breakpoint
 CREATE TABLE discord_pairing_challenges (
   digest TEXT PRIMARY KEY NOT NULL,
   user_id TEXT NOT NULL,
   expires_at INTEGER NOT NULL,
   consumed_at INTEGER
 );
+--> statement-breakpoint
 CREATE TABLE discord_account_bindings (
   discord_user_id TEXT PRIMARY KEY NOT NULL,
   user_id TEXT NOT NULL,
@@ -38,7 +44,9 @@ CREATE TABLE discord_account_bindings (
   paired_at INTEGER NOT NULL,
   revoked_at INTEGER
 );
+--> statement-breakpoint
 CREATE UNIQUE INDEX discord_account_bindings_active_user ON discord_account_bindings(user_id) WHERE revoked_at IS NULL;
+--> statement-breakpoint
 CREATE TABLE discord_inbound_receipts (
   event_id TEXT PRIMARY KEY NOT NULL,
   payload_digest TEXT NOT NULL,
@@ -46,6 +54,7 @@ CREATE TABLE discord_inbound_receipts (
   state TEXT NOT NULL CHECK(state IN ('dispatching','settled','response-unknown')),
   created_at INTEGER NOT NULL
 );
+--> statement-breakpoint
 CREATE TABLE discord_disclosures (
   token_digest TEXT PRIMARY KEY NOT NULL,
   discord_user_id TEXT NOT NULL,
@@ -57,4 +66,3 @@ CREATE TABLE discord_disclosures (
   content_digest TEXT NOT NULL,
   expires_at INTEGER NOT NULL
 );
-
