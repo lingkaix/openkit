@@ -757,7 +757,7 @@ describe('work observation portable closure', () => {
               'exports',
               'workspaces',
               demo.workspace.id,
-              'export_expired_observations',
+              expiredExport.verified.manifest.id,
               entry.path
             )
           ).equals(bytes)
