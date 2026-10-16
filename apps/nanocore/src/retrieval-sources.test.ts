@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,10 +14,11 @@ import {
 } from './retrieval-sources.js';
 import { openWorkspaceDb } from './storage/db.js';
 import { applyScopedMigrations } from './storage/migrate.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './workspace-materials.js';
 
 const stamp = '2026-10-15T00:00:00.000Z';
-const actor = { userId: 'user_local', kind: 'local' as const };
+const actor = { userId: 'usr_00000000-0000-7000-8000-000000000001', kind: 'local' as const };
 const hash = (text: string) => `sha256:${createHash('sha256').update(text).digest('hex')}`;
 const testRoots: string[] = [];
 afterEach(async () => {
@@ -38,7 +40,7 @@ describe('canonical product retrieval adapters', () => {
     message(store, turn, 'old conversation marker');
     const body = 'Artifact unique marker';
     store.createArtifact({
-      id: 'ar_retrieval',
+      id: 'ar_00000000-0000-7472-9b71-dafe5512cf50',
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -62,7 +64,7 @@ describe('canonical product retrieval adapters', () => {
     const db = openWorkspaceDb(dataRoot, workspace.id);
     applyScopedMigrations(db);
     const material = createWorkspaceMaterial(db, {
-      actorId: actor.userId,
+      actor: { kind: 'user', id: actor.userId },
       acceptedAt: stamp,
       requestId: 'material_create',
       title: 'Material',
@@ -71,7 +73,7 @@ describe('canonical product retrieval adapters', () => {
     });
     const materialText = 'Material unique marker';
     saveWorkspaceMaterialRevision(db, {
-      actorId: actor.userId,
+      actor: { kind: 'user', id: actor.userId },
       acceptedAt: stamp,
       requestId: 'material_save',
       materialId: material.materialId,
@@ -127,7 +129,10 @@ describe('canonical product retrieval adapters', () => {
     const other = store.createThread(workspace.id, 'Other');
     const shared = store.createThread(workspace.id, 'Shared');
     Object.assign(own, { visibility: 'private', privateOwnerUserId: actor.userId });
-    Object.assign(other, { visibility: 'private', privateOwnerUserId: 'other_user' });
+    Object.assign(other, {
+      visibility: 'private',
+      privateOwnerUserId: testEntityId('usr', 'other_user'),
+    });
     Object.assign(shared, { visibility: 'workspace' });
     delete (shared as unknown as Record<string, unknown>).privateOwnerUserId;
     for (const [thread, text] of [
@@ -168,7 +173,7 @@ describe('canonical product retrieval adapters', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'retrieval-sidecar-'));
     testRoots.push(dataRoot);
     const identity = {
-      key: { namespace: 'artifact', id: 'ar_binary' },
+      key: { namespace: 'artifact', id: 'ar_00000000-0000-7361-99da-c4b29ba62194' },
       revision: 'version-1',
       digest: hash('binary-private-body-marker'),
       size: 999999,
@@ -214,7 +219,7 @@ describe('canonical product retrieval adapters', () => {
 /** Adds the canonical visible message owned by a Turn; createTurn alone stores no Item. */
 function message(store: FsStore, turn: ReturnType<FsStore['createTurn']>, text: string): void {
   store.createItem({
-    id: `it_${turn.id}`,
+    id: testEntityId('it', `it_${turn.id}`),
     workspaceId: turn.workspaceId,
     threadId: turn.threadId,
     turnId: turn.id,

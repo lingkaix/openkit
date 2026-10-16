@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { deriveEntityId } from '@openkit/protocol';
 
 import {
   type CommandRequestName,
@@ -347,27 +348,29 @@ export function commandInputHash(input: unknown): string {
   return `sha256:${createHash('sha256').update(stableJson(input)).digest('hex')}`;
 }
 
-/**
- * Derives one Chat-subordinate Task Turn id without impersonating a direct Task command.
- *
- * @param actorId Authenticated actor id.
- * @param workspaceId Workspace command scope.
- * @param threadId Thread command scope.
- * @param requestId Caller-supplied Chat command request id.
- * @returns Stable Chat-subordinate worker Turn id.
- */
-export function chatTaskModeTurnId(
-  actorId: string,
+/** Derives the receiving Thread of an admitted command-initiated conversation handoff. */
+export function conversationTaskThreadId(
+  actor: import('@openkit/protocol').ActorRef,
   workspaceId: string,
-  threadId: string,
+  originatingThreadId: string,
   requestId: string
 ): string {
-  const suffix = commandInputHash({
-    command: 'conversation.submit.task',
-    actorId,
+  return deriveEntityId('th', [actor, workspaceId, originatingThreadId, requestId]);
+}
+
+/** Derives the first Task Turn inside that handoff's exact receiving Thread. */
+export function conversationTaskTurnId(
+  actor: import('@openkit/protocol').ActorRef,
+  workspaceId: string,
+  originatingThreadId: string,
+  receivingThreadId: string,
+  requestId: string
+): string {
+  return deriveEntityId('tu', [
+    actor,
     workspaceId,
-    threadId,
+    originatingThreadId,
+    receivingThreadId,
     requestId,
-  }).slice(-16);
-  return `turn_${requestId}_${suffix}`;
+  ]);
 }

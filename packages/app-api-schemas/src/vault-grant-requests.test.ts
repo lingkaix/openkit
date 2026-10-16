@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import {
   ListVaultGrantRequestsResponseSchema,
@@ -9,7 +9,7 @@ import {
 import { VAULT_OPERATION_DEFINITIONS } from './vault-operations.js';
 
 const terms = {
-  referenceId: 'vault_fixture',
+  referenceId: allocateEntityId('vault'),
   ownerScope: 'workspace',
   lifetime: 'workspace',
   injectionPath: 'gateway-only',
@@ -43,24 +43,25 @@ describe('supported secret-use request schema', () => {
       { ...terms, mcpSource: { serverId: 'ghp_synthetic_private_value', slot: 'token' } },
     ])
       expect(VaultGrantRequestTermsSchema.safeParse(changed).success).toBe(false);
-    expect(
-      RequestVaultGrantSchema.safeParse({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        requestId: '11111111-1111-4111-8111-111111111111',
-        terms,
-        actorId: 'another-user',
-      }).success
-    ).toBe(false);
+    const request = {
+      workspaceId: allocateEntityId('ws'),
+      threadId: allocateEntityId('th'),
+      requestId: '11111111-1111-4111-8111-111111111111',
+      terms,
+    };
+    expect(RequestVaultGrantSchema.safeParse(request).success).toBe(true);
+    expect(RequestVaultGrantSchema.safeParse({ ...request, actorId: 'another-user' }).success).toBe(
+      false
+    );
   });
 });
 
 const view = {
   approvalRequestId: 'approval_fixture',
-  workspaceId: 'ws_fixture',
-  threadId: 'th_fixture',
-  raisingTurnId: 'tu_fixture',
-  responsibleUserId: 'user_fixture',
+  workspaceId: allocateEntityId('ws'),
+  threadId: allocateEntityId('th'),
+  raisingTurnId: allocateEntityId('tu'),
+  responsibleUserId: allocateEntityId('usr'),
   requesterKind: 'person',
   agentId: null,
   agentSessionId: null,
@@ -108,12 +109,16 @@ describe('descriptive grant request readers', () => {
       expect(schema.safeParse({ items: 'unsupported' }).success).toBe(false);
     }
   });
-  it('accepts opaque references issued by both supported scopes without a prefix assumption', () => {
+  it('accepts canonical references for both supported scopes and rejects a wrong entity kind', () => {
+    expect(
+      VaultGrantRequestTermsSchema.safeParse({ ...terms, referenceId: allocateEntityId('grant') })
+        .success
+    ).toBe(false);
     for (const ownerScope of ['workspace', 'server'] as const) {
       expect(
         VaultGrantRequestTermsSchema.safeParse({
           ...terms,
-          referenceId: randomUUID(),
+          referenceId: allocateEntityId('vault'),
           ownerScope,
           lifetime: ownerScope,
         }).success

@@ -9,16 +9,16 @@ describe('pending request additive command content', () => {
   it('accepts and strips additive answer and withdrawal fields', () => {
     const answer = {
       requestId: 'command',
-      workspaceId: 'workspace',
-      threadId: 'thread',
+      workspaceId: 'ws_00000000-0000-70c6-8ed9-fd7af910ecca',
+      threadId: 'th_00000000-0000-73eb-9a38-397e2c3d8bd1',
       userInputRequestId: 'question',
       answers: { path: ['left'] },
       futureHint: 'untrusted canary',
     };
     const withdraw = {
       requestId: 'command',
-      workspaceId: 'workspace',
-      threadId: 'thread',
+      workspaceId: 'ws_00000000-0000-70c6-8ed9-fd7af910ecca',
+      threadId: 'th_00000000-0000-73eb-9a38-397e2c3d8bd1',
       pendingRequestId: 'pending',
       futureHint: 'untrusted canary',
     };
@@ -27,8 +27,8 @@ describe('pending request additive command content', () => {
     expect(
       PendingRequestOutcomeSchema.safeParse({
         requestId: 'pending',
-        workspaceId: 'workspace',
-        threadId: 'thread',
+        workspaceId: 'ws_00000000-0000-70c6-8ed9-fd7af910ecca',
+        threadId: 'th_00000000-0000-73eb-9a38-397e2c3d8bd1',
         state: 'future-state',
         resolution: null,
         ending: null,

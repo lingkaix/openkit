@@ -9,7 +9,7 @@ describe('parseJsoncObject', () => {
         // NanoCore mode selected by the operator.
         "mode": "server",
         "defaults": {
-          "workspaceId": "ws_demo",
+          "workspaceId": "ws_00000000-0000-7000-8000-000000000001",
         },
       }`,
       'server.jsonc'
@@ -18,7 +18,7 @@ describe('parseJsoncObject', () => {
     expect(parsed).toEqual({
       mode: 'server',
       defaults: {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       },
     });
     expect(Object.getPrototypeOf(parsed)).toBe(Object.prototype);

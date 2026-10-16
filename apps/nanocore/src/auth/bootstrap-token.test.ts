@@ -29,7 +29,7 @@ describe('server bootstrap token', () => {
       const consumed = await consumeServerBootstrapToken(coreDb, {
         displayName: 'Owner',
         email: 'owner@example.com',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         password: 'password123456',
         token: issued!.token,
         tokenExpiresAt: '2026-07-07T00:00:00.000Z',
@@ -38,7 +38,7 @@ describe('server bootstrap token', () => {
       const secondConsume = await consumeServerBootstrapToken(coreDb, {
         displayName: 'Owner',
         email: 'owner@example.com',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         password: 'password123456',
         token: issued!.token,
         tokenExpiresAt: '2026-07-07T00:00:00.000Z',
@@ -49,7 +49,7 @@ describe('server bootstrap token', () => {
       };
       const user = coreDb.sqlite
         .prepare('SELECT display_name, email, email_verified, kind FROM users WHERE id = ?')
-        .get('user_owner') as {
+        .get('usr_00000000-0000-7011-88df-c2b1e8466b6f') as {
         display_name: string;
         email: string;
         email_verified: number;
@@ -61,13 +61,16 @@ describe('server bootstrap token', () => {
            FROM account
            WHERE user_id = ?`
         )
-        .get('user_owner') as { account_id: string; provider_id: string };
+        .get('usr_00000000-0000-7011-88df-c2b1e8466b6f') as {
+        account_id: string;
+        provider_id: string;
+      };
 
       expect(issued?.token).toMatch(/^okt_/);
       expect(secondIssue).toBeNull();
       expect(statSync(emission.path).mode & 0o777).toBe(0o600);
       expect(consumed).toMatchObject({
-        record: { ownerUserId: 'user_owner', scope: 'server-admin' },
+        record: { ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f', scope: 'server-admin' },
       });
       expect(
         verifyOpenKitAccessTokenRecord(coreDb, consumed?.secret ?? '', {
@@ -82,7 +85,10 @@ describe('server bootstrap token', () => {
         email_verified: 0,
         kind: 'human',
       });
-      expect(credentialAccount).toEqual({ account_id: 'user_owner', provider_id: 'credential' });
+      expect(credentialAccount).toEqual({
+        account_id: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+        provider_id: 'credential',
+      });
       expect(JSON.stringify(emission)).not.toContain(consumed?.secret);
     } finally {
       coreDb.sqlite.close();
@@ -105,7 +111,7 @@ describe('server bootstrap token', () => {
       const pending = consumeServerBootstrapToken(coreDb, {
         displayName: 'Owner',
         email: 'owner@example.com',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         password: 'password123456',
         token: issued!.token,
         tokenExpiresAt: '2026-07-07T00:00:00.000Z',

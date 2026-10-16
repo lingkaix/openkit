@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { FsStore } from '../lib/store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 
 const TIMESTAMP = '2026-07-12T00:00:00.000Z';
 type LedgerFamily = 'claims' | 'conflicts' | 'observations';
@@ -41,7 +42,7 @@ function createFixture() {
  * @param store Store that owns the workspace.
  * @param workspaceId Owning workspace id.
  * @param family Ledger family to append.
- * @param suffix Stable record-id suffix.
+ * @param suffix Fixture-local record identity key.
  */
 function appendLedgerRecord(
   store: FsStore,
@@ -52,7 +53,7 @@ function appendLedgerRecord(
   switch (family) {
     case 'observations':
       store.recordKnowledgeObservation({
-        id: `ko_${suffix}`,
+        id: testEntityId('ko', `ko_${suffix}`),
         workspaceId,
         kind: 'maintenance',
         summary: `Observation ${suffix}.`,
@@ -68,7 +69,7 @@ function appendLedgerRecord(
       break;
     case 'claims':
       store.recordKnowledgeClaim({
-        id: `kc_${suffix}`,
+        id: testEntityId('kc', `kc_${suffix}`),
         workspaceId,
         statement: `Claim ${suffix}.`,
         sourceReferences: [],
@@ -84,7 +85,7 @@ function appendLedgerRecord(
       break;
     case 'conflicts':
       store.recordKnowledgeConflict({
-        id: `kf_${suffix}`,
+        id: testEntityId('kf', `kf_${suffix}`),
         workspaceId,
         subjectReferences: [`knowledge:${suffix}`],
         sourceReferences: [],

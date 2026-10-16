@@ -52,17 +52,17 @@ function createTurnCompletedEnvelope(stopReason: string = 'completed') {
     sequence: 3,
     requestId: '0190f4c8-0000-7000-8000-000000000132',
     timestamp: '2026-05-27T00:00:02Z',
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
-    turnId: 'tu_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+    turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
     data: {
       type: 'turn-completed',
       stopReason,
       turn: {
-        id: 'tu_demo',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        triggerActor: { kind: 'user', id: 'user_demo' },
+        id: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
         items: [],
         status: 'completed',
         error: null,
@@ -78,12 +78,16 @@ function createTurnCompletedEnvelope(stopReason: string = 'completed') {
 describe('generated JSON Schema event parity', () => {
   it('generates a standalone closed ActorRef JSON Schema artifact', () => {
     const validate = createValidator(actorRefSchemaUrl);
-    const actor = { kind: 'user', id: 'user_demo' };
+    const actor = { kind: 'user', id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' };
 
     expect(validate(actor)).toBe(true);
     expect(validate({ ...actor, responsibleUserId: actor.id })).toBe(false);
     expect(
-      validate({ kind: 'automation', id: 'automation_demo', responsibleUserId: actor.id })
+      validate({
+        kind: 'automation',
+        id: 'auto_00000000-0000-78f1-8515-ecaa54916cbe',
+        responsibleUserId: actor.id,
+      })
     ).toBe(true);
     expect(validate({ ...actor, displayName: 'Demo User' })).toBe(false);
   });
@@ -91,12 +95,12 @@ describe('generated JSON Schema event parity', () => {
   it('keeps AuditEvent actor attribution closed and secret-free', () => {
     const validate = createValidator(auditEventSchemaUrl);
     const auditEvent = AuditEventSchema.parse({
-      id: 'audit_actor_demo',
-      actor: { kind: 'user', id: 'user_owner' },
+      id: 'aud_00000000-0000-7afe-8fe3-939a560f98cf',
+      actor: { kind: 'user', id: 'usr_00000000-0000-7011-88df-c2b1e8466b6f' },
       subject: {
         kind: 'automation',
-        id: 'automation_invitation',
-        responsibleUserId: 'user_owner',
+        id: 'auto_00000000-0000-7af9-8497-e7a8bda470e0',
+        responsibleUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       },
       action: 'workspace.member.add',
       outcome: 'succeeded',
@@ -106,11 +110,13 @@ describe('generated JSON Schema event parity', () => {
     expect(validate(auditEvent)).toBe(true);
     expect(validate({ ...auditEvent, resourceRevision: 2 })).toBe(true);
     expect(validate({ ...auditEvent, resourceRevision: 0 })).toBe(false);
-    expect(validate({ ...auditEvent, actorId: 'user_owner' })).toBe(false);
+    expect(validate({ ...auditEvent, actorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f' })).toBe(
+      false
+    );
     expect(
       validate({
         ...auditEvent,
-        actor: { kind: 'automation', id: 'automation_invitation' },
+        actor: { kind: 'automation', id: 'auto_00000000-0000-7af9-8497-e7a8bda470e0' },
       })
     ).toBe(false);
     expect(
@@ -130,12 +136,12 @@ describe('generated JSON Schema event parity', () => {
       sequence: 1,
       requestId: '0190f4c8-0000-7000-8000-000000000130',
       timestamp: '2026-05-27T00:00:00Z',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'tu_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       data: {
         type: 'item-delta',
-        itemId: 'it_assistant',
+        itemId: 'it_00000000-0000-78de-a2fa-49aad7f27c08',
         itemType: 'assistant-message',
         deltaKind: 'text-delta',
         delta: 'hello',
@@ -153,12 +159,12 @@ describe('generated JSON Schema event parity', () => {
       sequence: 1,
       requestId: '0190f4c8-0000-7000-8000-000000000131',
       timestamp: '2026-05-27T00:00:00Z',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'tu_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       data: {
         type: 'item-delta',
-        itemId: 'it_artifact',
+        itemId: 'it_00000000-0000-7f8f-b32e-caed70ed31c3',
         itemType: 'artifact-reference',
         deltaKind: 'text-delta',
         delta: 'Artifact references cannot stream text deltas.',
@@ -171,10 +177,10 @@ describe('generated JSON Schema event parity', () => {
   it('rejects the removed awaiting_human turn status', () => {
     const validate = createValidator(turnSchemaUrl);
     const baseTurn = {
-      id: 'tu_demo',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      triggerActor: { kind: 'user', id: 'user_demo' },
+      id: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
       items: [],
       error: null,
       configVersion: null,
@@ -226,13 +232,13 @@ describe('generated JSON Schema event parity', () => {
       capabilityId: 'llm.responses',
       completedAt: '2026-07-05T00:00:02.000Z',
       errorCode: null,
-      id: 'cap_demo',
+      id: 'cap_00000000-0000-7b43-b8ca-b360c4c6c4f4',
       startedAt: '2026-07-05T00:00:01.000Z',
       status: 'succeeded',
       summary: null,
       threadId: null,
       turnId: null,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     expect(validate(terminal)).toBe(true);

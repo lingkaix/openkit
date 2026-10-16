@@ -13,7 +13,7 @@ import {
   revokeOpenKitAccessTokenRecord,
   setDefaultServerAdminTokenId,
 } from '../auth/access-token-store.js';
-import { type Actor, ensureLocalUser } from '../auth/identity.js';
+import type { Actor } from '../auth/identity.js';
 import {
   DeploymentAdminRequiredError,
   requireCurrentDeploymentAdmin,
@@ -23,7 +23,9 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { readRuntimeCleanupView } from './administrator-cleanup-view.js';
 import {
@@ -80,14 +82,18 @@ function fixture() {
   applyMigrations(coreDb);
   coreDb.sqlite.pragma('journal_mode = WAL');
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_cleanup', ownerUserId: 'user_local' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: 'ws_00000000-0000-740d-a2ee-b63efda55617',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
   coreDb.sqlite
     .prepare(
-      `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status) VALUES ('admin_cleanup', 'Administrator', 'cleanup@example.invalid', 0, 0, 0, 'human', 'active')`
+      `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status) VALUES ('usr_00000000-0000-7add-9824-527f8e1d47e2', 'Administrator', 'cleanup@example.invalid', 0, 0, 0, 'human', 'active')`
     )
     .run();
   const token = createOpenKitAccessTokenRecord(coreDb, {
-    ownerUserId: 'admin_cleanup',
+    ownerUserId: 'usr_00000000-0000-7add-9824-527f8e1d47e2',
     scope: 'server-admin',
     workspaceIds: [],
     now: new Date(CREATED),
@@ -95,12 +101,12 @@ function fixture() {
   });
   const actor: Actor = {
     kind: 'token',
-    userId: 'admin_cleanup',
+    userId: 'usr_00000000-0000-7add-9824-527f8e1d47e2',
     tokenId: token.tokenId,
     tokenScope: 'server-admin',
   };
   const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-    deploymentId: 'deployment_cleanup',
+    deploymentId: testEntityId('dep', 'deployment_cleanup'),
     identityId: 'identity_cleanup',
     targetId: 'target_cleanup',
     observedAt: CREATED,
@@ -116,15 +122,35 @@ function fixture() {
   return { coreDb, dataRoot, actor, token };
 }
 
+/** Creates one opaque native Sandbox record for a UTF-8 byte-budget proof. */
+function sandbox(coreDb: CoreDb, sandboxId: string) {
+  createNanoHostHarnessRuntime(coreDb, {
+    adapterId: 'pi',
+    adapterVersion: '1',
+    harnessInstanceId: 'harness_cleanup',
+    harnessBindingRef: 'harness_binding_cleanup',
+    harnessCompatibilityKey: 'b'.repeat(64),
+    imageDigest: `sha256:${'c'.repeat(64)}`,
+    originPhysicalEpoch: 'a'.repeat(64),
+    sandboxBindingRef: 'sandbox_binding_cleanup',
+    sandboxCompatibilityKey: 'd'.repeat(64),
+    sandboxIntegrationBindingRef: 'integration_cleanup',
+    sandboxRuntimeId: sandboxId,
+    runtimeTargetId: 'target_cleanup',
+    timestamp: CREATED,
+  });
+}
+
 /** Creates an exact prepared attempt without launching a Worker or opening Workspace content. */
-function attempt(coreDb: CoreDb, id = 'attempt_001') {
+function attempt(coreDb: CoreDb, label = 'attempt_001') {
+  const id = testEntityId('attempt', label);
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
     queueEntryId: `queue_${id}`,
-    triggerActor: { kind: 'user', id: 'user_local' },
-    workspaceId: 'ws_cleanup',
-    threadId: `thread_${id}`,
-    turnId: `turn_${id}`,
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+    workspaceId: 'ws_00000000-0000-740d-a2ee-b63efda55617',
+    threadId: testEntityId('th', `thread_${id}`),
+    turnId: testEntityId('tu', `turn_${id}`),
     turnInput: PRIVATE,
     requestedAgentId: 'agent_cleanup',
     now: () => CREATED,
@@ -132,7 +158,7 @@ function attempt(coreDb: CoreDb, id = 'attempt_001') {
   return recordTestExecutionAttempt(coreDb, {
     entry,
     attemptId: id,
-    agentSessionId: `session_${id}`,
+    agentSessionId: testEntityId('as', `session_${id}`),
     inputRef: `package_${id}`,
     bindingRef: `binding_${id}`,
     sessionCompatibilityKey: 'b'.repeat(64),
@@ -141,14 +167,14 @@ function attempt(coreDb: CoreDb, id = 'attempt_001') {
 }
 
 /** Composes each actual Core record producer; physical effects are never requested. */
-function populate(coreDb: CoreDb) {
+function populate(coreDb: CoreDb, sandboxId = 'sandbox_cleanup') {
   const execution = attempt(coreDb);
   recordWorkerBackendSessionMaterializing(coreDb, {
     identity: {
       agentSessionId: execution.agentSessionId!,
       backendKind: 'openshell',
       backendSessionId: PRIVATE,
-      deploymentId: 'deployment_cleanup',
+      deploymentId: testEntityId('dep', 'deployment_cleanup'),
       packageSnapshotId: execution.inputRef!,
       runtimeTargetId: 'target_cleanup',
       stagingDirectoryRef: `server/runtime/${PRIVATE}`,
@@ -173,7 +199,7 @@ function populate(coreDb: CoreDb) {
     sandboxBindingRef: 'sandbox_binding_cleanup',
     sandboxCompatibilityKey: 'd'.repeat(64),
     sandboxIntegrationBindingRef: 'integration_cleanup',
-    sandboxRuntimeId: 'sandbox_cleanup',
+    sandboxRuntimeId: sandboxId,
     runtimeTargetId: 'target_cleanup',
     timestamp: CREATED,
   });
@@ -188,9 +214,9 @@ function populate(coreDb: CoreDb) {
     timestamp: CREATED,
   });
   const storage = createWorkerStorageBinding(coreDb, {
-    deploymentId: 'deployment_cleanup',
+    deploymentId: testEntityId('dep', 'deployment_cleanup'),
     runtimeTargetId: 'target_cleanup',
-    workspaceId: 'ws_cleanup',
+    workspaceId: 'ws_00000000-0000-740d-a2ee-b63efda55617',
     now: CREATED,
     layout: {
       family: 'worker',
@@ -281,7 +307,7 @@ describe('administrator runtime cleanup view', () => {
     ).toBe(true);
     expect(result.items[0]?.target).toMatchObject({
       attemptId: execution.attemptId,
-      workspaceId: 'ws_cleanup',
+      workspaceId: 'ws_00000000-0000-740d-a2ee-b63efda55617',
       threadId: execution.threadId,
       turnId: execution.turnId,
       agentSessionId: execution.agentSessionId,
@@ -297,7 +323,7 @@ describe('administrator runtime cleanup view', () => {
     });
     expect(result.items[4]?.target).toMatchObject({
       storageRef: storage.storageRef,
-      workspaceId: 'ws_cleanup',
+      workspaceId: 'ws_00000000-0000-740d-a2ee-b63efda55617',
       runtimeTargetId: 'target_cleanup',
     });
     expect(result.items[0]?.state).toMatchObject({ phase: 'open', disposition: 'not_accepted' });
@@ -457,7 +483,7 @@ describe('administrator runtime cleanup view', () => {
     const successor = allocateNanoHostRuntimeTargetConnectionGeneration(input.coreDb, {
       targetId: 'target_cleanup',
       identityId: 'identity_cleanup',
-      deploymentId: 'deployment_cleanup',
+      deploymentId: testEntityId('dep', 'deployment_cleanup'),
       observedAt: NOW,
     });
     upsertNanoHostRuntimeTarget(input.coreDb, {
@@ -524,20 +550,22 @@ describe('administrator runtime cleanup view', () => {
     if (kind === 'ordinary' || kind === 'readonly') {
       const scope = kind === 'readonly' ? 'workspace-readonly' : 'workspace';
       const issued = createOpenKitAccessTokenRecord(input.coreDb, {
-        ownerUserId: 'admin_cleanup',
+        ownerUserId: 'usr_00000000-0000-7add-9824-527f8e1d47e2',
         scope,
-        workspaceIds: ['ws_cleanup'],
+        workspaceIds: ['ws_00000000-0000-740d-a2ee-b63efda55617'],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
       input.actor = {
         kind: 'token',
-        userId: 'admin_cleanup',
+        userId: 'usr_00000000-0000-7add-9824-527f8e1d47e2',
         tokenId: issued.tokenId,
         tokenScope: scope,
       };
     } else if (kind === 'disabled') {
       input.coreDb.sqlite
-        .prepare("UPDATE users SET status = 'disabled' WHERE id = 'admin_cleanup'")
+        .prepare(
+          "UPDATE users SET status = 'disabled' WHERE id = 'usr_00000000-0000-7add-9824-527f8e1d47e2'"
+        )
         .run();
     } else if (kind === 'revoked') {
       revokeOpenKitAccessTokenRecord(input.coreDb, input.token.tokenId, new Date(NOW));
@@ -576,7 +604,9 @@ describe('administrator runtime cleanup view', () => {
     expect((await read(input)).items).toHaveLength(5);
     expect(
       input.coreDb.sqlite
-        .prepare("SELECT * FROM workspace_members WHERE user_id = 'admin_cleanup'")
+        .prepare(
+          "SELECT * FROM workspace_members WHERE user_id = 'usr_00000000-0000-7add-9824-527f8e1d47e2'"
+        )
         .all()
     ).toEqual([]);
     revokeOpenKitAccessTokenRecord(input.coreDb, input.token.tokenId, new Date(NOW));
@@ -642,7 +672,9 @@ describe('administrator runtime cleanup view', () => {
     const input = fixture();
     populate(input.coreDb);
     input.coreDb.sqlite
-      .prepare("DELETE FROM workspace_registry WHERE workspace_id = 'ws_cleanup'")
+      .prepare(
+        "DELETE FROM workspace_registry WHERE workspace_id = 'ws_00000000-0000-740d-a2ee-b63efda55617'"
+      )
       .run();
     const result = await read(input);
     for (const source of [
@@ -666,7 +698,7 @@ describe('administrator runtime cleanup view', () => {
     populate(input.coreDb);
     input.coreDb.sqlite
       .prepare(
-        "UPDATE workspace_registry SET status = 'deleting' WHERE workspace_id = 'ws_cleanup'"
+        "UPDATE workspace_registry SET status = 'deleting' WHERE workspace_id = 'ws_00000000-0000-740d-a2ee-b63efda55617'"
       )
       .run();
     const before = rows(input.coreDb);
@@ -683,24 +715,24 @@ describe('administrator runtime cleanup view', () => {
     recordWorkspaceOwnerMembership({
       coreDb: input.coreDb,
       workspaceId: workspace.id,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     });
     const thread = store.createThread(
       workspace.id,
       PRIVATE,
-      'private_cleanup_source',
+      testEntityId('th', 'private_cleanup_source'),
       'conversation',
-      { visibility: 'private', privateOwnerUserId: 'user_local' }
+      { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
     );
     const restricted = createWorkerStorageBinding(input.coreDb, {
-      deploymentId: 'deployment_cleanup',
+      deploymentId: testEntityId('dep', 'deployment_cleanup'),
       runtimeTargetId: 'target_cleanup',
       workspaceId: workspace.id,
       now: CREATED,
       layout: empty.layout,
     });
     reserveWorkerStorageAttachment(input.coreDb, {
-      agentSessionId: 'private_storage_session',
+      agentSessionId: testEntityId('as', 'private_storage_session'),
       authorizeContributor: (contributor) =>
         isThreadIdVisible(
           store,
@@ -711,7 +743,7 @@ describe('administrator runtime cleanup view', () => {
       expectedRevision: restricted.revision,
       layout: restricted.layout,
       purpose: 'work',
-      responsibleUserId: 'user_local',
+      responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
       runtimeTargetId: restricted.runtimeTargetId,
       storageRef: restricted.storageRef,
       threadId: thread.id,
@@ -738,10 +770,13 @@ describe('administrator runtime cleanup view', () => {
     const first = await read(input, 2);
     const second = await read(input, 2);
     expect(first).toEqual(second);
-    expect(first.items.map((item) => item.target)).toEqual([
-      expect.objectContaining({ attemptId: 'attempt_001' }),
-      expect.objectContaining({ attemptId: 'attempt_002' }),
-    ]);
+    expect(first.items.map((item) => item.target)).toEqual(
+      ['attempt_001', 'attempt_002', 'attempt_003']
+        .map((label) => testEntityId('attempt', label))
+        .sort()
+        .slice(0, 2)
+        .map((attemptId) => expect.objectContaining({ attemptId }))
+    );
     expect(
       first.sources.every((source) => source.incomplete && source.reasons.includes('count_limit'))
     ).toBe(true);
@@ -815,7 +850,7 @@ describe('administrator runtime cleanup view', () => {
 
   it('counts the complete UTF-8 fragment and coverage flags without cutting identity fields', async () => {
     const input = fixture();
-    attempt(input.coreDb, `attempt_${'界'.repeat(150)}`);
+    sandbox(input.coreDb, `sandbox_${'界'.repeat(150)}`);
     const complete = await read(input);
     const completeBytes = Buffer.byteLength(JSON.stringify(complete), 'utf8');
     expect(completeBytes).toBeGreaterThan(JSON.stringify(complete).length);
@@ -825,7 +860,7 @@ describe('administrator runtime cleanup view', () => {
       completeBytes - 1
     );
     expect(truncated.items).toEqual([]);
-    expect(truncated.sources[0]).toMatchObject({ incomplete: true, reasons: ['byte_limit'] });
+    expect(truncated.sources[3]).toMatchObject({ incomplete: true, reasons: ['byte_limit'] });
     expect(truncated.incomplete).toBe(true);
   });
 

@@ -2,7 +2,7 @@
 type: change-plan
 status: implemented
 date: "2026-10-16"
-branch: lane/ga-request-next
+branch: lane/ga-request-p14
 ---
 # Supported Vault Grant Request And Review
 
@@ -103,3 +103,9 @@ Independent review of `bd790f56766937dfbca1ec28733a59429cf413cf` identified its 
 Regeneration used the existing documented `OPENKIT_UPDATE_EFFECT_FIXTURE=1` actual producer, one worker and no file parallelism. It passed. Comparing all effects and decoded bytes against the saved pre-change fixture proves that only entry 4 input/command body, length and SHA changed. The decoded package differs only by appending `vault_grant_request` and `vault_grant_request_list` to the existing generative Tool list and its derived catalog digest. Replacing those fields reconstructs the exact complete body and fixture bytes. Other authored fields, effects and their order are unchanged. Exact comparison is `evidence/L-GA/request-next-host-comparison.log`; generation output is `request-next-host-regenerate.log`.
 
 The NanoHost guide explains this accepted request-only Tool inventory and uses the owning-app Rust invocation so its app-local toolchain applies. Updates-disabled verification passed in `evidence/L-GA/request-next-host-green.log`: both selected native producer/dispatcher pins passed, with 200 unrelated cases unselected. The owning-app Rust consumer passed one selected test, with 382 unit cases filtered out; unrelated integration targets ran no selected cases. Cargo completed its test build in 2m 37s without changing the toolchain. Documentation model (527 documents), lifecycle/index and whitespace also passed. This correction changes only the fixture, its local guide and this plan. No runtime, test, schema, identifier, Server, catalog, session, preview or Equal source is changed. R2 remains open for actual P14 API integration before review and landing; no identifier spelling is guessed or pre-approved.
+
+## R2 — Actual P14 Integration
+
+Normally merge prepared Server/P14 parent `4ceaa9e0ad3687843754ff13d987faafdf82d405`, which contains the actual committed P14 API `e2493a138cdef6d204afbd1c9d6ef471647661cc`. No changing remote or independently reworked Server/common join is imported. Request-owned Turn, Item, VaultGrant and PermissionDecision allocation uses `allocateEntityId` with its existing kind and allocation trigger; Worker Turns and exact request replay retain their recorded identities. Named public/captured entity fields reuse Protocol validators, while request, Approval, Agent, MCP and native selectors remain opaque under their existing owners. No generator, tag, compatibility reader or derivation is added.
+
+Existing native, App API and Web fixtures use recorded canonical identities and otherwise valid unknown targets so authority and canary negatives still reach their subject. The actual nonmember administrator session and persisted product-policy provenance oracles remain. R1 uses the accepted P14 parent Host fixture and actual producer, not the prior 9215-byte old-format Tool package. Its current accepted comparison baseline has 24 effects and a 9639-byte/15-Tool package; observe the real producer before regeneration and preserve every other P14 field and authored byte. Focused results and generation are pending; this preparation is not final main integration, independent acceptance, a full gate or browser proof.

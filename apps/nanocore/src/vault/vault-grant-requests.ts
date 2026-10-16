@@ -1,11 +1,21 @@
-import { randomUUID } from 'node:crypto';
 import {
   type VaultGrantRequestTerms,
   VaultGrantRequestTermsSchema,
   type VaultGrantRequestView,
 } from '@openkit/app-api-schemas';
 import { resolveWorkspaceMcpServer } from '@openkit/config-schema';
-import { type ActorRef, isSealedTurnTerminal, responsibleUserIdForActor } from '@openkit/protocol';
+import {
+  AccessTokenIdSchema,
+  type ActorRef,
+  AgentSessionIdSchema,
+  allocateEntityId,
+  isSealedTurnTerminal,
+  responsibleUserIdForActor,
+  ThreadIdSchema,
+  TurnIdSchema,
+  UserIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import {
@@ -55,12 +65,12 @@ type Dependencies = Pick<
 
 const ActorSchema = z
   .object({
-    userId: z.string().min(1),
+    userId: UserIdSchema,
     kind: z.enum(['local', 'session', 'token']),
-    tokenId: z.string().optional(),
+    tokenId: AccessTokenIdSchema.optional(),
     tokenScope: z.enum(['server-admin', 'workspace', 'workspace-readonly']).optional(),
-    tokenWorkspaceIds: z.array(z.string()).optional(),
-    adminTokenId: z.string().optional(),
+    tokenWorkspaceIds: z.array(WorkspaceIdSchema).optional(),
+    adminTokenId: AccessTokenIdSchema.optional(),
   })
   .strict();
 const OriginSchema = z.discriminatedUnion('kind', [
@@ -72,15 +82,24 @@ const OriginSchema = z.discriminatedUnion('kind', [
         .object({
           kind: z.enum(['user', 'agent', 'system']),
           id: z.string(),
-          responsibleUserId: z.string().nullable().optional(),
+          responsibleUserId: UserIdSchema.nullable().optional(),
         })
-        .strict(),
+        .strict()
+        .superRefine((actor, ctx) => {
+          // Only a User actor names a Core entity; Agent and system selectors stay opaque.
+          if (actor.kind === 'user' && !UserIdSchema.safeParse(actor.id).success)
+            ctx.addIssue({
+              code: 'custom',
+              path: ['id'],
+              message: 'Canonical User identity is required.',
+            });
+        }),
       lineage: z
         .object({
-          workspaceId: z.string(),
-          threadId: z.string(),
-          turnId: z.string(),
-          agentSessionId: z.string(),
+          workspaceId: WorkspaceIdSchema,
+          threadId: ThreadIdSchema,
+          turnId: TurnIdSchema,
+          agentSessionId: AgentSessionIdSchema,
           packageSnapshotId: z.string(),
         })
         .strict(),
@@ -652,8 +671,8 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
             409
           );
         const now = new Date().toISOString();
-        const raisingTurnId = turn?.id ?? `tu_${randomUUID()}`;
-        const requestItemId = `it_${randomUUID()}`;
+        const raisingTurnId = turn?.id ?? allocateEntityId('tu');
+        const requestItemId = allocateEntityId('it');
         const raisedInput = {
           requestId: input.requestId,
           workspaceId: input.workspaceId,
@@ -825,8 +844,8 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
             'The request was already consumed or invalidated.',
             409
           );
-        const grantId = randomUUID();
-        const policyDecisionId = randomUUID();
+        const grantId = allocateEntityId('grant');
+        const policyDecisionId = allocateEntityId('pd');
         let coreAttempted = false;
         try {
           const access = authorizeWorkspace(

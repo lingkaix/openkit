@@ -1,4 +1,9 @@
-import { type Item, isSealedTurnTerminal } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  deriveEntityId,
+  type Item,
+  isSealedTurnTerminal,
+} from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import {
   authorizeWorkspace,
@@ -199,6 +204,7 @@ export function recoverPendingRequestsAtBoot(
   const now = new Date().toISOString();
   for (const workspace of store.listWorkspaces()) {
     withWorkspace(dependencies, workspace.id, (sqlite) => {
+      assertPendingAssociations(store, sqlite, workspace.id);
       settleUnfinishedClaims(sqlite, now, (record) =>
         canonicalRecordIsUsable(store, sqlite, record)
       );
@@ -712,6 +718,7 @@ export function archiveThreadWithCloseout(
 ): string {
   const now = new Date().toISOString();
   withWorkspace(dependencies, workspaceId, (sqlite) => {
+    assertPendingAssociations(store, sqlite, workspaceId, threadId);
     const records = listThreadPendingRequests(sqlite, workspaceId, threadId).filter((record) =>
       canonicalRecordIsUsable(store, sqlite, record)
     );
@@ -732,7 +739,7 @@ export function archiveThreadWithCloseout(
         409
       );
     }
-    const closeoutTurnId = `tu_closeout_${threadId}_${now.replace(/[^0-9]/g, '')}`;
+    if (!records.some(archiveSelects)) return;
     const needsTurn = records.some(
       (record) =>
         archiveSelects(record) &&
@@ -740,6 +747,11 @@ export function archiveThreadWithCloseout(
           (record.state === 'pending' && record.publicationTurnId === null) ||
           needsInvalidationPublication(record))
     );
+    const closeoutTurnId = needsTurn
+      ? allocateEntityId('tu')
+      : records.find((record) => archiveSelects(record) && record.publicationTurnId)
+          ?.publicationTurnId;
+    if (!closeoutTurnId) throw associationGap();
     if (needsTurn && !storeHasTurn(store, closeoutTurnId)) {
       store.createTurn(
         workspaceId,
@@ -800,6 +812,7 @@ function closeoutUnavailableRequests(
 ): boolean {
   let closed = false;
   withWorkspace(dependencies, workspaceId, (sqlite) => {
+    assertPendingAssociations(store, sqlite, workspaceId, threadId);
     const loss = (record: PendingRequestRecord): string | null =>
       !(
         dependencies.requesterAuthority?.(record) ??
@@ -820,7 +833,7 @@ function closeoutUnavailableRequests(
         needsInvalidationPublication(record));
     if (!listThreadPendingRequests(sqlite, workspaceId, threadId).some(usable)) return;
     const now = new Date().toISOString();
-    const turnId = `tu_closeout_${threadId}_${now.replace(/[^0-9]/g, '')}`;
+    const turnId = allocateEntityId('tu');
     const records = applyPendingCloseout(sqlite, {
       workspaceId,
       threadId,
@@ -893,9 +906,8 @@ function admitNextOutcome(
     readonly actorId: string;
     readonly agentId: string | null;
   } = selected;
-  const now = new Date().toISOString();
-  const turnId = `tu_outcome_${threadId.slice(-12)}_${now.replace(/[^0-9]/g, '')}`;
-  if (storeHasTurn(store, turnId)) return;
+  const turnId = allocateEntityId('tu');
+  if (storeHasTurn(store, turnId)) throw associationGap();
   outcomeCauses.set(turnId, 'outcome');
   const triggerKind = choice.approval ? 'approval-resolution' : 'user-input';
   const turn = store.createTurn(
@@ -1401,6 +1413,7 @@ function admitInvalidations(
 ): boolean {
   let admitted = false;
   withWorkspace(dependencies, workspaceId, (sqlite) => {
+    assertPendingAssociations(store, sqlite, workspaceId, threadId);
     const waiting = listThreadPendingRequests(sqlite, workspaceId, threadId).filter(
       (record) =>
         canonicalRecordIsUsable(store, sqlite, record) &&
@@ -1409,7 +1422,7 @@ function admitInvalidations(
     );
     if (!waiting.length) return;
     const now = new Date().toISOString();
-    const turnId = `tu_invalidation_${waiting[0]!.requestId}`;
+    const turnId = deriveEntityId('tu', ['invalidation', waiting[0]!.requestId]);
     sqlite.transaction(() => {
       for (const record of waiting)
         sqlite
@@ -1495,4 +1508,76 @@ export function invalidateForAuthorityLoss(
   now: string
 ): PendingRequestRecord | null {
   return invalidatePendingRequest(sqlite, record.requestId, event, actor, now);
+}
+
+/** Uses existing canonical owners to refuse partial publication; it never reconstructs an association. */
+function assertPendingAssociations(
+  store: FsStore,
+  sqlite: import('better-sqlite3').Database,
+  workspaceId: string,
+  threadId?: string
+): void {
+  const rows = sqlite
+    .prepare('SELECT request_id FROM pending_requests WHERE workspace_id = ?')
+    .all(workspaceId) as Array<{ request_id: string }>;
+  const records = rows
+    .flatMap((row) => {
+      try {
+        const record = readPendingRequest(sqlite, row.request_id);
+        return record ? [record] : [];
+      } catch {
+        return [];
+      } // Malformed rows remain inspect-only under their existing canonical reader.
+    })
+    .filter((record) => threadId === undefined || record.threadId === threadId);
+  for (const record of records) {
+    for (const id of [record.publicationTurnId, record.deliveryTurnId, record.invalidationTurnId]) {
+      if (!id) continue;
+      if (!storeHasTurn(store, id)) throw associationGap();
+      const turn = store.getTurnById(id);
+      if (turn.workspaceId !== record.workspaceId || turn.threadId !== record.threadId)
+        throw associationGap();
+    }
+  }
+  const threads =
+    threadId === undefined
+      ? store.listThreads(workspaceId)
+      : [store.getThread(workspaceId, threadId)];
+  for (const thread of threads) {
+    const owned = records.filter((record) => record.threadId === thread.id);
+    for (const turn of store.listThreadTurns(workspaceId, thread.id)) {
+      if (isSealedTurnTerminal(turn.status)) continue;
+      if (
+        owned.some(
+          (record) =>
+            record.raisingTurnId === turn.id ||
+            record.publicationTurnId === turn.id ||
+            record.deliveryTurnId === turn.id ||
+            record.invalidationTurnId === turn.id
+        )
+      )
+        continue;
+      const pendingActor =
+        turn.triggerActor.kind === 'system' && turn.triggerActor.id === 'nanocore-pending-request';
+      const executor =
+        store.getTurnExecutor(turn.id) ??
+        executorKindForTurn(turn) ??
+        (!turn.agentId && !turn.agentSessionId ? 'person' : null);
+      const unprovedOutcome =
+        (turn.triggerSource?.kind === 'user-input' ||
+          turn.triggerSource?.kind === 'approval-resolution') &&
+        owned.some((record) => isReadyOutcome(record) && record.requesterKind === executor);
+      // These facts only refuse uncertain work. No title, clock, suffix or current-list match creates an owner.
+      if (pendingActor || unprovedOutcome) throw associationGap();
+    }
+  }
+}
+
+/** Retains the existing typed refusal for missing cross-store publication proof. */
+function associationGap(): PendingRequestCommandError {
+  return new PendingRequestCommandError(
+    'recovery_required',
+    'Pending request Turn association is incomplete.',
+    409
+  );
 }

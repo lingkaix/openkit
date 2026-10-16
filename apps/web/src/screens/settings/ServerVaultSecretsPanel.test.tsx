@@ -1,4 +1,5 @@
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
+import { allocateEntityId } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -6,19 +7,21 @@ import { expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { ServerVaultSecretsPanel } from './ServerVaultSecretsPanel';
 
+const REFERENCE_ID = allocateEntityId('vault');
+const GRANT_ID = allocateEntityId('grant');
 const CANARY = 'ghp_synthetic_private_test_value';
 /** Observe secret input custody and the existing Server administration commands. */
 function setup() {
   const reference = {
-    referenceId: 'vault_shared',
+    referenceId: REFERENCE_ID,
     status: 'active',
     currentVersion: 1,
     secretKind: 'mcp-credential',
     material: CANARY,
   };
   const grant = {
-    grantId: 'grant_shared',
-    vaultReferenceId: 'vault_shared',
+    grantId: GRANT_ID,
+    vaultReferenceId: REFERENCE_ID,
     status: 'active',
     targetAgentId: null,
     targetAgentSessionId: null,
@@ -84,13 +87,13 @@ it('creates Server material only through transient input and excludes it from ca
 
 it('uses the existing Server grant narrowing command and requires explicit replacement binding', async () => {
   const { operations } = setup();
-  await screen.findByText('grant_shared');
+  await screen.findByText(GRANT_ID);
   await userEvent.type(screen.getByLabelText('Shared grant Agent'), 'agent_review');
-  await userEvent.click(screen.getByRole('button', { name: 'Narrow shared grant grant_shared' }));
+  await userEvent.click(screen.getByRole('button', { name: `Narrow shared grant ${GRANT_ID}` }));
   await waitFor(() =>
     expect(operations['vault.server-mcp-grant-narrow']).toHaveBeenCalledWith(
       expect.objectContaining({
-        grantId: 'grant_shared',
+        grantId: GRANT_ID,
         constraints: { targetAgentId: 'agent_review' },
       })
     )
@@ -149,11 +152,11 @@ it('clears transient material and removes mutation controls after current author
 });
 
 it.each([
-  'Create shared gateway grant vault_shared',
-  'Narrow shared grant grant_shared',
+  `Create shared gateway grant ${REFERENCE_ID}`,
+  `Narrow shared grant ${GRANT_ID}`,
 ])('rejects secret-shaped restrictions before %s enters mutation retention', async (name) => {
   const { operations, cache } = setup();
-  await screen.findByText('grant_shared');
+  await screen.findByText(GRANT_ID);
   const canary = 'ghp_synthetic_private_grant_canary';
   await userEvent.type(screen.getByLabelText('Shared grant Agent'), canary);
   await userEvent.click(screen.getByRole('button', { name }));

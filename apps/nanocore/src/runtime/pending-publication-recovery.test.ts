@@ -90,6 +90,50 @@ describe('public pending publication recovery', () => {
     });
   }, 90_000);
 
+  it.each([
+    'delivery',
+    'closeout',
+  ])('keeps independent %s identity through named completion and reopen', (mode) => {
+    const crashed = probe(mode);
+    expect(crashed.result.status, crashed.result.stderr).toBe(23);
+    const recovered = probe(mode, 'first', crashed.root);
+    expect(recovered.result.status, recovered.result.stderr).toBe(0);
+    const identities = recovered.value.records.flatMap(
+      (record: { publicationTurnId: string | null }) =>
+        record.publicationTurnId ? [record.publicationTurnId] : []
+    );
+    expect(identities.length).toBeGreaterThan(0);
+    for (const id of identities)
+      expect(id).toMatch(
+        /^tu_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+      );
+    const repeated = probe(mode, 'first', crashed.root);
+    expect(repeated.value.records).toEqual(recovered.value.records);
+  }, 90_000);
+
+  it.each([
+    'delivery',
+    'closeout',
+  ])('refuses a %s Turn persisted before its association without a replacement', (mode) => {
+    const crashed = probe(mode, 'before-association');
+    expect(crashed.result.status, crashed.result.stderr).toBe(23);
+    const refused = probe(mode, 'before-association', crashed.root);
+    expect(refused.result.status, refused.result.stderr).toBe(0);
+    expect(refused.value.recoveryCode).toBe('recovery_required');
+    expect(refused.value.before).toEqual(refused.value.after);
+    const repeated = probe(mode, 'before-association', crashed.root);
+    expect(repeated.value).toEqual(refused.value);
+  }, 90_000);
+
+  it('refuses a recorded closeout pointer whose canonical Turn is missing', () => {
+    const crashed = probe('closeout');
+    expect(crashed.result.status, crashed.result.stderr).toBe(23);
+    const refused = probe('closeout', 'missing-turn', crashed.root);
+    expect(refused.result.status, refused.result.stderr).toBe(0);
+    expect(refused.value.recoveryCode).toBe('recovery_required');
+    expect(refused.value.before).toEqual(refused.value.after);
+  }, 90_000);
+
   it('reloads one shared archive decision and invalidation publication as canonical', () => {
     const archived = probe('shared-closeout');
     expect(archived.result.status, archived.result.stderr).toBe(0);

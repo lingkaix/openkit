@@ -1,4 +1,13 @@
-import { RequestIdSchema, ThreadIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
+import {
+  AgentSessionIdSchema,
+  RequestIdSchema,
+  ThreadIdSchema,
+  TurnIdSchema,
+  UserIdSchema,
+  VaultGrantIdSchema,
+  VaultReferenceIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import { ApprovalEffectPreviewSchema } from './pending-request.js';
 import { addRawSecretIssues } from './raw-secrets.js';
@@ -6,7 +15,7 @@ import { CreateWorkspaceVaultGrantRequestSchema } from './vault-admin.js';
 
 /** Exact non-secret bounds admitted by the two current grant issuers. */
 export const VaultGrantRequestTermsSchema = CreateWorkspaceVaultGrantRequestSchema.safeExtend({
-  referenceId: z.string().min(1),
+  referenceId: VaultReferenceIdSchema,
   ownerScope: z.enum(['workspace', 'server']),
   lifetime: z.enum(['workspace', 'server']),
   injectionPath: z.enum(['gateway-only', 'runtime-env']),
@@ -59,11 +68,11 @@ export const VaultGrantRequestViewSchema = z
     approvalRequestId: z.string().min(1),
     workspaceId: WorkspaceIdSchema,
     threadId: ThreadIdSchema,
-    raisingTurnId: z.string().min(1),
-    responsibleUserId: z.string().min(1),
+    raisingTurnId: TurnIdSchema,
+    responsibleUserId: UserIdSchema,
     requesterKind: z.enum(['person', 'worker']),
     agentId: z.string().nullable(),
-    agentSessionId: z.string().nullable(),
+    agentSessionId: AgentSessionIdSchema.nullable(),
     terms: VaultGrantRequestTermsSchema,
     state: z.enum(['pending', 'resolved', 'ended']),
     resolution: z.enum(['granted', 'denied', 'answered']).nullable(),
@@ -73,8 +82,8 @@ export const VaultGrantRequestViewSchema = z
       .enum(['approved-executed', 'denied-not-executed', 'execution-error', 'outcome-unknown'])
       .nullable(),
     delivery: z.enum(['undelivered', 'frozen', 'delivered', 'delivery-unknown', 'closed-out']),
-    decidingActorId: z.string().nullable(),
-    grantId: z.string().nullable(),
+    decidingActorId: UserIdSchema.nullable(),
+    grantId: VaultGrantIdSchema.nullable(),
     createdAt: z.string().datetime(),
     effect: ApprovalEffectPreviewSchema,
     canApprove: z.boolean(),

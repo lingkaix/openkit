@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorkerHarness } from '../harness.js';
 import {
@@ -83,7 +84,7 @@ function harnessFor(
   integration: SandboxIntegrationClient,
   options: PiResidentAdapterOptions = {}
 ) {
-  const workspaceId = `workspace-${sha256(root)}`;
+  const workspaceId = allocateEntityId('ws');
   const sandboxRoot = join(root, 'openkit');
   const nativeRoot = join(root, 'sandbox', 'native');
   const bindings: PiResidentBinding[] = [];
@@ -131,7 +132,7 @@ function harnessFor(
   const open = (
     agentSessionId: string,
     resume: { digest: string; locator: string } | null = null,
-    threadId = 'thread-one'
+    threadId = 'th_00000000-0000-730e-88b8-d76794f39a2f'
   ) => {
     const config = join(sandboxRoot, 'sessions', agentSessionId, 'config');
     mkdirSync(config, { recursive: true });
@@ -158,7 +159,7 @@ function harnessFor(
   const run = async (
     turnId: string,
     sequence: number,
-    agentSessionId = 'session-a',
+    agentSessionId = 'as_00000000-0000-7f03-8682-76a52604a84a',
     servers: string[] = []
   ) => {
     const config = join(sandboxRoot, 'sessions', agentSessionId, 'config');
@@ -218,7 +219,7 @@ function harnessFor(
         },
         scope: {
           agentSessionId: agentSessionId,
-          threadId: 'thread-one',
+          threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
           turnId,
           workspaceId,
         },
@@ -236,7 +237,7 @@ function harnessFor(
       inferenceToken: credential(`inference-token-${turnId}`),
       leaseId: `lease-${turnId}`,
       packageSnapshotId: `package-${turnId}`,
-      threadId: 'thread-one',
+      threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
       turnId,
       turnSequence: sequence,
       workerControlToken: credential(`control-token-${turnId}`),
@@ -370,7 +371,10 @@ afterEach(async () => {
   vi.unstubAllEnvs();
   for (const close of cleanup.splice(0)) await close();
 });
-async function waitIdle(f: Awaited<ReturnType<typeof fixture>>, id = 'session-a') {
+async function waitIdle(
+  f: Awaited<ReturnType<typeof fixture>>,
+  id = 'as_00000000-0000-7f03-8682-76a52604a84a'
+) {
   await vi.waitFor(
     async () => {
       const state = await f.send('session.inspect', f.selector(id));
@@ -387,67 +391,112 @@ describe('Pi real Integration lifecycle', () => {
     async () => {
       const f = await fixture((n) => ({ text: `answer-${n}` }));
       cleanup.push(f.close);
-      expect((await f.open('session-a')).disposition).toBe('succeeded');
+      const opened = await f.open('as_00000000-0000-7f03-8682-76a52604a84a');
+      expect(opened).toMatchObject({ disposition: 'succeeded' });
       expect(f.capability.log).toHaveLength(0);
-      expect((await f.run('turn-1', 0, 'session-a', ['openkit-work'])).disposition).toBe(
-        'succeeded'
+      const firstTurn = await f.run(
+        'tu_00000000-0000-7e49-8268-e35715b55d0c',
+        0,
+        'as_00000000-0000-7f03-8682-76a52604a84a',
+        ['openkit-work']
       );
+      expect(firstTurn).toMatchObject({ disposition: 'succeeded' });
       await vi.waitFor(() => expect(f.finalStatuses).toHaveLength(1), { timeout: 20000 });
       await waitIdle(f);
-      const first = await f.send('session.inspect', f.selector('session-a'));
+      const first = await f.send(
+        'session.inspect',
+        f.selector('as_00000000-0000-7f03-8682-76a52604a84a')
+      );
       const reference = readFileSync(
-        join(f.nativeRoot, 'thread-one', 'pi', 'agent-session-references', 'session-a')
+        join(
+          f.nativeRoot,
+          'th_00000000-0000-730e-88b8-d76794f39a2f',
+          'pi',
+          'agent-session-references',
+          'as_00000000-0000-7f03-8682-76a52604a84a'
+        )
       );
       expect(sha256(reference)).toBe(first.body.nativeHandleDigest);
-      expect(f.finalStatuses.find((status) => status.lineage.turnId === 'turn-1')).toMatchObject({
+      expect(
+        f.finalStatuses.find(
+          (status) => status.lineage.turnId === 'tu_00000000-0000-7e49-8268-e35715b55d0c'
+        )
+      ).toMatchObject({
         body: { status: 'completed' },
       });
-      expect((await f.run('turn-2', 1, 'session-a', ['openkit-work'])).disposition).toBe(
-        'succeeded'
-      );
+      expect(
+        (
+          await f.run(
+            'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+            1,
+            'as_00000000-0000-7f03-8682-76a52604a84a',
+            ['openkit-work']
+          )
+        ).disposition
+      ).toBe('succeeded');
       await vi.waitFor(() => expect(f.finalStatuses).toHaveLength(2), { timeout: 20000 });
       await waitIdle(f);
-      expect(f.finalStatuses.find((status) => status.lineage.turnId === 'turn-2')).toMatchObject({
+      expect(
+        f.finalStatuses.find(
+          (status) => status.lineage.turnId === 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'
+        )
+      ).toMatchObject({
         body: { status: 'completed' },
       });
-      expect(requestTexts(f.inference.requests[1]!).join(' ')).toContain('input for turn-1');
+      expect(requestTexts(f.inference.requests[1]!).join(' ')).toContain(
+        'input for tu_00000000-0000-7e49-8268-e35715b55d0c'
+      );
       expect(requestTexts(f.inference.requests[1]!).join(' ')).toContain('answer-1');
       expect(f.bindings).toHaveLength(1);
       expect(children).toHaveLength(1);
       expect(
         readFileSync(
-          join(f.nativeRoot, 'thread-one', 'pi', 'agent-session-references', 'session-a')
+          join(
+            f.nativeRoot,
+            'th_00000000-0000-730e-88b8-d76794f39a2f',
+            'pi',
+            'agent-session-references',
+            'as_00000000-0000-7f03-8682-76a52604a84a'
+          )
         ).equals(reference)
       ).toBe(true);
       expect(
-        (await f.send('session.inspect', f.selector('session-a'))).body.nativeHandleDigest
+        (await f.send('session.inspect', f.selector('as_00000000-0000-7f03-8682-76a52604a84a')))
+          .body.nativeHandleDigest
       ).toBe(first.body.nativeHandleDigest);
       expect(f.capability.log.filter((r) => r.method === 'initialize')).toHaveLength(1);
       expect(f.capability.log.filter((r) => r.method === 'tools/list')).toHaveLength(1);
       const requestAt = f.events.findIndex((e) => e.startsWith('request:/inference/'));
-      expect(f.events.indexOf('bind:session-a')).toBeLessThan(requestAt);
+      expect(f.events.indexOf('bind:as_00000000-0000-7f03-8682-76a52604a84a')).toBeLessThan(
+        requestAt
+      );
       expect(f.events.indexOf('drain-end')).toBeLessThan(f.events.indexOf('final'));
       expect(
         f.upstream.filter((r) => r.path.startsWith('/inference/')).map((r) => r.authorization)
       ).toEqual([
-        `Bearer ${credential('inference-token-turn-1')}`,
-        `Bearer ${credential('inference-token-turn-2')}`,
+        `Bearer ${credential(`inference-token-${'tu_00000000-0000-7e49-8268-e35715b55d0c'}`)}`,
+        `Bearer ${credential(`inference-token-${'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'}`)}`,
       ]);
       const idle = await fetch('http://127.0.0.1:17892/inference/v1/chat/completions', {
         method: 'POST',
-        headers: { authorization: `Bearer ${credential('inference-session-a')}` },
+        headers: {
+          authorization: `Bearer ${credential('inference-as_00000000-0000-7f03-8682-76a52604a84a')}`,
+        },
         body: '{}',
       });
       expect(idle.status).toBe(403);
       const sibling = await fetch('http://127.0.0.1:17892/inference/v1/chat/completions', {
         method: 'POST',
-        headers: { authorization: `Bearer ${credential('inference-session-b')}` },
+        headers: {
+          authorization: `Bearer ${credential('inference-as_00000000-0000-7ccb-a600-607d092dffc8')}`,
+        },
         body: '{}',
       });
       expect(sibling.status).toBe(401);
-      expect((await f.send('session.close', f.selector('session-a'))).disposition).toBe(
-        'succeeded'
-      );
+      expect(
+        (await f.send('session.close', f.selector('as_00000000-0000-7f03-8682-76a52604a84a')))
+          .disposition
+      ).toBe('succeeded');
       expect(observations.getResponses).toEqual([405]);
       expect(f.capability.log.some((r) => r.httpMethod === 'GET')).toBe(false);
     },
@@ -467,8 +516,10 @@ describe('Pi real Integration lifecycle', () => {
         requestTimeoutMs: 1000,
       });
       cleanup.push(f.close);
-      expect((await f.open('session-a')).disposition).toBe('succeeded');
-      const started = await f.run('turn-1', 0);
+      expect((await f.open('as_00000000-0000-7f03-8682-76a52604a84a')).disposition).toBe(
+        'succeeded'
+      );
+      const started = await f.run('tu_00000000-0000-7e49-8268-e35715b55d0c', 0);
       expect(started, JSON.stringify(started)).toMatchObject({ disposition: 'succeeded' });
       await vi.waitFor(() => expect(f.inference.requests).toHaveLength(1), { timeout: 20000 });
       const child = children.at(-1)!;
@@ -479,7 +530,7 @@ describe('Pi real Integration lifecycle', () => {
           ? '{bad json}\n'
           : `${JSON.stringify({
               event: 'turn_settled',
-              turnId: 'turn-1',
+              turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
               outcome: { status: 'future-status' },
               nativeHandle: { state: 'pending' },
               compactionEntryIds: [],
@@ -488,7 +539,14 @@ describe('Pi real Integration lifecycle', () => {
       if (blocked) {
         await vi.waitFor(
           async () =>
-            expect((await f.send('session.inspect', f.selector('session-a'))).body).toMatchObject({
+            expect(
+              (
+                await f.send(
+                  'session.inspect',
+                  f.selector('as_00000000-0000-7f03-8682-76a52604a84a')
+                )
+              ).body
+            ).toMatchObject({
               cleanupState: 'unknown',
               childState: 'unknown',
             }),
@@ -498,26 +556,48 @@ describe('Pi real Integration lifecycle', () => {
           state: 'draining',
           activeTurns: 1,
         });
-        expect((await f.open('session-b', null, 'thread-two')).disposition).toBe('refused');
-        expect((await f.open('session-c', null, 'thread-one')).disposition).toBe('refused');
+        expect(
+          (
+            await f.open(
+              'as_00000000-0000-7ccb-a600-607d092dffc8',
+              null,
+              'th_00000000-0000-779e-b7fd-63d275d430ba'
+            )
+          ).disposition
+        ).toBe('refused');
+        expect(
+          (
+            await f.open(
+              'as_00000000-0000-770b-8a9d-a7fc1ad1b168',
+              null,
+              'th_00000000-0000-730e-88b8-d76794f39a2f'
+            )
+          ).disposition
+        ).toBe('refused');
         const rival = harnessFor(f.root, f.integration);
-        expect(await rival.open('session-rival')).toMatchObject({
+        expect(await rival.open('as_00000000-0000-7c5d-83c3-54f832c04ba5')).toMatchObject({
           disposition: 'refused',
           body: { reasonCode: 'conflict' },
         });
         expect(rival.bindings).toHaveLength(0);
         await vi.waitFor(() =>
           expect(
-            f.finalStatuses.filter((status) => status.lineage.turnId === 'turn-1')
+            f.finalStatuses.filter(
+              (status) => status.lineage.turnId === 'tu_00000000-0000-7e49-8268-e35715b55d0c'
+            )
           ).toHaveLength(1)
         );
         expect(
-          f.finalStatuses.find((status) => status.lineage.turnId === 'turn-1')!.body.status
+          f.finalStatuses.find(
+            (status) => status.lineage.turnId === 'tu_00000000-0000-7e49-8268-e35715b55d0c'
+          )!.body.status
         ).toBe('failed');
         const afterFinal = f.upstream.length;
         await new Promise((resolve) => setTimeout(resolve, 100));
         expect(f.upstream).toHaveLength(afterFinal);
-        expect((await f.run('turn-2', 1)).disposition).toBe('refused');
+        expect((await f.run('tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4', 1)).disposition).toBe(
+          'refused'
+        );
         expect(f.events).not.toContain('drain-start');
       } else {
         await waitIdle(f);
@@ -525,7 +605,9 @@ describe('Pi real Integration lifecycle', () => {
         expect(f.finalStatuses.every((status) => status.body.status !== 'completed')).toBe(true);
         if (f.events.includes('drain-start'))
           expect(f.events.indexOf('exit')).toBeLessThan(f.events.indexOf('drain-start'));
-        expect((await f.run('turn-2', 1)).disposition).toBe('refused');
+        expect((await f.run('tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4', 1)).disposition).toBe(
+          'refused'
+        );
       }
     },
     TIMEOUT
@@ -556,12 +638,22 @@ describe('Pi real Integration lifecycle', () => {
         }
       );
       cleanup.push(f.close);
-      await f.open('session-a');
-      await f.run('turn-1', 0, 'session-a', ['openkit-work']);
+      await f.open('as_00000000-0000-7f03-8682-76a52604a84a');
+      await f.run(
+        'tu_00000000-0000-7e49-8268-e35715b55d0c',
+        0,
+        'as_00000000-0000-7f03-8682-76a52604a84a',
+        ['openkit-work']
+      );
       await vi.waitFor(() => expect(f.finalStatuses).toHaveLength(1), { timeout: 20000 });
       await waitIdle(f);
       f.capability.holdToolCall = true;
-      await f.run('turn-2', 1, 'session-a', ['openkit-work']);
+      await f.run(
+        'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+        1,
+        'as_00000000-0000-7f03-8682-76a52604a84a',
+        ['openkit-work']
+      );
       await vi.waitFor(
         () =>
           stage === 'model'
@@ -595,9 +687,9 @@ describe('Pi real Integration lifecycle', () => {
         return (write as (...args: unknown[]) => boolean)(chunk, ...args);
       }) as Duplex['write'];
       const result = await f.send('turn.interrupt', {
-        ...f.selector('session-a'),
-        turnId: 'turn-2',
-        leaseId: 'lease-turn-2',
+        ...f.selector('as_00000000-0000-7f03-8682-76a52604a84a'),
+        turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+        leaseId: `lease-${'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'}`,
         purpose: 'interrupt',
       });
       if (blocked) {
@@ -605,15 +697,16 @@ describe('Pi real Integration lifecycle', () => {
           disposition: 'refused',
           body: { reasonCode: 'cleanup_required' },
         });
-        expect((await f.send('session.inspect', f.selector('session-a'))).body.cleanupState).toBe(
-          'unknown'
-        );
+        expect(
+          (await f.send('session.inspect', f.selector('as_00000000-0000-7f03-8682-76a52604a84a')))
+            .body.cleanupState
+        ).toBe('unknown');
       } else {
         await waitIdle(f);
         expect(f.bindings[0]!.childState()).toBe('absent');
         expect(
           f.finalStatuses
-            .filter((status) => status.lineage.turnId === 'turn-2')
+            .filter((status) => status.lineage.turnId === 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4')
             .every((status) => status.body.status !== 'completed')
         ).toBe(true);
       }
@@ -631,17 +724,38 @@ describe('Pi real Integration lifecycle', () => {
         },
       });
       cleanup.push(f.close);
-      await f.open('session-a');
-      await f.run('turn-1', 0, 'session-a', ['openkit-work']);
+      await f.open('as_00000000-0000-7f03-8682-76a52604a84a');
+      await f.run(
+        'tu_00000000-0000-7e49-8268-e35715b55d0c',
+        0,
+        'as_00000000-0000-7f03-8682-76a52604a84a',
+        ['openkit-work']
+      );
       await vi.waitFor(() => expect(f.finalStatuses).toHaveLength(1), { timeout: 20000 });
       await waitIdle(f);
-      const handle = await f.send('session.inspect', f.selector('session-a'));
+      const handle = await f.send(
+        'session.inspect',
+        f.selector('as_00000000-0000-7f03-8682-76a52604a84a')
+      );
       const reference = readFileSync(
-        join(f.nativeRoot, 'thread-one', 'pi', 'agent-session-references', 'session-a')
+        join(
+          f.nativeRoot,
+          'th_00000000-0000-730e-88b8-d76794f39a2f',
+          'pi',
+          'agent-session-references',
+          'as_00000000-0000-7f03-8682-76a52604a84a'
+        )
       );
       if (rejectedStart) {
         const write = vi.spyOn(channel!, 'write');
-        expect(await f.run('turn-refused', 1, 'session-a', ['openkit-extra'])).toMatchObject({
+        expect(
+          await f.run(
+            'tu_00000000-0000-7eb4-95e8-3f9483ed62e1',
+            1,
+            'as_00000000-0000-7f03-8682-76a52604a84a',
+            ['openkit-extra']
+          )
+        ).toMatchObject({
           disposition: 'refused',
           body: {
             reasonCode: 'dependency_failed',
@@ -653,36 +767,49 @@ describe('Pi real Integration lifecycle', () => {
       }
       expect(f.inference.requests).toHaveLength(1);
       await waitIdle(f);
-      expect((await f.send('session.inspect', f.selector('session-a'))).body).toMatchObject({
+      expect(
+        (await f.send('session.inspect', f.selector('as_00000000-0000-7f03-8682-76a52604a84a')))
+          .body
+      ).toMatchObject({
         state: 'open',
         cleanupState: 'clean',
       });
-      expect((await f.send('session.close', f.selector('session-a'))).disposition).toBe(
-        'succeeded'
-      );
+      expect(
+        (await f.send('session.close', f.selector('as_00000000-0000-7f03-8682-76a52604a84a')))
+          .disposition
+      ).toBe('succeeded');
       expect(f.bindings[0]!.childState()).toBe('absent');
       const count = f.capability.log.length;
       expect(
         (
-          await f.open('session-b', {
-            locator: 'session-a',
+          await f.open('as_00000000-0000-7ccb-a600-607d092dffc8', {
+            locator: 'as_00000000-0000-7f03-8682-76a52604a84a',
             digest: String(handle.body.nativeHandleDigest),
           })
         ).disposition
       ).toBe('succeeded');
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(f.capability.log).toHaveLength(count);
-      expect((await f.run('turn-2', 0, 'session-b', ['openkit-extra'])).disposition).toBe(
-        'succeeded'
-      );
+      expect(
+        (
+          await f.run(
+            'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+            0,
+            'as_00000000-0000-7ccb-a600-607d092dffc8',
+            ['openkit-extra']
+          )
+        ).disposition
+      ).toBe('succeeded');
       await vi.waitFor(
         () =>
           expect(
-            f.finalStatuses.find((status) => status.lineage.turnId === 'turn-2')
+            f.finalStatuses.find(
+              (status) => status.lineage.turnId === 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'
+            )
           ).toMatchObject({ body: { status: 'completed' } }),
         { timeout: 20000 }
       );
-      await waitIdle(f, 'session-b');
+      await waitIdle(f, 'as_00000000-0000-7ccb-a600-607d092dffc8');
       expect(requestTexts(f.inference.requests[1]!).join(' ')).toContain('answer-1');
       expect(f.inference.requests[1]!.body.tools?.map((t) => t.function.name)).toContain(
         'mcp__openkit_extra__echo'
@@ -693,15 +820,22 @@ describe('Pi real Integration lifecycle', () => {
       expect(f.capability.log.filter((r) => r.method === 'initialize')).toHaveLength(2);
       expect(
         readFileSync(
-          join(f.nativeRoot, 'thread-one', 'pi', 'agent-session-references', 'session-b')
+          join(
+            f.nativeRoot,
+            'th_00000000-0000-730e-88b8-d76794f39a2f',
+            'pi',
+            'agent-session-references',
+            'as_00000000-0000-7ccb-a600-607d092dffc8'
+          )
         ).equals(reference)
       ).toBe(true);
       expect(f.upstream.filter((r) => r.path.startsWith('/inference/')).at(-1)?.authorization).toBe(
-        `Bearer ${credential('inference-token-turn-2')}`
+        `Bearer ${credential(`inference-token-${'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'}`)}`
       );
-      expect((await f.send('session.close', f.selector('session-b'))).disposition).toBe(
-        'succeeded'
-      );
+      expect(
+        (await f.send('session.close', f.selector('as_00000000-0000-7ccb-a600-607d092dffc8')))
+          .disposition
+      ).toBe('succeeded');
     },
     TIMEOUT
   );
@@ -717,19 +851,35 @@ describe('Pi real Integration lifecycle', () => {
             : { toolCall: { name: 'mcp__openkit_work__echo', arguments: { text: 'held' } } }
       );
       cleanup.push(f.close);
-      await f.open('session-a');
-      await f.run('turn-1', 0, 'session-a', ['openkit-work']);
+      await f.open('as_00000000-0000-7f03-8682-76a52604a84a');
+      await f.run(
+        'tu_00000000-0000-7e49-8268-e35715b55d0c',
+        0,
+        'as_00000000-0000-7f03-8682-76a52604a84a',
+        ['openkit-work']
+      );
       await vi.waitFor(() => expect(f.finalStatuses).toHaveLength(1), { timeout: 20000 });
       await waitIdle(f);
       const reference = JSON.parse(
         readFileSync(
-          join(f.nativeRoot, 'thread-one', 'pi', 'agent-session-references', 'session-a'),
+          join(
+            f.nativeRoot,
+            'th_00000000-0000-730e-88b8-d76794f39a2f',
+            'pi',
+            'agent-session-references',
+            'as_00000000-0000-7f03-8682-76a52604a84a'
+          ),
           'utf8'
         )
       ) as { path: string };
       const retained = readFileSync(reference.path);
       f.capability.holdToolCall = true;
-      await f.run('turn-2', 1, 'session-a', ['openkit-work']);
+      await f.run(
+        'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+        1,
+        'as_00000000-0000-7f03-8682-76a52604a84a',
+        ['openkit-work']
+      );
       await vi.waitFor(
         () =>
           kind === 'model'
@@ -739,7 +889,10 @@ describe('Pi real Integration lifecycle', () => {
       );
       // The shared close operation refuses an active Turn. The resident close owns native drain;
       // close it through the held binding, then ask Harness to release the binding.
-      expect((await f.send('session.close', f.selector('session-a'))).body.reasonCode).toBe('busy');
+      expect(
+        (await f.send('session.close', f.selector('as_00000000-0000-7f03-8682-76a52604a84a'))).body
+          .reasonCode
+      ).toBe('busy');
       const close = f.bindings[0]!.close();
       expect(f.bindings[0]!.close()).toBe(close);
       await close;

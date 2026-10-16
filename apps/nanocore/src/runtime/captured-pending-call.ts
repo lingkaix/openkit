@@ -1,4 +1,5 @@
 import { resolveWorkspaceMcpServer, type WorkspaceMcpServerCatalog } from '@openkit/config-schema';
+import { deriveEntityId } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import {
   finishCapabilityCall,
@@ -157,7 +158,7 @@ export function admitCapturedPendingCall(
     workspaceDb,
     workspaceId: record.workspaceId,
     ownerScope: 'workspace',
-    decisionId: `pd_pending_execution_${record.requestId}`,
+    decisionId: deriveEntityId('pd', ['pending_execution', record.requestId]),
     action: 'tool.use',
     approvalId: record.requestId,
     auditActor: { kind: 'user', id: record.responsibleUserId },
@@ -395,7 +396,6 @@ function recordCapturedExecution(
         call,
         records: [
           {
-            usageId: `usage_pending_${call.id}`,
             category: 'tool',
             quantity: 1,
             source: 'mcp-gateway-request-dispatched',

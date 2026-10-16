@@ -333,7 +333,10 @@ describe('Shared MCP administration', () => {
     const operations = setup();
     await userEvent.click(await screen.findByRole('button', { name: 'Configure Shared example' }));
     await userEvent.type(await screen.findByLabelText('Credential slot'), 'authorization');
-    await userEvent.type(screen.getByLabelText('Server MCP grant id'), 'grant-selected');
+    await userEvent.type(
+      screen.getByLabelText('Server MCP grant id'),
+      'grant_00000000-0000-7a77-8a56-84fc4fb5c8ba'
+    );
     await userEvent.type(screen.getByLabelText('Sink name'), 'Authorization');
     await userEvent.click(screen.getByRole('button', { name: 'Add grant binding to draft' }));
     expect(operations['administration.server-mcp-update-binding']).not.toHaveBeenCalled();
@@ -344,7 +347,7 @@ describe('Shared MCP administration', () => {
           credentialBindings: [
             {
               slot: 'authorization',
-              vaultGrantId: 'grant-selected',
+              vaultGrantId: 'grant_00000000-0000-7a77-8a56-84fc4fb5c8ba',
               sink: { kind: 'header', name: 'Authorization' },
               presentation: 'raw',
             },

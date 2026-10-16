@@ -24,7 +24,7 @@ describe('nanocore e2e local restart replay', () => {
     harness = await startNanoCoreHarness();
     dataRootToRemove = harness.dataRoot;
 
-    const workspaceId = 'ws_demo';
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const requestId = randomUUID();
     const threadResponse = await fetch(`${harness.baseUrl}/api/app/operations/thread.create`, {
       method: 'POST',

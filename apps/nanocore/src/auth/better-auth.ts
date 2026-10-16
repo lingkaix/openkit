@@ -1,4 +1,5 @@
 import { drizzleAdapter } from '@better-auth/drizzle-adapter';
+import { allocateEntityId } from '@openkit/protocol';
 import { betterAuth } from 'better-auth';
 import { APIError } from 'better-auth/api';
 import { resolveBindHost, resolveBindPort } from '../config/bind-host.js';
@@ -70,6 +71,29 @@ export function createBetterAuth(
 
   return betterAuth({
     baseURL,
+    advanced: {
+      database: {
+        generateId: ({ model }) => {
+          // Better Auth uses logical names; the adapter can also pass the configured table name.
+          switch (model) {
+            case 'user':
+            case 'users':
+              return allocateEntityId('usr');
+            case 'session':
+            case 'sessions':
+              return allocateEntityId('auth');
+            case 'account':
+            case 'accounts':
+              return allocateEntityId('acct');
+            case 'verification':
+            case 'verifications':
+              return allocateEntityId('verif');
+            default:
+              throw new Error('Authentication model has no identifier owner.');
+          }
+        },
+      },
+    },
     database: drizzleAdapter(coreDb.db, {
       provider: 'sqlite',
       schema: betterAuthSchema,

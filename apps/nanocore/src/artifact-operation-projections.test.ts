@@ -8,7 +8,6 @@ import { describe, expect, it } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import { createArtifactReview, getArtifactReview } from './artifact-reviews.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
@@ -16,6 +15,7 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -32,36 +32,38 @@ function fixture(member = true, acceptingProductWork = true, privateOrigin = fal
   ensureLocalUser(coreDb);
   coreDb.sqlite
     .prepare(
-      "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, last_seen_at) SELECT 'user_foreign', kind, display_name, 'foreign@local.openkit.invalid', email_verified, created_at, updated_at, last_seen_at FROM users WHERE id = 'user_local'"
+      "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, last_seen_at) SELECT 'usr_00000000-0000-7ed5-9b62-226e0a66887f', 'human', display_name, 'foreign@local.openkit.invalid', email_verified, created_at, updated_at, last_seen_at FROM users WHERE id = 'usr_00000000-0000-7000-8000-000000000001'"
     )
     .run();
   const store = createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
-    ownerUserId: member ? 'user_local' : 'user_foreign',
-    workspaceId: 'ws_demo',
+    ownerUserId: member
+      ? 'usr_00000000-0000-7000-8000-000000000001'
+      : 'usr_00000000-0000-7ed5-9b62-226e0a66887f',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   const thread = store.createThread(
-    'ws_demo',
+    'ws_00000000-0000-7000-8000-000000000001',
     'Review source',
     undefined,
     'conversation',
     privateOrigin
-      ? { visibility: 'private', privateOwnerUserId: 'user_foreign' }
+      ? { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' }
       : { visibility: 'workspace' }
   );
   const turn = store.createTurn(
-    'ws_demo',
+    'ws_00000000-0000-7000-8000-000000000001',
     thread.id,
     'Produce an output',
-    { kind: 'user', id: 'user_foreign' },
+    { kind: 'user', id: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' },
     null,
     { agentId: 'agent_codex_host' }
   );
   const content = 'Exact reviewed output.\n';
   store.createArtifact({
-    id: 'ar_review',
-    workspaceId: 'ws_demo',
+    id: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     threadId: thread.id,
     turnId: turn.id,
     kind: 'summary',
@@ -81,10 +83,10 @@ function fixture(member = true, acceptingProductWork = true, privateOrigin = fal
     createdAt: turn.startedAt!,
     updatedAt: turn.startedAt!,
   });
-  const db = openWorkspaceDb(dataRoot, 'ws_demo');
+  const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(db);
   createArtifactReview(db, {
-    artifactId: 'ar_review',
+    artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
     artifactVersion: 1,
     contentDigest: digest(content),
     sourceThreadId: thread.id,
@@ -176,7 +178,7 @@ async function projections(f: ReturnType<typeof fixture>, token?: string) {
 const content = 'Imported exact bytes.\n';
 const inputs = {
   'artifact.list': {},
-  'artifact.read': { artifactId: 'ar_review' },
+  'artifact.read': { artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f' },
   'artifact.import': {
     title: 'Import',
     mediaType: 'text/plain',
@@ -185,27 +187,42 @@ const inputs = {
     requestId: 'import-projection',
   },
   'artifact.introduce': {
-    artifactId: 'ar_review',
-    threadId: 'th_demo',
+    artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
     expectedArtifactVersion: 1,
     requestId: 'introduce-projection',
   },
-  'artifact.review-list': { artifactId: 'ar_review' },
+  'artifact.review-list': { artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f' },
   'artifact.review.decide': {
-    artifactId: 'ar_review',
+    artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
     artifactVersion: 1,
     decision: 'rejected',
     requestId: 'decide-projection',
   },
 };
 const oldRoutes = [
-  ['GET', '/api/workspaces/ws_demo/artifacts'],
-  ['GET', '/api/workspaces/ws_demo/artifacts/ar_review'],
-  ['GET', '/api/workspaces/ws_demo/artifacts/ar_review/content'],
-  ['POST', '/api/app/workspaces/ws_demo/artifacts/imports'],
-  ['POST', '/api/app/workspaces/ws_demo/threads/th_demo/artifacts/ar_review/introductions'],
-  ['GET', '/api/app/workspaces/ws_demo/artifacts/ar_review/reviews'],
-  ['POST', '/api/app/workspaces/ws_demo/artifacts/ar_review/versions/1/review/decision'],
+  ['GET', '/api/workspaces/ws_00000000-0000-7000-8000-000000000001/artifacts'],
+  [
+    'GET',
+    '/api/workspaces/ws_00000000-0000-7000-8000-000000000001/artifacts/ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
+  ],
+  [
+    'GET',
+    '/api/workspaces/ws_00000000-0000-7000-8000-000000000001/artifacts/ar_00000000-0000-7b5d-82ba-fa20d4518e2f/content',
+  ],
+  ['POST', '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/artifacts/imports'],
+  [
+    'POST',
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/artifacts/ar_00000000-0000-7b5d-82ba-fa20d4518e2f/introductions',
+  ],
+  [
+    'GET',
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/artifacts/ar_00000000-0000-7b5d-82ba-fa20d4518e2f/reviews',
+  ],
+  [
+    'POST',
+    '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/artifacts/ar_00000000-0000-7b5d-82ba-fa20d4518e2f/versions/1/review/decision',
+  ],
 ];
 
 describe('Artifact definition projections', () => {
@@ -254,16 +271,20 @@ describe('Artifact definition projections', () => {
     );
     try {
       const token = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: authority === 'eligible administrator' ? 'server-admin' : 'workspace',
-        workspaceIds: authority === 'eligible administrator' ? [] : ['ws_demo'],
+        workspaceIds:
+          authority === 'eligible administrator' ? [] : ['ws_00000000-0000-7000-8000-000000000001'],
         expiresAt: '2099-01-01T00:00:00.000Z',
       }).secret;
       const projectors = await projections(f, token);
       async function compare(id: string, input: Record<string, unknown>) {
         let expected: unknown;
         for (const project of Object.values(projectors)) {
-          const result = await project(id, { workspaceId: 'ws_demo', ...input });
+          const result = await project(id, {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            ...input,
+          });
           if (expected === undefined) expected = result;
           expect(result, id).toEqual(expected);
         }
@@ -276,33 +297,46 @@ describe('Artifact definition projections', () => {
       }
       const imported = await compare('artifact.import', inputs['artifact.import']);
       const read = await compare('artifact.read', { artifactId: imported.artifactId });
-      expect(read).toEqual(f.store.getArtifact('ws_demo', imported.artifactId));
+      expect(read).toEqual(
+        f.store.getArtifact('ws_00000000-0000-7000-8000-000000000001', imported.artifactId)
+      );
       expect((read as unknown as { content: unknown }).content).toEqual({
         format: 'text',
         body: content,
       });
       const list = await compare('artifact.list', {});
-      expect(list).toEqual({ items: f.store.listArtifacts('ws_demo') });
+      expect(list).toEqual({
+        items: f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001'),
+      });
       const introduced = await compare('artifact.introduce', {
         ...inputs['artifact.introduce'],
         artifactId: imported.artifactId,
       });
-      expect(f.store.getTurn('ws_demo', 'th_demo', introduced.turnId).items[0]?.id).toBe(
-        introduced.itemId
-      );
-      expect(f.store.getArtifact('ws_demo', imported.artifactId).origin.kind).toBe('imported');
+      expect(
+        f.store.getTurn(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          introduced.turnId
+        ).items[0]?.id
+      ).toBe(introduced.itemId);
+      expect(
+        f.store.getArtifact('ws_00000000-0000-7000-8000-000000000001', imported.artifactId).origin
+          .kind
+      ).toBe('imported');
       await compare('artifact.review.decide', inputs['artifact.review.decide']);
       const reviews = await compare('artifact.review-list', inputs['artifact.review-list']);
-      const db = openWorkspaceDb(f.dataRoot, 'ws_demo');
+      const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
-        expect(reviews).toEqual({ reviews: [getArtifactReview(db, 'ar_review', 1)] });
+        expect(reviews).toEqual({
+          reviews: [getArtifactReview(db, 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f', 1)],
+        });
       } finally {
         db.sqlite.close();
       }
       for (const project of Object.values(projectors))
         await expect(
           project('artifact.import', {
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             ...inputs['artifact.import'],
             title: 'Changed input',
           })
@@ -318,9 +352,9 @@ describe('Artifact definition projections', () => {
       for (const project of Object.values(await projections(f)))
         await expect(
           project('artifact.introduce', {
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             ...inputs['artifact.introduce'],
-            threadId: 'th_missing',
+            threadId: 'th_00000000-0000-70ca-938d-c2a0530f9882',
           })
         ).rejects.toMatchObject({ code: 'not_found', message: 'Thread not found.', status: 404 });
     } finally {
@@ -337,7 +371,7 @@ describe('Artifact definition projections', () => {
     try {
       const app = new Hono<{ Variables: AuthVariables }>();
       app.use('*', async (c, next) => {
-        c.set('actor', { kind: 'local', userId: 'user_local' });
+        c.set('actor', { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' });
         await next();
       });
       registerOperationJsonRoutes({
@@ -355,11 +389,11 @@ describe('Artifact definition projections', () => {
       const response = await app.request(`/api/app/operations/${id}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
-        body: JSON.stringify({ workspaceId: 'ws_demo', ...body }),
+        body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001', ...body }),
       });
       expect(response.status).toBe(500);
       expect(await response.json()).toEqual({
-        protocolVersion: '0.5.0',
+        protocolVersion: '0.6.0',
         code: 'internal_error',
         message: 'Internal Server Error',
       });
@@ -374,7 +408,9 @@ describe('Artifact definition projections', () => {
     const f = fixture();
     try {
       for (const project of Object.values(await projections(f)))
-        await expect(project(id, { ...input, workspaceId: 'ws_unknown' })).rejects.toMatchObject({
+        await expect(
+          project(id, { ...input, workspaceId: 'ws_00000000-0000-7744-93d6-d2f551c62efa' })
+        ).rejects.toMatchObject({
           code: 'workspace_access_denied',
           status: 403,
         });
@@ -389,21 +425,27 @@ describe('Artifact definition projections', () => {
       const other = f.store.createWorkspace('Other Workspace');
       recordWorkspaceOwnerMembership({
         coreDb: f.coreDb,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: other.id,
       });
       const token = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'workspace',
-        workspaceIds: ['ws_demo', other.id],
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001', other.id],
         expiresAt: '2099-01-01T00:00:00.000Z',
       }).secret;
       for (const project of Object.values(await projections(f, token))) {
         await expect(
-          project('artifact.read', { workspaceId: 'ws_demo', artifactId: 'ar_review' })
+          project('artifact.read', {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
+          })
         ).rejects.toMatchObject({ message: 'Artifact not found.', status: 404 });
         await expect(
-          project('artifact.read', { workspaceId: other.id, artifactId: 'ar_review' })
+          project('artifact.read', {
+            workspaceId: other.id,
+            artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
+          })
         ).rejects.toMatchObject({ message: 'Artifact not found.', status: 404 });
       }
     } finally {
@@ -420,23 +462,39 @@ describe('Artifact definition projections', () => {
     let reviewDb: ReturnType<typeof openWorkspaceDb> | undefined;
     try {
       const token = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'workspace-readonly',
-        workspaceIds: ['ws_demo'],
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
         expiresAt: '2099-01-01T00:00:00.000Z',
       }).secret;
-      const artifacts = f.store.listArtifacts('ws_demo');
-      const turns = f.store.listThreadTurns('ws_demo', 'th_demo');
-      if (id === 'artifact.review.decide') reviewDb = openWorkspaceDb(f.dataRoot, 'ws_demo');
-      const review = reviewDb ? getArtifactReview(reviewDb, 'ar_review', 1) : undefined;
+      const artifacts = f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001');
+      const turns = f.store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      );
+      if (id === 'artifact.review.decide')
+        reviewDb = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+      const review = reviewDb
+        ? getArtifactReview(reviewDb, 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f', 1)
+        : undefined;
       for (const project of Object.values(await projections(f, token)))
-        await expect(project(id, { workspaceId: 'ws_demo', ...input })).rejects.toMatchObject({
+        await expect(
+          project(id, { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', ...input })
+        ).rejects.toMatchObject({
           code: 'workspace_access_denied',
           status: 403,
         });
-      expect(f.store.listArtifacts('ws_demo')).toEqual(artifacts);
-      expect(f.store.listThreadTurns('ws_demo', 'th_demo')).toEqual(turns);
-      if (reviewDb) expect(getArtifactReview(reviewDb, 'ar_review', 1)).toEqual(review);
+      expect(f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual(artifacts);
+      expect(
+        f.store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      ).toEqual(turns);
+      if (reviewDb)
+        expect(getArtifactReview(reviewDb, 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f', 1)).toEqual(
+          review
+        );
     } finally {
       reviewDb?.sqlite.close();
       f.close();
@@ -450,13 +508,15 @@ describe('Artifact definition projections', () => {
   )('returns product_work_unavailable for %s while product admission is closed', async (id, input) => {
     const f = fixture(true, false);
     try {
-      const artifacts = f.store.listArtifacts('ws_demo');
+      const artifacts = f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001');
       for (const project of Object.values(await projections(f)))
-        await expect(project(id, { workspaceId: 'ws_demo', ...input })).rejects.toMatchObject({
+        await expect(
+          project(id, { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', ...input })
+        ).rejects.toMatchObject({
           code: 'product_work_unavailable',
           status: 503,
         });
-      expect(f.store.listArtifacts('ws_demo')).toEqual(artifacts);
+      expect(f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual(artifacts);
     } finally {
       f.close();
     }

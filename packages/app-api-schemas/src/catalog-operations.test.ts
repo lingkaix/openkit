@@ -1,3 +1,4 @@
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { AGENT_OPERATION_DEFINITIONS } from './agent-operations.js';
 import { CATALOG_OPERATION_DEFINITIONS } from './catalog-operations.js';
@@ -6,9 +7,24 @@ import {
   operationMcpEligible,
   operationModelInput,
 } from './operation-definitions.js';
+import { SERVER_MCP_OPERATION_DEFINITIONS } from './server-mcp-operations.js';
 import { WORKER_OPERATION_DEFINITIONS } from './worker-operations.js';
 
 describe('Agent, Worker and resource catalog definitions', () => {
+  it('rejects wrong-kind Server Vault identifiers at admission', () => {
+    const requestId = '00000000-0000-4000-8000-000000000001';
+    const referenceId = allocateEntityId('vault');
+    const grantId = allocateEntityId('grant');
+    const secret = SERVER_MCP_OPERATION_DEFINITIONS['vault.server-mcp-secret-revoke'].inputSchema;
+    const grant = SERVER_MCP_OPERATION_DEFINITIONS['vault.server-mcp-grant-revoke'].inputSchema;
+    const create = SERVER_MCP_OPERATION_DEFINITIONS['vault.server-mcp-grant-create'].inputSchema;
+    expect(secret.safeParse({ requestId, referenceId }).success).toBe(true);
+    expect(grant.safeParse({ requestId, grantId }).success).toBe(true);
+    expect(secret.safeParse({ requestId, referenceId: grantId }).success).toBe(false);
+    expect(create.safeParse({ requestId, referenceId: grantId }).success).toBe(false);
+    expect(grant.safeParse({ requestId, grantId: referenceId }).success).toBe(false);
+  });
+
   it('composes exactly seventeen strict JSON operations with truthful MCP and mutation facts', () => {
     const definitions = {
       ...AGENT_OPERATION_DEFINITIONS,
@@ -34,7 +50,7 @@ describe('Agent, Worker and resource catalog definitions', () => {
         tree,
       },
       'catalog.skill-candidate-decide': {
-        candidateId: 'candidate_proof',
+        candidateId: 'cand_00000000-0000-755a-9cf1-f372129db2e4',
         decision: 'promoted',
         expectedRevision: 1,
       },
@@ -84,7 +100,7 @@ describe('Agent, Worker and resource catalog definitions', () => {
 
   it('admits null pin removal and refuses null default selection through complete and model inputs', () => {
     const input = {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       skillId: 'proof',
       digest: null,
       expectedRevision: 1,

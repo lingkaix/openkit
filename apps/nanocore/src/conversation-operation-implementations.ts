@@ -92,7 +92,8 @@ export function createTaskConversationOperationImplementations(
         const result = await dependencies.conversationService!.submit(
           store,
           input,
-          publicOperationActor(context)
+          publicOperationActor(context),
+          context.actorRef
         );
         context.observeSuccessStatus?.(result.status);
         return result.body;

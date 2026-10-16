@@ -1,6 +1,6 @@
-import { randomUUID } from 'node:crypto';
 import type { SERVER_MCP_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { digestMcpConfig, McpValidatedDeclarationSchema } from '@openkit/config-schema';
+import { allocateEntityId } from '@openkit/protocol';
 import { z } from 'zod';
 import { listServerAuditEvents, recordServerAuditEvent } from '../audit-events.js';
 import { requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
@@ -379,7 +379,7 @@ export function createServerMcpOperationImplementations(
         'vault_reference',
         () => {
           const vault = backend();
-          const referenceId = randomUUID();
+          const referenceId = allocateEntityId('vault');
           recordServerAuditEvent({
             coreDb: coreDb!,
             actor: { kind: 'user', id: publicOperationActor(context).userId },
@@ -472,7 +472,7 @@ export function createServerMcpOperationImplementations(
           if (input.expiresAt && Date.parse(input.expiresAt) <= Date.now())
             throw new OperationError('invalid_request', 'Grant expiry must be in the future.', 400);
           const created = createVaultGrant(coreDb!, {
-            grantId: randomUUID(),
+            grantId: allocateEntityId('grant'),
             vaultReferenceId: input.referenceId,
             ownerScope: 'server',
             lifetime: 'server',
@@ -526,7 +526,7 @@ export function createServerMcpOperationImplementations(
           const result = coreDb!.sqlite.transaction(() => {
             const narrowed = narrowVaultGrant(coreDb!, {
               grantId: input.grantId,
-              replacementGrantId: randomUUID(),
+              replacementGrantId: allocateEntityId('grant'),
               constraints: input.constraints,
             });
             recordServerAuditEvent({

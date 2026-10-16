@@ -3,16 +3,26 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach } from 'vitest';
 import { type CreateAppOptions, createApp as createNanoCoreApp } from '../app.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './agent-environment.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './local-user.js';
 import { admitTestNativeEnvironment } from './native-environment.js';
 
 export type { CreateAppOptions } from '../app.js';
+
+/** Supplies only explicit fixture identity; all production runtime and configuration defaults stay active. */
+export function createAppWithLocalIdentity(
+  options: CreateAppOptions = {}
+): ReturnType<typeof createNanoCoreApp> {
+  return createNanoCoreApp({
+    ...(!options.coreDb && options.mode !== 'server' ? { localUserId: FIXTURE_LOCAL_USER_ID } : {}),
+    ...options,
+  });
+}
 
 /**
  * Creates a NanoCore app with an explicit deterministic executor for unit tests.
@@ -43,7 +53,7 @@ export function createApp(options: CreateAppOptions = {}): ReturnType<typeof cre
     options.providerRegistry.get('agent-openrouter')?.models.includes('openai/gpt-5.2') === true;
   const turnExecutor =
     options.turnExecutor ?? new SimulatedTurnExecutor({ coreDb: options.coreDb });
-  return createNanoCoreApp({
+  return createAppWithLocalIdentity({
     ...(ownsRuntimeConfig && providerSupportsDefaultGateway
       ? { gatewayConfig: createTestGatewayConfig() }
       : {}),
@@ -81,7 +91,7 @@ export function createAppWithWorkspaceAuthority(
   for (const workspace of options.store.listWorkspaces()) {
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
       workspaceId: workspace.id,
     });
   }

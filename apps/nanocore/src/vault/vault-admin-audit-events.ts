@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { allocateEntityId } from '@openkit/protocol';
 import { recordServerAuditEvent } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import type { CoreDb } from '../storage/db.js';
@@ -49,7 +49,7 @@ export interface RecordVaultAdminAuditEventInput {
  * @param input Vault admin audit event input.
  */
 export function recordVaultAdminAuditEvent(input: RecordVaultAdminAuditEventInput): void {
-  const auditEventId = input.auditEventId ?? `aud_${randomUUID()}`;
+  const auditEventId = input.auditEventId ?? allocateEntityId('aud');
   const severity = input.severity ?? (input.outcome === 'succeeded' ? 'info' : 'warning');
   const now = input.now ?? new Date();
 
