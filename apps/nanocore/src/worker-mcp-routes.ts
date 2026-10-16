@@ -462,6 +462,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 const result = await dispatchOpenkitGenerativeTool(
                   {
                     coreDb: input.coreDb!,
+                    ...(input.vaultUnlockState ? { vaultUnlockState: input.vaultUnlockState } : {}),
                     workspaceMutationAdmission: input.workspaceMutationAdmission,
                     packageSnapshotId: environmentPackage.snapshotId,
                     store: input.store,

@@ -15,6 +15,7 @@ export interface RecordVaultAdminAuditEventInput {
   /** Stable admin action name. */
   readonly action:
     | `vault.workspace_${'create' | 'rotate' | 'revoke' | 'grant' | 'revoke-grant' | 'narrow-grant'}`
+    | 'vault.grant-issue'
     | 'vault.unlock'
     | 'vault.lock'
     | 'vault.bootstrap_codex_auth_json'
@@ -36,6 +37,8 @@ export interface RecordVaultAdminAuditEventInput {
   readonly vaultGrantId?: string;
   /** Exact redacted source resource, including a replaced grant when applicable. */
   readonly resource?: string;
+  /** Exact initiating non-secret request identity when the mutation consumes a request. */
+  readonly requestId?: string;
   /** Event creation time. */
   readonly now?: Date;
 }
@@ -90,6 +93,7 @@ export function recordVaultAdminAuditEvent(input: RecordVaultAdminAuditEventInpu
     resource: input.resource ?? `vault:${input.backendKind}`,
     workspaceId: input.workspaceId ?? null,
     vaultGrantId: input.vaultGrantId ?? null,
+    requestId: input.requestId ?? null,
     severity,
     summary: input.summary,
   });
