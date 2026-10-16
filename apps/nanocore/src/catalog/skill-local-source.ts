@@ -8,7 +8,7 @@ import {
   readSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { type CatalogTreeFile, validateCatalogTree } from './resource-catalog.js';
+import { type CatalogTreeFile, validateCatalogTree } from './catalog-tree.js';
 import { discoverEcosystemSkills } from './skill-discovery.js';
 import {
   parseEcosystemSkillHeader,
