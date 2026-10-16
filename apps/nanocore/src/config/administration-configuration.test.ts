@@ -285,13 +285,7 @@ describe('administration catalog configuration', () => {
         logicalModels: [
           {
             ...f.logicalModel,
-            routes: [
-              {
-                id: 'primary',
-                providerProfileId: testEntityId('ar', 'missing'),
-                providerModel: 'gpt-6',
-              },
-            ],
+            routes: [{ id: 'primary', providerProfileId: 'missing', providerModel: 'gpt-6' }],
           },
         ],
       },

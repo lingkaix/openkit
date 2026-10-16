@@ -136,7 +136,7 @@ function createRemoteGitProductFixture(
     {
       defaultModel: 'openai/gpt-5.2',
       displayName: 'Simulator remote Git inference',
-      id: testEntityId('usr', 'agent-openrouter'),
+      id: 'agent-openrouter',
       kind: 'local',
       models: ['openai/gpt-5.2'],
     },
@@ -250,7 +250,7 @@ describe('SimulatedTurnExecutor', () => {
         {
           defaultModel: 'openai/gpt-5.2',
           displayName: 'Simulator inference',
-          id: testEntityId('usr', 'agent-openrouter'),
+          id: 'agent-openrouter',
           kind: 'local',
           models: ['openai/gpt-5.2'],
         },
@@ -396,7 +396,7 @@ describe('SimulatedTurnExecutor', () => {
         {
           defaultModel: 'openai/gpt-5.2',
           displayName: 'Simulator continuity inference',
-          id: testEntityId('usr', 'agent-openrouter'),
+          id: 'agent-openrouter',
           kind: 'local',
           models: ['openai/gpt-5.2'],
         },
@@ -514,7 +514,7 @@ describe('SimulatedTurnExecutor', () => {
       {
         defaultModel: 'openai/gpt-5.2',
         displayName: 'Simulator continuity inference',
-        id: testEntityId('usr', 'agent-openrouter'),
+        id: 'agent-openrouter',
         kind: 'local',
         models: ['openai/gpt-5.2'],
       },
@@ -731,7 +731,7 @@ describe('SimulatedTurnExecutor', () => {
         {
           defaultModel: 'openai/gpt-5.2',
           displayName: 'Simulator backend inference',
-          id: testEntityId('usr', 'agent-openrouter'),
+          id: 'agent-openrouter',
           kind: 'local',
           models: ['openai/gpt-5.2'],
         },
@@ -1361,7 +1361,7 @@ describe('SimulatedTurnExecutor', () => {
         {
           defaultModel: 'openai/gpt-5.2',
           displayName: 'Simulator inference',
-          id: testEntityId('usr', 'agent-openrouter'),
+          id: 'agent-openrouter',
           kind: 'local',
           models: ['openai/gpt-5.2'],
         },
@@ -1392,7 +1392,7 @@ describe('SimulatedTurnExecutor', () => {
       const turn = (await turnResponse.json()) as { id: string };
       expect(turnResponse.status, JSON.stringify(turn)).toBe(202);
       await vi.waitFor(() => expect(store.getTurnById(turn.id).status).toBe('completed'));
-      const commandItemId = testEntityId('it', `it_command_${turn.id}`);
+      const commandItemId = `it_command_${turn.id}`;
       const commandEvents = store.getTurnEvents(turn.id).filter((event) => {
         const data = event.data as { item?: { id: string }; itemId?: string };
         return (data.itemId ?? data.item?.id) === commandItemId;

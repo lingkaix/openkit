@@ -1,5 +1,4 @@
 // openkit-test-platform: posix
-
 import {
   existsSync,
   mkdirSync,
@@ -21,7 +20,6 @@ import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
-import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { createVaultReference, getVaultReference } from './vault/vault-references.js';
@@ -94,11 +92,7 @@ function fixture(subscription = false) {
           contextManagement: [{ type: 'compaction', compactThreshold: 8000 }],
           routes: [
             { id: 'primary', providerProfileId: 'removed', providerModel: 'gpt-5.1' },
-            {
-              id: 'backup',
-              providerProfileId: testEntityId('usr', 'remaining'),
-              providerModel: 'gpt-5.1',
-            },
+            { id: 'backup', providerProfileId: 'remaining', providerModel: 'gpt-5.1' },
           ],
         },
       ],
@@ -129,7 +123,7 @@ function fixture(subscription = false) {
   writeFileSync(
     join(dataRoot, 'config/providers/remaining.provider.jsonc'),
     JSON.stringify({
-      id: testEntityId('usr', 'remaining'),
+      id: 'remaining',
       displayName: 'Remaining',
       kind: 'local',
       vendor: 'openai',
@@ -300,7 +294,7 @@ describe('provider profile removal', () => {
     );
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toMatchObject({
-      code: testEntityId('dep', 'deployment_admin_required'),
+      code: 'deployment_admin_required',
       message: 'Current deployment administrator authority is required.',
     });
     expect(readFileSync(join(f.dataRoot, 'config', f.id))).toEqual(before);

@@ -176,8 +176,8 @@ describe('capability usage ledger', () => {
         expect(capabilityCallRow(workspaceDb, call.id)).toMatchObject({
           request_id: null,
           status: 'succeeded',
-          thread_id: testEntityId('th', 'th_command'),
-          turn_id: testEntityId('tu', 'turn_command'),
+          thread_id: 'th_command',
+          turn_id: 'turn_command',
           workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
         });
         expect(usageRows(workspaceDb, call.id)).toEqual([
@@ -186,9 +186,9 @@ describe('capability usage ledger', () => {
             category: 'llm',
             quantity: 12,
             request_id: null,
-            responsible_user_id: testEntityId('usr', 'user_ledger'),
-            thread_id: testEntityId('th', 'th_command'),
-            turn_id: testEntityId('tu', 'turn_command'),
+            responsible_user_id: 'user_ledger',
+            thread_id: 'th_command',
+            turn_id: 'turn_command',
             unit: 'tokens',
             usage_id: usageIds[index][0],
             workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
@@ -202,8 +202,8 @@ describe('capability usage ledger', () => {
             capability_call_id: call.id,
             outcome: 'succeeded',
             request_id: auditLineage.commandRequestId,
-            thread_id: testEntityId('th', 'th_command'),
-            turn_id: testEntityId('tu', 'turn_command'),
+            thread_id: 'th_command',
+            turn_id: 'turn_command',
             workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
           }),
         ]);

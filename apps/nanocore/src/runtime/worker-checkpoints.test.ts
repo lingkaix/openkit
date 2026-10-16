@@ -193,7 +193,7 @@ describe('worker checkpoint storage', () => {
         requestInputHash: 'sha256:worker_demo',
         stage: 'running_worker',
         iteration: 2,
-        workerSessionId: testEntityId('as', 'session_demo'),
+        workerSessionId: 'session_demo',
         contextDigest: 'ctxpkg_sha256_abc',
         stopReason: null,
         diagnosticsSummary: 'worker is running',
@@ -212,7 +212,7 @@ describe('worker checkpoint storage', () => {
         requestInputHash: 'sha256:worker_demo',
         stage: 'running_worker',
         iteration: 2,
-        workerSessionId: testEntityId('as', 'session_demo'),
+        workerSessionId: 'session_demo',
         contextDigest: 'ctxpkg_sha256_abc',
         replayInstruction: false,
         createdAt: '2026-05-31T00:00:00.000Z',
@@ -392,11 +392,11 @@ describe('worker checkpoint storage', () => {
         requestInputHash: 'sha256:tu_00000000-0000-784a-b5cd-eb5f8f622c05',
         stage: 'running_worker',
         iteration: 1,
-        workerSessionId: testEntityId('as', 'session_demo'),
+        workerSessionId: 'session_demo',
         contextDigest: 'sha256:ctx_demo',
         diagnosticsSummary: createWorkerCheckpointEvidenceDiagnostics({
           itemIds: ['it_00000000-0000-7a37-91be-d019992bbed5'],
-          artifactIds: [testEntityId('ar', 'artifact_worker_result')],
+          artifactIds: ['artifact_worker_result'],
         }),
         now: () => '2026-05-31T00:00:00.000Z',
       });
@@ -509,7 +509,7 @@ describe('worker checkpoint storage', () => {
         requestInputHash: 'sha256:tu_00000000-0000-7a0d-b527-6df9c8763406',
         stage: 'running_worker',
         iteration: 1,
-        workerSessionId: testEntityId('as', 'session_backend'),
+        workerSessionId: 'session_backend',
         now: () => '2026-05-31T00:00:00.000Z',
       });
       recordWorkerBackendTeardownEvidence(workspaceDb, {

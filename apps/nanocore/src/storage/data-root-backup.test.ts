@@ -21,7 +21,6 @@ import {
 } from '../auth/access-token-store.js';
 import { createLightApp } from '../generative-kernel/commands.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { testEntityId } from '../test-support/entity-ids.js';
 import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
   bindThreadMaterial,
@@ -338,7 +337,7 @@ describe('data-root backup manifest', () => {
       dataRoot,
       backupRoot,
       backupId: 'drbak_hot',
-      sourceDeploymentId: testEntityId('dep', 'deployment_backup_test'),
+      sourceDeploymentId: 'deployment_backup_test',
       startedAt: timestamp,
       completedAt: '2026-07-06T00:00:01.000Z',
     });
@@ -535,7 +534,7 @@ describe('data-root backup manifest', () => {
       dataRoot,
       backupRoot,
       backupId: 'drbak_light_app',
-      sourceDeploymentId: testEntityId('dep', 'deployment_backup_test'),
+      sourceDeploymentId: 'deployment_backup_test',
       startedAt: timestamp,
       completedAt: '2026-09-09T00:00:01.000Z',
     });

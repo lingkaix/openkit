@@ -461,7 +461,7 @@ describe('Worker environment preparation', () => {
       fixture
         .createService()
         .prepare({ actor }, prepareRequest(fixture.thread.id, fixture.configuration))
-    ).rejects.toMatchObject({ code: testEntityId('th', 'thread_busy') });
+    ).rejects.toMatchObject({ code: 'thread_busy' });
     expect(fixture.store.listArtifacts(fixture.workspace.id)).toEqual([]);
     expect(fixture.runtimeEffects.prepareImage).not.toHaveBeenCalled();
   });

@@ -363,7 +363,7 @@ function writeReloadableModelCatalog(dataRoot: string): void {
     `${JSON.stringify(
       {
         displayName: 'Worker environment fixture provider',
-        id: testEntityId('usr', 'worker-environment-fixture'),
+        id: 'worker-environment-fixture',
         kind: 'local',
         models: ['openai/gpt-5.2'],
       },
@@ -384,9 +384,9 @@ function writeReloadableModelCatalog(dataRoot: string): void {
             id: 'smart',
             routes: [
               {
-                id: testEntityId('usr', 'worker-environment-fixture'),
+                id: 'worker-environment-fixture',
                 providerModel: 'openai/gpt-5.2',
-                providerProfileId: testEntityId('usr', 'worker-environment-fixture'),
+                providerProfileId: 'worker-environment-fixture',
               },
             ],
           },
@@ -422,7 +422,7 @@ function attachResidentStorage(input: {
     )
     .run('a'.repeat(64), now);
   const created = createWorkerStorageBinding(input.coreDb, {
-    deploymentId: testEntityId('dep', 'deployment_local'),
+    deploymentId: 'deployment_local',
     layout: STORAGE_LAYOUT,
     now,
     runtimeTargetId: 'target_local',
@@ -770,7 +770,7 @@ describe('Worker environment App composition', () => {
         ['worker-environment.recover', logicalRecovery],
       ] as const) {
         for (const [secret, refusedInput, status, code] of [
-          [workspaceToken.secret, input, 403, testEntityId('dep', 'deployment_admin_required')],
+          [workspaceToken.secret, input, 403, 'deployment_admin_required'],
           [
             foreignAdmin.secret,
             operation === 'worker-environment.recover'
@@ -994,7 +994,7 @@ describe('Worker environment App composition', () => {
         logicalModelId: 'smart',
         privateRoute: {
           providerModel: 'openai/gpt-5.2',
-          providerProfileId: testEntityId('usr', 'worker-environment-fixture'),
+          providerProfileId: 'worker-environment-fixture',
         },
       } as const;
       const agentSetup = createTestAgentSetup(agentSetupOptions);
@@ -1012,7 +1012,7 @@ describe('Worker environment App composition', () => {
           {
             defaultModel: 'openai/gpt-5.2',
             displayName: 'Worker environment fixture provider',
-            id: testEntityId('usr', 'worker-environment-fixture'),
+            id: 'worker-environment-fixture',
             kind: 'local',
             models: ['openai/gpt-5.2'],
           },

@@ -54,10 +54,7 @@ function fixture(configured = true) {
   const environmentPackage = resolveAgentEnvironmentPackage({
     agentSetup: createTestAgentSetup({
       logicalModelId: 'worker-model',
-      privateRoute: {
-        providerProfileId: testEntityId('usr', 'provider'),
-        providerModel: 'native-model',
-      },
+      privateRoute: { providerProfileId: 'provider', providerModel: 'native-model' },
       requiredCapabilities: ['trusted-worker-inference-relay'],
     }),
     agentSessionId: testEntityId('as', 'as_diagnostics'),
@@ -80,7 +77,7 @@ function fixture(configured = true) {
   });
   const providerRegistry = new ProviderRegistry([
     {
-      id: testEntityId('usr', 'provider'),
+      id: 'provider',
       displayName: 'Provider',
       kind: 'local',
       vendor: 'ollama',
@@ -91,7 +88,7 @@ function fixture(configured = true) {
   const dispatch = vi.fn();
   const resolveGatewayProvider = vi.fn(
     (): ResolvedLLMProviderConfig => ({
-      id: testEntityId('usr', 'provider'),
+      id: 'provider',
       displayName: 'Provider',
       backend: 'pi-ai',
       adapterId: 'ollama',
@@ -128,11 +125,7 @@ function fixture(configured = true) {
               routing: { autoFailover: true },
               contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
               routes: [
-                {
-                  id: 'primary',
-                  providerProfileId: testEntityId('usr', 'provider'),
-                  providerModel: 'native-model',
-                },
+                { id: 'primary', providerProfileId: 'provider', providerModel: 'native-model' },
               ],
             },
           ],

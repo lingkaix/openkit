@@ -22,7 +22,13 @@ describe('Thread canonical record envelope', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-envelope-'));
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Envelope workspace');
-    const thread = store.createThread(workspace.id, 'Envelope thread', undefined, 'administration');
+    const thread = store.createThread(
+      workspace.id,
+      'Envelope thread',
+      undefined,
+      'administration',
+      { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
+    );
     const persisted = threadRecord(dataRoot, workspace.id, thread.id);
 
     expect(persisted.value).toMatchObject({

@@ -14,7 +14,6 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestGatewayConfig } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
-import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { readGoalView } from './goal-owner.js';
@@ -67,7 +66,7 @@ it('dispatches an ordinary Coordinator Turn through Gateway and invokes a table-
     gatewayConfig,
     providerRegistry: new ProviderRegistry([
       {
-        id: testEntityId('usr', 'agent-openrouter'),
+        id: 'agent-openrouter',
         kind: 'local',
         displayName: 'Test inference',
         defaultModel: 'openai/gpt-5.2',
@@ -109,8 +108,8 @@ it('dispatches an ordinary Coordinator Turn through Gateway and invokes a table-
     expect(dispatch.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(dispatch.mock.calls[0]?.[1].tools.map((tool: { name: string }) => tool.name)).toEqual(
       expect.arrayContaining([
-        testEntityId('th', 'thread_items'),
-        testEntityId('ar', 'artifact_read'),
+        'thread_items',
+        'artifact_read',
         'tu_00000000-0000-77a7-a194-9ad9d8661498',
         'evidence_runtime_list',
       ])
@@ -215,7 +214,7 @@ it('completes the real Coordinator request through stock Codex with unchanged To
     store,
     providerRegistry: new ProviderRegistry([
       {
-        id: testEntityId('usr', 'agent-openrouter'),
+        id: 'agent-openrouter',
         vendor: 'openai-codex',
         kind: 'oauth',
         displayName: 'Synthetic Codex',

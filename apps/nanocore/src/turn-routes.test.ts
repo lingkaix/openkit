@@ -58,7 +58,7 @@ function testProviderRegistry(): ProviderRegistry {
   return new ProviderRegistry([
     {
       displayName: 'Agent OpenRouter',
-      id: testEntityId('usr', 'agent-openrouter'),
+      id: 'agent-openrouter',
       kind: 'local',
       models: ['openai/gpt-5.2'],
     },
@@ -748,7 +748,7 @@ describe('generic turn routes', () => {
       commandRecords: 0,
       completedAtUnchanged: true,
       executorCalls: 0,
-      responseCode: testEntityId('tu', 'turn_not_interruptible'),
+      responseCode: 'turn_not_interruptible',
       responseStatus: 409,
       turnStatus: 'completed',
     });

@@ -1122,7 +1122,7 @@ describe('FsStore canonical reload', () => {
       'Reject the linked artifact root',
       localActor
     );
-    const artifactId = testEntityId('ar', `ar_linked_${turn.id}`);
+    const artifactId = `ar_linked_${turn.id}`;
     const artifactBody = 'Must not escape through the linked parent.';
     const outsideRoot = join(dataRoot, 'outside-artifact-root');
     const linkedRoot = join(dataRoot, 'workspaces', workspace.id, 'artifacts', artifactId);
@@ -1500,7 +1500,7 @@ describe('FsStore canonical reload', () => {
   ] as const)('rejects a canonical Workspace with %s', (_name, recordKind, itemType, field, invalidValue) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-invalid-attribution-'));
     const store = new FsStore({ dataRoot });
-    const workspaceId = testEntityId('ws', `ws_attribution_${itemType ?? 'turn'}`);
+    const workspaceId = `ws_attribution_${itemType ?? 'turn'}`;
     const input = workspaceImportPayload(
       workspaceId,
       'th_00000000-0000-7b11-b339-beca8166a3ac',

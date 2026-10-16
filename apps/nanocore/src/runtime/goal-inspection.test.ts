@@ -400,19 +400,15 @@ it.each([
               role: 'assistant' as const,
               truncated: false,
               content: [
-                call('items', testEntityId('th', 'thread_items'), { threadId: completed.id }),
+                call('items', 'thread_items', { threadId: completed.id }),
                 call('terminal', 'tu_00000000-0000-77a7-a194-9ad9d8661498', {
                   threadId: completed.id,
                   turnId: taskTurn.id,
                 }),
                 call('refusal', 'evidence_runtime_list', {}),
-                call('unrelated', testEntityId('th', 'thread_items'), { threadId: unrelated.id }),
-                call('unlinked-artifact', testEntityId('ar', 'artifact_read'), {
-                  artifactId: unrelatedArtifact.id,
-                }),
-                call('private', testEntityId('ar', 'artifact_read'), {
-                  artifactId: privateArtifact.id,
-                }),
+                call('unrelated', 'thread_items', { threadId: unrelated.id }),
+                call('unlinked-artifact', 'artifact_read', { artifactId: unrelatedArtifact.id }),
+                call('private', 'artifact_read', { artifactId: privateArtifact.id }),
               ],
             },
           };
@@ -441,9 +437,7 @@ it.each([
             message: {
               role: 'assistant' as const,
               truncated: false,
-              content: [
-                call('note', testEntityId('ar', 'artifact_read'), { artifactId: artifact.id }),
-              ],
+              content: [call('note', 'artifact_read', { artifactId: artifact.id })],
             },
           };
         }
@@ -551,16 +545,14 @@ it.each([
         })
       ).isError
     ).toBe(true);
-    expect(
-      (await read(testEntityId('th', 'thread_items'), { threadId: privateThread.id })).isError
-    ).toBe(true);
+    expect((await read('thread_items', { threadId: privateThread.id })).isError).toBe(true);
     for (const [name, args] of [
       [
-        testEntityId('th', 'thread_items'),
+        'thread_items',
         { threadId: completed.id, workspaceId: 'ws_00000000-0000-7f9c-aa14-53566c621405' },
       ],
       [
-        testEntityId('ar', 'artifact_read'),
+        'artifact_read',
         {
           artifactId: artifact.id,
           actor: { kind: 'local', userId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' },
@@ -571,8 +563,8 @@ it.each([
     // Presence of the fixed Tools cannot cache authority after the responsible user is disabled.
     coreDb.sqlite.transaction(() => disableCanonicalUser(coreDb, actor.userId))();
     for (const [name, args] of [
-      [testEntityId('th', 'thread_items'), { threadId: completed.id }],
-      [testEntityId('ar', 'artifact_read'), { artifactId: artifact.id }],
+      ['thread_items', { threadId: completed.id }],
+      ['artifact_read', { artifactId: artifact.id }],
       ['tu_00000000-0000-77a7-a194-9ad9d8661498', { threadId: completed.id, turnId: taskTurn.id }],
       ['evidence_runtime_list', {}],
     ] as const)

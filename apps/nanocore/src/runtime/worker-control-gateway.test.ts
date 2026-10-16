@@ -136,7 +136,7 @@ function createEventRecord(
     event: {
       data: {
         delta,
-        itemId: 'candidate_item_1',
+        itemId: testEntityId('it', 'candidate_item_1'),
       },
       type: 'item.delta',
     },

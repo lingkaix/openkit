@@ -1,5 +1,4 @@
 // openkit-test-platform: posix
-
 import { createHash } from 'node:crypto';
 import {
   copyFileSync,
@@ -15,12 +14,13 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
 import { listRecoverableWorkerCheckpoints } from '../runtime/worker-checkpoints.js';
 import { listExistingWorkspaceDatabaseScopes, openBootVerifiedWorkspaceDb } from '../storage/db.js';
 import { listAppliedNativeMigrationIds } from '../storage/migrate.js';
-import { testEntityId } from '../test-support/entity-ids.js';
 import { FsStore } from './store.js';
 
 /**
@@ -365,7 +365,7 @@ function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-tree-durability-'));
   roots.push(dataRoot);
   const store = new FsStore({ dataRoot });
-  const workspaceId = testEntityId('ws', 'ws_durable_import');
+  const workspaceId = 'ws_durable_import';
   const finalRoot = join(dataRoot, 'workspaces', workspaceId);
   const timestamp = '2026-07-12T00:00:00.000Z';
   const publish = () =>

@@ -191,7 +191,7 @@ describe('workspace review application', () => {
     );
     temporaryRoots.push(dataRoot, targetRoot, workerRoot, stagingRoot);
 
-    const workspaceId = testEntityId('ws', `ws_filesystem_lineage_${suffix}`);
+    const workspaceId = `ws_filesystem_lineage_${suffix}`;
     const reviewId = `swr_filesystem_lineage_${suffix}`;
     const changeSetId = `wcs_filesystem_lineage_${suffix}`;
     const timestamp = '2026-07-11T00:00:00.000Z';

@@ -58,7 +58,7 @@ import {
 import { registerWorkerControlRoutes } from './worker-control-routes.js';
 
 const NOW = '2026-07-13T00:00:06.000Z';
-const ATTEMPT_ID = testEntityId('attempt', 'attempt_cancellation');
+const ATTEMPT_ID = 'attempt_cancellation';
 const BINDING = 'lease-binding:cancellation';
 const CONTROL_TOKEN = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 const INFERENCE_TOKEN = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
@@ -330,7 +330,10 @@ function ordinaryEvent(lineage: WorkerControlLineage, sequence = 7): WorkerCanon
     kind: 'event',
     lineage,
     sequence,
-    event: { type: 'item.delta', data: { itemId: 'candidate_cancel', delta: 'late output' } },
+    event: {
+      type: 'item.delta',
+      data: { itemId: testEntityId('it', 'candidate_cancel'), delta: 'late output' },
+    },
   };
 }
 

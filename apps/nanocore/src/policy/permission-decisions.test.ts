@@ -7,10 +7,10 @@ import {
 } from '@openkit/app-api-schemas';
 import { isEntityId } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
+
 import { loadBootPolicyKernel } from '../bootstrap/policy.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { testEntityId } from '../test-support/entity-ids.js';
 import {
   listExportableWorkspacePermissionDecisions,
   listServerPermissionDecisions,
@@ -235,7 +235,7 @@ describe('permission decision recorder', () => {
     ['resource', 'permission:vault.use'],
     ['actor_json', '{"kind":"user","userId":"usr_00000000-0000-7000-8000-000000000001"}'],
     ['workspace_id', 'ws_00000000-0000-7000-8000-000000000001'],
-    [testEntityId('th', 'thread_id'), 'th_00000000-0000-7000-8000-000000000001'],
+    ['thread_id', 'th_00000000-0000-7000-8000-000000000001'],
     ['severity', 'warning'],
     ['error_code', 'contradictory'],
     ['occurred_at', '2026-07-05T00:01:00.000Z'],

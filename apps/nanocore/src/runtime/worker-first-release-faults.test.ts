@@ -290,7 +290,7 @@ async function faultFixture() {
       threadId: 'th_00000000-0000-7000-8000-000000000001',
     },
     inputHash: 'fault-fixture',
-    response: { kind: 'turn', id: testEntityId('tu', 'fault-turn') },
+    response: { kind: 'turn', id: 'fault-turn' },
   });
   createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
@@ -331,8 +331,8 @@ async function faultFixture() {
   const running = runSchedulerDispatchLoop({
     agentManifests: [setup.manifest],
     coreDb,
-    createAgentSessionId: () => testEntityId('as', 'fault-session'),
-    createAttemptId: () => testEntityId('attempt', 'fault-lease'),
+    createAgentSessionId: () => 'fault-session',
+    createAttemptId: () => 'fault-lease',
     executionBackend: runtime.turnExecutor.executionBackend!,
     gatewayConfig: createTestGatewayConfig(),
     maxDispatches: 1,
@@ -342,7 +342,7 @@ async function faultFixture() {
       {
         defaultModel: 'openai/gpt-5.2',
         displayName: 'Fault fixture',
-        id: testEntityId('usr', 'agent-openrouter'),
+        id: 'agent-openrouter',
         kind: 'local',
         models: ['openai/gpt-5.2'],
       },
@@ -486,7 +486,7 @@ describe('first-release worker faults (real Core crossings)', () => {
       const request = {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
-        raisingTurnId: testEntityId('tu', 'fault-turn'),
+        raisingTurnId: 'fault-turn',
         requestId: 'fault-question',
         requestItemId: 'fault-question-item',
         kind: 'user-input' as const,
@@ -657,9 +657,7 @@ describe('first-release worker faults (real Core crossings)', () => {
       });
       markSchedulerAttemptForTerminalTurn(f.coreDb, turn);
       // D97/D111: terminal failure and physical cleanup cannot prove unread output or evidence.
-      expect(
-        requireSchedulerExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
-      ).toMatchObject({
+      expect(requireSchedulerExecutionAttempt(f.coreDb, 'fault-lease')).toMatchObject({
         phase: 'closing',
         disposition: 'unknown',
         operationId: expect.any(String),
@@ -703,9 +701,7 @@ describe('first-release worker faults (real Core crossings)', () => {
       expect(f.isSettled()).toBe(false);
       expect(f.store.getTurnById(testEntityId('tu', 'fault-turn')).status).toBe('running');
       expect(
-        f.store
-          .getTurnEvents(testEntityId('tu', 'fault-turn'))
-          .filter((event) => event.event === 'turn.completed')
+        f.store.getTurnEvents('fault-turn').filter((event) => event.event === 'turn.completed')
       ).toEqual([]);
       await vi.advanceTimersByTimeAsync(1);
       await expect(f.running).rejects.toThrow(
@@ -741,9 +737,7 @@ describe('first-release worker faults (real Core crossings)', () => {
       });
       markSchedulerAttemptForTerminalTurn(f.coreDb, turn);
       // Submission was accepted, but held inspection leaves collection/evidence unproved.
-      expect(
-        requireSchedulerExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
-      ).toMatchObject({
+      expect(requireSchedulerExecutionAttempt(f.coreDb, 'fault-lease')).toMatchObject({
         phase: 'closing',
         disposition: 'accepted',
         operationId: expect.any(String),

@@ -15,7 +15,6 @@ import {
 } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -70,7 +69,7 @@ function fixture() {
   write(
     'config/providers/fixture.provider.jsonc',
     JSON.stringify({
-      id: testEntityId('usr', 'agent-openrouter'),
+      id: 'agent-openrouter',
       displayName: 'Synthetic local inference supply',
       kind: 'local',
       vendor: 'openai',

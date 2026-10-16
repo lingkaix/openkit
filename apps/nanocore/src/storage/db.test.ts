@@ -1,5 +1,4 @@
 // openkit-test-platform: posix
-
 import { spawnSync } from 'node:child_process';
 import {
   existsSync,
@@ -15,7 +14,6 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
-import { testEntityId } from '../test-support/entity-ids.js';
 import {
   listExistingWorkspaceDatabaseScopes,
   openBootVerifiedWorkspaceDb,
@@ -101,7 +99,7 @@ describe('scoped storage databases', () => {
       ).toBe(false);
       expect(tables).toEqual([
         '__drizzle_migrations',
-        testEntityId('ar', 'artifact_reviews'),
+        'artifact_reviews',
         'audit_events',
         'backend_workspace_handles',
         'capability_calls',
@@ -120,7 +118,7 @@ describe('scoped storage databases', () => {
         'runtime_evidence',
         'staged_workspace_reviews',
         'task_turn_terminal_facts',
-        testEntityId('th', 'thread_material_bindings'),
+        'thread_material_bindings',
         'usage_records',
         'vault_use_records',
         'worker_output_manifests',
@@ -342,7 +340,7 @@ describe('scoped storage databases', () => {
           .map((column) => (column as { name: string }).name)
       ).toEqual([
         'workspace_id',
-        testEntityId('th', 'thread_id'),
+        'thread_id',
         'material_id',
         'binding_state',
         'latest_queued_revision_id',
@@ -474,7 +472,7 @@ describe('scoped storage databases', () => {
       expect(tableColumns(workspaceDb.sqlite, 'steering_terminal_outcomes')).toEqual([]);
       expect(tableColumns(workspaceDb.sqlite, 'goals')).toEqual([
         'goal_id',
-        testEntityId('th', 'thread_id'),
+        'thread_id',
         'payload_json',
       ]);
       expect(tableColumns(workspaceDb.sqlite, 'goal_cards')).toEqual([

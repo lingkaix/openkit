@@ -227,6 +227,7 @@ describe('loadProviderProfiles', () => {
     expect(isEntityId('vault', String(exampleParsed.secretRef).slice('vault://'.length))).toBe(
       true
     );
+    expect(String(exampleParsed.secretRef).startsWith('vault://')).toBe(true);
     const references = [...profiles.map((profile) => profile.secretRef), exampleParsed.secretRef];
     expect(new Set(references).size).toBe(references.length);
     expect(loadProviderProfiles(dataRoot)).toEqual(profiles);

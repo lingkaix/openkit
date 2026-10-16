@@ -266,7 +266,7 @@ function seedCompletedSurface(
     data: {
       delta: `${label} needle content`,
       deltaKind: 'text-delta',
-      itemId: `it_${label}`,
+      itemId: testEntityId('it', `it_${label}`),
       itemType: 'assistant-message',
       type: 'item-delta',
     },
@@ -655,9 +655,7 @@ describe('core Thread audience', () => {
         if (row.headers === admin) {
           if (row.path.endsWith('turn.start')) {
             expect(response.status).toBe(409);
-            expect(await response.json()).toMatchObject({
-              code: testEntityId('th', 'thread_busy'),
-            });
+            expect(await response.json()).toMatchObject({ code: 'thread_busy' });
             row.after();
           } else {
             expect(response.status).toBe(200);

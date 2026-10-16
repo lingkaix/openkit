@@ -133,12 +133,7 @@ describe('workspace derived index rebuild', () => {
         targetId: sourceId,
         resolved: false,
       },
-      {
-        id: testEntityId('ws', 'missing'),
-        reference: `source:${missingId}`,
-        targetId: missingId,
-        resolved: false,
-      },
+      { id: 'missing', reference: `source:${missingId}`, targetId: missingId, resolved: false },
       {
         id: 'missing-pinned',
         reference: `source:${missingId}@${digest}`,
@@ -1435,7 +1430,7 @@ describe('workspace derived index rebuild', () => {
         {
           fromId: 'alpha',
           target: './missing.md',
-          toId: testEntityId('ws', 'missing'),
+          toId: 'missing',
           resolved: false,
         },
       ]),

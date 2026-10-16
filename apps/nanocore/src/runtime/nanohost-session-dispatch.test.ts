@@ -302,18 +302,18 @@ describe('authoritative NanoHost session dispatch', () => {
       });
       await expect(
         live.effect({ kind: 'file.export', requestId: 'c'.repeat(64), input: liveInput })
-      ).rejects.toMatchObject({ code: testEntityId('ar', 'artifact_capture_busy') });
+      ).rejects.toMatchObject({ code: 'artifact_capture_busy' });
       for (const invalid of [{ requestId: refusedId, state: 'refused', reasonCode: 'future' }])
         await expect(live.result(physical, 'file.export', invalid)).rejects.toThrow(/invalid/i);
       await live.result(physical, 'file.export', {
         requestId: refusedId,
         state: 'refused',
-        reasonCode: testEntityId('ar', 'artifact_file_not_regular'),
+        reasonCode: 'artifact_file_not_regular',
         note: 'ignored',
       });
       await expect(refused).resolves.toEqual({
         state: 'refused',
-        reasonCode: testEntityId('ar', 'artifact_file_not_regular'),
+        reasonCode: 'artifact_file_not_regular',
       });
       const absentId = 'c'.repeat(64);
       const absent = live.effect({ kind: 'file.export', requestId: absentId, input: liveInput });
@@ -1241,7 +1241,7 @@ describe('authoritative NanoHost session dispatch', () => {
       ).rejects.toThrow(/physical Epoch changed/i);
       const requestId = 'e'.repeat(64);
       const imageSettlement = {
-        authoredArtifactId: testEntityId('ar', 'artifact_settlement'),
+        authoredArtifactId: 'artifact_settlement',
         authoredArtifactVersion: 1,
         authoredContentDigest: `sha256:${'a'.repeat(64)}`,
         inputDigest: `sha256:${'b'.repeat(64)}`,

@@ -729,7 +729,7 @@ describe('worker transcript import', () => {
         type: 'item.delta',
         data: {
           delta: 'hello',
-          itemId: 'candidate_item_1',
+          itemId: testEntityId('it', 'candidate_item_1'),
         },
       },
     };
@@ -806,7 +806,7 @@ describe('worker transcript import', () => {
         type: 'item.delta',
         data: {
           delta: 'hello',
-          itemId: 'candidate_item_1',
+          itemId: testEntityId('it', 'candidate_item_1'),
         },
       },
     };
@@ -816,7 +816,7 @@ describe('worker transcript import', () => {
         type: 'item.delta',
         data: {
           delta: 'different',
-          itemId: 'candidate_item_1',
+          itemId: testEntityId('it', 'candidate_item_1'),
         },
       },
     };

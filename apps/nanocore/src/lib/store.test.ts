@@ -143,13 +143,17 @@ describe('FsStore persistence', () => {
     store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
     const conversation = store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
-      'Conversation'
+      'Conversation',
+      undefined,
+      'conversation',
+      { visibility: 'private', privateOwnerUserId: LOCAL_ACTOR.id }
     );
     const administration = store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       'Administration',
       'th_00000000-0000-7624-b3fa-287b4af56d2a',
-      'administration'
+      'administration',
+      { visibility: 'private', privateOwnerUserId: LOCAL_ACTOR.id }
     );
 
     expect(conversation.entryPath).toBe('conversation');
@@ -161,7 +165,10 @@ describe('FsStore persistence', () => {
     store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
     const thread = store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
-      'Attribution ownership'
+      'Attribution ownership',
+      undefined,
+      'conversation',
+      { visibility: 'private', privateOwnerUserId: LOCAL_ACTOR.id }
     );
     const turn = store.createTurn(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
@@ -288,7 +295,10 @@ describe('FsStore persistence', () => {
     store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
     const thread = store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
-      'Turn timestamp ownership'
+      'Turn timestamp ownership',
+      undefined,
+      'conversation',
+      { visibility: 'private', privateOwnerUserId: LOCAL_ACTOR.id }
     );
     const beforeDefault = Date.now();
     const defaultTurn = store.createTurn(
@@ -318,7 +328,10 @@ describe('FsStore persistence', () => {
     store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
     const thread = store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
-      'Reserved approval identity'
+      'Reserved approval identity',
+      undefined,
+      'conversation',
+      { visibility: 'private', privateOwnerUserId: LOCAL_ACTOR.id }
     );
     const turn = store.createTurn(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
@@ -436,13 +449,10 @@ describe('FsStore persistence', () => {
       LOCAL_ACTOR
     );
     const currentRequestId = 'artifact-save-revision-lineage';
-    const currentReferenceId = testEntityId(
-      'it',
-      `it_artifact_${createHash('sha256')
-        .update(JSON.stringify([artifact.id, communicatingTurn.id]), 'utf8')
-        .digest('hex')
-        .slice(0, 24)}`
-    );
+    const currentReferenceId = `it_artifact_${createHash('sha256')
+      .update(JSON.stringify([artifact.id, communicatingTurn.id]), 'utf8')
+      .digest('hex')
+      .slice(0, 24)}`;
     const currentReference = {
       id: currentReferenceId,
       workspaceId: workspace.id,
@@ -617,7 +627,7 @@ describe('FsStore persistence', () => {
     } catch (caught) {
       error = caught;
     }
-    expect(error).toMatchObject({ code: testEntityId('th', 'thread_busy'), status: 409 });
+    expect(error).toMatchObject({ code: 'thread_busy', status: 409 });
     expect(store.listThreadTurns(workspace.id, busyThread.id)).toHaveLength(1);
 
     const firstIntroduction = store.introduceArtifact(firstInput);

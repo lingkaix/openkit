@@ -359,7 +359,7 @@ describe('Worker environment operations', () => {
       message: 'Worker environment was not found.',
     };
 
-    for (const threadId of [testEntityId('th', 'thread_missing'), foreign.id, inaccessible.id]) {
+    for (const threadId of ['thread_missing', foreign.id, inaccessible.id]) {
       expect(() =>
         fixture.operations.select(context, {
           adjudicatedThreadIds: [],
@@ -436,7 +436,7 @@ describe('Worker environment operations', () => {
     );
     fixture.coreDb.sqlite
       .prepare('UPDATE worker_storage_contributors SET thread_id = ? WHERE storage_ref = ?')
-      .run(testEntityId('th', 'thread_private_source'), fixture.binding.storageRef);
+      .run('thread_private_source', fixture.binding.storageRef);
 
     expect(fixture.operations.list(context, { limit: 50 })).toEqual({
       items: [],

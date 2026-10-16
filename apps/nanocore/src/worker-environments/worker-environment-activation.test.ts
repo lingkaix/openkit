@@ -115,7 +115,8 @@ function createBaseFixture(): BaseFixture {
     privateWorkspace.id,
     'Administration',
     testEntityId('th', 'thread_administration'),
-    'administration'
+    'administration',
+    { visibility: 'private', privateOwnerUserId: ACTOR.userId }
   );
   return {
     administrationThreadId: administrationThread.id,
@@ -337,7 +338,7 @@ describe('Worker environment activation', () => {
     await expect(
       activation.activate({ actor: ACTOR }, activationRequest(pair))
     ).rejects.toMatchObject({
-      code: testEntityId('th', 'thread_busy'),
+      code: 'thread_busy',
     });
     expect(inspectImage).toHaveBeenCalledTimes(phase === 'before-inspection' ? 0 : 1);
     expect(
@@ -799,7 +800,7 @@ function createResidentFixture(): ResidentFixture {
     )
     .run('a'.repeat(64), NOW);
   const created = createWorkerStorageBinding(fixture.coreDb, {
-    deploymentId: testEntityId('dep', 'deployment_activation'),
+    deploymentId: 'deployment_activation',
     layout: LAYOUT,
     now: NOW,
     runtimeTargetId: 'target_activation',

@@ -658,7 +658,7 @@ describe('Assistant pending input', () => {
         agentManifests: [setup.manifest],
         providerRegistry: new ProviderRegistry([
           {
-            id: testEntityId('usr', 'agent-openrouter'),
+            id: 'agent-openrouter',
             displayName: 'Fixture',
             kind: 'local',
             models: ['openai/gpt-5.2'],
@@ -1558,7 +1558,7 @@ describe('mode command failure diagnostics', () => {
           gatewayConfig: createTestGatewayConfig(),
           providerRegistry: new ProviderRegistry([
             {
-              id: testEntityId('usr', 'agent-openrouter'),
+              id: 'agent-openrouter',
               displayName: 'Test provider',
               kind: 'local',
               defaultModel: 'openai/gpt-5.2',
@@ -1936,7 +1936,7 @@ it('publishes resolver effort levels, empty controls, and absent controls in the
   setup.manifest.models.allowedLogicalModelIds = models;
   const providerRegistry = new ProviderRegistry([
     {
-      id: testEntityId('usr', 'agent-openrouter'),
+      id: 'agent-openrouter',
       kind: 'local',
       displayName: 'Catalog fixture',
       models,
@@ -1962,9 +1962,7 @@ it('publishes resolver effort levels, empty controls, and absent controls in the
         ...base.logicalModels[0]!,
         id,
         displayName: id,
-        routes: [
-          { id, providerProfileId: testEntityId('usr', 'agent-openrouter'), providerModel: id },
-        ],
+        routes: [{ id, providerProfileId: 'agent-openrouter', providerModel: id }],
       })),
     },
     agentManifests: [setup.manifest],
@@ -2289,7 +2287,7 @@ describe('Task durable admission response', () => {
           agentManifests: [setup.manifest],
           providerRegistry: new ProviderRegistry([
             {
-              id: testEntityId('usr', 'agent-openrouter'),
+              id: 'agent-openrouter',
               displayName: 'Fixture',
               kind: 'local',
               models: ['openai/gpt-5.2'],
@@ -2650,7 +2648,7 @@ describe('Task terminal replay closeout ownership', () => {
           agentManifests: [setup.manifest],
           providerRegistry: new ProviderRegistry([
             {
-              id: testEntityId('usr', 'agent-openrouter'),
+              id: 'agent-openrouter',
               displayName: 'Fixture',
               kind: 'local',
               models: ['openai/gpt-5.2'],
@@ -3030,7 +3028,7 @@ describe('exact Task Agent selection', () => {
         },
         providerRegistry: new ProviderRegistry([
           {
-            id: testEntityId('usr', 'agent-openrouter'),
+            id: 'agent-openrouter',
             displayName: 'Healthy local Provider',
             kind: 'local',
             models: [healthyModelId],
@@ -3110,7 +3108,7 @@ describe('exact Task Agent selection', () => {
         },
         providerRegistry: new ProviderRegistry([
           {
-            id: testEntityId('usr', 'agent-openrouter'),
+            id: 'agent-openrouter',
             displayName: 'Healthy local Provider',
             kind: 'local',
             models: [healthyModelId],
@@ -3404,7 +3402,7 @@ describe('route B queued Task receipts', () => {
         agentManifests: [setup.manifest],
         providerRegistry: new ProviderRegistry([
           {
-            id: testEntityId('usr', 'agent-openrouter'),
+            id: 'agent-openrouter',
             displayName: 'Fixture',
             kind: 'local',
             models: ['openai/gpt-5.2'],
@@ -4008,7 +4006,7 @@ function assistantWiringFixture(
       gatewayConfig: createTestGatewayConfig(),
       providerRegistry: new ProviderRegistry([
         {
-          id: testEntityId('usr', 'agent-openrouter'),
+          id: 'agent-openrouter',
           displayName: 'Entry Provider',
           kind: 'local',
           defaultModel: 'openai/gpt-5.2',
@@ -4421,7 +4419,7 @@ describe('#144 real Assistant command wiring', () => {
             threadId: f.thread.id,
             turnId: original.turn.id,
             responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
-            providerRef: testEntityId('usr', 'agent-openrouter'),
+            providerRef: 'agent-openrouter',
           }),
         ]);
         expect(

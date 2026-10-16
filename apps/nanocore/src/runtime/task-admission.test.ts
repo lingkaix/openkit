@@ -98,7 +98,7 @@ it.each([
           workspaceId: entry.workspaceId,
         });
         throw new TurnStartValidationError(
-          testEntityId('tu', 'turn_cancelled'),
+          'turn_cancelled',
           'Task request cancelled before product acceptance.',
           409
         );
@@ -204,7 +204,7 @@ it.each([
           gatewayConfig: createTestGatewayConfig(),
           providerRegistry: new ProviderRegistry([
             {
-              id: testEntityId('usr', 'agent-openrouter'),
+              id: 'agent-openrouter',
               displayName: 'Fixture',
               kind: 'local',
               defaultModel: 'openai/gpt-5.2',
@@ -443,7 +443,7 @@ it.each([
           outcome === 'recovery-required-refusal'
             ? 'recovery_required'
             : outcome === 'cancelled'
-              ? testEntityId('tu', 'turn_cancelled')
+              ? 'turn_cancelled'
               : 'scheduler_admission_denied',
       });
       // Retained pre-fix timestamps remain usable data but cannot prove a Turn was admitted.

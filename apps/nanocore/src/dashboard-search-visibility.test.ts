@@ -381,9 +381,7 @@ describe('dashboard and search Thread audiences', () => {
             )
           );
           expect(attached.status, await attached.clone().text()).toBe(409);
-          expect(await attached.json()).toMatchObject({
-            code: testEntityId('ar', 'artifact_not_found'),
-          });
+          expect(await attached.json()).toMatchObject({ code: 'artifact_not_found' });
           expect(store.listThreadTurns(workspace.id, receiving.id)).toEqual([]);
           const source = store.getArtifact(workspace.id, ownArtifactId);
           store.createArtifact({
@@ -424,9 +422,7 @@ describe('dashboard and search Thread audiences', () => {
             )
           );
           expect(introduced.status).toBe(409);
-          expect(await introduced.json()).toMatchObject({
-            code: testEntityId('th', 'thread_busy'),
-          });
+          expect(await introduced.json()).toMatchObject({ code: 'thread_busy' });
         }
         exposeUnavailableAudience = true;
         const search = await app.request(

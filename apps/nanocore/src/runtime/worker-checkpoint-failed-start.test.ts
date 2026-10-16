@@ -11,7 +11,6 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
@@ -543,8 +542,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
         const failure = vi
           .spyOn(f.store, 'updateItem')
           .mockImplementation((id, patch, authority) => {
-            if (id === testEntityId('it', `it_worker_result_${f.turnId}`))
-              throw new Error('Partial Item write.');
+            if (id === `it_worker_result_${f.turnId}`) throw new Error('Partial Item write.');
             return update(id, patch, authority);
           });
         await expect(f.classify()).rejects.toThrow('Partial Item write.');
@@ -862,9 +860,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
           );
           return {
             ...turn,
-            items: turn.items.filter(
-              (item) => item.id !== testEntityId('it', `it_worker_result_${id}`)
-            ),
+            items: turn.items.filter((item) => item.id !== `it_worker_result_${id}`),
           };
         });
       const files = retainedFileBytes(f.dataRoot);

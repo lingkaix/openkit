@@ -208,7 +208,7 @@ function seedRetainedWork(f: Awaited<ReturnType<typeof fixture>>) {
     updatedAt: timestamp,
   });
   // A later revision changes bytes but not the number of current canonical Items.
-  f.store.updateItem(testEntityId('it', 'it_caller_0'), { text: 'Revised private-content' });
+  f.store.updateItem('it_caller_0', { text: 'Revised private-content' });
 }
 
 /** Returns a real Core Client over the App's actual JSON and authentication boundaries. */
@@ -309,9 +309,7 @@ describe('caller operation projections', () => {
     });
     expect(Number.isFinite(Date.parse(session.workspace.observedAt))).toBe(true);
     expect(JSON.stringify(session)).not.toMatch(/private-content|Other private|caller@example/);
-    expect(itemReads.mock.calls.map(([, threadId]) => threadId)).not.toContain(
-      testEntityId('th', 'th_other')
-    );
+    expect(itemReads.mock.calls.map(([, threadId]) => threadId)).not.toContain('th_other');
     const admin = f.token();
     const client = clientFor(f, { authorization: `Bearer ${admin.secret}` });
     const read = Reflect.get(client.operations, 'caller.read');
@@ -561,7 +559,7 @@ describe('caller operation projections', () => {
     const threads = vi.spyOn(f.store, 'listThreads');
     const artifacts = vi.spyOn(f.store, 'listArtifacts');
     const bodies = [];
-    for (const id of [testEntityId('ws', 'ws_absent'), f.foreign.id]) {
+    for (const id of ['ws_absent', f.foreign.id]) {
       const response = await f.post(
         'caller.read',
         { workspaceId: id },

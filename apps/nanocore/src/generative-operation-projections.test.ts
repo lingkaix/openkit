@@ -47,7 +47,11 @@ const publish = {
   title: 'Proof',
   fallbackText: 'Proof',
   messages: [{}, {}],
-  source: { kind: 'item', itemId: 'missing-item', contentDigest: `sha256:${'0'.repeat(64)}` },
+  source: {
+    kind: 'item',
+    itemId: testEntityId('it', 'missing-item'),
+    contentDigest: `sha256:${'0'.repeat(64)}`,
+  },
   actions: [],
 };
 const base = '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001';
