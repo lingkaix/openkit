@@ -17,10 +17,11 @@ const digest = (bytes: Uint8Array) => `sha256:${createHash('sha256').update(byte
 function fixture(bytes = Buffer.from('界'.repeat(40_000))) {
   const workspaceRoot = mkdtempSync(join(tmpdir(), 'worker-source-read-'));
   roots.push(workspaceRoot);
-  const originalSnapshotPath = 'originals/artifacts/ar_selected/1/payload';
+  const originalSnapshotPath =
+    'originals/artifacts/ar_00000000-0000-7000-8000-0000000003ea/1/payload';
   const path = join(
     workspaceRoot,
-    'threads/th_selected/turns/tu_selected/context-package',
+    'threads/th_00000000-0000-7000-8000-0000000003f9/turns/tu_00000000-0000-7000-8000-0000000003fe/context-package',
     originalSnapshotPath
   );
   mkdirSync(dirname(path), { recursive: true });
@@ -28,14 +29,17 @@ function fixture(bytes = Buffer.from('界'.repeat(40_000))) {
   const source: WorkerContextPackageSourceFile = {
     source: {
       kind: 'artifact',
-      reference: { scopeId: 'artifact/workspace/ws_selected', objectId: 'ar_selected' },
+      reference: {
+        scopeId: 'artifact/workspace/ws_00000000-0000-7000-8000-000000000403',
+        objectId: 'ar_00000000-0000-7000-8000-0000000003ea',
+      },
       artifactVersion: 1,
     },
     originalDigest: digest(bytes),
     byteLength: bytes.length,
     mediaType: 'text/plain',
     originalSnapshotPath,
-    packagePath: 'sources/artifacts/ar_selected/1.txt',
+    packagePath: 'sources/artifacts/ar_00000000-0000-7000-8000-0000000003ea/1.txt',
     projection: {
       kind: 'excerpt',
       sourceRevision: '1',
@@ -55,7 +59,13 @@ function fixture(bytes = Buffer.from('界'.repeat(40_000))) {
     source,
     path,
     bytes,
-    input: { workspaceRoot, threadId: 'th_selected', turnId: 'tu_selected', source, assertCurrent },
+    input: {
+      workspaceRoot,
+      threadId: 'th_00000000-0000-7000-8000-0000000003f9',
+      turnId: 'tu_00000000-0000-7000-8000-0000000003fe',
+      source,
+      assertCurrent,
+    },
   };
 }
 
@@ -87,7 +97,8 @@ it('reads an exact retained UTF-8 snapshot through preview, range continuation a
 it('reads the retained PDF representation and preserves incomplete page coverage rather than decoding its binary original', async () => {
   const f = fixture(Buffer.from([0, 255, 128]));
   const text = Buffer.from('Page one\n\f');
-  const relative = 'representations/artifacts/ar_selected/1/pdf-text-layer.txt';
+  const relative =
+    'representations/artifacts/ar_00000000-0000-7000-8000-0000000003ea/1/pdf-text-layer.txt';
   const packageRoot = f.path.slice(0, -f.source.originalSnapshotPath.length);
   mkdirSync(dirname(join(packageRoot, relative)), { recursive: true });
   writeFileSync(join(packageRoot, relative), text);

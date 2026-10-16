@@ -46,7 +46,8 @@ function digest(bytes: Uint8Array): string {
 function inline(bytes: Buffer, identity: Partial<SourceViewIdentity> = {}) {
   return {
     identity: {
-      sourceKey: 'artifact:ws_fixture/ar_source@1',
+      sourceKey:
+        'artifact:ws_00000000-0000-7000-8000-000000000401/ar_00000000-0000-7000-8000-0000000003eb@1',
       revision: 'revision-1',
       originalDigest: digest(bytes),
       representationId: 'original-utf8',

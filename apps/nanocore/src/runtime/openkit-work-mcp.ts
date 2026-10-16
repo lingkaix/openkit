@@ -4,9 +4,9 @@ import { ListThreadItemsResponseSchema } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
   ArtifactMediaTypeSchema,
+  deriveEntityId,
   isSealedTurnTerminal,
   MAX_ARTIFACT_FILE_BYTES,
-  deriveEntityId,
   MaterialIdSchema,
   ProductTurnSchema,
   RequestIdSchema,

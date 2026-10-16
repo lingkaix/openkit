@@ -135,21 +135,29 @@ describe('scope-qualified reference contract', () => {
 it('resolves exact file scopes without treating versions or input ordinals as new entity ids', () => {
   for (const [scopeId, expected] of [
     [
-      'artifact/workspace/ws_current',
-      { family: 'artifact', kind: 'workspace', workspaceId: 'ws_current' },
+      'artifact/workspace/ws_00000000-0000-7075-8a5a-74c8c6e85b6e',
+      {
+        family: 'artifact',
+        kind: 'workspace',
+        workspaceId: 'ws_00000000-0000-7075-8a5a-74c8c6e85b6e',
+      },
     ],
     [
-      'material/workspace/ws_current',
-      { family: 'material', kind: 'workspace', workspaceId: 'ws_current' },
+      'material/workspace/ws_00000000-0000-7075-8a5a-74c8c6e85b6e',
+      {
+        family: 'material',
+        kind: 'workspace',
+        workspaceId: 'ws_00000000-0000-7075-8a5a-74c8c6e85b6e',
+      },
     ],
     [
-      'input/turn/ws_current/th_current/tu_current',
+      'input/turn/ws_00000000-0000-7075-8a5a-74c8c6e85b6e/th_00000000-0000-7d53-83f1-7e7cac9ae169/tu_00000000-0000-7000-8000-0000000003fc',
       {
         family: 'input',
         kind: 'turn',
-        workspaceId: 'ws_current',
-        threadId: 'th_current',
-        turnId: 'tu_current',
+        workspaceId: 'ws_00000000-0000-7075-8a5a-74c8c6e85b6e',
+        threadId: 'th_00000000-0000-7d53-83f1-7e7cac9ae169',
+        turnId: 'tu_00000000-0000-7000-8000-0000000003fc',
       },
     ],
   ] as const) {
@@ -157,23 +165,28 @@ it('resolves exact file scopes without treating versions or input ordinals as ne
     expect(
       ScopeQualifiedReferenceSchema.safeParse({
         scopeId,
-        objectId: scopeId.startsWith('input/') ? '0' : 'opaque-current-id',
+        objectId: scopeId.startsWith('input/')
+          ? '0'
+          : scopeId.startsWith('artifact/')
+            ? 'ar_00000000-0000-7000-8000-0000000007d4'
+            : 'mat_00000000-0000-7000-8000-0000000007d5',
       }).success
     ).toBe(true);
   }
   for (const scopeId of [
     'artifact/server',
-    'artifact/workspace/th_current',
-    'material/workspace/ws_current/extra',
-    'input/thread/ws_current/th_current',
-    'input/turn/ws_current/th_current/th_current',
+    'artifact/workspace/th_00000000-0000-7d53-83f1-7e7cac9ae169',
+    'material/workspace/ws_00000000-0000-7075-8a5a-74c8c6e85b6e/extra',
+    'input/thread/ws_00000000-0000-7075-8a5a-74c8c6e85b6e/th_00000000-0000-7d53-83f1-7e7cac9ae169',
+    'input/turn/ws_00000000-0000-7075-8a5a-74c8c6e85b6e/th_00000000-0000-7d53-83f1-7e7cac9ae169/th_00000000-0000-7d53-83f1-7e7cac9ae169',
   ]) {
     expect(parseReferenceScope(scopeId)).toBeNull();
   }
   for (const objectId of ['', '-1', '+1', '01', '1.0', '1e2', '0/1', '9007199254740992']) {
     expect(
       ScopeQualifiedReferenceSchema.safeParse({
-        scopeId: 'input/turn/ws_current/th_current/tu_current',
+        scopeId:
+          'input/turn/ws_00000000-0000-7075-8a5a-74c8c6e85b6e/th_00000000-0000-7d53-83f1-7e7cac9ae169/tu_00000000-0000-7000-8000-0000000003fc',
         objectId,
       }).success
     ).toBe(false);
@@ -181,7 +194,7 @@ it('resolves exact file scopes without treating versions or input ordinals as ne
   for (const family of ['artifact', 'material']) {
     expect(
       ScopeQualifiedReferenceSchema.safeParse({
-        scopeId: `${family}/workspace/ws_current`,
+        scopeId: `${family}/workspace/ws_00000000-0000-7075-8a5a-74c8c6e85b6e`,
         objectId: 'a/b',
       }).success
     ).toBe(false);

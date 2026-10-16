@@ -172,8 +172,7 @@ describe('Artifact binary client bindings', () => {
   it('validates the accepted import response instead of inventing a usable version', async () => {
     const client = createCoreClient({
       baseUrl: 'http://127.0.0.1',
-      fetch: async () =>
-        Response.json({ artifactId, artifactVersion: 2 }, { status: 201 }),
+      fetch: async () => Response.json({ artifactId, artifactVersion: 2 }, { status: 201 }),
     });
     await expect(client.artifactFiles.import(metadata, bytes)).rejects.toBeInstanceOf(
       ProtocolValidationError

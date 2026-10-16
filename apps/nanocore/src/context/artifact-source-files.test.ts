@@ -47,7 +47,7 @@ async function fixture(
   body: Buffer,
   format: 'file' | 'text' | 'markdown' | 'json' = 'file',
   mediaType = 'text/plain',
-  artifactId = 'ar_selected'
+  artifactId = 'ar_00000000-0000-7000-8000-0000000003ea'
 ) {
   const root = mkdtempSync(join(tmpdir(), 'artifact-source-files-'));
   roots.push(root);
@@ -78,7 +78,7 @@ async function fixture(
       sourceKind: 'direct-import',
       sourceId: requestId,
       sourceDigest: digest,
-      actor: { kind: 'user', id: 'user_local' },
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       requestId,
       recordedAt: '2026-10-17T00:00:00.000Z',
     },
@@ -142,8 +142,12 @@ it('prepares a bounded preview and exact streamed original larger than the inlin
   expect(sources).toHaveLength(1);
   const source = sources[0]!;
   expect(source.originalDigest).toBe(expected);
-  expect(source.originalSnapshotPath).toBe('originals/artifacts/ar_selected/1/payload');
-  expect(source.packagePath).toBe('sources/artifacts/ar_selected/1.txt');
+  expect(source.originalSnapshotPath).toBe(
+    'originals/artifacts/ar_00000000-0000-7000-8000-0000000003ea/1/payload'
+  );
+  expect(source.packagePath).toBe(
+    'sources/artifacts/ar_00000000-0000-7000-8000-0000000003ea/1.txt'
+  );
   expect(source.deliveredBytes).toEqual(original.subarray(0, 2048));
   expect(source.projection).toMatchObject({
     representationId: 'original-utf8',
@@ -220,7 +224,10 @@ it.each([
     });
   const files = packageFor(f, [source!]);
   await writeWorkerContextPackageFiles(f.workspaceRoot, files, { admission: f.admission });
-  const snapshot = join(f.workspaceRoot, 'threads/th_source/turns/tu_source/context-package');
+  const snapshot = join(
+    f.workspaceRoot,
+    'threads/th_00000000-0000-7000-8000-0000000003fa/turns/tu_00000000-0000-7000-8000-0000000003ff/context-package'
+  );
   expect(readFileSync(join(snapshot, source!.originalSnapshotPath))).toEqual(body);
   expect(readFileSync(join(snapshot, source!.packagePath))).toEqual(source!.deliveredBytes);
 });
@@ -232,11 +239,11 @@ function packageFor(
 ) {
   return createWorkerContextPackageFiles({
     workspaceId: f.artifact.workspaceId,
-    threadId: 'th_source',
-    turnId: 'tu_source',
-    workerRequestItemId: 'it_source',
+    threadId: 'th_00000000-0000-7000-8000-0000000003fa',
+    turnId: 'tu_00000000-0000-7000-8000-0000000003ff',
+    workerRequestItemId: 'it_00000000-0000-7000-8000-0000000003ef',
     workerRequestBytes: 'Inspect selected originals',
-    includedItemIds: ['it_source'],
+    includedItemIds: ['it_00000000-0000-7000-8000-0000000003ef'],
     contextBudgetTokens: 4096,
     materialSelections: [],
     sourceFiles,
@@ -349,7 +356,9 @@ it('captures nested metadata before callbacks can mutate caller-owned input', as
   });
   expect(source!.source).toMatchObject({ artifactVersion: 1 });
   expect(source!.byteLength).toBe(f.body.length);
-  expect(source!.originalSnapshotPath).toBe('originals/artifacts/ar_selected/1/payload');
+  expect(source!.originalSnapshotPath).toBe(
+    'originals/artifacts/ar_00000000-0000-7000-8000-0000000003ea/1/payload'
+  );
   await source!.assertUnchanged();
 });
 
@@ -528,11 +537,14 @@ it('retains a selected PDF original and complete isolated text representation wh
   expect(source!.projection.kind).toBe('excerpt');
   expect(source!.projection.representationId).toMatch(/^pdf-text-layer-v1:sha256:/);
   expect(source!.projection.representationSnapshotPath).toBe(
-    'representations/artifacts/ar_selected/1/pdf-text-layer.txt'
+    'representations/artifacts/ar_00000000-0000-7000-8000-0000000003ea/1/pdf-text-layer.txt'
   );
   const files = packageFor(f, [source!]);
   await writeWorkerContextPackageFiles(f.workspaceRoot, files, { admission: f.admission });
-  const root = join(f.workspaceRoot, 'threads/th_source/turns/tu_source/context-package');
+  const root = join(
+    f.workspaceRoot,
+    'threads/th_00000000-0000-7000-8000-0000000003fa/turns/tu_00000000-0000-7000-8000-0000000003ff/context-package'
+  );
   expect(readFileSync(join(root, source!.originalSnapshotPath))).toEqual(original);
   const complete = readFileSync(join(root, source!.projection.representationSnapshotPath!));
   const expected = [1, 2]
@@ -593,7 +605,10 @@ it('retains a selected encrypted PDF original with only an unavailable descripto
   expect(source!).not.toHaveProperty('openRepresentation');
   const files = packageFor(f, [source!]);
   await writeWorkerContextPackageFiles(f.workspaceRoot, files, { admission: f.admission });
-  const root = join(f.workspaceRoot, 'threads/th_source/turns/tu_source/context-package');
+  const root = join(
+    f.workspaceRoot,
+    'threads/th_00000000-0000-7000-8000-0000000003fa/turns/tu_00000000-0000-7000-8000-0000000003ff/context-package'
+  );
   expect(readFileSync(join(root, source!.originalSnapshotPath))).toEqual(original);
   expect(files.fileInventory.some((file) => file.path.startsWith('representations/'))).toBe(false);
 });

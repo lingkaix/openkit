@@ -5959,7 +5959,7 @@ describe('nanocore server', () => {
     const start = vi.spyOn(executor, 'startTurn');
     const brief = 'Implement the selected report findings.';
     const artifact = createImportedMarkdownArtifact(store, {
-      id: 'ar_worker_snapshot_original',
+      id: 'ar_00000000-0000-7000-8000-0000000007d2',
       title: 'Selected report',
       body: 'Selected report text. '.repeat(300),
       requestId: 'worker-snapshot-report',
@@ -5969,7 +5969,10 @@ describe('nanocore server', () => {
       const response = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             headers: jsonHeaders(),

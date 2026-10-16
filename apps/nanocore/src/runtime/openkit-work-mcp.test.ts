@@ -6,7 +6,6 @@ import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { decideArtifactReview, getArtifactReview } from '../artifact-reviews.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { prepareArtifactSourceInputs } from '../context/artifact-source-files.js';
 import * as visionOwner from '../context/vision-view.js';
@@ -21,8 +20,8 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { createPdfFixture } from '../test-support/pdf-fixture.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -116,7 +115,11 @@ function submissionFixture() {
     const artifact = store.getArtifact('ws_00000000-0000-7000-8000-000000000001', id);
     expect(artifact.content.format).toBe('file');
     return readFileSync(
-      artifactFilePayloadPath(join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001'), id, artifact.version)
+      artifactFilePayloadPath(
+        join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001'),
+        id,
+        artifact.version
+      )
     );
   };
   const submit = (requestId = 'req_file_1', overrides: Record<string, unknown> = {}) =>
@@ -780,31 +783,37 @@ async function sourceToolFixture(bytes: Buffer, mediaType: string) {
   ensureLocalUser(fixture.coreDb);
   recordWorkspaceOwnerMembership({
     coreDb: fixture.coreDb,
-    ownerUserId: 'user_local',
-    workspaceId: 'ws_demo',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   fixture.captureArtifact.mockResolvedValue({
     bytes: Buffer.from(bytes),
     credentialCheckValues: fixture.credentialCheckValues,
   });
   const artifactId = acknowledgedArtifactId(await fixture.submit('req_source_tool', { mediaType }));
-  const artifact = fixture.store.getArtifact('ws_demo', artifactId);
-  const workspaceRoot = join(fixture.dataRoot, 'workspaces', 'ws_demo');
+  const artifact = fixture.store.getArtifact('ws_00000000-0000-7000-8000-000000000001', artifactId);
+  const workspaceRoot = join(
+    fixture.dataRoot,
+    'workspaces',
+    'ws_00000000-0000-7000-8000-000000000001'
+  );
   const sourceFiles = await prepareArtifactSourceInputs({
     workspaceRoot,
     artifacts: [artifact],
     admission: fixture.fileAdmission,
     assertCurrent: (selected) => {
-      expect(selected).toEqual(fixture.store.getArtifact('ws_demo', artifactId));
+      expect(selected).toEqual(
+        fixture.store.getArtifact('ws_00000000-0000-7000-8000-000000000001', artifactId)
+      );
     },
   });
   const files = packageOwner.createWorkerContextPackageFiles({
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
     turnId: fixture.turn.id,
-    workerRequestItemId: 'it_source_tools',
+    workerRequestItemId: 'it_00000000-0000-7000-8000-0000000003f0',
     workerRequestBytes: 'Inspect selected sources',
-    includedItemIds: ['it_source_tools'],
+    includedItemIds: ['it_00000000-0000-7000-8000-0000000003f0'],
     contextBudgetTokens: 4096,
     materialSelections: [],
     sourceFiles,
@@ -868,7 +877,7 @@ it('reads retained bytes through the real dispatcher and withholds them after cu
   expect(JSON.stringify(unselected)).not.toContain('Finished report');
   expect(proof).toHaveBeenCalledTimes(2);
   fixture.coreDb.sqlite.transaction(() => {
-    disableCanonicalUser(fixture.coreDb, 'user_local');
+    disableCanonicalUser(fixture.coreDb, 'usr_00000000-0000-7000-8000-000000000001');
   })();
   const denied = await dispatchOpenkitWorkTool(fixture.input, 'work_read_source', {
     path: packagePath,
@@ -949,7 +958,9 @@ it.skipIf(process.platform !== 'linux')(
       .spyOn(visionOwner, 'processVisionView')
       .mockImplementationOnce(async (input) => {
         const value = await actual(input);
-        f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, 'user_local'))();
+        f.coreDb.sqlite.transaction(() =>
+          disableCanonicalUser(f.coreDb, 'usr_00000000-0000-7000-8000-000000000001')
+        )();
         return value;
       });
     onTestFinished(() => changed.mockRestore());

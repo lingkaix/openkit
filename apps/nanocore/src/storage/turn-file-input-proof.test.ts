@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
-import { LOCAL_USER_ID } from './fs-layout.js';
 import {
   turnFilePayloadPath,
   verifyTurnFileInput,

@@ -66,7 +66,7 @@ import { createWorkspaceOperationImplementations } from './workspace-operation-i
 import { createWorkspaceSharingOperationImplementations } from './workspace-sharing-operations.js';
 /** Existing process and record owners used by native invocation. */
 export interface OperationInvocationDependencies {
-  /** App-owned capacity admission, shared by Artifact and Workspace file transfers. */
+  /** App-owned capacity admission, shared by Artifact, ZIP and Workspace file transfers. */
   readonly fileAdmission?: FileStorageAdmission;
   readonly coreDb: CoreDb | undefined;
   /** Current process and configuration owners for admitted product diagnostics. */
@@ -141,8 +141,6 @@ export interface OperationInvocationDependencies {
     Partial<OpenKitNanoHostConfig>;
   /** Trusted deployment storage path and process-local transport fencing owner. */
   readonly dataRoot?: string | null;
-  /** Shared canonical capacity owner used by disposable ZIP extraction. */
-  readonly fileAdmission?: import('./storage/artifacts/file-admission.js').FileStorageAdmission;
   readonly nanoHostSessionAuthority?: NanoHostTransportSessionAuthority;
 }
 /** Supplies only executable bindings, with no repeated declarative contract facts. */
