@@ -27,16 +27,22 @@ import {
   parseResourceCatalogDocument,
   type ResourceCatalogDocument,
   ResourceCatalogDocumentViewSchema,
+  ResourceCatalogIdSchema,
   type SkillCandidateRecord,
+  SkillCandidateRecordSchema,
+  SkillEntryRecordSchema,
   type SkillVersionRecord,
+  SkillVersionRecordSchema,
   type WorkspaceMcpServer,
   type WorkspaceMcpServerCatalog,
   WorkspaceMcpServerSchema,
 } from '@openkit/config-schema';
+import { parseDocument } from 'yaml';
 import type { ZodError } from 'zod';
 
 import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
 import {
+  assertCanonicalDirectory,
   ensureCanonicalDirectory,
   publishCanonicalPath,
   syncCanonicalDirectory,
@@ -80,6 +86,14 @@ export class CatalogNotFoundError extends Error {
   }
 }
 
+/** Metadata remains retained but its exact installed payload is unavailable. */
+export class CatalogContentUnavailableError extends CatalogNotFoundError {
+  public constructor(message: string) {
+    super(message);
+    this.name = 'CatalogContentUnavailableError';
+  }
+}
+
 /** Catalog authority is missing or contradictory after publication. */
 export class CatalogIntegrityError extends Error {
   public constructor(message: string) {
@@ -95,6 +109,17 @@ export class CatalogForbiddenError extends Error {
     this.name = 'CatalogForbiddenError';
   }
 }
+
+/** Exact reference causes that prevent physical Skill content deletion. */
+export class CatalogRetentionError extends Error {
+  public constructor(public readonly references: readonly string[]) {
+    super(`Skill content is retained: ${references.join(', ')}`);
+    this.name = 'CatalogRetentionError';
+  }
+}
+
+/** Authenticated decision lineage supplied by the existing Audit owner before publication. */
+export type SkillCandidateDecisionContext = NonNullable<SkillCandidateRecord['decision']>;
 
 /** One API-submitted tree entry. */
 export interface CatalogTreeFile {
@@ -164,6 +189,7 @@ export function publishWorkspaceResourceCatalog(input: {
 
 /**
  * Imports one Skill directory as an inactive-or-current version depending on create semantics.
+ * Reuses immutable metadata for identical bytes; provenance describes only the first admission.
  *
  * @param input Workspace, identity, and tree.
  * @returns Updated catalog and version.
@@ -171,44 +197,69 @@ export function publishWorkspaceResourceCatalog(input: {
 export function importWorkspaceSkill(input: {
   readonly activate: boolean;
   readonly baseCatalog?: ResourceCatalogDocument;
+  readonly baseDigest?: string | null;
   readonly createdAt: string;
   readonly dataRoot: string;
   readonly displayName: string;
   readonly expectedRevision: number;
   readonly id?: string;
   readonly persist?: boolean;
+  readonly pluginMemberKey?: string | null;
+  readonly pluginVersionDigest?: string | null;
   readonly producer: CatalogProducer;
+  readonly sourceSubpath?: string | null;
+  readonly uploadedSourceId?: string | null;
   readonly tree: readonly CatalogTreeFile[];
   readonly workspaceId: string;
 }): { catalog: ResourceCatalogDocument; version: SkillVersionRecord } {
   const current =
     input.baseCatalog ?? readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
-  const entries = treeFilesToEntries(input.tree);
-  const digest = hashOpenKitTreeEntries(entries);
-  const id = input.id ?? skillIdFromDisplayName(input.displayName);
-  const layout = ensureWorkspaceLayout(input.dataRoot, input.workspaceId);
-  materializeSnapshot(
-    join(layout.catalogSkillSnapshots, id, digest.slice('sha256:'.length)),
-    entries
+  if (current.revision !== input.expectedRevision) throw new CatalogConflictError();
+  SkillEntryRecordSchema.shape.displayName.parse(input.displayName);
+  const { entries, digest } = validateCatalogTree(input.tree);
+  validateSkillTree(
+    entries,
+    input.pluginMemberKey?.startsWith('skills/')
+      ? input.pluginMemberKey.slice('skills/'.length)
+      : undefined
   );
-  const version: SkillVersionRecord = {
-    createdAt: input.createdAt,
-    digest,
-    digestFormat: 'openkit-tree-v1',
-    entryId: id,
-    inventory: inventoryFromEntries(entries),
-    producer: input.producer,
-    provenance: {
-      baseDigest: null,
-      pluginMemberKey: null,
-      pluginVersionDigest: null,
-      sourceCommit: null,
-      sourceSubpath: null,
-      uploadedSourceId: null,
-    },
-    publisherVersion: null,
-  };
+  const id = ResourceCatalogIdSchema.parse(input.id ?? skillIdFromDisplayName(input.displayName));
   const existing = current.skills.entries.find((entry) => entry.id === id);
+  if (existing?.availability === 'removed') throw new CatalogNotFoundError(`Skill removed: ${id}`);
+  if (
+    input.baseDigest &&
+    !current.skills.versions.some((item) => item.entryId === id && item.digest === input.baseDigest)
+  ) {
+    throw new CatalogNotFoundError(`Skill base version not found: ${input.baseDigest}`);
+  }
+  const layout = ensureWorkspaceLayout(input.dataRoot, input.workspaceId);
+  const retainedVersion = current.skills.versions.find(
+    (item) => item.entryId === id && item.digest === digest
+  );
+  const version: SkillVersionRecord = retainedVersion
+    ? { ...retainedVersion, contentState: 'retained' }
+    : {
+        contentState: 'retained',
+        createdAt: input.createdAt,
+        digest,
+        digestFormat: 'openkit-tree-v1',
+        entryId: id,
+        inventory: inventoryFromEntries(entries),
+        producer: input.producer,
+        provenance: {
+          baseDigest: input.baseDigest ?? null,
+          pluginMemberKey: input.pluginMemberKey ?? null,
+          pluginVersionDigest: input.pluginVersionDigest ?? null,
+          sourceCommit: null,
+          sourceSubpath: input.sourceSubpath ?? null,
+          uploadedSourceId: input.uploadedSourceId ?? null,
+        },
+        publisherVersion: null,
+      };
+  if (!retainedVersion) SkillVersionRecordSchema.parse(version);
+  const snapshotPath = join(layout.catalogSkillSnapshots, id, digest.slice('sha256:'.length));
+  if (existsSync(snapshotPath)) verifySkillSnapshot(input, version);
+  materializeSnapshot(snapshotPath, entries);
   const nextEntries = existing
     ? current.skills.entries.map((entry) =>
         entry.id === id
@@ -229,10 +280,8 @@ export function importWorkspaceSkill(input: {
           id,
         },
       ];
-  const versions = current.skills.versions.some(
-    (item) => item.entryId === id && item.digest === digest
-  )
-    ? current.skills.versions
+  const versions = retainedVersion
+    ? current.skills.versions.map((item) => (item === retainedVersion ? version : item))
     : [...current.skills.versions, version];
   const nextCatalog = parseResourceCatalogDocument({
     ...current,
@@ -247,7 +296,11 @@ export function importWorkspaceSkill(input: {
     expectedRevision: input.expectedRevision,
     workspaceId: input.workspaceId,
   });
-  return { catalog, version };
+  // Public results use the known-field projection; retained annotations stay in catalog storage.
+  return {
+    catalog,
+    version: catalog.skills.versions.find((item) => item.entryId === id && item.digest === digest)!,
+  };
 }
 
 /** Submits a Skill candidate without changing the current pointer. */
@@ -256,47 +309,69 @@ export function submitWorkspaceSkillCandidate(input: {
   readonly createdAt: string;
   readonly dataRoot: string;
   readonly entryId: string;
+  readonly evidenceRefs?: readonly string[];
   readonly expectedRevision: number;
   readonly producer: CatalogProducer;
   readonly summary: string;
+  readonly submitter?: CatalogProducer;
   readonly tree: readonly CatalogTreeFile[];
+  readonly uploadedSourceId?: string | null;
   readonly workspaceId: string;
 }): { candidate: SkillCandidateRecord; catalog: ResourceCatalogDocument } {
   const current = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+  if (current.revision !== input.expectedRevision) throw new CatalogConflictError();
+  SkillCandidateRecordSchema.shape.summary.parse(input.summary);
+  const evidenceRefs = SkillCandidateRecordSchema.shape.evidenceRefs.parse(
+    input.evidenceRefs ?? []
+  );
+  const submitter = SkillCandidateRecordSchema.shape.submitter.parse(
+    input.submitter ?? input.producer
+  );
   const entry = current.skills.entries.find((item) => item.id === input.entryId);
-  if (!entry || entry.availability !== 'available') {
+  if (entry?.availability === 'removed' || (!entry && input.baseDigest !== null)) {
     throw new CatalogNotFoundError(`Skill not found: ${input.entryId}`);
   }
-  const { version } = importWorkspaceSkill({
+  if (entry && input.baseDigest === null)
+    throw new CatalogInputError('An existing Skill requires an exact candidate base digest.');
+  const candidateId = `cand_${randomUUID().replaceAll('-', '').slice(0, 16)}`;
+  const imported = importWorkspaceSkill({
     activate: false,
+    baseCatalog: current,
+    baseDigest: input.baseDigest,
     createdAt: input.createdAt,
     dataRoot: input.dataRoot,
-    displayName: entry.displayName,
+    displayName: entry?.displayName ?? input.entryId,
     expectedRevision: input.expectedRevision,
     id: input.entryId,
+    persist: false,
     producer: input.producer,
     tree: input.tree,
+    uploadedSourceId: input.uploadedSourceId ?? null,
     workspaceId: input.workspaceId,
   });
-  const published = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
   const candidate: SkillCandidateRecord = {
     baseDigest: input.baseDigest,
-    candidateDigest: version.digest,
+    candidateDigest: imported.version.digest,
     createdAt: input.createdAt,
+    decision: null,
     disposition: 'proposed',
     entryId: input.entryId,
-    evidenceRefs: [],
-    id: `cand_${randomUUID().replaceAll('-', '').slice(0, 16)}`,
+    evidenceRefs,
+    id: candidateId,
     producer: input.producer,
     summary: input.summary,
+    submitter,
   };
   const catalog = publishWorkspaceResourceCatalog({
     catalog: {
-      ...published,
-      skills: { ...published.skills, candidates: [...published.skills.candidates, candidate] },
+      ...imported.catalog,
+      skills: {
+        ...imported.catalog.skills,
+        candidates: [...imported.catalog.skills.candidates, candidate],
+      },
     },
     dataRoot: input.dataRoot,
-    expectedRevision: published.revision,
+    expectedRevision: input.expectedRevision,
     workspaceId: input.workspaceId,
   });
   return { candidate, catalog };
@@ -307,14 +382,38 @@ export function decideWorkspaceSkillCandidate(input: {
   readonly candidateId: string;
   readonly dataRoot: string;
   readonly decision: 'promoted' | 'rejected' | 'withdrawn';
+  readonly decisionContext: SkillCandidateDecisionContext;
+  readonly configurationOwner?: boolean;
+  readonly expectedCurrentDigest?: string | null;
   readonly expectedRevision: number;
   readonly workspaceId: string;
 }): ResourceCatalogDocument {
   const current = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+  if (current.revision !== input.expectedRevision) throw new CatalogConflictError();
+  if (!input.decisionContext)
+    throw new CatalogIntegrityError(
+      'Skill candidate decisions require exact actor and Audit lineage.'
+    );
   const candidate = current.skills.candidates.find((item) => item.id === input.candidateId);
   if (!candidate || candidate.disposition !== 'proposed') {
     throw new CatalogNotFoundError(`Skill candidate not found: ${input.candidateId}`);
   }
+  if (
+    input.decision === 'withdrawn' &&
+    !input.configurationOwner &&
+    (candidate.submitter?.id !== input.decisionContext.actor.id ||
+      candidate.submitter?.kind !== input.decisionContext.actor.kind)
+  ) {
+    throw new CatalogForbiddenError(
+      'Only the submitting actor or configuration owner can withdraw a Skill candidate.'
+    );
+  }
+  const entry = current.skills.entries.find((item) => item.id === candidate.entryId);
+  if (
+    Object.hasOwn(input, 'expectedCurrentDigest') &&
+    entry?.currentDigest !== input.expectedCurrentDigest
+  )
+    throw new CatalogConflictError('Skill current digest conflict.');
   if (
     input.decision === 'promoted' &&
     candidate.baseDigest !==
@@ -322,13 +421,25 @@ export function decideWorkspaceSkillCandidate(input: {
   ) {
     throw new CatalogConflictError('Skill candidate base no longer matches the current digest.');
   }
+  if (input.decision === 'promoted') {
+    if (entry?.availability !== 'available')
+      throw new CatalogNotFoundError(`Skill not found: ${candidate.entryId}`);
+    const version = current.skills.versions.find(
+      (item) => item.entryId === candidate.entryId && item.digest === candidate.candidateDigest
+    );
+    if (!version)
+      throw new CatalogNotFoundError(`Skill version not found: ${candidate.candidateDigest}`);
+    verifySkillSnapshot(input, version);
+  }
   return publishWorkspaceResourceCatalog({
     catalog: {
       ...current,
       skills: {
         ...current.skills,
         candidates: current.skills.candidates.map((item) =>
-          item.id === candidate.id ? { ...item, disposition: input.decision } : item
+          item.id === candidate.id
+            ? { ...item, decision: input.decisionContext, disposition: input.decision }
+            : item
         ),
         entries:
           input.decision === 'promoted'
@@ -352,9 +463,24 @@ export function setWorkspaceSkillPin(input: {
   readonly digest: string | null;
   readonly entryId: string;
   readonly expectedRevision: number;
+  readonly expectedPinDigest?: string | null;
   readonly workspaceId: string;
 }): ResourceCatalogDocument {
   const current = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+  if (current.revision !== input.expectedRevision) throw new CatalogConflictError();
+  const entry = current.skills.entries.find((item) => item.id === input.entryId);
+  if (!entry) throw new CatalogNotFoundError(`Skill not found: ${input.entryId}`);
+  const prior = current.skills.pins.find((pin) => pin.entryId === input.entryId)?.digest ?? null;
+  if (Object.hasOwn(input, 'expectedPinDigest') && prior !== input.expectedPinDigest)
+    throw new CatalogConflictError('Skill pin digest conflict.');
+  if (input.digest !== null) {
+    const version = current.skills.versions.find(
+      (item) => item.entryId === input.entryId && item.digest === input.digest
+    );
+    if (entry.availability !== 'available' || !version)
+      throw new CatalogNotFoundError(`Skill version not found: ${input.entryId}/${input.digest}`);
+    verifySkillSnapshot(input, version);
+  }
   const pins =
     input.digest === null
       ? current.skills.pins.filter((pin) => pin.entryId !== input.entryId)
@@ -380,16 +506,24 @@ export function selectWorkspaceSkillDefault(input: {
   readonly digest: string;
   readonly entryId: string;
   readonly expectedRevision: number;
+  readonly expectedCurrentDigest?: string | null;
   readonly workspaceId: string;
 }): ResourceCatalogDocument {
   const current = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+  if (current.revision !== input.expectedRevision) throw new CatalogConflictError();
+  const entry = current.skills.entries.find((item) => item.id === input.entryId);
   if (
-    !current.skills.versions.some(
-      (version) => version.entryId === input.entryId && version.digest === input.digest
-    )
-  ) {
+    Object.hasOwn(input, 'expectedCurrentDigest') &&
+    entry?.currentDigest !== input.expectedCurrentDigest
+  )
+    throw new CatalogConflictError('Skill current digest conflict.');
+  const version = current.skills.versions.find(
+    (item) => item.entryId === input.entryId && item.digest === input.digest
+  );
+  if (entry?.availability !== 'available' || !version) {
     throw new CatalogNotFoundError(`Skill version not found: ${input.digest}`);
   }
+  verifySkillSnapshot(input, version);
   return publishWorkspaceResourceCatalog({
     catalog: {
       ...current,
@@ -404,6 +538,175 @@ export function selectWorkspaceSkillDefault(input: {
     expectedRevision: input.expectedRevision,
     workspaceId: input.workspaceId,
   });
+}
+
+/** Reads and verifies the exact retained Skill tree without source lookup or selection changes. */
+export function readWorkspaceSkillSnapshot(input: {
+  readonly dataRoot: string;
+  readonly digest: string;
+  readonly entryId: string;
+  readonly workspaceId: string;
+}) {
+  const catalog = loadWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+  const version = catalog.skills.versions.find(
+    (item) => item.entryId === input.entryId && item.digest === input.digest
+  );
+  if (!version)
+    throw new CatalogNotFoundError(`Skill version not found: ${input.entryId}/${input.digest}`);
+  return { entries: verifySkillSnapshot(input, version), version };
+}
+
+/** Rejects missing, unsafe or changed retained content before selection or disclosure. */
+function verifySkillSnapshot(
+  input: { readonly dataRoot: string; readonly workspaceId: string },
+  version: SkillVersionRecord
+): readonly OpenKitTreeEntry[] {
+  if (version.contentState === 'purged')
+    throw new CatalogContentUnavailableError(
+      `Skill content was purged: ${version.entryId}/${version.digest}`
+    );
+  const path = skillSnapshotPath(
+    input.dataRoot,
+    input.workspaceId,
+    version.entryId,
+    version.digest
+  );
+  if (!existsSync(path))
+    throw new CatalogContentUnavailableError(
+      `Skill content unavailable: ${version.entryId}/${version.digest}`
+    );
+  try {
+    assertCanonicalDirectory(dirname(path));
+    const tree = digestOpenKitTree(path);
+    if (tree.digest !== version.digest) throw new Error('Digest mismatch.');
+    const inventory = inventoryFromEntries(tree.entries);
+    if (
+      inventory.length !== version.inventory.length ||
+      inventory.some(
+        (row) =>
+          !version.inventory.some(
+            (retained) =>
+              row.path === retained.path &&
+              row.kind === retained.kind &&
+              row.sha256 === retained.sha256 &&
+              row.size === retained.size &&
+              row.executable === retained.executable
+          )
+      )
+    )
+      throw new Error('Inventory mismatch.');
+    return tree.entries;
+  } catch {
+    throw new CatalogIntegrityError(
+      `Skill snapshot integrity failed: ${version.entryId}/${version.digest}`
+    );
+  }
+}
+
+/** Blocks future selection while retaining exact history, pins and snapshot bytes. */
+export function removeWorkspaceSkill(input: {
+  readonly dataRoot: string;
+  readonly entryId: string;
+  readonly expectedRevision: number;
+  readonly workspaceId: string;
+}): ResourceCatalogDocument {
+  const current = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+  if (current.revision !== input.expectedRevision) throw new CatalogConflictError();
+  if (!current.skills.entries.some((entry) => entry.id === input.entryId))
+    throw new CatalogNotFoundError(`Skill not found: ${input.entryId}`);
+  return publishWorkspaceResourceCatalog({
+    catalog: {
+      ...current,
+      skills: {
+        ...current.skills,
+        entries: current.skills.entries.map((entry) =>
+          entry.id === input.entryId
+            ? { ...entry, availability: 'removed', currentDigest: null }
+            : entry
+        ),
+      },
+    },
+    dataRoot: input.dataRoot,
+    expectedRevision: input.expectedRevision,
+    workspaceId: input.workspaceId,
+  });
+}
+
+/** Purges only after complete reference admission by the existing external retention owners. */
+export function purgeWorkspaceSkillVersion(input: {
+  readonly dataRoot: string;
+  readonly digest: string;
+  readonly entryId: string;
+  readonly expectedRevision: number;
+  readonly retainedReferences: readonly string[] | null;
+  readonly workspaceId: string;
+}): ResourceCatalogDocument {
+  const current = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+  if (current.revision !== input.expectedRevision) throw new CatalogConflictError();
+  if (
+    !current.skills.versions.some(
+      (version) => version.entryId === input.entryId && version.digest === input.digest
+    )
+  )
+    throw new CatalogNotFoundError(`Skill version not found: ${input.entryId}/${input.digest}`);
+  const references = [...(input.retainedReferences ?? ['retention_authority_unavailable'])];
+  if (
+    current.skills.entries.some(
+      (entry) => entry.id === input.entryId && entry.currentDigest === input.digest
+    )
+  )
+    references.push(`skill_default:${input.entryId}`);
+  if (
+    current.skills.pins.some((pin) => pin.entryId === input.entryId && pin.digest === input.digest)
+  )
+    references.push(`skill_pin:${input.entryId}`);
+  for (const candidate of current.skills.candidates) {
+    if (
+      candidate.entryId === input.entryId &&
+      candidate.disposition === 'proposed' &&
+      (candidate.baseDigest === input.digest || candidate.candidateDigest === input.digest)
+    )
+      references.push(`skill_candidate:${candidate.id}`);
+  }
+  for (const version of current.plugins.versions) {
+    if (
+      version.members.some(
+        (member) =>
+          member.kind === 'skill' &&
+          member.catalogId === input.entryId &&
+          member.versionDigest === input.digest
+      )
+    )
+      references.push(`plugin_version:${version.entryId}/${version.digest}`);
+  }
+  if (references.length > 0) throw new CatalogRetentionError(references);
+  const path = skillSnapshotPath(input.dataRoot, input.workspaceId, input.entryId, input.digest);
+  try {
+    ensureCanonicalDirectory(dirname(path), 0o777);
+    rmSync(path, { force: true, recursive: true });
+    syncCanonicalDirectory(dirname(path));
+    return publishWorkspaceResourceCatalog({
+      catalog: {
+        ...current,
+        skills: {
+          ...current.skills,
+          versions: current.skills.versions.map((version) =>
+            version.entryId === input.entryId && version.digest === input.digest
+              ? { ...version, contentState: 'purged' }
+              : version
+          ),
+        },
+      },
+      dataRoot: input.dataRoot,
+      expectedRevision: input.expectedRevision,
+      workspaceId: input.workspaceId,
+    });
+  } catch {
+    // The receipt owner retains admitted intent; a new request must inspect any unacknowledged deletion.
+    throw new CatalogIntegrityError(
+      'Skill purge could not acknowledge content deletion and catalog publication.'
+    );
+  }
 }
 
 /** Creates an inactive MCP configuration version and optional binding. */
@@ -646,7 +949,7 @@ export function importWorkspacePlugin(input: {
     maxBytes: 64 * 1024 * 1024,
     maxEntries: 4_096,
   });
-  const parsed = parsePluginPackage(input.treeRoot);
+  const parsed = parsePluginPackage(packageTree.entries);
   const layout = ensureWorkspaceLayout(input.dataRoot, input.workspaceId);
   const pluginId = parsed.id;
   materializeSnapshot(
@@ -665,7 +968,10 @@ export function importWorkspacePlugin(input: {
       expectedRevision: input.expectedRevision,
       id: skill.id,
       persist: false,
+      pluginMemberKey: skill.packageKey,
+      pluginVersionDigest: packageTree.digest,
       producer: input.producer,
+      sourceSubpath: skill.packageKey,
       tree: skill.tree,
       workspaceId: input.workspaceId,
     });
@@ -987,8 +1293,8 @@ function effectiveMcpServer(
   };
 }
 
-/** Parses a local Agent Plugin package root. */
-function parsePluginPackage(root: string): {
+/** Parses the captured package bytes; source mutation cannot change admitted members. */
+function parsePluginPackage(packageEntries: readonly OpenKitTreeEntry[]): {
   description: string | null;
   displayName: string;
   id: string;
@@ -1001,40 +1307,62 @@ function parsePluginPackage(root: string): {
   publisherLabel: string | null;
   skills: Array<{ displayName: string; id: string; packageKey: string; tree: CatalogTreeFile[] }>;
 } {
-  const pluginJson = JSON.parse(readFileSync(join(root, 'plugin.json'), 'utf8')) as {
-    description?: string;
-    name?: string;
-    version?: string;
+  const readJson = (path: string, required: boolean): Record<string, unknown> | null => {
+    const entry = packageEntries.find((item) => item.path === path);
+    if (!entry) {
+      if (required) throw new CatalogInputError(`Agent Plugin requires ${path}.`);
+      return null;
+    }
+    if (entry.kind === 0)
+      throw new CatalogInputError(`Agent Plugin ${path} must be a regular file.`);
+    let value: unknown;
+    try {
+      value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(entry.content));
+    } catch {
+      throw new CatalogInputError(`Agent Plugin ${path} must contain valid UTF-8 JSON.`);
+    }
+    if (value === null || typeof value !== 'object' || Array.isArray(value))
+      throw new CatalogInputError(`Agent Plugin ${path} must contain an object.`);
+    return value as Record<string, unknown>;
   };
-  const displayName = pluginJson.name ?? 'plugin';
+  const pluginJson = readJson('plugin.json', true)!;
+  for (const field of ['name', 'description', 'version']) {
+    if (
+      pluginJson[field] !== undefined &&
+      (typeof pluginJson[field] !== 'string' || pluginJson[field].length === 0)
+    )
+      throw new CatalogInputError(`Agent Plugin ${field} must be a non-empty string.`);
+  }
+  const displayName = (pluginJson.name as string | undefined) ?? 'plugin';
   const id = skillIdFromDisplayName(displayName);
-  const skillsRoot = join(root, 'skills');
   const skills: Array<{
     displayName: string;
     id: string;
     packageKey: string;
     tree: CatalogTreeFile[];
   }> = [];
-  if (existsSync(skillsRoot)) {
-    const names = readDirNames(skillsRoot);
-    for (const name of names) {
-      const skillRoot = join(skillsRoot, name);
-      if (!existsSync(join(skillRoot, 'SKILL.md'))) {
-        continue;
-      }
-      const collected = digestOpenKitTree(skillRoot).entries;
-      skills.push({
-        displayName: name,
-        id: skillIdFromDisplayName(name),
-        packageKey: `skills/${name}`,
-        tree: collected.map((entry) => ({
-          ...(entry.content ? { contentBase64: entry.content.toString('base64') } : {}),
-          executable: entry.kind === 2,
-          kind: entry.kind === 0 ? 'directory' : 'file',
-          path: entry.path,
-        })),
-      });
-    }
+  for (const root of packageEntries.filter((entry) =>
+    /^skills\/[^/]+\/SKILL\.md$/.test(entry.path)
+  )) {
+    const name = root.path.split('/')[1]!;
+    const prefix = `skills/${name}/`;
+    const entries = packageEntries
+      .filter((entry) => entry.path.startsWith(prefix))
+      .map((entry) => ({ ...entry, path: entry.path.slice(prefix.length) }));
+    // Validate every component before any package or component payload becomes canonical.
+    hashOpenKitTreeEntries(entries);
+    validateSkillTree(entries, name);
+    skills.push({
+      displayName: name,
+      id: skillIdFromDisplayName(name),
+      packageKey: `skills/${name}`,
+      tree: entries.map((entry) => ({
+        ...(entry.content ? { contentBase64: entry.content.toString('base64') } : {}),
+        executable: entry.kind === 2,
+        kind: entry.kind === 0 ? 'directory' : 'file',
+        path: entry.path,
+      })),
+    });
   }
   const mcp: Array<{
     declaration: McpValidatedDeclaration;
@@ -1042,26 +1370,26 @@ function parsePluginPackage(root: string): {
     id: string;
     packageKey: string;
   }> = [];
-  const mcpJsonPath = join(root, 'mcp.json');
-  if (existsSync(mcpJsonPath)) {
-    const mcpJson = JSON.parse(readFileSync(mcpJsonPath, 'utf8')) as {
-      mcpServers?: Record<string, Record<string, unknown>>;
-    };
-    for (const [key, server] of Object.entries(mcpJson.mcpServers ?? {})) {
-      mcp.push({
-        declaration: pluginMcpDeclaration(server),
-        displayName: key,
-        id: skillIdFromDisplayName(key),
-        packageKey: `mcp/${key}`,
-      });
-    }
+  const mcpJson = readJson('mcp.json', false);
+  const servers = mcpJson?.mcpServers ?? {};
+  if (typeof servers !== 'object' || servers === null || Array.isArray(servers))
+    throw new CatalogInputError('Agent Plugin mcpServers must contain an object.');
+  for (const [key, server] of Object.entries(servers)) {
+    if (server === null || typeof server !== 'object' || Array.isArray(server))
+      throw new CatalogInputError('Agent Plugin MCP declarations must contain objects.');
+    mcp.push({
+      declaration: pluginMcpDeclaration(server as Record<string, unknown>),
+      displayName: key,
+      id: skillIdFromDisplayName(key),
+      packageKey: `mcp/${key}`,
+    });
   }
   return {
-    description: pluginJson.description ?? null,
+    description: (pluginJson.description as string | undefined) ?? null,
     displayName,
     id,
     mcp,
-    publisherLabel: pluginJson.version ?? null,
+    publisherLabel: (pluginJson.version as string | undefined) ?? null,
     skills,
   };
 }
@@ -1092,15 +1420,104 @@ function pluginMcpDeclaration(server: Record<string, unknown>): McpValidatedDecl
   });
 }
 
-/** Converts submitted or collected files into hasher entries. */
+/** Validates authored Skill metadata without changing payload bytes or granting tool authority. */
+function validateSkillTree(entries: readonly OpenKitTreeEntry[], expectedName?: string): void {
+  const root = entries.find((entry) => entry.path === 'SKILL.md');
+  if (!root || root.kind === 0)
+    throw new CatalogInputError('Skill admission requires a root SKILL.md regular file.');
+  let content: string;
+  try {
+    content = new TextDecoder('utf-8', { fatal: true }).decode(root.content);
+  } catch {
+    throw new CatalogInputError('Skill SKILL.md must contain valid UTF-8.');
+  }
+  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content);
+  if (!frontmatter)
+    throw new CatalogInputError('Skill SKILL.md requires Agent Skills YAML frontmatter.');
+  const document = parseDocument(frontmatter[1]!);
+  if (document.errors.length > 0 || document.warnings.length > 0)
+    throw new CatalogInputError('Skill SKILL.md has invalid YAML frontmatter.');
+  let metadata: unknown;
+  try {
+    metadata = document.toJS();
+  } catch {
+    throw new CatalogInputError('Skill SKILL.md has invalid YAML frontmatter.');
+  }
+  if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata))
+    throw new CatalogInputError('Skill SKILL.md requires a metadata mapping.');
+  const header = metadata as Record<string, unknown>;
+  if (
+    typeof header.name !== 'string' ||
+    header.name.length > 64 ||
+    !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(header.name)
+  )
+    throw new CatalogInputError('Skill SKILL.md requires a valid Agent Skills name.');
+  if (expectedName !== undefined && header.name !== expectedName)
+    throw new CatalogInputError('Skill SKILL.md name must match its package directory.');
+  if (
+    typeof header.description !== 'string' ||
+    header.description.trim().length === 0 ||
+    header.description.length > 1_024
+  )
+    throw new CatalogInputError(
+      'Skill SKILL.md requires a description of 1 through 1024 characters.'
+    );
+  if (header.license !== undefined && typeof header.license !== 'string')
+    throw new CatalogInputError('Skill SKILL.md license must be a string.');
+  if (
+    header.compatibility !== undefined &&
+    (typeof header.compatibility !== 'string' ||
+      header.compatibility.length === 0 ||
+      header.compatibility.length > 500)
+  )
+    throw new CatalogInputError(
+      'Skill SKILL.md compatibility must contain 1 through 500 characters.'
+    );
+  if (
+    header.metadata !== undefined &&
+    (header.metadata === null ||
+      typeof header.metadata !== 'object' ||
+      Array.isArray(header.metadata) ||
+      Object.values(header.metadata).some((value) => typeof value !== 'string'))
+  )
+    throw new CatalogInputError('Skill SKILL.md metadata must map string keys to string values.');
+  if (header['allowed-tools'] !== undefined && typeof header['allowed-tools'] !== 'string')
+    throw new CatalogInputError('Skill SKILL.md allowed-tools must be a string.');
+}
+
+/** Validates one bounded transport tree and derives its physical-tree identity without filesystem effects. */
+export function validateCatalogTree(tree: readonly CatalogTreeFile[]): {
+  readonly entries: readonly OpenKitTreeEntry[];
+  readonly digest: string;
+} {
+  const entries = treeFilesToEntries(tree);
+  return { digest: hashOpenKitTreeEntries(entries), entries };
+}
+
+/** Forms the actual tree, including ancestors that materialization must create, before shared validation. */
 function treeFilesToEntries(tree: readonly CatalogTreeFile[]): OpenKitTreeEntry[] {
-  return tree.map((entry) => {
+  const entries: OpenKitTreeEntry[] = tree.map((entry) => {
     if (entry.kind === 'directory') {
       return { kind: 0, path: entry.path };
     }
     const content = Buffer.from(entry.contentBase64 ?? '', 'base64');
     return { content, kind: entry.executable ? 2 : 1, path: entry.path };
   });
+  const directories = new Set(
+    entries.filter((entry) => entry.kind === 0).map((entry) => entry.path)
+  );
+  for (const entry of tree) {
+    const segments = entry.path.split('/');
+    for (let depth = 1; depth < segments.length; depth += 1) {
+      const path = segments.slice(0, depth).join('/');
+      if (!directories.has(path)) {
+        directories.add(path);
+        // A file at this path remains a duplicate, which the shared validator rejects.
+        entries.push({ kind: 0, path });
+      }
+    }
+  }
+  return entries;
 }
 
 /** Builds retained inventory metadata. */
@@ -1130,8 +1547,9 @@ function materializeSnapshot(target: string, entries: readonly OpenKitTreeEntry[
     return;
   }
   const staged = `${target}.staging`;
-  rmSync(staged, { force: true, recursive: true });
+  // Validate the parent before cleanup can touch any path beneath it.
   ensureCanonicalDirectory(dirname(target), 0o777);
+  rmSync(staged, { force: true, recursive: true });
   mkdirSync(staged, { recursive: true });
   try {
     for (const entry of entries) {
@@ -1163,11 +1581,6 @@ function skillIdFromDisplayName(value: string): string {
     throw new CatalogInputError(`Cannot derive a catalog id from name: ${value}`);
   }
   return normalized;
-}
-
-/** Reads direct child directory names. */
-function readDirNames(path: string): string[] {
-  return readdirSync(path).filter((name) => statSync(join(path, name)).isDirectory());
 }
 
 /** Coerces an unknown map into string records. */

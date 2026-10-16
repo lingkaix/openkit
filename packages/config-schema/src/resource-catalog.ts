@@ -39,9 +39,10 @@ export const ResourceInventoryEntrySchema = z
   })
   .strict();
 
-/** Immutable Skill version metadata. */
+/** Immutable Skill identity and provenance with explicit payload retention disposition. */
 export const SkillVersionRecordSchema = z
   .object({
+    contentState: z.enum(['retained', 'purged']).default('retained'),
     createdAt: z.string().min(1),
     digest: ResourceDigestSchema,
     digestFormat: z.literal(OPENKIT_TREE_DIGEST_FORMAT),
@@ -87,11 +88,21 @@ export const SkillCandidateRecordSchema = z
     baseDigest: ResourceDigestSchema.nullable(),
     candidateDigest: ResourceDigestSchema,
     createdAt: z.string().min(1),
+    decision: z
+      .object({
+        actor: CatalogProducerSchema,
+        auditRef: z.string().min(1),
+        decidedAt: z.string().min(1),
+      })
+      .strict()
+      .nullable()
+      .default(null),
     disposition: z.enum(['proposed', 'withdrawn', 'rejected', 'promoted']),
     entryId: ResourceCatalogIdSchema,
     evidenceRefs: z.array(z.string().min(1)).default([]),
     id: z.string().min(1),
     producer: CatalogProducerSchema,
+    submitter: CatalogProducerSchema.nullable().default(null),
     summary: z.string().min(1).max(4_096),
   })
   .strict();
@@ -291,7 +302,15 @@ const SkillVersionRecordReaderSchema = SkillVersionRecordSchema.safeExtend({
   provenance: SkillVersionRecordSchema.shape.provenance.passthrough(),
 }).passthrough();
 const SkillCandidateRecordReaderSchema = SkillCandidateRecordSchema.safeExtend({
+  decision: SkillCandidateRecordSchema.shape.decision
+    .removeDefault()
+    .unwrap()
+    .safeExtend({ actor: CatalogProducerReaderSchema })
+    .passthrough()
+    .nullable()
+    .default(null),
   producer: CatalogProducerReaderSchema,
+  submitter: CatalogProducerReaderSchema.nullable().default(null),
 }).passthrough();
 const PluginMemberRecordReaderSchema = PluginMemberRecordSchema.passthrough();
 const PluginVersionRecordReaderSchema = PluginVersionRecordSchema.safeExtend({
@@ -355,7 +374,17 @@ export const ResourceCatalogDocumentViewSchema = ResourceCatalogDocumentSchema.s
     .safeExtend({
       candidates: z
         .array(
-          SkillCandidateRecordSchema.safeExtend({ producer: CatalogProducerSchema.strip() }).strip()
+          SkillCandidateRecordSchema.safeExtend({
+            decision: SkillCandidateRecordSchema.shape.decision
+              .removeDefault()
+              .unwrap()
+              .safeExtend({ actor: CatalogProducerSchema.strip() })
+              .strip()
+              .nullable()
+              .default(null),
+            producer: CatalogProducerSchema.strip(),
+            submitter: CatalogProducerSchema.strip().nullable().default(null),
+          }).strip()
         )
         .default([]),
       entries: z.array(SkillEntryRecordSchema.strip()).default([]),

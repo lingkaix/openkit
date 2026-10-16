@@ -41,8 +41,15 @@ function skillTree(body = '# Hello\n'): Array<{
   kind: 'directory' | 'file';
   path: string;
 }> {
+  const content = body.startsWith('---\n')
+    ? body
+    : `---\nname: alpha\ndescription: Exercise retained catalog behavior.\n---\n${body}`;
   return [
-    { contentBase64: Buffer.from(body, 'utf8').toString('base64'), kind: 'file', path: 'SKILL.md' },
+    {
+      contentBase64: Buffer.from(content, 'utf8').toString('base64'),
+      kind: 'file',
+      path: 'SKILL.md',
+    },
   ];
 }
 
@@ -53,7 +60,10 @@ function writeStdioPluginPackage(packageRoot: string, scriptBody: string): void 
     join(packageRoot, 'plugin.json'),
     JSON.stringify({ name: 'demo-pack', version: '1.0.0' })
   );
-  writeFileSync(join(packageRoot, 'skills', 'alpha', 'SKILL.md'), '# Alpha\n');
+  writeFileSync(
+    join(packageRoot, 'skills', 'alpha', 'SKILL.md'),
+    '---\nname: alpha\ndescription: Exercise package import.\n---\n# Alpha\n'
+  );
   writeFileSync(join(packageRoot, 'scripts', 'run.sh'), scriptBody);
   writeFileSync(
     join(packageRoot, 'mcp.json'),
@@ -423,6 +433,9 @@ describe('workspace resource catalog', () => {
         tree,
         workspaceId: 'ws_demo',
       });
+      const path = catalogDocumentPath(dataRoot, 'ws_demo');
+      const retained = annotateCatalogHistory(original.catalog);
+      writeFileSync(path, JSON.stringify(retained));
       const repeated = importWorkspaceSkill({
         activate: false,
         createdAt: '2026-09-08T00:01:00.000Z',
@@ -440,6 +453,10 @@ describe('workspace resource catalog', () => {
       expect(reopened.skills.versions).toEqual([original.version]);
       expect(reopened.skills.entries[0]?.currentDigest).toBe(original.version.digest);
       expect(reopened.skills.candidates).toEqual([]);
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({
+        ...(retained as object),
+        revision: repeated.catalog.revision,
+      });
     } finally {
       rmSync(dataRoot, { force: true, recursive: true });
     }
@@ -768,8 +785,14 @@ describe('workspace resource catalog', () => {
         join(packageRoot, 'plugin.json'),
         JSON.stringify({ name: 'demo-pack', version: '1.0.0' })
       );
-      writeFileSync(join(packageRoot, 'skills', 'alpha', 'SKILL.md'), '# Alpha\n');
-      writeFileSync(join(packageRoot, 'skills', 'beta', 'SKILL.md'), '# Beta\n');
+      writeFileSync(
+        join(packageRoot, 'skills', 'alpha', 'SKILL.md'),
+        '---\nname: alpha\ndescription: Exercise package import.\n---\n# Alpha\n'
+      );
+      writeFileSync(
+        join(packageRoot, 'skills', 'beta', 'SKILL.md'),
+        '---\nname: beta\ndescription: Exercise package import.\n---\n# Beta\n'
+      );
       writeFileSync(
         join(packageRoot, 'mcp.json'),
         JSON.stringify({
@@ -1107,7 +1130,7 @@ describe('workspace resource catalog', () => {
     }
   });
 
-  it('does not leave failed snapshot staging that blocks later catalog reads', () => {
+  it('rejects file and directory collisions without staging residue and permits corrected import', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-staging-'));
     try {
       expect(() =>
@@ -1120,7 +1143,10 @@ describe('workspace resource catalog', () => {
           producer: { id: 'user_local', kind: 'user' },
           tree: [
             {
-              contentBase64: Buffer.from('# Skill\n', 'utf8').toString('base64'),
+              contentBase64: Buffer.from(
+                '---\nname: broken-tree\ndescription: Exercise failed tree publication.\n---\n# Skill\n',
+                'utf8'
+              ).toString('base64'),
               kind: 'file',
               path: 'SKILL.md',
             },
@@ -1137,7 +1163,7 @@ describe('workspace resource catalog', () => {
           ],
           workspaceId: 'ws_demo',
         })
-      ).toThrow();
+      ).toThrow(/duplicate path/);
       expect(catalogHasStagingResidue(dataRoot, 'ws_demo')).toBe(false);
       const afterFailure = loadWorkspaceResourceCatalog(dataRoot, 'ws_demo');
       expect(afterFailure.revision).toBe(0);
