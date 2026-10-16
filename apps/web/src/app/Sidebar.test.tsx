@@ -1,7 +1,7 @@
 import type { ConversationNavigationResponse } from '@openkit/app-api-schemas';
 import type { CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -159,6 +159,7 @@ describe('conversation navigation sidebar', () => {
     expect(buttons[0]).toHaveAccessibleDescription('Goal · Needs your attention');
     expect(buttons[1]).toHaveAccessibleDescription('Worker task · Working');
     expect(buttons[2]).toHaveAccessibleDescription('Assistant chat · Idle · 2 unread replies');
+    expect(within(buttons[2]!).getByText('2')).toBeVisible();
     expect(buttons[3]).toHaveAccessibleDescription('Activity type unknown · Idle');
     const user = userEvent.setup();
     await user.click(buttons[0]!);
@@ -178,6 +179,7 @@ describe('conversation navigation sidebar', () => {
     });
     expect(await screen.findByText(/Conversation status unavailable/)).toBeInTheDocument();
     expect(buttons[1]).toHaveAccessibleDescription('Worker task · Status unavailable');
+    expect(within(buttons[2]!).queryByText('2')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Retry conversations' }));
     await waitFor(() => expect(buttons[1]).toHaveAccessibleDescription('Worker task · Working'));
     await user.click(screen.getByRole('button', { name: 'Send pending request' }));

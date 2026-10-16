@@ -1,7 +1,7 @@
 import { useMutationState } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Button, Icon, type IconName, Menu, NavRow } from '../primitives';
+import { Button, CountBadge, Icon, type IconName, Menu, NavRow } from '../primitives';
 import {
   chatKeys,
   conversationThreadPath,
@@ -280,6 +280,11 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
                       icon={icons[activity]}
                       label={thread.name ?? thread.preview}
                       description={`${labels[activity]} · ${status}${!navigation.isError && unreadCount > 0 ? ` · ${unreadCount} unread ${unreadCount === 1 ? 'reply' : 'replies'}` : ''}`}
+                      trailing={
+                        !navigation.isError && unreadCount > 0 ? (
+                          <CountBadge count={unreadCount} tone="neutral" />
+                        ) : undefined
+                      }
                       iconBadge={
                         !navigation.isError && state !== 'idle' ? (
                           <span
