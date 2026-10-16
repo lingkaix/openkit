@@ -289,3 +289,7 @@ Previously open questions are resolved by accepted defaults: `stdio` MCP servers
 - `docs/core/permissions.md`
 - `docs/core/vault.md`
 - `docs/roadmap.md`
+
+### Administrator Discovery Is A Separate Consumer
+
+The [explicit bounded preview](20260907-mcp_catalog_management.md#explicit-bounded-discovery-preview) reuses the SDK Gateway connection and teardown seam with an exact canonical declaration and a trusted temporary context. Its narrow connection input does not claim an enabled Worker binding or AEP admission. Ordinary Worker selection, current binding/material checks and `tools/call` authority remain unchanged. Preview instances never share a Worker session or consuming-Workspace process data, and cannot execute a tool.

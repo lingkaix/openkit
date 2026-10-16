@@ -2,7 +2,7 @@
 type: change-plan
 status: implemented
 date: "2026-10-16"
-branch: lane/ga-request-review
+branch: lane/ga-request-next
 ---
 # Supported Vault Grant Request And Review
 
@@ -81,3 +81,17 @@ p22-request-public-create-green.log then passed all25native request cases, NanoC
 ## Main Integration And Express Gate
 
 Merged main0f0673ba after independent APPROVEDe56bc629. Three additive conflicts retain both Shared MCP and Server operations route exports and both complete Web owner sections; Server audit current-account cache rules remain intact. Removed the unused fixture import noted in review. Regenerate the CLI and OpenAPI, then inspect and independently review the edited join. The exact committed-head Express gate must run all changed-module suites and Web e2e before acquiring the window. Branch full CI is not dispatched under the engineer-approved Express protocol.
+
+## Bounded Request Feature Preparation
+
+The coordinator approved a separate full request/review increment under the engineer's simplicity rule. Start from preserved `2a5605ab24d0670061120e7d90aca291f7602bbd` and normally merge preview parent `211438d3b931652cc92255f0920613bce6177dd6`, which includes the current Server-first parent. The initial request delta is 38 paths against preview. Equal membership remains a later pending dependency; no joined 200-file branch or Equal adapter is imported. Normal additive owner/manual joins preserve complete Server, preview and request behavior. Actual generation resolves shared CLI/OpenAPI conflicts. Prior cancelled gates remain FAIL and no full/browser success is inferred.
+
+The known issuer correction uses the existing product PermissionDecision writer to record `nanocore-vault-policy:v1`, `reviewed_vault_grant_issue` and `reviewed_vault_grant_administrator_authorized`. Existing current issuer, deciding credential, requester, Workspace, exact intent, claim and Audit checks remain unchanged. A nonmember administrator gains no fabricated owner/member role. The retained real public Workspace and Server tests check this provenance, actual actor and linked Approval/Audit. Prior deciding evidence is the two-scope failure and 26-case correction in the preserved branch; this branch requires its own focused rerun. No new design, lifecycle, recovery owner or test matrix is added.
+
+P14 and final Server/preview/Equal parent choices precede final review and gate. Only useful focused request/type checks run during preparation. Host effect fixture updates wait for an actual producer failure against the final parent, and no host or broad suite runs now. Reviews block only for a reachable defect, a violation of an accepted owner contract, a security defect, or loss of user content. Every other finding is a non-blocking note. External checkpoint is `evidence/L-GA/request-next-checkpoint.md` in the backlog.
+
+## Prepared Request Cut Verification
+
+The normal preview-parent merge and minimal provenance correction passed the existing full 26-case request suite on this branch. Its two existing scope cases now use the fixture's actual nonmember administrator Web session for list, complete effect disclosure, review and issue. They assert the captured deciding session Token, truthful stored PermissionDecision, exact Approval/Audit links and absent fabricated membership. No separate disclosure fixture or matrix was imported. The source still checks both the current issuer and actual deciding credential; authenticated session identity alone grants nothing. The feature remains 38 paths against preview parent `211438d3b931652cc92255f0920613bce6177dd6`.
+
+Pipeline 44676 completed with exit 0. Exact output is `evidence/L-GA/request-next-focused.log` in the backlog: 26 native cases, 89 root Skill/Web inventory cases, prerequisite builds, CLI/OpenAPI generation and validation, NanoCore/Web typechecks, focused Biome, documentation model (527 documents), lifecycle/index/test governance and whitespace passed. The earlier two-scope provenance failure remains separately preserved; this preparation does not claim a new pre-change RED or a full/browser gate. Normal merge output conflicts were resolved by generation. No Server/catalog/session/preview behavior, Equal adapter or host fixture was changed. Final parent selection, required host producer check if applicable, independent review and exact full gate remain open.

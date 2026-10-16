@@ -52,7 +52,7 @@ import { createVaultGrant, getVaultGrant } from './vault-grants.js';
 import { createVaultUnlockState } from './vault-unlock-state.js';
 
 /** Owns one isolated real App/API fixture and removes every synthetic record at closeout. */
-function fixture() {
+function fixture(sessionUserId = 'user_local') {
   const dataRoot = mkdtempSync(join(tmpdir(), 'vault-grant-request-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -83,7 +83,7 @@ function fixture() {
           api: {
             getSession: async () => ({
               session: { id: 'synthetic-session' },
-              user: { id: 'user_local' },
+              user: { id: sessionUserId },
             }),
           },
           handler: async () => Response.json({}),
@@ -322,9 +322,15 @@ it.each([
     try {
       expect(
         db.sqlite
-          .prepare('SELECT result, approval_id FROM permission_decisions WHERE decision_id = ?')
+          .prepare(
+            'SELECT result, approval_id, policy_snapshot_id FROM permission_decisions WHERE decision_id = ?'
+          )
           .get(actual.policyDecisionId)
-      ).toEqual({ result: 'allow', approval_id: request.approvalRequestId });
+      ).toEqual({
+        result: 'allow',
+        approval_id: request.approvalRequestId,
+        policy_snapshot_id: 'reviewed_vault_grant_issue',
+      });
     } finally {
       db.sqlite.close();
     }
@@ -1126,14 +1132,17 @@ it('does not substitute a session replacement Token for the credential that deci
   }
 });
 
-it('records the actual administrator decision without changing the responsible requester', async () => {
-  const f = fixture();
+it.each([
+  'workspace',
+  'server',
+] as const)('records exact nonmember administrator session review and provenance for %s', async (scope) => {
+  const reviewerId = `user_${randomUUID()}`;
+  const f = fixture(reviewerId);
   try {
-    const source = await prepare(f);
+    const source = await prepare(f, scope);
     const request = await (
       await f.send('vault.grant-request', { ...source, requestId: randomUUID() })
     ).json();
-    const reviewerId = `user_${randomUUID()}`;
     f.coreDb.sqlite
       .prepare(
         "INSERT INTO users (id, display_name, email, email_verified, kind, created_at, updated_at, status) VALUES (?, 'Synthetic reviewer', ?, 0, 'human', ?, ?, 'active')"
@@ -1145,24 +1154,84 @@ it('records the actual administrator decision without changing the responsible r
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    expect(
-      (await f.serverSend('approval.respond', decision(request, 'granted'), reviewer.secret)).status
-    ).toBe(200);
-    const issued = await f.serverSend(
-      'vault.grant-issue',
-      {
-        workspaceId: source.workspaceId,
-        threadId: source.threadId,
-        approvalRequestId: request.approvalRequestId,
-      },
-      reviewer.secret
+    expect(setDefaultServerAdminTokenId(f.coreDb, reviewerId, reviewer.tokenId)).toBe(true);
+    const listed = await f.sessionSend('vault.grant-request-list', {
+      workspaceId: source.workspaceId,
+      threadId: source.threadId,
+    });
+    expect(listed.status).toBe(200);
+    const observed = (await listed.json()).items[0];
+    expect(observed).toMatchObject({ canApprove: true, effect: { status: 'available' } });
+    expect(JSON.parse(observed.effect.detail)).toMatchObject({
+      operation: 'vault.grant-issue',
+      terms: source.terms,
+    });
+    expect((await f.sessionSend('approval.respond', decision(request, 'granted'))).status).toBe(
+      200
     );
+    const issued = await f.sessionSend('vault.grant-issue', {
+      workspaceId: source.workspaceId,
+      threadId: source.threadId,
+      approvalRequestId: request.approvalRequestId,
+    });
     expect(issued.status).toBe(200);
-    expect(await issued.json()).toMatchObject({
+    const result = await issued.json();
+    expect(result).toMatchObject({
       responsibleUserId: 'user_local',
       decidingActorId: reviewerId,
       disposition: 'approved-executed',
     });
+    expect(
+      f.coreDb.sqlite
+        .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+        .all(source.workspaceId, reviewerId)
+    ).toEqual([]);
+    const grant = getVaultGrant(f.coreDb, result.grantId)!;
+    expect(grant.approvalId).toBe(request.approvalRequestId);
+    const db = openWorkspaceDb(f.dataRoot, source.workspaceId);
+    try {
+      expect(readPendingRequest(db.sqlite, request.approvalRequestId)).toMatchObject({
+        decidingActor: { kind: 'user', id: reviewerId },
+        decidingActorContext: {
+          kind: 'session',
+          userId: reviewerId,
+          adminTokenId: reviewer.tokenId,
+        },
+      });
+      const decisions = db.sqlite
+        .prepare<[], { context_summary_json: string; audit_event_id: string }>(
+          "SELECT decision_id, policy_engine_version, policy_snapshot_id, result, reason_code, subject_summary_json, context_summary_json, approval_id, audit_event_id FROM permission_decisions WHERE enforcement_point = 'vault.grant-issue'"
+        )
+        .all();
+      expect(decisions).toHaveLength(1);
+      expect(decisions[0]).toMatchObject({
+        decision_id: grant.policyDecisionId,
+        policy_engine_version: 'nanocore-vault-policy:v1',
+        policy_snapshot_id: 'reviewed_vault_grant_issue',
+        result: 'allow',
+        reason_code: 'reviewed_vault_grant_administrator_authorized',
+        subject_summary_json: JSON.stringify({ kind: 'user', id: reviewerId }),
+        approval_id: request.approvalRequestId,
+      });
+      expect(JSON.parse(decisions[0]!.context_summary_json)).toMatchObject({
+        issuingActorId: reviewerId,
+        requesterId: 'user_local',
+        approvalRequestId: request.approvalRequestId,
+      });
+      expect(
+        db.sqlite
+          .prepare(
+            'SELECT actor_json, permission_decision_id, request_id FROM audit_events WHERE audit_event_id = ?'
+          )
+          .get(decisions[0]!.audit_event_id)
+      ).toEqual({
+        actor_json: JSON.stringify({ kind: 'user', id: reviewerId }),
+        permission_decision_id: grant.policyDecisionId,
+        request_id: request.approvalRequestId,
+      });
+    } finally {
+      db.sqlite.close();
+    }
     const audit = f.coreDb.sqlite
       .prepare("SELECT actor_json, request_id FROM audit_events WHERE action = 'vault.grant-issue'")
       .get();

@@ -8,10 +8,15 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 263;
-const EXPECTED_SERVER_SIZE = 75;
+const EXPECTED_CATALOG_SIZE = 264;
+const EXPECTED_SERVER_SIZE = 76;
 const EXPECTED_GATEWAY_SIZE = 2;
 const EXPECTED_INCLUDED_SIZE = 186;
+
+/** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
+const SERVER_WEB_OPERATIONS = {
+  'administration.mcp-discovery-preview': { disposition: 'live', surface: 'Shared MCP' },
+};
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -421,6 +426,14 @@ function assertDisposition(operationKey, disposition) {
 }
 
 describe('Web user operation surface contract', () => {
+  it('projects explicit administrative discovery on the published Shared MCP surface', () => {
+    const catalog = partitionCatalog(PUBLIC_OPERATION_ACCESS);
+    for (const [operationKey, disposition] of Object.entries(SERVER_WEB_OPERATIONS)) {
+      assert.ok(catalog.server.includes(operationKey));
+      assertDisposition(operationKey, disposition);
+    }
+  });
+
   it('accounts for every included catalog operation and excludes server and Gateway-actor operations', () => {
     const catalog = partitionCatalog(PUBLIC_OPERATION_ACCESS);
     const inventory = flattenInventory(WEB_OPERATION_GROUPS);

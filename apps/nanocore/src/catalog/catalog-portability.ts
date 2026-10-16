@@ -196,6 +196,7 @@ export function reconstructImportedWorkspaceCatalog(
       versions: portable.plugins.versions,
     },
     revision: 1,
+    scope: 'workspace',
     schemaVersion: 1,
     skills: {
       candidates: [],
