@@ -258,15 +258,15 @@ describe('Shared MCP administration', () => {
       )
     ).not.toContain('ghp_fake_canary');
   });
-  it('rejects credential-bearing endpoint userinfo before cache admission or transport', async () => {
+  it.each([
+    'https://ordinary-user:plain-password@example.invalid/mcp',
+    'not-a-url',
+  ])('rejects an unsafe endpoint before cache admission or transport: %s', async (endpoint) => {
     const operations = setup();
     await screen.findByText('Shared example');
     await userEvent.type(screen.getByLabelText('New MCP id'), 'new-example');
     await userEvent.type(screen.getByLabelText('New display name'), 'New example');
-    await userEvent.type(
-      screen.getByLabelText('New HTTP endpoint'),
-      'https://ordinary-user:plain-password@example.invalid/mcp'
-    );
+    await userEvent.type(screen.getByLabelText('New HTTP endpoint'), endpoint);
     await userEvent.type(screen.getByLabelText('New allowed tools'), 'read');
     await userEvent.click(
       screen.getByRole('button', { name: 'Add inactive shared configuration' })
