@@ -193,7 +193,7 @@ struct LocalInventory {
 }
 
 impl LocalInventory {
-    /// Uses the caller's private disk-backed TMPDIR and no installed paths.
+    /// Uses the caller's private TMPDIR and no installed paths.
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
             "openkit-inventory-okt_inventory_fixture-{}-{}",
@@ -208,21 +208,40 @@ impl LocalInventory {
     fn sleep_member(&self, ordinal: usize) -> Child {
         let image = self.root.join(format!("private-member-{ordinal}"));
         std::fs::copy("/bin/sleep", &image).unwrap();
-        Command::new(image).arg("60").spawn().unwrap()
+        let child = Command::new(&image).arg("60").spawn().unwrap();
+        wait_for_member_image(child, &image)
     }
 
     /// Starts a real child whose observed exit code is controlled through stdin.
     fn exit_member(&self, ordinal: usize) -> (Child, ChildStdin) {
         let image = self.root.join(format!("private-member-{ordinal}"));
         std::fs::copy("/bin/sh", &image).unwrap();
-        let mut child = Command::new(image)
+        let child = Command::new(&image)
             .args(["-c", "read result; exit \"$result\""])
             .stdin(Stdio::piped())
             .spawn()
             .unwrap();
+        let mut child = wait_for_member_image(child, &image);
         let input = child.stdin.take().unwrap();
         (child, input)
     }
+}
+
+/// Waits for the fixture's exec boundary before sampling independent kernel facts.
+/// Spawn can return while /proc still exposes the inherited test-runner image.
+/// The installed fixture image is only a readiness target; report expectations
+/// still come from the live process before any installed-path replacement.
+fn wait_for_member_image(child: Child, image: &Path) -> Child {
+    let mut owned = ReapChildren(vec![child]);
+    let expected = std::fs::metadata(image).unwrap();
+    let process_image = format!("/proc/{}/exe", owned.0[0].id());
+    wait_for("fixture member executable", || {
+        std::fs::metadata(&process_image).is_ok_and(|actual| {
+            (actual.dev(), actual.ino(), actual.size())
+                == (expected.dev(), expected.ino(), expected.size())
+        })
+    });
+    owned.0.pop().unwrap()
 }
 
 impl Drop for LocalInventory {
