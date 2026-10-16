@@ -1,13 +1,14 @@
 import { createHash } from 'node:crypto';
 import { expect, it } from 'vitest';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { prepareMaterialSourceInput } from './material-source-files.js';
 import type { WorkerContextPackageMaterialSelectionInput } from './worker-context-package.js';
 
 /** Captures an existing immutable revision without inventing a lifecycle for the projection. */
 function fixture(content: string) {
   const selection: WorkerContextPackageMaterialSelectionInput = {
-    materialId: 'material-with-opaque-id',
-    revisionId: 'revision-with-opaque-id',
+    materialId: testEntityId('mat', 'selected-material-source'),
+    revisionId: testEntityId('mrev', 'selected-material-source'),
     parentRevisionId: null,
     mediaType: 'text/markdown',
     contentDigest: sha256(Buffer.from(content)),
@@ -55,8 +56,7 @@ it('delivers one bounded excerpt while retaining and streaming every original by
   expect(prepared.selection.projection).toEqual(prepared.source.projection);
   expect(prepared.source.projection).toMatchObject({
     kind: 'excerpt',
-    originalSnapshotPath:
-      'originals/materials/material-with-opaque-id/revision-with-opaque-id/payload',
+    originalSnapshotPath: `originals/materials/${state.selection.materialId}/${state.selection.revisionId}/payload`,
     deliveredDigest: sha256(Buffer.from(delivered)),
     representationDigest: sha256(Buffer.from(content)),
     truncated: true,

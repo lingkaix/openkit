@@ -6,7 +6,7 @@ import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { decideArtifactReview, getArtifactReview } from '../artifact-reviews.js';
-import { ensureLocalUser } from '../auth/identity.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { prepareArtifactSourceInputs } from '../context/artifact-source-files.js';
 import * as visionOwner from '../context/vision-view.js';
