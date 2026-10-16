@@ -327,7 +327,7 @@ const VAULT_USE_RECORDS = {
   secret: 'use-field-poison-should-never-render',
   vaultUseRecords: [
     {
-      useId: 'vault_00000000-0000-7c5c-b6b6-c91fe7477020',
+      useId: 'vu_00000000-0000-7c5c-b6b6-c91fe7477020',
       ownerScope: 'workspace',
       workspaceId: WORKSPACE.id,
       vaultReferenceId: 'vault_00000000-0000-7fce-81f5-bbcd6886eec4',
@@ -346,7 +346,7 @@ const VAULT_USE_RECORDS = {
       authorization: 'use-row-poison-should-never-render',
     },
     {
-      useId: 'vault_00000000-0000-7af9-a8a7-9251d3e8c990',
+      useId: 'vu_00000000-0000-7af9-a8a7-9251d3e8c990',
       ownerScope: 'workspace',
       workspaceId: WORKSPACE.id,
       vaultReferenceId: 'vault_00000000-0000-7a31-b0e1-45f0875d4f6f',
@@ -364,7 +364,7 @@ const VAULT_USE_RECORDS = {
       usedAt: TIMESTAMP,
     },
     {
-      useId: 'vault_00000000-0000-7d04-bf1c-d040cf5ab373',
+      useId: 'vu_00000000-0000-7d04-bf1c-d040cf5ab373',
       ownerScope: 'workspace',
       workspaceId: WORKSPACE.id,
       vaultReferenceId: 'vault_00000000-0000-718b-bed8-d5cdaac28798',
@@ -552,13 +552,13 @@ const WORKSPACE_PERMISSION_DECISIONS = {
       ownerScope: 'workspace',
       workspaceId: WORKSPACE.id,
       policyEngineVersion: 'policy:v1',
-      policySnapshotId: 'ws_00000000-0000-7c05-80b7-985198b83d37',
+      policySnapshotId: 'workspace-policy',
       subjectSummary: { kind: 'agent', id: 'agent_1' },
       action: 'llm.gateway.use',
       resourceSummary: { kind: 'model', id: 'gpt-5' },
       contextSummary: { turnId: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575' },
       result: 'allow',
-      reasonCode: 'ws_00000000-0000-7f19-9709-6e706779a8a8',
+      reasonCode: 'workspace_policy_allowed',
       enforcementPoint: 'llm.gateway.policy',
       requiredApprovalKind: null,
       approvalId: null,
@@ -599,8 +599,8 @@ const USAGE_NON_DISPLAY_FIELDS = [
   'provider_openai',
   'gateway-reported:input',
   'policy:v1',
-  'ws_00000000-0000-7c05-80b7-985198b83d37',
-  'ws_00000000-0000-7f19-9709-6e706779a8a8',
+  'workspace-policy',
+  'workspace_policy_allowed',
   'llm.gateway.policy',
 ] as const;
 
@@ -621,7 +621,7 @@ const EVIDENCE_BUNDLES = {
       rawEvidenceRefs: [{ kind: 'backend-log', ref: 'raw-evidence-locator-should-never-render' }],
       redactedEvidenceRefs: [{ kind: 'artifact', ref: 'ar_00000000-0000-7b7e-8526-70bc66fa3094' }],
       contentDigests: ['sha256:evidence'],
-      retentionClass: 'tu_00000000-0000-7ef6-b7cd-03de9c89c58e',
+      retentionClass: 'turn-evidence',
       sensitivityClass: 'product-safe',
       importStatus: 'collected',
       requiredFeatures: [],

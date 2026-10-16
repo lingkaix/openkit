@@ -54,9 +54,7 @@ describe('scoped storage databases', () => {
         statSync(userDbPath(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b')).isFile()
       ).toBe(true);
       expect(tables).toEqual(['__drizzle_migrations', 'idempotency_requests']);
-      expect(listMigrationIds(userDb.sqlite, 'user')).toEqual([
-        'usr_00000000-0000-76f6-b592-f63edf15ea68',
-      ]);
+      expect(listMigrationIds(userDb.sqlite, 'user')).toEqual(['user_0000_setup']);
     } finally {
       userDb.sqlite.close();
     }
@@ -284,9 +282,7 @@ describe('scoped storage databases', () => {
     const migratedUserDb = openUserDb(dataRoot, '.staging');
     try {
       expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual(['workspace_0000_setup']);
-      expect(listMigrationIds(migratedUserDb.sqlite, 'user')).toEqual([
-        'usr_00000000-0000-76f6-b592-f63edf15ea68',
-      ]);
+      expect(listMigrationIds(migratedUserDb.sqlite, 'user')).toEqual(['user_0000_setup']);
     } finally {
       workspaceDb.sqlite.close();
       migratedUserDb.sqlite.close();
@@ -584,9 +580,7 @@ process.kill(process.pid, 'SIGKILL');`,
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
 
     try {
-      expect(listMigrationIds(userDb.sqlite, 'user')).toEqual([
-        'usr_00000000-0000-76f6-b592-f63edf15ea68',
-      ]);
+      expect(listMigrationIds(userDb.sqlite, 'user')).toEqual(['user_0000_setup']);
       expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual(['workspace_0000_setup']);
     } finally {
       userDb.sqlite.close();

@@ -114,7 +114,7 @@ function approvalRaise(
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     threadId: 'th_00000000-0000-7000-8000-000000000001',
     raisingTurnId: turnId,
-    requestItemId: `it_${requestId}`,
+    requestItemId: testEntityId('it', `it_${requestId}`),
     kind: 'approval',
     requesterKind: 'worker',
     agentId: 'agent_demo',
@@ -257,7 +257,7 @@ describe('pending requests', () => {
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           raisingTurnId: turn.id,
           requestId,
-          requestItemId: `it_${requestId}`,
+          requestItemId: testEntityId('it', `it_${requestId}`),
           kind: 'user-input',
           requesterKind: 'worker',
           agentId: 'agent_demo',
@@ -1049,7 +1049,7 @@ describe('pending requests', () => {
         });
         raiseRecordedPendingRequest(store, db.sqlite, {
           requestId: `ap_attention_${id}`,
-          requestItemId: `it_attention_${id}`,
+          requestItemId: testEntityId('it', `it_attention_${id}`),
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           raisingTurnId: turn.id,

@@ -1701,7 +1701,7 @@ describe('app api schemas', () => {
           userDb: {
             path: 'users/usr_00000000-0000-7e68-8ab1-8dcac1be1b5b/db/user.sqlite',
             exists: true,
-            appliedMigrations: ['usr_00000000-0000-76f6-b592-f63edf15ea68'],
+            appliedMigrations: ['user_0000_setup'],
           },
         },
       ],
@@ -1711,7 +1711,7 @@ describe('app api schemas', () => {
           workspaceDb: {
             path: 'workspaces/ws_00000000-0000-73c3-900f-8d310e4ba201/db/workspace.sqlite',
             exists: true,
-            appliedMigrations: ['ws_00000000-0000-7cbe-80db-14aa357efc76'],
+            appliedMigrations: ['workspace_0000_setup'],
           },
           indexesDir: {
             path: 'workspaces/ws_00000000-0000-73c3-900f-8d310e4ba201/indexes',

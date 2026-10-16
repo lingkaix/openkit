@@ -572,9 +572,7 @@ describe('database setup', () => {
       applyScopedMigrations(workspaceDb);
       applyScopedMigrations(workspaceDb);
 
-      expect(listMigrationIds(userDb, 'user')).toEqual([
-        'usr_00000000-0000-76f6-b592-f63edf15ea68',
-      ]);
+      expect(listMigrationIds(userDb, 'user')).toEqual(['user_0000_setup']);
       expect(listTableNames(userDb)).toEqual(['__drizzle_migrations', 'idempotency_requests']);
       expect(listMigrationIds(workspaceDb, 'workspace')).toEqual(['workspace_0000_setup']);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
@@ -1088,7 +1086,7 @@ describe('native Drizzle migrate', () => {
       {
         tag: '0000_setup',
         when: 1000,
-        sql: 'CREATE TABLE usr_00000000-0000-7567-978f-a2dc91f29370 (id text PRIMARY KEY NOT NULL);',
+        sql: 'CREATE TABLE user_only (id text PRIMARY KEY NOT NULL);',
       },
     ]);
     const coreSqlite = new Database(join(coreFolder, 'db.sqlite'));
@@ -1099,15 +1097,12 @@ describe('native Drizzle migrate', () => {
       applyNativeScopeMigrations(userSqlite, 'user', userFolder);
 
       expect(listTableNames({ sqlite: coreSqlite })).toEqual(['__drizzle_migrations', 'core_only']);
-      expect(listTableNames({ sqlite: userSqlite })).toEqual([
-        '__drizzle_migrations',
-        'usr_00000000-0000-7567-978f-a2dc91f29370',
-      ]);
+      expect(listTableNames({ sqlite: userSqlite })).toEqual(['__drizzle_migrations', 'user_only']);
       expect(listAppliedNativeMigrationIds(coreSqlite, 'core', coreFolder)).toEqual([
         'core_0000_setup',
       ]);
       expect(listAppliedNativeMigrationIds(userSqlite, 'user', userFolder)).toEqual([
-        'usr_00000000-0000-76f6-b592-f63edf15ea68',
+        'user_0000_setup',
       ]);
     } finally {
       userSqlite.close();

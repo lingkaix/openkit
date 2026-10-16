@@ -8,6 +8,7 @@ import {
   ConversationTargetCatalogSchema,
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
+import { deriveEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { FsStore } from './lib/store.js';
 import { GatewayAttemptFailure } from './llm/gateway-execution.js';
@@ -742,7 +743,7 @@ describe('quick chat app API', () => {
     }
 
     for (const index of [0, 2]) {
-      store.updateAgentSession(`as_${states[index]}`, { stale: true });
+      store.updateAgentSession(testEntityId('as', `as_${states[index]}`), { stale: true });
       const stale = await app.request(
         ...operationRequest(
           'conversation.targets',
@@ -2166,7 +2167,7 @@ describe('quick chat app API', () => {
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001'
       )
-      .find((item) => item.id === `it_chat_user_${accepted.turn.id}`);
+      .find((item) => item.id === deriveEntityId('it', ['chat-user', accepted.turn.id]));
     if (userItem?.type !== 'user-message') {
       throw new Error('Expected the stored Chat user message.');
     }

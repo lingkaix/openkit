@@ -2,6 +2,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
+import { deriveEntityId } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
@@ -11,6 +12,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
@@ -299,7 +301,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
         .prepare('SELECT rowid, * FROM scheduler_execution_attempts WHERE attempt_id = ?')
         .get(f.attempt.attemptId) as Record<string, unknown>;
       row.rowid = Number(row.rowid) - 1;
-      row.attempt_id = 'earlier-busy-attempt';
+      row.attempt_id = testEntityId('attempt', 'earlier-busy-attempt');
       row.terminal_cause = 'backend-busy';
       row.agent_session_id = null;
       row.input_ref = null;
@@ -542,7 +544,8 @@ describe('checkpoint-owned never-submitted failed start', () => {
         const failure = vi
           .spyOn(f.store, 'updateItem')
           .mockImplementation((id, patch, authority) => {
-            if (id === `it_worker_result_${f.turnId}`) throw new Error('Partial Item write.');
+            if (id === deriveEntityId('it', ['worker-result', f.turnId]))
+              throw new Error('Partial Item write.');
             return update(id, patch, authority);
           });
         await expect(f.classify()).rejects.toThrow('Partial Item write.');
@@ -661,7 +664,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
         const row = sql
           .prepare('SELECT * FROM scheduler_execution_attempts WHERE attempt_id = ?')
           .get(attemptId) as Record<string, unknown>;
-        row.attempt_id = 'later-attempt';
+        row.attempt_id = testEntityId('attempt', 'later-attempt');
         if (gap === 'later-busy-equal-time') {
           row.terminal_cause = 'backend-busy';
           row.agent_session_id = null;
@@ -860,7 +863,9 @@ describe('checkpoint-owned never-submitted failed start', () => {
           );
           return {
             ...turn,
-            items: turn.items.filter((item) => item.id !== `it_worker_result_${id}`),
+            items: turn.items.filter(
+              (item) => item.id !== deriveEntityId('it', ['worker-result', id])
+            ),
           };
         });
       const files = retainedFileBytes(f.dataRoot);

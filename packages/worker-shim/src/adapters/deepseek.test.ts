@@ -187,7 +187,7 @@ describe('deepseek permission and bounds', () => {
   });
 
   it('counts session update bytes against the 16 MiB ceiling', () => {
-    const small = { sessionUpdate: 'use_00000000-0000-7858-8880-15d361f524ed', used: 1 };
+    const small = { sessionUpdate: 'usage_update', used: 1 };
     expect(deepseekSessionUpdateBytes(small)).toBeLessThan(DEEPSEEK_SESSION_UPDATE_LIMIT_BYTES);
     const huge = { text: 'y'.repeat(DEEPSEEK_SESSION_UPDATE_LIMIT_BYTES) };
     expect(deepseekSessionUpdateBytes(huge)).toBeGreaterThan(DEEPSEEK_SESSION_UPDATE_LIMIT_BYTES);
@@ -2026,7 +2026,7 @@ describe('deepseek resident adapter', () => {
                 method: 'session/update',
                 params: {
                   sessionId: native.sessionId,
-                  update: { sessionUpdate: 'use_00000000-0000-7858-8880-15d361f524ed', used: 1 },
+                  update: { sessionUpdate: 'usage_update', used: 1 },
                 },
               })
             ),
