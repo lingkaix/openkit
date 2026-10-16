@@ -265,3 +265,5 @@ Worker Context Package preparation captures a selected Material revision as one 
 The `work_submit_artifact` Tool description advertises the same arbitrary-byte, per-file admission as its public schema and capture owner. Material proposal text validation remains separate from file storage.
 
 Selected Artifact originals come only from structured Artifact selectors or explicitly requested Artifact-reference Items. Conversation producers pin the known Artifact version. Preparation retains one bounded preview and one exact original for each selected version, rechecks current source access and receiving audience before return, and excludes unselected Workspace Artifacts. A private source cannot become shared through a reference.
+
+Selected Worker objectives retain the exact admitted user brief. Artifact previews and original file descriptors belong to the source snapshot, so their bytes do not consume or alter the structured objective allowance.

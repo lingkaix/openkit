@@ -5582,6 +5582,55 @@ describe('nanocore server', () => {
     }
   });
 
+  it('keeps selected Artifact previews outside the exact Worker objective', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const executor = new FakeTurnExecutor();
+    const start = vi.spyOn(executor, 'startTurn');
+    const brief = 'Implement the selected report findings.';
+    const artifact = createImportedMarkdownArtifact(store, {
+      id: 'ar_worker_snapshot_original',
+      title: 'Selected report',
+      body: 'Selected report text. '.repeat(300),
+      requestId: 'worker-snapshot-report',
+    });
+    const app = createApp({ coreDb, store, turnExecutor: executor });
+    try {
+      const response = await app.request(
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            headers: jsonHeaders(),
+            body: JSON.stringify({
+              requestId: '0190f4c8-0000-7000-8000-000000000477',
+              input: brief,
+              targetRef: 'new-task-worker',
+              artifactRefs: [{ artifactId: artifact.id, artifactVersion: artifact.version }],
+            }),
+          }
+        )
+      );
+      expect(response.status, await response.clone().text()).toBe(202);
+      await executor.waitForFinished(store);
+      expect(start).toHaveBeenCalledOnce();
+      const request = StructuredWorkerDelegationRequestSchema.parse(
+        JSON.parse(start.mock.calls[0]![2])
+      );
+      expect(request.objective).toBe(brief);
+      expect(request.contextRefs).toContainEqual({
+        kind: 'artifact',
+        id: artifact.id,
+        artifactVersion: artifact.version,
+      });
+      expect(request.objective).not.toContain('Selected report text.');
+    } finally {
+      start.mockRestore();
+      coreDb.sqlite.close();
+    }
+  });
+
   it.each([
     {
       status: 'failed' as const,

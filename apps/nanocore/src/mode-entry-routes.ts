@@ -3391,8 +3391,9 @@ export function createConversationService({
 
       /** Validates the objective before creating receiving work through the existing product Turn owner. */
       const startSelectedWorker = async (): Promise<ConversationCommandResult> => {
-        const objective =
-          StructuredWorkerDelegationRequestSchema.shape.objective.safeParse(conversationPrompt);
+        const objective = StructuredWorkerDelegationRequestSchema.shape.objective.safeParse(
+          chatInput.input
+        );
         if (!objective.success) {
           throw new TurnStartValidationError(
             'invalid_request',
@@ -3457,7 +3458,7 @@ export function createConversationService({
           );
         }
         const workerRequest = createStructuredWorkerDelegationRequest({
-          objective: conversationPrompt,
+          objective: objective.data,
           acceptanceCriteria: [
             'The bounded worker task satisfies the requested objective.',
             'The worker reports verification evidence or a clear blocker.',
