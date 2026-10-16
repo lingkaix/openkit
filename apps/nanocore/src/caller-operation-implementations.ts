@@ -42,9 +42,7 @@ export function createCallerOperationImplementations(
         let items = 0;
         for (const thread of threads) {
           readOwnedCallerWorkspace(coreDb, actor, workspaceId, administratorEligible);
-          turns += store
-            .listThreadTurns(workspaceId, thread.id)
-            .map((candidate) => store.getTurn(workspaceId, thread.id, candidate.id)).length;
+          turns += store.listThreadTurns(workspaceId, thread.id).length;
           readOwnedCallerWorkspace(coreDb, actor, workspaceId, administratorEligible);
           items += store.listThreadItems(workspaceId, thread.id).length;
         }

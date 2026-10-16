@@ -2453,7 +2453,6 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
     const threadRoot = join(root, thread.id);
     const turnsRoot = join(threadRoot, 'turns');
     const threadTurns = records.turns.filter((turn) => turn.threadId === thread.id);
-    const expectedTurnIds = new Set(threadTurns.map((turn) => turn.id));
 
     if (!lstatSync(threadRoot, { throwIfNoEntry: false })) {
       publishNewRecordDirectory(workspaceRoot, threadRoot, (stage) => {
@@ -2468,7 +2467,7 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
     const previousBytes = existsSync(threadPath) ? readCanonicalFile(threadPath) : undefined;
     const previous =
       previousBytes === undefined ? undefined : JSON.parse(previousBytes.toString('utf8'));
-    removeStaleDirectories(turnsRoot, expectedTurnIds);
+    // An absent cache candidate does not delete retained history. Thread or Workspace deletion owns it.
 
     for (const turn of threadTurns) {
       const turnRoot = join(turnsRoot, turn.id);

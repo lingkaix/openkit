@@ -333,6 +333,7 @@ function pendingRequestRows(input: BuildHumanAttentionRowsInput): HumanAttention
     } catch {
       continue;
     }
+    const turns = input.store.listThreadTurns(input.workspaceId, thread.id);
     for (const record of records) {
       if (record.state !== 'pending') continue;
       if (
@@ -341,9 +342,6 @@ function pendingRequestRows(input: BuildHumanAttentionRowsInput): HumanAttention
         !input.administratorEligible
       )
         continue;
-      const turns = input.store
-        .listThreadTurns(input.workspaceId, thread.id)
-        .map((candidate) => input.store.getTurn(input.workspaceId, thread.id, candidate.id));
       const contradiction = validateCanonicalLoad(
         record,
         input.store

@@ -312,11 +312,7 @@ function buildWorkspaceWorkSections(
   const attentionNeeded: WorkspaceDashboardResponse['attentionNeeded'] = [];
 
   for (const thread of threads) {
-    const turns = sortTurns(
-      store
-        .listThreadTurns(workspaceId, thread.id)
-        .map((candidate) => store.getTurn(workspaceId, thread.id, candidate.id))
-    );
+    const turns = sortTurns(store.listThreadTurns(workspaceId, thread.id));
     const items = store.listThreadItems(workspaceId, thread.id);
     const threadArtifacts = artifacts.filter((artifact) => artifact.threadId === thread.id);
     const newestArtifact = selectNewestArtifact(threadArtifacts);
@@ -537,16 +533,12 @@ export function readThreadDashboard(input: {
     .listArtifacts(workspaceId)
     .filter((artifact) => isArtifactVisible(store, artifact, actor?.userId, administratorEligible));
   const visibleArtifactIds = new Set(visibleArtifacts.map((artifact) => artifact.id));
-  const turns = store.listThreadTurns(workspaceId, threadId).map((candidate) => {
-    // Scoped reads refuse an unresolved candidate; internal cached Turns still preserve Thread exclusion.
-    const turn = store.getTurn(workspaceId, threadId, candidate.id);
-    return {
-      ...turn,
-      items: turn.items.filter(
-        (item) => item.type !== 'artifact-reference' || visibleArtifactIds.has(item.artifactId)
-      ),
-    };
-  });
+  const turns = store.listThreadTurns(workspaceId, threadId).map((turn) => ({
+    ...turn,
+    items: turn.items.filter(
+      (item) => item.type !== 'artifact-reference' || visibleArtifactIds.has(item.artifactId)
+    ),
+  }));
   const threadItems = store.listThreadItems(workspaceId, threadId);
   const participants = new Map<string, ThreadDashboardResponse['participants'][number]>();
   const authors = [
@@ -741,11 +733,7 @@ export function readConversationNavigation({
     const rows: ConversationNavigationResponse['items'] = visibleThreads
       .filter((thread) => thread.status === 'active')
       .map((thread) => {
-        const turns = sortTurns(
-          store
-            .listThreadTurns(workspaceId, thread.id)
-            .map((candidate) => store.getTurn(workspaceId, thread.id, candidate.id))
-        );
+        const turns = sortTurns(store.listThreadTurns(workspaceId, thread.id));
         const items = store.listThreadItems(workspaceId, thread.id);
         const activeTurn = turns.findLast((turn) => !isSealedTurnTerminal(turn.status));
         const latestTurn = activeTurn ?? turns.at(-1);
