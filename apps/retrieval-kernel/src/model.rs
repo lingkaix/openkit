@@ -307,7 +307,7 @@ impl Document {
         document
     }
 
-    /// Resolve the adapter's searchable direct-text units without joining their boundaries.
+    /// Resolve canonical or extracted-text ranges without joining their boundaries.
     pub(crate) fn searchable_ranges(&self) -> Vec<ByteRange> {
         if let Content::Representation { fragments, .. } = &self.content {
             return fragments

@@ -36,7 +36,7 @@ pub(crate) struct Record {
     pub sidecar: Option<String>,
     pub units: Vec<Unit>,
 }
-/// A searchable unit preserves metadata boundaries; text has one canonical unit.
+/// A searchable unit preserves admitted text or identity metadata boundaries.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Unit {
     pub field: Option<String>,
@@ -283,16 +283,16 @@ impl Kernel {
         let mut records = Vec::with_capacity(view.documents.len());
         let mut indexed_bytes = 0u64;
         for (number, document) in view.documents.into_iter().enumerate() {
-            let direct = matches!(
+            let searchable = matches!(
                 document.content,
-                Content::Text { .. } | Content::InlineText { .. }
+                Content::Text { .. } | Content::InlineText { .. } | Content::Representation { .. }
             );
-            let representation_digest = if direct {
-                document.digest.clone()
-            } else {
-                String::new()
+            let representation_digest = match &document.content {
+                Content::Representation { digest, .. } => digest.clone(),
+                _ if searchable => document.digest.clone(),
+                _ => String::new(),
             };
-            let units = if direct {
+            let units = if searchable {
                 text_units(&document)
             } else {
                 vec![]
