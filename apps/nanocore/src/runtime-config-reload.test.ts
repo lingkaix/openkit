@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { getNanoHostTransportSessionAuthority } from './app.js';
-import { createNanoHostTransportTokenRecord } from './auth/nanohost-transport-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
+import { createNanoHostTransportTokenRecord } from './auth/nanohost-transport-token-store.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { ProviderRegistry } from './providers/registry.js';
@@ -124,9 +124,11 @@ describe('NanoHost restart-required reload fencing', () => {
         const initial = manager.current();
         let app = createApp({ coreDb, dataRoot, runtimeConfigManager: manager, store });
         const authority = getNanoHostTransportSessionAuthority(app);
-        coreDb.sqlite.prepare(
-          'INSERT INTO nanohost_integration_identities (identity_id, deployment_id, status, created_at) VALUES (?, ?, ?, ?)'
-        ).run(host.identityId, deploymentId, 'active', new Date().toISOString());
+        coreDb.sqlite
+          .prepare(
+            'INSERT INTO nanohost_integration_identities (identity_id, deployment_id, status, created_at) VALUES (?, ?, ?, ?)'
+          )
+          .run(host.identityId, deploymentId, 'active', new Date().toISOString());
         const token = createNanoHostTransportTokenRecord(coreDb, {
           deploymentId,
           expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
@@ -136,24 +138,35 @@ describe('NanoHost restart-required reload fencing', () => {
         server = createServer(async (request, response) => {
           const chunks: Buffer[] = [];
           for await (const chunk of request) chunks.push(Buffer.from(chunk));
-          const result = await app.fetch(new Request('http://fixture/api/nanohost/transport/session/admit', {
-            method: 'POST',
-            headers: { authorization: `Bearer ${token.secret}`, 'content-type': 'application/json' },
-            body: Buffer.concat(chunks),
-          }), { incoming: request });
-          response.writeHead(result.status, { 'content-type': 'application/json' }).end(await result.text());
+          const result = await app.fetch(
+            new Request('http://fixture/api/nanohost/transport/session/admit', {
+              method: 'POST',
+              headers: {
+                authorization: `Bearer ${token.secret}`,
+                'content-type': 'application/json',
+              },
+              body: Buffer.concat(chunks),
+            }),
+            { incoming: request }
+          );
+          response
+            .writeHead(result.status, { 'content-type': 'application/json' })
+            .end(await result.text());
         });
         server.on('session', (session) => sessions.push(session));
         server.listen(0, '127.0.0.1');
         await once(server, 'listening');
         const address = server.address();
-        if (!address || typeof address === 'string') throw new Error('Missing reload fixture address.');
+        if (!address || typeof address === 'string')
+          throw new Error('Missing reload fixture address.');
         const admit = async () => {
           const client = connect(`http://127.0.0.1:${address.port}`);
           clients.push(client);
           const request = client.request({ ':method': 'POST', ':path': '/' });
           let status: unknown;
-          request.on('response', (headers) => { status = headers[':status']; });
+          request.on('response', (headers) => {
+            status = headers[':status'];
+          });
           const chunks: Buffer[] = [];
           request.on('data', (chunk: Buffer) => chunks.push(chunk));
           request.end('{}');
@@ -172,7 +185,10 @@ describe('NanoHost restart-required reload fencing', () => {
           predecessorFenced: true,
           ready: true,
         });
-        expect(getNanoHostRuntimeTarget(coreDb, host.identityId)).toMatchObject({ ready: true, physicalEpoch: 'a'.repeat(64) });
+        expect(getNanoHostRuntimeTarget(coreDb, host.identityId)).toMatchObject({
+          ready: true,
+          physicalEpoch: 'a'.repeat(64),
+        });
         if (mode === 'strict' || mode === 'read-failed') {
           const candidate = await admit();
           expect(candidate.status).toBe(200);
@@ -186,10 +202,13 @@ describe('NanoHost restart-required reload fencing', () => {
           const failure = new Error('Synthetic readiness observation read failed.');
           const prepare = coreDb.sqlite.prepare.bind(coreDb.sqlite);
           const targetBeforeReload = getNanoHostRuntimeTarget(coreDb, host.identityId);
-          const readFailure = vi.spyOn(coreDb.sqlite, 'prepare').mockImplementation((sql: string) => {
-            if (sql.includes('target_id AS targetId') && sql.includes('WHERE identity_id = ?')) throw failure;
-            return prepare(sql);
-          });
+          const readFailure = vi
+            .spyOn(coreDb.sqlite, 'prepare')
+            .mockImplementation((sql: string) => {
+              if (sql.includes('target_id AS targetId') && sql.includes('WHERE identity_id = ?'))
+                throw failure;
+              return prepare(sql);
+            });
           try {
             expect(() => manager.reload({ mode: 'safe' })).toThrow(failure);
             expect(authority.mayCarryWork(sessions[0]!)).toBe(false);
@@ -202,10 +221,17 @@ describe('NanoHost restart-required reload fencing', () => {
           expect(getNanoHostRuntimeTarget(coreDb, host.identityId)).toEqual(targetBeforeReload);
         } else if (mode === 'safe') expect(manager.reload({ mode: 'safe' }).status).toBe('applied');
         else {
-          const response = await app.request(...operationRequest('runtime.reload', {}, {
-            method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ mode: 'strict', dryRun: mode === 'dry-run' }),
-          }));
+          const response = await app.request(
+            ...operationRequest(
+              'runtime.reload',
+              {},
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ mode: 'strict', dryRun: mode === 'dry-run' }),
+              }
+            )
+          );
           expect(response.status).toBe(200);
           expect((await response.json()).status).toBe('rejected');
         }
@@ -213,12 +239,19 @@ describe('NanoHost restart-required reload fencing', () => {
         if (mode === 'strict' || mode === 'dry-run') expect(manager.current()).toBe(initial);
         if (mode === 'dry-run') {
           expect(authority.mayCarryWork(sessions[0]!)).toBe(true);
-          expect(getNanoHostRuntimeTarget(coreDb, host.identityId)).toMatchObject({ ready: true, physicalEpoch: 'a'.repeat(64) });
+          expect(getNanoHostRuntimeTarget(coreDb, host.identityId)).toMatchObject({
+            ready: true,
+            physicalEpoch: 'a'.repeat(64),
+          });
           return;
         }
         expect(authority.mayCarryWork(sessions[0]!)).toBe(false);
         expect(authority.authoritativeGeneration(host.identityId)).toBeNull();
-        expect(getNanoHostRuntimeTarget(coreDb, host.identityId)).toMatchObject({ ready: false, freshEmpty: false, physicalEpoch: null });
+        expect(getNanoHostRuntimeTarget(coreDb, host.identityId)).toMatchObject({
+          ready: false,
+          freshEmpty: false,
+          physicalEpoch: null,
+        });
         if (mode === 'strict' || mode === 'read-failed') {
           authority.closePhysicalConnection(sessions[0]!);
           expect(authority.mayCarryWork(sessions[1]!)).toBe(false);
@@ -233,7 +266,12 @@ describe('NanoHost restart-required reload fencing', () => {
         expect(authority.authoritativeGeneration(host.identityId)).toBeNull();
 
         // A new App lifetime reads the restored startup file and admits a fresh generation.
-        app = createApp({ coreDb, dataRoot, runtimeConfigManager: createRuntimeConfigManager({ dataRoot }), store });
+        app = createApp({
+          coreDb,
+          dataRoot,
+          runtimeConfigManager: createRuntimeConfigManager({ dataRoot }),
+          store,
+        });
         expect((await admit()).status).toBe(200);
       } finally {
         for (const client of clients) client.destroy();

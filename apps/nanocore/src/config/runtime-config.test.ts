@@ -621,7 +621,11 @@ describe('runtime config loading and reload planning', () => {
     it('applies a capacity-only change without requiring restart', () => {
       const dataRoot = createDataRoot();
       try {
-        writeConfiguredServer(dataRoot, 'openai/gpt-5.1', `, "nanohost": ${JSON.stringify(initialHost)}`);
+        writeConfiguredServer(
+          dataRoot,
+          'openai/gpt-5.1',
+          `, "nanohost": ${JSON.stringify(initialHost)}`
+        );
         const manager = createRuntimeConfigManager({ dataRoot });
         const next = { ...initialHost, maxActiveTurnsPerSandbox: 8 };
         writeConfiguredServer(dataRoot, 'openai/gpt-5.1', `, "nanohost": ${JSON.stringify(next)}`);
@@ -687,7 +691,9 @@ describe('runtime config loading and reload planning', () => {
                 ? { ...transition.previous, maxActiveTurnsPerSandbox: 8 }
                 : transition.previous
             );
-            expect(captureCoverageBindingFromOpenKitConfig(manager.current().openKitConfig)).toEqual({
+            expect(
+              captureCoverageBindingFromOpenKitConfig(manager.current().openKitConfig)
+            ).toEqual({
               scope: 'server',
               value: mode === 'safe' ? 'on' : 'off',
             });
