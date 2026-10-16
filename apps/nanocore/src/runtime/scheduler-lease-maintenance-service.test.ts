@@ -329,14 +329,14 @@ describe('scheduler lease maintenance service', () => {
       dispatchLease(coreDb, 'heartbeat');
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        attemptId: 'attempt_00000000-0000-78e7-b5a5-40821c8579f3',
+        attemptId: testEntityId('attempt', 'lease_heartbeat'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
       });
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        attemptId: 'attempt_00000000-0000-78e7-b5a5-40821c8579f3',
+        attemptId: testEntityId('attempt', 'lease_heartbeat'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
@@ -372,14 +372,14 @@ describe('scheduler lease maintenance service', () => {
       dispatchLease(coreDb, 'server_user', triggerActor);
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        attemptId: 'attempt_00000000-0000-71ea-b559-2afe073c4300',
+        attemptId: testEntityId('attempt', 'lease_server_user'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
       });
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        attemptId: 'attempt_00000000-0000-71ea-b559-2afe073c4300',
+        attemptId: testEntityId('attempt', 'lease_server_user'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
@@ -416,14 +416,14 @@ describe('scheduler lease maintenance service', () => {
       });
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        attemptId: 'attempt_00000000-0000-7c09-99b8-354637bffa88',
+        attemptId: testEntityId('attempt', 'lease_actor_mismatch'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
       });
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        attemptId: 'attempt_00000000-0000-7c09-99b8-354637bffa88',
+        attemptId: testEntityId('attempt', 'lease_actor_mismatch'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
@@ -468,7 +468,7 @@ describe('scheduler lease maintenance service', () => {
       });
       recordCanonicalWorkspaceHandoff(workspaceDb, environmentPackage);
       markSchedulerExecutionAttemptClosing(coreDb, {
-        attemptId: 'attempt_00000000-0000-739d-b48c-42c87d00d358',
+        attemptId: testEntityId('attempt', 'lease_release_retry'),
         now: () => '2026-07-05T00:00:10.000Z',
         cause: 'worker-final-status',
       });
@@ -485,7 +485,7 @@ describe('scheduler lease maintenance service', () => {
       expectUnprovedWorkspaceReconciliation(coreDb, workspaceDb, environmentPackage);
       expect(
         observeExecutionAttempts(coreDb).find(
-          (attempt) => attempt.attempt_id === 'attempt_00000000-0000-739d-b48c-42c87d00d358'
+          (attempt) => attempt.attempt_id === testEntityId('attempt', 'lease_release_retry')
         )?.phase
       ).toBe('closing');
     } finally {
@@ -503,14 +503,14 @@ describe('scheduler lease maintenance service', () => {
       dispatchLease(coreDb, 'zero_input');
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        attemptId: 'attempt_00000000-0000-7493-a452-c33fc974d0e9',
+        attemptId: testEntityId('attempt', 'lease_zero_input'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
       });
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        attemptId: 'attempt_00000000-0000-7493-a452-c33fc974d0e9',
+        attemptId: testEntityId('attempt', 'lease_zero_input'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
@@ -529,7 +529,7 @@ describe('scheduler lease maintenance service', () => {
       ).toEqual([]);
       expect(['open', 'closing']).toContain(
         observeExecutionAttempts(coreDb).find(
-          (attempt) => attempt.attempt_id === 'attempt_00000000-0000-7493-a452-c33fc974d0e9'
+          (attempt) => attempt.attempt_id === testEntityId('attempt', 'lease_zero_input')
         )?.phase
       );
     } finally {
@@ -547,14 +547,14 @@ describe('scheduler lease maintenance service', () => {
       dispatchLease(coreDb, 'partial_handoff');
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        attemptId: 'attempt_00000000-0000-7aba-a63c-a596383f9e7a',
+        attemptId: testEntityId('attempt', 'lease_partial_handoff'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
       });
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        attemptId: 'attempt_00000000-0000-7aba-a63c-a596383f9e7a',
+        attemptId: testEntityId('attempt', 'lease_partial_handoff'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
@@ -587,7 +587,7 @@ describe('scheduler lease maintenance service', () => {
 
       expect(['open', 'closing']).toContain(
         observeExecutionAttempts(coreDb).find(
-          (attempt) => attempt.attempt_id === 'attempt_00000000-0000-7aba-a63c-a596383f9e7a'
+          (attempt) => attempt.attempt_id === testEntityId('attempt', 'lease_partial_handoff')
         )?.phase
       );
 
@@ -639,19 +639,19 @@ describe('scheduler lease maintenance service', () => {
       );
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        attemptId: 'attempt_00000000-0000-7bfa-a12a-039d346f7e1b',
+        attemptId: testEntityId('attempt', 'lease_stale_retained'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
       });
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        attemptId: 'attempt_00000000-0000-7bfa-a12a-039d346f7e1b',
+        attemptId: testEntityId('attempt', 'lease_stale_retained'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
       markSchedulerExecutionAttemptClosing(coreDb, {
-        attemptId: 'attempt_00000000-0000-735c-997f-8f1a24a4bd14',
+        attemptId: testEntityId('attempt', 'lease_release_retained'),
         now: () => '2026-07-05T00:00:10.000Z',
         cause: 'worker-final-status',
       });
@@ -684,19 +684,19 @@ describe('scheduler lease maintenance service', () => {
       recordCanonicalWorkspaceHandoff(workspaceDb, environmentPackage);
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        attemptId: 'attempt_00000000-0000-734d-a29f-66001428ce65',
+        attemptId: testEntityId('attempt', 'lease_release_timeout'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
       });
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
-        attemptId: 'attempt_00000000-0000-734d-a29f-66001428ce65',
+        attemptId: testEntityId('attempt', 'lease_release_timeout'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
       markSchedulerExecutionAttemptClosing(coreDb, {
-        attemptId: 'attempt_00000000-0000-734d-a29f-66001428ce65',
+        attemptId: testEntityId('attempt', 'lease_release_timeout'),
         now: () => '2026-07-05T00:00:10.000Z',
         cause: 'worker-final-status',
       });
@@ -722,7 +722,7 @@ describe('scheduler lease maintenance service', () => {
       });
       expect(
         observeExecutionAttempts(coreDb).find(
-          (attempt) => attempt.attempt_id === 'attempt_00000000-0000-734d-a29f-66001428ce65'
+          (attempt) => attempt.attempt_id === testEntityId('attempt', 'lease_release_timeout')
         )?.phase
       ).toBe('closing');
 
@@ -745,7 +745,7 @@ describe('scheduler lease maintenance service', () => {
       expect(recovery.reconcileAcceptedFinalStatus).toHaveBeenCalledTimes(3);
       expect(recovery.cleanupBackendSession).not.toHaveBeenCalled();
       expect(
-        getWorkerBackendSession(coreDb, 'attempt_00000000-0000-734d-a29f-66001428ce65')
+        getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_release_timeout'))
       ).toMatchObject({
         state: 'materializing',
         physicalCleanedAt: null,
@@ -755,7 +755,7 @@ describe('scheduler lease maintenance service', () => {
       ).toEqual([]);
       expect(
         observeExecutionAttempts(coreDb).find(
-          (attempt) => attempt.attempt_id === 'attempt_00000000-0000-734d-a29f-66001428ce65'
+          (attempt) => attempt.attempt_id === testEntityId('attempt', 'lease_release_timeout')
         )?.phase
       ).toBe('closing');
     } finally {

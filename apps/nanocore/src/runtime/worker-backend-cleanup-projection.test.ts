@@ -5,7 +5,6 @@ import { describe, expect, it } from 'vitest';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
-import { testEntityId } from '../test-support/entity-ids.js';
 import {
   listWorkspaceRuntimeEvidence,
   recordWorkerBackendTeardownEvidence,
@@ -70,17 +69,17 @@ function createFixture(options: { omitBackendStatus?: boolean } = {}) {
 /** Returns the canonical successful cleanup projection input. */
 function cleanupInput(environmentPackage: ReturnType<typeof recordTestAgentEnvironmentPackage>) {
   return {
-    agentSessionId: 'as_00000000-0000-75bd-ba85-63403d734f6e',
+    agentSessionId: environmentPackage.scope.agentSessionId,
     backendType: 'openshell',
     backendVersion: '0.0.80',
     completedAt: '2026-07-15T00:01:00.000Z',
     outcome: 'succeeded' as const,
     backendSessionId: 'openkit-as_cleanup_projection',
     environmentPackage,
-    packageSnapshotId: 'aepsnap_turn_cleanup_projection_as_cleanup_projection',
+    packageSnapshotId: environmentPackage.snapshotId,
     placement: 'local' as const,
-    threadId: testEntityId('th', 'thread_cleanup_projection'),
-    turnId: 'tu_00000000-0000-762f-9b7d-284155b49ed8',
+    threadId: environmentPackage.scope.threadId,
+    turnId: environmentPackage.scope.turnId,
     workerImage: 'openkit/worker-codex:dev',
     workspaceHandoffState: 'complete' as const,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -231,7 +230,9 @@ describe('worker backend cleanup projection', () => {
   ] as const)('rejects partial rows despite no-materialization proof with a %s handoff', (workspaceHandoffState) => {
     const { environmentPackage, workspaceDb } = createFixture();
     try {
-      workspaceDb.sqlite.prepare('DELETE FROM backend_workspace_handles').run();
+      expect(
+        workspaceDb.sqlite.prepare('DELETE FROM backend_workspace_handles').run().changes
+      ).toBe(1);
       expect(() =>
         projectWorkerBackendCleanup(workspaceDb, {
           ...cleanupInput(environmentPackage),
