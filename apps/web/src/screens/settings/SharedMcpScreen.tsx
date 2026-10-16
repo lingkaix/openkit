@@ -173,8 +173,8 @@ export function SharedMcpScreen() {
             <ErrorBanner
               message={
                 previewFailure === 409
-                  ? 'Discovery used stale configuration. Reload current configuration before a new deliberate preview.'
-                  : 'Discovery failed or its connection or cleanup outcome is unknown. Inspect current state and Reload current configuration before a new deliberate request. It will contact upstream again.'
+                  ? 'Discovery requires inspection. Configuration may be stale or cleanup unconfirmed. Inspect before another invocation. Reload current configuration only reads configuration and does not prove cleanup. Any new preview must be deliberate and may contact upstream again.'
+                  : 'Discovery failed or its connection or cleanup outcome is unknown. Inspect before another invocation. Reload current configuration only reads configuration and does not prove cleanup. Any new preview must be deliberate and may contact upstream again.'
               }
             />
           ) : null}

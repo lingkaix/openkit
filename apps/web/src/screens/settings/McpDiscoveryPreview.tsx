@@ -187,7 +187,8 @@ function Preview({ data, blocked, onFailure, onBusyChange }: Props) {
       <h2 className="text-sm font-bold text-fg">Discover tools before activation</h2>
       <p className="text-xs text-fg-muted">
         Preview contacts this retained configuration once with tools/list. It does not activate
-        supply, select a version, save bindings or permit a later tool call.
+        supply, select a version, save bindings or permit a later tool call. A configuration reread
+        does not prove cleanup of an earlier attempt.
       </p>
       <p className="break-all text-xs text-fg-muted">
         Server MCP {data.entry.id} · catalog revision {data.revision} · binding revision{' '}
@@ -308,8 +309,8 @@ function Preview({ data, blocked, onFailure, onBusyChange }: Props) {
         <ErrorBanner
           message={
             action.error.status === 409
-              ? 'The configuration is stale. Reload current configuration before a new deliberate preview.'
-              : 'Discovery failed or its connection or cleanup outcome is unknown. Inspect current state and Reload current configuration before a new deliberate request. It will contact upstream again.'
+              ? 'Discovery requires inspection. Configuration may be stale or cleanup unconfirmed. Inspect before another invocation. Reload current configuration only reads configuration and does not prove cleanup. Any new preview must be deliberate and may contact upstream again.'
+              : 'Discovery failed or its connection or cleanup outcome is unknown. Inspect before another invocation. Reload current configuration only reads configuration and does not prove cleanup. Any new preview must be deliberate and may contact upstream again.'
           }
         />
       ) : null}

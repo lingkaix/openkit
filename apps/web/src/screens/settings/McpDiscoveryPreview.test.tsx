@@ -163,6 +163,12 @@ describe('explicit MCP discovery preview', () => {
     expect(screen.queryByText('Read one record.')).not.toBeInTheDocument();
     expect(screen.getByText(/Reload current configuration/)).toBeVisible();
     if (status > 403)
+      expect(
+        screen.getByText(
+          /Reload current configuration only reads configuration and does not prove cleanup/
+        )
+      ).toBeVisible();
+    if (status > 403)
       expect(screen.getByRole('button', { name: 'Preview tools once' })).toBeDisabled();
     expect(preview).toHaveBeenCalledTimes(2);
     const states = view.cache

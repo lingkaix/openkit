@@ -374,7 +374,7 @@ openkit ops describe administration.mcp-discovery-preview
 openkit ops call administration.mcp-discovery-preview --input -
 ```
 
-Inspect the returned `mcpId`, `versionDigest`, `observedAt`, server version and bounded tool metadata. The result is one `tools/list` observation, not a saved schema, activation receipt or permission for `tools/call`. Preview does not save temporary grants or fill the allowlist. Choose exact allowed tools and explicitly save or enable the binding through the existing procedure afterwards. On denial, stale revision, timeout, failed or unknown connection/cleanup, inspect current configuration and redacted Vault evidence before a new deliberate preview. Never retry automatically, replay an old observation or infer that failed cleanup completed. A new invocation can contact upstream again. A restart does not reconstruct the preview list.
+Inspect the returned `mcpId`, `versionDigest`, `observedAt`, server version and bounded tool metadata. The result is one `tools/list` observation, not a saved schema, activation receipt or permission for `tools/call`. Preview does not save temporary grants or fill the allowlist. Choose exact allowed tools and explicitly save or enable the binding through the existing procedure afterwards. On denial, stale revision, timeout, failed or unknown connection/cleanup, inspect current configuration and redacted Vault evidence before a new deliberate preview. A 409 can mean stale configuration or unconfirmed cleanup; a configuration reread does not prove cleanup. Never retry automatically, replay an old observation or infer that failed cleanup completed. A new invocation can contact upstream again. A restart does not reconstruct the preview list.
 
 ## Hosting credential cutover
 

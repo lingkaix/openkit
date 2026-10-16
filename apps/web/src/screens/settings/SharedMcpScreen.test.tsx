@@ -192,8 +192,13 @@ describe('Shared MCP administration', () => {
       expect(screen.queryByText('Shared example')).not.toBeInTheDocument();
     } else {
       await screen.findByText(
-        status === 409 ? /Discovery used stale configuration/ : /Discovery failed or its connection/
+        status === 409 ? /Discovery requires inspection/ : /Discovery failed or its connection/
       );
+      expect(
+        screen.getByText(
+          /Reload current configuration only reads configuration and does not prove cleanup/
+        )
+      ).toBeVisible();
       expect(screen.getByRole('button', { name: 'Preview tools once' })).toBeDisabled();
       expect(screen.getByRole('button', { name: 'Enable shared supply' })).toBeDisabled();
     }
@@ -204,6 +209,9 @@ describe('Shared MCP administration', () => {
       expect(screen.getByRole('button', { name: 'Preview tools once' })).toBeEnabled()
     );
     expect(operations['administration.mcp-discovery-preview']).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByText(/A configuration reread does not prove cleanup of an earlier attempt/)
+    ).toBeVisible();
     await userEvent.click(screen.getByRole('button', { name: 'Preview tools once' }));
     await screen.findByText('Observed tool metadata.');
     expect(operations['administration.mcp-discovery-preview']).toHaveBeenCalledTimes(2);
