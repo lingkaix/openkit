@@ -50,6 +50,7 @@ import { createSchedulerAdmissionOperationImplementations } from './runtime/sche
 import type { TurnExecutor } from './runtime/types.js';
 import { createRecoveryOperationImplementations } from './runtime/worker-recovery-operations.js';
 import { createWorkspaceSyncOperationImplementations } from './runtime/workspace-sync-operations.js';
+import type { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { createDataRootAdminOperationImplementations } from './storage/data-root-admin-operations.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { createWorkspaceTransferOperationImplementations } from './storage/workspace-transfer-operations.js';
@@ -65,6 +66,8 @@ import { createWorkspaceOperationImplementations } from './workspace-operation-i
 import { createWorkspaceSharingOperationImplementations } from './workspace-sharing-operations.js';
 /** Existing process and record owners used by native invocation. */
 export interface OperationInvocationDependencies {
+  /** App-owned capacity admission, shared by Artifact and Workspace file transfers. */
+  readonly fileAdmission?: FileStorageAdmission;
   readonly coreDb: CoreDb | undefined;
   /** Current process and configuration owners for admitted product diagnostics. */
   readonly diagnosticsServices?: Parameters<typeof createDiagnosticsOperationImplementations>[0];

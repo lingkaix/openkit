@@ -95,7 +95,11 @@ function workspaceAuthority(fixture: ReturnType<typeof archiveFixture>) {
 describe('retained archive primary admission', () => {
   it('shares disk capacity admission across export and archive staging', async () => {
     let availableBytes = 1_000_000_000n;
-    const admission = new FileStorageAdmission('.', () => 0n, () => availableBytes);
+    const admission = new FileStorageAdmission(
+      '.',
+      () => 0n,
+      () => availableBytes
+    );
     const fixture = archiveFixture(admission);
     const archive = await exportedArchive(fixture);
     const before = workspaceAuthority(fixture);
@@ -108,16 +112,23 @@ describe('retained archive primary admission', () => {
     });
     try {
       const exported = await fixture.app.request(
-        ...operationRequest('workspace.export', { workspaceId: fixture.workspace.id }, { method: 'POST' })
+        ...operationRequest(
+          'workspace.export',
+          { workspaceId: fixture.workspace.id },
+          { method: 'POST' }
+        )
       );
-      const imported = await fixture.app.request('http://127.0.0.1/api/app/workspace-archives/import', {
-        body: archive.bytes,
-        headers: {
-          'content-type': WORKSPACE_EXPORT_ARCHIVE_MEDIA_TYPE,
-          'x-openkit-request-id': '00000000-0000-4000-8000-000000000017',
-        },
-        method: 'POST',
-      });
+      const imported = await fixture.app.request(
+        'http://127.0.0.1/api/app/workspace-archives/import',
+        {
+          body: archive.bytes,
+          headers: {
+            'content-type': WORKSPACE_EXPORT_ARCHIVE_MEDIA_TYPE,
+            'x-openkit-request-id': '00000000-0000-4000-8000-000000000017',
+          },
+          method: 'POST',
+        }
+      );
       expect([exported.status === 200, imported.status === 200]).toEqual([false, false]);
       expect(workspaceAuthority(fixture)).toEqual(before);
     } finally {

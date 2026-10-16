@@ -26,6 +26,8 @@ import { OperationError } from './operation-error.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
 import { hasUnprovedNanoHostWorkspaceCleanup } from './runtime/nanohost-attempt-records.js';
 import { listWorkerBackendSessions } from './runtime/worker-backend-sessions.js';
+import type { FileStorageAdmission } from './storage/artifacts/file-admission.js';
+import { withCanonicalFileWriteAdmission } from './storage/canonical-write-capacity.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
 import {
@@ -69,6 +71,7 @@ export function createWorkspaceDeletionOperationImplementations(
     OperationInvocationDependencies,
     | 'coreDb'
     | 'dataRoot'
+    | 'fileAdmission'
     | 'workspaceMutationAdmission'
     | 'closeWorkspaceMcpSessions'
     | 'repositoryWorkspaceDb'
@@ -79,7 +82,8 @@ export function createWorkspaceDeletionOperationImplementations(
     'workspace.delete': async (value, context) => {
       const coreDb = input.coreDb;
       const dataRoot = input.dataRoot;
-      if (!coreDb || !dataRoot)
+      const fileAdmission = input.fileAdmission;
+      if (!coreDb || !dataRoot || !fileAdmission)
         throw new OperationError(
           'workspace_deletion_unavailable',
           'Workspace deletion is unavailable.',
@@ -107,6 +111,7 @@ export function createWorkspaceDeletionOperationImplementations(
               coreDb,
               dataRoot,
               mutationAdmission: input.workspaceMutationAdmission!,
+              fileAdmission,
               repositoryWorkspaceDb: input.repositoryWorkspaceDb!,
               request: {
                 confirmation: value.confirmation,
@@ -128,7 +133,8 @@ export function createWorkspaceDeletionOperationImplementations(
     'workspace.deleted-recover': (value, context) => {
       const coreDb = input.coreDb;
       const dataRoot = input.dataRoot;
-      if (!coreDb || !dataRoot)
+      const fileAdmission = input.fileAdmission;
+      if (!coreDb || !dataRoot || !fileAdmission)
         throw new OperationError(
           'workspace_recovery_unavailable',
           'Deleted Workspace recovery is unavailable.',
@@ -167,15 +173,17 @@ export function createWorkspaceDeletionOperationImplementations(
         requireTerminalWorkspaceStorage(dataRoot, request);
         requireTerminalDeletionTruth({ coreDb, store: input.store!, workspaceId }, request);
         const verified = verifyDeletionArtifacts(dataRoot, request);
-        const imported = importVerifiedWorkspace({
-          authorityUserId: actor.userId,
-          recoveryOwnerUserId: registry.ownerUserId,
-          coreDb,
-          dataRoot,
-          requestId: value.requestId,
-          store: input.store!,
-          verified,
-        });
+        const imported = withCanonicalFileWriteAdmission(fileAdmission, () =>
+          importVerifiedWorkspace({
+            authorityUserId: actor.userId,
+            recoveryOwnerUserId: registry.ownerUserId,
+            coreDb,
+            dataRoot,
+            requestId: value.requestId,
+            store: input.store!,
+            verified,
+          })
+        );
         return RecoverDeletedWorkspaceResponseSchema.parse({
           recovery: {
             sourceWorkspaceId: workspaceId,
@@ -205,6 +213,7 @@ async function advanceWorkspaceDeletion(input: {
   coreDb: CoreDb;
   dataRoot: string;
   mutationAdmission: WorkspaceMutationAdmission;
+  fileAdmission: FileStorageAdmission;
   repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   request: { confirmation: string; expectedRegistryRevision: number; requestId: string };
   store: FsStore;
@@ -315,16 +324,20 @@ async function advanceWorkspaceDeletion(input: {
       ? verifyWorkspaceExportTree({
           exportRoot: existingWorkspaceExportRoot(input.dataRoot, input.workspaceId, exportId),
         })
-      : createVerifiedWorkspaceExport({
-          authorityUserId: request.originalOwnerUserId,
-          coreDb: input.coreDb,
-          dataRoot: input.dataRoot,
-          deletionRecoveryRequestId: request.requestId,
-          exportId,
-          repositoryWorkspaceDb: input.repositoryWorkspaceDb,
-          store: input.store,
-          workspaceId: input.workspaceId,
-        }).verified;
+      : withCanonicalFileWriteAdmission(
+          input.fileAdmission,
+          () =>
+            createVerifiedWorkspaceExport({
+              authorityUserId: request.originalOwnerUserId,
+              coreDb: input.coreDb,
+              dataRoot: input.dataRoot,
+              deletionRecoveryRequestId: request.requestId,
+              exportId,
+              repositoryWorkspaceDb: input.repositoryWorkspaceDb,
+              store: input.store,
+              workspaceId: input.workspaceId,
+            }).verified
+        );
     if (exported.manifest.id !== exportId || exported.manifest.workspaceId !== input.workspaceId) {
       throw recoveryRequired();
     }
