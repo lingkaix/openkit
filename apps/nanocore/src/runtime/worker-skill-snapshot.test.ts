@@ -208,33 +208,36 @@ describe('exact retained Worker Skill delivery', () => {
     });
   });
 
-  it.each([
-    'supporting bytes',
-    'missing supporting file',
-    'executable mode',
-    'empty directory',
-    'extra file',
-    'missing snapshot',
-  ] as const)('refuses %s tamper at AEP resolution and native import', async (tamper) => {
-    const snapshot = skillSnapshotPath(
-      coreDb.dataRoot,
-      turn.workspaceId,
-      'repo-guidelines',
-      first.version.digest
-    );
-    chmodSync(snapshot, 0o755);
-    if (tamper === 'supporting bytes') {
-      chmodSync(join(snapshot, 'supporting.bin'), 0o644);
-      writeFileSync(join(snapshot, 'supporting.bin'), 'changed');
-    } else if (tamper === 'missing supporting file') rmSync(join(snapshot, 'supporting.bin'));
-    else if (tamper === 'executable mode') chmodSync(join(snapshot, 'run.sh'), 0o444);
-    else if (tamper === 'empty directory') rmSync(join(snapshot, 'empty-dir'), { recursive: true });
-    else if (tamper === 'extra file') writeFileSync(join(snapshot, 'extra'), 'undeclared');
-    else rmSync(snapshot, { recursive: true });
-    const failure =
-      tamper === 'missing snapshot' ? CatalogContentUnavailableError : CatalogIntegrityError;
-    expect(() => resolvePackage()).toThrow(failure);
-    await expect(prepare()).rejects.toBeInstanceOf(failure);
+  describe.each(['aep', 'native'] as const)('%s snapshot admission', (boundary) => {
+    it.each([
+      'supporting bytes',
+      'missing supporting file',
+      'executable mode',
+      'empty directory',
+      'extra file',
+      'missing snapshot',
+    ] as const)('refuses %s tamper at AEP resolution and native import', async (tamper) => {
+      const snapshot = skillSnapshotPath(
+        coreDb.dataRoot,
+        turn.workspaceId,
+        'repo-guidelines',
+        first.version.digest
+      );
+      chmodSync(snapshot, 0o755);
+      if (tamper === 'supporting bytes') {
+        chmodSync(join(snapshot, 'supporting.bin'), 0o644);
+        writeFileSync(join(snapshot, 'supporting.bin'), 'changed');
+      } else if (tamper === 'missing supporting file') rmSync(join(snapshot, 'supporting.bin'));
+      else if (tamper === 'executable mode') chmodSync(join(snapshot, 'run.sh'), 0o444);
+      else if (tamper === 'empty directory')
+        rmSync(join(snapshot, 'empty-dir'), { recursive: true });
+      else if (tamper === 'extra file') writeFileSync(join(snapshot, 'extra'), 'undeclared');
+      else rmSync(snapshot, { recursive: true });
+      const failure =
+        tamper === 'missing snapshot' ? CatalogContentUnavailableError : CatalogIntegrityError;
+      if (boundary === 'aep') expect(() => resolvePackage()).toThrow(failure);
+      else await expect(prepare()).rejects.toBeInstanceOf(failure);
+    });
   });
 
   it.each([
