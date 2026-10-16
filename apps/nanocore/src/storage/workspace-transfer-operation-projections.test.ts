@@ -4,7 +4,7 @@ import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
-import { PROTOCOL_VERSION } from '@openkit/protocol';
+import { deriveEntityId, PROTOCOL_VERSION } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
@@ -831,7 +831,11 @@ describe('Workspace JSON transfer cutover', () => {
     const { exportId } = await exported.json();
     const workspaceDb = openWorkspaceDb(root, DEMO_WORKSPACE_ID);
     try {
-      workspaceDb.sqlite.prepare(mutation).run(`cap_storage_export_${exportId}`);
+      expect(
+        workspaceDb.sqlite
+          .prepare(mutation)
+          .run(deriveEntityId('cap', ['storage_export', exportId])).changes
+      ).toBeGreaterThan(0);
     } finally {
       workspaceDb.sqlite.close();
     }
