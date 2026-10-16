@@ -242,7 +242,7 @@ export function RecoveryScreen() {
   }
 
   const workersReadAvailable =
-    workersVerified && workersQuery.isSuccess && !workersQuery.isFetching;
+    workersVerified && workersQuery.isSuccess && workersQuery.fetchStatus === 'idle';
 
   function workerReleaseLocked() {
     if (disconnected || !workersReadAvailable) return true;
@@ -259,7 +259,7 @@ export function RecoveryScreen() {
     !workspaceId ||
     !verifiedAdmissionWorkspaces.has(workspaceId) ||
     !admissionsQuery.isSuccess ||
-    admissionsQuery.isFetching ||
+    admissionsQuery.fetchStatus !== 'idle' ||
     Boolean(
       workspaceId &&
         ((schedulerLock?.workspaceId === workspaceId ? schedulerLock : null) ??
@@ -466,7 +466,7 @@ export function RecoveryScreen() {
             <ErrorBanner message={workersAlert.message} onRetry={workersAlert.onRetry} />
           ) : null}
           {!workersQuery.isError &&
-          !workersQuery.isFetching &&
+          workersQuery.fetchStatus === 'idle' &&
           !workersLoading &&
           workers.length === 0 ? (
             <p className="text-sm text-fg-muted">No interrupted workers</p>
@@ -545,7 +545,7 @@ export function RecoveryScreen() {
           ) : null}
           {admissionsLoading ? <Skeleton lines={2} /> : null}
           {!admissionsQuery.isError &&
-          !admissionsQuery.isFetching &&
+          admissionsQuery.fetchStatus === 'idle' &&
           !admissionsLoading &&
           admissions.length === 0 ? (
             <p className="text-sm text-fg-muted">No scheduler admissions</p>

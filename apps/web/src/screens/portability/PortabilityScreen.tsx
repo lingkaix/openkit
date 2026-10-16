@@ -161,7 +161,7 @@ function ProjectVault({
 
   const references = vault.isSuccess ? (vault.data?.references ?? []) : [];
   const unbound = references.filter((item) => item.status === 'unbound');
-  const writeBlocked = disconnected || !vault.isSuccess || vault.isFetching;
+  const writeBlocked = disconnected || !vault.isSuccess || vault.fetchStatus !== 'idle';
   const rebindError = vaultRebind.isError ? rebindWorkspaceVaultError(vaultRebind.error) : null;
 
   function submitRebind(referenceId: string) {
@@ -187,7 +187,7 @@ function ProjectVault({
         />
       ) : null}
       {rebindError ? <ErrorBanner message={rebindError} /> : null}
-      {vault.isSuccess && !vault.isFetching && references.length === 0 ? (
+      {vault.isSuccess && vault.fetchStatus === 'idle' && references.length === 0 ? (
         <EmptyState
           icon="key"
           title="No vault references"

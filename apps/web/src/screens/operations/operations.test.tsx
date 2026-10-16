@@ -7,7 +7,7 @@ import {
   SchedulerAdmissionReadModelSchema,
 } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
@@ -876,6 +876,78 @@ describe('Recovery and search', () => {
     await waitFor(() => expect(workerActionButton(workers)).toBeEnabled());
     expect(within(workers).queryByRole('alert')).toBeNull();
     expect(release.mock.calls).toEqual([[originalCommand]]);
+  });
+
+  it('keeps recorded Recovery observations inspectable while a paused current read blocks effects until resume completes', async () => {
+    const user = userEvent.setup();
+    const workersReread = createDeferred<{ items: unknown[] }>();
+    const admissionsReread = createDeferred<{ items: unknown[] }>();
+    const workersRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: ALL_WORKERS })
+      .mockReturnValue(workersReread.promise);
+    const admissionsRead = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [DENIED_ADMISSION] })
+      .mockReturnValue(admissionsReread.promise);
+    const client = makeClient({
+      'recovery.worker-list': workersRead,
+      'scheduler.list': admissionsRead,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
+    });
+    onlineManager.setOnline(true);
+    try {
+      renderApp('/recovery', client, undefined, queryClient);
+      const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
+      const scheduler = await screen.findByRole('region', { name: 'Scheduler admissions' });
+      await waitFor(() => expect(workerActionButton(workers)).toBeEnabled());
+      act(() => onlineManager.setOnline(false));
+      await act(async () => {
+        await Promise.all([
+          queryClient.refetchQueries({ queryKey: operationsKeys.workers, exact: true }),
+          queryClient.refetchQueries({
+            queryKey: operationsKeys.admissions(WORKSPACE.id),
+            exact: true,
+          }),
+        ]);
+      });
+      await waitFor(() => {
+        expect(queryClient.getQueryState(operationsKeys.workers)?.fetchStatus).toBe('paused');
+        expect(
+          queryClient.getQueryState(operationsKeys.admissions(WORKSPACE.id))?.fetchStatus
+        ).toBe('paused');
+      });
+      expect(workersRead).toHaveBeenCalledTimes(1);
+      expect(admissionsRead).toHaveBeenCalledTimes(1);
+      expect(within(workers).getByText(INTERRUPTED_WORKER.diagnosticsSummary)).toBeInTheDocument();
+      expect(within(scheduler).getByText(DENIED_ADMISSION.requestedAgentId)).toBeInTheDocument();
+      await toggleInspect(user, rowFor(workers, INSPECT_WORKER.diagnosticsSummary));
+      expectInspectExpanded(rowFor(workers, INSPECT_WORKER.diagnosticsSummary));
+      expectWorkerActionUnavailable(workers);
+      expectActionUnavailable(scheduler, 'Retry');
+      expectActionUnavailable(scheduler, 'Cancel');
+      act(() => onlineManager.setOnline(true));
+      await waitFor(() => {
+        expect(workersRead).toHaveBeenCalledTimes(2);
+        expect(admissionsRead).toHaveBeenCalledTimes(2);
+      });
+      expectWorkerActionUnavailable(workers);
+      expectActionUnavailable(scheduler, 'Cancel');
+      await act(async () => {
+        workersReread.resolve({ items: ALL_WORKERS });
+        admissionsReread.resolve({ items: [DENIED_ADMISSION] });
+        await Promise.all([workersReread.promise, admissionsReread.promise]);
+      });
+      await waitFor(() => expect(workerActionButton(workers)).toBeEnabled());
+      expect(within(scheduler).getByRole('button', { name: 'Retry' })).toBeEnabled();
+      expect(client.operations['recovery.checkpoint-retry']).not.toHaveBeenCalled();
+      expect(client.operations['scheduler.retry']).not.toHaveBeenCalled();
+      expect(client.operations['scheduler.cancel']).not.toHaveBeenCalled();
+    } finally {
+      act(() => onlineManager.setOnline(true));
+    }
   });
 
   it('starts current recovery reads on a fresh-cache remount before enabling actions', async () => {
