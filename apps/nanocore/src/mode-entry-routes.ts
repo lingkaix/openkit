@@ -41,6 +41,10 @@ import {
   resolveDefaultAgentId,
 } from './config/runtime-config.js';
 import {
+  admitModelRequest,
+  ModelRequestAdmissionError,
+} from './context/model-request-admission.js';
+import {
   type AssistantCommandResult,
   assembleAssistantCommandRun,
   runAssistantCommand,
@@ -2690,6 +2694,7 @@ export function createConversationService({
           attempt,
           execution,
         }) => {
+          let admissionFailure: ModelRequestAdmissionError | undefined;
           const response = await Promise.race([
             llmGatewayDispatcher.createChatCompletion(
               provider,
@@ -2731,11 +2736,39 @@ export function createConversationService({
                       })
                     );
                 },
-                transport: { signal, deadline: execution.deadline },
+                transport: {
+                  signal,
+                  deadline: execution.deadline,
+                  finalRequestAdmission: (final) => {
+                    try {
+                      admitModelRequest({
+                        payload: final.payload,
+                        continuity: final.codexTurnState,
+                        contextWindowTokens: Math.min(
+                          final.contextWindowTokens,
+                          input.logicalModel.contract?.context ?? Infinity
+                        ),
+                        outputReserveTokens: final.outputReserveTokens,
+                      });
+                    } catch (error) {
+                      if (error instanceof ModelRequestAdmissionError) admissionFailure = error;
+                      throw error;
+                    }
+                  },
+                },
               }
             ),
             aborted,
-          ]);
+          ]).catch((error: unknown) => {
+            // Stock can flatten hook errors; retain this trusted refusal for existing Quick Chat closeout.
+            if (admissionFailure)
+              throw new TurnStartValidationError(
+                admissionFailure.code,
+                admissionFailure.message,
+                400
+              );
+            throw error;
+          });
           const content = response.choices[0]?.message.content;
           if (typeof content !== 'string' || content.trim().length === 0)
             throw new TurnStartValidationError(
@@ -3394,8 +3427,9 @@ export function createConversationService({
           };
         }
 
-        const objective =
-          StructuredWorkerDelegationRequestSchema.shape.objective.safeParse(chatInput.input);
+        const objective = StructuredWorkerDelegationRequestSchema.shape.objective.safeParse(
+          chatInput.input
+        );
         if (!objective.success) {
           throw new TurnStartValidationError(
             'invalid_request',

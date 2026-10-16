@@ -2514,11 +2514,15 @@ describe('quick chat app API', () => {
       llmPiAiClient: { createChatCompletion } as unknown as PiAiGatewayClient,
     });
     const response = await app.request(
-      ...operationRequest('chat.quick', {}, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ input: 'A small public prompt.' }),
-      })
+      ...operationRequest(
+        'chat.quick',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ input: 'A small public prompt.' }),
+        }
+      )
     );
 
     expect(response.status).toBe(400);
