@@ -455,6 +455,51 @@ describe('protocol schemas', () => {
     expect(parsed.modelId).toBe('model_codex');
   });
 
+  it('preserves exact run Skill input and retained omission while refusing duplicate selectors', () => {
+    const input = {
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      requestId: '00000000-0000-4000-8000-000000000129',
+      input: 'Use exact Skill',
+    };
+    const skillSelections = [{ skillId: 'run-skill', digest: `sha256:${'a'.repeat(64)}` }];
+    expect(SubmitTurnInputRequestSchema.parse({ ...input, skillSelections })).toEqual({
+      ...input,
+      skillSelections,
+    });
+    expect(SubmitTurnInputRequestSchema.parse(input)).not.toHaveProperty('skillSelections');
+    expect(
+      SubmitTurnInputRequestSchema.safeParse({
+        ...input,
+        skillSelections: [...skillSelections, ...skillSelections],
+      }).success
+    ).toBe(false);
+    expect(
+      SubmitTurnInputRequestSchema.safeParse({
+        ...input,
+        skillSelections: [{ skillId: 'run-skill', digest: 'latest' }],
+      }).success
+    ).toBe(false);
+    const turn = {
+      id: 'turn_run',
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      triggerActor: { kind: 'user', id: 'user_local' },
+      items: [],
+      status: 'pending',
+      error: null,
+      configVersion: null,
+      startedAt: null,
+      completedAt: null,
+      durationMs: null,
+    };
+    expect(TurnSchema.parse(turn)).not.toHaveProperty('skillSelections');
+    expect(ProductTurnSchema.parse({ ...turn, skillSelections })).toHaveProperty(
+      'skillSelections',
+      skillSelections
+    );
+  });
+
   it('rejects empty model overrides on turn requests', () => {
     expect(() =>
       SubmitTurnInputRequestSchema.parse({
