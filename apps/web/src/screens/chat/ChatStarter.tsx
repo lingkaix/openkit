@@ -19,10 +19,7 @@ import {
   useCreateThread,
   useCurrentWorkspaceId,
   useSendTurn,
-  useSignedInUserId,
-  useWorkspaceSummaries,
   useWorkspaces,
-  workspaceAdmissionIsAmbiguous,
 } from './data';
 
 /**
@@ -39,9 +36,6 @@ export function ChatStarter() {
   const navigate = useNavigate();
   const workspaceId = useCurrentWorkspaceId();
   const workspaces = useWorkspaces();
-  const summaries = useWorkspaceSummaries();
-  const ambiguous = summaries.isSuccess && workspaceAdmissionIsAmbiguous(summaries.data);
-  const sessionUser = useSignedInUserId(ambiguous);
   const navigation = useConversationNavigation(workspaceId);
   const targets = useConversationTargets(workspaceId);
   const artifacts = useArtifacts(workspaceId);
@@ -56,13 +50,8 @@ export function ChatStarter() {
   const createOwner = create.variables?.workspaceId === workspaceId;
   const conversations = navigation.data ?? [];
   // Retry the read that prevented authorized Workspace resolution, never navigation with a null ID.
-  const recentRead = workspaces.isError
-    ? workspaces
-    : !workspaceId && ambiguous
-      ? sessionUser
-      : navigation;
-  const workspaceUnavailable =
-    !workspaceId && workspaces.isSuccess && (!ambiguous || sessionUser.isSuccess);
+  const recentRead = workspaces.isError ? workspaces : navigation;
+  const workspaceUnavailable = !workspaceId && workspaces.isSuccess;
 
   useEffect(() => {
     mounted.current = true;
@@ -91,7 +80,7 @@ export function ChatStarter() {
 
   /** Imports an attachment and starts this starter's list refresh without delaying selection. */
   async function importFile(file: File) {
-    const attachment = await importComposerFile(workspaceId, file, importArtifact.mutateAsync);
+    const attachment = await importComposerFile(workspaceId, file, importArtifact);
     void artifacts.refetch();
     return attachment;
   }

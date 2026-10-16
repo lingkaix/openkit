@@ -1,12 +1,14 @@
 import type { z } from 'zod';
 import { ACCESS_TOKEN_OPERATION_DEFINITIONS } from './access-token-operations.js';
 import { ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS } from './administration-operations.js';
+import { ADMINISTRATOR_CLEANUP_OPERATION_DEFINITIONS } from './administrator-cleanup-operations.js';
 import { AGENT_OPERATION_DEFINITIONS } from './agent-operations.js';
 import { APP_SEARCH_OPERATION_DEFINITIONS } from './app-search-operations.js';
 import { APP_UPDATE_OPERATION_DEFINITIONS } from './app-update-operations.js';
 import { ARTIFACT_OPERATION_DEFINITIONS } from './artifact-operations.js';
 import { ATTENTION_OPERATION_DEFINITIONS } from './attention-operations.js';
 import { AUTOMATION_OPERATION_DEFINITIONS } from './automation-operations.js';
+import { CALLER_OPERATION_DEFINITIONS } from './caller-operations.js';
 import { CATALOG_OPERATION_DEFINITIONS } from './catalog-operations.js';
 import {
   CONVERSATION_OPERATION_DEFINITIONS,
@@ -84,6 +86,7 @@ export { WORKSPACE_OPERATION_DEFINITIONS } from './workspace-operations.js';
 export const ADMINISTRATION_OPERATION_DEFINITIONS = composeOperationTables(
   WORKER_ENVIRONMENT_OPERATION_DEFINITIONS,
   ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS,
+  ADMINISTRATOR_CLEANUP_OPERATION_DEFINITIONS,
   APP_UPDATE_OPERATION_DEFINITIONS,
   DIAGNOSTICS_OPERATION_DEFINITIONS,
   NANOHOST_OPERATION_DEFINITIONS,
@@ -92,6 +95,7 @@ export const ADMINISTRATION_OPERATION_DEFINITIONS = composeOperationTables(
 
 /** Statically composed product contracts. */
 export const PRODUCT_OPERATION_DEFINITIONS = composeOperationTables(
+  CALLER_OPERATION_DEFINITIONS,
   RUNTIME_CONFIG_OPERATION_DEFINITIONS,
   PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS,
   VAULT_OPERATION_DEFINITIONS,
@@ -171,4 +175,5 @@ export function operationModelInput(
 export { ACCESS_TOKEN_OPERATION_DEFINITIONS } from './access-token-operations.js';
 export { ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS } from './administration-operations.js';
 export { APP_UPDATE_OPERATION_DEFINITIONS } from './app-update-operations.js';
+export { CALLER_OPERATION_DEFINITIONS } from './caller-operations.js';
 export { WORKER_ENVIRONMENT_OPERATION_DEFINITIONS } from './worker-environment-operations.js';

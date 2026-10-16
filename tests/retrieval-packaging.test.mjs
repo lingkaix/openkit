@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
@@ -11,6 +11,40 @@ const root = resolve(import.meta.dirname, '..');
 const archiveName = 'mecab-ipadic-2.7.0-20250920.tar.gz';
 const expected = 'a7ba9f645ffe7094e56ae1c4a81d100df8fbb1e28bbe1792622e9728e162db3d';
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
+
+// Notice provenance reads metadata offline, so cold shards must fetch first.
+test('retrieval tests fetch locked dependencies before offline notices and stop on fetch failure', (t) => {
+  const fixture = mkdtempSync(join(tmpdir(), 'retrieval-test-bootstrap-'));
+  t.after(() => rmSync(fixture, { recursive: true, force: true }));
+  const record = join(fixture, 'commands');
+  for (const command of ['cargo', 'python3', 'bash'])
+    writeFileSync(
+      join(fixture, command),
+      `#!/bin/sh\nprintf '%s\\n' '${command}' "$*" >> '${record}'\n` +
+        (command === 'cargo' ? 'exit "${FETCH_EXIT:-0}"\n' : ''),
+      { mode: 0o755 }
+    );
+  const recipe = JSON.parse(readFileSync(join(root, 'apps/retrieval-kernel/package.json'))).scripts
+    .test;
+  const run = (fetchExit) =>
+    spawnSync('/bin/sh', ['-c', recipe], {
+      cwd: join(root, 'apps/retrieval-kernel'),
+      encoding: 'utf8',
+      env: { ...process.env, PATH: fixture, FETCH_EXIT: String(fetchExit) },
+    });
+  assert.equal(run(0).status, 0);
+  assert.deepEqual(readFileSync(record, 'utf8').trim().split('\n'), [
+    'cargo',
+    'fetch --locked',
+    'python3',
+    '-m unittest discover -s tests -p *_test.py',
+    'bash',
+    '../../scripts/retrieval-cargo.sh test --locked',
+  ]);
+  writeFileSync(record, '');
+  assert.equal(run(23).status, 23);
+  assert.deepEqual(readFileSync(record, 'utf8').trim().split('\n'), ['cargo', 'fetch --locked']);
+});
 
 test('vendored IPADIC is exact, caches without downloads, retains COPYING, and rejects cache corruption', () => {
   const archive = join(root, 'apps/retrieval-kernel/vendor', archiveName);

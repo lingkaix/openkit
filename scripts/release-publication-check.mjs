@@ -7,7 +7,8 @@ import { pathToFileURL } from 'node:url';
 import { parseVersionTag } from './release-preflight.mjs';
 import { canonical, sha } from './release-safety.mjs';
 
-const candidateJobs = [
+export const registryJob = 'Prerelease registry admission';
+export const candidateJobs = [
   'L0-L2 static, unit, contract',
   'L3 NanoCore e2e',
   'L5 smoke',
@@ -20,7 +21,7 @@ const candidateJobs = [
   'Smoke worker-runtimes (linux/amd64)',
   'Smoke worker-runtimes (linux/arm64)',
 ];
-const publicationJobs = [
+export const publicationJobs = [
   'Publish app image',
   'Publish worker-common image',
   'Publish worker-runtimes image',
@@ -89,12 +90,43 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
       'publish-app-image'
     );
   }
-  for (const name of publicationJobIds) {
+  const movedJobs = [
+    'candidate-plan',
+    'candidate-images',
+    'candidate-index',
+    ...(blocks.has('candidate-registry') ? ['candidate-registry'] : []),
+  ];
+  const hasMovedWork = movedJobs.some((name) => blocks.has(name));
+  let candidateImageIds;
+  if (hasMovedWork) publicationJobIds.push(...movedJobs, 'container-image-matrix');
+  for (const name of new Set(publicationJobIds)) {
     const block = blocks.get(name);
     requireFact(typeof block === 'string', `publication job missing: ${name}`);
     jobs[name] = git(['hash-object', '--stdin'], block).trim();
     for (const match of block.matchAll(/\bscripts\/[a-zA-Z0-9_./-]+\.(?:mjs|sh|py)\b/g))
       pending.add(match[0]);
+  }
+  if (hasMovedWork) {
+    pending.add('containers/images.json');
+    pending.add('.dockerignore');
+    pending.add('Caddyfile');
+    const images = JSON.parse(read('containers/images.json').bytes).images.filter((i) => i.release);
+    requireFact(images.length > 0, 'candidate image catalog');
+    candidateImageIds = images.map((i) => i.id);
+    const directories = new Set(
+      images.flatMap((i) => [posix.dirname(i.dockerfile), posix.dirname(i.smoke)])
+    );
+    for (const directory of directories) {
+      for (const file of git(['ls-tree', '-r', '--name-only', sourceCommit, '--', directory])
+        .trim()
+        .split('\n'))
+        if (file) pending.add(file);
+    }
+    // These are image-construction programs, not the product source bundled by COPY . . .
+    for (const file of git(['ls-tree', '-r', '--name-only', sourceCommit, '--', 'scripts'])
+      .trim()
+      .split('\n'))
+      if (/^scripts\/retrieval-[^/]+\.(?:py|sh)$/.test(file)) pending.add(file);
   }
   requireFact(pending.size > 0, 'publication jobs have no admitted script inputs');
   // Current publication scripts use relative static imports and literal URL file reads.
@@ -106,16 +138,25 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
     );
     const { blob, bytes } = read(file);
     files[file] = blob;
+    for (const match of bytes.matchAll(/\bscripts\/[a-zA-Z0-9_./-]+\.(?:mjs|sh|py)\b/g))
+      pending.add(match[0]);
     if (!/\.(?:mjs|js)$/.test(file)) continue;
     for (const match of bytes.matchAll(
-      /(?:\bfrom\s*|\bimport\s*(?:\(\s*)?|\bnew URL\(\s*)['"](\.[^'"]+)['"]/g
+      /(\bfrom\s*|\bimport\s*(?:\(\s*)?|\bnew URL\(\s*)['"](\.[^'"]+)['"]/g
     )) {
-      const dependency = posix.normalize(posix.join(posix.dirname(file), match[1]));
+      // A trailing-slash URL locates a directory (for example a build's cwd),
+      // not file bytes. Imports and literal file URLs must still resolve to blobs.
+      if (match[1].startsWith('new URL') && match[2].endsWith('/')) continue;
+      const dependency = posix.normalize(posix.join(posix.dirname(file), match[2]));
       pending.add(dependency);
     }
   }
   const inputs = { jobs, files };
-  return { ...inputs, sha256: sha(canonical(inputs)) };
+  return {
+    ...inputs,
+    ...(candidateImageIds ? { candidateImageIds } : {}),
+    sha256: sha(canonical(inputs)),
+  };
 }
 /** Skipped or unnamed jobs cannot supply the required real-run proof. */
 function successfulJobs(run, names) {
@@ -184,7 +225,10 @@ export function checkPublication(e, { now = new Date(), repoRoot = process.cwd()
       c.attempt > 0 &&
       ((c.event === 'push' && c.ref === 'refs/heads/main' && c.gate === 'release-gate') ||
         (c.event === 'workflow_dispatch' && ['release-gate', 'full'].includes(c.gate))) &&
-      successfulJobs(c, candidateJobs),
+      successfulJobs(c, [
+        ...candidateJobs,
+        ...(actual.candidateImageIds ?? []).map((id) => `Candidate index (${id})`),
+      ]),
     'successful exact-P candidate run and jobs'
   );
   let baselineVersion;
@@ -196,7 +240,7 @@ export function checkPublication(e, { now = new Date(), repoRoot = process.cwd()
   const baselineJobNames = actual.jobs['smoke-app-native']
     ? [
         ...publicationJobs,
-        'Build app candidate',
+        'Read app candidate',
         'Smoke App native (linux/amd64)',
         'Smoke App native (linux/arm64)',
       ]
@@ -241,6 +285,33 @@ export function checkPublication(e, { now = new Date(), repoRoot = process.cwd()
         ),
     'approved publication baseline identity and tag-push provenance'
   );
+  if (actual.candidateImageIds?.length) {
+    const r = e.registry;
+    requireFact(
+      Number.isSafeInteger(r?.artifactId) &&
+        r.artifactId > 0 &&
+        r?.sha === e.sha &&
+        r.tag === e.tag &&
+        r.inputs === actual.sha256 &&
+        Number.isSafeInteger(r.attempt) &&
+        r.attempt > 0 &&
+        r.provenance?.runId === r.runId &&
+        r.provenance.attempt === r.attempt &&
+        r.candidate?.runId === e.candidate.runId &&
+        r.candidate.attempt === e.candidate.attempt &&
+        ((r.event === 'push' && r.ref === 'refs/heads/main') || r.event === 'workflow_dispatch') &&
+        Number.isFinite(Date.parse(r.inspectionStartedAt)) &&
+        start <= Date.parse(r.inspectionStartedAt) &&
+        Date.parse(r.inspectionStartedAt) <= Date.parse(r.checkedAt) &&
+        hash.test(r.recordSha256 ?? '') &&
+        r.recordSha256 === e.identities?.registryEvidenceSha256 &&
+        Number.isFinite(Date.parse(r.checkedAt)) &&
+        start <= Date.parse(r.checkedAt) &&
+        Date.parse(r.checkedAt) <= now.getTime() &&
+        successfulJobs(r, [registryJob]),
+      'fresh exact-P CI registry evidence'
+    );
+  }
   const identities = e.identities;
   requireFact(
     (identities?.state === 'unused' &&

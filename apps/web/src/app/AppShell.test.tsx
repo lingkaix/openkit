@@ -45,6 +45,8 @@ function makeClient(): CoreClient {
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
       'workspace.list': vi.fn().mockResolvedValue({
         items: [{ id: 'ws1', name: 'Market research' }].map((workspace) => ({
+          membershipStatus: 'active' as const,
+          accessCause: 'membership' as const,
           workspace,
           effectiveRole: 'owner',
           membershipRevision: 1,

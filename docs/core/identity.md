@@ -61,6 +61,16 @@ An `AuthSession` may carry a non-secret derived-authority Token reference when a
 
 These are conceptual record families, not a complete field list.
 
+### Implicit Local Human
+
+The implicit local human is one ordinary canonical User in the existing Core users authority. A fresh local deployment allocates its `usr` UUIDv7 once under the existing single-writer initialization and User transaction boundary. Local actor, ownership, personal-Workspace and recovery consumers resolve that recorded User. A fixed textual singleton or separate lookup registry supplies no identity authority ([accepted D4 realization](../decisions/20261015-identifier_owner_declarations.md)).
+
+Restart requires exactly one consistent recorded local User and reuses its ID. Updates, disabled state and retained history preserve that identity under the existing User lifecycle. Missing or ambiguous local authority on an initialized deployment fails the critical local-identity phase before recovery. Startup must not mint a replacement or select an unrelated User.
+
+Only the existing fresh-deployment initialization boundary permits first allocation. An empty lookup on a used deployment does not prove that boundary. If existing authority cannot prove fresh initialization, fail closed. This rule creates no initialization marker or durable registry.
+
+Server mode creates no implicit local User. An explicitly authorized pre-stable staged reinstall may initialize a fresh local deployment; startup failure grants no reset authority. Demo Workspace and Thread records use fixture-owned canonical allocations. Tests may inject canonical IDs without making them product defaults. Acceptance requires one allocation, stable identity after reopen, unchanged local permissions, and refusal of missing or duplicate authority after initialization. There is no separate local-identity lifecycle.
+
 ## Typical Record Areas
 
 `User` record areas include stable identity, `kind` (`local` only for the implicit local-human projection or `human` for an account-backed human), display name, contact handles, status, creation time, last activity time, and profile metadata. Both `kind` values remain projections of the same Core `User` family.

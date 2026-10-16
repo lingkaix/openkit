@@ -4,6 +4,7 @@ import {
   type AgentAssistantMessage,
   type AgentMessage,
   type AgentTool,
+  type InternalAgentProviderRequest,
   runInternalAgentLoop,
 } from './internal-agent-loop.js';
 
@@ -11,11 +12,6 @@ const model = {
   logicalModelId: 'assistant',
   capabilities: ['chat-completions', 'tool-calling'],
   modelFamilyId: 'gpt-5',
-};
-const contextManagement = {
-  type: 'compaction' as const,
-  compactThreshold: 8_000,
-  authority: 'openkit' as const,
 };
 
 function userMessage(text = 'Inspect the environment.'): AgentMessage {
@@ -35,7 +31,6 @@ function input(tools: readonly AgentTool[] = []) {
     messages: [userMessage()],
     tools,
     model,
-    contextManagement,
     limits: { maxModelTurns: 4, maxToolCalls: 3, deadlineMs: 5_000 },
     signal: new AbortController().signal,
   };
@@ -224,6 +219,127 @@ describe('internal Agent loop', () => {
     );
   });
 
+  it('discards a Provider result when the caller cancels before it settles', async () => {
+    const controller = new AbortController();
+    const initial = input();
+    const call = vi.fn(async () => {
+      // Cancel after the dependency race settles, before the loop consumes its result.
+      queueMicrotask(() => queueMicrotask(() => controller.abort()));
+      return { message: assistantMessage([{ type: 'text', text: 'Too late.' }]) };
+    });
+
+    const result = await runInternalAgentLoop({ ...initial, signal: controller.signal }, call);
+
+    expect(result).toEqual({ kind: 'aborted', messages: initial.messages });
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it('discards a Tool result when the closure cancels its run', async () => {
+    const controller = new AbortController();
+    const tool: AgentTool = {
+      name: 'environment.status',
+      description: 'Read status.',
+      inputSchema: { type: 'object' },
+      execute: async () => {
+        queueMicrotask(() => queueMicrotask(() => controller.abort()));
+        return { content: [{ type: 'text', text: 'Too late.' }] };
+      },
+    };
+    const message = assistantMessage([
+      { type: 'toolCall', callId: 'cancel', name: tool.name, arguments: {} },
+    ]);
+    const initial = input([tool]);
+    const call = vi.fn(async () => ({ message }));
+
+    const result = await runInternalAgentLoop({ ...initial, signal: controller.signal }, call);
+
+    expect(result).toEqual({ kind: 'aborted', messages: [...initial.messages, message] });
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it('observes a dependency rejection when invocation synchronously cancels the run', async () => {
+    const controller = new AbortController();
+    const initial = input();
+    let calls = 0;
+    // A mock wrapper can observe rejections itself and hide the loop's missing handler.
+    const call = () => {
+      calls += 1;
+      controller.abort();
+      return Promise.reject(new Error('Cancelled dependency failed.'));
+    };
+
+    const result = await runInternalAgentLoop({ ...initial, signal: controller.signal }, call);
+    // Give the runner a turn to detect an unobserved dependency rejection.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(result).toEqual({ kind: 'aborted', messages: initial.messages });
+    expect(calls).toBe(1);
+  });
+
+  it.each([
+    'quiescent',
+    'failed',
+    'limit_reached',
+  ] as const)('ignores saved text callbacks after a %s exit', async (kind) => {
+    vi.useFakeTimers();
+    try {
+      let emit!: NonNullable<InternalAgentProviderRequest['onTextIncrement']>;
+      const onTextIncrement = vi.fn();
+      const call = vi.fn(async (request: InternalAgentProviderRequest) => {
+        emit = request.onTextIncrement!;
+        emit('Before exit.');
+        if (kind === 'failed') throw new Error('Provider failed.');
+        return {
+          message: assistantMessage(
+            kind === 'limit_reached'
+              ? [{ type: 'toolCall', callId: 'unknown', name: 'unavailable', arguments: {} }]
+              : [{ type: 'text', text: 'Done.' }]
+          ),
+        };
+      });
+      const initial = input();
+
+      const result = await runInternalAgentLoop(
+        { ...initial, limits: { ...initial.limits, maxModelTurns: 1 }, onTextIncrement },
+        call
+      );
+      emit('After exit.');
+
+      expect(result.kind).toBe(kind);
+      expect(call).toHaveBeenCalledTimes(1);
+      expect(onTextIncrement.mock.calls).toEqual([['Before exit.']]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the first cancellation cause when a deadline precedes caller cancellation', async () => {
+    const controller = new AbortController();
+    const initial = input();
+    const call = vi.fn((request: InternalAgentProviderRequest) => {
+      request.signal.addEventListener('abort', () => controller.abort(), { once: true });
+      return new Promise<never>(() => undefined);
+    });
+
+    const result = await runInternalAgentLoop(
+      {
+        ...initial,
+        signal: controller.signal,
+        limits: { ...initial.limits, deadlineMs: 10 },
+      },
+      call
+    );
+
+    expect(controller.signal.aborted).toBe(true);
+    expect(result).toEqual({
+      kind: 'limit_reached',
+      limit: 'deadline',
+      messages: initial.messages,
+    });
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+
   it('redacts model-visible tool text and ignores observer failures', async () => {
     const tool: AgentTool = {
       name: 'environment.status',
@@ -260,5 +376,136 @@ describe('internal Agent loop', () => {
     expect(JSON.stringify(call.mock.calls[1]?.[0].messages)).not.toContain('secret-value');
     expect(JSON.stringify(call.mock.calls[1]?.[0].messages)).not.toContain('abc123');
     expect(JSON.stringify(call.mock.calls[1]?.[0].messages)).not.toContain('must stay server-side');
+  });
+});
+
+describe('internal Agent assembled context', () => {
+  it('consumes a completed caller-assembled Tool exchange without replay or input mutation', async () => {
+    const execute = vi.fn(async () => ({
+      content: [{ type: 'text' as const, text: 'Unexpected replay.' }],
+    }));
+    const tool: AgentTool = {
+      name: 'source.read',
+      description: 'Read an admitted source.',
+      inputSchema: { type: 'object', additionalProperties: false },
+      execute,
+    };
+    const messages: readonly AgentMessage[] = Object.freeze([
+      userMessage('Read the admitted source.'),
+      assistantMessage([
+        { type: 'toolCall', callId: 'settled-read', name: tool.name, arguments: {} },
+      ]),
+      {
+        role: 'tool' as const,
+        callId: 'settled-read',
+        content: [{ type: 'text' as const, text: 'Settled observation.' }],
+        isError: false,
+      },
+      userMessage('Explain that observation without another read.'),
+    ]);
+    const before = structuredClone(messages);
+    const call = vi.fn(async (_request: InternalAgentProviderRequest) => ({
+      message: assistantMessage([{ type: 'text', text: 'The retained observation is available.' }]),
+    }));
+    const assembled = { ...input([tool]), messages };
+
+    const result = await runInternalAgentLoop(assembled, call);
+
+    expect(result.kind).toBe('quiescent');
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(call.mock.calls[0]?.[0].messages).toEqual(before);
+    expect(messages).toEqual(before);
+    expect(result.messages.slice(0, before.length)).toEqual(before);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('uses only newly assembled history and the current Tool closure in a fresh run', async () => {
+    const earlierExecute = vi.fn(async () => ({
+      content: [{ type: 'text' as const, text: 'earlier-source-only' }],
+    }));
+    const currentExecute = vi.fn(async () => ({
+      content: [{ type: 'text' as const, text: 'Current source access is denied.' }],
+      isError: true,
+    }));
+    const definition = {
+      name: 'source.read',
+      description: 'Read an admitted source.',
+      inputSchema: { type: 'object', additionalProperties: false },
+    };
+    const earlierProvider = vi
+      .fn()
+      .mockResolvedValueOnce({
+        message: assistantMessage([
+          { type: 'toolCall', callId: 'earlier-read', name: definition.name, arguments: {} },
+        ]),
+      })
+      .mockResolvedValueOnce({
+        message: assistantMessage([{ type: 'text', text: 'Earlier answer.' }]),
+      });
+    const earlier = await runInternalAgentLoop(
+      {
+        ...input([{ ...definition, execute: earlierExecute }]),
+        messages: [userMessage('earlier-user-only')],
+      },
+      earlierProvider
+    );
+    expect(earlier.kind).toBe('quiescent');
+    expect(earlierExecute).toHaveBeenCalledTimes(1);
+
+    const rebuiltMessages = Object.freeze([userMessage('current-authorized-input-only')]);
+    const currentProvider = vi
+      .fn()
+      .mockResolvedValueOnce({
+        message: assistantMessage([
+          { type: 'toolCall', callId: 'current-read', name: definition.name, arguments: {} },
+        ]),
+      })
+      .mockResolvedValueOnce({
+        message: assistantMessage([{ type: 'text', text: 'Access remains denied.' }]),
+      });
+    const current = await runInternalAgentLoop(
+      { ...input([{ ...definition, execute: currentExecute }]), messages: rebuiltMessages },
+      currentProvider
+    );
+
+    expect(current.kind).toBe('quiescent');
+    expect(currentProvider.mock.calls[0]?.[0].messages).toEqual(rebuiltMessages);
+    expect(currentExecute).toHaveBeenCalledTimes(1);
+    expect(earlierExecute).toHaveBeenCalledTimes(1);
+    expect(currentProvider.mock.calls[1]?.[0].messages.at(-1)).toMatchObject({
+      role: 'tool',
+      callId: 'current-read',
+      isError: true,
+    });
+    expect(JSON.stringify(currentProvider.mock.calls)).not.toContain('earlier-source-only');
+    expect(JSON.stringify(currentProvider.mock.calls)).not.toContain('earlier-user-only');
+  });
+});
+
+describe('internal Agent context ownership', () => {
+  it('accepts the complete private input without a compaction field', async () => {
+    const call = vi.fn(async (_request: InternalAgentProviderRequest) => ({
+      message: assistantMessage([{ type: 'text', text: 'Ready.' }]),
+    }));
+
+    const result = await runInternalAgentLoop(input(), call);
+
+    expect(result.kind).toBe('quiescent');
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(call.mock.calls[0]?.[0]).not.toHaveProperty('contextManagement');
+  });
+
+  it('keeps admitted history when a dependency returns an obsolete compaction checkpoint', async () => {
+    const initial = input();
+    const message = assistantMessage([{ type: 'text', text: 'Answer.' }]);
+    const response = {
+      message,
+      compactedMessages: [userMessage('Provider-owned replacement.')],
+    };
+
+    const result = await runInternalAgentLoop(initial, async () => response);
+
+    expect(result).toEqual({ kind: 'quiescent', messages: [...initial.messages, message] });
+    expect(initial.messages).toEqual([userMessage()]);
   });
 });

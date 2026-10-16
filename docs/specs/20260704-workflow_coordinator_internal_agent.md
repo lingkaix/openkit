@@ -102,6 +102,10 @@ When `task.start` supplies an exact `agentId`, the caller restricts the eligible
 
 If no eligible candidate is ready, the decision is `blocked` and has no worker payload. The selected worker summary may be product-visible; adapter-native launch payloads remain internal to the owning runtime contracts. Runtime-family inference and the closed V1 runtime label set are audited by the Worker Agent Adapter Boundary plan, not expanded here.
 
+### Bounded Source Projection
+
+Coordinator inputs, failure summaries, and structured worker requests use [bounded Context Package projections](20260703-worker_context_package.md#bounded-model-projection). Preserve exact admitted references and required request fields; do not inline large bodies or truncate required authority to fit. A required request that cannot fit fails before delegation. Mode services retain source storage, current disclosure, materialization, and replay ownership. This deterministic Coordinator gains no model loop; any model-using coordinator path follows the shared internal-runtime owner.
+
 ### Context reference handling
 
 - Mode services request source-traceable knowledge or source material from Knowledge Manager and pass policy-filtered references or summaries to Coordinator.

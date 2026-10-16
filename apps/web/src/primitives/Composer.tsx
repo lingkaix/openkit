@@ -21,6 +21,7 @@ import {
   Text,
 } from 'react-aria-components';
 import { Icon } from './Icon';
+import { ErrorBanner } from './states';
 
 type ConversationTarget = ConversationTargetCatalog['targets'][number];
 
@@ -150,6 +151,7 @@ export function Composer({
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [pendingImport, setPendingImport] = useState(false);
+  const [importFailed, setImportFailed] = useState(false);
   const [requestId, setRequestId] = useState(() => initialDraft?.requestId ?? crypto.randomUUID());
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -190,6 +192,7 @@ export function Composer({
   const clearSentDraft = useCallback(() => {
     setValue('');
     setSelectedArtifacts([]);
+    setImportFailed(false);
     setSelectedEnvironment(null);
     setEffortChoice(null);
     setEffortSubmitted(false);
@@ -291,8 +294,10 @@ export function Composer({
         current.some((candidate) => candidate.id === artifact.id) ? current : [...current, artifact]
       );
       setAttachmentsOpen(false);
+      setImportFailed(false);
     } catch {
-      // The caller owns import error presentation; the selected draft remains unchanged.
+      // File-read and server errors share safe copy; raw failures can contain private details.
+      setImportFailed(true);
     } finally {
       setPendingImport(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -379,9 +384,13 @@ export function Composer({
               </div>
               {onImportFile ? (
                 <>
+                  {importFailed ? (
+                    <ErrorBanner message="Couldn't confirm the file import. The file may already exist. Select the same file to try again." />
+                  ) : null}
                   <input
                     ref={fileInputRef}
                     type="file"
+                    disabled={disabled || pendingImport}
                     accept=".md,.txt,.json,text/markdown,text/plain,application/json"
                     className="sr-only"
                     onChange={(event) => {
@@ -391,6 +400,7 @@ export function Composer({
                   />
                   <button
                     type="button"
+                    disabled={disabled || pendingImport}
                     onClick={() => fileInputRef.current?.click()}
                     className="mt-1 w-full rounded-ok border-t border-separator px-2 py-2 text-left text-sm font-medium text-accent-content outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus"
                   >

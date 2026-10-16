@@ -21,6 +21,10 @@ import type {
   WorkerControlLineage,
   WorkerControlSupplyRefreshAck,
 } from './worker-control-gateway.js';
+import {
+  getWorkerControlAcceptedFinalStatus,
+  hasPendingWorkerCancellationFinal,
+} from './worker-control-records.js';
 
 interface WorkerControlRecordRow {
   readonly acceptedAt: string;
@@ -29,7 +33,7 @@ interface WorkerControlRecordRow {
 }
 
 /**
- * Restores live worker-control sessions from durable scheduler and gateway rows.
+ * Restores live control, cancellation-only first-final serving state and exact final replay from durable owners.
  *
  * @param coreDb Server-scope Core database.
  * @param gateway Gateway instance to hydrate.
@@ -40,7 +44,7 @@ export function rebuildWorkerControlGatewaySessions(
 ): void {
   const leases = [
     ...listRestorableNanoHostExecutionAttempts(coreDb),
-    ...listFinalStatusReplayLeases(coreDb),
+    ...listTerminalControlLeases(coreDb),
   ];
 
   for (const lease of leases) {
@@ -54,6 +58,20 @@ export function rebuildWorkerControlGatewaySessions(
     }
 
     const admission = requireSchedulerExecutionAttemptAdmissionContext(coreDb, lease.attemptId);
+    const lineage: WorkerControlLineage = {
+      agentSessionId: lease.agentSessionId,
+      packageSnapshotId: lease.inputRef,
+      requestId: admission.requestId,
+      threadId: lease.threadId,
+      turnId: lease.turnId,
+      workspaceId: lease.workspaceId,
+    };
+    if (
+      lease.phase !== 'open' &&
+      !getWorkerControlAcceptedFinalStatus(coreDb, lineage) &&
+      !hasPendingWorkerCancellationFinal(lease, new Date().toISOString())
+    )
+      continue;
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lease.workspaceId);
     let environmentPackage: AgentEnvironmentPackage;
 
@@ -68,14 +86,6 @@ export function rebuildWorkerControlGatewaySessions(
       workspaceDb.sqlite.close();
     }
     assertRestoredPackageLineage(environmentPackage, lease, admission);
-    const lineage: WorkerControlLineage = {
-      agentSessionId: environmentPackage.scope.agentSessionId,
-      packageSnapshotId: environmentPackage.snapshotId,
-      requestId: environmentPackage.scope.requestId,
-      threadId: environmentPackage.scope.threadId,
-      turnId: environmentPackage.scope.turnId,
-      workspaceId: environmentPackage.scope.workspaceId,
-    };
     const records = readAcceptedRecords(coreDb, lineage);
 
     gateway.restoreSession({
@@ -92,12 +102,12 @@ export function rebuildWorkerControlGatewaySessions(
 }
 
 /**
- * Lists releasing leases that retain one durable final status within release grace.
+ * Lists terminal-control candidates whose current owners are checked before gateway restoration.
  *
  * @param coreDb Server-scope Core database.
- * @returns Leases restorable only for exact final-status replay.
+ * @returns Cancellation-closing candidates and retained final-status replay candidates.
  */
-function listFinalStatusReplayLeases(coreDb: CoreDb): NanoHostExecutionAttemptRecord[] {
+function listTerminalControlLeases(coreDb: CoreDb): NanoHostExecutionAttemptRecord[] {
   const table = coreDb.sqlite
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get('scheduler_execution_attempts');
@@ -115,7 +125,7 @@ function listFinalStatusReplayLeases(coreDb: CoreDb): NanoHostExecutionAttemptRe
            AND lease.worker_control_token_hash IS NOT NULL
            AND lease.worker_inference_token_hash IS NOT NULL
            AND lease.deadline > ?
-          AND EXISTS (
+          AND ((lease.phase = 'closing' AND lease.terminal_cause = 'turn-cancelled') OR EXISTS (
             SELECT 1
               FROM worker_control_records AS record
              WHERE record.workspace_id = lease.workspace_id
@@ -124,7 +134,7 @@ function listFinalStatusReplayLeases(coreDb: CoreDb): NanoHostExecutionAttemptRe
                AND record.agent_session_id = lease.agent_session_id
                AND record.package_snapshot_id = lease.input_ref
                AND record.operation = 'final_status'
-          )
+          ))
         ORDER BY lease.created_at ASC, lease.attempt_id ASC`
     )
     .all(new Date().toISOString()) as Array<{ attemptId: string }>;

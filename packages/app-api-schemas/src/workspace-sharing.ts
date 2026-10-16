@@ -17,6 +17,31 @@ export const WorkspaceEffectiveRoleSchema = z.enum(['owner', 'editor', 'viewer']
 /** Durable lifecycle state of one Workspace membership. */
 export const WorkspaceMembershipStatusSchema = z.enum(['active', 'removed']);
 
+/** Current Workspace eligibility, independent of the caller's actual membership or ownership. */
+export const WorkspaceAccessCauseSchema = z.enum(['membership', 'administrator']);
+
+/** Actual retained relationship and current access cause; administrator eligibility grants no membership. */
+export const WorkspaceAccessRelationSchema = z
+  .object({
+    ownerUserId: z.string().min(1),
+    membershipStatus: WorkspaceMembershipStatusSchema.nullable(),
+    accessCause: WorkspaceAccessCauseSchema,
+  })
+  .superRefine((value, context) => {
+    if (value.accessCause === 'membership' && value.membershipStatus !== 'active') {
+      context.addIssue({
+        code: 'custom',
+        path: ['membershipStatus'],
+        message: 'Membership access requires active membership.',
+      });
+    }
+  });
+
+/** Flat Workspace read with caller-specific relationship metadata, separate from the durable record. */
+export const WorkspaceReadResponseSchema = WorkspaceAccessRelationSchema.safeExtend(
+  WorkspaceRecordSchema.shape
+);
+
 /** Current invitation outcome, including the computed expired projection. */
 export const WorkspaceInvitationEffectiveStatusSchema = z.enum([
   'pending',
@@ -39,15 +64,12 @@ export const UserLifecycleSummarySchema = z
   .strict();
 
 /** Authorized Workspace projection returned to one current caller. */
-export const AuthorizedWorkspaceSummarySchema = z
-  .object({
-    workspace: WorkspaceRecordSchema,
-    ownerUserId: z.string().min(1),
-    effectiveRole: WorkspaceEffectiveRoleSchema,
-    registryRevision: WorkspaceRevisionSchema,
-    membershipRevision: WorkspaceRevisionSchema,
-  })
-  .strict();
+export const AuthorizedWorkspaceSummarySchema = WorkspaceAccessRelationSchema.safeExtend({
+  workspace: WorkspaceRecordSchema,
+  effectiveRole: WorkspaceEffectiveRoleSchema.nullable(),
+  registryRevision: WorkspaceRevisionSchema,
+  membershipRevision: WorkspaceRevisionSchema.nullable(),
+});
 
 /** Administrator-safe Workspace access recovery projection. */
 export const WorkspaceAccessRecoveryStateSchema = z

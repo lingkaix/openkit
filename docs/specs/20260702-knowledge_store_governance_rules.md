@@ -252,6 +252,12 @@ Restricted trace evidence MUST remain redacted or access-controlled under the ow
 | Lower-conformance source snippet | Explicit policy authorization plus traceable source identity and exclusion reasoning. |
 | Health inspection | Any conformance level, report only. |
 
+## Source And Projection Evidence
+
+Source intake preserves exact original bytes or an admitted immutable source reference. [Work Resource Interaction](20260713-work_resource_interaction_model.md#bounded-media-processors) owns bounded PDF text-layer and explicit vision derivatives. Each derivative retains its original digest, processor identity, locators, and coverage. Extraction and indexing do not constitute Knowledge publication or human review.
+
+A Context Package may deliver a bounded body, excerpt, or descriptor under [its owner](20260703-worker_context_package.md#bounded-model-projection). Its delivered digest is separate from canonical source/page identity. Missing, stale, unsupported, or budget-limited content remains explicit; no complete absence or delivery claim follows from an incomplete representation. Existing notebook publication, suppression, forgetting, and audience rules remain binding.
+
 ## Current Implementation Projection
 
 The current V1 implements portable governed page projection, the default Workspace Schema, pre-write validation and secret-like-field rejection, source identity and first text-derived metadata, observation and claim ledgers, conflict recording and resolution, derived indexes, deterministic retrieval traces, proposal review and application, and explicit Knowledge context preparation. The retrieval path does not yet consume the latest conflict ledger, so it cannot satisfy the required unresolved-conflict selection and trace decision; this bounded implementation defect remains scheduled under S60/S61 before the next generated-Knowledge release claim.

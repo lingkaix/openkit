@@ -32,6 +32,8 @@ const PRODUCT_WORKSPACES = {
     {
       effectiveRole: 'owner' as const,
       membershipRevision: 1,
+      membershipStatus: 'active' as const,
+      accessCause: 'membership' as const,
       ownerUserId: 'user-owner',
       registryRevision: 1,
       workspace: {

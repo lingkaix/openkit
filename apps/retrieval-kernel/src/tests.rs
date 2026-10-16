@@ -1,4 +1,208 @@
 //! Kernel contract fixtures; expectations are independent of the returned data.
+/// Freeze the pre-#249 shipped analyzer, including OpenKit's lowercase and word filters.
+#[test]
+fn p08_tokenizer_fields_are_preserved() {
+    use tantivy::tokenizer::TokenStream;
+    for (language, examples) in [
+        (
+            "ja",
+            vec![
+                (
+                    "検索機能を改善しました。",
+                    vec![
+                        ("検索", 0, 1, 0, 6),
+                        ("機能", 1, 1, 6, 12),
+                        ("を", 2, 1, 12, 15),
+                        ("改善", 3, 1, 15, 21),
+                        ("し", 4, 1, 21, 24),
+                        ("まし", 5, 1, 24, 30),
+                        ("た", 6, 1, 30, 33),
+                    ],
+                ),
+                (
+                    "API_v2 Rust検索、カナ🙂é İSTANBUL\n改善!",
+                    vec![
+                        ("api", 0, 1, 0, 3),
+                        ("v", 2, 1, 4, 5),
+                        ("2", 3, 1, 5, 6),
+                        ("rust", 4, 1, 7, 11),
+                        ("検索", 5, 1, 11, 17),
+                        ("カナ", 7, 1, 20, 26),
+                        ("é", 9, 1, 30, 32),
+                        ("i\u{307}stanbul", 10, 1, 33, 42),
+                        ("改善", 11, 1, 43, 49),
+                    ],
+                ),
+            ],
+        ),
+        (
+            "zh",
+            vec![(
+                "我们完成了测试，并修复了缺陷。 API_v2",
+                vec![
+                    ("我们", 0, 2, 0, 6),
+                    ("完成", 2, 2, 6, 12),
+                    ("了", 4, 1, 12, 15),
+                    ("测试", 5, 2, 15, 21),
+                    ("并", 8, 1, 24, 27),
+                    ("修复", 9, 2, 27, 33),
+                    ("了", 11, 1, 33, 36),
+                    ("缺陷", 12, 2, 36, 42),
+                    ("api", 16, 3, 46, 49),
+                    ("v2", 20, 2, 50, 52),
+                    ("api_v2", 16, 6, 46, 52),
+                ],
+            )],
+        ),
+    ] {
+        let mut analyzer = analyzer(language).unwrap();
+        // Reuse after both an exhausted stream and empty/punctuation-only streams.
+        for _ in 0..2 {
+            for (input, expected) in &examples {
+                let mut stream = analyzer.token_stream(input);
+                let mut observed = Vec::new();
+                while stream.advance() {
+                    let token = stream.token();
+                    observed.push((
+                        token.text.clone(),
+                        token.position,
+                        token.position_length,
+                        token.offset_from,
+                        token.offset_to,
+                    ));
+                }
+                let expected: Vec<_> = expected
+                    .iter()
+                    .map(|&(text, position, length, start, end)| {
+                        (text.to_string(), position, length, start, end)
+                    })
+                    .collect();
+                assert_eq!(observed, expected, "{language}: {input:?}");
+                assert!(!stream.advance());
+            }
+            for input in ["", "。、🙂!\n"] {
+                assert!(!analyzer.token_stream(input).advance(), "{input:?}");
+            }
+        }
+    }
+}
+
+/// Frozen pre-#249 BM25 observations prove dictionary lookup and scope-local index/query agreement.
+#[test]
+fn p08_scoped_cjk_ranking_is_preserved() {
+    let f = Fixture::new();
+    for (language, body, query, body_score) in [
+        ("ja", "検索機能を改善しました。", "検索 改善", 0.83345735),
+        (
+            "zh",
+            "我们完成了测试，并修复了缺陷。",
+            "测试 修复",
+            0.82720643,
+        ),
+    ] {
+        let mut a = f.text(&format!("{language}-a"), body);
+        a.language = Some(language.into());
+        let mut b = f.text(&format!("{language}-b"), body);
+        b.language = Some(language.into());
+        let mut title = f.text(&format!("{language}-title"), "unrelated vocabulary");
+        title.language = Some(language.into());
+        title.title = query.into();
+        let public = f.view(language, vec![b, title, a]);
+        f.kernel.publish(public.clone(), None).unwrap();
+        let baseline = f.search(Mode::Lexical, query, vec![public.clone()], 20);
+        assert!(baseline.complete && baseline.coverage.enumeration_complete);
+        assert_eq!(baseline.coverage.admitted_objects, 3);
+        assert_eq!(baseline.coverage.searched_representations, 3);
+        assert_eq!(baseline.coverage.matching_documents, 3);
+        assert_eq!(
+            baseline
+                .hits
+                .iter()
+                .map(|hit| hit.key.id.clone())
+                .collect::<Vec<_>>(),
+            ["title", "a", "b"].map(|suffix| format!("{language}-{suffix}"))
+        );
+        for (index, hit) in baseline.hits.iter().enumerate() {
+            let expected_score = if index == 0 { 3.257093 } else { body_score };
+            // Allow only floating-point rounding; gram fallback scores cannot satisfy this oracle.
+            assert!(
+                (hit.score.unwrap() - expected_score).abs() < 0.000001,
+                "{hit:?}"
+            );
+            assert_eq!(hit.scope, language);
+            assert_eq!(hit.representation, "text");
+            assert_eq!(hit.chunk, 0);
+            let (snippet, locator) = if index == 0 {
+                (
+                    query,
+                    Locator::Title {
+                        start: 0,
+                        end: 13,
+                        original: None,
+                    },
+                )
+            } else {
+                (
+                    body,
+                    Locator::Text {
+                        start: 0,
+                        end: body.len() as u64,
+                        original: None,
+                    },
+                )
+            };
+            assert_eq!(hit.snippet, snippet);
+            assert_eq!(hit.locator, locator);
+        }
+        assert_eq!(baseline.hits[1].score, baseline.hits[2].score);
+
+        let private_id = format!("SECRET_PRIVATE_{language}");
+        let mut private_doc = f.text(&private_id, &format!("{body} {body} SECRET_PRIVATE"));
+        private_doc.language = Some(language.into());
+        private_doc.title = query.into();
+        let private_scope = format!("PRIVATE-{language}");
+        let private = f.view(&private_scope, vec![private_doc]);
+        f.kernel.publish(private.clone(), None).unwrap();
+        let owner = f.search(Mode::Lexical, query, vec![private], 20);
+        assert!(owner.complete);
+        assert_eq!(owner.hits[0].key.id, private_id);
+        assert_eq!(
+            baseline,
+            f.search(Mode::Lexical, query, vec![public.clone()], 20)
+        );
+
+        // A restart must still open only the readable scope, even when the other pointer is corrupt.
+        fs::write(
+            f.kernel.scope_path(&private_scope).join("CURRENT"),
+            b"corrupt",
+        )
+        .unwrap();
+        fs::remove_file(f.root.path().join(private_id)).unwrap();
+        let restarted = Kernel::new(f.root.path(), f.store.path()).unwrap();
+        take_access();
+        let after = restarted
+            .search(Query {
+                mode: Mode::Lexical,
+                query: query.into(),
+                scopes: vec![public],
+                limit: 20,
+            })
+            .unwrap();
+        assert_eq!(after, baseline);
+        let opened = take_access();
+        assert!(
+            opened
+                .iter()
+                .any(|(kind, identity)| kind == "generation-open" && identity == language)
+        );
+        assert!(
+            opened.iter().all(|(_, identity)| identity == language
+                || identity.starts_with(&format!("{language}-"))),
+            "{opened:?}"
+        );
+    }
+}
+
 /// The issue #222 body terms must survive segmentation on the shipped dictionaries.
 #[test]
 fn regression_222_segmentation() {
@@ -1269,13 +1473,14 @@ fn large_file_actual_allocations_and_peak_memory() {
             String::from_utf8_lossy(&output.stdout)
         );
         let output = String::from_utf8(output.stdout).unwrap();
-        println!(
-            "{}",
-            output
-                .lines()
-                .find(|line| line.starts_with("allocation:"))
-                .unwrap()
-        );
+        // Serial libtest can prefix nocapture output with the current test name.
+        // Retain the child's measured values and its decisive allocation/RSS assertions.
+        let measurement = output
+            .lines()
+            .find_map(|line| line.split_once("allocation: "))
+            .map(|(_, measurement)| measurement)
+            .expect("child must report actual allocation measurements");
+        println!("allocation: {measurement}");
         return;
     }
     let f = Fixture::new();

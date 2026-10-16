@@ -375,6 +375,8 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
         .fn()
         .mockResolvedValueOnce({
           items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -387,6 +389,8 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
             app['workspace.list'] ??
             vi.fn().mockResolvedValue({
               items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+                membershipStatus: 'active' as const,
+                accessCause: 'membership' as const,
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
@@ -1676,6 +1680,8 @@ describe('Recovery and search', () => {
       {
         'workspace.list': vi.fn().mockResolvedValue({
           items: [].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -3306,7 +3312,17 @@ describe('Recovery and search', () => {
     expect(events).toEqual([]);
 
     await act(async () => {
-      discovery.resolve({ items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({ workspace })) });
+      discovery.resolve({
+        items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+          workspace,
+          effectiveRole: 'owner' as const,
+          membershipStatus: 'active' as const,
+          accessCause: 'membership' as const,
+          membershipRevision: 1,
+          ownerUserId: 'user_local',
+          registryRevision: 1,
+        })),
+      });
       await discovery.promise;
     });
     await waitFor(() =>
@@ -3411,7 +3427,17 @@ describe('Recovery and search', () => {
     ).toBeInTheDocument();
     if (scenario.admitted) {
       await act(async () => {
-        discovery.resolve({ items: scenario.admitted.map((workspace) => ({ workspace })) });
+        discovery.resolve({
+          items: scenario.admitted.map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner' as const,
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        });
         await discovery.promise;
       });
     }

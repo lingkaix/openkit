@@ -12,6 +12,7 @@ mod filesystem_capacity;
 mod image_acquisition;
 mod image_store;
 mod image_store_cli;
+mod live_inspection;
 mod nanocore_session;
 mod openshell_client;
 mod openshell_policy;
@@ -947,6 +948,7 @@ async fn run_sessions(
             (
                 &physical_epoch,
                 startup_deadline,
+                coordinator.inspection_state(),
                 move || {
                     let Some(started) = readiness_fence else {
                         return Ok(None);
@@ -969,6 +971,7 @@ async fn run_sessions(
                 },
             ),
             |generation, mut sender| {
+                coordinator.record_readiness_acknowledgement();
                 let readiness_commit = if fence_started.is_some() {
                     clear_fence_started().map_err(|_| {
                         OuterSessionFailure::terminal(
@@ -1278,6 +1281,17 @@ async fn run_sessions(
             Ok(generation) => reconnect_after = Some(generation),
             Err(failure) => match failure.disposition() {
                 OuterSessionDisposition::Reconnect => {
+                    // Observe the predecessor's retained result separately from the next poll; this projection never decides retry or effect ownership.
+                    let retained = pending_result
+                        .as_ref()
+                        .map(|(command, _)| OuterSessionOperation::from(command.kind))
+                        .unwrap_or(OuterSessionOperation::None);
+                    let _ = writeln!(std::io::stderr().lock(), "{failure}");
+                    let _ = writeln!(
+                        std::io::stderr().lock(),
+                        "nanohost retained effect after connection loss: operation={}",
+                        retained.as_str()
+                    );
                     reconnect_after = failure.reconnect_after();
                 }
                 OuterSessionDisposition::Terminal => {
@@ -1308,11 +1322,21 @@ fn image_store_cli_error_message(error: image_store_cli::ImageStoreCliError) -> 
     }
 }
 
-/// Reports the version, executes local image administration, or starts the Runtime Epoch.
+/// Reports the version, performs fixed local inspection or image maintenance, or starts the Epoch.
 fn main() {
     let args = std::env::args().collect::<Vec<_>>();
     if args.get(1).map(String::as_str) == Some("--version") && args.len() == 2 {
         println!(env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    if args.get(1).map(String::as_str) == Some("inspect") && args.len() == 2 {
+        match live_inspection::cli() {
+            Ok(()) => {}
+            Err(_) => {
+                eprintln!("nanohost inspection request invalid or incomplete");
+                std::process::exit(1);
+            }
+        }
         return;
     }
     match image_store_cli::dispatch(&args[1..]) {
@@ -1522,6 +1546,10 @@ mod tests {
             "TCP deadline must export the startup invalidation report"
         );
         assert_eq!(reports[0]["trigger"], "epoch-creation-failure");
+        assert_eq!(
+            reports[0]["fields"]["readiness"],
+            "last_succeeded=unavailable"
+        );
         assert_eq!(reports[0]["complete"], true);
         assert!(root.0.join("fence-started").is_file());
         assert!(
@@ -1593,7 +1621,8 @@ mod tests {
         };
         let (mut coordinator, _) = EpochCoordinator::collection_fixture(&root.0);
         let physical_epoch = coordinator.physical_epoch().to_string();
-        let members = coordinator.fixture_member_events();
+        let reports = coordinator.fixture_invalidation_reports(&root.0);
+        let members = coordinator.fixture_invalidation_requester();
         let (observations, mut observed) = tokio::sync::mpsc::unbounded_channel();
 
         /// Acts as Core authority: each physical connection gets one admission and readiness.
@@ -1731,7 +1760,7 @@ mod tests {
             result = &mut host => panic!("Host ended after successor readiness: {}", result.unwrap_err()),
             extra = tokio::time::timeout(Duration::from_millis(20), listener.accept()) => assert!(extra.is_err(), "only one physical successor connection"),
         }
-        members.send(EpochFault::MemberExited(None)).unwrap();
+        members.send(Some(EpochFault::MemberExited(None))).unwrap();
         let terminal = tokio::time::timeout(Duration::from_secs(5), &mut host)
             .await
             .unwrap()
@@ -1741,6 +1770,22 @@ mod tests {
         };
         assert_eq!(terminal.disposition(), OuterSessionDisposition::Terminal);
         assert_eq!(terminal.reason(), "nanohost epoch member failed");
+        let reports = std::fs::read_dir(reports)
+            .unwrap()
+            .map(|entry| {
+                serde_json::from_slice::<serde_json::Value>(
+                    &std::fs::read(entry.unwrap().path()).unwrap(),
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0]["trigger"], "member-exit");
+        assert_eq!(reports[0]["complete"], true);
+        assert_eq!(
+            reports[0]["fields"]["readiness"],
+            "last_succeeded=core-acknowledgement"
+        );
         peer.abort();
         assert!(peer.await.unwrap_err().is_cancelled());
     }
@@ -2503,3 +2548,12 @@ mod tests {
 
 #[cfg(test)]
 mod epoch_evidence;
+
+#[cfg(test)]
+mod image_import_tests;
+
+#[cfg(test)]
+mod live_inspection_tests;
+
+#[cfg(test)]
+mod epoch_inventory_tests;

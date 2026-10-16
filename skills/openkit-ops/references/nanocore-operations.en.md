@@ -19,6 +19,12 @@ NanoHost startup and Worker-image availability are separate checks. The accepted
 
 From `v0.1.0`, use the accepted carry-forward or explicit data-retirement owner instead. These steps execute no reset by themselves and define no new command, account store, or recovery service.
 
+## Pin A Reusable Worker In A Workspace
+
+The conversation target catalog offers Workspace-pinned Agents or the Workspace default. General Agent inventory is broader; direct Task selection can still name any currently eligible Agent. A pin grants no permission, readiness, credential, runtime, or Task. This boundary follows [Unified Conversation Composer](https://github.com/lingkaix/openkit/blob/main/docs/specs/20260831-unified_conversation_composer.md#workspace-pin-prerequisite).
+
+A currently authorized technical administrator uses the existing `runtime.file-list` and `runtime.file-read` operations to identify the registered Workspace source and current revision. Preserve unrelated Agent bindings. Add the stable Agent identity and optional declared profile to the existing authored bindings, validate with `runtime.validate`, and submit through `runtime.file-update` against that exact revision. Use `runtime.reload` where supported. Report the persisted revision and reload outcome separately, then read the catalog again. Failed reload, stale revision, removed authority, and unavailable supply retain their existing refusal; never claim the pin is available from persistence alone. A member without configuration authority requests this administrator action. No dedicated Web pin control is implied by this procedure.
+
 ## Inspect A Running Deployment
 
 Doctor distinguishes service availability, product-work readiness, update readiness and maintenance safety. Configured transport still requires helper preparation. Execution-host readiness includes observation age and is not a live probe; `freshEmpty` is not deployment-wide idleness. A completed index rebuild remains informational. Unknown evidence stays unknown.
@@ -26,6 +32,33 @@ Doctor distinguishes service availability, product-work readiness, update readin
 With the bundled administrator CLI installed, run its `scripts/openkit doctor`, search for `diagnostics`, describe the matching operation and perform an authorized read. Inspect the relevant Workspace, Thread, Task, Artifact, Evidence, Audit or Usage records through their public operations. Current running admission lets a presented usable `server-admin` bearer admit active Workspace product routes as owner, including Task start. That running admission is not the rule. A currently usable administrator credential, the administrator's Web session or an administrator bearer, is eligible under the administrator eligibility rule in [Core Permissions](https://github.com/lingkaix/openkit/blob/main/docs/core/permissions.md#administrator-eligibility). Prefer a workspace-scoped token for least privilege when only one Workspace is needed. Session cookies remain membership-bound for an ordinary caller.
 
 Observe product-work readiness and its individual reasons rather than treating every degraded state as failure or success. Retain the actual boot and deployed image/source identity. Current optional telemetry consists of explicit HTTP response-handoff spans and process diagnostics; it does not trace a complete Worker task. Use retained product records to establish that outcome. Inspect deployment-owned rotated logs or Collector files through authorized host tools only for the missing diagnostic question, without dumping credentials, full configuration or unrelated transcripts.
+
+## Update Through HTTPS Only
+
+Use this runbook when the caller has only the deployment's HTTPS address and an authorized administrator credential. It projects [App Update Delivery](https://github.com/lingkaix/openkit/blob/main/docs/specs/20260910-app_update_delivery.md) and [Agent Operator Skill](https://github.com/lingkaix/openkit/blob/main/docs/specs/20260910-agent_operator_skill.md). The caller uses Web or the installed administrator CLI; NanoCore uses its already configured restricted helper transport. The caller needs no SSH, Docker, root access, or host shell for these remote steps.
+
+Before starting, an authorized host operator must already have installed and verified the target release's helper and established its compatibility and recovery assessment. Obtain the non-secret helper checksum and target-binding evidence. If that work is missing, stop for [helper preparation](#replace-the-installed-helper) under separate host authorization. This HTTPS procedure cannot install or replace the helper.
+
+1. Select the exact HTTPS deployment and installed operations package. Use Node.js 24 and the existing protected credential procedure in [deployment modes](nanocore-deployment-modes.en.md#administrator-cli-and-remote-mcp-access). Keep normal TLS verification. Run local help, search and describe before any call. Discovery grants no update authority.
+2. Select one published target release and verify its source commit, immutable App digest, and checksum-covered helper bytes. Read authenticated App Diagnostics for the current release, image and boot identity. Apply the [image matching rules](#update-nanocore-and-web); do not guess the current image from a tag. Retain selected authorized Workspace content reads for comparison after replacement. Where available, `caller.read` can record non-secret identity and counts for one explicitly selected owned Workspace; counts alone do not prove retained content equality.
+3. Describe `app-update.preflight`, `app-update.prepare`, `app-update.start`, and `app-update.status`. Call preflight with `{}`. Continue only with `state: idle` and every work count zero. Retain its observation time. Counts overlap, and preflight creates no admission barrier. Follow the existing maintenance window and final-recheck rules in [Update NanoCore And Web](#update-nanocore-and-web).
+4. An authorized administrator prepares the exact published source and observed current-image binding. Save the returned `requestId` before start. Present the complete `approvalSummary`, including interruption, preflight observations, deployment bindings and recovery limitations. Match `helperSha256` and `preparedHelperSha256` to the verified target helper checksum. A missing or contradictory field stops this attempt.
+5. Obtain exact administrator consent for that prepared receipt and interruption. Use the administrator's Web action or authorized direct caller. Agent-mediated delivery requires its existing exact operation approval binding; the current unsupported adapter is a stop. Do not switch delivery modes to bypass it or invent approval. The separately scoped standing test grant keeps its existing procedure and limits.
+6. Recheck idle preflight and submit the authorized start once for the saved receipt. After a disconnect, read `app-update.status` with that same ID when HTTPS returns. A local abort or lost response does not cancel the host job. Do not prepare or start another update to resolve an unknown start. If HTTPS does not return, retain the ID and hand off receipt inspection under separate host authorization.
+7. Read the terminal receipt and all applicable verification predicates. Through public HTTPS reads, verify the exact target App/Web identities, a new boot, current readiness and selected retained Workspace content. NanoHost must retain its identity and reconnect as its owner requires; App, NanoHost and Worker results remain separate. Report completion only when the receipt and public observations agree. A handoff, healthy API or restored previous App is not a successful target update.
+
+Stop at these boundaries and retain the exact non-secret observation:
+
+| Observation | Next action |
+| --- | --- |
+| Expired/revoked credential, missing administrator authority, or failed TLS verification | Stop remote effects. Resolve access through its existing owner; do not disable TLS or replay bootstrap. |
+| Missing/disabled helper, unsupported required operation, unknown current image, or missing helper/compatibility evidence | Hand off to an authorized operator. Host installation, configuration and image inspection are outside this runbook. |
+| Busy work or `app_update_work_active` | Keep the App running and resolve the maintenance window. Any later attempt needs fresh observations and its existing authority. |
+| `app_update_preflight_unsupported` | Stop and ask for the existing first-upgrade decision. Do not replace preflight with per-Workspace counts. |
+| Expired, conflicting, corrupt or missing receipt; failed, unknown or `recovery_required` outcome | Preserve the saved ID and inspect the existing result. Do not replay start, remove receipts, reset data or infer rollback compatibility. |
+| NanoHost not ready, failed restoration, unavailable status, or failed retained-data/readiness verification | Stop and hand off the specific recovery need under separate host authorization. Do not restart NanoHost, edit host files or restore a database through this HTTPS path. |
+
+For separately authorized host replacement or recovery, continue with [Update NanoCore And Web](#update-nanocore-and-web) and its linked procedures. This runbook executes no update or host handoff by itself.
 
 ## Update NanoCore And Web
 
@@ -324,9 +357,29 @@ Start editing Task A on a new shared Thread using `task.start` with `workerStora
 
 Web uses **Settings → Vault backend → Workspace secrets** for the same lifecycle, with a password field cleared on submission and redacted inventory. Existing Workspace Vault remains an evidence view. Revocation retains reference and grant history and does not make an ID reusable. A failed or interrupted mutation requires inventory inspection before a fresh request; the system does not automatically repair Core/backend disagreement.
 
+## Discover Administrator CLI Operations
+
+Start with local help: `openkit --help`, `openkit help ops search`, or `openkit ops call --help`. Help returns the normal JSON envelope with `command: help` and exit status 0. Help, search and describe require no endpoint or credential and make no network request.
+
+`openkit ops search <query>` returns only operation ids and one-line summaries. Search matches ids, capability groups, summary text and bounded discovery terms. Use `update` or `upgrade` to find the App update operations, `preflight` to find `app-update.preflight`, and `connection` or `version` to find `diagnostics.app`. These are discovery terms, not operation ids or call aliases.
+
+`openkit ops describe <operation-id>` returns the operation summary, mutation flag, sensitivity and required-access metadata, and a compact input contract. It lists required fields, value kinds and scalar constraints, preserves each flat input alternative, and leaves nested product structures compact. Defaulted input fields remain optional. Add `--schema` to describe for the full shared JSON input schema, or to search for full shared JSON input/output schemas.
+
+Use this read-only discovery sequence before an App update:
+
+```text
+openkit ops search update
+openkit ops describe app-update.preflight
+printf '%s' '{}' | openkit ops call app-update.preflight --input -
+openkit ops describe app-update.prepare
+openkit ops describe app-update.start
+```
+
+Call only the canonical operation id with `openkit ops call <operation-id> --input -`. Supply one strict flat JSON object on stdin: path scope, query and body fields share the top level, without `params`, `query` or `body` wrappers. Nested product values remain valid when the shared schema requires them. Discovery does not authorize a mutation, replace exact approval, or run the update sequence for you; retain the existing update preparation, consent and status procedure.
+
 ## Administrator CLI Secret And Archive Delivery
 
-Use `scripts/openkit` relative to the installed package with Node.js 24. Confirm the exact deployment, Workspace, intended effect and current administrator authority; run doctor, search and describe before a bounded `ops call <id> --input -`. One-time-secret operations are unavailable over MCP. For token.create or token.rotate, supply the complete described stdin JSON and an explicit safe non-reserved named destination. Secure storage preflight must pass before issuance; the endpoint administration credential remains unchanged. Success exposes redacted records and storage metadata only. On delivery failure after issuance or unknown transport outcome, inspect token inventory before a new explicit request; issuance and local storage are separate effects and cannot be rolled back by the CLI. Bootstrap consumes secret stdin with first-owner display name, email and password, uses no ordinary bearer, and stores the returned administrator credential in the endpoint sink. Never replay bootstrap on an initialized deployment.
+Use `scripts/openkit` relative to the installed package with Node.js 24. Confirm the exact deployment, Workspace, intended effect and current administrator authority; run doctor, search and describe before a bounded `ops call <id> --input -`. One-time-secret operations are unavailable over MCP. For a scoped member call, follow [named member connection](nanocore-deployment-modes.en.md#connect-with-a-named-workspace-token), verify `caller.read`, and append `--credential <name>` each time. For token.create or token.rotate, supply the complete described stdin JSON and an explicit safe non-reserved named destination. Secure storage preflight must pass before issuance; the endpoint administration credential remains unchanged. Success exposes redacted records and storage metadata only. On delivery failure after issuance or unknown transport outcome, inspect token inventory before a new explicit request; issuance and local storage are separate effects and cannot be rolled back by the CLI. Bootstrap consumes secret stdin with first-owner display name, email and password, uses no ordinary bearer, and stores the returned administrator credential in the endpoint sink. Never replay bootstrap on an initialized deployment.
 
 For workspace.archive-download, first create/read the exact authorized server export and pass its Workspace/export identity plus a caller-selected destinationPath. The output must be absent in a secure existing parent; the CLI exclusively creates a private 0600 local archive and never overwrites an existing path or symlink. Partial transfer cleanup owns only the file it created. For workspace.archive-import-dry-run and workspace.archive-import, pass sourcePath for an existing regular local file with no symlink and no group/other permission bits; remote URLs and stdin archive bytes are unavailable. Describe the complete input for this version, retain exact archive bytes/digest and review, and obtain the required user import decision before commit. Dry-run and import remain separate owner operations with their existing staging/admission/retry rules. Download never returns archive bytes in JSON, and import never base64-encodes or spools them for MCP. An unknown import effect requires retained-request inspection, not blind replay or altered input under the same requestId. Ordinary users perform these three transfers through Web Portability. Server backup/restore and stopped-server recovery retain their separate authority and procedures.
 

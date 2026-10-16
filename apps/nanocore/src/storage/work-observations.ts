@@ -15,6 +15,11 @@ import {
   THREAD_RUNTIME_ACTIVITY_MAX_ENTRIES,
   THREAD_RUNTIME_ACTIVITY_MAX_TEXT_CHARACTERS,
 } from '@openkit/app-api-schemas';
+import {
+  ResourceCatalogDocumentSchema,
+  ResourceCatalogIdSchema,
+  ResourceDigestSchema,
+} from '@openkit/config-schema';
 import { ReasoningEffortSchema, SystemPromptDigestSchema } from '@openkit/protocol';
 import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
@@ -45,6 +50,51 @@ export interface WorkObservationReference {
   readonly digest?: string | undefined;
   readonly edge: 'association' | 'publication';
 }
+
+/** Minimal historical source admission, never target catalog references or access authority. */
+export const AssistantSkillAdmissionSchema = z
+  .object({
+    catalogRevision: ResourceCatalogDocumentSchema.shape.revision.nullable(),
+    skills: z.array(
+      z
+        .object({
+          skillId: ResourceCatalogIdSchema,
+          versionId: ResourceDigestSchema,
+          contentDigest: ResourceDigestSchema,
+        })
+        .strict()
+    ),
+  })
+  .strict()
+  .superRefine((admission, context) => {
+    if ((admission.skills.length === 0) !== (admission.catalogRevision === null)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['catalogRevision'],
+        message: 'Only an empty Skill selection has a null catalog revision.',
+      });
+    }
+    for (const [index, skill] of admission.skills.entries()) {
+      const previous = admission.skills[index - 1];
+      if (previous && previous.skillId >= skill.skillId) {
+        context.addIssue({
+          code: 'custom',
+          path: ['skills', index, 'skillId'],
+          message: 'Skill IDs must be unique and ordered by Skill ID.',
+        });
+      }
+      if (skill.versionId !== skill.contentDigest) {
+        context.addIssue({
+          code: 'custom',
+          path: ['skills', index, 'versionId'],
+          message: 'The admitted Skill version must equal its content digest.',
+        });
+      }
+    }
+  });
+
+/** Shared trusted-producer shape for the canonical environment admission tuple. */
+export type AssistantSkillAdmission = z.infer<typeof AssistantSkillAdmissionSchema>;
 
 /** Owner-validated long-lived facts, never arbitrary original bodies. */
 export interface WorkObservationDraft {
@@ -212,6 +262,7 @@ const payloadSchemas = {
     .object({
       version: z.string().min(1),
       workspaceId: z.string().min(1),
+      assistantSkillAdmission: AssistantSkillAdmissionSchema.optional(),
       systemPromptDigest: SystemPromptDigestSchema,
       tools: z.array(
         z

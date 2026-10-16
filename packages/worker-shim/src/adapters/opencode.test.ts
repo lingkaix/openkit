@@ -2,7 +2,7 @@
 
 import { type ChildProcess, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, getEventListeners } from 'node:events';
 import {
   existsSync,
   mkdirSync,
@@ -11,6 +11,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -29,11 +30,16 @@ import type {
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
 import { WORKER_ADAPTERS } from '../adapter-registry.js';
+import { WorkerControlError, type WorkerControlFetch } from '../control-client.js';
 import { WorkerHarness } from '../harness.js';
 import type { SandboxIntegrationClient } from '../integration-client.js';
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
 import { nativeStartupAdmission } from '../native-startup.js';
-import { type RuntimeObservation, RuntimeSemanticCapture } from '../runtime-capture.js';
+import {
+  RuntimeCaptureStoppedError,
+  type RuntimeObservation,
+  RuntimeSemanticCapture,
+} from '../runtime-capture.js';
 import {
   type SyntheticCapability,
   startSyntheticCapability,
@@ -44,6 +50,8 @@ import {
   type SyntheticInference,
   startSyntheticInference,
 } from '../test-support/synthetic-inference.js';
+import { WorkerTranscriptWriter } from '../transcript.js';
+import { runResidentTurn } from '../turn.js';
 import { TurnTimeline } from '../turn-timeline.js';
 import {
   boundOpenCodeDiagnostic,
@@ -132,6 +140,603 @@ describe('OpenCode resident adapter', () => {
     });
     return { adapter, child, client, layout, creds, environment: () => environment };
   }
+
+  it.each([
+    {
+      capture: 'off' as const,
+      code: 'worker_control_lease_not_live',
+      status: 403,
+      owned: true,
+      admitted: true,
+    },
+    {
+      capture: 'on' as const,
+      code: 'worker_control_lease_not_live',
+      status: 403,
+      owned: true,
+      admitted: true,
+    },
+    {
+      capture: 'on' as const,
+      code: 'worker_control_lease_not_live',
+      status: 403,
+      owned: false,
+      admitted: false,
+    },
+    {
+      capture: 'on' as const,
+      code: 'worker_control_lease_not_live',
+      status: 401,
+      owned: true,
+      admitted: false,
+    },
+    {
+      capture: 'on' as const,
+      code: 'worker_control_revoked',
+      status: 403,
+      owned: true,
+      admitted: false,
+    },
+  ])('composes OpenCode publication refusal $code/$status with capture=$capture and owned=$owned', async (testCase) => {
+    const f = timelineFixture('new');
+    const controller = new AbortController();
+    let prompted = false;
+    let nativeInterrupted = false;
+    let releasePublication!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releasePublication = resolve;
+    });
+    let enteredPublication!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enteredPublication = resolve;
+    });
+    let readyAccepted!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      readyAccepted = resolve;
+    });
+    let observedInterrupt!: () => void;
+    const interruption = new Promise<void>((resolve) => {
+      observedInterrupt = resolve;
+    });
+    f.client.session.prompt = async () => {
+      prompted = true;
+      return { id: 'user-1' };
+    };
+    f.client.session.get = async () => {
+      if (prompted) await ready;
+      return {
+        id: 'sess-1',
+        model: { id: 'prompt-model', providerID: OPENCODE_PROVIDER_ID },
+        time: { idle: nativeInterrupted ? Number.MAX_SAFE_INTEGER : 0 },
+        ...(nativeInterrupted ? { outcome: 'interrupted' } : {}),
+      };
+    };
+    f.client.message.list = async () =>
+      ({
+        cursor: {},
+        data: !prompted
+          ? []
+          : [
+              { id: 'user-1', type: 'user' },
+              {
+                id: 'answer-1',
+                type: 'assistant',
+                content: [{ type: 'text', text: 'Partial native evidence.' }],
+                ...(nativeInterrupted ? { finish: 'error' } : {}),
+              },
+              ...(nativeInterrupted
+                ? [{ id: 'idle-1', type: 'idle', outcome: 'interrupted' }]
+                : []),
+            ],
+      }) as never;
+    const nativeInterrupt = vi.spyOn(f.client.session, 'interrupt').mockImplementation(async () => {
+      nativeInterrupted = true;
+      observedInterrupt();
+      return { interrupted: true } as never;
+    });
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    let nativeSettlement: Promise<WorkerAdapterResult> | undefined;
+    const startTurn = session.startTurn.bind(session);
+    vi.spyOn(session, 'startTurn').mockImplementation(async (input) => {
+      const turn = await startTurn(input);
+      nativeSettlement = turn.settled;
+      return turn;
+    });
+    const publication = vi.spyOn(WorkerTranscriptWriter.prototype, 'writeObservation');
+    const lineage = {
+      agentSessionId: 'as-opencode',
+      packageSnapshotId: 'pkg-composed',
+      requestId: 'req-composed',
+      threadId: 'th-composed',
+      turnId: 'tu-composed',
+      workspaceId: 'ws-composed',
+    };
+    const packagePath = join(f.layout.root, 'composed-package.json');
+    const sessionDir = join(f.layout.root, 'composed-capture');
+    const eventPath = join(sessionDir, 'events.jsonl');
+    writeFileSync(
+      packagePath,
+      JSON.stringify({
+        control: {
+          adapter: { kind: 'openkit-worker-shim', targetRuntime: 'opencode' },
+          mode: 'sandbox-integration',
+          bindings: {
+            capabilities: {
+              pathPrefix: '/capabilities/',
+              tokenRef: 'runtime://openkit/capability-token',
+            },
+            inference: { pathPrefix: '/inference/', tokenRef: 'runtime://openkit/inference-token' },
+            workerControl: {
+              pathPrefix: '/worker-control/',
+              tokenRef: 'runtime://openkit/worker-control-token',
+            },
+          },
+        },
+        extensions: { openkit: { turnInput: 'Collect the addressed Turn.' } },
+        llm: {
+          mode: 'gateway',
+          preferredLogicalModelId: 'prompt-model',
+          routes: [
+            {
+              ...acceptedRoute(f.creds, 'prompt-model'),
+              endpoint: { kind: 'openai-compatible', upstream: { kind: 'nanocore-gateway' } },
+            },
+          ],
+        },
+        observability: { captureCoverage: { scope: 'server', value: testCase.capture } },
+        runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: f.layout.work } },
+        scope: lineage,
+      })
+    );
+    const requests: Array<{ url: string; body: string }> = [];
+    const accepted: unknown[] = [];
+    const finals: Array<{ sequence: number; body: Record<string, unknown> }> = [];
+    const sealedAtFinal: string[] = [];
+    let refusedSequence: number | undefined;
+    const fetch: WorkerControlFetch = async (url, init) => {
+      requests.push({ url, body: init.body });
+      const body = JSON.parse(init.body);
+      if (url.endsWith('/events/append')) {
+        const record = body.record;
+        if (
+          record.event.type === 'observation.recorded' &&
+          record.event.data.fact.kind === 'assistant'
+        ) {
+          refusedSequence ??= record.sequence;
+          enteredPublication();
+          return {
+            ok: false,
+            status: testCase.status,
+            text: async () => {
+              await release;
+              return JSON.stringify({ code: testCase.code });
+            },
+          };
+        }
+        accepted.push(record);
+        if (record.event.type === 'worker.ready') readyAccepted();
+      }
+      if (url.endsWith('/final-status')) {
+        finals.push(body);
+        sealedAtFinal.push(readFileSync(eventPath, 'utf8'));
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ accepted: true, diagnostics: [], schemaVersion: 2 }),
+      };
+    };
+    const result = runResidentTurn({
+      adapterId: 'opencode',
+      credentialValues: [],
+      environment: {},
+      fetch,
+      integration: {
+        ready: Promise.resolve(),
+        bindTurnRouteTokens() {},
+        clearTurnRouteTokens() {},
+        drainTurn: async () => 0,
+      } as unknown as SandboxIntegrationClient,
+      lineage,
+      nativeEnvironment: null,
+      onStarted() {},
+      packagePath,
+      resident: session,
+      runtimeEnvironmentNames: new Set(),
+      sessionDir,
+      signal: controller.signal,
+      tokens: {
+        capabilityToken: 'composed-capability',
+        controlToken: 'composed-control',
+        inferenceToken: 'composed-inference',
+      },
+      turnDirectory: join(f.layout.root, 'composed-turn'),
+    }).then(
+      (result) => ({ result }),
+      (error: unknown) => ({ error })
+    );
+    try {
+      await nativeTestBound(
+        Promise.race([
+          entered,
+          result.then((outcome) => {
+            throw new Error(
+              `The Turn ended before publication entry: ${'error' in outcome && outcome.error instanceof Error ? outcome.error.message : JSON.stringify(outcome)}`
+            );
+          }),
+        ]),
+        1_000,
+        'The real writer publication did not enter HTTP.'
+      );
+      const prefix = structuredClone(accepted);
+      const enteredRequests = requests.length;
+      if (testCase.owned) {
+        controller.abort();
+        await nativeTestBound(interruption, 1_000, 'The addressed native interrupt did not enter.');
+      }
+      releasePublication();
+      const outcome = await nativeTestBound(result, 2_000, 'The composed Turn did not settle.');
+      const acknowledgements = await Promise.all(
+        publication.mock.results.map((call) =>
+          Promise.resolve(call.value).then(
+            () => null,
+            (error: unknown) => error
+          )
+        )
+      );
+      expect(acknowledgements).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: testCase.code, status: testCase.status }),
+        ])
+      );
+      expect(
+        acknowledgements.some(
+          (error) =>
+            error instanceof WorkerControlError &&
+            error.code === testCase.code &&
+            error.status === testCase.status
+        )
+      ).toBe(true);
+      expect(accepted).toEqual(prefix);
+      expect(
+        requests.filter(
+          (request) =>
+            request.url.endsWith('/events/append') &&
+            JSON.parse(request.body).record.sequence === refusedSequence
+        )
+      ).toHaveLength(1);
+      if (testCase.admitted) {
+        expect(outcome).toMatchObject({
+          result: { status: 'interrupted', nativeEvidence: { nativeTerminal: true } },
+        });
+        await expect(nativeSettlement).resolves.toMatchObject({
+          status: 'interrupted',
+          interruptRequested: true,
+        });
+        expect(nativeInterrupt).toHaveBeenCalledTimes(1);
+        expect(requests.slice(enteredRequests).map((request) => request.url)).toEqual([
+          '/worker-control/final-status',
+        ]);
+        const records = readFileSync(eventPath, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line));
+        const terminal = records.at(-1)!;
+        expect(terminal.event.data).toMatchObject({ status: 'interrupted', stopReason: 'aborted' });
+        expect(
+          Object.values((terminal.event.data.diagnostics ?? {}) as Record<string, string>).some(
+            (value) => /\bincomplete\b/i.test(value)
+          )
+        ).toBe(true);
+        expect(finals).toEqual([
+          {
+            operation: 'final_status',
+            schemaVersion: 2,
+            lineage,
+            sequence: terminal.sequence,
+            body: terminal.event.data,
+          },
+        ]);
+        expect(sealedAtFinal).toEqual([readFileSync(eventPath, 'utf8')]);
+      } else {
+        if ('result' in outcome) expect(outcome.result.status).toBe('failed');
+        else expect(outcome.error).toBeInstanceOf(Error);
+        expect(finals.filter((final) => final.body.status === 'interrupted')).toEqual([]);
+      }
+    } finally {
+      readyAccepted();
+      releasePublication();
+      await result;
+      publication.mockRestore();
+    }
+  });
+
+  describe('owned collector stop boundary', () => {
+    const retainedCases = (['off', 'on'] as const).flatMap((capture) =>
+      (['assistant', 'origin'] as const).flatMap((boundary) =>
+        (['interrupted', 'failed'] as const).map((native) => ({ capture, boundary, native }))
+      )
+    );
+
+    /** Keeps native correlation and collector rejection separate at the existing SDK-shaped boundary. */
+    async function startBoundary(options: {
+      capture: 'off' | 'on';
+      boundary: 'assistant' | 'origin';
+      native: 'interrupted' | 'failed' | 'completed' | 'length';
+      fault: Error;
+      abortAtSink: boolean;
+      requestedBeforeCorrelation?: boolean;
+      malformed?: 'duplicate idle' | 'wrong prompt';
+    }) {
+      const f = timelineFixture('new');
+      const controller = new AbortController();
+      const prompt = f.client.session.prompt;
+      let prompted = false;
+      f.client.session.prompt = async (input) => {
+        const result = await prompt(input);
+        prompted = true;
+        return result;
+      };
+      let releaseCorrelation!: () => void;
+      const correlate = new Promise<void>((resolve) => {
+        releaseCorrelation = resolve;
+      });
+      let enteredCorrelation!: () => void;
+      const correlating = new Promise<void>((resolve) => {
+        enteredCorrelation = resolve;
+      });
+      const get = f.client.session.get;
+      f.client.session.get = async (...args) => {
+        const info = await get(...args);
+        if (prompted && options.requestedBeforeCorrelation) {
+          enteredCorrelation();
+          await correlate;
+        }
+        return {
+          ...info,
+          outcome:
+            options.native === 'completed' || options.native === 'length'
+              ? 'succeeded'
+              : options.native,
+        };
+      };
+      const list = f.client.message.list;
+      f.client.message.list = async (...args) => {
+        const response = await list(...args);
+        let data = response.data.map((row) =>
+          row.type === 'assistant'
+            ? {
+                ...row,
+                finish:
+                  options.native === 'completed'
+                    ? 'stop'
+                    : options.native === 'length'
+                      ? 'length'
+                      : 'error',
+              }
+            : row.type === 'idle'
+              ? {
+                  ...row,
+                  outcome:
+                    options.native === 'completed' || options.native === 'length'
+                      ? 'succeeded'
+                      : options.native,
+                }
+              : row
+        );
+        if (prompted && options.malformed) {
+          controller.abort();
+          data =
+            options.malformed === 'duplicate idle'
+              ? [...data, { ...data.at(-1), id: 'unrelated-idle' }]
+              : data.map((row) => (row.type === 'user' ? { ...row, id: 'wrong-prompt' } : row));
+        }
+        return { ...response, data } as never;
+      };
+      const nativeInterrupt = vi
+        .spyOn(f.client.session, 'interrupt')
+        .mockResolvedValue({ interrupted: true } as never);
+      const killed = vi.spyOn(f.child, 'kill');
+      const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+      sessions.push(session);
+      const accepted: RuntimeObservation[] = [];
+      const rejected: RuntimeObservation[] = [];
+      let firstRefusedCall = -1;
+      let collectorCallsAtRefusal = -1;
+      const collector = vi.spyOn(RuntimeSemanticCapture.prototype, 'emit');
+      const emit = vi.fn(async (record: RuntimeObservation) => {
+        const selected =
+          record.fact.kind === options.boundary &&
+          (options.boundary === 'assistant' || record.fact.phase !== 'started');
+        if (selected) {
+          if (options.abortAtSink) controller.abort();
+          if (firstRefusedCall < 0) {
+            firstRefusedCall = emit.mock.calls.length - 1;
+            collectorCallsAtRefusal = collector.mock.calls.length;
+          }
+          rejected.push(record);
+          throw options.fault;
+        }
+        accepted.push(record);
+      });
+      const input = turnInput(f.layout, f.creds, 'collector-boundary', 'prompt-model');
+      const turn = await session.startTurn({
+        ...input,
+        signal: controller.signal,
+        runtimeCapture: {
+          ...input.runtimeCapture,
+          captureCoverage: { scope: 'server', value: options.capture },
+          emit,
+        },
+      });
+      let interrupt: Promise<void> | undefined;
+      if (options.requestedBeforeCorrelation) {
+        await nativeTestBound(correlating, 1_000, 'Native correlation did not enter.');
+        controller.abort();
+        interrupt = turn.interrupt();
+        releaseCorrelation();
+      }
+      const outcome = await nativeTestBound(
+        turn.settled.then(
+          (result) => ({ result }),
+          (error: unknown) => ({ error })
+        ),
+        1_000,
+        'Collector stop did not settle through the existing native boundary.'
+      );
+      await interrupt?.catch(() => undefined);
+      const collectorCallCount = collector.mock.calls.length;
+      collector.mockRestore();
+      return {
+        ...f,
+        controller,
+        session,
+        nativeInterrupt,
+        killed,
+        emit,
+        accepted,
+        rejected,
+        firstRefusedCall,
+        collectorCallsAtRefusal,
+        collectorCallCount,
+        outcome,
+      };
+    }
+
+    it.each(
+      retainedCases
+    )('retains correlated $native at $boundary with capture=$capture after the owned stop', async (testCase) => {
+      const fault = new RuntimeCaptureStoppedError();
+      const f = await startBoundary({ ...testCase, fault, abortAtSink: true });
+      expect(f.controller.signal.aborted).toBe(true);
+      expect(f.outcome).toMatchObject({
+        result: {
+          status: testCase.native,
+          interruptRequested: false,
+          nativeEvidence: { nativeTerminal: true },
+        },
+      });
+      expect(f.rejected).toHaveLength(1);
+      await expect(f.emit.mock.results[f.firstRefusedCall]!.value).rejects.toBe(fault);
+      expect(f.emit).toHaveBeenCalledTimes(f.firstRefusedCall + 1);
+      expect(f.collectorCallCount).toBe(f.collectorCallsAtRefusal);
+      expect(f.accepted).not.toContain(f.rejected[0]);
+      expect(f.nativeInterrupt).not.toHaveBeenCalled();
+      expect(f.killed).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'off',
+      'on',
+    ] as const)('retains an interruption requested before correlation with capture=%s', async (capture) => {
+      const fault = new RuntimeCaptureStoppedError();
+      const f = await startBoundary({
+        capture,
+        boundary: 'assistant',
+        native: 'interrupted',
+        fault,
+        abortAtSink: false,
+        requestedBeforeCorrelation: true,
+      });
+      expect(f.outcome).toMatchObject({
+        result: {
+          status: 'interrupted',
+          interruptRequested: true,
+          nativeEvidence: { nativeTerminal: true },
+        },
+      });
+      expect(f.nativeInterrupt).toHaveBeenCalledTimes(1);
+      expect(f.rejected).toHaveLength(1);
+      await expect(f.emit.mock.results[f.firstRefusedCall]!.value).rejects.toBe(fault);
+      expect(f.emit).toHaveBeenCalledTimes(f.firstRefusedCall + 1);
+      expect(f.collectorCallCount).toBe(f.collectorCallsAtRefusal);
+      expect(f.killed).not.toHaveBeenCalled();
+    });
+
+    const refusedCases = (['off', 'on'] as const).flatMap((capture) => [
+      {
+        capture,
+        failure: 'unowned marker',
+        fault: new RuntimeCaptureStoppedError(),
+        abortAtSink: false,
+      },
+      {
+        capture,
+        failure: 'unknown error',
+        fault: new Error('Unrelated collector failure.'),
+        abortAtSink: true,
+      },
+      {
+        capture,
+        failure: 'same message and name',
+        fault: Object.assign(new Error(new RuntimeCaptureStoppedError().message), {
+          name: new RuntimeCaptureStoppedError().name,
+        }),
+        abortAtSink: true,
+      },
+      {
+        capture,
+        failure: 'revoked control authority',
+        fault: new WorkerControlError('worker_control_revoked', 403, null),
+        abortAtSink: true,
+      },
+    ]);
+    it.each(refusedCases)('fails closed for $failure with capture=$capture', async ({
+      capture,
+      fault,
+      abortAtSink,
+    }) => {
+      const f = await startBoundary({
+        capture,
+        fault,
+        abortAtSink,
+        boundary: 'assistant',
+        native: 'interrupted',
+      });
+      if ('result' in f.outcome) {
+        expect(f.outcome.result).toMatchObject({ status: 'failed', assistantText: null });
+      } else expect(f.outcome.error).toBeInstanceOf(Error);
+      expect(f.rejected.length).toBeGreaterThan(0);
+      await expect(f.emit.mock.results[f.firstRefusedCall]!.value).rejects.toBe(fault);
+      expect(f.session.childState()).toBe('absent');
+    });
+
+    it.each(
+      (['off', 'on'] as const).flatMap((capture) =>
+        (['assistant', 'origin'] as const).flatMap((boundary) =>
+          (['completed', 'length'] as const).map((native) => ({ capture, boundary, native }))
+        )
+      )
+    )('fails closed for native $native with lost observations at $boundary and capture=$capture', async (testCase) => {
+      const fault = new RuntimeCaptureStoppedError();
+      const f = await startBoundary({ ...testCase, fault, abortAtSink: true });
+      if ('result' in f.outcome)
+        expect(f.outcome.result).toMatchObject({ status: 'failed', assistantText: null });
+      else expect(f.outcome.error).toBeInstanceOf(Error);
+      expect(f.rejected.length).toBeGreaterThan(0);
+      await expect(f.emit.mock.results[f.firstRefusedCall]!.value).rejects.toBe(fault);
+    });
+
+    it.each([
+      'duplicate idle',
+      'wrong prompt',
+    ] as const)('does not replace malformed %s evidence with cancellation', async (malformed) => {
+      const f = await startBoundary({
+        capture: 'on',
+        boundary: 'origin',
+        native: 'interrupted',
+        fault: new RuntimeCaptureStoppedError(),
+        abortAtSink: false,
+        malformed,
+      });
+      expect(f.controller.signal.aborted).toBe(true);
+      if ('result' in f.outcome)
+        expect(f.outcome.result).toMatchObject({ status: 'failed', assistantText: null });
+      else expect(f.outcome.error).toBeInstanceOf(Error);
+      expect(f.session.childState()).toBe('absent');
+    });
+  });
 
   it.each([
     'interrupt',
@@ -225,6 +830,106 @@ describe('OpenCode resident adapter', () => {
     expect(session.nativeEvidence?.().pipesDrained).toBe(true);
     await expect(session.close()).rejects.toThrow(/drain|flush/);
     expect(session.nativeEvidence?.().persistencePreservingClose).toBe(false);
+  });
+
+  it('releases only bootstrap services after move drain and before the first prompt', async () => {
+    const f = timelineFixture('new');
+    const calls: string[] = [];
+    f.client.session.move = async () => {
+      calls.push('move');
+    };
+    f.client.session.wait = async () => {
+      calls.push('wait');
+    };
+    const evict = vi.spyOn(f.client.debug.location, 'evict').mockImplementation(async () => {
+      calls.push('evict');
+    });
+    const prompt = f.client.session.prompt;
+    f.client.session.prompt = async (input) => {
+      calls.push('prompt');
+      return prompt(input);
+    };
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const input = turnInput(f.layout, f.creds, 'first', 'prompt-model');
+    expect((await (await session.startTurn(input)).settled).status).toBe('completed');
+    expect(calls).toEqual(['move', 'wait', 'evict', 'prompt']);
+    expect(evict).toHaveBeenCalledWith({
+      location: { directory: join(f.layout.stateRoot, 'work') },
+    });
+    await (await session.startTurn({ ...input, turnId: 'second' })).settled;
+    expect(calls).toEqual(['move', 'wait', 'evict', 'prompt', 'prompt']);
+    expect(evict).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    false,
+    true,
+  ])('keeps active bootstrap services when the Workspace is its alias=%s', async (alias) => {
+    const f = timelineFixture('new');
+    const evict = vi.spyOn(f.client.debug.location, 'evict');
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const bootstrap = join(f.layout.stateRoot, 'work');
+    const workingDirectory = alias ? join(f.layout.stateRoot, 'work-alias') : bootstrap;
+    if (alias) symlinkSync(bootstrap, workingDirectory, 'dir');
+    const turn = await session.startTurn({
+      ...turnInput(f.layout, f.creds, 'first', 'prompt-model'),
+      workingDirectory,
+    });
+    expect((await turn.settled).status).toBe('completed');
+    expect(evict).not.toHaveBeenCalled();
+  });
+
+  it('releases native exit waiters after completed observation RPCs', async () => {
+    const f = timelineFixture('new');
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    // Promise reactions cannot be removed before exit; completed reads must not accumulate them.
+    const exitSubscriptions = vi.spyOn(session.exited, 'then');
+    const listen = vi.spyOn(AbortSignal.prototype, 'addEventListener');
+    try {
+      const turn = await session.startTurn(turnInput(f.layout, f.creds, 'first', 'prompt-model'));
+      expect((await turn.settled).status).toBe('completed');
+      expect(exitSubscriptions).not.toHaveBeenCalled();
+      for (const signal of new Set(listen.mock.contexts))
+        expect(getEventListeners(signal, 'abort')).toHaveLength(0);
+    } finally {
+      exitSubscriptions.mockRestore();
+      listen.mockRestore();
+    }
+  });
+
+  it('settles an outstanding observation RPC when native exit is observed', async () => {
+    const f = timelineFixture('new');
+    let entered!: () => void;
+    let release!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<[]>((resolve) => {
+      release = () => resolve([]);
+    });
+    f.client.permission.list = () => {
+      entered();
+      return held;
+    };
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const turn = await session.startTurn(turnInput(f.layout, f.creds, 'first', 'prompt-model'));
+    await reading;
+    try {
+      Object.assign(f.child, { exitCode: 17 });
+      f.child.emit('exit', 17, null);
+      f.child.emit('close', 17, null);
+      await expect(turn.settled).resolves.toMatchObject({
+        status: 'failed',
+        diagnostics: { native: 'OpenCode server exited during the Turn.' },
+      });
+      expect(session.childState()).toBe('absent');
+    } finally {
+      release();
+    }
   });
 
   it('round-three: interrupt settles held structural finalization with capture off', async () => {
@@ -510,7 +1215,12 @@ describe('OpenCode resident adapter', () => {
     });
     const session = await f.adapter.openSession(openInput(f.layout, f.creds));
     sessions.push(session);
-    await expect(session.close()).rejects.toThrow(/drain|flush/);
+    await expect(session.close()).rejects.toThrow(
+      'OpenCode native drain or persistence flush was not proved. ' +
+        `(activeTurn=false, normalExit=true, stdoutEof=${failure === 'stream error'}, ` +
+        `stderrEof=${failure === 'stream error'}, streamError=${failure === 'stream error'}, ` +
+        'stopRequested=false, forcedStop=false)'
+    );
     expect(session.nativeEvidence?.().persistencePreservingClose).toBe(false);
   });
 
@@ -2421,7 +3131,7 @@ describe('W4 round-five proof regressions', () => {
     sessions.push(session);
     const close = session.close();
     expect(session.close()).toBe(close);
-    await expect(close).rejects.toThrow(/drain|flush/);
+    await expect(close).rejects.toThrow(/normalExit=false.*stopRequested=true, forcedStop=true/);
     expect(session.childState()).toBe('absent');
   });
 
@@ -2438,7 +3148,9 @@ describe('W4 round-five proof regressions', () => {
     sessions.push(session);
     child.emit('exit', 1, null);
     child.emit('close', 1, null);
-    await expect(session.close()).rejects.toThrow(/drain|flush/);
+    await expect(session.close()).rejects.toThrow(
+      /normalExit=false.*stopRequested=false, forcedStop=false/
+    );
   });
 
   it('R5 rejects both interruption and settlement when escalation is unproved', async () => {
@@ -3256,6 +3968,7 @@ function failingModule(method: 'create' | 'prompt') {
         return {
           agent: { get: async () => ({ data: { permissions: [] } }) },
           config: { get: async () => [] },
+          debug: { location: { evict: async () => undefined } },
           location: { reload: async () => undefined },
           model: {
             list: async () => ({

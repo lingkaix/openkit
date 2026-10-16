@@ -10,6 +10,7 @@
     "tsconfig.base.json"
   ],
   "globalPassThroughEnv": [
+    "TMPDIR",
     "CARGO_HOME",
     "RUSTUP_HOME",
     "RUST_VERSION",

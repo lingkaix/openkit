@@ -14,7 +14,7 @@
 #![allow(dead_code, clippy::assertions_on_constants)]
 
 use std::future::Future;
-use std::io::{Cursor, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -579,6 +579,23 @@ pub struct AsyncRustlsClientStream<S = TcpStream> {
     pending_tls_offset: usize,
 }
 
+/// Polls a socket into rustls's own receive buffer, preserving partial-read ownership.
+struct RustlsSocketReader<'a, 'cx, S> {
+    socket: &'a mut S,
+    context: &'a mut Context<'cx>,
+}
+
+impl<S: AsyncRead + Unpin> Read for RustlsSocketReader<'_, '_, S> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let mut buffer = ReadBuf::new(buffer);
+        match Pin::new(&mut *self.socket).poll_read(self.context, &mut buffer) {
+            Poll::Pending => Err(std::io::ErrorKind::WouldBlock.into()),
+            Poll::Ready(Err(error)) => Err(error),
+            Poll::Ready(Ok(())) => Ok(buffer.filled().len()),
+        }
+    }
+}
+
 impl VerifiedSessionTransport {
     /// Returns whether this transport requires server-authenticated TLS.
     pub fn requires_server_authenticated_tls(&self) -> bool {
@@ -660,24 +677,31 @@ where
 
     /// Reads and processes one TLS record batch without exposing peer error text.
     fn poll_receive_tls(&mut self, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        let mut encrypted = [0_u8; 16 * 1024];
-        let mut encrypted_buffer = ReadBuf::new(&mut encrypted);
-        match Pin::new(&mut self.socket).poll_read(cx, &mut encrypted_buffer) {
-            Poll::Pending => return Poll::Pending,
-            Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-            Poll::Ready(Ok(())) => {}
-        }
-        if encrypted_buffer.filled().is_empty() {
+        // rustls can consume less than an offered socket batch. Let its Read buffer select the socket read size so no encrypted suffix is discarded.
+        let mut reader = RustlsSocketReader {
+            socket: &mut self.socket,
+            context: cx,
+        };
+        let received = match self.connection.read_tls(&mut reader) {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Poll::Pending,
+            Err(error) => return Poll::Ready(Err(error)),
+            Ok(received) => received,
+        };
+        if received == 0 {
             return Poll::Ready(Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "nanohost TLS socket read closed",
             )));
         }
-        self.connection
-            .read_tls(&mut Cursor::new(encrypted_buffer.filled()))?;
-        self.connection
-            .process_new_packets()
-            .map_err(std::io::Error::other)?;
+        self.connection.process_new_packets().map_err(|error| {
+            // H2 retains only the I/O kind and stringifies its source. Observe the typed cause here without exposing that text or retaining another connection projection.
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "{}",
+                format_tls_processing_failure(&error)
+            );
+            std::io::Error::other(error)
+        })?;
         Poll::Ready(Ok(()))
     }
 
@@ -1178,7 +1202,7 @@ impl From<RuntimeEffectKind> for OuterSessionOperation {
 
 impl OuterSessionOperation {
     /// Returns the exact fixed operation literal or `none`.
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
             Self::CreateSandbox => "sandbox.create",
@@ -1356,12 +1380,93 @@ fn is_physical_epoch(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+/// Classifies a TLS processing failure before H2 erases its typed I/O source.
+fn format_tls_processing_failure(error: &rustls::Error) -> String {
+    let cause = match error {
+        rustls::Error::InvalidCertificate(_) => "certificate",
+        rustls::Error::AlertReceived(_) => "peer_alert",
+        rustls::Error::InvalidMessage(_) => "invalid_message",
+        rustls::Error::DecryptError => "decrypt_error",
+        rustls::Error::PeerMisbehaved(_) => "peer_misbehaved",
+        rustls::Error::PeerIncompatible(_) => "peer_incompatible",
+        rustls::Error::InappropriateMessage { .. }
+        | rustls::Error::InappropriateHandshakeMessage { .. } => "unexpected_message",
+        _ => "other",
+    };
+    format!("nanohost TLS processing failed: cause={cause}")
+}
+
+/// Projects the actual H2 driver's completion into closed, value-free journal fields.
+/// Peer debug bytes and underlying I/O messages are never formatted.
+fn format_h2_driver_close(result: &Result<(), h2::Error>) -> String {
+    let (outcome, initiator, reason, io) = match result {
+        Ok(()) => ("clean_end", "none", "none", "none"),
+        Err(error) => {
+            let outcome = if error.is_io() {
+                "io_error"
+            } else if error.is_go_away() {
+                "goaway"
+            } else if error.is_reset() {
+                "reset"
+            } else {
+                "protocol_error"
+            };
+            let initiator = if error.is_io() {
+                "none"
+            } else if error.is_remote() {
+                "remote"
+            } else if error.is_library() {
+                "library"
+            } else {
+                "other"
+            };
+            let reason = match error.reason() {
+                None => "none",
+                Some(h2::Reason::NO_ERROR) => "no_error",
+                Some(h2::Reason::PROTOCOL_ERROR) => "protocol_error",
+                Some(h2::Reason::INTERNAL_ERROR) => "internal_error",
+                Some(h2::Reason::FLOW_CONTROL_ERROR) => "flow_control_error",
+                Some(h2::Reason::SETTINGS_TIMEOUT) => "settings_timeout",
+                Some(h2::Reason::STREAM_CLOSED) => "stream_closed",
+                Some(h2::Reason::FRAME_SIZE_ERROR) => "frame_size_error",
+                Some(h2::Reason::REFUSED_STREAM) => "refused_stream",
+                Some(h2::Reason::CANCEL) => "cancel",
+                Some(h2::Reason::COMPRESSION_ERROR) => "compression_error",
+                Some(h2::Reason::CONNECT_ERROR) => "connect_error",
+                Some(h2::Reason::ENHANCE_YOUR_CALM) => "enhance_your_calm",
+                Some(h2::Reason::INADEQUATE_SECURITY) => "inadequate_security",
+                Some(h2::Reason::HTTP_1_1_REQUIRED) => "http_1_1_required",
+                Some(_) => "unknown",
+            };
+            let io = match error.get_io().map(std::io::Error::kind) {
+                None => "none",
+                Some(std::io::ErrorKind::ConnectionReset) => "connection_reset",
+                Some(std::io::ErrorKind::ConnectionAborted) => "connection_aborted",
+                Some(std::io::ErrorKind::UnexpectedEof) => "unexpected_eof",
+                Some(std::io::ErrorKind::TimedOut) => "timed_out",
+                Some(std::io::ErrorKind::BrokenPipe) => "broken_pipe",
+                Some(std::io::ErrorKind::NotConnected) => "not_connected",
+                Some(std::io::ErrorKind::InvalidData) => "invalid_data",
+                Some(std::io::ErrorKind::Interrupted) => "interrupted",
+                Some(std::io::ErrorKind::WouldBlock) => "would_block",
+                Some(_) => "other",
+            };
+            (outcome, initiator, reason, io)
+        }
+    };
+    format!(
+        "nanohost physical connection ended: source=h2_driver outcome={outcome} initiator={initiator} reason={reason} io={io}"
+    )
+}
+
 /// Runs one authenticated outbound HTTP/2 connection to NanoCore.
 ///
 /// # Errors
 ///
 /// Invokes the caller-owned readiness gate after admission and immediately before publication.
 /// The caller's absolute startup deadline includes time already used by connection setup.
+/// Optional operator observation uses that exact admission only after the complete ACK;
+/// physical close, cancellation and return clear it without changing runtime authority.
 ///
 /// Returns one bounded closed classification when the fixed session cannot continue.
 pub async fn run_outer_session<IO, R, D, F>(
@@ -1370,7 +1475,12 @@ pub async fn run_outer_session<IO, R, D, F>(
     context: &CredentialSelectionContext,
     presentation: &CredentialPresentationOutcome,
     reconnect_after: Option<u64>,
-    readiness: (&str, tokio::time::Instant, R),
+    readiness: (
+        &str,
+        tokio::time::Instant,
+        Option<Arc<crate::live_inspection::InspectionState>>,
+        R,
+    ),
     dispatch: D,
 ) -> Result<u64, OuterSessionFailure>
 where
@@ -1379,7 +1489,10 @@ where
     D: FnOnce(u64, h2::client::SendRequest<Bytes>) -> F,
     F: Future<Output = Result<(), OuterSessionFailure>>,
 {
-    let (physical_epoch, startup_deadline, readiness_gate) = readiness;
+    let (physical_epoch, startup_deadline, inspection, readiness_gate) = readiness;
+    let _inspection_lifetime = inspection
+        .as_ref()
+        .map(|state| crate::live_inspection::ConnectionObservation::new(Arc::clone(state)));
     if !is_physical_epoch(physical_epoch) {
         return Err(OuterSessionFailure::terminal(
             OuterSessionStage::Readiness,
@@ -1731,6 +1844,13 @@ where
         if tokio::time::Instant::now() > startup_deadline {
             return Err(startup_failure().with_reconnect_after(Some(connection_generation)));
         }
+        if let Some(inspection) = &_inspection_lifetime {
+            inspection.admit(
+                &context.identity_id,
+                &context.deployment_id,
+                connection_generation,
+            );
+        }
         let _ = startup_ready.send(());
         dispatch(connection_generation, sender)
             .await
@@ -1745,7 +1865,19 @@ where
             })?;
         Ok(connection_generation)
     };
-    let mut connection = tokio::spawn(connection);
+    let lost_inspection = inspection.clone();
+    let mut connection = tokio::spawn(async move {
+        let result = connection.await;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "{}",
+            format_h2_driver_close(&result)
+        );
+        if let Some(inspection) = lost_inspection {
+            inspection.clear();
+        }
+        result
+    });
     tokio::pin!(exchange);
     let startup_timeout = async {
         if matches!(
@@ -1766,7 +1898,17 @@ where
             let generation = admitted_generation.load(Ordering::Acquire);
             Err(startup_failure().with_reconnect_after((generation != 0).then_some(generation).or(reconnect_after)))
         },
-        _ = &mut connection => {
+        result = &mut connection => {
+            if let Err(error) = result {
+                let outcome = if error.is_cancelled() {
+                    "cancelled"
+                } else if error.is_panic() {
+                    "panicked"
+                } else {
+                    "unknown"
+                };
+                let _ = writeln!(std::io::stderr().lock(), "nanohost physical connection ended: source=driver_task outcome={outcome} initiator=local reason=none io=none");
+            }
             let generation = admitted_generation.load(Ordering::Acquire);
             Err(OuterSessionFailure::reconnect(
                 OuterSessionStage::Connect,
@@ -2914,6 +3056,14 @@ impl OuterSessionState {
 #[cfg(test)]
 #[path = "nanocore_tls_tests.rs"]
 pub(crate) mod native_tls_tests;
+
+#[cfg(test)]
+#[path = "nanocore_connection_tests.rs"]
+mod nanocore_connection_tests;
+
+#[cfg(test)]
+#[path = "nanocore_tls_io_tests.rs"]
+mod nanocore_tls_io_tests;
 
 #[cfg(test)]
 mod tests {
@@ -4434,7 +4584,9 @@ mod tests {
             &context,
             &presentation,
             None,
-            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                Ok(None)
+            }),
             |_, mut sender| async move {
                 let mut cursor = 0;
                 poll_effect_command("http://nanocore:80", &mut sender, &mut cursor, false)
@@ -4495,7 +4647,7 @@ mod tests {
                 &context,
                 &presentation,
                 None,
-                (physical_epoch, test_startup_deadline(), move || {
+                (physical_epoch, test_startup_deadline(), None, move || {
                     readiness_gate_observation.store(true, Ordering::Relaxed);
                     Ok(None)
                 }),
@@ -4527,7 +4679,9 @@ mod tests {
             &context,
             &presentation,
             None,
-            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                Ok(None)
+            }),
             move |_, _| async move {
                 first_dispatch.store(true, Ordering::Relaxed);
                 Ok(())
@@ -4553,7 +4707,9 @@ mod tests {
             &context,
             &presentation,
             Some(1),
-            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                Ok(None)
+            }),
             move |_, _| async move {
                 successor_dispatch.store(true, Ordering::Relaxed);
                 Err(OuterSessionFailure::terminal(
@@ -4610,14 +4766,19 @@ mod tests {
             &context,
             &presentation,
             None,
-            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), move || {
-                gate_observation.store(true, Ordering::Relaxed);
-                let deadline = match deadline {
-                    MarkerDeadline::Within(budget) => tokio::time::Instant::now() + budget,
-                    MarkerDeadline::AlreadyElapsed(expired) => expired,
-                };
-                Ok(Some(deadline))
-            }),
+            (
+                TEST_PHYSICAL_EPOCH,
+                test_startup_deadline(),
+                None,
+                move || {
+                    gate_observation.store(true, Ordering::Relaxed);
+                    let deadline = match deadline {
+                        MarkerDeadline::Within(budget) => tokio::time::Instant::now() + budget,
+                        MarkerDeadline::AlreadyElapsed(expired) => expired,
+                    };
+                    Ok(Some(deadline))
+                },
+            ),
             move |_, _| async move {
                 std::fs::remove_file(dispatch_marker).expect("consume first-fence marker");
                 Err(OuterSessionFailure::terminal(
@@ -4713,7 +4874,9 @@ mod tests {
             &context,
             &presentation,
             reconnect_after,
-            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                Ok(None)
+            }),
             |_, mut sender| async move {
                 let mut cursor = effect_cursor_start(false);
                 poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, false)
@@ -4776,7 +4939,9 @@ mod tests {
             &context,
             &presentation,
             Some(7),
-            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                Ok(None)
+            }),
             |_, mut sender| async move {
                 let mut cursor = effect_cursor_start(true);
                 submit_effect_result(
@@ -4821,7 +4986,9 @@ mod tests {
             &context,
             &presentation,
             Some(7),
-            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                Ok(None)
+            }),
             |_, mut sender| async move {
                 let mut cursor = effect_cursor_start(false);
                 assert!(
@@ -4884,7 +5051,9 @@ mod tests {
                 &context,
                 &presentation,
                 Some(7),
-                (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
+                (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                    Ok(None)
+                }),
                 |_, mut sender| async move {
                     let mut cursor = effect_cursor_start(has_retained_result);
                     if has_retained_result {
@@ -4949,7 +5118,9 @@ mod tests {
             &context,
             &presentation,
             None,
-            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), || Ok(None)),
+            (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                Ok(None)
+            }),
             |_, mut sender| async move {
                 let mut cursor = 2;
                 poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, true)

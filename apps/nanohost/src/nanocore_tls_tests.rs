@@ -190,7 +190,7 @@ async fn assert_native_tls_ready(fragment: bool) {
             &context,
             &presentation,
             None,
-            (&"a".repeat(64), startup_deadline, || Ok(None)),
+            (&"a".repeat(64), startup_deadline, None, || Ok(None)),
             |generation, _| async move {
                 assert!(generation > 0, "dispatch requires authenticated readiness");
                 Ok(())
@@ -301,7 +301,7 @@ async fn assert_silent_startup<IO: AsyncRead + AsyncWrite + Unpin + Send + 'stat
             &context,
             &presentation,
             reconnect_after,
-            (&"a".repeat(64), startup_deadline, || Ok(None)),
+            (&"a".repeat(64), startup_deadline, None, || Ok(None)),
             |_, _| async { panic!("silent peer cannot reach readiness") },
         ),
     )
@@ -362,7 +362,7 @@ async fn ready_session_outlives_startup_deadline() {
         &context,
         &presentation,
         None,
-        (&"a".repeat(64), startup_deadline, || Ok(None)),
+        (&"a".repeat(64), startup_deadline, None, || Ok(None)),
         |_, _| async {
             tokio::time::sleep(Duration::from_secs(121)).await;
             Ok(())
@@ -435,7 +435,7 @@ async fn assert_native_tls_verification_rejected(
             &context,
             &presentation,
             None,
-            (&"a".repeat(64), startup_deadline, || Ok(None)),
+            (&"a".repeat(64), startup_deadline, None, || Ok(None)),
             |_, _| async { panic!("invalid certificate cannot grant readiness") },
         )
         .await

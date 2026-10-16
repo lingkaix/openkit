@@ -166,18 +166,31 @@ export function createWorkerEnvironmentOperations(
     },
 
     async status(context, input) {
-      requireOperationAuthority(dependencies.coreDb, context, false);
-      const binding = requireAuthorizedBinding(
-        dependencies.coreDb,
-        context.workspaceId,
-        input.storageRef,
-        contributorAuthorizer(dependencies.store, context)
-      );
+      const storageRef = input.storageRef;
+      // The Host observation yields; current authority and the complete source audience must still hold.
+      const readCurrentBinding = () => {
+        requireOperationAuthority(dependencies.coreDb, context, false);
+        return requireAuthorizedBinding(
+          dependencies.coreDb,
+          context.workspaceId,
+          storageRef,
+          contributorAuthorizer(dependencies.store, context)
+        );
+      };
+      const binding = readCurrentBinding();
       const storage = await dependencies.runtimeEffects.inspectStorage({
-        authorize: () => hasOperationAuthority(dependencies.coreDb, context, false),
+        authorize: () => {
+          try {
+            readCurrentBinding();
+            return true;
+          } catch {
+            return false;
+          }
+        },
         binding,
         commandRequestId: readRequestId('status', context, binding),
       });
+      readCurrentBinding();
       return GetWorkerEnvironmentStatusResponseSchema.parse({
         environment: projectBinding(binding),
         storage: {

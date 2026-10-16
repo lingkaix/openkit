@@ -816,6 +816,79 @@ def idle_preflight() -> dict:
     }
 
 
+class ReceiptDiagnosticsTests(unittest.TestCase):
+    """Receipt inspection must not depend on a current mutation assessment."""
+
+    def test_status_reads_receipt_with_stale_missing_or_malformed_assessment(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path, effects, _, prepared = _prepare(module, root)
+            authored = json.loads(config_path.read_text())
+            stale = dict(authored["compatibility"], candidate={"kind": "commit", "sourceCommit": COMMIT})
+            for assessment in (stale, None, "invalid", {"candidate": RELEASE_SOURCE}):
+                with self.subTest(assessment=assessment):
+                    changed = dict(authored)
+                    if assessment is None:
+                        changed.pop("compatibility")
+                    else:
+                        changed["compatibility"] = assessment
+                    config_path.write_text(json.dumps(changed))
+                    effects.calls.clear()
+                    body = invoke(module, {"op": "status", "requestId": prepared["requestId"]}, config_path, effects=effects)[1]
+                    self.assertEqual(body, prepared)
+                    for payload in (
+                        {"op": "prepare", "source": RELEASE_SOURCE, "expectedCurrentImageId": DIGEST},
+                        {"op": "start", "requestId": prepared["requestId"], "maintenanceConsent": True},
+                    ):
+                        refused = invoke(module, payload, config_path, effects=effects)[1]
+                        self.assertEqual(refused["error"]["code"], "app_update_unconfigured")
+                    self.assertEqual(effects.calls, [])
+
+    def test_status_still_requires_receipt_location_outside_data_root(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root, receiptDir=str(root / "data"))
+            authored = json.loads(config_path.read_text())
+            authored.pop("compatibility")
+            config_path.write_text(json.dumps(authored))
+            effects = RecordingEffects()
+            body = invoke(module, {"op": "status", "requestId": str(uuid.uuid4())}, config_path, effects=effects)[1]
+            self.assertEqual(body["error"]["code"], "app_update_unconfigured")
+            self.assertIn("outside Data Root", body["error"]["message"])
+            self.assertEqual(effects.calls, [])
+
+    def test_old_receipt_reaches_recovery_while_mutations_refuse_stale_assessment(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path, effects, _, prepared = _prepare(module, root)
+            receipt_path = root / "receipts" / (prepared["requestId"] + ".json")
+            receipt = json.loads(receipt_path.read_text())
+            receipt["source"] = {"kind": "commit", "sourceCommit": COMMIT}
+            receipt_path.write_text(json.dumps(receipt))
+            authored = json.loads(config_path.read_text())
+            authored["compatibility"]["candidate"] = receipt["source"]
+            config_path.write_text(json.dumps(authored))
+            effects.calls.clear()
+            original = receipt_path.read_bytes()
+
+            body = invoke(module, {"op": "status", "requestId": prepared["requestId"]}, config_path, effects=effects)[1]
+            self.assertEqual(body["error"]["code"], "app_update_recovery_required")
+            for payload, argv in (
+                ({"op": "prepare", "source": RELEASE_SOURCE, "expectedCurrentImageId": DIGEST}, None),
+                ({"op": "start", "requestId": prepared["requestId"], "maintenanceConsent": True}, None),
+                ({}, ["--apply", prepared["requestId"]]),
+            ):
+                body = invoke(module, payload, config_path, effects=effects, extra_argv=argv)[1]
+                self.assertEqual(body["error"]["code"], "app_update_unconfigured")
+                self.assertIn("compatibility assessment", body["error"]["message"])
+                self.assertIn("re-authored for a release candidate", body["error"]["message"])
+            self.assertEqual(effects.calls, [])
+            self.assertEqual(receipt_path.read_bytes(), original)
+
+
 class RC6RegressionTests(unittest.TestCase):
     """Accepted update safety, environment and review regressions."""
 
@@ -1026,20 +1099,29 @@ console.log(JSON.stringify(result));
                 member = bundle.extractfile("openkit-ops-skill-v0.1.0-rc.6/scripts/docker/app-update-helper.py")
                 self.assertEqual(member.read(), reviewed)
 
-    def test_ci_runs_the_helper_suite_directly_in_the_l0_l2_job(self) -> None:
+    def test_ci_runs_the_helper_suite_in_the_required_l0_l2_root_shard(self) -> None:
         script = """
 import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
+import { shardPlan } from './scripts/ci-l0-l2.mjs';
 const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
-const job = Object.values(workflow.jobs).find(job => job.name === 'L0-L2 static, unit, contract');
-console.log(JSON.stringify({ push: workflow.on.push, condition: job.if, steps: job.steps, prSteps: workflow.jobs['pr-check'].steps }));
+const aggregate = workflow.jobs['l0-l2'];
+const shard = workflow.jobs['l0-l2-shards'];
+console.log(JSON.stringify({ push: workflow.on.push, aggregate, shard, plan: shardPlan(), runner: readFileSync('scripts/ci-l0-l2.mjs', 'utf8'), prSteps: workflow.jobs['pr-check'].steps }));
 """
         result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=REPO_ROOT, check=True, capture_output=True, text=True)
         workflow = json.loads(result.stdout)
+        condition = "github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('[\"l0-l2\",\"release-gate\",\"full\"]'), inputs.gate))"
         self.assertEqual(workflow["push"]["tags"], ["v*.*.*"])
-        self.assertEqual(workflow["condition"], "github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('[\"l0-l2\",\"release-gate\",\"full\"]'), inputs.gate))")
+        self.assertEqual(workflow["shard"]["if"], condition)
+        self.assertEqual(workflow["aggregate"]["if"], f"always() && ({condition})")
+        self.assertEqual(workflow["aggregate"]["needs"], ["l0-l2-plan", "l0-l2-shards"])
         self.assertFalse(any("app-update-helper.test.py" in step.get("run", "") for step in workflow["prSteps"]))
-        matching = [step for step in workflow["steps"] if step.get("run") == "python3 -I -B scripts/docker/app-update-helper.test.py"]
+        self.assertEqual(len([shard for shard in workflow["plan"] if shard["kind"] == "root" and shard["id"] == "root"]), 1)
+        helper_command = "command(['python3', '-I', '-B', 'scripts/docker/app-update-helper.test.py'], root);"
+        self.assertEqual(workflow["runner"].count(helper_command), 1)
+        self.assertIn("rootSuite({ root });\n    " + helper_command, workflow["runner"])
+        matching = [step for step in workflow["shard"]["steps"] if 'node scripts/ci-l0-l2.mjs --run "${SHARD_ID}"' in step.get("run", "")]
         self.assertEqual(len(matching), 1)
         self.assertNotIn("continue-on-error", matching[0])
         self.assertEqual(matching[0].get("if"), "steps.reuse.outputs.reused != 'true'")

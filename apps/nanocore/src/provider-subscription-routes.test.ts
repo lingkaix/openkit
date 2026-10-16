@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -10,7 +10,7 @@ import {
   ProviderSubscriptionsResponseSchema,
 } from '@openkit/app-api-schemas';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ProviderSubscriptionAccountError,
   ProviderSubscriptionAccountManager,
@@ -406,6 +406,14 @@ function snapshot(
   };
 }
 
+const fixtureDatabases: ReturnType<typeof openCoreDb>[] = [];
+afterEach(() => {
+  for (const coreDb of fixtureDatabases.splice(0)) {
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
+    rmSync(coreDb.dataRoot, { recursive: true, force: true });
+  }
+});
+
 /**
  * Creates one observed manager and deterministic app fixture.
  *
@@ -414,6 +422,7 @@ function snapshot(
 function createFixture(providerRegistry = new ProviderRegistry([])) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-provider-subscription-routes-'));
   const coreDb = openCoreDb(dataRoot);
+  fixtureDatabases.push(coreDb);
   applyMigrations(coreDb);
   const vaultBackendAccess = vi.fn(() => {
     throw new Error('Vault backend access was not expected.');

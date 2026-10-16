@@ -416,6 +416,7 @@ export function readConfiguredNanoHostRuntimeTargetStatus(input: {
       freshEmpty: target.freshEmpty,
       identityId: target.identityId,
       observedAt: target.observedAt,
+      physicalEpoch: target.physicalEpoch,
       predecessorFenced: target.predecessorFenced,
       ready: target.ready,
     }),

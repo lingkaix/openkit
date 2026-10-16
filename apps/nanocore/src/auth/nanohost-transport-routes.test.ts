@@ -18,6 +18,8 @@ import { createBootReadinessSnapshot } from '../bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
+  fenceNanoHostRuntimeTargetAfterRestart,
+  recordNanoHostRuntimeTargetConnectionClose,
   upsertNanoHostRuntimeTarget,
 } from '../runtime/nanohost-runtime-target.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
@@ -25,6 +27,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { createOpenKitAccessTokenRecord } from './access-token-store.js';
 import type { BetterAuthServer } from './middleware.js';
+import { createNanoHostOperationImplementations } from './nanohost-operations.js';
 import { createNanoHostTransportSessionAuthority } from './nanohost-transport-session.js';
 import {
   createNanoHostTransportTokenRecord,
@@ -263,6 +266,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         predecessorFenced: false,
         ready: false,
         freshEmpty: false,
+        physicalEpoch: null,
         observedAt: '2026-08-15T01:02:02.000Z',
       });
       upsertNanoHostRuntimeTarget(coreDb, {
@@ -306,6 +310,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         predecessorFenced: true,
         ready: true,
         freshEmpty: true,
+        physicalEpoch: 'a'.repeat(64),
         observedAt: '2026-08-15T01:02:03.000Z',
       });
 
@@ -1734,6 +1739,247 @@ function administrationFixture(acceptingProductWork = true) {
 }
 
 describe('definition-derived deployment administration cutover', () => {
+  it.each([
+    'close',
+    'restart',
+    'revoke',
+  ] as const)('projects the stored physical Epoch through native, HTTP, MCP and CLI reads after %s', async (loss) => {
+    const f = administrationFixture();
+    try {
+      const physicalEpoch = '0123456789abcdef'.repeat(4);
+      insertActiveNanoHostIdentity(f.coreDb, f.config.identityId, f.config.deploymentId);
+      const transport = createNanoHostTransportTokenRecord(f.coreDb, {
+        deploymentId: f.config.deploymentId,
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerNanoHostIdentityId: f.config.identityId,
+        responsibleServerAdminActorId: 'user_owner',
+      });
+      const native = createNanoHostOperationImplementations({
+        coreDb: f.coreDb,
+        mode: 'server',
+        nanoHostConfig: f.config,
+      });
+      // @ts-expect-error The bundled CLI catalog is JavaScript.
+      const { operationCatalog } = await import('../../../../skills/openkit-operations.mjs');
+      const cli = operationCatalog.find(
+        (entry: { id: string }) => entry.id === 'nanohost.runtime-target'
+      )!;
+      /** Checks all real public projections without changing the stored observation or credential owner. */
+      async function expectObservation(expected: Record<string, unknown>): Promise<void> {
+        const targetBefore = f.coreDb.sqlite
+          .prepare('SELECT * FROM nanohost_runtime_targets')
+          .all();
+        const tokensBefore = f.coreDb.sqlite
+          .prepare('SELECT * FROM nanohost_transport_tokens')
+          .all();
+        expect(native['nanohost.runtime-target']()).toEqual(expected);
+        expect(await f.client.operations['nanohost.runtime-target']({})).toEqual(expected);
+        expect(await f.mcp('call', { operation: 'nanohost.runtime-target', input: {} })).toEqual({
+          isError: false,
+          result: expected,
+        });
+        expect(await cli.handler({ client: f.client }, {})).toEqual(expected);
+        expect(f.coreDb.sqlite.prepare('SELECT * FROM nanohost_runtime_targets').all()).toEqual(
+          targetBefore
+        );
+        expect(f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all()).toEqual(
+          tokensBefore
+        );
+        expect(readdirSync(f.slotRoot)).toEqual([]);
+      }
+      const identity = {
+        targetId: f.config.identityId,
+        identityId: f.config.identityId,
+        deploymentId: f.config.deploymentId,
+      };
+      const first = allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+        ...identity,
+        observedAt: '2026-10-03T00:00:00.000Z',
+      });
+      upsertNanoHostRuntimeTarget(f.coreDb, {
+        ...identity,
+        connectionGeneration: first.connectionGeneration,
+        predecessorFenced: true,
+        ready: true,
+        freshEmpty: true,
+        physicalEpoch,
+        observedAt: '2026-10-03T00:00:01.000Z',
+      });
+      const ready = {
+        identityId: f.config.identityId,
+        deploymentId: f.config.deploymentId,
+        connectionGeneration: 1,
+        predecessorFenced: true,
+        ready: true,
+        freshEmpty: true,
+        physicalEpoch,
+        observedAt: '2026-10-03T00:00:01.000Z',
+      };
+      await expectObservation(ready);
+
+      // Allocation loses readiness until the existing owner accepts the successor's proof.
+      const successor = allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+        ...identity,
+        observedAt: '2026-10-03T00:00:02.000Z',
+      });
+      expect(successor.connectionGeneration).toBe(2);
+      await expectObservation({
+        ...ready,
+        connectionGeneration: 2,
+        predecessorFenced: false,
+        ready: false,
+        freshEmpty: false,
+        physicalEpoch: null,
+        observedAt: '2026-10-03T00:00:02.000Z',
+      });
+      recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
+        targetId: identity.targetId,
+        closedGeneration: first.connectionGeneration,
+        authoritativeGeneration: successor.connectionGeneration,
+        observedAt: '2026-10-03T00:00:03.000Z',
+      });
+      upsertNanoHostRuntimeTarget(f.coreDb, {
+        ...identity,
+        connectionGeneration: successor.connectionGeneration,
+        predecessorFenced: true,
+        ready: true,
+        freshEmpty: true,
+        physicalEpoch,
+        observedAt: '2026-10-03T00:00:04.000Z',
+      });
+      recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
+        targetId: identity.targetId,
+        closedGeneration: first.connectionGeneration,
+        authoritativeGeneration: successor.connectionGeneration,
+        observedAt: '2026-10-03T00:00:05.000Z',
+      });
+      await expectObservation({
+        ...ready,
+        connectionGeneration: 2,
+        observedAt: '2026-10-03T00:00:04.000Z',
+      });
+
+      let observedAt = '2026-10-03T00:00:06.000Z';
+      if (loss === 'close') {
+        recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
+          targetId: identity.targetId,
+          closedGeneration: successor.connectionGeneration,
+          authoritativeGeneration: null,
+          observedAt,
+        });
+      } else if (loss === 'restart') {
+        fenceNanoHostRuntimeTargetAfterRestart(f.coreDb, observedAt);
+      } else {
+        await f.client.operations['nanohost.token-revoke']({ tokenId: transport.tokenId });
+        const stored = f.coreDb.sqlite
+          .prepare('SELECT observed_at FROM nanohost_runtime_targets')
+          .get() as { observed_at: string };
+        observedAt = stored.observed_at;
+        expect(Date.parse(observedAt)).not.toBeNaN();
+        expect(observedAt > '2026-10-03T00:00:04.000Z').toBe(true);
+      }
+      await expectObservation({
+        ...ready,
+        connectionGeneration: 2,
+        ready: false,
+        freshEmpty: false,
+        physicalEpoch: null,
+        observedAt,
+      });
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('refuses caller-selected RuntimeTarget input and non-administrator reads without exposing a stored Epoch', async () => {
+    const f = administrationFixture();
+    try {
+      const physicalEpoch = 'fedcba9876543210'.repeat(4);
+      const identity = {
+        targetId: f.config.identityId,
+        identityId: f.config.identityId,
+        deploymentId: f.config.deploymentId,
+      };
+      const target = allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+        ...identity,
+        observedAt: '2026-10-03T00:00:00.000Z',
+      });
+      upsertNanoHostRuntimeTarget(f.coreDb, {
+        ...identity,
+        connectionGeneration: target.connectionGeneration,
+        predecessorFenced: true,
+        ready: true,
+        freshEmpty: true,
+        physicalEpoch,
+        observedAt: '2026-10-03T00:00:01.000Z',
+      });
+      const targetBefore = f.coreDb.sqlite.prepare('SELECT * FROM nanohost_runtime_targets').all();
+      for (const input of [
+        { targetId: f.config.identityId },
+        { identityId: f.config.identityId },
+        { deploymentId: f.config.deploymentId },
+        { physicalEpoch },
+        { physicalEpoch: null },
+        { scope: 'server' },
+        { host: '127.0.0.1' },
+      ]) {
+        const response = await f.app.request(
+          ...operationRequest('nanohost.runtime-target', input, { headers: f.headers })
+        );
+        expect(response.status).toBe(400);
+        expect(await response.json()).toMatchObject({ code: 'invalid_request' });
+        const mcp = await f.mcp('call', { operation: 'nanohost.runtime-target', input });
+        expect(mcp).toMatchObject({
+          isError: true,
+          result: { code: 'invalid_request' },
+        });
+        expect(JSON.stringify(mcp)).not.toContain(physicalEpoch);
+      }
+      const readonly = createOpenKitAccessTokenRecord(f.coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerUserId: 'user_owner',
+        scope: 'workspace-readonly',
+        workspaceIds: ['ws_demo'],
+      });
+      insertActiveNanoHostIdentity(f.coreDb, f.config.identityId, f.config.deploymentId);
+      const transport = createNanoHostTransportTokenRecord(f.coreDb, {
+        deploymentId: f.config.deploymentId,
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerNanoHostIdentityId: f.config.identityId,
+        responsibleServerAdminActorId: 'user_owner',
+      });
+      const tokensBefore = f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all();
+      for (const denied of [
+        { headers: {}, status: 401 },
+        { headers: { authorization: `Bearer ${readonly.secret}` }, status: 403 },
+        { headers: { authorization: `Bearer ${transport.secret}` }, status: 401 },
+      ]) {
+        const response = await f.app.request(
+          ...operationRequest('nanohost.runtime-target', {}, { headers: denied.headers })
+        );
+        expect(response.status).toBe(denied.status);
+        const body = await response.text();
+        for (const hidden of [
+          physicalEpoch,
+          f.config.identityId,
+          f.config.deploymentId,
+          f.slotRoot,
+        ]) {
+          expect(body).not.toContain(hidden);
+        }
+      }
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM nanohost_runtime_targets').all()).toEqual(
+        targetBefore
+      );
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all()).toEqual(
+        tokensBefore
+      );
+      expect(readdirSync(f.slotRoot)).toEqual([]);
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
   it('executes the family across client and MCP with redacted sinks, derived CLI metadata and CLI inventory execution', async () => {
     const f = administrationFixture();
     try {

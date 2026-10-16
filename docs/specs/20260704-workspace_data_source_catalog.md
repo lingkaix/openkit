@@ -147,6 +147,12 @@ Conflict means duplicate source id, incompatible catalog evolution, narrowing ou
 
 The catalog is the unique durable authority for registered source configuration. A manifest `sourceRef`, resolved AEP entry, materialization record, audit row, usage row, cache, backend mount, and provider request are projections carrying lineage; none can register, widen, revive, or silently replace a source. Observable acceptance requires registration alone to move no bytes, a Turn to expose only explicitly selected and narrowed sources, every effective access to remain at or below the catalog ceiling, Vault material to remain behind its reference, lineage to preserve both catalog configuration identity and supported source revision evidence, catalog change after launch not to alter the pinned Turn, and every missing or conflicting resolution to fail without substitution. No decision class is not applicable.
 
+### Source References For Bounded Views
+
+An admitted file reference names its existing logical owner, immutable version/revision, verified original digest, size, media type, and availability. A descriptor or sidecar has a separate representation identity and digest. A raw object URL alone is not an immutable version. Selected product files follow [Turn snapshot materialization](20260704-session_static_workspace_materialization.md#read-only-turn-source-snapshot), without registering a second source or treating a catalog row as acquisition authority.
+
+Future cloud/object adapters must resolve a supported immutable version and verify bytes at their source-owner boundary before snapshot readiness. Missing, changed, stale, denied, or dependency-failed resolution returns the existing typed unavailable/blocked result. It cannot substitute a live object under an old reference. Registration alone still moves no bytes and grants no model input, mount, download, or external writeback.
+
 ## Current Implementation Projection
 
 - The V1 workspace data source catalog slice implements schema, sourceRef, audit, capability-ledger, and downstream-review paths; broader source adapters remain partial.

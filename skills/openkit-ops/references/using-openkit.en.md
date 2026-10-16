@@ -49,6 +49,8 @@ Use `usage.read` for durably recorded model usage; process-local diagnostics are
 
 ## Run bounded work
 
+A Task marked `completed` means its bounded Worker Turn ended normally. Check the reply, outputs, verification evidence and remaining blockers against your requested outcome. The label alone does not prove the objective, Artifact acceptance or an external effect succeeded. The label alone does not authorize another Turn. Further standalone work needs an authorized follow-up; delivery of an existing pending-request outcome retains its own admission rules. [Task Mode](https://github.com/lingkaix/openkit/blob/main/docs/specs/20260704-task_mode_worker_delegation.md#completion-states) owns this distinction.
+
 1. Search and describe the required operation when its contract is not already known.
 2. Goal work uses immutable Plan approval and completion acceptance through Pending Requests; the Coordinator dispatches ordinary Tasks within the approved version through the shared operations, and card edits do not steer a running worker.
 3. Invoke one operation with its described input.

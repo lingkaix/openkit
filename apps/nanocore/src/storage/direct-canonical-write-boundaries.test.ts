@@ -6,6 +6,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -15,6 +16,59 @@ import { dirname, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { FsStore, type KnowledgeSourceRecord } from '../lib/store.js';
+import { feedbackFilePath, readTurnFeedback, updateTurnFeedback } from '../runtime/feedback.js';
+import {
+  readEncryptedFileVaultText,
+  writeEncryptedFileVaultJsonAtomically,
+} from '../vault/vault-encrypted-file-store.js';
+import { writeStorageJsonAtomically } from './data-root-backup.js';
+
+const durability = vi.hoisted(() => ({
+  paths: new Map<number, string>(),
+  events: [] as Array<{
+    op: 'sync' | 'rename';
+    path: string;
+    from?: string;
+    directory?: boolean;
+    mode?: number;
+  }>,
+  fail: undefined as ((path: string, directory: boolean) => boolean) | undefined,
+}));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    openSync: ((...args: Parameters<typeof actual.openSync>) => {
+      const descriptor = actual.openSync(...args);
+      durability.paths.set(descriptor, String(args[0]));
+      return descriptor;
+    }) as typeof actual.openSync,
+    closeSync: ((descriptor: number) => {
+      durability.paths.delete(descriptor);
+      return actual.closeSync(descriptor);
+    }) as typeof actual.closeSync,
+    fsyncSync: ((descriptor: number) => {
+      const path = durability.paths.get(descriptor) ?? '<untracked>';
+      const directory = actual.fstatSync(descriptor).isDirectory();
+      durability.events.push({
+        op: 'sync',
+        path,
+        directory,
+        mode: actual.fstatSync(descriptor).mode & 0o777,
+      });
+      if (durability.fail?.(path, directory)) throw new Error('Injected publication sync failure');
+      return actual.fsyncSync(descriptor);
+    }) as typeof actual.fsyncSync,
+    renameSync: ((
+      from: Parameters<typeof actual.renameSync>[0],
+      to: Parameters<typeof actual.renameSync>[1]
+    ) => {
+      durability.events.push({ op: 'rename', from: String(from), path: String(to) });
+      return actual.renameSync(from, to);
+    }) as typeof actual.renameSync,
+  };
+});
 
 const timestamp = '2026-07-12T00:00:00.000Z';
 
@@ -320,5 +374,198 @@ describe('direct canonical write boundaries', () => {
     writeFileSync(eventsPath, `${retainedIndexes.map((index) => events[index]).join('\n')}\n`);
 
     expect(() => new FsStore({ dataRoot })).toThrow(/sequence/i);
+  });
+});
+
+describe('canonical file durability failures', () => {
+  it('preserves the prior backup manifest when file synchronization fails before publication', () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-manifest-pre-sync-'));
+    const path = join(root, 'manifest.json');
+    writeStorageJsonAtomically(path, { revision: 1 });
+    durability.events.length = 0;
+    durability.fail = (candidate, directory) => !directory && dirname(candidate) === root;
+    try {
+      expect(() => writeStorageJsonAtomically(path, { revision: 2 })).toThrow();
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ revision: 1 });
+      expect(durability.events.some((event) => event.op === 'rename' && event.path === path)).toBe(
+        false
+      );
+    } finally {
+      durability.fail = undefined;
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  it('does not acknowledge a backup manifest when directory synchronization fails after rename', () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-manifest-post-sync-'));
+    const path = join(root, 'manifest.json');
+    durability.events.length = 0;
+    durability.fail = (candidate, directory) =>
+      directory &&
+      candidate === root &&
+      durability.events.some((event) => event.op === 'rename' && event.path === path);
+    try {
+      expect(() => writeStorageJsonAtomically(path, { revision: 2 })).toThrow();
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ revision: 2 });
+    } finally {
+      durability.fail = undefined;
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+});
+
+/** Composes each single-file producer with its real disk reader after replacement. */
+function durableFileFixture(kind: 'backup' | 'vault' | 'feedback') {
+  const root = mkdtempSync(join(tmpdir(), `openkit-${kind}-durability-`));
+  if (kind === 'feedback') {
+    const store = new FsStore({ dataRoot: root });
+    const workspace = store.createWorkspace('Feedback durability');
+    const thread = store.createThread(workspace.id, 'Feedback');
+    const turn = store.createTurn(workspace.id, thread.id, 'Durable feedback', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
+    const path = feedbackFilePath(store, store.getTurnById(turn.id));
+    return {
+      root,
+      path,
+      write: () => updateTurnFeedback(store, turn.id, { rating: 'good', note: 'retained' }),
+      read: () => readTurnFeedback(new FsStore({ dataRoot: root }), turn.id).note,
+      expected: 'retained',
+    };
+  }
+  const path = join(root, 'manifest.json');
+  const write = () =>
+    kind === 'vault'
+      ? writeEncryptedFileVaultJsonAtomically(path, { revision: 2 })
+      : writeStorageJsonAtomically(path, { revision: 2 });
+  if (kind === 'vault') writeEncryptedFileVaultJsonAtomically(path, { revision: 1 });
+  else writeStorageJsonAtomically(path, { revision: 1 });
+  return {
+    root,
+    path,
+    write,
+    read: () =>
+      JSON.parse(kind === 'vault' ? readEncryptedFileVaultText(path) : readFileSync(path, 'utf8'))
+        .revision,
+    expected: 2,
+  };
+}
+
+describe('single-file publication seam', () => {
+  it.each([
+    'backup',
+    'vault',
+    'feedback',
+  ] as const)('syncs the %s bytes before rename and its exact parent afterward', (kind) => {
+    const f = durableFileFixture(kind);
+    durability.events.length = 0;
+    try {
+      f.write();
+      const renameAt = durability.events.findIndex(
+        (event) => event.op === 'rename' && event.path === f.path
+      );
+      expect(renameAt).toBeGreaterThan(0);
+      const temporaryPath = durability.events[renameAt].from;
+      expect(
+        durability.events
+          .slice(0, renameAt)
+          .some((event) => event.op === 'sync' && !event.directory && event.path === temporaryPath)
+      ).toBe(true);
+      expect(
+        durability.events
+          .slice(renameAt + 1)
+          .some((event) => event.op === 'sync' && event.directory && event.path === dirname(f.path))
+      ).toBe(true);
+      expect(f.read()).toBe(f.expected);
+      if (kind === 'vault') expect(statSync(f.path).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(f.root, { force: true, recursive: true });
+    }
+  });
+
+  it.each([
+    'vault',
+    'feedback',
+  ] as const)('preserves prior %s authority when its staged file sync fails', (kind) => {
+    const f = durableFileFixture(kind);
+    const before = readFileSync(f.path);
+    durability.events.length = 0;
+    durability.fail = (candidate, directory) =>
+      !directory && dirname(candidate) === dirname(f.path);
+    try {
+      expect(f.write).toThrow(
+        kind === 'vault' ? 'Encrypted-file vault file could not be written securely.' : undefined
+      );
+      expect(readFileSync(f.path)).toEqual(before);
+      expect(
+        durability.events.some((event) => event.op === 'rename' && event.path === f.path)
+      ).toBe(false);
+    } finally {
+      durability.fail = undefined;
+      rmSync(f.root, { force: true, recursive: true });
+    }
+  });
+
+  it.each([
+    'vault',
+    'feedback',
+  ] as const)('rejects %s success after its renamed parent sync fails and retains readable bytes', (kind) => {
+    const f = durableFileFixture(kind);
+    durability.events.length = 0;
+    durability.fail = (candidate, directory) =>
+      directory &&
+      candidate === dirname(f.path) &&
+      durability.events.some((event) => event.op === 'rename' && event.path === f.path);
+    try {
+      expect(f.write).toThrow(
+        kind === 'vault' ? 'Encrypted-file vault file could not be written securely.' : undefined
+      );
+      durability.fail = undefined;
+      expect(f.read()).toBe(f.expected);
+    } finally {
+      durability.fail = undefined;
+      rmSync(f.root, { force: true, recursive: true });
+    }
+  });
+});
+
+describe('uncommitted ancestor recovery', () => {
+  it.each([
+    'flat',
+    'nested',
+  ] as const)('retries the failed ancestor synchronization for a %s manifest directory', (shape) => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-manifest-ancestor-retry-'));
+    const directory = shape === 'flat' ? join(root, 'new') : join(root, 'new', 'nested');
+    const path = join(directory, 'manifest.json');
+    durability.events.length = 0;
+    durability.fail = (candidate, isDirectory) => isDirectory && candidate === root;
+    try {
+      expect(() => writeStorageJsonAtomically(path, { revision: 1 })).toThrow(
+        'Injected publication sync failure'
+      );
+      expect(existsSync(join(root, 'new'))).toBe(true);
+      expect(existsSync(path)).toBe(false);
+      // The nested case still lacks its immediate parent after the failed outer mkdir commit.
+      if (shape === 'nested') expect(existsSync(directory)).toBe(false);
+      durability.events.length = 0;
+      expect(() => writeStorageJsonAtomically(path, { revision: 1 })).toThrow(
+        'Injected publication sync failure'
+      );
+      expect(existsSync(path)).toBe(false);
+      durability.events.length = 0;
+      durability.fail = undefined;
+      writeStorageJsonAtomically(path, { revision: 1 });
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ revision: 1 });
+      expect(
+        durability.events.some(
+          (event) => event.op === 'sync' && event.directory && event.path === root
+        )
+      ).toBe(true);
+    } finally {
+      durability.fail = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

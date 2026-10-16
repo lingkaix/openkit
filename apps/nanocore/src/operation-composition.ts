@@ -2,6 +2,7 @@ import { composeOperationTables } from '@openkit/app-api-schemas';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { createAdministrationOperationImplementations } from './administration/administration-operations.js';
+import { createAdministratorCleanupOperationImplementations } from './administrator-cleanup-operations.js';
 import { createAgentOperationImplementations } from './agents/agent-operations.js';
 import { createWorkerOperationImplementations } from './agents/workspace-workers.js';
 import { createAppSearchOperationImplementations } from './app-search-operation-implementations.js';
@@ -11,6 +12,7 @@ import { createAccessTokenOperationImplementations } from './auth/access-token-o
 import { createNanoHostOperationImplementations } from './auth/nanohost-operations.js';
 import type { NanoHostTransportSessionAuthority } from './auth/nanohost-transport-session.js';
 import { createAutomationOperationImplementations } from './automation-operations.js';
+import { createCallerOperationImplementations } from './caller-operation-implementations.js';
 import { createCatalogOperationImplementations } from './catalog/catalog-operations.js';
 import type { CoreMode } from './config/mode.js';
 import type { RuntimeConfigManager } from './config/runtime-config.js';
@@ -23,6 +25,11 @@ import {
 } from './generative-operations.js';
 import { createGoalOperationImplementations } from './goal-operation-implementations.js';
 import { createGovernanceOperationImplementations } from './governance-operation-implementations.js';
+import {
+  ASSISTANT_SKILL_OPERATION_DEFINITIONS,
+  type AssistantSkillResources,
+} from './internal-agents/assistant-skill-resources.js';
+import type { ToolExecutionContext } from './internal-agents/internal-agent-loop.js';
 import { createKernelOperationImplementations } from './kernel-operation-implementations.js';
 import { createKnowledgeOperationImplementations } from './knowledge-operations.js';
 import type { AutomationStore } from './lib/automation-store.js';
@@ -30,8 +37,11 @@ import type { FsStore } from './lib/store.js';
 import { createProviderSubscriptionOperationImplementations } from './llm/provider-subscription-operation-implementations.js';
 import { createMaterialOperationImplementations } from './material-operation-implementations.js';
 import type { createConversationService, createTaskStartOperation } from './mode-entry-routes.js';
-import type { OperationImplementations } from './operation-contract.js';
-import { createOperationEngine } from './operation-invocation.js';
+import type {
+  AssistantOperationInvocationContext,
+  OperationImplementations,
+} from './operation-contract.js';
+import { createInternalOperationEngine, createOperationEngine } from './operation-invocation.js';
 import { createPendingRequestOperationImplementations } from './pending-request-operations.js';
 import { createEnvironmentOperationImplementations } from './runtime/environment-operation-implementations.js';
 import type { GoalOwnerServices } from './runtime/goal-owner.js';
@@ -133,6 +143,7 @@ export interface OperationInvocationDependencies {
 /** Supplies only executable bindings, with no repeated declarative contract facts. */
 export function createOperationImplementations(dependencies: OperationInvocationDependencies) {
   return composeOperationTables(
+    createCallerOperationImplementations(dependencies),
     createMaterialOperationImplementations({
       coreDb: dependencies.coreDb,
       store: dependencies.store!,
@@ -153,6 +164,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createAppSearchOperationImplementations(dependencies),
     createEnvironmentOperationImplementations(dependencies),
     createGovernanceOperationImplementations(dependencies),
+    createAdministratorCleanupOperationImplementations(dependencies),
     createWorkerEnvironmentOperationImplementations(
       dependencies.workerEnvironmentServices ?? { operations: null }
     ),
@@ -205,4 +217,25 @@ export function createOperationImplementations(dependencies: OperationInvocation
 /** Composes at the caller's existing store lifetime; request status, cancellation and delivery travel only in entry context. */
 export function createOperationInvocation(dependencies: OperationInvocationDependencies) {
   return createOperationEngine(createOperationImplementations(dependencies), dependencies);
+}
+
+/** Joins the static private definition to this admitted command's exact retained Skill handler. */
+export function createAssistantSkillReadInvocation(input: {
+  readonly coreDb: CoreDb;
+  readonly store: FsStore;
+  readonly resources: AssistantSkillResources;
+  readonly context: AssistantOperationInvocationContext;
+}) {
+  const context = { ...input.context, actor: structuredClone(input.context.actor) };
+  const invoke = createInternalOperationEngine(
+    ASSISTANT_SKILL_OPERATION_DEFINITIONS,
+    { 'skill.read': input.resources.read.bind(input.resources) },
+    { coreDb: input.coreDb, store: input.store },
+    context
+  );
+  return (value: unknown, tool: ToolExecutionContext) =>
+    invoke('skill.read', value, {
+      ...context,
+      signal: AbortSignal.any([context.signal, tool.signal]),
+    });
 }

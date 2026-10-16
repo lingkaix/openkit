@@ -37,12 +37,22 @@ import {
   type RuntimeConfigSnapshot,
   resolveDefaultAgentId,
 } from './config/runtime-config.js';
+import {
+  type AssistantCommandResult,
+  assembleAssistantCommandRun,
+  runAssistantCommand,
+} from './internal-agents/assistant-command-run.js';
+import {
+  assembleAssistantSkillResources,
+  createAssistantSkillReadTool,
+} from './internal-agents/assistant-skill-resources.js';
 import { assembleBuiltInSystemPrompt } from './internal-agents/builtin-prompts.js';
 import {
   createStructuredWorkerDelegationRequest,
   StructuredWorkerDelegationRequestSchema,
   serializeStructuredWorkerDelegationRequest,
 } from './internal-agents/delegation.js';
+import type { AgentMessage } from './internal-agents/internal-agent-loop.js';
 import { resolveInternalRoleProfile } from './internal-agents/profile-resolver.js';
 import { redactInternalAgentText } from './internal-agents/redaction.js';
 import {
@@ -63,15 +73,22 @@ import {
   projectGatewayFailure,
 } from './llm/gateway-routes.js';
 import { recordInternalLlmGatewayUsage } from './llm/gateway-usage.js';
-import type { ResolvedLogicalModel } from './llm/logical-models.js';
-import { type ModelCaptureContext, withTurnModelCapture } from './llm/model-capture.js';
+import { type ResolvedLogicalModel, resolveLogicalModel } from './llm/logical-models.js';
+import {
+  type ModelCaptureContext,
+  ModelCaptureError,
+  withTurnModelCapture,
+} from './llm/model-capture.js';
 import {
   type OpenAICompatibleChatMessage,
   OpenAICompatibleProviderError,
 } from './llm/openai-compatible-client.js';
 import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
-import { createOperationInvocation } from './operation-composition.js';
+import {
+  createAssistantSkillReadInvocation,
+  createOperationInvocation,
+} from './operation-composition.js';
 import { OperationError } from './operation-error.js';
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
 import type { ProviderCredentialConfigured } from './providers/registry.js';
@@ -2288,7 +2305,10 @@ export function createConversationService({
   readonly coreDb: CoreDb | undefined;
   readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
-  readonly llmGatewayDispatcher: Pick<LLMGatewayProviderDispatcher, 'createChatCompletion'>;
+  readonly llmGatewayDispatcher: Pick<
+    LLMGatewayProviderDispatcher,
+    'createChatCompletion' | 'createResponses'
+  >;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   /** Current API-key presence without resolving Vault material. */
   readonly providerCredentialConfigured?: ProviderCredentialConfigured;
@@ -3828,40 +3848,97 @@ export function createConversationService({
         );
       }
 
-      // Read canonical history before createChatTurn persists the current user message.
-      const history = store
-        .listThreadItems(workspaceId, threadId)
-        .flatMap<OpenAICompatibleChatMessage>((item) =>
-          item.status === 'completed' &&
-          (item.type === 'user-message' || item.type === 'assistant-message')
-            ? [{ role: item.type === 'user-message' ? 'user' : 'assistant', content: item.text }]
-            : []
-        );
+      // History remains inert context; only this newly admitted command owns the fixed assembly.
+      const history = store.listThreadItems(workspaceId, threadId).flatMap<AgentMessage>((item) => {
+        if (item.status !== 'completed') return [];
+        if (item.type === 'assistant-message')
+          return [
+            { role: 'assistant', content: [{ type: 'text', text: item.text }], truncated: false },
+          ];
+        if (item.type === 'user-message')
+          return [{ role: 'user', content: [{ type: 'text', text: item.text }] }];
+        return [];
+      });
       const turn = createChatTurn(new Date().toISOString(), providerTurnId);
       const controller = new AbortController();
       let cancellationPersisted = false;
       const execution = (async (): Promise<ConversationCommandResult> => {
-        let result: Awaited<ReturnType<typeof callQuickChatProvider>>;
+        let result: AssistantCommandResult;
         try {
-          result = await withTurnModelCapture(
-            {
-              store,
-              turn,
-              environment: { systemPrompt: assembleBuiltInSystemPrompt('quick-chat'), tools: [] },
+          const dataRoot = store.getDataRoot();
+          if (!coreDb || !dataRoot) throw new ModelCaptureError();
+          // Resolve authored selection once. The retained closure, prompt and admission stay together.
+          const snapshot = runtimeConfig();
+          const resources = await assembleAssistantSkillResources({
+            dataRoot,
+            coreDb,
+            store,
+            actor,
+            workspaceId,
+            threadId,
+            turnId: turn.id,
+            requestId: chatInput.requestId,
+            skillIds:
+              findWorkspaceConfig(snapshot, workspaceId)?.config.workspace.assistant.resources
+                ?.skillIds ?? [],
+          });
+          const assembly = assembleAssistantCommandRun({
+            resources,
+            messages: [
+              ...history,
+              { role: 'user', content: [{ type: 'text', text: conversationPrompt }] },
+            ],
+            tools: [
+              createAssistantSkillReadTool(
+                createAssistantSkillReadInvocation({
+                  coreDb,
+                  store,
+                  resources,
+                  context: {
+                    kind: 'assistant-command',
+                    actor,
+                    workspaceId,
+                    threadId,
+                    turnId: turn.id,
+                    entryScope: 'conversation.submit',
+                    requestId: chatInput.requestId,
+                    signal: controller.signal,
+                  },
+                })
+              ),
+            ],
+          });
+          result = await runAssistantCommand({
+            assembly,
+            store,
+            coreDb,
+            turn,
+            actor,
+            requestId: chatInput.requestId,
+            gateway: {
+              logicalModel: selection.logicalModel,
+              resolveLogicalModel: (logicalModelId) => {
+                const current = runtimeConfig();
+                return resolveLogicalModel(
+                  current.gatewayConfig,
+                  current.providerRegistry,
+                  logicalModelId,
+                  providerSubscriptionAccountManager,
+                  providerCredentialConfigured
+                );
+              },
+              dispatcher: llmGatewayDispatcher,
+              resolveGatewayProvider,
+              ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
+              promptCacheScope: { sessionId, workspaceId },
             },
-            (capture) =>
-              callQuickChatProvider({
-                authorityActor: triggerActor,
-                requestId: chatInput.requestId,
-                logicalModel: selection.logicalModel,
-                prompt: conversationPrompt,
-                history,
-                sessionId,
-                workspaceId,
-                signal: controller.signal,
-                capture,
-              })
-          );
+            limits: selection.profile?.limits ?? {
+              maxModelTurns: 16,
+              maxToolCalls: 48,
+              deadlineMs: QUICK_CHAT_TIMEOUT_MS,
+            },
+            signal: controller.signal,
+          });
           if (controller.signal.aborted) {
             throw new TurnStartValidationError(
               'provider_call_aborted',
@@ -3869,6 +3946,16 @@ export function createConversationService({
               499
             );
           }
+          // Inference completion does not retain publication authority across membership or audience changes.
+          if (
+            !currentWorkspaceAuthority(coreDb, workspaceId, triggerActor, 'turn.run', true, actor)
+          )
+            throw new TurnStartValidationError(
+              'workspace_access_denied',
+              'Workspace access denied.',
+              403
+            );
+          resources.assertCurrent({ actor, workspaceId, threadId, turnId: turn.id });
         } catch (error) {
           const aborted =
             error instanceof TurnStartValidationError && error.code === 'provider_call_aborted';

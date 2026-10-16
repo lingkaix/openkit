@@ -106,6 +106,8 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
             { id: 'ws1', name: 'Market research' },
             { id: 'ws2', name: 'Second workspace' },
           ].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -122,6 +124,8 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
                 { id: 'ws1', name: 'Market research' },
                 { id: 'ws2', name: 'Second workspace' },
               ].map((workspace) => ({
+                membershipStatus: 'active' as const,
+                accessCause: 'membership' as const,
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,

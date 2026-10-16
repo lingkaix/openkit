@@ -158,6 +158,8 @@ The future thin worker client supplies through the separately authenticated capa
 
 NanoCore derives authoritative workspace, thread, turn, AgentSession, package-snapshot, capability-id, and family context from the authenticated package session, selected route, and resolved catalog. Worker-supplied lineage is never authority.
 
+The mediated MCP CapabilityCall producers derive `cap` UUIDv5 from exact JSON name `["mcp", packageSnapshotId, serverId, operation, protocolRequestId]`. `packageSnapshotId` is the authenticated frozen AEP snapshot. `serverId` is the exact admitted catalog binding. `operation` is the complete admitted operation discriminator; the captured approval-call producer uses `mcp.call_tool`. `protocolRequestId` is the exact admitted native JSON-RPC string or number. Preserve these input types and the literal `mcp` purpose ([accepted allocation decision](../decisions/20261016-identifier_derivation_and_import_allocations.md)). Fix identity at existing call admission and retain it through update, termination and reopen. Identity never substitutes for current AEP, policy, claim, recorder-key or immutable-attribution checks. Missing, stale, contradictory or unknown proof follows existing refusal/unknown rules without another contact. Retention and import stay with the call owner. Acceptance requires distinct native types and package/server/operation scopes, unchanged attribution conflict, retained-call reuse on permitted replay and zero replacement contact after uncertain work.
+
 ## CapabilityCall Record
 
 `CapabilityCall` is the durable record for one call through an agent capability route or gateway projection.
@@ -196,6 +198,14 @@ MCP catalog entries may represent:
 Through the gateway, workers do not receive MCP server command lines, tokens, or remote URLs of catalog or external servers. They receive a capability id and a gateway route. A server the worker configures inside its own Sandbox is its own configuration, not something the gateway hands out.
 
 MCP tool calls must produce `CapabilityCall`, `UsageRecord` where measurable, and `AuditEvent` records.
+
+### MCP Item Identifier Name
+
+An existing product-visible MCP tool-call Item uses `it` UUIDv5 with exact JSON name `["mcp", packageSnapshotId, serverId, toolName, protocolRequestId]`. Inputs are the authenticated frozen AEP snapshot, exact bound catalog server, complete tool name and native JSON-RPC request ID. Preserve the admitted string or number type of that request ID. [Core Protocol](../core/protocol.md#ids) supplies canonical name bytes under the [accepted complete-name declaration](../decisions/20261015-identifier_owner_declarations.md).
+
+An approval or `work_request_input` request Item instead uses only [Pending Requests' name](20260930-pending_requests.md#deliver): `[durableRequestId, "request"]`. No nested digest, Turn-derived or MCP-specific alias supplies another product request Item. Item identity supplies neither call-start idempotency nor captured-call authority; those remain with Capability Usage Gateway Foundation and Pending Requests.
+
+Existing Item publication, current package/declaration/authorization checks, persistence, retention, termination and unknown-effect rules remain binding. No new publication or contact trigger is added. Acceptance requires numeric/string request distinction, distinct package/server/tool inputs, one Item per durable Pending Request and unchanged at-most-once contact. Native identifiers remain opaque input values; prefixing them grants no Core identity or authority.
 
 ### Built-In Tool Derivation
 

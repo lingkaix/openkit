@@ -24,6 +24,7 @@ export const PI_FAILED_REASONS = [
   'Worker runtime stopped on its own without an OpenKit interrupt request.',
   'pi-final-message-empty',
   'pi-identity-failed',
+  'pi-inference-failed',
   'pi-output-malformed',
   'pi-output-too-large',
   'pi-prompt-failed',

@@ -315,7 +315,29 @@ For an Agent explicitly selected for Git or code-host work that needs a read-onl
 
 The same Agent Manifest can be used by many Workspaces with different accounts and permissions. A manifest declares a stable `requirementId`, and each Workspace Agent binding maps it to that Workspace's `vaultGrantId`. A required missing binding fails Agent setup; an optional missing binding is omitted. The worker sees only the configured target such as an environment variable, file, or Provider attachment and does not see the Workspace's routing decision.
 
-Secret material never belongs in JSONC. Vault references, grants, injection plans, receipts, and use records remain Core control-plane records. A plan is written before attempted resolution, `VaultUse` records resolution success or failure, backend-private sinks receive material, and a receipt is written only after the sink completes successfully.
+Secret material never belongs in JSONC. Vault references, grants, injection plans, receipts, and use records remain Core control-plane records. A plan is written before attempted resolution, `VaultUse` records resolution success or failure, backend-private sinks receive material, and a receipt is written only after the sink completes successfully. Revocation blocks future use. A completed gateway-only receipt becomes revoked; runtime-visible material remains stale-session when removal is unproved. This status does not retract the original completion or prove recall. A repeated plan or receipt identity with changed immutable content is rejected without changing history. Exact creation replay returns the retained record and current revocation state; it does not prove another injection. If an identity conflict occurs, inspect the original Task and Vault records before any new request. Do not edit these records or infer that an attempted sink completed.
+
+### Review And Narrow A Workspace Grant
+
+Use a currently authorized deployment administrator for secret and grant administration. A Workspace member Token alone cannot administer secrets. Read the exact operation schema before a change, then review the current non-secret inventory:
+
+```bash
+scripts/openkit ops describe vault.grant-create
+scripts/openkit ops describe vault.grant-narrow
+printf '%s' '{"workspaceId":"<workspace-id>"}' | scripts/openkit ops call vault.grant-list --input -
+```
+
+Replace placeholders with retained identities from the supported inventory. Review the reference, target Agent, target AgentSession, capability, visibility, lifetime, expiry and status. An omitted target adds no restriction. Creation can restrict Agent and AgentSession exactly. A gateway-only capability target is either `mcp.list_tools` or `mcp.call_tool`; it does not replace MCP tool Policy. Runtime-env accepts only the supported GitHub token path and rejects capability targets. This surface issues Workspace-lifetime grants; expiry can bound that lifetime further.
+
+To reduce an existing supported grant to one Agent, submit its exact identity and the new restriction:
+
+```bash
+printf '%s' '{"workspaceId":"<workspace-id>","grantId":"<grant-id>","constraints":{"targetAgentId":"<agent-id>"}}' | scripts/openkit ops call vault.grant-narrow --input -
+```
+
+Every supplied constraint must retain or reduce authority, and at least one must reduce it strictly. A target already set cannot be cleared or changed. Expiry must be a canonical future UTC timestamp no later than the old expiry. Paths must stay within the old path set. Missing, inactive, expired, imported or unsupported authority cannot be revived through narrowing. Narrowing returns the revoked original and its fresh replacement. Bind the replacement explicitly through the existing Workspace credential binding or selected MCP catalog binding, then validate and reload that configuration. Existing bindings stay on the revoked grant until this change; no running environment is repaired automatically. Narrowing and grant revocation need no material access and work while the Vault is locked.
+
+If a response is lost, inspect `vault.grant-list` and `audit.server-list` before a new request. The narrowing Audit event identifies the original grant resource and the replacement grant. Do not retry a mutation to discover whether it happened. A retry against the revoked original returns conflict. To end future use, call `vault.grant-revoke` with the exact Workspace and grant identities. Inspect receipt projections separately: revoked gateway use does not claim recall of previously exposed runtime material. User/Agent grant requests, approval workflow and cross-scope review remain open product work.
 
 ## Reload Behavior
 

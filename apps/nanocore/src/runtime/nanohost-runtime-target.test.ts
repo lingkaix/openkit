@@ -238,7 +238,7 @@ describe('durable NanoHost RuntimeTarget authority', () => {
 });
 
 describe('configured NanoHost RuntimeTarget redacted status', () => {
-  it('returns ready, unready, and missing results without leaking physicalEpoch', () => {
+  it('returns ready, unready, and missing results with the stored physicalEpoch', () => {
     expect(
       readConfiguredNanoHostRuntimeTargetStatus({ coreDb: undefined, mode: 'local' })
     ).toMatchObject({ code: 'nanohost_transport_admin_server_mode_required', ok: false });
@@ -275,6 +275,7 @@ describe('configured NanoHost RuntimeTarget redacted status', () => {
         freshEmpty: false,
         identityId: config.identityId,
         observedAt: '2026-08-10T00:00:00.000Z',
+        physicalEpoch: null,
         predecessorFenced: false,
         ready: false,
       },
@@ -301,12 +302,13 @@ describe('configured NanoHost RuntimeTarget redacted status', () => {
         freshEmpty: true,
         identityId: config.identityId,
         observedAt: '2026-08-10T00:00:01.000Z',
+        physicalEpoch: physicalEpochA,
         predecessorFenced: true,
         ready: true,
       },
     });
-    expect(JSON.stringify(ready)).not.toContain('physicalEpoch');
-    expect(JSON.stringify(ready)).not.toContain(physicalEpochA);
+    expect(JSON.stringify(ready)).toContain('physicalEpoch');
+    expect(JSON.stringify(ready)).toContain(physicalEpochA);
 
     coreDb.sqlite
       .prepare('UPDATE nanohost_runtime_targets SET deployment_id = ?')

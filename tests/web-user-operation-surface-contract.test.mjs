@@ -8,10 +8,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 238;
-const EXPECTED_SERVER_SIZE = 57;
+const EXPECTED_CATALOG_SIZE = 241;
+const EXPECTED_SERVER_SIZE = 58;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 179;
+const EXPECTED_INCLUDED_SIZE = 181;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -66,6 +66,7 @@ const WEB_OPERATION_GROUPS = {
     'administration.conversation-submit': { disposition: 'live', surface: 'Administration' },
   },
   'App utilities': {
+    'caller.read': { disposition: 'workflow', surface: 'Account' },
     'chat.quick': { disposition: 'workflow', surface: 'Chat' },
     'agent.health-refresh': { disposition: 'live', surface: 'Agents' },
     'app.search': { disposition: 'workflow', surface: 'Overview' },
@@ -200,6 +201,7 @@ const WEB_OPERATION_GROUPS = {
   },
   Vault: {
     'vault.grant-create': { disposition: 'live', surface: 'Vault backend' },
+    'vault.grant-narrow': { disposition: 'live', surface: 'Vault backend' },
     'vault.secret-create': { disposition: 'live', surface: 'Vault backend' },
     'vault.grant-list': { disposition: 'live', surface: 'Vault' },
     'vault.injection-plan-list': { disposition: 'live', surface: 'Vault' },
@@ -424,6 +426,8 @@ describe('Web user operation surface contract', () => {
     assert.equal(catalog.gateway.length, EXPECTED_GATEWAY_SIZE);
     assert.equal(catalog.included.length, EXPECTED_INCLUDED_SIZE);
     assert.ok(catalog.server.includes('app-update.preflight'));
+    assert.ok(catalog.server.includes('administration.cleanup-read'));
+    assert.ok(catalog.included.includes('caller.read'));
     assert.deepEqual(catalog.gateway, ['POST /v1/chat/completions', 'POST /v1/responses']);
     assert.deepEqual(inventory.duplicates, []);
     assert.deepEqual(

@@ -1,5 +1,7 @@
 export * from './action-center.js';
 export * from './administration.js';
+export * from './administrator-cleanup.js';
+export * from './administrator-cleanup-operations.js';
 export * from './agent-environment.js';
 export { AGENT_OPERATION_DEFINITIONS } from './agent-operations.js';
 export * from './agents.js';
@@ -9,6 +11,7 @@ export * from './audit.js';
 export * from './auth.js';
 export * from './automation.js';
 export { AUTOMATION_OPERATION_DEFINITIONS } from './automation-operations.js';
+export * from './caller.js';
 export * from './capability-usage.js';
 export { CATALOG_OPERATION_DEFINITIONS } from './catalog-operations.js';
 export * from './chat-mode.js';

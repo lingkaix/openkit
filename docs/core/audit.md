@@ -96,7 +96,9 @@ Minimum stable areas include:
 - optional invitation or membership ID
 - optional error code
 
-These are model areas, not a complete field list.
+For a command-initiated Assistant inference call, an available command request ID is retained in the AuditEvent request ID even when the CapabilityCall per-invocation request ID is null; a Turn link does not replace that available audit value.
+
+These are model areas, not a complete field list. The reason is recorded in [Assistant Inference Request Lineage](../decisions/20261015-assistant_inference_request_lineage.md).
 
 ## Data Safety
 

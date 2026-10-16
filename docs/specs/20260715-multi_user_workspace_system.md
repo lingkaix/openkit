@@ -603,6 +603,18 @@ Portable export preflight rejects a Workspace that contains any unresolved `user
 
 A full data-root backup includes the Core database and therefore preserves users, memberships, invitations, and owner relationships when restored as the same deployment. Portable Workspace export and full deployment backup are distinct contracts.
 
+## Administrator Cleanup View
+
+The administrator-only cleanup read derives its entries from existing Workspace deletion requests, execution-attempt/AgentSession close and cleanup records, and Sandbox/retained-storage cleanup observations. Their current owners remain this specification's deletion contract, [Durable Scheduler](20260703-durable_scheduler_design.md), [NanoHost Runtime](20260802-nanohost_runtime_and_transport.md), and [Persistent Worker Volumes](20260910-persistent_worker_volumes.md). This is a read projection, not a cleanup lifecycle ([#226 ruling](../decisions/20261015-cleanup_pinning_and_delegated_apply_rulings.md)).
+
+Each entry carries its source owner, exact target identity, that owner's current state, observation time, and next authorized inspection or action. It contains no conversation, file content, secret, raw log, or private host path. Bound result count and response bytes under the existing read boundary. Limits report incomplete coverage rather than an empty all-clear. A source with missing or stale proof reports unknown or unavailable; it is never inferred clean, dead, or safe to delete.
+
+Require current usable administrator authority and credential read scope on every read. Ordinary Workspace membership cannot access this aggregate. Map the read to the existing `audit.read` product operation and `ar:audit-read` access right with the additional administrator requirement; add no new right. Resolve source access before returning identifiers; do not bypass source restrictions through a derived entry. A deleting Workspace remains closed to ordinary content access. This non-content server observation does not reopen its gate, resume deletion, or grant recovery authority.
+
+The view stores no summary, queue, lease, readiness flag, or retry decision. Restart reads current canonical owners again. A dependency failure retains its source-specific uncertainty and the other sources' truthful observations. Any selected mutation still requires a separate existing operation with its current authority, exact target, revision, confirmation, and failure semantics. The read performs no cleanup, filesystem discovery, service operation, or automatic repair.
+
+Acceptance covers each declared source, administrator denial/revocation, bounded incomplete results, stale/missing/contradictory proof, concurrent source change, and restart. A waiting source remains waiting, an unknown result remains unknown, and inspecting an entry produces no lifecycle transition or storage effect.
+
 ## Current Implementation Projection
 
 The eleven ordinary Workspace, Thread and Turn commands, Workspace dashboard, opaque Turn feedback and Quick Chat now use definition-derived canonical operation IDs and `client.operations` with complete logical selectors. Native invocation preserves current Workspace and Thread admission, exact command replay and owner outcomes; their former JSON routes and client members are absent. The Thread event stream remains unchanged.

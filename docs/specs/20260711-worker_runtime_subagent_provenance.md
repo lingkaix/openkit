@@ -89,6 +89,12 @@ The historical `inference.local` behavior in stock OpenShell `0.0.80` was gatewa
 
 The current prompt-cache resolver preserves an explicit `prompt_cache_key`, otherwise reads `metadata.openkit.promptCacheKey`, otherwise derives a key from stable OpenKit scope, and finally generates a request-scoped fallback. That generic behavior is suitable for public callers, but an outer OpenKit thread or AgentSession is too coarse for a runtime that has several concurrent child threads.
 
+## Raw Emission Attribution
+
+[Worker Turn Reliability](20260531-worker_turn_reliability_envelope.md#worker-raw-output-accounting) owns the one atomic raw-output aggregate. The authenticated inference path supplies trusted Turn and provider-attempt identity before response buffering can discard failed-attempt output. Attribute primary and concurrent child emissions to that same Turn. Deduplication uses trusted attempt, emission/content-part identity, and stream position; native origin hints, equal text, and equal digests cannot suppress a charge.
+
+Mechanically forwarding a child result adds no emission; generated parent text does. Retain bounded accounting evidence through Turn recovery without acquiring hidden reasoning or placing exposed reasoning text, raw provider payloads, or secrets into normal logs. Qualify every admitted inference/child route and restart before claiming uniform enforcement. Missing observability blocks the affected route; existing provenance completeness alone does not prove accounting completeness.
+
 ## Decision
 
 OpenKit will model worker-internal sub-agent execution through three separate identity dimensions.

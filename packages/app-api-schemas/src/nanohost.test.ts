@@ -108,6 +108,7 @@ describe('NanoHost safe-sink App API schemas', () => {
       predecessorFenced: true,
       ready: true,
       freshEmpty: true,
+      physicalEpoch: '0123456789abcdef'.repeat(4),
       observedAt: '2026-08-15T01:02:03.000Z',
     });
 
@@ -119,6 +120,7 @@ describe('NanoHost safe-sink App API schemas', () => {
         'predecessorFenced',
         'ready',
         'freshEmpty',
+        'physicalEpoch',
         'observedAt',
       ].sort()
     );
@@ -131,6 +133,50 @@ describe('NanoHost safe-sink App API schemas', () => {
     expect(() =>
       NanoHostRuntimeTargetStatusResponseSchema.parse({ ...response, observedAt: 'not-a-time' })
     ).toThrow();
+  });
+
+  it('requires an explicit nullable physical Epoch with exact lowercase SHA-256 syntax', () => {
+    const observation = {
+      identityId: 'integration_nanohost_primary',
+      deploymentId: 'deploy_primary',
+      connectionGeneration: 3,
+      predecessorFenced: true,
+      ready: true,
+      freshEmpty: true,
+      observedAt: '2026-08-15T01:02:03.000Z',
+    };
+    const physicalEpoch = '0123456789abcdef'.repeat(4);
+    expect(
+      NanoHostRuntimeTargetStatusResponseSchema.parse({ ...observation, physicalEpoch })
+    ).toEqual({ ...observation, physicalEpoch });
+    expect(
+      NanoHostRuntimeTargetStatusResponseSchema.parse({
+        ...observation,
+        ready: false,
+        freshEmpty: false,
+        physicalEpoch: null,
+      })
+    ).toEqual({ ...observation, ready: false, freshEmpty: false, physicalEpoch: null });
+    expect(NanoHostRuntimeTargetStatusResponseSchema.safeParse(observation).success).toBe(false);
+    for (const invalid of [
+      undefined,
+      '',
+      physicalEpoch.toUpperCase(),
+      'a'.repeat(63),
+      'a'.repeat(65),
+      'g'.repeat(64),
+      'pre-witness',
+      1,
+      {},
+    ]) {
+      expect(
+        NanoHostRuntimeTargetStatusResponseSchema.safeParse({
+          ...observation,
+          physicalEpoch: invalid,
+        }).success,
+        `invalid physical Epoch: ${JSON.stringify(invalid)}`
+      ).toBe(false);
+    }
   });
 
   it('keeps configured identity, deployment, and filesystem targets out of App API input', () => {

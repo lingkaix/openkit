@@ -11,7 +11,7 @@ import {
 import { chmod, mkdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   applyStagedFilesystemChanges,
   buildFilesystemWorkspaceChangeSet,
@@ -2420,6 +2420,180 @@ describe('filesystem workspace synchronization', () => {
       await rm(fixture.targetRoot, { force: true, recursive: true });
       await rm(fixture.workerRoot, { force: true, recursive: true });
       await rm(fixture.stagingRoot, { force: true, recursive: true });
+    }
+  });
+});
+
+const publication = vi.hoisted(() => ({
+  events: [] as Array<{
+    op: 'sync' | 'rename';
+    path: string;
+    from?: string;
+    directory?: boolean;
+    mode?: number;
+  }>,
+  fail: undefined as ((path: string, directory: boolean) => boolean) | undefined,
+}));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    open: (async (...args: Parameters<typeof actual.open>) => {
+      const handle = await actual.open(...args);
+      const sync = handle.sync.bind(handle);
+      handle.sync = async () => {
+        const metadata = await handle.stat();
+        const path = String(args[0]);
+        const directory = metadata.isDirectory();
+        publication.events.push({ op: 'sync', path, directory, mode: metadata.mode & 0o777 });
+        if (publication.fail?.(path, directory))
+          throw new Error('Injected async publication sync failure');
+        return sync();
+      };
+      return handle;
+    }) as typeof actual.open,
+    rename: (async (
+      from: Parameters<typeof actual.rename>[0],
+      to: Parameters<typeof actual.rename>[1]
+    ) => {
+      publication.events.push({ op: 'rename', path: String(to), from: String(from) });
+      return actual.rename(from, to);
+    }) as typeof actual.rename,
+  };
+});
+
+/** Applies a prepared file review through the real replacement and rollback readers. */
+async function applyDurabilityFixture(
+  f: Awaited<ReturnType<typeof createChangedFileFixture>>,
+  persistResult = ignoreApplyResult
+) {
+  return applyStagedFilesystemChanges({
+    appliedAt: f.timestamp,
+    before: f.before,
+    changeSet: f.changeSet,
+    persistResult,
+    reviewId: 'swr_durability',
+    stagingRoot: f.stagingRoot,
+    stagingRootIdentity: await rootIdentity(f.stagingRoot),
+    targetRoot: f.targetRoot,
+    targetRootIdentity: await rootIdentity(f.targetRoot),
+    workspaceId: 'ws_demo',
+  });
+}
+
+describe('filesystem publication durability', () => {
+  it('syncs complete rollback data and copied replacement bytes before either rename and both parents afterward', async () => {
+    const f = await createChangedFileFixture('durable', 'after\n');
+    publication.events.length = 0;
+    try {
+      expect((await applyDurabilityFixture(f)).status).toBe('applied');
+      const rollbackAt = publication.events.findIndex(
+        (event) => event.op === 'rename' && event.from?.endsWith('.prepare')
+      );
+      expect(rollbackAt).toBeGreaterThan(0);
+      const rollbackStage = publication.events[rollbackAt].from as string;
+      const before = publication.events.slice(0, rollbackAt);
+      const fileAt = before.findLastIndex(
+        (event) =>
+          event.op === 'sync' &&
+          !event.directory &&
+          event.path === join(rollbackStage, 'files', 'notes.txt')
+      );
+      const filesAt = before.findLastIndex(
+        (event) =>
+          event.op === 'sync' && event.directory && event.path === join(rollbackStage, 'files')
+      );
+      const rootAt = before.findLastIndex(
+        (event) => event.op === 'sync' && event.directory && event.path === rollbackStage
+      );
+      expect(fileAt).toBeGreaterThanOrEqual(0);
+      expect(filesAt).toBeGreaterThan(fileAt);
+      expect(rootAt).toBeGreaterThan(filesAt);
+      expect(
+        before.some(
+          (event) =>
+            event.op === 'sync' &&
+            !event.directory &&
+            event.path === join(rollbackStage, 'ready.json')
+        )
+      ).toBe(true);
+      const targetPath = join(f.targetRoot, 'notes.txt');
+      const replacementAt = publication.events.findIndex(
+        (event) => event.op === 'rename' && event.path === targetPath
+      );
+      expect(replacementAt).toBeGreaterThan(rollbackAt);
+      const replacementStage = publication.events[replacementAt].from as string;
+      expect(
+        publication.events
+          .slice(0, replacementAt)
+          .some(
+            (event) =>
+              event.op === 'sync' &&
+              !event.directory &&
+              event.path === replacementStage &&
+              event.mode === 0o644
+          )
+      ).toBe(true);
+      for (const parent of [dirname(targetPath), dirname(replacementStage)]) {
+        expect(
+          publication.events
+            .slice(replacementAt + 1)
+            .some((event) => event.op === 'sync' && event.directory && event.path === parent)
+        ).toBe(true);
+      }
+      expect(readFileSync(targetPath, 'utf8')).toBe('after\n');
+      expect(
+        (
+          await createFilesystemSnapshotManifest({
+            createdAt: f.timestamp,
+            resourceId: 'fs_default',
+            rootPath: f.targetRoot,
+            workspaceId: 'ws_demo',
+          })
+        ).entries.find((entry) => entry.path === 'notes.txt')?.permissions
+      ).toBe('0644');
+    } finally {
+      for (const path of [f.targetRoot, f.workerRoot, f.stagingRoot])
+        await rm(path, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    'rollback-file',
+    'rollback-parent',
+    'replacement-file',
+    'replacement-parent',
+  ] as const)('does not commit an applied result at the %s synchronization failure', async (boundary) => {
+    const f = await createChangedFileFixture(`durable-${boundary}`, 'after\n');
+    const persisted = vi.fn();
+    publication.events.length = 0;
+    publication.fail = (path, directory) => {
+      const rollback = publication.events.find(
+        (event) => event.op === 'rename' && event.from?.endsWith('.prepare')
+      );
+      const replacement = publication.events.find(
+        (event) => event.op === 'rename' && event.path === join(f.targetRoot, 'notes.txt')
+      );
+      const match =
+        boundary === 'rollback-file'
+          ? !directory && path.endsWith('.prepare/files/notes.txt')
+          : boundary === 'rollback-parent'
+            ? directory && rollback !== undefined && path === dirname(rollback.path)
+            : boundary === 'replacement-file'
+              ? !directory && path.endsWith('/content') && path.includes('/.openkit-write-')
+              : directory && replacement !== undefined && path === f.targetRoot;
+      if (match) publication.fail = undefined;
+      return match;
+    };
+    try {
+      await expect(applyDurabilityFixture(f, persisted)).rejects.toThrow();
+      expect(persisted).not.toHaveBeenCalled();
+      expect(readFileSync(join(f.targetRoot, 'notes.txt'), 'utf8')).toBe('base\n');
+    } finally {
+      publication.fail = undefined;
+      for (const path of [f.targetRoot, f.workerRoot, f.stagingRoot])
+        await rm(path, { recursive: true, force: true });
     }
   });
 });

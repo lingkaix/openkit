@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { APP_UPDATE_RECEIPT_LIMIT_BYTES } from './host-request.js';
 import {
@@ -154,6 +154,62 @@ describe('app-update SSH transport', () => {
     child.emit('close', 0);
 
     await expect(pending).resolves.toEqual({ ok: true, status: PREPARED_RECEIPT });
+  });
+
+  it.each([
+    { exitCode: 1, signal: null },
+    { exitCode: 255, signal: null },
+    { exitCode: null, signal: 'SIGTERM' },
+  ])('records a pre-envelope exit without retaining stderr: $exitCode $signal', async ({
+    exitCode,
+    signal,
+  }) => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const child = createFakeHostChild();
+      const pending = invokeAppUpdateHostChild(child, Buffer.from('{}\n'));
+      child.stderr.write(Buffer.alloc(APP_UPDATE_RECEIPT_LIMIT_BYTES * 2, 0x78));
+      child.stderr.write('/private/host/helper.py token=fixture-secret\n');
+      child.emit('close', exitCode, signal);
+
+      await expect(pending).resolves.toEqual({
+        ok: false,
+        code: 'app_update_unavailable',
+        message: 'App-update host helper returned no observation.',
+      });
+      expect(warning).toHaveBeenCalledExactlyOnceWith(
+        'App-update host helper exited before its observation.',
+        { code: 'app_update_helper_exit_before_envelope', exitCode, signal }
+      );
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it.each([0, 1, 255])('keeps a written envelope authoritative on exit %s', async (exitCode) => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (const envelope of [
+        PREPARED_RECEIPT,
+        {
+          error: { code: 'app_update_busy', message: 'An App update is running.' },
+          helperSha256: 'c'.repeat(64),
+        },
+      ]) {
+        const child = createFakeHostChild();
+        const pending = invokeAppUpdateHostChild(child, Buffer.from('{}\n'));
+        child.stderr.write('/private/host/helper.py token=fixture-secret\n');
+        child.stdout.write(JSON.stringify(envelope));
+        child.emit('close', exitCode, null);
+
+        await expect(pending).resolves.toEqual(
+          envelope.error ? { ok: false, ...envelope.error } : { ok: true, status: envelope }
+        );
+      }
+      expect(warning).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
   });
 });
 

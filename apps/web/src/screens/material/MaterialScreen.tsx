@@ -1,7 +1,8 @@
 import { ApiCallError } from '@openkit/core-client';
 import { useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
+import { useSurfaceParams } from '../../app/route-params';
 import {
   Button,
   Card,
@@ -371,11 +372,7 @@ export function MaterialScreen() {
     materialId: routeMaterialId,
     threadId,
     workspaceId: routeWorkspaceId,
-  } = useParams<{
-    materialId?: string;
-    threadId?: string;
-    workspaceId?: string;
-  }>();
+  } = useSurfaceParams('material');
   const workspaceId = useCurrentWorkspaceId(routeWorkspaceId);
   if (!routeWorkspaceId) throw new Error('The registered Material route requires a Workspace id.');
   if (!threadId) throw new Error('The registered Material route requires a Thread id.');
@@ -422,7 +419,11 @@ export function MaterialScreen() {
         selectedMaterialId={selectedMaterialId}
         routeMaterialId={routeMaterialId}
         threadId={threadId}
-        onSelect={(id) => navigate(`/materials/${routeWorkspaceId}/${threadId}/${id}`)}
+        onSelect={(id) =>
+          navigate(
+            `/materials/${encodeURIComponent(routeWorkspaceId)}/${encodeURIComponent(threadId)}/${encodeURIComponent(id)}`
+          )
+        }
         create={create}
         showNew={showNew}
         disconnected={disconnected}

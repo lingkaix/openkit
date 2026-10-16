@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build": "bash ../../scripts/retrieval-cargo.sh build --locked",
-    "test": "bash ../../scripts/retrieval-cargo.sh test --locked",
+    "test": "cargo fetch --locked && python3 -m unittest discover -s tests -p '*_test.py' && bash ../../scripts/retrieval-cargo.sh test --locked",
     "lint": "cargo fmt --check && bash ../../scripts/retrieval-cargo.sh clippy --locked --all-targets --all-features -- -D warnings",
     "format": "cargo fmt"
   }

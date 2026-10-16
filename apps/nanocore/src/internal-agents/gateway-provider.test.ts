@@ -7,6 +7,7 @@ import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  type CapabilityAuditLineage,
   listWorkspaceCapabilityCalls,
   listWorkspaceUsageRecords,
 } from '../capability/usage-ledger.js';
@@ -92,11 +93,6 @@ function request(input = 'Read status.') {
       capabilities: logicalModel.capabilities,
       modelFamilyId: logicalModel.modelFamilyId,
     },
-    contextManagement: {
-      type: 'compaction' as const,
-      compactThreshold: 8_000,
-      authority: 'openkit' as const,
-    },
     signal: new AbortController().signal,
   };
 }
@@ -132,13 +128,14 @@ describe('internal Agent Gateway provider', () => {
       }),
       resolveGatewayProvider: () => ({
         id: 'provider',
+        displayName: 'Provider',
         adapterId: 'provider',
         apiKey: 'credential-canary',
         baseUrl: null,
         models: ['model'],
         requiresApiKey: true,
         gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
-        modelMetadata: { model: { tool_call: true } },
+        modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
       }),
       promptCacheScope: { sessionId: 'internal', workspaceId: capture.turn.workspaceId },
       usageEndpoint: 'responses',
@@ -202,7 +199,7 @@ describe('internal Agent Gateway provider', () => {
         id,
         models: ['model'],
         gatewayCapabilities: {},
-        modelMetadata: { model: { tool_call: true } },
+        modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
       } as never;
     });
     const provider = createInternalAgentGatewayProvider({
@@ -241,7 +238,12 @@ describe('internal Agent Gateway provider', () => {
     models.setProvider(stock);
     const model = models
       .getModels()
-      .find((model) => model.provider === stock.id && model.api === 'openai-responses')!;
+      .find(
+        (model) =>
+          model.provider === stock.id &&
+          model.api === 'openai-responses' &&
+          model.contextWindow - model.maxTokens > 8_192
+      )!;
     expect(model).toBeDefined();
     const selectedModel = {
       ...logicalModel,
@@ -275,13 +277,19 @@ describe('internal Agent Gateway provider', () => {
       },
       resolveGatewayProvider: () => ({
         id: 'provider',
+        displayName: 'Provider',
         adapterId: stock.id,
         apiKey: 'credential-canary',
         baseUrl: null,
         models: [model.id],
         requiresApiKey: true,
         gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
-        modelMetadata: { [model.id]: { tool_call: true } },
+        modelMetadata: {
+          [model.id]: {
+            tool_call: true,
+            limit: { context: model.contextWindow, output: model.maxTokens },
+          },
+        },
       }),
       promptCacheScope: {
         sessionId: 'private-session-canary',
@@ -396,7 +404,7 @@ describe('internal Agent Gateway provider', () => {
           id: 'provider',
           models: ['model'],
           gatewayCapabilities: {},
-          modelMetadata: { model: { tool_call: true } },
+          modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
         }) as never,
       promptCacheScope: { sessionId: 'internal', workspaceId: capture.turn.workspaceId },
       usageEndpoint: 'responses',
@@ -485,7 +493,9 @@ describe('internal Agent Gateway provider', () => {
             id,
             models: ['model'],
             gatewayCapabilities: {},
-            modelMetadata: { model: { tool_call: true } },
+            modelMetadata: {
+              model: { tool_call: true, limit: { context: 64_000, output: 8_000 } },
+            },
           }) as never,
         promptCacheScope: { sessionId: 'internal', workspaceId: capture.turn.workspaceId },
         usageEndpoint: 'responses',
@@ -532,7 +542,7 @@ describe('internal Agent Gateway provider', () => {
       id: 'provider',
       models: ['model'],
       gatewayCapabilities: {},
-      modelMetadata: { model: { tool_call: true } },
+      modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
     });
     const provider = createInternalAgentGatewayProvider({
       capture,
@@ -610,7 +620,7 @@ describe('internal Agent Gateway provider', () => {
           id: 'provider',
           models: ['model'],
           gatewayCapabilities: {},
-          modelMetadata: { model: { tool_call: true } },
+          modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
         }) as never,
       promptCacheScope: { sessionId: 'admin:th_private', workspaceId: 'ws_private' },
       usageEndpoint: 'responses',
@@ -734,7 +744,7 @@ describe('internal Agent Gateway provider', () => {
         },
       ],
     });
-    expect(onDispatch).toHaveBeenCalledWith({ providerId: 'provider' });
+    expect(onDispatch).toHaveBeenCalledWith({ id: 'response', providerId: 'provider' });
   });
 
   it.each([
@@ -762,7 +772,7 @@ describe('internal Agent Gateway provider', () => {
           id: 'provider',
           models: ['model'],
           gatewayCapabilities: {},
-          modelMetadata: { model: { tool_call: true } },
+          modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
         }) as never,
       promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
       usageEndpoint: 'responses',
@@ -854,7 +864,7 @@ describe('internal Agent Gateway provider', () => {
           id: 'provider',
           models: ['model'],
           gatewayCapabilities: {},
-          modelMetadata: { model: { tool_call: true } },
+          modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
         }) as never,
       promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
       usageEndpoint: 'responses',
@@ -903,7 +913,7 @@ describe('internal Agent Gateway provider', () => {
           id: 'provider',
           models: ['model'],
           gatewayCapabilities: {},
-          modelMetadata: { model: { tool_call: true } },
+          modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
         }) as never,
       promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
       usageEndpoint: 'responses',
@@ -971,7 +981,7 @@ describe('internal Agent Gateway provider', () => {
           id: 'provider',
           models: ['model'],
           gatewayCapabilities: {},
-          modelMetadata: { model: { tool_call: true } },
+          modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
         }) as never
     );
     const provider = createInternalAgentGatewayProvider({
@@ -994,26 +1004,6 @@ describe('internal Agent Gateway provider', () => {
       })
     ).rejects.toThrow('Internal Agent Tool aliases must be unique Responses function names.');
     expect(resolveGatewayProvider).not.toHaveBeenCalled();
-    expect(createResponses).not.toHaveBeenCalled();
-  });
-
-  it('fails before provider contact when unsupported compaction is required', async () => {
-    const createResponses = vi.fn();
-    const provider = createInternalAgentGatewayProvider({
-      resolveLogicalModel(): ResolvedLogicalModel {
-        return this.logicalModel;
-      },
-      logicalModel,
-      dispatcher: { createResponses } as Pick<LLMGatewayProviderDispatcher, 'createResponses'>,
-      resolveGatewayProvider: () => ({}) as never,
-      promptCacheScope: { sessionId: 'admin:th_private', workspaceId: 'ws_private' },
-      usageEndpoint: 'responses',
-      capture: captureBinding(),
-    });
-
-    await expect(provider(request('x'.repeat(8_000)))).rejects.toMatchObject({
-      code: 'context_compaction_unavailable',
-    });
     expect(createResponses).not.toHaveBeenCalled();
   });
 
@@ -1059,6 +1049,7 @@ describe('internal Agent Gateway provider', () => {
             }),
             resolveGatewayProvider: () => ({
               id: 'provider',
+              displayName: 'Provider',
               adapterId: stock.id,
               apiKey: 'synthetic',
               baseUrl: null,
@@ -1124,7 +1115,7 @@ describe('internal Agent Gateway provider', () => {
   it.each([
     'off',
     'on',
-  ] as const)('passes the below-threshold request through real Gateway admission with capture %s', async (value) => {
+  ] as const)('passes a physically fitting request through real Gateway admission with capture %s', async (value) => {
     const faux = fauxProvider({
       // Give the capture fixture a meaningful API identity matching its native Responses capability.
       api: 'openai-responses',
@@ -1149,7 +1140,7 @@ describe('internal Agent Gateway provider', () => {
         gatewayCapabilities: { chatCompletions: 'native' as const, responses: 'native' as const },
         id: 'provider',
         models: ['model'],
-        modelMetadata: { model: { tool_call: true } },
+        modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
         requiresApiKey: true,
       }),
       promptCacheScope: { sessionId: 'administration:th_private', workspaceId: 'ws_private' },
@@ -1241,7 +1232,11 @@ describe('internal Agent Gateway provider', () => {
       models: [{ id: 'gpt-5.6-sol' }],
     });
     const pairModels = createModels();
-    pairModels.setProvider({ ...faux.provider, baseUrl: openaiCodexProvider().baseUrl });
+    const baseUrl = openaiCodexProvider().baseUrl;
+    pairModels.setProvider({
+      ...faux.provider,
+      ...(baseUrl === undefined ? {} : { baseUrl }),
+    });
     pairModels.checkAuth = async () => ({}) as never;
     faux.setResponses([fauxAssistantMessage('Codex admitted.')]);
     const provider = createInternalAgentGatewayProvider({
@@ -1272,7 +1267,12 @@ describe('internal Agent Gateway provider', () => {
         gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
         id: 'codex-work',
         models: ['openai-codex/gpt-5.6-sol'],
-        modelMetadata: { 'openai-codex/gpt-5.6-sol': { tool_call: true } },
+        modelMetadata: {
+          'openai-codex/gpt-5.6-sol': {
+            tool_call: true,
+            limit: { context: faux.getModel().contextWindow, output: faux.getModel().maxTokens },
+          },
+        },
         requiresApiKey: false,
         subscriptionProviderId: 'openai-codex',
       }),
@@ -1313,6 +1313,7 @@ describe('internal Agent Gateway provider', () => {
           {
             role: 'tool',
             callId: 'call_image',
+            isError: false,
             content: [{ type: 'image', mimeType: 'image/png', data: 'private-image-bytes' }],
           },
         ],
@@ -1387,7 +1388,9 @@ describe('internal role shares Gateway planning and replay rules', () => {
               id,
               models: ['model'],
               gatewayCapabilities: { responses: 'native', chatCompletions: 'native' },
-              modelMetadata: { model: { tool_call: true } },
+              modelMetadata: {
+                model: { tool_call: true, limit: { context: 64_000, output: 8_000 } },
+              },
             }) as never,
           promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
           usageEndpoint: 'responses',
@@ -1444,7 +1447,9 @@ describe('internal role shares Gateway planning and replay rules', () => {
           id,
           models: ['model'],
           gatewayCapabilities: { responses: 'native' },
-          modelMetadata: { model: { tool_call: id === 'backup' } },
+          modelMetadata: {
+            model: { tool_call: id === 'backup', limit: { context: 64_000, output: 8_000 } },
+          },
         }) as never,
       promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
       usageEndpoint: 'responses',
@@ -1485,7 +1490,7 @@ describe('internal role shares Gateway planning and replay rules', () => {
           id,
           models: ['model'],
           gatewayCapabilities: { responses: 'native' },
-          modelMetadata: { model: { tool_call: true } },
+          modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
         }) as never,
       promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
       usageEndpoint: 'responses',
@@ -1553,7 +1558,9 @@ describe('Round 2 internal-role exhaustion cause', () => {
             id,
             models: ['model'],
             gatewayCapabilities: { responses: 'native' },
-            modelMetadata: { model: { tool_call: true } },
+            modelMetadata: {
+              model: { tool_call: true, limit: { context: 64_000, output: 8_000 } },
+            },
           }) as never,
         promptCacheScope: { sessionId: 'admin', workspaceId: 'workspace' },
         usageEndpoint: 'responses',
@@ -1674,7 +1681,9 @@ describe('slice 1d round 2 internal lifecycle', () => {
             id: 'provider',
             models: ['model'],
             gatewayCapabilities: {},
-            modelMetadata: { model: { tool_call: true } },
+            modelMetadata: {
+              model: { tool_call: true, limit: { context: 64_000, output: 8_000 } },
+            },
           }) as never,
         promptCacheScope: { sessionId: 'internal', workspaceId: capture.turn.workspaceId },
         usageEndpoint: 'responses',
@@ -1747,7 +1756,7 @@ describe('slice 1d round 2 internal lifecycle', () => {
           id,
           models: ['model'],
           gatewayCapabilities: {},
-          modelMetadata: { model: { tool_call: true } },
+          modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
         }) as never,
       promptCacheScope: { sessionId: 'internal', workspaceId: capture.turn.workspaceId },
       usageEndpoint: 'responses',
@@ -1770,5 +1779,497 @@ describe('slice 1d round 2 internal lifecycle', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('internal rolling context Gateway boundary', () => {
+  const completeResponse = {
+    id: 'context_answer',
+    object: 'response',
+    status: 'completed',
+    output: [
+      { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Ready.' }] },
+    ],
+  };
+
+  /** Binds the real projection while leaving only outer Provider transport under test control. */
+  function boundaryFixture(
+    admitted = logicalModel,
+    current = () => admitted,
+    limit: { context?: number; output?: number } = { context: 64_000, output: 8_000 }
+  ) {
+    const createResponses = vi.fn().mockResolvedValue(completeResponse);
+    const resolveLogicalModel = vi.fn(current);
+    const resolveGatewayProvider = vi.fn(() => ({
+      id: 'provider',
+      models: ['model'],
+      gatewayCapabilities: { responses: 'native' },
+      modelMetadata: { model: { tool_call: true, limit } },
+    }));
+    const provider = createInternalAgentGatewayProvider({
+      capture: captureBinding(),
+      logicalModel: admitted,
+      resolveLogicalModel,
+      dispatcher: { createResponses },
+      resolveGatewayProvider: resolveGatewayProvider as never,
+      promptCacheScope: { sessionId: 'rolling-context', workspaceId: 'workspace' },
+      usageEndpoint: 'responses',
+    });
+    return { provider, createResponses, resolveLogicalModel, resolveGatewayProvider };
+  }
+
+  it('dispatches an assembled window above the authored compaction threshold without a compactor', async () => {
+    const admitted = {
+      ...logicalModel,
+      contextManagement: { type: 'compaction' as const, compactThreshold: 100 },
+    };
+    let current = admitted;
+    const { provider, createResponses, resolveLogicalModel } = boundaryFixture(
+      admitted,
+      () => current
+    );
+    const assembled = request('Retain this admitted source. '.repeat(400));
+    const before = structuredClone(assembled.messages);
+
+    await expect(provider(assembled)).resolves.toMatchObject({
+      message: { content: [{ type: 'text', text: 'Ready.' }] },
+    });
+    current = {
+      ...admitted,
+      contextManagement: { type: 'compaction', compactThreshold: 200 },
+    };
+    await expect(provider(assembled)).resolves.toMatchObject({
+      message: { content: [{ type: 'text', text: 'Ready.' }] },
+    });
+
+    expect(resolveLogicalModel.mock.calls).toEqual([['assistant'], ['assistant']]);
+    expect(createResponses).toHaveBeenCalledTimes(2);
+    for (const [, payload] of createResponses.mock.calls) {
+      expect(payload).not.toHaveProperty('context_management');
+      expect(payload).not.toHaveProperty('previous_response_id');
+      expect(payload.input).toEqual([
+        { role: 'user', content: [{ type: 'input_text', text: before[0]!.content[0]!.text }] },
+      ]);
+    }
+    expect(assembled.messages).toEqual(before);
+  });
+
+  it.each([
+    'messages',
+    'prompt',
+    'schema',
+  ] as const)('rejects physical overflow from %s before Provider dispatch', async (component) => {
+    const { provider, createResponses } = boundaryFixture(logicalModel, undefined, {
+      context: 16_000,
+      output: 2_000,
+    });
+    const large = 'Required source constraint and exact continuation reference. '.repeat(16_000);
+    const assembled = {
+      ...request(component === 'messages' ? large : 'Read status.'),
+      ...(component === 'prompt' ? { systemPrompt: large } : {}),
+      ...(component === 'schema'
+        ? {
+            tools: [
+              { ...request().tools[0]!, inputSchema: { type: 'object', description: large } },
+            ],
+          }
+        : {}),
+    };
+    const before = structuredClone(assembled.messages);
+
+    await expect(provider(assembled)).rejects.toMatchObject({
+      code: 'internal_agent_context_exceeded',
+    });
+
+    expect(createResponses).not.toHaveBeenCalled();
+    expect(assembled.messages).toEqual(before);
+  });
+
+  it('reserves known output capacity when fitting an otherwise admissible request', async () => {
+    const limit = { context: 16_000, output: 1_000 };
+    const { provider, createResponses } = boundaryFixture(logicalModel, undefined, limit);
+    const assembled = request('Current source fact. '.repeat(400));
+
+    await expect(provider(assembled)).resolves.toMatchObject({ message: { role: 'assistant' } });
+    limit.output = 15_000;
+    await expect(provider(assembled)).rejects.toMatchObject({
+      code: 'internal_agent_context_exceeded',
+    });
+
+    expect(createResponses).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { admittedOutput: 2_000, expectedOutput: 2_000 },
+    { admittedOutput: null, expectedOutput: 8_000 },
+  ])('caps model output at the known admitted or member limit: %j', async ({
+    admittedOutput,
+    expectedOutput,
+  }) => {
+    const admitted: ResolvedLogicalModel = {
+      ...logicalModel,
+      contract: { context: 64_000, output: admittedOutput, inputModalities: null, reasoning: null },
+    };
+    const { provider, createResponses } = boundaryFixture(admitted);
+
+    await expect(provider(request())).resolves.toMatchObject({ message: { role: 'assistant' } });
+
+    expect(createResponses).toHaveBeenCalledTimes(1);
+    expect(createResponses.mock.calls[0]![1]).toMatchObject({
+      model: 'model',
+      max_output_tokens: expectedOutput,
+    });
+  });
+
+  it('enforces the admitted logical window when the selected member has more physical capacity', async () => {
+    const admitted: ResolvedLogicalModel = {
+      ...logicalModel,
+      contextManagement: { type: 'compaction', compactThreshold: 1_000 },
+      contract: { context: 8_000, output: 2_000, inputModalities: null, reasoning: null },
+    };
+    const { provider, createResponses } = boundaryFixture(admitted, undefined, {
+      context: 128_000,
+      output: 2_000,
+    });
+    const initial = request(
+      'Exact retained continuation fact and required source boundary. '.repeat(1_400)
+    );
+    const before = structuredClone(initial.messages);
+
+    const result = await runInternalAgentLoop(
+      {
+        ...initial,
+        tools: [],
+        limits: { maxModelTurns: 2, maxToolCalls: 1, deadlineMs: 5_000 },
+      },
+      provider
+    );
+
+    expect(result.kind).toBe('failed');
+    expect(result).toMatchObject({ code: 'internal_agent_context_exceeded' });
+    expect(result.messages).toEqual(before);
+    expect(createResponses).not.toHaveBeenCalled();
+    expect(initial.messages).toEqual(before);
+  });
+
+  it('rejects a Provider compaction item without accepting its summary or ordinary output', async () => {
+    const { provider, createResponses } = boundaryFixture();
+    createResponses.mockResolvedValueOnce({
+      ...completeResponse,
+      output: [
+        ...completeResponse.output,
+        {
+          type: 'compaction',
+          id: 'provider-checkpoint',
+          summary: 'Provider-owned history replacement.',
+        },
+      ],
+    });
+    const initial = request();
+    const before = structuredClone(initial.messages);
+
+    const result = await runInternalAgentLoop(
+      {
+        ...initial,
+        tools: [],
+        limits: { maxModelTurns: 2, maxToolCalls: 1, deadlineMs: 5_000 },
+      },
+      provider
+    );
+
+    expect(result).toEqual({ kind: 'failed', code: 'provider_response_invalid', messages: before });
+    expect(createResponses).toHaveBeenCalledTimes(1);
+    expect(initial.messages).toEqual(before);
+  });
+
+  it('fails closed when no physical context limit can be established', async () => {
+    const { provider, createResponses } = boundaryFixture(logicalModel, undefined, {});
+
+    await expect(provider(request())).rejects.toMatchObject({
+      code: 'internal_agent_context_unavailable',
+    });
+
+    expect(createResponses).not.toHaveBeenCalled();
+  });
+
+  it('returns a safe failure for later overflow without trimming observations or replaying a Tool', async () => {
+    const { provider, createResponses } = boundaryFixture(logicalModel, undefined, {
+      context: 16_000,
+      output: 2_000,
+    });
+    const observation = 'Required observed state and pending work. '.repeat(16_000);
+    const execute = vi.fn(async () => ({
+      content: [{ type: 'text' as const, text: observation }],
+    }));
+    createResponses.mockResolvedValueOnce({
+      id: 'context_tool',
+      object: 'response',
+      status: 'completed',
+      output: [
+        {
+          type: 'function_call',
+          call_id: 'effect_once',
+          name: 'environment_status',
+          arguments: '{}',
+        },
+      ],
+    });
+    const initial = request();
+    const before = structuredClone(initial.messages);
+
+    const result = await runInternalAgentLoop(
+      {
+        ...initial,
+        tools: [{ ...initial.tools[0]!, execute }],
+        limits: { maxModelTurns: 3, maxToolCalls: 2, deadlineMs: 5_000 },
+      },
+      provider
+    );
+
+    expect(result).toMatchObject({ kind: 'failed', code: 'internal_agent_context_exceeded' });
+    expect(createResponses).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(initial.messages).toEqual(before);
+    expect(result.messages).toEqual([
+      ...before,
+      {
+        role: 'assistant',
+        truncated: false,
+        content: [
+          { type: 'toolCall', callId: 'effect_once', name: 'environment.status', arguments: {} },
+        ],
+      },
+      {
+        role: 'tool',
+        callId: 'effect_once',
+        content: [{ type: 'text', text: observation }],
+        isError: false,
+      },
+    ]);
+  });
+
+  it('keeps the admitted model identity and known physical minimums across current resolution', async () => {
+    const admitted: ResolvedLogicalModel = {
+      ...logicalModel,
+      contract: { context: 64_000, output: 8_000, inputModalities: null, reasoning: null },
+    };
+    const limit = { context: 64_000, output: 8_000 };
+    const { provider, createResponses, resolveLogicalModel } = boundaryFixture(
+      admitted,
+      () => ({ ...admitted, contract: { ...admitted.contract!, context: 16_000 } }),
+      limit
+    );
+
+    await expect(provider(request())).resolves.toMatchObject({ message: { role: 'assistant' } });
+    limit.context = 16_000;
+    await expect(provider(request())).rejects.toMatchObject({
+      code: 'gateway_logical_model_unavailable',
+    });
+    await expect(
+      provider({ ...request(), model: { ...request().model, logicalModelId: 'another-model' } })
+    ).rejects.toThrow('Internal Agent logical model changed after admission.');
+
+    expect(resolveLogicalModel.mock.calls).toEqual([['assistant'], ['assistant']]);
+    expect(createResponses).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('command audit lineage at the internal Gateway seam', () => {
+  const commandRequestId = '00000000-0000-4000-8000-000000000144';
+
+  /** Composes real capture, Gateway, usage and audit writers; only model transport is injected. */
+  function auditFixture(
+    auditLineage?: CapabilityAuditLineage,
+    storedRequestId: string | null = null
+  ) {
+    const capture = captureBinding();
+    const createResponses = vi
+      .fn<LLMGatewayProviderDispatcher['createResponses']>()
+      .mockResolvedValue({
+        id: 'response-audit',
+        object: 'response',
+        status: 'completed',
+        output: [
+          {
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'Audited answer.' }],
+          },
+        ],
+        usage: { input_tokens: 9, output_tokens: 3, total_tokens: 12 },
+      });
+    const options = {
+      capture,
+      logicalModel,
+      resolveLogicalModel: () => logicalModel,
+      dispatcher: { createResponses },
+      resolveGatewayProvider: () =>
+        ({
+          id: 'provider',
+          models: ['model'],
+          gatewayCapabilities: {},
+          modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
+        }) as never,
+      promptCacheScope: { sessionId: capture.threadId, workspaceId: capture.turn.workspaceId },
+      usageEndpoint: 'responses' as const,
+      callContext: {
+        workspaceId: capture.turn.workspaceId,
+        authorityActor: capture.turn.triggerActor,
+        agentId: 'assistant',
+        family: 'llm' as const,
+        operation: 'quick_chat',
+        capabilityId: 'inference.local.quick_chat',
+        redactionClass: 'metadata-only',
+        requestId: storedRequestId,
+      },
+      ...(auditLineage === undefined ? {} : { auditLineage }),
+    };
+    return { capture, createResponses, provider: createInternalAgentGatewayProvider(options) };
+  }
+
+  it.each([
+    {
+      label: 'without command context',
+      lineage: undefined,
+      storedRequestId: null,
+      expectedAuditRequest: null,
+    },
+    {
+      label: 'with command context',
+      lineage: { commandRequestId },
+      storedRequestId: null,
+      expectedAuditRequest: commandRequestId,
+    },
+    {
+      label: 'with an existing non-null call request',
+      lineage: { commandRequestId },
+      storedRequestId: '00000000-0000-4000-8000-000000000145',
+      expectedAuditRequest: '00000000-0000-4000-8000-000000000145',
+    },
+  ])('preserves success attribution $label', async ({
+    lineage,
+    storedRequestId,
+    expectedAuditRequest,
+  }) => {
+    const f = auditFixture(lineage, storedRequestId);
+
+    await f.provider(request());
+
+    const calls = listWorkspaceCapabilityCalls(f.capture.workspaceDb, f.capture.turn.workspaceId);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      requestId: storedRequestId,
+      status: 'succeeded',
+      threadId: f.capture.threadId,
+      turnId: f.capture.turnId,
+    });
+    expect(listWorkspaceUsageRecords(f.capture.workspaceDb, f.capture.turn.workspaceId)).toEqual([
+      expect.objectContaining({
+        requestId: storedRequestId,
+        capabilityCallId: calls[0]!.id,
+        responsibleUserId: 'user_local',
+        threadId: f.capture.threadId,
+        turnId: f.capture.turnId,
+        quantity: 12,
+      }),
+    ]);
+    expect(
+      f.capture.workspaceDb.sqlite
+        .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
+        .all(calls[0]!.id)
+    ).toEqual([
+      expect.objectContaining({
+        action: 'capability.finish',
+        request_id: expectedAuditRequest,
+        capability_call_id: calls[0]!.id,
+        thread_id: f.capture.threadId,
+        turn_id: f.capture.turnId,
+        outcome: 'succeeded',
+      }),
+    ]);
+  });
+
+  it('retains the command audit request when inference fails', async () => {
+    const f = auditFixture({ commandRequestId });
+    const error = new GatewayAttemptFailure({ kind: 'invalid_request', settled: true });
+    f.createResponses.mockRejectedValue(error);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(f.provider(request())).rejects.toHaveProperty('failure.kind', 'invalid_request');
+
+    expect(f.createResponses).toHaveBeenCalledOnce();
+    const calls = listWorkspaceCapabilityCalls(f.capture.workspaceDb, f.capture.turn.workspaceId);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ requestId: null, status: 'failed' });
+    expect(listWorkspaceUsageRecords(f.capture.workspaceDb, f.capture.turn.workspaceId)).toEqual(
+      []
+    );
+    expect(
+      f.capture.workspaceDb.sqlite
+        .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
+        .all(calls[0]!.id)
+    ).toEqual([
+      expect.objectContaining({
+        action: 'capability.finish',
+        request_id: commandRequestId,
+        capability_call_id: calls[0]!.id,
+        workspace_id: f.capture.turn.workspaceId,
+        thread_id: f.capture.threadId,
+        turn_id: f.capture.turnId,
+        outcome: 'failed',
+      }),
+    ]);
+  });
+
+  it.each([
+    'reported-callback',
+    'successful-response',
+  ] as const)('retains command audit lineage when the %s usage write fails', async (boundary) => {
+    const f = auditFixture({ commandRequestId });
+    f.capture.workspaceDb.sqlite.exec(`
+      CREATE TRIGGER reject_gateway_usage_write
+      BEFORE INSERT ON usage_records
+      BEGIN
+        SELECT RAISE(ABORT, 'injected Gateway usage write failure');
+      END
+    `);
+    if (boundary === 'reported-callback') {
+      f.createResponses.mockImplementation(async (_provider, _input, context) => {
+        context?.onUsage?.({ input_tokens: 9, output_tokens: 3, total_tokens: 12 });
+        throw new Error('The failed usage callback must not return.');
+      });
+    }
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(f.provider(request())).rejects.toBeInstanceOf(Error);
+
+    expect(f.createResponses).toHaveBeenCalledOnce();
+    const calls = listWorkspaceCapabilityCalls(f.capture.workspaceDb, f.capture.turn.workspaceId);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      requestId: null,
+      status: 'failed',
+      errorCode: 'usage_record_failed',
+    });
+    expect(listWorkspaceUsageRecords(f.capture.workspaceDb, f.capture.turn.workspaceId)).toEqual(
+      []
+    );
+    expect(
+      f.capture.workspaceDb.sqlite
+        .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
+        .all(calls[0]!.id)
+    ).toEqual([
+      expect.objectContaining({
+        action: 'capability.finish',
+        capability_call_id: calls[0]!.id,
+        request_id: commandRequestId,
+        workspace_id: f.capture.turn.workspaceId,
+        thread_id: f.capture.threadId,
+        turn_id: f.capture.turnId,
+        outcome: 'failed',
+        error_code: 'usage_record_failed',
+      }),
+    ]);
   });
 });

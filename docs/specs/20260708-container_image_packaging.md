@@ -229,9 +229,9 @@ The app image must:
 - use a persistent `/data/openkit` data root by default,
 - run in `server` mode for formal release images unless a release explicitly ships a local-only developer preview,
 - provide a smoke command that verifies Node, NanoCore boot, `/api/health`, static Web UI routing, and data-root writability.
-- carry its release identity in `/usr/local/lib/openkit/release-identity.json` when, and only when, a release build supplies `OPENKIT_RELEASE_TAG` and `OPENKIT_SOURCE_COMMIT`. A non-release build, including a local build, a pull request build, and candidate CI, passes neither argument and includes no identity file. The file's closed core is `releaseTag` (a v-prefixed SemVer tag) and `sourceCommit` (40 lowercase hex). Unknown additive keys are ignored. A missing file means a non-release build. A present file that is invalid JSON, has an unknown core shape, or carries a value outside that closed core fails NanoCore boot configuration with `invalid_release_identity` and MUST NOT be reported as a release identity.
+- carry its release identity in `/usr/local/lib/openkit/release-identity.json` when, and only when, a release build supplies `OPENKIT_RELEASE_TAG` and `OPENKIT_SOURCE_COMMIT`. A prerelease candidate build in the release workflow may supply the intended prerelease tag and exact source commit before publication under the candidate rules below. Ordinary local, pull request and diagnostic builds pass neither argument and include no identity file. The file's closed core is `releaseTag` (a v-prefixed SemVer tag) and `sourceCommit` (40 lowercase hex). Unknown additive keys are ignored. A missing file means a non-release build. A present file that is invalid JSON, has an unknown core shape, or carries a value outside that closed core fails NanoCore boot configuration with `invalid_release_identity` and MUST NOT be reported as a release identity.
 
-The identity MUST be that file and MUST NOT be an image `ENV`. The App-update helper replays every entry of the previous container's `Config.Env` as `--env`, so an `ENV` identity from the old image would override the new image after every update. Only the release workflow passes the tag and source commit, and it passes them to the App image build only. Worker images, image tags, OCI labels, and the same-tag reuse rule do not carry this file.
+The identity MUST be that file and MUST NOT be an image `ENV`. The App-update helper replays every entry of the previous container's `Config.Env` as `--env`, so an `ENV` identity from the old image would override the new image after every update. Only the release workflow passes the tag and source commit, including its explicit prerelease candidate build, and it passes them to the App image build only. Worker images, image tags, OCI labels, and the same-tag reuse rule do not carry this file.
 
 The app image may include Caddy as the current HTTP frontend.
 
@@ -361,9 +361,15 @@ The publish job must run only after release-gate jobs pass.
 
 The publish job must build only manifest entries where `release` is `true`.
 
-The publish job must push one digest-only candidate, smoke that exact digest on every cataloged platform, and assign release tags only after every platform passes.
+For a prerelease, the release workflow may build and smoke candidate images before the tag. Each platform build pushes only by digest. An assembled index may use a reference beginning with `candidate-` that cannot be mistaken for an exact-version, version-without-v, source-revision or Latest tag. No public release tag or Latest pointer moves before the real tag push. These candidates are not published releases or deployment inputs. Ordinary main validation remains valid when no intended prerelease is selected.
 
-The publish job must derive mutable metadata from the release commit, serialize tag workflows, and reuse a complete same-tag identity only when its version, version-without-`v`, and source-revision tags resolve to the same digest.
+The candidate record binds the repository, intended prerelease tag, exact source commit P, workflow run and latest attempt, immutable build/smoke/index/promotion input identities, index digest, and exactly the catalog platform set and its digests. Each platform records successful smoke of that exact registry digest at P, matching OCI source repository, revision and version, and the App identity file when applicable. GitHub execution observations, not the record alone, prove run and attempt provenance. Changed candidate construction, smoke or index inputs are part of the publication-path proof and require the existing scratch rehearsal.
+
+The tag job accepts only a complete candidate whose repository and intended tag match and whose recorded source revision equals the tagged commit. It promotes the recorded index digest unchanged, with exactly the recorded platform digests. It verifies the registry index-to-platform bindings, matching OCI source/revision/version and App identity observations, successful exact-P smoke, proved inputs and current run-attempt provenance before promotion. A changed P invalidates the old candidate even when its tree is identical. Missing, stale, partial, failed or inconsistent evidence refuses promotion; a fresh candidate run may supply new evidence, but a tag-stage rebuild cannot substitute for it. Before the tag, admission still proves unused release identities or the existing explicitly admitted immutable same-tag retry.
+
+Release tags are assigned only after every required platform passed and the existing tag gates passed. All existing publication checks remain required: tag preflight and main membership, exact-P candidate admission, NanoHost qualification, immutable identity and retry, Latest invariants, anonymous Worker base inspection, GitHub Release consistency and downloaded assets. This prerelease candidate rule changes no stable publication rule or credential boundary.
+
+The release workflow must derive mutable metadata from the release commit, serialize tag workflows, and reuse a complete same-tag identity only when its version, version-without-`v`, and source-revision tags resolve to the same digest.
 
 A partial or conflicting existing tag identity must fail closed.
 
@@ -408,7 +414,7 @@ Version tags must run:
 
 L4 Web browser e2e and deterministic L6 stories remain manual unless the testing strategy spec promotes them into the automatic release gate.
 
-Image publishing must not start if L0-L3 or L5 fails.
+Release-tag promotion must not start if L0-L3 or L5 fails. A pre-tag candidate upload creates no release identity and cannot bypass those gates.
 
 Release tag promotion must not start if exact-digest image smoke fails.
 
@@ -577,11 +583,16 @@ image-matrix
   -> validates containers/images.json
   -> emits release image matrix
 
+candidate-images
+  -> builds each declared platform natively and pushes only its digest
+  -> runs the catalog smoke owner, including Worker-base derivation, on that digest
+  -> assembles the exact platform digests under a candidate-only index reference
+  -> retains exact-P, intended-tag and current-attempt evidence
+
 publish-images
-  -> needs L0-L2, L3, L5, and image-matrix
-  -> pushes each multi-platform image as a digest-only candidate
-  -> smokes the same digest on every declared platform
-  -> promotes that digest to release tags
+  -> needs L0-L2, L3, L5, image-matrix, and NanoHost qualification
+  -> verifies the successful exact-P candidate record and registry index
+  -> promotes the unchanged index digest to release tags without rebuilding
   -> emits digest summary
 ```
 

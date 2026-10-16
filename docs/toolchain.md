@@ -55,6 +55,7 @@ The default-tooling decision is:
 - pnpm is the default package manager, and pnpm workspaces the default workspace model.
 - TypeScript is the default compiler for typed JS/TS projects.
 - Turborepo is the default build orchestrator.
+- Turbo passes the caller's `TMPDIR` to its tasks. Slot-managed checks can therefore keep test fixtures and transform caches in their private temporary directory instead of the shared `/tmp` inode pool.
 - Biome is the default linter and formatter.
 - lefthook is the default git-hook manager.
 - mise is the default tool installer and version anchor, bounded by Toolchain Provisioning Boundary below.
@@ -174,3 +175,7 @@ The Command Links inventory is a hand-written derivable projection. Source: root
 ### Fork Pull Requests Cannot Publish The Test Execution Image
 
 The `test-image` job needs `packages: write` to publish a digest tag that is not yet in the registry. A pull request from a fork receives a read-only token, so a fork that also changes `containers/test-env/Dockerfile` produces a tag nobody can publish and every gate job fails to start. Same-repository pull requests, which are how this repository is developed today, are unaffected. Activation: when a fork contribution is accepted, add a build-and-load fallback for that case rather than weakening the digest-tag rule, which is what keeps a tree from being tested against a foreign image.
+
+### Test Temporary Directories
+
+Vitest configurations use the shared [run setup](../tests/support/vitest-global-setup.mjs) before worker creation. It places one invocation directory below the caller-selected temporary directory, passes it to workers through TMPDIR, TMP and TEMP, and removes it during normal success or failure teardown. Set TMPDIR to private disk-backed storage on shared developer machines; do not rely on shared `/tmp` inode capacity. Fixture owners must still close resources and remove their own directories. The [real-worker regression](../tests/vitest-temporary-directory.test.mjs) checks containment and removal for successful, failed and multi-project runs. A forcibly terminated process needs external temporary-storage reclamation.

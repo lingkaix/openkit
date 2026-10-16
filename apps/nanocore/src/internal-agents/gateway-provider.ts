@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 import { operationToolName } from '@openkit/app-api-schemas';
 
 import {
+  type CapabilityAuditLineage,
   finishCapabilityCall,
   type GatewayCallContext,
   startCapabilityCall,
@@ -9,7 +10,7 @@ import {
 import { LogicalModelRoutesExhaustedError } from '../llm/gateway-execution.js';
 import { dispatchLogicalModel, projectGatewayFailure } from '../llm/gateway-routes.js';
 import { recordInternalLlmGatewayUsage } from '../llm/gateway-usage.js';
-import type { ResolvedLogicalModel } from '../llm/logical-models.js';
+import { type ResolvedLogicalModel, resolveEffectiveModelMetadata } from '../llm/logical-models.js';
 import { type ModelCaptureContext, ModelCaptureError } from '../llm/model-capture.js';
 import type { OpenAICompatibleResponsesResponse } from '../llm/openai-compatible-client.js';
 import { GatewayUnsupportedFeatureError } from '../llm/pi-ai-client.js';
@@ -40,12 +41,14 @@ type InternalGatewayFailurePhase =
 export interface InternalAgentGatewayProviderOptions {
   /** Exact entry-admitted Turn; internal Agents never use public metadata as authority. */
   readonly capture: Omit<ModelCaptureContext, 'corr'>;
-  /** Entry-admitted model retained for pinned identity and context policy checks. */
+  /** Entry-admitted model retained for pinned identity, capabilities and known physical limits. */
   readonly logicalModel: ResolvedLogicalModel;
   /** Resolves the pinned ID from the current snapshot and live availability at each Provider call. */
   readonly resolveLogicalModel: (logicalModelId: string) => ResolvedLogicalModel | null;
   /** Entry-owned attribution for each logical model invocation; Turn and database come from admitted capture. */
   readonly callContext?: GatewayCallContext;
+  /** Entry-validated command context for audit only; never a call-start request key. */
+  readonly auditLineage?: CapabilityAuditLineage;
   readonly dispatcher: Pick<LLMGatewayProviderDispatcher, 'createResponses'>;
   readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
@@ -54,13 +57,17 @@ export interface InternalAgentGatewayProviderOptions {
     readonly workspaceId: string;
   };
   readonly usageEndpoint: 'quick_chat' | 'responses';
-  readonly onDispatch?: (result: { readonly providerId: string; readonly usage?: unknown }) => void;
+  readonly onDispatch?: (result: {
+    readonly id: string;
+    readonly providerId: string;
+    readonly usage?: unknown;
+  }) => void;
 }
 
 /**
  * Creates the private Gateway projection used by one pinned internal Agent run.
  *
- * Current Gateway adapters do not yet produce an OpenKit Compaction Item. This projection runs only while the complete serialized request is conservatively below the selected threshold and otherwise returns the stable unsupported-compaction failure. Internal cache and usage lineage stay on `promptCacheScope` and `usageEndpoint`; they are not authored onto the provider payload.
+ * Trusted role owners assemble the rolling window. Every route attempt checks the complete serialized request against current Gateway-owned physical context and known output reserve before inference. This projection neither compacts nor truncates history. Internal cache and usage lineage stay on `promptCacheScope` and `usageEndpoint`; they are not authored onto the provider payload.
  *
  * @param options Existing logical-model routing, provider, cache, and usage context.
  * @returns Effect injected into the role-agnostic loop.
@@ -73,18 +80,6 @@ export function createInternalAgentGatewayProvider(
     if (request.model.logicalModelId !== options.logicalModel.id) {
       throw new Error('Internal Agent logical model changed after admission.');
     }
-    if (
-      !options.logicalModel.contextManagement ||
-      options.logicalModel.contextManagement.type !== request.contextManagement.type ||
-      options.logicalModel.contextManagement.compactThreshold !==
-        request.contextManagement.compactThreshold
-    ) {
-      throw new InternalAgentProviderError(
-        'context_compaction_unavailable',
-        'The selected logical model has no matching admitted context policy.'
-      );
-    }
-
     // Transport aliases are request-local; only this exact map may restore canonical identity.
     const canonicalToAlias = new Map<string, string>();
     const aliasToCanonical = new Map<string, string>();
@@ -112,11 +107,6 @@ export function createInternalAgentGatewayProvider(
       // The loop validates the original schema before execution; stock strict generation rewrites optional fields and rejects valid Tool schemas such as task_start's tuple prefixItems.
       strict: false,
     }));
-    assertBelowUnsupportedCompactionThreshold(
-      { instructions: request.systemPrompt, input: providerInput, tools: providerTools },
-      request.contextManagement.compactThreshold
-    );
-
     const workspaceDb = options.capture.workspaceDb;
     const call = options.callContext
       ? startCapabilityCall({
@@ -158,6 +148,27 @@ export function createInternalAgentGatewayProvider(
           attempt,
           execution,
         }) => {
+          const limits = resolveEffectiveModelMetadata(
+            {
+              id: provider.id,
+              kind: 'direct',
+              displayName: provider.displayName,
+              models: [...provider.models],
+              ...(provider.vendor ? { vendor: provider.vendor } : {}),
+              ...(provider.modelMetadata ? { modelMetadata: provider.modelMetadata } : {}),
+            },
+            providerModel
+          ).limit;
+          const maxOutputTokens = options.logicalModel.contract?.output ?? limits?.output;
+          assertPhysicalContextFits(
+            { instructions: request.systemPrompt, input: providerInput, tools: providerTools },
+            limits?.context === undefined
+              ? undefined
+              : Math.min(limits.context, options.logicalModel.contract?.context ?? limits.context),
+            maxOutputTokens
+          );
+          // A late callback from a settled member cannot replace a later attempt's diagnostics.
+          let observedHttpRejection: number | undefined;
           const response = await options.dispatcher
             .createResponses(
               provider,
@@ -167,6 +178,7 @@ export function createInternalAgentGatewayProvider(
                 input: providerInput,
                 parallel_tool_calls: false,
                 tools: providerTools,
+                ...(maxOutputTokens === undefined ? {} : { max_output_tokens: maxOutputTokens }),
               },
               {
                 ...(subscriptionModels ? { models: subscriptionModels } : {}),
@@ -184,6 +196,7 @@ export function createInternalAgentGatewayProvider(
                       recordInternalLlmGatewayUsage({
                         workspaceDb,
                         call,
+                        ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
                         logicalModelId: options.logicalModel.id,
                         providerId: provider.id,
                         usage,
@@ -202,6 +215,10 @@ export function createInternalAgentGatewayProvider(
                     failurePhase = 'transport';
                     execution.onProviderHandoff?.();
                   },
+                  onProviderHttpRejection: (status) => {
+                    if (Number.isInteger(status) && status >= 400 && status <= 599)
+                      observedHttpRejection = status;
+                  },
                 },
               }
             )
@@ -214,7 +231,7 @@ export function createInternalAgentGatewayProvider(
                 status >= 100 &&
                 status <= 599
                   ? status
-                  : undefined;
+                  : observedHttpRejection;
               // pi-ai 0.99.2 flattens this local serializer rejection into terminal text after stock handoff.
               // Recognize only its fixed signature for diagnostics; never use it for routing or emit the Tool name, schema or exception text.
               if (
@@ -237,6 +254,7 @@ export function createInternalAgentGatewayProvider(
               recordInternalLlmGatewayUsage({
                 workspaceDb,
                 call,
+                ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
                 logicalModelId: options.logicalModel.id,
                 providerId: provider.id,
                 usage: response.usage,
@@ -248,9 +266,16 @@ export function createInternalAgentGatewayProvider(
         },
       });
       callFinished = true;
-      if (call) finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded' });
+      if (call)
+        finishCapabilityCall({
+          workspaceDb,
+          callId: call.id,
+          status: 'succeeded',
+          ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
+        });
       const message = selected.message;
       options.onDispatch?.({
+        id: selected.response.id,
         providerId: selected.providerId,
         ...(selected.response.usage === undefined ? {} : { usage: selected.response.usage }),
       });
@@ -262,6 +287,7 @@ export function createInternalAgentGatewayProvider(
           workspaceDb,
           callId: call.id,
           status: 'failed',
+          ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
           errorCode: projectGatewayFailure(error, 'internal_inference_failed').code,
         });
       try {
@@ -364,20 +390,34 @@ function fromResponses(
   aliasToCanonical: ReadonlyMap<string, string>,
   canonicalToAlias: ReadonlyMap<string, string>
 ): AgentAssistantMessage {
-  if (!Array.isArray(response.output)) {
-    throw new Error('Gateway returned an invalid internal Agent response.');
+  if (!response || !Array.isArray(response.output)) {
+    throw new InternalAgentProviderError(
+      'provider_response_invalid',
+      'Gateway returned an invalid internal Agent response.'
+    );
   }
   const content: AgentAssistantMessage['content'][number][] = [];
   let truncated = response.status === 'incomplete';
   for (const output of response.output) {
+    if (!output || typeof output !== 'object')
+      throw new InternalAgentProviderError(
+        'provider_response_invalid',
+        'Gateway returned an invalid internal Agent response.'
+      );
     if (output.type === 'message') {
       if (!Array.isArray(output.content)) {
-        throw new Error('Gateway returned invalid message content.');
+        throw new InternalAgentProviderError(
+          'provider_response_invalid',
+          'Gateway returned invalid message content.'
+        );
       }
       for (const rawPart of output.content) {
         const part = record(rawPart);
         if (part?.type !== 'output_text' || typeof part.text !== 'string') {
-          throw new Error('Gateway returned unsupported message content.');
+          throw new InternalAgentProviderError(
+            'provider_response_invalid',
+            'Gateway returned unsupported message content.'
+          );
         }
         content.push({ type: 'text', text: part.text });
       }
@@ -392,7 +432,10 @@ function fromResponses(
         !output.name ||
         typeof output.arguments !== 'string'
       ) {
-        throw new Error('Gateway returned invalid Tool calls.');
+        throw new InternalAgentProviderError(
+          'provider_response_invalid',
+          'Gateway returned invalid Tool calls.'
+        );
       }
       const name =
         aliasToCanonical.get(output.name) ??
@@ -403,7 +446,10 @@ function fromResponses(
       try {
         args = JSON.parse(output.arguments);
       } catch {
-        throw new Error('Gateway returned invalid Tool arguments.');
+        throw new InternalAgentProviderError(
+          'provider_response_invalid',
+          'Gateway returned invalid Tool arguments.'
+        );
       }
       content.push({
         type: 'toolCall',
@@ -415,21 +461,43 @@ function fromResponses(
     }
     if (output.type === 'compaction') {
       throw new InternalAgentProviderError(
-        'context_compaction_unavailable',
-        'The Gateway returned compaction output without an admitted OpenKit checkpoint adapter.'
+        'provider_response_invalid',
+        'Internal Agent inference cannot consume a compaction checkpoint.'
       );
     }
   }
-  if (content.length === 0) throw new Error('Gateway returned empty internal Agent content.');
+  if (content.length === 0)
+    throw new InternalAgentProviderError(
+      'provider_response_invalid',
+      'Gateway returned empty internal Agent content.'
+    );
   return { role: 'assistant', content, truncated };
 }
 
-function assertBelowUnsupportedCompactionThreshold(value: unknown, compactThreshold: number): void {
-  const conservativeTokenUpperBound = Buffer.byteLength(JSON.stringify(value), 'utf8') + 4_096;
-  if (conservativeTokenUpperBound >= compactThreshold) {
+/** Checks assembled input conservatively without changing canonical history or adding a loop fuse. */
+function assertPhysicalContextFits(
+  value: unknown,
+  contextLimit: number | undefined,
+  outputReserve: number | undefined
+): void {
+  if (
+    contextLimit === undefined ||
+    !Number.isSafeInteger(contextLimit) ||
+    contextLimit <= 0 ||
+    (outputReserve !== undefined && (!Number.isSafeInteger(outputReserve) || outputReserve <= 0))
+  ) {
     throw new InternalAgentProviderError(
-      'context_compaction_unavailable',
-      'The active context reached a threshold that requires unsupported compaction.'
+      'internal_agent_context_unavailable',
+      'The selected model has no usable physical context bounds.'
+    );
+  }
+  // Retain the existing UTF-8 serialization allowance; it includes fixed instructions and Tool schemas.
+  // This is conservative admission, not exact Provider token usage. Upstream overflow remains explicit.
+  const conservativeTokenUpperBound = Buffer.byteLength(JSON.stringify(value), 'utf8') + 4_096;
+  if (conservativeTokenUpperBound + (outputReserve ?? 0) > contextLimit) {
+    throw new InternalAgentProviderError(
+      'internal_agent_context_exceeded',
+      'The assembled internal Agent context exceeds the selected model capacity.'
     );
   }
 }

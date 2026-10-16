@@ -21,6 +21,9 @@ import { fileURLToPath } from 'node:url';
 import type { ReasoningEffort } from '@openkit/protocol';
 import { workerTurnCapturePaths } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+// Test-only composition checks the private host producer and its actual supervising reader.
+import { encodeFrame } from '../../../pi-runtime-host/src/channel.ts';
+import { PiTurnOutcomeTracker } from '../../../pi-runtime-host/src/outcome.ts';
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
 import type { RuntimeObservation } from '../runtime-capture.js';
 import { waitForPiHostReadiness } from '../test-support/pi-host-readiness.js';
@@ -188,6 +191,7 @@ const PEER_BIN = fileURLToPath(new URL('../test-support/pi-channel-peer.mjs', im
 const TIMEOUT = 120_000;
 const sessions: PiResidentBinding[] = [];
 const stops: (() => Promise<void>)[] = [];
+const fixtureRoots: string[] = [];
 
 afterEach(async () => {
   copyControl.publishRace = false;
@@ -217,6 +221,7 @@ afterEach(async () => {
   spawnCalls.length = 0;
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+  for (const root of fixtureRoots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
 interface Dirs {
@@ -239,6 +244,7 @@ interface Fixture {
 /** Real, absolute directories for one binding. macOS `/tmp` is a symlink, so this resolves it. */
 async function createDirs(): Promise<Dirs> {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'openkit-pi-adapter-')));
+  fixtureRoots.push(root);
   const dirs = {
     home: join(root, 'home'),
     root,
@@ -529,6 +535,90 @@ describe('Pi frame projection', () => {
     expect(redactPiText('Authorization: Bearer secret token=value', ['secret'])).toBe(
       'Authorization: Bearer [redacted] token=[redacted]'
     );
+  });
+
+  it.each([
+    0, 1, 47,
+  ])('carries the real inference failure producer through a split private frame at byte %s', (split) => {
+    const tracker = new PiTurnOutcomeTracker();
+    const route = { model: 'logical-a', provider: 'openkit-worker-inference' };
+    const message = {
+      role: 'assistant',
+      ...route,
+      stopReason: 'error',
+      content: [],
+      errorMessage: 'private provider detail',
+    };
+    tracker.observe({ type: 'message_end', message });
+    tracker.observe({ type: 'turn_end', message });
+    tracker.observe({ type: 'agent_end', messages: [message], willRetry: false });
+    tracker.observe({ type: 'agent_settled' });
+    const outcome = tracker.finish({ route, interrupted: false, promptFailed: false });
+    const encoded = Buffer.from(
+      encodeFrame(
+        {
+          event: 'turn_settled',
+          turnId: 'turn-1',
+          outcome,
+          nativeHandle: { state: 'unknown' },
+          compactionEntryIds: [],
+          reasoningEffort: 'unknown',
+        },
+        []
+      )
+    );
+    const projected: ReturnType<typeof projectPiTurnSettlement>[] = [];
+    const reader = createPiLineReader(
+      (line) => {
+        const frame = parsePiHostFrame(line);
+        expect(frame.kind).toBe('settled');
+        if (frame.kind === 'settled')
+          projected.push(
+            projectPiTurnSettlement(frame.settled, { expectedHandleText: null, secrets: [] })
+          );
+      },
+      () => {
+        throw new Error('The admitted private frame must not overflow.');
+      }
+    );
+    reader(encoded.subarray(0, split));
+    expect(projected).toEqual([]);
+    reader(encoded.subarray(split));
+    reader.finish();
+    expect(projected).toEqual([
+      expect.objectContaining({
+        status: 'failed',
+        stopReason: 'pi-inference-failed',
+        assistantText: null,
+        establishes: false,
+        validEvidence: true,
+      }),
+    ]);
+    expect(encoded.toString()).not.toContain('private provider detail');
+  });
+
+  it.each([
+    'pi-inference-failed-unknown',
+    'PI-INFERENCE-FAILED',
+    'future-reason',
+  ])('rejects the unknown private inference failure reason %s', (reason) => {
+    expect(project({ status: 'failed', reason })).toMatchObject({
+      status: 'failed',
+      stopReason: 'pi-output-malformed',
+      assistantText: null,
+      establishes: false,
+      validEvidence: false,
+    });
+  });
+
+  it('admits the exact private inference failure without a successful assistant candidate', () => {
+    expect(project({ status: 'failed', reason: 'pi-inference-failed' })).toMatchObject({
+      status: 'failed',
+      stopReason: 'pi-inference-failed',
+      assistantText: null,
+      establishes: false,
+      validEvidence: true,
+    });
   });
 });
 
@@ -1012,6 +1102,56 @@ describe('Pi controlled channel faults', () => {
     });
   });
 
+  it('keeps a first correlated inference failure non-reusable and preserves its retained bytes on close', async () => {
+    let channel!: Duplex;
+    const { dirs, session } = await peer('ordinary', undefined, {
+      observeChannel: (observed) => {
+        channel = observed;
+      },
+    });
+    const emit = channel.emit.bind(channel);
+    const rewrite = createPiLineReader(
+      (line) => {
+        const frame = JSON.parse(line);
+        if (frame.event === 'turn_settled') {
+          frame.outcome = { status: 'failed', reason: 'pi-inference-failed' };
+          frame.nativeHandle = { state: 'unknown' };
+        }
+        emit('data', Buffer.from(`${JSON.stringify(frame)}\n`));
+      },
+      () => {
+        throw new Error('The controlled peer frame must remain valid.');
+      }
+    );
+    vi.spyOn(channel, 'emit').mockImplementation((event, ...args) => {
+      if (event === 'data') {
+        rewrite(Buffer.from(args[0]));
+        return true;
+      }
+      return emit(event, ...args);
+    });
+    const writes = vi.spyOn(channel, 'write');
+    const turn = await session.startTurn(turnInput(dirs));
+    expect(await turn.settled).toMatchObject({
+      status: 'failed',
+      stopReason: 'pi-inference-failed',
+      assistantText: null,
+      nativeEvidence: { nativeTerminal: true },
+    });
+    const files = await sessionJsonlFiles(dirs.stateRoot);
+    expect(files).toHaveLength(1);
+    const retained = await readFile(files[0]!);
+    await expect(
+      session.startTurn(turnInput(dirs, { turnId: 'turn-2', prompt: 'do not retry' }))
+    ).rejects.toThrow('Pi conversation is not reusable until a completed first Turn.');
+    expect(
+      writes.mock.calls.filter(([bytes]) => JSON.parse(String(bytes)).op === 'turn')
+    ).toHaveLength(1);
+    await session.close();
+    expect(session.childState()).toBe('absent');
+    expect(await readFile(files[0]!)).toEqual(retained);
+  });
+
   it.each([
     'off',
     'on',
@@ -1242,6 +1382,116 @@ describe('Pi controlled channel faults', () => {
       expect.objectContaining({ kind: 'coverage', coverage: 'ended' }),
     ]);
     await session.close();
+  });
+
+  it.each([
+    ['off', 'interrupt'],
+    ['on', 'interrupt'],
+    ['off', 'recovery'],
+    ['on', 'recovery'],
+  ] as const)('keeps native terminal and interrupt progress under capture backlog pressure with content %s during %s', async (value, disposition) => {
+    let channel!: Duplex;
+    const { dirs, session } = await peer('ordinary', undefined, {
+      observeChannel: (observed) => {
+        channel = observed;
+      },
+    });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const accepted: RuntimeObservation[] = [];
+    const toolBodies: string[] = [];
+    let blocked = false;
+    const write = channel.write.bind(channel);
+    vi.spyOn(channel, 'write').mockImplementation(((bytes: unknown) => {
+      const request = JSON.parse(String(bytes));
+      if (request.op === 'turn') {
+        for (let index = 0; index < 4_096; index += 1)
+          channel.emit(
+            'data',
+            Buffer.from(
+              `${JSON.stringify({
+                event: 'native',
+                turnId: request.turnId,
+                data: {
+                  type: 'tool_execution_start',
+                  toolCallId: `pressure-${index}`,
+                  toolName: 'echo',
+                  args: { text: `value-${index}` },
+                },
+              })}\n`
+            )
+          );
+      }
+      return write(bytes as string);
+    }) as typeof channel.write);
+    const input = turnInput(dirs);
+    const turn = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        captureCoverage: { scope: 'server', value },
+        emit: async (record, body) => {
+          if (!blocked && record.fact.kind === 'tool') {
+            blocked = true;
+            entered.resolve();
+            await release.promise;
+          }
+          accepted.push(record);
+          if (body && record.fact.kind === 'tool') toolBodies.push(Buffer.from(body).toString());
+        },
+      },
+    });
+    try {
+      await entered.promise;
+      // Inspection crosses the same private channel while capture publication is stalled.
+      await expect(session.nativeHandle()).resolves.toMatchObject({ state: 'ready' });
+      const before = accepted.slice();
+      if (disposition === 'recovery') release.resolve();
+      else await turn.interrupt(new LifecycleDeadline(100, 30));
+      expect(await turn.settled).toMatchObject({
+        assistantText: 'answer',
+        status: 'completed',
+        nativeEvidence: { nativeTerminal: true },
+        diagnostics: { runtimeCapture: 'incomplete' },
+      });
+      if (disposition === 'interrupt') {
+        expect(accepted).toEqual(before);
+        release.resolve();
+        await waitFor(() => accepted.length === before.length + 1);
+        expect(accepted.slice(before.length).map((record) => record.fact)).toEqual([
+          expect.objectContaining({ kind: 'tool', phase: 'started' }),
+        ]);
+      } else {
+        expect(accepted.map((record) => record.fact)).toContainEqual(
+          expect.objectContaining({
+            kind: 'coverage',
+            family: 'primary-content',
+            coverage: 'unavailable',
+            reason: 'limit-exceeded',
+          })
+        );
+        expect(accepted.map((record) => record.fact)).toContainEqual(
+          expect.objectContaining({ kind: 'origin', phase: 'completed' })
+        );
+        const tools = accepted.filter((record) => record.fact.kind === 'tool');
+        expect(tools.length).toBeGreaterThan(1);
+        expect(tools.length).toBeLessThan(4_096);
+        if (value === 'off') expect(toolBodies).toEqual([]);
+        else {
+          expect(toolBodies.length).toBeGreaterThan(1);
+          expect(toolBodies).toEqual(
+            Array.from({ length: toolBodies.length }, (_, index) =>
+              JSON.stringify({ text: `value-${index}` })
+            )
+          );
+        }
+      }
+      expect(accepted.slice(0, before.length)).toEqual(before);
+      await session.close();
+      expect(session.childState()).toBe('absent');
+    } finally {
+      release.resolve();
+    }
   });
 
   it('landing bounds a short join without another interrupt or signal owner', async () => {
@@ -2394,7 +2644,7 @@ export default function (pi) {
       expect(retainedIds.filter((id) => id === compactionIds[0])).toEqual(compactionIds);
       const outcomes = [
         ['turn-3', 'length', 'pi-length', 'length'],
-        ['turn-4', 'status', 'pi-terminal-correlation-failed', 'failed'],
+        ['turn-4', 'status', 'pi-inference-failed', 'failed'],
         // This fixture completes a tool call, then settles a correlated native length message.
         ['turn-5', 'tool', 'pi-length', 'length'],
         ['turn-6', 'empty', 'pi-final-message-empty', 'failed'],

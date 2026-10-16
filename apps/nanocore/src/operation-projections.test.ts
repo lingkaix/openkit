@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
@@ -12,6 +12,7 @@ import {
 import { ApiErrorSchema } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import {
   createOpenKitAccessTokenRecord,
@@ -24,11 +25,15 @@ import { createInMemoryRuntimeConfigSnapshot } from './config/runtime-config.js'
 import * as commands from './generative-kernel/commands.js';
 import { createLightApp, listRecords, updateRecord } from './generative-kernel/commands.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
+import { APP_OPENAPI_DOCUMENT, getRegisteredAppApiOperationIds } from './openapi.js';
 import * as invocation from './operation-composition.js';
 import { createOperationInvocation } from './operation-composition.js';
-import type { OperationImplementations } from './operation-contract.js';
+import type {
+  AssistantOperationInvocationContext,
+  OperationImplementations,
+} from './operation-contract.js';
 import { OperationError } from './operation-error.js';
-import { createOperationEngine } from './operation-invocation.js';
+import { createInternalOperationEngine, createOperationEngine } from './operation-invocation.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import type { OperationAdmissionDependencies } from './operation-resolvers.js';
 import {
@@ -1727,4 +1732,277 @@ it('discloses and grants a Coordinator proposal to the current administrator wit
     db.sqlite.close();
     f.coreDb.sqlite.close();
   }
+});
+
+/** Isolates generic private invocation while retaining real current admission and Turn owners. */
+function privateEngineFixture() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'private-native-operation-'));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  const store = createDemoStore({ dataRoot });
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+  const thread = store.createThread('ws_demo', 'Private operation', undefined, 'conversation', {
+    visibility: 'private',
+    privateOwnerUserId: 'user_local',
+  });
+  const turn = store.createTurn('ws_demo', thread.id, 'Private read', {
+    kind: 'user',
+    id: 'user_local',
+  });
+  const controller = new AbortController();
+  const context: AssistantOperationInvocationContext = {
+    kind: 'assistant-command',
+    entryScope: 'conversation.submit',
+    actor: { kind: 'local', userId: 'user_local' },
+    workspaceId: 'ws_demo',
+    threadId: thread.id,
+    turnId: turn.id,
+    requestId: randomUUID(),
+    signal: controller.signal,
+  };
+  const definitions = {
+    'probe.read': {
+      binding: 'internal',
+      entryScope: 'conversation.submit',
+      description: 'Read a bounded fixture value.',
+      inputSchema: z.object({ value: z.string().default('default') }).strict(),
+      outputSchema: z.object({ echo: z.string() }).strict(),
+      policyOperation: 'workspace.read',
+      mutating: false,
+    },
+  } as const;
+  const handler = vi.fn(
+    async (input: { value: string }, _context: AssistantOperationInvocationContext) => ({
+      echo: input.value,
+    })
+  );
+  const invoke = createInternalOperationEngine(
+    definitions,
+    { 'probe.read': handler },
+    { coreDb, store },
+    context
+  );
+  return {
+    dataRoot,
+    coreDb,
+    store,
+    context,
+    controller,
+    handler,
+    invoke,
+    close: () => {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    },
+  };
+}
+
+describe('#144 private native invocation and public exclusion', () => {
+  it('executes a definition-authored private key without Skill-specific dispatch and parses its defaults', async () => {
+    const f = privateEngineFixture();
+    try {
+      expect(await f.invoke('probe.read', {}, f.context)).toEqual({ echo: 'default' });
+      expect(f.handler).toHaveBeenCalledOnce();
+      expect(f.handler).toHaveBeenCalledWith(
+        { value: 'default' },
+        expect.objectContaining({ ...f.context, signal: expect.any(AbortSignal) })
+      );
+    } finally {
+      f.close();
+    }
+  });
+
+  it.each([
+    null,
+    { value: 7 },
+    { unexpected: true },
+  ])('rejects invalid logical input %j before private handler dispatch', async (input) => {
+    const f = privateEngineFixture();
+    try {
+      await expect(f.invoke('probe.read', input, f.context)).rejects.toMatchObject({
+        code: 'invalid_request',
+        status: 400,
+      });
+      expect(f.handler).not.toHaveBeenCalled();
+    } finally {
+      f.close();
+    }
+  });
+
+  it.each([
+    'actor',
+    'workspaceId',
+    'threadId',
+    'turnId',
+    'entryScope',
+    'requestId',
+    'signal',
+  ] as const)('rejects caller-bound %s even when equal to trusted context', async (field) => {
+    const f = privateEngineFixture();
+    try {
+      await expect(
+        f.invoke('probe.read', { [field]: f.context[field] }, f.context)
+      ).rejects.toMatchObject({ code: 'bound_input_conflict', status: 403 });
+      expect(f.handler).not.toHaveBeenCalled();
+    } finally {
+      f.close();
+    }
+  });
+
+  it('validates logical output before returning from native invocation', async () => {
+    const f = privateEngineFixture();
+    f.handler.mockResolvedValueOnce({ echo: 7 } as unknown as { echo: string });
+    try {
+      await expect(f.invoke('probe.read', {}, f.context)).rejects.toMatchObject({
+        code: 'invalid_operation_output',
+        status: 500,
+      });
+      expect(f.handler).toHaveBeenCalledOnce();
+    } finally {
+      f.close();
+    }
+  });
+
+  it.each([
+    'before',
+    'during',
+  ] as const)('preserves cancellation %s the private handler and returns no late success', async (when) => {
+    const f = privateEngineFixture();
+    const stopped = new Error('Fixture cancellation.');
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    if (when === 'before') f.controller.abort(stopped);
+    else
+      f.handler.mockImplementationOnce(async () => {
+        entered.resolve();
+        await release.promise;
+        return { echo: 'late-success-canary' };
+      });
+    const pending = f.invoke('probe.read', {}, f.context);
+    try {
+      if (when === 'during') {
+        await entered.promise;
+        f.controller.abort(stopped);
+        release.resolve();
+      }
+      await expect(pending).rejects.toBe(stopped);
+      expect(f.handler).toHaveBeenCalledTimes(when === 'before' ? 0 : 1);
+    } finally {
+      release.resolve();
+      await pending.catch(() => undefined);
+      f.close();
+    }
+  });
+
+  it('omits the private operation from public definitions, HTTP, OpenAPI, Core Client and CLI', async () => {
+    const f = await operationFixture();
+    try {
+      expect(Object.keys(OPERATION_DEFINITIONS)).not.toContain('skill.read');
+      expect(getRegisteredAppApiOperationIds(f.app)).not.toContain('skill.read');
+      expect(JSON.stringify(APP_OPENAPI_DOCUMENT)).not.toContain('skill.read');
+      const client = createCoreClient({ baseUrl: 'http://nanocore.test' });
+      expect(Object.keys(client.operations)).not.toContain('skill.read');
+      const cliModule = new URL('../../../skills/openkit-operations.mjs', import.meta.url).href;
+      const { operationCatalog } = await import(cliModule);
+      expect(operationCatalog.map((row: { id: string }) => row.id)).not.toContain('skill.read');
+      const response = await f.app.request('/api/app/operations/skill.read', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ skillId: 'alpha' }),
+      });
+      expect(response.status).toBe(404);
+      const touched = vi.fn();
+      const invoke = createOperationEngine(
+        new Proxy({}, { get: touched }) as OperationImplementations,
+        new Proxy({}, { get: touched }) as OperationAdmissionDependencies
+      );
+      await expect(
+        invoke(
+          'skill.read' as JsonOperationId,
+          {},
+          { kind: 'public', actor: { kind: 'local', userId: 'user_local' } }
+        )
+      ).rejects.toMatchObject({ code: 'unsupported_operation', status: 400 });
+      expect(touched).not.toHaveBeenCalled();
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('omits and refuses the private operation in remote MCP discovery and invocation', async () => {
+    const f = await operationFixture();
+    const token = createOpenKitAccessTokenRecord(f.coreDb, {
+      ownerUserId: 'user_local',
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    const request = async (name: string, args: Record<string, unknown>) => {
+      const response = await f.app.request('/mcp', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${token.secret}`,
+          accept: 'application/json, text/event-stream',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: randomUUID(),
+          method: 'tools/call',
+          params: { name, arguments: args },
+        }),
+      });
+      expect(response.status).toBe(200);
+      return response.json();
+    };
+    try {
+      const found = await request('search', { query: 'skill.read' });
+      expect(JSON.stringify(found)).not.toContain('skill.read');
+      for (const name of ['describe', 'call']) {
+        const result = await request(name, {
+          operation: 'skill.read',
+          ...(name === 'call' ? { input: {} } : {}),
+        });
+        expect(result.result.isError).toBe(true);
+        expect(JSON.parse(result.result.content[0].text)).toMatchObject({
+          code: 'unsupported_operation',
+        });
+      }
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('omits and refuses the private operation through the real supplied Worker MCP projection', async () => {
+    const f = await operationFixture();
+    try {
+      const { mcp } = await operationProjections(f);
+      const request = async (method: string, params: Record<string, unknown>) => {
+        const response = await mcp.request('/api/worker-capabilities/mcp/openkit-generative', {
+          method: 'POST',
+          headers: {
+            accept: 'application/json, text/event-stream',
+            authorization: 'Bearer private-test-capability',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', id: randomUUID(), method, params }),
+        });
+        expect(response.status).toBe(200);
+        return response.json();
+      };
+      const listed = await request('tools/list', {});
+      expect(listed.result.tools).not.toContainEqual(
+        expect.objectContaining({ name: 'skill_read' })
+      );
+      expect(Object.values(OPENKIT_GENERATIVE_TOOL_OPERATIONS)).not.toContain('skill.read');
+      const called = await request('tools/call', {
+        name: 'skill_read',
+        arguments: { skillId: 'alpha' },
+      });
+      expect(called.error).toBeDefined();
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
 });

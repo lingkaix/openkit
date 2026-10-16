@@ -5,6 +5,7 @@ import type {
   OperationOutput,
 } from '@openkit/app-api-schemas';
 import type { ActorRef } from '@openkit/protocol';
+import type { z } from 'zod';
 import type { Actor } from './auth/identity.js';
 import { OperationError } from './operation-error.js';
 import type { SchedulerExecutionLineage } from './scheduler-records.js';
@@ -80,3 +81,36 @@ export function publicOperationActor(context: OperationInvocationContext): Actor
     throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
   return context.actor;
 }
+
+/** Release-authored server-only definition; it has no public or Worker projection. */
+export interface InternalOperationDefinition {
+  readonly binding: 'internal';
+  readonly entryScope: 'conversation.submit';
+  readonly description: string;
+  readonly inputSchema: z.ZodObject;
+  readonly outputSchema: z.ZodType;
+  readonly policyOperation: 'workspace.read';
+  readonly mutating: false;
+}
+
+/** Real command admission retained by one private Assistant binding, never model arguments. */
+export interface AssistantOperationInvocationContext {
+  readonly kind: 'assistant-command';
+  readonly actor: Actor;
+  readonly workspaceId: string;
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly entryScope: 'conversation.submit';
+  readonly requestId: string;
+  readonly signal: AbortSignal;
+}
+
+/** Exact-key implementation join for a static private definition table. */
+export type InternalOperationImplementations<
+  T extends Readonly<Record<string, InternalOperationDefinition>>,
+> = {
+  readonly [K in keyof T]: (
+    input: z.output<T[K]['inputSchema']>,
+    context: AssistantOperationInvocationContext
+  ) => z.output<T[K]['outputSchema']> | Promise<z.output<T[K]['outputSchema']>>;
+};

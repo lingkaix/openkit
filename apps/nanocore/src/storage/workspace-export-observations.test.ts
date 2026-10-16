@@ -3,6 +3,8 @@ import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { loadWorkspaceResourceCatalog } from '../catalog/resource-catalog.js';
+import { findWorkspaceConfig, loadRuntimeConfig } from '../config/runtime-config.js';
 import {
   compactWorkspaceEvidenceBundles,
   listStoredWorkspaceEvidenceBundles,
@@ -252,6 +254,16 @@ describe('work observation portable closure', () => {
     const environment = {
       version: '0.0.0',
       workspaceId: foreignOwner ?? demo.workspace.id,
+      assistantSkillAdmission: {
+        catalogRevision: 17,
+        skills: [
+          {
+            skillId: 'historical-source-skill',
+            versionId: `sha256:${'c'.repeat(64)}`,
+            contentDigest: `sha256:${'c'.repeat(64)}`,
+          },
+        ],
+      },
       systemPromptDigest: digestLlmSystemPrompt({
         endpoint: 'responses',
         request: { instructions: 'Portable system prompt' },
@@ -290,6 +302,7 @@ describe('work observation portable closure', () => {
           ts: turn.startedAt!,
           obs: 'core',
           corr: 'recovery-group',
+          parent: `env:${turn.id}`,
           ret: 'turn-evidence',
           payload: recovery,
         },
@@ -304,6 +317,14 @@ describe('work observation portable closure', () => {
         store,
         workspaceId: demo.workspace.id,
       });
+      expect(loadWorkspaceResourceCatalog(dataRoot, demo.workspace.id).skills.entries).toEqual([]);
+      const observationFile = [...exported.verified.fileContents.keys()].find((path) =>
+        path.endsWith('/observations.jsonl')
+      )!;
+      expect(
+        JSON.parse(exported.verified.fileContents.get(observationFile)!.split('\n')[0]!).payload
+          .assistantSkillAdmission
+      ).toEqual(environment.assistantSkillAdmission);
       const app = createApp({ coreDb, dataRoot, store });
       const archive = await app.request(
         `/api/app/workspaces/${demo.workspace.id}/exports/export_environment/archive`
@@ -350,7 +371,10 @@ describe('work observation portable closure', () => {
       });
       const thread = store.listThreads(importedWorkspaceId)[0]!;
       const importedTurn = store.listThreadTurns(importedWorkspaceId, thread.id)[0]!;
+      expect(thread.id).not.toBe(demo.thread.id);
+      expect(importedTurn.id).not.toBe(turn.id);
       const importedDb = workspaceDb(dataRoot, importedWorkspaceId);
+      let importedEnvironmentId: string;
       try {
         const rows = readWorkObservations(importedDb, {
           threadId: thread.id,
@@ -359,11 +383,67 @@ describe('work observation portable closure', () => {
         expect(rows).toHaveLength(2);
         expect(rows[0]?.payload).toEqual({ ...environment, workspaceId: importedWorkspaceId });
         expect(rows[0]?.id).not.toBe(`env:${turn.id}`);
+        importedEnvironmentId = rows[0]!.id;
         expect(rows[0]?.turnId).toBe(importedTurn.id);
         expect(rows[1]?.payload).toEqual(recovery);
         expect(rows[1]?.corr).toBe('recovery-group');
+        expect(rows[1]?.parent).toBe(rows[0]?.id);
       } finally {
         importedDb.sqlite.close();
+      }
+      const reexported = createVerifiedWorkspaceExport({
+        authorityUserId: 'user_local',
+        coreDb,
+        dataRoot,
+        exportId: 'export_environment_again',
+        repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
+        store,
+        workspaceId: importedWorkspaceId,
+      });
+      const reexportedObservationFile = [...reexported.verified.fileContents.keys()].find((path) =>
+        path.endsWith('/observations.jsonl')
+      )!;
+      expect(
+        JSON.parse(reexported.verified.fileContents.get(reexportedObservationFile)!.split('\n')[0]!)
+          .payload.assistantSkillAdmission
+      ).toEqual(environment.assistantSkillAdmission);
+      const secondImport = importVerifiedWorkspace({
+        authorityUserId: 'user_local',
+        coreDb,
+        dataRoot,
+        requestId: null,
+        store,
+        verified: reexported.verified,
+      });
+      const secondWorkspaceId = secondImport.importedWorkspaceId;
+      const secondThread = store.listThreads(secondWorkspaceId)[0]!;
+      const secondTurn = store.listThreadTurns(secondWorkspaceId, secondThread.id)[0]!;
+      expect([demo.workspace.id, importedWorkspaceId]).not.toContain(secondWorkspaceId);
+      expect([demo.thread.id, thread.id]).not.toContain(secondThread.id);
+      expect([turn.id, importedTurn.id]).not.toContain(secondTurn.id);
+      const secondDb = workspaceDb(dataRoot, secondWorkspaceId);
+      try {
+        const rows = readWorkObservations(secondDb, {
+          threadId: secondThread.id,
+          turnId: secondTurn.id,
+        });
+        expect(rows).toHaveLength(2);
+        expect(rows[0]?.payload).toEqual({ ...environment, workspaceId: secondWorkspaceId });
+        expect([`env:${turn.id}`, importedEnvironmentId!]).not.toContain(rows[0]?.id);
+        expect(rows.every((row) => row.turnId === secondTurn.id)).toBe(true);
+        expect(rows[1]?.parent).toBe(rows[0]?.id);
+        expect(rows[1]?.payload).toEqual(recovery);
+      } finally {
+        secondDb.sqlite.close();
+      }
+      for (const workspaceId of [importedWorkspaceId, secondWorkspaceId]) {
+        const catalog = loadWorkspaceResourceCatalog(dataRoot, workspaceId);
+        expect(catalog.skills.entries).toEqual([]);
+        expect(catalog.skills.versions).toEqual([]);
+        expect(catalog.skills.pins).toEqual([]);
+        const importedConfig = findWorkspaceConfig(loadRuntimeConfig(dataRoot), workspaceId);
+        expect(importedConfig).not.toBeNull();
+        expect(importedConfig!.config.workspace.assistant?.resources?.skillIds ?? []).toEqual([]);
       }
       expect(
         readWorkObservations(db, { threadId: demo.thread.id, turnId: turn.id })[0]?.payload

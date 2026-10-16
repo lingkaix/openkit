@@ -2618,25 +2618,25 @@ describe('WorkerGovernanceTurnExecutor', () => {
         phase: 'closing',
         terminalCause: 'turn-cancelled',
       });
-      // WCP cancellation wins the product race; the worker's first report still belongs to its exact durable evidence stream.
+      // The cancellation-only first final preserves exact evidence without overriding the interrupted Turn.
       f.backend.eventsJsonlFactory = () =>
         `${JSON.stringify(
           buildWorkerCanonicalTerminalEventRecord({
             lineage: f.lineage,
             sequence: 1,
-            data: { status: 'completed', stopReason: 'completed' },
+            data: { status: 'cancelled', stopReason: 'aborted' },
           })
         )}\n`;
       f.gateway.recordFinalStatus({
         authorization: `Bearer ${f.token}`,
         lineage: f.lineage,
         sequence: 1,
-        status: 'completed',
-        stopReason: 'completed',
+        status: 'cancelled',
+        stopReason: 'aborted',
       });
       expect(getWorkerControlAcceptedFinalStatus(f.coreDb, f.lineage)).toMatchObject({
-        status: 'completed',
-        stopReason: 'completed',
+        status: 'cancelled',
+        stopReason: 'aborted',
       });
       const readFinalRow = () =>
         f.coreDb.sqlite
@@ -2655,8 +2655,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(acceptedRow).toMatchObject({ sequence: 1, record_key: '1' });
       expect(JSON.parse(acceptedRow!.record_json)).toMatchObject({
         sequence: 1,
-        status: 'completed',
-        stopReason: 'completed',
+        status: 'cancelled',
+        stopReason: 'aborted',
       });
       expect(await Promise.race([f.execution, delay(2000, 'completion-timeout')])).toBeNull();
       const terminal = f.store.getTurnById(f.turn.id);
@@ -2670,8 +2670,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
         ])
       );
       expect(getWorkerControlAcceptedFinalStatus(f.coreDb, f.lineage)).toMatchObject({
-        status: 'completed',
-        stopReason: 'completed',
+        status: 'cancelled',
+        stopReason: 'aborted',
       });
       expect(readFinalRow()).toEqual(acceptedRow);
       completeOwnedTerminalAttempt(f.coreDb, terminal);
@@ -6900,14 +6900,18 @@ describe('WorkerGovernanceTurnExecutor', () => {
     };
     setupDb.sqlite.close();
     const originalPrepare = sqlitePrototype.prepare;
-    // Drizzle apply uses Database.prepare, not exec. Poison the workspace file's artifact_reviews statement only.
+    // Workspace creation already applied the journal. Fail its next ledger read without changing retained schema.
     const prepareSpy = vi.spyOn(sqlitePrototype, 'prepare').mockImplementation(function (
       this: { name?: string },
       sql: string,
       ...rest: unknown[]
     ) {
       const filename = typeof this.name === 'string' ? this.name : '';
-      if (filename.endsWith('workspace.sqlite') && sql.includes('artifact_reviews')) {
+      if (
+        filename.endsWith('workspace.sqlite') &&
+        sql.includes('__drizzle_migrations') &&
+        /^\s*select\b/i.test(sql)
+      ) {
         throw new Error('injected workspace migration failure');
       }
       return originalPrepare.call(this, sql, ...rest);
@@ -6920,6 +6924,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'Fail workspace storage migration'
     );
     recordExecutorAttempt(coreDb, {
+      admittedAt: new Date().toISOString(),
       agentSessionId: 'as_workspace_migrate_fail_1',
       packageSnapshotId: `aepsnap_${turn.id}_as_workspace_migrate_fail_1`,
       sandboxBindingRef: `lease-binding:${turn.id}`,
@@ -6947,7 +6952,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           workspaceRoots: [],
         })
       ).rejects.toThrow(
-        /Failed to apply workspace native Drizzle migrations:[\s\S]*artifact_reviews/
+        /Failed to apply workspace native Drizzle migrations: injected workspace migration failure/
       );
 
       expect(store.getTurnById(turn.id)).toMatchObject({ status: 'failed' });
