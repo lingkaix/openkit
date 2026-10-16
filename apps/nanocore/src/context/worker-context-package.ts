@@ -1316,13 +1316,17 @@ export function serializeWorkerContextPackageTrace(trace: WorkerContextPackageTr
  * Projects the bounded selection inputs shared by accepted worker request families.
  *
  * @param text Exact worker request JSON retained by the request Item.
- * @returns Context budget and explicitly requested prior Item ids.
+ * @returns Context budget and explicitly requested prior Item ids and Artifact selectors.
  * @throws Error when the request is not a supported closed worker request.
  */
 export function projectWorkerContextRequest(text: string): {
   readonly contextBudgetTokens: number;
   readonly requestKind: 'artifact-review' | 'structured-delegation' | 'pending-outcomes';
   readonly requestedItemIds: readonly string[];
+  readonly requestedArtifactRefs: readonly {
+    readonly artifactId: string;
+    readonly artifactVersion?: number;
+  }[];
 } {
   const value = JSON.parse(text) as unknown;
   if (PendingOutcomeInputSchema.safeParse(value).success) {
@@ -1330,6 +1334,7 @@ export function projectWorkerContextRequest(text: string): {
       contextBudgetTokens: STRUCTURED_WORKER_DELEGATION_MAX_CONTEXT_TOKENS,
       requestKind: 'pending-outcomes',
       requestedItemIds: [],
+      requestedArtifactRefs: [],
     };
   }
   const structured = StructuredWorkerDelegationRequestSchema.safeParse(value);
@@ -1340,13 +1345,24 @@ export function projectWorkerContextRequest(text: string): {
       requestedItemIds: structured.data.contextRefs
         .filter((reference) => reference.kind === 'item')
         .map((reference) => reference.id),
+      requestedArtifactRefs: structured.data.contextRefs
+        .filter((reference) => reference.kind === 'artifact')
+        .map((reference) => ({
+          artifactId: reference.id,
+          ...(reference.artifactVersion === undefined
+            ? {}
+            : { artifactVersion: reference.artifactVersion }),
+        })),
     };
   }
-  ArtifactReviewFollowUpRequestSchema.parse(value);
+  const review = ArtifactReviewFollowUpRequestSchema.parse(value);
   return {
     contextBudgetTokens: STRUCTURED_WORKER_DELEGATION_MAX_CONTEXT_TOKENS,
     requestKind: 'artifact-review',
     requestedItemIds: [],
+    requestedArtifactRefs: [
+      { artifactId: review.artifactId, artifactVersion: review.artifactVersion },
+    ],
   };
 }
 
