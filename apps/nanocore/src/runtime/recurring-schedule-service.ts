@@ -2,6 +2,7 @@ import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { AutomationStore } from '../lib/automation-store.js';
 import { type FsStore, StoreRecordNotFoundError } from '../lib/store.js';
+import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import {
   RecurringAdmissionPayloadSchema,
   type RecurringOccurrence,
@@ -63,12 +64,33 @@ export function startRecurringScheduleService(
           }
         }
         if (stopped) return;
-        input.schedules.commitAttempt(
+        const accepted = input.schedules.commitAttempt(
           occurrence.id,
           occurrence.definitionRevision,
           preparation,
           () => validateCurrent(occurrence)
         );
+        if (accepted?.state === 'admission-accepted' && accepted.queueEntryId) {
+          // Attempt initial file publication once while this source admission holds the
+          // Workspace fence. Acceptance stays terminal if publication is interrupted.
+          const entry = requireSchedulerAdmissionEntry(db, accepted.queueEntryId);
+          input.store.createTurn(
+            entry.workspaceId,
+            entry.threadId,
+            entry.turnInput,
+            entry.triggerActor,
+            null,
+            {
+              turnId: entry.turnId,
+              status: 'pending',
+              agentId: entry.requestedAgentId,
+              executorKind: 'worker',
+              ...(entry.reasoningEffort !== undefined
+                ? { reasoningEffort: entry.reasoningEffort }
+                : {}),
+            }
+          );
+        }
       } catch (error) {
         // Only committed outcomes count. An unexpected Core/preparation result is inspected
         // by its owner and is never converted to a claim that an external effect did not happen.

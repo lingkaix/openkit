@@ -129,6 +129,7 @@ export const AutomationOccurrenceSchema = z.object({
     })
     .nullable(),
   schedulerStatus: z.enum(['queued', 'admitted', 'denied', 'cancelled', 'expired']).nullable(),
+  publicationIssue: z.enum(['turn_missing', 'turn_contradictory']).nullable(),
 });
 /** Exact missed nominal coverage; reads return a range without expanding its occurrences. */
 export const AutomationExpiredRangeSchema = z.object({
@@ -163,3 +164,5 @@ export const AutomationHistoryResponseSchema = z.object({
 });
 /** Public bounded history response. */
 export type AutomationHistoryResponse = z.infer<typeof AutomationHistoryResponseSchema>;
+/** Public occurrence with actual retained Turn availability, never a publication or retry grant. */
+export type AutomationOccurrence = z.infer<typeof AutomationOccurrenceSchema>;

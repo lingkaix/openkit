@@ -119,6 +119,7 @@ import {
   remintWorkerRuntimeProvenanceIndex,
   WorkerRuntimeOriginIndexRowSchema,
 } from '../runtime/worker-runtime-provenance.js';
+import { validateRecurringPortableHistory } from './recurring-portable-history.js';
 import { retrievalTraceRelativePath } from './retrieval-traces.js';
 import { parseWorkObservationRecord, type WorkObservationReference } from './work-observations.js';
 import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
@@ -3895,6 +3896,7 @@ function readPortableFileStateFromExport(context: ImportRemintContext): Workspac
       sourceReferences: rewritePortableReferences(parsed.sourceReferences, replacements),
     });
   });
+  let recurringHistory: string | null = null;
   let workspaceConfig: string | null = null;
   let workspaceSchema: string | null = null;
   const nativeKnowledgePages = new Map<string, string>();
@@ -3904,7 +3906,10 @@ function readPortableFileStateFromExport(context: ImportRemintContext): Workspac
     }
     const workspacePath = exportPath.slice('workspace-files/'.length);
     assertPortableWorkspaceFilePath(workspacePath);
-    if (workspacePath === 'config/workspace.jsonc') {
+    if (workspacePath === 'imports/recurrence-history.json') {
+      validateRecurringPortableHistory(content);
+      recurringHistory = content;
+    } else if (workspacePath === 'config/workspace.jsonc') {
       workspaceConfig = content;
     } else if (workspacePath === 'knowledge/schema/workspace-schema.yaml') {
       workspaceSchema = content;
@@ -3923,6 +3928,7 @@ function readPortableFileStateFromExport(context: ImportRemintContext): Workspac
   }
 
   return {
+    recurringHistory,
     observations: groupPortableRecords(observations, (record) => record.observedAt),
     claims: groupPortableRecords(claims, (record) => record.createdAt),
     conflicts: groupPortableRecords(conflicts, (record) => record.resolvedAt ?? record.createdAt),

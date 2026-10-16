@@ -163,6 +163,18 @@ A failed persistence write can leave a Product Turn recorded as running and its 
 
 For active internal Chat, explicit `turn.interrupt` stops the admitted model wait and persists `interrupted` with `provider_call_aborted`. A transport disconnect or locally aborted wait does not stop server work. Replaying the Chat submission or accepted interrupt reads the retained lineage without another provider invocation; a new attempt needs a new request id. If interruption cannot persist its required records, NanoCore returns `recovery_required`; do not claim cancellation from a rejected Stop, a timeout, or a later provider failure.
 
+## Run Fixed-Interval Automations
+
+Open Automations in the selected Workspace, or discover the canonical `automation` operations through remote MCP or the administrator CLI. Create a paused definition with one existing Thread, a name, worker input and an interval of at least five seconds. The creator remains the responsible user. Optional Agent, profile and logical-model selections follow ordinary Worker setup; the first resolved complete selection is retained for that occurrence and is not silently replaced during retry.
+
+Review the paused input, then resume with an explicit UTC scheduled instant. Pause before editing the target, cadence or input. Resume starts a new cadence; paused time is not missed work. Delete stops future triggering and retains read-only definition and occurrence history. It does not cancel an already accepted queue entry or complete its Turn.
+
+Read occurrence history before deciding what happened. `admission-accepted` means that one exact queue entry committed. It does not mean the Worker started or completed. A trigger has at most three committed admission outcomes and a ten-minute deadline from its original nominal instant. Expired ranges record exact missed bounds and count without pretending those tasks ran. Later execution failure, denial, approval wait or an unknown result never causes the trigger to submit accepted work again.
+
+A missing or contradictory fixed Turn is `recovery_required`, with its cause in `publicationIssue`. Inspect it; do not recreate a Turn, change its identity or retry file publication. Use the existing `scheduler.cancel` operation on the exact queued entry when authorized to release that held waiting slot. The original occurrence remains accepted history, and later nominal occurrences can continue. The queue cancel does not repair the interrupted occurrence. Follow an actual recorded Turn link only when history supplies one.
+
+Workspace export retains schedule, occurrence and expired-range history. Imported recurrence history stays inert and cannot resume source schedules or restore queue authority. Create a new target schedule under current authority when future work is wanted.
+
 ## Handle retries conservatively
 
 Reuse the same request only when the public operation contract and returned state make replay safe. Treat changed input under the same idempotency identity as a conflict.

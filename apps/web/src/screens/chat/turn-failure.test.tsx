@@ -210,12 +210,12 @@ function makeClient(core: Record<string, unknown> = {}, app: Record<string, unkn
   } as unknown as CoreClient;
 }
 
-function renderTask(client: CoreClient) {
+function renderTask(client: CoreClient, path = '/tasks/ws1/th_82') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = (children: ReactNode) => (
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
-        <MemoryRouter initialEntries={['/tasks/ws1/th_82']}>{children}</MemoryRouter>
+        <MemoryRouter initialEntries={[path]}>{children}</MemoryRouter>
       </CoreClientProvider>
     </QueryClientProvider>
   );
@@ -229,6 +229,33 @@ beforeEach(() => {
 });
 
 describe('task runtime activity', () => {
+  it.each([true, false])('locates only a retained Turn from the current authorized Thread: %s', async (present) => {
+    const prior = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    const scroll = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scroll });
+    try {
+      const target = present ? FAILED_DASHBOARD_TURN.id : 'tu_unavailable';
+      const client = makeClient({
+        'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+        'thread.dashboard': vi.fn().mockResolvedValue({ turns: [{ ...COMPLETED_DASHBOARD_TURN, status: 'pending', completedAt: null, items: [] }] }),
+      });
+      renderTask(client, `/tasks/ws1/th_82?turnId=${encodeURIComponent(target)}`);
+      if (present) {
+        expect(await screen.findByText(`Recorded Turn ${target} · pending`)).toBeInTheDocument();
+        await waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+        expect(scroll.mock.contexts[0]).toHaveTextContent(`Recorded Turn ${target}`);
+      } else {
+        expect(await screen.findByText('Recorded Turn is unavailable in this Thread.')).toBeInTheDocument();
+        expect(scroll).not.toHaveBeenCalled();
+      }
+      expect(client.operations['turn.start']).not.toHaveBeenCalled();
+      expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
+    } finally {
+      if (prior) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', prior);
+      else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+    }
+  });
+
   it('shows activity once after the last interleaved group without inventing actions', async () => {
     renderTask(
       makeClient(

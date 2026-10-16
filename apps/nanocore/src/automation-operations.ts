@@ -9,6 +9,7 @@ import { StoreRecordNotFoundError } from './lib/store.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import type { OperationImplementations } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
+import { recurringTurnPublicationIssue } from './runtime/recurring-turn-publication.js';
 import { requireSchedulerAdmissionEntry } from './scheduler-records.js';
 /** Joins fixed-interval operations to the durable Workspace schedule owner. */
 export function createAutomationOperationImplementations(
@@ -30,10 +31,18 @@ export function createAutomationOperationImplementations(
       const items: AutomationHistoryResponse['items'] = history.items.map((entry) => {
         if (entry.kind === 'expired-range') return entry;
         const { resolvedPayload, ...record } = entry.record;
+        const queued = record.queueEntryId
+          ? requireSchedulerAdmissionEntry(dependencies.coreDb!, record.queueEntryId)
+          : null;
+        const publicationIssue = queued
+          ? recurringTurnPublicationIssue(dependencies.store!, queued)
+          : null;
         return {
           kind: 'occurrence',
           record: {
             ...record,
+            turnId: publicationIssue ? null : record.turnId,
+            publicationIssue,
             resolvedSelection: resolvedPayload
               ? {
                   agentId: resolvedPayload.requestedAgentId,
@@ -41,9 +50,7 @@ export function createAutomationOperationImplementations(
                   modelId: resolvedPayload.modelId,
                 }
               : null,
-            schedulerStatus: record.queueEntryId
-              ? requireSchedulerAdmissionEntry(dependencies.coreDb!, record.queueEntryId).status
-              : null,
+            schedulerStatus: queued?.status ?? null,
           },
         };
       });

@@ -179,7 +179,7 @@ export function listWorkspaceAuditEvents(
   if (coreDb) events.push(...listSqliteAuditEvents(coreDb.sqlite, workspaceId));
   return events.sort(
     (left, right) =>
-      left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)
+      (left.createdAt ?? '').localeCompare(right.createdAt ?? '') || left.id.localeCompare(right.id)
   );
 }
 
