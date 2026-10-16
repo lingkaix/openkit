@@ -1,14 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import {
-  closeSync,
-  fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-} from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { lstatSync, mkdirSync } from 'node:fs';
+import { dirname, isAbsolute, resolve } from 'node:path';
 import { KnowledgeNotebookCommitMetadataSchema } from '@openkit/protocol';
 import type { z } from 'zod';
 
@@ -82,21 +75,6 @@ export function validateNotebookFiles(
   }
   if ((editing && total > EDITING_BYTES) || (!editing && !Object.hasOwn(files, 'index.md')))
     throw new NotebookError('invalid_request');
-}
-
-/** Flushes directory entries after Git flushes its object/ref files through core.fsync=all. */
-function syncDirectory(path: string, recursive = false): void {
-  if (recursive)
-    for (const entry of readdirSync(path, { withFileTypes: true })) {
-      if (entry.isSymbolicLink()) throw new NotebookError('recovery_required');
-      if (entry.isDirectory()) syncDirectory(join(path, entry.name), true);
-    }
-  const descriptor = openSync(path, 'r');
-  try {
-    fsyncSync(descriptor);
-  } finally {
-    closeSync(descriptor);
-  }
 }
 
 /** One bare Git content authority; it owns no live authorization, command receipts or editing lifecycle. */
@@ -211,8 +189,6 @@ export class KnowledgeNotebook {
     // Native fresh-scope admission retains its Audit evidence after the exact commit exists and before its ref does.
     input.beforePublish?.(revision);
     this.git(['update-ref', PUBLISHED_REF, revision, '0'.repeat(revision.length)]);
-    this.syncRefs();
-    syncDirectory(dirname(this.repositoryPath));
     return revision;
   }
 
@@ -324,7 +300,6 @@ export class KnowledgeNotebook {
       // A missing or uncertain ref result cannot supply completed command evidence.
       throw new NotebookError('recovery_required');
     }
-    this.syncRefs();
     return { revision: input.candidateRevision };
   }
 
@@ -343,7 +318,6 @@ export class KnowledgeNotebook {
       input.candidateRevision,
       '0'.repeat(input.candidateRevision.length),
     ]);
-    syncDirectory(join(this.repositoryPath, 'refs'), true);
   }
 
   /** Reads the service-owned retained Proposal ref without changing publication or reconstructing content. */
@@ -466,14 +440,6 @@ export class KnowledgeNotebook {
       `${JSON.stringify(metadata)}\n`,
       metadata.producer.id
     ).trim();
-    syncDirectory(join(this.repositoryPath, 'objects'), true);
-    syncDirectory(this.repositoryPath);
     return revision;
-  }
-
-  /** Makes the published reference and its parent directory entries durable before returning. */
-  private syncRefs(): void {
-    syncDirectory(join(this.repositoryPath, 'refs'), true);
-    syncDirectory(this.repositoryPath);
   }
 }
