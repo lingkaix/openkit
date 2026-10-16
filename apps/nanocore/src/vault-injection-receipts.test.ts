@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { recordServerAuditEvent } from './audit-events.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { createVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultInjectionPlan } from './vault-injection-plans.js';
@@ -96,22 +97,22 @@ describe('injection receipts', () => {
     const coreDb = createCoreDb();
     try {
       createVaultReference(coreDb, {
-        referenceId: 'preview_reference',
+        referenceId: testEntityId('vault', 'preview-reference'),
         ownerScope: 'server',
         backendKind: 'encrypted-file',
         secretKind: 'mcp-token',
         displayName: 'Preview',
       });
       createVaultGrant(coreDb, {
-        grantId: 'preview_grant',
-        vaultReferenceId: 'preview_reference',
+        grantId: testEntityId('grant', 'preview-grant'),
+        vaultReferenceId: testEntityId('vault', 'preview-reference'),
         ownerScope: 'server',
         lifetime: 'server',
         allowedInjectionPaths: ['gateway-only'],
       });
       createVaultInjectionPlan(coreDb, {
         planId: 'preview_plan',
-        grantId: 'preview_grant',
+        grantId: testEntityId('grant', 'preview-grant'),
         capabilityId: 'mcp.list_tools',
         injectionVisibility: 'gateway-only',
         expirationBehavior: 'grant-lifetime',
@@ -122,17 +123,17 @@ describe('injection receipts', () => {
       const receipt = {
         receiptId: 'preview_receipt',
         planId: 'preview_plan',
-        grantId: 'preview_grant',
+        grantId: testEntityId('grant', 'preview-grant'),
         backendSummary: 'mcp-gateway:http:preview',
         injectedAt: '2026-07-05T00:10:00.000Z',
         revocationStatus: 'active' as const,
       };
       const delivery = {
         coreDb,
-        actor: { kind: 'user' as const, id: 'administrator' },
+        actor: { kind: 'user' as const, id: testEntityId('usr', 'preview-administrator') },
         workspaceId: null,
         requestId: randomUUID(),
-        vaultGrantId: 'preview_grant',
+        vaultGrantId: testEntityId('grant', 'preview-grant'),
         action: 'administration.mcp-discovery-preview.delivery',
         resource: 'vault-injection-plan:preview_plan',
         outcome: 'succeeded' as const,
@@ -142,9 +143,15 @@ describe('injection receipts', () => {
         { action: 'administration.mcp-discovery-preview' },
         { outcome: 'failed' as const },
         { resource: 'vault-injection-plan:another_plan' },
-        { vaultGrantId: 'another_grant' },
+        { vaultGrantId: testEntityId('grant', 'another-preview-grant') },
         { requestId: null },
-        { actor: { kind: 'system' as const, id: 'system', responsibleUserId: 'administrator' } },
+        {
+          actor: {
+            kind: 'system' as const,
+            id: 'system',
+            responsibleUserId: testEntityId('usr', 'preview-administrator'),
+          },
+        },
       ]) {
         const event = recordServerAuditEvent({ ...delivery, ...patch });
         expect(() =>
@@ -153,7 +160,10 @@ describe('injection receipts', () => {
         expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
       }
       expect(() =>
-        createVaultInjectionReceipt(coreDb, { ...receipt, auditEventId: 'missing_audit' })
+        createVaultInjectionReceipt(coreDb, {
+          ...receipt,
+          auditEventId: testEntityId('aud', 'missing-preview-audit'),
+        })
       ).toThrow();
       const audit = recordServerAuditEvent(delivery);
       const created = createVaultInjectionReceipt(coreDb, { ...receipt, auditEventId: audit.id });

@@ -100,7 +100,10 @@ describe('explicit MCP discovery preview', () => {
       view.tree({ ...configuration, entry: { ...configuration.entry, bindingRevision: 3 } })
     );
     await userEvent.type(screen.getByLabelText('Preview credential slot'), 'api-token');
-    await userEvent.type(screen.getByLabelText('Preview Vault grant id'), 'grant-existing');
+    await userEvent.type(
+      screen.getByLabelText('Preview Vault grant id'),
+      'grant_00000000-0000-7a77-8a56-84fc4fb5c8ba'
+    );
     await userEvent.type(screen.getByLabelText('Preview sink name'), 'Authorization');
     await userEvent.click(screen.getByRole('button', { name: 'Add temporary grant' }));
     expect(view.preview).not.toHaveBeenCalled();
@@ -111,7 +114,7 @@ describe('explicit MCP discovery preview', () => {
       credentialBindings: [
         {
           slot: 'api-token',
-          vaultGrantId: 'grant-existing',
+          vaultGrantId: 'grant_00000000-0000-7a77-8a56-84fc4fb5c8ba',
           sink: { kind: 'header', name: 'Authorization' },
           presentation: 'raw',
         },
@@ -126,7 +129,10 @@ describe('explicit MCP discovery preview', () => {
   ])('rejects %s before a transport or mutation cache entry', async (field, value) => {
     const view = setup();
     await userEvent.type(screen.getByLabelText('Preview credential slot'), 'api-token');
-    await userEvent.type(screen.getByLabelText('Preview Vault grant id'), 'grant-existing');
+    await userEvent.type(
+      screen.getByLabelText('Preview Vault grant id'),
+      'grant_00000000-0000-7a77-8a56-84fc4fb5c8ba'
+    );
     await userEvent.type(screen.getByLabelText('Preview sink name'), 'Authorization');
     await userEvent.clear(screen.getByLabelText(field));
     await userEvent.type(screen.getByLabelText(field), value);
