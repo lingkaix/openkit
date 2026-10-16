@@ -193,8 +193,10 @@ export function AdministrationScreen() {
     administrationThread.isFetchedAfterMount &&
     administrationThread.isSuccess &&
     administrationThread.fetchStatus === 'idle';
+  // Keep the admitted source key through access failures so dispatched candidate observers retain outcomes.
+  // Current access and parent reads still gate private output and every new candidate effect.
   const administrationItems = useThreadItems(
-    threadId && quickChat && access.isSuccess ? quickChat.id : null,
+    threadId && quickChat && access.data !== undefined ? quickChat.id : null,
     threadId ?? ''
   );
   const artifactReferences = useMemo(
