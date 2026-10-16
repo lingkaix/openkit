@@ -43,8 +43,8 @@ const SECONDARY_IMPORT_DIGEST =
   'sha256:8ecbbc69fee9cfe754926024b3e86dd3b42be5c88161db5bde71256c4d73eda4';
 const OPS_BODY = 'Ops body';
 const OPS_DIGEST = 'sha256:b8238e0ad296bb47e6fa9c2ec1ef244c58bc91b5046e2bc56d2ca1bcf1b6843f';
-const INTRODUCE_TURN_ID = 'tu_intro';
-const INTRODUCE_ITEM_ID = 'it_intro';
+const INTRODUCE_TURN_ID = 'tu_00000000-0000-7ac2-a032-335d20c2771a';
+const INTRODUCE_ITEM_ID = 'it_00000000-0000-7f18-82b3-fd8ca1594ced';
 const DISTRACTOR_TITLE = 'Mismatched distractor artifact';
 const DISTRACTOR_SUMMARY = 'Distractor summary must not settle introduction';
 const MULTILINE_MARKDOWN = '# Imported weekly summary\n\nSecond paragraph with **emphasis**.';
@@ -95,20 +95,30 @@ function workspaceRecord(
   });
 }
 
-const WORKSPACE = workspaceRecord('ws1', 'Market research', 'research', {
-  threadCount: 1,
-  artifactCount: 2,
-});
-const WORKSPACE_B = workspaceRecord('ws2', 'Ops workspace', 'operations', {
-  threadCount: 1,
-  artifactCount: 1,
-});
+const WORKSPACE = workspaceRecord(
+  'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  'Market research',
+  'research',
+  {
+    threadCount: 1,
+    artifactCount: 2,
+  }
+);
+const WORKSPACE_B = workspaceRecord(
+  'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+  'Ops workspace',
+  'operations',
+  {
+    threadCount: 1,
+    artifactCount: 1,
+  }
+);
 
 const THREAD_NAME = 'Competitive teardown';
 const THREAD = ThreadSchema.parse({
   visibility: 'workspace',
   entryPath: 'conversation',
-  id: 'th_intro',
+  id: 'th_00000000-0000-7795-b51b-fdaf75668bc1',
   workspaceId: WORKSPACE.id,
   name: THREAD_NAME,
   preview: THREAD_NAME,
@@ -118,17 +128,17 @@ const THREAD = ThreadSchema.parse({
 });
 const THREAD_B = ThreadSchema.parse({
   ...THREAD,
-  id: 'th_ops',
+  id: 'th_00000000-0000-7c50-b3e8-778872f15252',
   workspaceId: WORKSPACE_B.id,
   name: 'Ops thread',
   preview: 'Ops thread',
 });
 
 const ARTIFACT = ArtifactSchema.parse({
-  id: 'artifact_weekly',
+  id: 'ar_00000000-0000-70ff-a91b-5bec57f685d9',
   workspaceId: WORKSPACE.id,
-  threadId: 'th_weekly',
-  turnId: 'tu_weekly',
+  threadId: 'th_00000000-0000-728d-b485-eaf3b3d62ded',
+  turnId: 'tu_00000000-0000-7995-899e-1efea8c86c29',
   kind: 'report',
   title: 'Weekly competitor summary',
   status: 'ready',
@@ -139,8 +149,8 @@ const ARTIFACT = ArtifactSchema.parse({
   lastMutationRequestId: POISON_SECRET,
   origin: {
     kind: 'turn-output',
-    threadId: 'th_weekly',
-    turnId: 'tu_weekly',
+    threadId: 'th_00000000-0000-728d-b485-eaf3b3d62ded',
+    turnId: 'tu_00000000-0000-7995-899e-1efea8c86c29',
     requestId: POISON_SECRET,
   },
   createdAt: TIMESTAMP,
@@ -149,7 +159,7 @@ const ARTIFACT = ArtifactSchema.parse({
 
 const IMPORTED_ARTIFACT = ArtifactSchema.parse({
   ...ARTIFACT,
-  id: 'artifact_imported',
+  id: 'ar_00000000-0000-7a0a-bfc8-c90c11d8be01',
   kind: 'file',
   threadId: null,
   turnId: null,
@@ -163,7 +173,7 @@ const IMPORTED_ARTIFACT = ArtifactSchema.parse({
     sourceKind: 'direct-import',
     sourceId: 'req_imported',
     sourceDigest: IMPORT_DIGEST,
-    actor: { kind: 'user', id: 'user_1' },
+    actor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
     requestId: 'req_imported',
     recordedAt: TIMESTAMP,
   },
@@ -181,7 +191,7 @@ const IMPORTED_ARTIFACT_V2 = ArtifactSchema.parse({
 
 const SECONDARY_IMPORTED_ARTIFACT = ArtifactSchema.parse({
   ...IMPORTED_ARTIFACT,
-  id: 'artifact_imported_appendix',
+  id: 'ar_00000000-0000-7290-bd57-0c3546b1bebb',
   title: SECONDARY_IMPORT_TITLE,
   content: { format: 'markdown', body: SECONDARY_IMPORT_CONTENT },
   contentDigest: SECONDARY_IMPORT_DIGEST,
@@ -196,10 +206,10 @@ const SECONDARY_IMPORTED_ARTIFACT = ArtifactSchema.parse({
 
 const ARTIFACT_B = ArtifactSchema.parse({
   ...ARTIFACT,
-  id: 'artifact_ops',
+  id: 'ar_00000000-0000-7b5a-81a1-cdfdbbbe8ee4',
   workspaceId: WORKSPACE_B.id,
-  threadId: 'th_ops_src',
-  turnId: 'tu_ops_src',
+  threadId: 'th_00000000-0000-7257-9b2f-ee6cf74339f8',
+  turnId: 'tu_00000000-0000-7705-8a5a-4092f915dc5e',
   title: 'Ops runbook',
   summary: 'Ops-only artifact.',
   content: { format: 'markdown', body: OPS_BODY },
@@ -207,14 +217,14 @@ const ARTIFACT_B = ArtifactSchema.parse({
   lastMutationRequestId: 'req_ops',
   origin: {
     kind: 'turn-output',
-    threadId: 'th_ops_src',
-    turnId: 'tu_ops_src',
+    threadId: 'th_00000000-0000-7257-9b2f-ee6cf74339f8',
+    turnId: 'tu_00000000-0000-7705-8a5a-4092f915dc5e',
     requestId: 'req_ops',
   },
 });
 
 const IMPORT_MUTATION = ImportWorkspaceArtifactResponseSchema.parse({
-  artifactId: 'mutation-only-artifact',
+  artifactId: 'ar_00000000-0000-70ea-afe3-80659d404bf3',
   artifactVersion: 1,
 });
 const INTRODUCE_MUTATION = IntroduceWorkspaceArtifactResponseSchema.parse({
@@ -286,7 +296,7 @@ function introduceItem(input: {
 /** Schema-valid completed Item that is not an artifact-reference. */
 function extraNonArtifactItem() {
   return ItemSchema.parse({
-    id: 'it_intro_extra_status',
+    id: 'it_00000000-0000-7e24-8e25-a1905413624b',
     workspaceId: WORKSPACE.id,
     threadId: THREAD.id,
     turnId: INTRODUCE_TURN_ID,
@@ -317,7 +327,7 @@ function introduceTurn(
     id: extras.id ?? INTRODUCE_TURN_ID,
     workspaceId: extras.workspaceId ?? WORKSPACE.id,
     threadId: extras.threadId ?? THREAD.id,
-    triggerActor: { kind: 'user', id: 'user_1' },
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
     items: extras.extraItems ? [item, ...extras.extraItems] : [item],
     error: null,
     configVersion: null,
@@ -394,7 +404,7 @@ function makeClient(
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         })
@@ -409,7 +419,7 @@ function makeClient(
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
-                ownerUserId: 'user_local',
+                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
                 registryRevision: 1,
               })),
             })
@@ -696,7 +706,7 @@ describe('Artifacts', () => {
   it.each([
     {
       name: 'a missing Artifact identity',
-      path: `/artifacts?workspaceId=${WORKSPACE.id}&artifact=artifact_missing`,
+      path: `/artifacts?workspaceId=${WORKSPACE.id}&artifact=ar_00000000-0000-7515-9a4d-9d89c8135600`,
       expectCatalog: true,
     },
     {
@@ -706,7 +716,7 @@ describe('Artifacts', () => {
     },
     {
       name: 'an unknown Workspace identity',
-      path: `/artifacts?workspaceId=ws_unknown&artifact=${ARTIFACT.id}`,
+      path: `/artifacts?workspaceId=ws_00000000-0000-7744-93d6-d2f551c62efa&artifact=${ARTIFACT.id}`,
       expectCatalog: false,
     },
   ])('does not open an unrelated Artifact for $name', async ({ path, expectCatalog }) => {
@@ -959,7 +969,7 @@ describe('Artifacts', () => {
     } = await startImportedIntroduction(user);
 
     const mismatched = introduceItem({
-      id: 'it_intro_other',
+      id: 'it_00000000-0000-75c3-9cda-f003261c938f',
       artifactId: ARTIFACT.id,
       artifactVersion: ARTIFACT.version,
       lastMutationRequestId: 'req_unrelated_communication',
@@ -1015,7 +1025,7 @@ describe('Artifacts', () => {
       .fn()
       .mockImplementation(() =>
         failThreads
-          ? Promise.reject(new Error('thread-list-private failure'))
+          ? Promise.reject(new Error('th_00000000-0000-7636-a11c-a4196c38d5c6 failure'))
           : Promise.resolve(ListThreadsResponseSchema.parse({ items: [THREAD] }))
       );
     renderApp(
@@ -1036,7 +1046,7 @@ describe('Artifacts', () => {
     await openArtifact(user, IMPORTED_ARTIFACT.title);
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/couldn't load conversations/i);
-    expect(alert).not.toHaveTextContent('thread-list-private failure');
+    expect(alert).not.toHaveTextContent('th_00000000-0000-7636-a11c-a4196c38d5c6 failure');
     expect(screen.getByRole('button', { name: /add to conversation/i })).toBeDisabled();
 
     failThreads = false;
@@ -1277,7 +1287,7 @@ describe('Artifacts', () => {
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       })
@@ -1288,7 +1298,7 @@ describe('Artifacts', () => {
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       });
@@ -1425,8 +1435,8 @@ describe('Artifacts', () => {
     );
 
     expect(ARTIFACT.origin.kind).toBe('turn-output');
-    expect(ARTIFACT.threadId).toBe('th_weekly');
-    expect(ARTIFACT.turnId).toBe('tu_weekly');
+    expect(ARTIFACT.threadId).toBe('th_00000000-0000-728d-b485-eaf3b3d62ded');
+    expect(ARTIFACT.turnId).toBe('tu_00000000-0000-7995-899e-1efea8c86c29');
     expect(await screen.findByText(ARTIFACT.title)).toBeInTheDocument();
     await openArtifact(user, ARTIFACT.title);
     expect(await screen.findByText(ARTIFACT.content.body)).toBeInTheDocument();
@@ -1517,7 +1527,9 @@ describe('Artifacts', () => {
     {
       name: 'the Turn id disagrees with the receipt',
       turn: (requestId: string) =>
-        introduceTurn(matchedIntroduceItem(requestId), { id: 'tu_other' }),
+        introduceTurn(matchedIntroduceItem(requestId), {
+          id: 'tu_00000000-0000-7bf1-990f-799cdaa2a481',
+        }),
     },
     {
       name: 'the Turn workspace disagrees with the request',
@@ -1535,7 +1547,7 @@ describe('Artifacts', () => {
         introduceTurn(matchedIntroduceItem(requestId), {
           extraItems: [
             introduceItem({
-              id: 'it_intro_extra',
+              id: 'it_00000000-0000-7048-b30a-c1de0e4abc3e',
               artifactId: ARTIFACT.id,
               artifactVersion: ARTIFACT.version,
               lastMutationRequestId: 'req_unrelated_communication',
@@ -1850,7 +1862,7 @@ describe('Artifacts', () => {
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         registryRevision: 1,
       })),
     });

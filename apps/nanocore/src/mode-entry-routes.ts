@@ -13,6 +13,8 @@ import {
 import {
   type ActorRef,
   type AssistantHandoff,
+  canonicalIdentifierName,
+  deriveEntityId,
   isCheckpointCollectableTurnStatus,
   type RetrievalTraceReference,
   responsibleUserIdForActor,
@@ -93,8 +95,9 @@ import {
   readGoalView,
 } from './runtime/goal-owner.js';
 import {
-  chatTaskModeTurnId,
   commandInputHash,
+  conversationTaskThreadId,
+  conversationTaskTurnId,
   findExactConversationWorkerOwnerReceipt,
   IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
@@ -109,6 +112,7 @@ import {
 import {
   assistantPendingHandoffIds,
   assistantPendingHandoffResultItemId,
+  assistantPendingOutcomeSource,
   assistantPendingOutcomeSourceHash,
   frozenPendingOutcomeInput,
   isBlockingPendingRequest,
@@ -158,7 +162,7 @@ import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.
 /** Stable attribution id for the direct Quick Chat provider call. */
 export const QUICK_CHAT_AGENT_ID = 'quick-chat';
 
-/** Maximum duration of one direct Quick Chat provider call. */
+/** Shared absolute deadline for an ordinary Assistant run, including summaries and its answer. */
 const QUICK_CHAT_TIMEOUT_MS = 30_000;
 const ConversationCommandBodySchema = SubmitConversationResponseSchema.omit({
   originatingWorkspaceId: true,
@@ -173,18 +177,17 @@ type ConversationCommandBody = z.infer<typeof ConversationCommandBodySchema>;
 /** Closed Chat result kind retained by the bounded receipt. */
 type ConversationCommandResultKind = ConversationCommandReceiptMetadata['resultKind'];
 
-/** Deterministic durable Item prefix for each accepted Chat result kind. */
-const CONVERSATION_RESULT_ITEM_PREFIX = {
-  'knowledge-answer': 'it_chat_answer_',
-  'provider-answer': 'it_chat_answer_',
-  clarification: 'it_chat_clarify_',
-  'task-handoff': 'it_chat_task_',
-  'goal-handoff': 'it_chat_goal_',
-  'worker-turn': 'it_worker_result_',
-  'goal-intent': 'it_chat_goal_intent_',
-  'goal-steering': 'it_steering_result_',
-  refused: 'it_chat_refused_',
-} satisfies Record<ConversationCommandResultKind, string>;
+/** Exact result purposes declared by the Chat allocating owner. */
+const CONVERSATION_RESULT_ITEM_ROLE = {
+  'knowledge-answer': 'chat-answer',
+  'provider-answer': 'chat-answer',
+  'task-handoff': 'chat-task',
+  'goal-handoff': 'chat-goal',
+  'worker-turn': 'worker-result',
+  'goal-intent': 'chat-goal-intent',
+  'goal-steering': 'steering-result',
+  refused: 'chat-refused',
+} as const;
 
 /** Stable downstream business-owner identifiers retained by the bounded receipt. */
 type ConversationCommandDownstream = ConversationCommandReceiptMetadata['downstream'];
@@ -270,7 +273,7 @@ function persistConversationWorkerResultItem(
 ) {
   const turn = store.getTurn(workspaceId, threadId, turnId);
   const presentation = conversationWorkerTurnPresentation(turn, agentId);
-  const itemId = `it_worker_result_${turn.id}`;
+  const itemId = deriveEntityId('it', ['worker-result', turn.id]);
   const existing = turn.items.find((item) => item.id === itemId);
   if (!existing) {
     const createdAt = new Date().toISOString();
@@ -335,22 +338,22 @@ function replayConversationCommand(
   workspaceId: string,
   threadId: string,
   record: CommandRequestRecord,
-  coreDb?: CoreDb
+  coreDb?: CoreDb,
+  triggerActor: ActorRef = { kind: 'user', id: actorId }
 ): ConversationCommandResult {
   if (!record.response.conversationMetadata) {
     // A failed provider attempt has no successful result kind or result Item to replay.
     try {
       const turn = store.getTurn(workspaceId, threadId, record.response.id);
-      const userItemId = `it_chat_user_${turn.id}`;
+      const userItemId = deriveEntityId('it', ['chat-user', turn.id]);
       const firstUserItem = store
         .listWorkspaceItemRevisions(workspaceId)
         .find((item) => item.id === userItemId);
       const userItem = turn.items.find((item) => item.id === userItemId);
       if (
         record.response.kind !== 'turn' ||
-        turn.id !== providerChatTurnId(actorId, workspaceId, threadId, record.requestId) ||
-        turn.triggerActor.kind !== 'user' ||
-        turn.triggerActor.id !== actorId ||
+        turn.id !== providerChatTurnId(triggerActor, workspaceId, threadId, record.requestId) ||
+        canonicalIdentifierName(turn.triggerActor) !== canonicalIdentifierName(triggerActor) ||
         turn.agentId !== QUICK_CHAT_AGENT_ID ||
         turn.agentSessionId ||
         turn.status !== 'interrupted' ||
@@ -359,15 +362,13 @@ function replayConversationCommand(
         firstUserItem?.type !== 'user-message' ||
         firstUserItem.status !== 'completed' ||
         !firstUserItem.completedAt ||
-        firstUserItem.actor.kind !== 'user' ||
-        firstUserItem.actor.id !== actorId ||
+        canonicalIdentifierName(firstUserItem.actor) !== canonicalIdentifierName(triggerActor) ||
         firstUserItem.workspaceId !== workspaceId ||
         firstUserItem.threadId !== threadId ||
         firstUserItem.turnId !== turn.id ||
         firstUserItem.createdAt !== turn.startedAt ||
         userItem?.type !== 'user-message' ||
-        userItem.actor.kind !== 'user' ||
-        userItem.actor.id !== actorId ||
+        canonicalIdentifierName(userItem.actor) !== canonicalIdentifierName(triggerActor) ||
         userItem.status !== firstUserItem.status ||
         userItem.completedAt !== firstUserItem.completedAt ||
         userItem.createdAt !== firstUserItem.createdAt ||
@@ -454,7 +455,7 @@ function replayConversationCommand(
         }
       }
       const resultItem = currentTurn.items.find(
-        (item) => item.id === `it_worker_result_${currentTurn.id}`
+        (item) => item.id === deriveEntityId('it', ['worker-result', currentTurn.id])
       );
       if (
         record.response.kind !== 'turn' ||
@@ -520,8 +521,8 @@ function replayConversationCommand(
         status: metadata.status,
       };
     }
-    const userItemId = `it_chat_user_${currentTurn.id}`;
-    let resultItemId = `${CONVERSATION_RESULT_ITEM_PREFIX[metadata.resultKind]}${currentTurn.id}`;
+    const userItemId = deriveEntityId('it', ['chat-user', currentTurn.id]);
+    let resultItemId: string;
     if (metadata.resultKind === 'clarification') {
       const db = repositoryWorkspaceDb(workspaceId);
       try {
@@ -542,6 +543,11 @@ function replayConversationCommand(
       } finally {
         db.sqlite.close();
       }
+    } else {
+      resultItemId = deriveEntityId('it', [
+        CONVERSATION_RESULT_ITEM_ROLE[metadata.resultKind],
+        currentTurn.id,
+      ]);
     }
     const userItem = itemRevisions.find((item) => item.id === userItemId);
     const resultItem = itemRevisions.find((item) => item.id === resultItemId);
@@ -552,13 +558,11 @@ function replayConversationCommand(
       record.response.kind !== 'turn' ||
       currentTurn.workspaceId !== workspaceId ||
       currentTurn.threadId !== threadId ||
-      currentTurn.triggerActor.kind !== 'user' ||
-      currentTurn.triggerActor.id !== actorId ||
+      canonicalIdentifierName(currentTurn.triggerActor) !== canonicalIdentifierName(triggerActor) ||
       userItem?.type !== 'user-message' ||
       userItem.status !== 'completed' ||
       !userItem.completedAt ||
-      userItem.actor.kind !== 'user' ||
-      userItem.actor.id !== actorId ||
+      canonicalIdentifierName(userItem.actor) !== canonicalIdentifierName(triggerActor) ||
       userItem.workspaceId !== workspaceId ||
       userItem.threadId !== threadId ||
       userItem.turnId !== currentTurn.id ||
@@ -570,8 +574,7 @@ function replayConversationCommand(
       !currentUserItem ||
       currentUserItem.type !== 'user-message' ||
       currentUserItem.createdAt !== userItem.createdAt ||
-      currentUserItem.actor.kind !== 'user' ||
-      currentUserItem.actor.id !== actorId ||
+      canonicalIdentifierName(currentUserItem.actor) !== canonicalIdentifierName(triggerActor) ||
       !currentResultItem ||
       currentResultItem.type !== resultItem.type ||
       currentResultItem.createdAt !== resultItem.createdAt
@@ -665,16 +668,31 @@ function replayConversationCommand(
 
       const downstreamTurn = store.getTurnById(metadata.downstream.turnId);
 
+      const receivingThreadId = conversationTaskThreadId(
+        triggerActor,
+        workspaceId,
+        threadId,
+        record.requestId
+      );
+      const receivingThread = store.getThread(workspaceId, receivingThreadId);
       if (
+        receivingThread.parentThreadId !== threadId ||
+        receivingThreadId === threadId ||
         downstreamTurn.id === currentTurn.id ||
         downstreamTurn.workspaceId !== workspaceId ||
-        downstreamTurn.threadId !== threadId ||
+        downstreamTurn.threadId !== receivingThreadId ||
         downstreamTurn.id !==
-          chatTaskModeTurnId(actorId, workspaceId, threadId, record.requestId) ||
+          conversationTaskTurnId(
+            triggerActor,
+            workspaceId,
+            threadId,
+            receivingThreadId,
+            record.requestId
+          ) ||
         (!(downstreamTurn.status === 'pending' || downstreamTurn.status === 'running') &&
           !downstreamTurn.items.some(
             (item) =>
-              item.id === `it_user_${downstreamTurn.id}` &&
+              item.id === deriveEntityId('it', ['task-user', downstreamTurn.id]) &&
               item.type === 'user-message' &&
               item.status === 'completed'
           ))
@@ -693,9 +711,9 @@ function replayConversationCommand(
             workspaceDb,
             actorId,
             workspaceId,
-            threadId,
+            threadId: receivingThreadId,
             requestId: record.requestId,
-            requestInputHash: commandInputHash({ input: userItem.text }),
+            requestInputHash: record.inputHash,
             turnId: downstreamTurn.id,
           });
         } finally {
@@ -766,12 +784,18 @@ function replayConversationCommand(
 
 /** Derives the provider Chat Turn identity from its exact command scope, excluding private input. */
 function providerChatTurnId(
-  actorId: string,
+  actor: ActorRef,
   workspaceId: string,
   threadId: string,
   requestId: string
 ): string {
-  return `tu_conversation_${commandInputHash({ command: 'conversation.submit', actorId, workspaceId, threadId, requestId }).slice(-24)}`;
+  return deriveEntityId('tu', {
+    command: 'conversation.submit',
+    actor,
+    workspaceId,
+    threadId,
+    requestId,
+  });
 }
 
 /**
@@ -877,7 +901,7 @@ function replayTaskModeCommand(
         }
       }
       const initiatingItem = currentTurn.items.find(
-        (item) => item.id === `it_user_${currentTurn.id}`
+        (item) => item.id === deriveEntityId('it', ['task-user', currentTurn.id])
       );
       const closedGate =
         classifyClosedWorkerApprovalGate(store, currentTurn) ??
@@ -928,39 +952,7 @@ function replayTaskModeCommand(
       }
     }
 
-    const statusItemSuffix = `_${currentTurn.id}`;
-    const statusItems = currentTurn.items.filter(
-      (item) =>
-        item.type === 'status' &&
-        item.id.startsWith('it_task_goal_') &&
-        item.id.endsWith(statusItemSuffix)
-    );
-
-    const statusItem = statusItems[0];
-
-    if (statusItems.length !== 1 || statusItem?.type !== 'status' || !coreDb) {
-      throw new Error('Task escalation owner contradiction.');
-    }
-
-    const goalId = statusItem.id.slice('it_task_goal_'.length, -statusItemSuffix.length);
-    const workspaceDb = repositoryWorkspaceDb(workspaceId);
-
-    try {
-      if (statusItem.status !== 'completed' || !statusItem.completedAt || !statusItem.summary)
-        throw new Error('Task handoff Item contradicts its receipt.');
-      return StartTaskModeResponseSchema.parse({
-        state: 'escalated-to-goal',
-        turn: currentTurn,
-        evidence: taskModeEvidenceForTurn(store, workspaceDb, workspaceId, threadId, currentTurn),
-        escalation: {
-          targetMode: 'goal',
-          goalId,
-          reason: statusItem.summary,
-        },
-      });
-    } finally {
-      workspaceDb.sqlite.close();
-    }
+    throw new Error('Task command does not name a current direct Task Turn.');
   } catch {
     throw new TurnStartValidationError(
       'recovery_required',
@@ -1100,7 +1092,9 @@ function recoverDirectTaskModeCheckpoint(input: {
   }
   if (turn.status === 'failed' && !turn.agentSessionId && checkpoint.workerSessionId === null)
     return recoverSessionlessTaskAdmission(input);
-  const initiatingItem = turn.items.find((item) => item.id === `it_user_${turn.id}`);
+  const initiatingItem = turn.items.find(
+    (item) => item.id === deriveEntityId('it', ['task-user', turn.id])
+  );
   if (
     initiatingItem?.type !== 'user-message' ||
     initiatingItem.status !== 'completed' ||
@@ -1290,7 +1284,7 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
     );
     if (neverSubmitted) {
       const resultItem = conversationTurn.items.find(
-        (item) => item.id === `it_worker_result_${conversationTurn.id}`
+        (item) => item.id === deriveEntityId('it', ['worker-result', conversationTurn.id])
       );
       if (
         resultItem?.type !== 'status' ||
@@ -1596,7 +1590,9 @@ function recoverSessionlessTaskAdmission(input: {
     throw directTaskModeRecoveryError(
       'The sessionless Task admission owner tuple requires recovery.'
     );
-  const initiatingItem = turn.items.find((item) => item.id === `it_user_${turn.id}`);
+  const initiatingItem = turn.items.find(
+    (item) => item.id === deriveEntityId('it', ['task-user', turn.id])
+  );
   if (
     initiatingItem &&
     (initiatingItem.type !== 'user-message' ||
@@ -1929,14 +1925,7 @@ function directTaskModeTurnId(
   threadId: string,
   requestId: string
 ): string {
-  const suffix = commandInputHash({
-    command: 'task.start',
-    actorId,
-    workspaceId,
-    threadId,
-    requestId,
-  }).slice(-16);
-  return `turn_${requestId}_${suffix}`;
+  return deriveEntityId('tu', { command: 'task.start', actorId, workspaceId, threadId, requestId });
 }
 
 /**
@@ -2005,16 +1994,17 @@ function conversationTargetAcceptsWorkerStorageChoice(
 function hasChatTaskCheckpointWithoutReceipt(
   store: FsStore,
   workspaceDb: WorkspaceDb,
-  actorId: string,
+  actor: ActorRef,
   workspaceId: string,
   threadId: string,
   requestId: string
 ): boolean {
-  const turnId = chatTaskModeTurnId(actorId, workspaceId, threadId, requestId);
+  const receivingThreadId = conversationTaskThreadId(actor, workspaceId, threadId, requestId);
+  const turnId = conversationTaskTurnId(actor, workspaceId, threadId, receivingThreadId, requestId);
   return (
-    getWorkerCheckpoint(workspaceDb, workspaceId, threadId, turnId) !== null &&
+    getWorkerCheckpoint(workspaceDb, workspaceId, receivingThreadId, turnId) !== null &&
     store.getCommandRequest('conversation.submit', requestId, {
-      actorId,
+      actorId: responsibleUserIdForActor(actor)!,
       workspaceId,
       threadId,
     }) === null
@@ -2036,17 +2026,13 @@ function directTaskKnowledgeRetrievalTraceId(
   threadId: string,
   requestId: string
 ): string {
-  const digest = commandInputHash({
+  return deriveEntityId('krt', {
     command: 'task.start.knowledge-retrieval',
     actorId,
     workspaceId,
     threadId,
     requestId,
-  }).slice('sha256:'.length);
-  const variant = ((Number.parseInt(digest[16] ?? '0', 16) & 0x3) | 0x8).toString(16);
-  const uuid = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-5${digest.slice(13, 16)}-${variant}${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
-
-  return `krt_${uuid}`;
+  });
 }
 
 /** Publishes the exact human selection through the existing pending owner after successful model completion. */
@@ -2489,6 +2475,10 @@ export function createConversationService({
     const workspaceConfig = findWorkspaceConfig(snapshot, workspaceId)?.config;
     const userConfig = snapshot.userConfigs.find((entry) => entry.userId === userId)?.config;
     const assistant = quickChatSelection(userId, workspaceId);
+    const personalWorkThread =
+      requestedThreadId !== null &&
+      store.getWorkspace(workspaceId).kind === 'personal' &&
+      store.getThread(workspaceId, requestedThreadId).visibility === 'workspace';
     const knowledgeManager = internalRoleSelection('knowledge-manager', userId, workspaceId);
     const targets: Array<z.infer<typeof ConversationTargetCatalogSchema>['targets'][number]> = [
       {
@@ -2496,8 +2486,12 @@ export function createConversationService({
         kind: 'assistant',
         label: 'Assistant',
         description: 'OpenKit Core Assistant.',
-        availability: assistant ? 'available' : 'unavailable',
-        unavailableReason: assistant ? null : 'No admitted logical model is configured.',
+        availability: assistant && !personalWorkThread ? 'available' : 'unavailable',
+        unavailableReason: personalWorkThread
+          ? 'Use your private Timeline for the Personal Assistant.'
+          : assistant
+            ? null
+            : 'No admitted logical model is configured.',
         threadId: requestedThreadId,
         profileId: assistant?.profile?.id ?? null,
         logicalModels: assistant?.logicalModels.map(conversationModelChoice) ?? [],
@@ -2678,7 +2672,8 @@ export function createConversationService({
       workspaceId: string;
       threadId: string;
     },
-    actor: Actor
+    actor: Actor,
+    triggerActor: ActorRef = { kind: 'user', id: actor.userId }
   ): Promise<{ body: z.infer<typeof SubmitConversationResponseSchema>; status: 200 | 202 }> {
     const { workspaceId, threadId } = chatInput;
     try {
@@ -2698,11 +2693,7 @@ export function createConversationService({
         409
       );
     }
-    const triggerActor = {
-      kind: 'user',
-      id: actor.userId,
-    } as const satisfies ActorRef;
-    const actorId = triggerActor.id;
+    const actorId = responsibleUserIdForActor(triggerActor)!;
     let freshLogicalModelId: string | null = null;
 
     /**
@@ -2720,7 +2711,7 @@ export function createConversationService({
     ): Promise<ConversationCommandResult> {
       // A missing receipt cannot make an existing provider attempt fresh through changed routing.
       const providerTurnId = providerChatTurnId(
-        actorId,
+        triggerActor,
         workspaceId,
         threadId,
         chatInput.requestId
@@ -2735,8 +2726,11 @@ export function createConversationService({
       const sourceThread = store.getThread(workspaceId, threadId);
       if (
         sourceThread.entryPath === 'conversation' &&
-        sourceThread.visibility === 'private' &&
-        findAssistantTimeline(store, workspaceId, actorId)?.id !== threadId
+        ((sourceThread.visibility === 'private' &&
+          findAssistantTimeline(store, workspaceId, actorId)?.id !== threadId) ||
+          (store.getWorkspace(workspaceId).kind === 'personal' &&
+            sourceThread.visibility === 'workspace' &&
+            chatInput.targetRef === 'internal-role:assistant'))
       ) {
         throw new TurnStartValidationError(
           'assistant_timeline_required',
@@ -2837,7 +2831,7 @@ export function createConversationService({
        */
       const createChatTurn = (completedAt: string, turnId?: string) => {
         const turn = store.createTurn(workspaceId, threadId, chatInput.input, triggerActor, null, {
-          ...(turnId ? { turnId } : {}),
+          turnId: turnId ?? providerTurnId,
           ...(chatInput.reasoningEffort !== undefined
             ? { reasoningEffort: chatInput.reasoningEffort }
             : {}),
@@ -2848,7 +2842,7 @@ export function createConversationService({
         });
 
         store.createItem({
-          id: `it_chat_user_${turn.id}`,
+          id: deriveEntityId('it', ['chat-user', turn.id]),
           workspaceId,
           threadId,
           turnId: turn.id,
@@ -2891,7 +2885,7 @@ export function createConversationService({
         const completedAt = new Date().toISOString();
         const turn = createChatTurn(completedAt);
         const refusedItem = store.createItem({
-          id: `it_chat_refused_${turn.id}`,
+          id: deriveEntityId('it', ['chat-refused', turn.id]),
           workspaceId,
           threadId,
           turnId: turn.id,
@@ -2939,7 +2933,7 @@ export function createConversationService({
         const turn = createChatTurn(completedAt);
         const sourceTitles = knowledgeAnswer.citations.map((citation) => citation.title).join(', ');
         const answerItem = store.createItem({
-          id: `it_chat_answer_${turn.id}`,
+          id: deriveEntityId('it', ['chat-answer', turn.id]),
           workspaceId,
           threadId,
           turnId: turn.id,
@@ -2971,6 +2965,24 @@ export function createConversationService({
 
       /** Validates the objective before creating receiving work through the existing product Turn owner. */
       const startSelectedWorker = async (): Promise<ConversationCommandResult> => {
+        if (
+          store.getThread(workspaceId, threadId).visibility === 'private' ||
+          artifacts.some(
+            (artifact) =>
+              artifact.origin.kind === 'turn-output' &&
+              store.getThread(workspaceId, artifact.origin.threadId).visibility === 'private'
+          )
+        ) {
+          return {
+            body: createRefusedResponse(
+              'Explicit disclosure admission is required before private Assistant input becomes shared Task work.'
+            ),
+            downstream: null,
+            resultKind: 'refused',
+            status: 200,
+          };
+        }
+
         const objective =
           StructuredWorkerDelegationRequestSchema.shape.objective.safeParse(conversationPrompt);
         if (!objective.success) {
@@ -3007,10 +3019,14 @@ export function createConversationService({
           agentId = session.agentId;
         } else {
           agentId = resolveDefaultAgentId(snapshot, workspaceId, actorId);
-          const createdThreadId = `th_task_${createHash('sha256')
-            .update(JSON.stringify([actorId, workspaceId, threadId, chatInput.requestId]))
-            .digest('hex')
-            .slice(0, 24)}`;
+        }
+        if (acceptedTarget.kind !== 'running-worker') {
+          const createdThreadId = conversationTaskThreadId(
+            triggerActor,
+            workspaceId,
+            threadId,
+            chatInput.requestId
+          );
           if (
             store.listThreads(workspaceId).some((candidate) => candidate.id === createdThreadId)
           ) {
@@ -3068,12 +3084,13 @@ export function createConversationService({
           escalationConditions: ['Escalate instead of inventing missing scope or authority.'],
           reviewContext: null,
         });
-        const reservedTurnId = `tu_conversation_${createHash('sha256')
-          .update(
-            JSON.stringify([actorId, workspaceId, threadId, receivingThreadId, chatInput.requestId])
-          )
-          .digest('hex')
-          .slice(0, 24)}`;
+        const reservedTurnId = conversationTaskTurnId(
+          triggerActor,
+          workspaceId,
+          threadId,
+          receivingThreadId,
+          chatInput.requestId
+        );
         if (
           store
             .listThreadTurns(workspaceId, receivingThreadId)
@@ -3273,7 +3290,7 @@ export function createConversationService({
             hasChatTaskCheckpointWithoutReceipt(
               store,
               workspaceDb,
-              actorId,
+              triggerActor,
               workspaceId,
               threadId,
               chatInput.requestId
@@ -3341,7 +3358,7 @@ export function createConversationService({
           const turn = createChatTurn(new Date().toISOString());
           const at = new Date().toISOString();
           const item = store.createItem({
-            id: `it_chat_goal_intent_${turn.id}`,
+            id: deriveEntityId('it', ['chat-goal-intent', turn.id]),
             workspaceId,
             threadId,
             turnId: turn.id,
@@ -3581,7 +3598,7 @@ export function createConversationService({
           };
         }
         const item = store.createItem({
-          id: `it_chat_answer_${turn.id}`,
+          id: deriveEntityId('it', ['chat-answer', turn.id]),
           workspaceId,
           threadId,
           turnId: turn.id,
@@ -3667,7 +3684,13 @@ export function createConversationService({
             record.response.conversationMetadata?.resultKind === 'task-handoff' &&
             downstream?.kind === 'task' &&
             downstream.turnId ===
-              chatTaskModeTurnId(actorId, workspaceId, threadId, record.requestId)
+              conversationTaskTurnId(
+                triggerActor,
+                workspaceId,
+                threadId,
+                conversationTaskThreadId(triggerActor, workspaceId, threadId, record.requestId),
+                record.requestId
+              )
           ) {
             const closeout = activeTaskCloseouts.get(downstream.turnId);
             if (closeout) {
@@ -3686,7 +3709,8 @@ export function createConversationService({
             workspaceId,
             threadId,
             record,
-            coreDb
+            coreDb,
+            triggerActor
           );
         },
         requestId: chatInput.requestId,
@@ -3746,7 +3770,7 @@ export function createConversationService({
             hasChatTaskCheckpointWithoutReceipt(
               store,
               workspaceDb,
-              actorId,
+              triggerActor,
               workspaceId,
               threadId,
               chatInput.requestId
@@ -3818,6 +3842,7 @@ export function createConversationService({
       const workspaceDb = repositoryWorkspaceDb(turn.workspaceId);
       let prompt: string;
       let sourceInputHash: string;
+      let outcomeScope: ReturnType<typeof assistantPendingOutcomeSource>;
       let handoffRecord: PendingRequestRecord | undefined;
       let selection: ReturnType<typeof quickChatSelection>;
       try {
@@ -3854,6 +3879,7 @@ export function createConversationService({
             turn.workspaceId,
             turn.threadId
           );
+        outcomeScope = assistantPendingOutcomeSource(turn, frozen, actorId);
         sourceInputHash = assistantPendingOutcomeSourceHash(turn, frozen, actorId);
         const proposals = frozen.filter((record) => record.assistantHandoff);
         if (proposals.length > 1)
@@ -3885,7 +3911,7 @@ export function createConversationService({
         if (proposed && !selected) {
           const at = new Date().toISOString();
           store.createItem({
-            id: uuidv5(JSON.stringify(['assistant-handoff-declined', turn.id])),
+            id: deriveEntityId('it', ['chat-refused', turn.id]),
             workspaceId: turn.workspaceId,
             threadId: turn.threadId,
             turnId: turn.id,
@@ -3968,7 +3994,7 @@ export function createConversationService({
             requestId,
             threadId: receivingThreadId,
             turnId: taskTurnId,
-          } = assistantPendingHandoffIds(sourceInputHash);
+          } = assistantPendingHandoffIds(outcomeScope);
           const targetWorkspaceId = proposed.targetWorkspaceId;
           const delegation = createTaskModeDelegation({
             entryIntent: 'explicit_task',
@@ -4117,7 +4143,7 @@ export function createConversationService({
             await observed.accepted;
             const completedAt = new Date().toISOString();
             store.createItem({
-              id: assistantPendingHandoffResultItemId(turn.id),
+              id: assistantPendingHandoffResultItemId(turn.id, 'task'),
               workspaceId: turn.workspaceId,
               threadId: turn.threadId,
               turnId: turn.id,
@@ -4139,7 +4165,7 @@ export function createConversationService({
         if (proposed?.kind === 'goal') {
           const db = repositoryWorkspaceDb(proposed.targetWorkspaceId);
           try {
-            const ids = assistantPendingHandoffIds(sourceInputHash);
+            const ids = assistantPendingHandoffIds(outcomeScope);
             handoffEffectStarted = true;
             const created = await executeGoalOperation(
               'goal.create',
@@ -4162,7 +4188,7 @@ export function createConversationService({
             );
             const at = new Date().toISOString();
             store.createItem({
-              id: assistantPendingHandoffResultItemId(turn.id),
+              id: assistantPendingHandoffResultItemId(turn.id, 'goal'),
               workspaceId: turn.workspaceId,
               threadId: turn.threadId,
               turnId: turn.id,
@@ -4326,7 +4352,7 @@ export function createConversationService({
         }
         const completedAt = new Date().toISOString();
         store.createItem({
-          id: `it_chat_answer_${turn.id}`,
+          id: deriveEntityId('it', ['chat-answer', turn.id]),
           workspaceId: turn.workspaceId,
           threadId: turn.threadId,
           turnId: turn.id,
@@ -4341,7 +4367,7 @@ export function createConversationService({
         if (handoffRecord?.assistantHandoff && !handoffEffectStarted) {
           const at = new Date().toISOString();
           store.createItem({
-            id: assistantPendingHandoffResultItemId(turn.id),
+            id: assistantPendingHandoffResultItemId(turn.id, 'refused'),
             workspaceId: turn.workspaceId,
             threadId: turn.threadId,
             turnId: turn.id,

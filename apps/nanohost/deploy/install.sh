@@ -421,16 +421,19 @@ def archive_identity(root, release):
         return digest.hexdigest()
 
 
-def unrelated_unit_permission_warning(line, unit):
-    """Recognizes only systemd's non-fatal file-mode warnings outside our unit and slice paths."""
-    # systemd stat_warn_permissions can warn about other loaded units during read-only verify.
-    warning = re.fullmatch(r'Configuration file (/\S+) (?:'
-                           r'is marked executable\. Please remove executable permission bits\.|'
-                           r'is marked world-writable\. Please remove world writability permission bits\.|'
-                           r'is marked world-inaccessible\. This has no effect as configuration data is accessible via APIs without restrictions\.'
-                           r') Proceeding anyway\.', line)
-    # Include drop-ins in the refusal boundary, regardless of the unit's installation directory.
-    return warning is not None and unit not in warning[1] and 'openkit-nanohost.slice' not in warning[1]
+def unrelated_unit_diagnostic(line, unit):
+    """Ignores attributed diagnostics only when neither OpenKit unit is involved."""
+    # Verify also loads other units. Their warnings do not describe this archive.
+    # Keep references in the message too: an unrelated source can name our dependency.
+    # systemd also applies dash-prefix and type-wide drop-ins to these units.
+    owned = (r'(?<![A-Za-z0-9_.@-])(?:' + re.escape(unit)
+             + r'(?=$|[/:.\s\'"])|openkit(?:-nanohost)?\.slice(?=$|[/:.\s\'"])'
+             + r'|(?:openkit-\.)?(?:service|slice)\.d/)')
+    if re.search(owned, line):
+        return False
+    return re.match(r'^(?:Configuration file )?(?:/\S*/)?[^\s/:]+\.'
+                    r'(?:service|socket|target|device|mount|automount|swap|timer|path|slice|scope)'
+                    r'(?:\.d/[^\s:]+)?(?=[:\s]|$)', line) is not None
 
 
 def observe(entry, root, release):
@@ -451,9 +454,10 @@ def observe(entry, root, release):
         unit = read_regular(root / predicate['unit']).decode()
         status, output, errors = command_result(['/usr/bin/systemd-analyze', 'verify', '--man=no', '--generators=no', str(root / predicate['unit'])])
         expected_absence = predicate['unit'] + ': Command /usr/lib/openkit/nanohost is not executable: No such file or directory'
-        errors = '\n'.join(line for line in errors.splitlines() if not unrelated_unit_permission_warning(line, predicate['unit']))
+        output = '\n'.join(line for line in output.splitlines() if not unrelated_unit_diagnostic(line, predicate['unit']))
+        errors = '\n'.join(line for line in errors.splitlines() if not unrelated_unit_diagnostic(line, predicate['unit']))
         unexpected = [line for line in errors.splitlines() if line != expected_absence]
-        if any('Permission denied' in line or 'Failed to open' in line or 'unrecognized option' in line for line in unexpected):
+        if any('Permission denied' in line or 'Failed to open' in line or 'unrecognized option' in line for line in unexpected + output.splitlines()):
             raise ValueError('unit inspection unavailable')
         parses = not output and not unexpected and status in (0, 1) and (status == 0 or errors == expected_absence)
         return {'active': active, 'unitParses': parses, 'slice': 'openkit-nanohost.slice' if 'Slice=openkit-nanohost.slice' in unit else None}

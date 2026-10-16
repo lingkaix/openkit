@@ -1,5 +1,6 @@
 import { ProviderApiKeyProfileIdSchema } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
+import { allocateEntityId } from '@openkit/protocol';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useConnection, useCoreClient } from '../../app/core-client';
@@ -619,39 +620,55 @@ function AccountControls({
     onSuccess: onAccountsChanged,
   });
   const login = useMutation({
+    onMutate: () => queryClient.getQueryCache().find({ queryKey: statusKey, exact: true }),
     mutationFn: () =>
       client.operations['provider-subscription.account-login-start']({
         subscriptionProviderId: providerId,
         accountSlotId: account.accountSlotId,
         mode: 'device_code',
       }),
-    onSuccess: (next) => {
-      queryClient.setQueryData(statusKey, next);
+    onSuccess: (next, _variables, origin) => {
+      // Account transitions remove this query; late responses cannot populate its replacement.
+      if (
+        origin &&
+        queryClient.getQueryCache().find({ queryKey: statusKey, exact: true }) === origin
+      )
+        queryClient.setQueryData(statusKey, next);
       setSnapshot(next);
       onAccountsChanged();
     },
   });
   const cancel = useMutation({
+    onMutate: () => queryClient.getQueryCache().find({ queryKey: statusKey, exact: true }),
     mutationFn: () =>
       client.operations['provider-subscription.account-login-cancel']({
         subscriptionProviderId: providerId,
         accountSlotId: account.accountSlotId,
         interactionId: live.interactionId as string,
       }),
-    onSuccess: (next) => {
-      queryClient.setQueryData(statusKey, next);
+    onSuccess: (next, _variables, origin) => {
+      if (
+        origin &&
+        queryClient.getQueryCache().find({ queryKey: statusKey, exact: true }) === origin
+      )
+        queryClient.setQueryData(statusKey, next);
       setSnapshot(next);
       onAccountsChanged();
     },
   });
   const logout = useMutation({
+    onMutate: () => queryClient.getQueryCache().find({ queryKey: statusKey, exact: true }),
     mutationFn: () =>
       client.operations['provider-subscription.account-logout']({
         subscriptionProviderId: providerId,
         accountSlotId: account.accountSlotId,
       }),
-    onSuccess: (next) => {
-      queryClient.setQueryData(statusKey, next);
+    onSuccess: (next, _variables, origin) => {
+      if (
+        origin &&
+        queryClient.getQueryCache().find({ queryKey: statusKey, exact: true }) === origin
+      )
+        queryClient.setQueryData(statusKey, next);
       setSnapshot(next);
       onAccountsChanged();
     },
@@ -1262,6 +1279,7 @@ function ProviderProfileForm({
   onCreated: () => void;
 }) {
   const [id, setId] = useState('');
+  const vaultCandidate = useRef<{ providerId: string; referenceId: string } | null>(null);
   const [displayName, setDisplayName] = useState('');
   const [kind, setKind] = useState<(typeof PROVIDER_KINDS)[number]>('custom');
   const [vendor, setVendor] = useState('');
@@ -1280,12 +1298,13 @@ function ProviderProfileForm({
   );
   const create = useMutation({
     mutationFn: async () => {
+      const providerId = id.trim();
       const modelList = models
         .split(/[,\n]/)
         .map((model) => model.trim())
         .filter(Boolean);
       const profile: Record<string, unknown> = {
-        id: id.trim(),
+        id: providerId,
         displayName: displayName.trim(),
         kind,
         models: modelList,
@@ -1306,17 +1325,20 @@ function ProviderProfileForm({
         if (vendor.trim()) profile.vendor = vendor.trim();
         if (baseUrl.trim()) profile.baseUrl = baseUrl.trim();
         if (kind === 'direct' || kind === 'gateway' || kind === 'custom') {
-          profile.secretRef = `vault://provider_${id.trim()}`;
+          if (vaultCandidate.current?.providerId !== providerId)
+            vaultCandidate.current = { providerId, referenceId: allocateEntityId('vault') };
+          profile.secretRef = `vault://${vaultCandidate.current.referenceId}`;
         }
       }
       const content = `${JSON.stringify(profile, null, 2)}\n`;
       return client.operations['runtime.file-create']({
-        id: `providers/${id.trim()}.provider.jsonc`,
+        id: `providers/${providerId}.provider.jsonc`,
         kind: 'provider',
         content,
       });
     },
     onSuccess: () => {
+      vaultCandidate.current = null;
       setId('');
       setDisplayName('');
       setVendor('');

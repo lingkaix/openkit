@@ -4,7 +4,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
@@ -341,6 +341,86 @@ beforeEach(() => {
 });
 
 describe('AI interface deployment-admin workflow', () => {
+  it('shows the returned login code while a subsequent status observation is pending', async () => {
+    let finish!: (value: typeof PENDING_ACCOUNT) => void;
+    const status = vi
+      .fn()
+      .mockResolvedValueOnce(CODEX_ACCOUNT)
+      .mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          })
+      );
+    const client = makeClient({
+      operations: {
+        'provider-subscription.account-list': vi
+          .fn()
+          .mockImplementation(({ subscriptionProviderId }: { subscriptionProviderId: string }) =>
+            Promise.resolve({
+              accounts: subscriptionProviderId === 'openai-codex' ? [CODEX_ACCOUNT] : [],
+            })
+          ),
+        'provider-subscription.account-status': status,
+      },
+    });
+    const { queryClient } = renderScreen(client);
+    const card = await screen.findByRole('region', { name: 'OpenAI Codex' });
+    await userEvent.click(within(card).getByRole('button', { name: 'Start login' }));
+    expect(await screen.findByText('ABCD-EFGH')).toBeInTheDocument();
+    // A fresh status read can finish later; the current mutation still owns its immediate code.
+    act(() => {
+      void queryClient.refetchQueries({
+        queryKey: [...settingsKeys.aiInterface, 'status', 'openai-codex', 'primary'],
+        exact: true,
+      });
+    });
+    await waitFor(() => expect(finish).toBeTypeOf('function'));
+    expect(screen.getByText('ABCD-EFGH')).toBeInTheDocument();
+    await act(async () => {
+      finish(PENDING_ACCOUNT);
+    });
+  });
+
+  it('does not restore an old device-login response into a replacement account status cache', async () => {
+    let finish!: (value: typeof PENDING_ACCOUNT) => void;
+    const client = makeClient({
+      operations: {
+        'provider-subscription.account-list': vi
+          .fn()
+          .mockImplementation(({ subscriptionProviderId }: { subscriptionProviderId: string }) =>
+            Promise.resolve({
+              accounts: subscriptionProviderId === 'openai-codex' ? [CODEX_ACCOUNT] : [],
+            })
+          ),
+        'provider-subscription.account-login-start': vi.fn().mockImplementation(
+          () =>
+            new Promise((resolve) => {
+              finish = resolve;
+            })
+        ),
+      },
+    });
+    const { unmount, queryClient } = renderScreen(client);
+    const card = await screen.findByRole('region', { name: 'OpenAI Codex' });
+    await userEvent.click(within(card).getByRole('button', { name: 'Start login' }));
+    await waitFor(() => expect(finish).toBeTypeOf('function'));
+    const pending = queryClient
+      .getMutationCache()
+      .getAll()
+      .find((item) => item.state.status === 'pending');
+    unmount();
+    queryClient.removeQueries({ queryKey: ['settings'] });
+    const key = [...settingsKeys.aiInterface, 'status', 'openai-codex', 'primary'];
+    queryClient.setQueryData(key, LOGGED_IN_ACCOUNT);
+    await act(async () => {
+      finish(PENDING_ACCOUNT);
+    });
+    await waitFor(() => expect(pending?.state.status).toBe('success'));
+    expect(queryClient.getQueryData(key)).toEqual(LOGGED_IN_ACCOUNT);
+    expect(queryClient.getMutationCache().getAll()).toContain(pending);
+  });
+
   describe.each(['openai-codex', 'xai'] as const)('%s inference observations', (providerId) => {
     const accessAt = '2026-10-02T01:00:00.000Z';
     const exhaustedAt = '2026-10-02T02:00:00.000Z';
@@ -1020,9 +1100,12 @@ describe('AI interface deployment-admin workflow', () => {
     expect(await screen.findByText(/Provider persisted revision:/)).toBeInTheDocument();
   });
 
-  it('creates a provider profile file with vault://provider_<id> for API-key kinds', async () => {
+  it('allocates one canonical Vault reference and retains it across provider creation retry', async () => {
     const user = userEvent.setup();
     const client = makeClient();
+    vi.mocked(client.operations['runtime.file-create'])
+      .mockRejectedValueOnce(new Error('Fixture create failed.'))
+      .mockRejectedValueOnce(new Error('Fixture retry failed.'));
     renderScreen(client);
 
     await user.type(await screen.findByLabelText('Provider id'), 'openrouter');
@@ -1044,8 +1127,28 @@ describe('AI interface deployment-admin workflow', () => {
       kind: 'provider',
     });
     expect(created?.content).toContain('"id": "openrouter"');
-    expect(created?.content).toContain('"secretRef": "vault://provider_openrouter"');
+    expect(JSON.parse(created!.content!).secretRef).toMatch(
+      /^vault:\/\/vault_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+    );
     expect(created?.content).toContain('"defaultModel": "openai/gpt-5.1"');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Create provider profile' })).toBeEnabled()
+    );
+    await user.click(screen.getByRole('button', { name: 'Create provider profile' }));
+    await waitFor(() => expect(client.operations['runtime.file-create']).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(client.operations['runtime.file-create']).mock.calls[1]?.[0]).toEqual(created);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Create provider profile' })).toBeEnabled()
+    );
+    await user.clear(screen.getByLabelText('Provider id'));
+    await user.type(screen.getByLabelText('Provider id'), 'second-profile');
+    await user.click(screen.getByRole('button', { name: 'Create provider profile' }));
+    await waitFor(() => expect(client.operations['runtime.file-create']).toHaveBeenCalledTimes(3));
+    const secondProfile = vi.mocked(client.operations['runtime.file-create']).mock.calls[2]![0];
+    expect(secondProfile.id).toBe('providers/second-profile.provider.jsonc');
+    expect(JSON.parse(secondProfile.content!).secretRef).not.toBe(
+      JSON.parse(created!.content!).secretRef
+    );
   });
 
   it('rejects provider ids that cannot form a writable redacted API-key profile', async () => {

@@ -1,5 +1,5 @@
 // openkit-test-platform: posix
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import {
   chmodSync,
@@ -28,13 +28,13 @@ import {
   parseWorkspaceMcpServerCatalog,
   resolveWorkspaceMcpServer,
 } from '@openkit/config-schema';
+import { deriveEntityId } from '@openkit/protocol';
 import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
-import { createApp, createDefaultWorkerControlGateway } from './app.js';
+import { createDefaultWorkerControlGateway } from './app.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
@@ -100,13 +100,21 @@ import {
   createTestGatewayConfig,
   recordTestAgentEnvironmentPackage,
 } from './test-support/agent-environment.js';
+import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
 import { admitTestNativeEnvironment } from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
-import { createVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
+import {
+  createVaultGrant,
+  importWorkspaceVaultGrants,
+  narrowVaultGrant,
+  revokeVaultGrant,
+} from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { reconcileWorkerMcpItems, registerWorkerMcpRoutes } from './worker-mcp-routes.js';
@@ -134,7 +142,7 @@ function recordMcpWorkerLineage(
   });
   const submittedAttempt = recordTestExecutionAttempt(coreDb, {
     entry,
-    attemptId: `lease_${scope.turnId}`,
+    attemptId: testEntityId('attempt', `lease_${scope.turnId}`),
     agentSessionId: scope.agentSessionId,
     inputRef: environmentPackage.snapshotId,
     bindingRef: `binding_${scope.turnId}`,
@@ -163,15 +171,24 @@ describe('worker MCP routes', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Submit one file', {
-      id: 'user_local',
-      kind: 'user',
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Submit one file',
+      {
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+        kind: 'user',
+      }
+    );
     store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: '2026-10-05T00:00:00.000Z',
-      id: 'as_capture_wait',
+      id: testEntityId('as', 'as_capture_wait'),
       message: null,
       status: 'busy',
       threadId: turn.threadId,
@@ -179,13 +196,13 @@ describe('worker MCP routes', () => {
       workspaceId: turn.workspaceId,
     });
     store.updateTurn(turn.id, {
-      agentSessionId: 'as_capture_wait',
+      agentSessionId: testEntityId('as', 'as_capture_wait'),
       agentId: 'agent_codex_host',
       status: 'running',
     });
     const pkg = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
-      agentSessionId: 'as_capture_wait',
+      agentSessionId: testEntityId('as', 'as_capture_wait'),
       agentSetup: createTestAgentSetup(),
       backend: { kind: 'openshell' },
       createdAt: '2026-10-05T00:00:00.000Z',
@@ -335,7 +352,7 @@ describe('worker MCP routes', () => {
         requestId: effectRequest.requestId,
       });
       accepted = true;
-      closing = admission.close('ws_demo').then(() => {
+      closing = admission.close('ws_00000000-0000-7000-8000-000000000001').then(() => {
         closed = true;
       });
       expect(closed).toBe(false);
@@ -378,13 +395,16 @@ describe('worker MCP routes', () => {
         state: 'absent',
       });
       await expect(next).resolves.toMatchObject({ state: 'absent' });
-      expect(store.listArtifacts('ws_demo')).toEqual([]);
+      expect(store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual([]);
       expect(
         store
-          .listThreadItems('ws_demo', 'th_demo')
+          .listThreadItems(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
           .filter((item) => item.type === 'artifact-reference')
       ).toEqual([]);
-      const db = openWorkspaceDb(dataRoot, 'ws_demo');
+      const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         expect(db.sqlite.prepare('SELECT COUNT(*) AS count FROM artifact_reviews').get()).toEqual({
           count: 0,
@@ -393,7 +413,7 @@ describe('worker MCP routes', () => {
       } finally {
         db.sqlite.close();
       }
-      admission.reopen('ws_demo');
+      admission.reopen('ws_00000000-0000-7000-8000-000000000001');
       expect(
         (await client.listTools()).tools.some((tool) => tool.name === 'work_submit_artifact')
       ).toBe(true);
@@ -420,25 +440,34 @@ describe('worker MCP routes', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-    const turn = store.createTurn('ws_demo', 'th_demo', 'List generative MCP tools', {
-      id: 'user_local',
-      kind: 'user',
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'List generative MCP tools',
+      {
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+        kind: 'user',
+      }
+    );
     store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: '2026-09-03T00:00:00.000Z',
-      id: 'as_mcp_era',
+      id: testEntityId('as', 'as_mcp_era'),
       message: null,
       status: 'busy',
       threadId: turn.threadId,
       updatedAt: '2026-09-03T00:00:00.000Z',
       workspaceId: turn.workspaceId,
     });
-    store.updateTurn(turn.id, { agentSessionId: 'as_mcp_era' });
+    store.updateTurn(turn.id, { agentSessionId: testEntityId('as', 'as_mcp_era') });
     const environmentPackage = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
-      agentSessionId: 'as_mcp_era',
+      agentSessionId: testEntityId('as', 'as_mcp_era'),
       agentSetup: createTestAgentSetup(),
       backend: { kind: 'openshell' },
       createdAt: '2026-09-03T00:00:00.000Z',
@@ -529,7 +558,7 @@ describe('worker MCP routes', () => {
           .all();
         const receiptsBefore = refusalDb.sqlite.prepare('SELECT * FROM idempotency_requests').all();
         const missingAppId = '00000000-0000-4000-8000-000000000701';
-        const missingPresentationId = '00000000-0000-4000-8000-000000000702';
+        const missingPresentationId = 'pres_00000000-0000-70d7-8dd6-8e00b4b4b40e';
         expect(existsSync(lightAppDbPath(dataRoot, turn.workspaceId, missingAppId))).toBe(false);
         await expect(
           sessionClient.callTool({
@@ -654,7 +683,7 @@ describe('worker MCP routes', () => {
           ).isError
         ).toBe(false);
       }
-      const countDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const countDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       const beforeCalls = (
         countDb.sqlite.prepare('SELECT COUNT(*) AS count FROM capability_calls').get() as {
           count: number;
@@ -689,7 +718,10 @@ describe('worker MCP routes', () => {
       expect(store.getTurnById(turn.id).status).toBe('running');
       expect(
         store
-          .listThreadItems('ws_demo', 'th_demo')
+          .listThreadItems(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
           .filter((item) => item.type === 'user-input-request')
       ).toHaveLength(16);
     } finally {
@@ -707,7 +739,11 @@ describe('worker MCP routes', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     let store = createDemoStore();
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const timestamp = '2026-09-30T00:00:00.000Z';
     const physicalEpoch = 'e'.repeat(64);
     coreDb.sqlite
@@ -735,12 +771,15 @@ describe('worker MCP routes', () => {
     }
     const threads = ['caller', 'peer', 'private', 'foreign'].map((name) =>
       store.createThread(
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         name,
-        `th_peers_${name}`,
+        testEntityId('th', `th_peers_${name}`),
         'conversation',
         name === 'private'
-          ? { visibility: 'private', privateOwnerUserId: 'user_other' }
+          ? {
+              visibility: 'private',
+              privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+            }
           : { visibility: 'workspace' }
       )
     );
@@ -748,19 +787,26 @@ describe('worker MCP routes', () => {
     coreDb.sqlite
       .prepare(`INSERT INTO users
       (id, display_name, email, email_verified, created_at, updated_at, kind, status)
-      VALUES ('user_other', 'Foreign worker owner', 'other@example.invalid', 0, ?, ?, 'human', 'active')`)
+      VALUES ('usr_00000000-0000-73d4-904a-d4c4b905df7c', 'Foreign worker owner', 'other@example.invalid', 0, ?, ?, 'human', 'active')`)
       .run(Date.parse(timestamp), Date.parse(timestamp));
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_other',
+      ownerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
       workspaceId: otherWorkspace.id,
     });
-    threads.push(store.createThread(otherWorkspace.id, 'external', 'th_peers_external'));
+    threads.push(
+      store.createThread(otherWorkspace.id, 'external', testEntityId('th', 'th_peers_external'))
+    );
     for (let index = 0; index < 3; index += 1) {
-      const history = store.createTurn('ws_demo', threads[1]!.id, 'Earlier work', {
-        kind: 'user',
-        id: 'user_local',
-      });
+      const history = store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        threads[1]!.id,
+        'Earlier work',
+        {
+          kind: 'user',
+          id: 'usr_00000000-0000-7000-8000-000000000001',
+        }
+      );
       store.updateTurn(history.id, {
         status: 'completed',
         completedAt: timestamp,
@@ -770,9 +816,12 @@ describe('worker MCP routes', () => {
     const turns = threads.map((thread) => {
       const turn = store.createTurn(thread.workspaceId, thread.id, 'Read peers', {
         kind: 'user',
-        id: thread.workspaceId === otherWorkspace.id ? 'user_other' : 'user_local',
+        id:
+          thread.workspaceId === otherWorkspace.id
+            ? 'usr_00000000-0000-73d4-904a-d4c4b905df7c'
+            : 'usr_00000000-0000-7000-8000-000000000001',
       });
-      const sessionId = `as_native_${thread.name}`;
+      const sessionId = testEntityId('as', `as_native_${thread.name}`);
       store.createAgentSession({
         id: sessionId,
         agentId: 'agent_codex_host',
@@ -802,7 +851,7 @@ describe('worker MCP routes', () => {
     });
     const peer = turns[1]!;
     const itemFields = {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: peer.threadId,
       turnId: peer.id,
       status: 'completed' as const,
@@ -812,7 +861,7 @@ describe('worker MCP routes', () => {
     for (let index = 0; index < 23; index += 1) {
       store.createItem({
         ...itemFields,
-        id: `it_peer_${String(index).padStart(2, '0')}`,
+        id: testEntityId('it', `it_peer_${String(index).padStart(2, '0')}`),
         createdAt: `2026-09-30T00:00:${String(index).padStart(2, '0')}.000Z`,
         type: 'assistant-message',
         text: `Product message ${index}`,
@@ -820,7 +869,7 @@ describe('worker MCP routes', () => {
     }
     store.createItem({
       ...itemFields,
-      id: 'it_peer_plan',
+      id: testEntityId('it', 'it_peer_plan'),
       type: 'plan',
       title: 'Product plan',
       summary: null,
@@ -828,7 +877,7 @@ describe('worker MCP routes', () => {
     });
     store.createItem({
       ...itemFields,
-      id: 'it_peer_tool',
+      id: testEntityId('it', 'it_peer_tool'),
       type: 'tool-call',
       tool: 'test',
       server: null,
@@ -839,7 +888,7 @@ describe('worker MCP routes', () => {
     });
     store.createItem({
       ...itemFields,
-      id: 'it_peer_status',
+      id: testEntityId('it', 'it_peer_status'),
       type: 'status',
       title: 'Product status',
       summary: null,
@@ -847,7 +896,7 @@ describe('worker MCP routes', () => {
     });
     store.createItem({
       ...itemFields,
-      id: 'it_peer_reasoning',
+      id: testEntityId('it', 'it_peer_reasoning'),
       type: 'reasoning',
       summary: [],
       content: ['restricted-evidence-canary'],
@@ -874,7 +923,7 @@ describe('worker MCP routes', () => {
         ),
       });
     }
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
     const rawEvidence = Buffer.from('restricted-raw-canary credential-canary');
     retainWorkObservationBody(workspaceDb, {
@@ -998,7 +1047,7 @@ describe('worker MCP routes', () => {
         name: 'work_list_peers',
         arguments: {
           future: 'additive-canary',
-          agentSessionId: 'as_native_foreign',
+          agentSessionId: testEntityId('as', 'as_native_foreign'),
           requestId: '00000000-0000-4000-8000-000000000256',
           prompt: 'additive-canary',
           questions: [
@@ -1044,7 +1093,7 @@ describe('worker MCP routes', () => {
           { id: peer.id, status: 'running', triggerSource: { kind: 'user-input' } },
           { status: 'completed' },
         ],
-        items: [{ id: 'it_peer_22' }, { id: 'it_peer_21' }],
+        items: [{ id: testEntityId('it', 'it_peer_22') }, { id: testEntityId('it', 'it_peer_21') }],
         nextCursor: '2',
       });
       const next = await client.callTool({
@@ -1064,7 +1113,10 @@ describe('worker MCP routes', () => {
         ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
       }
       await expect(
-        client.callTool({ name: 'work_read_peer', arguments: { handle: 'as_native_peer' } })
+        client.callTool({
+          name: 'work_read_peer',
+          arguments: { handle: testEntityId('as', 'as_native_peer') },
+        })
       ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
       expect(workspaceDb.sqlite.prepare('SELECT * FROM capability_calls').all()).toHaveLength(
         callsBefore + 6
@@ -1125,9 +1177,9 @@ describe('worker MCP routes', () => {
       expect(reverse.map((entry) => entry.title)).toContain('caller');
       expect(reverse.map((entry) => entry.title)).not.toContain('peer');
       environmentPackage = packages[0]!;
-      Object.assign(store.getThread('ws_demo', peer.threadId), {
+      Object.assign(store.getThread('ws_00000000-0000-7000-8000-000000000001', peer.threadId), {
         visibility: 'private',
-        privateOwnerUserId: 'user_other',
+        privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
       });
       await expect(
         client.callTool({ name: 'work_read_peer', arguments: { handle: readable.handle } })
@@ -1137,13 +1189,13 @@ describe('worker MCP routes', () => {
       expect(
         Object.keys(relisted.find((entry) => entry.handle === readable.handle)!).sort()
       ).toEqual(['agentId', 'handle', 'runtime']);
-      Object.assign(store.getThread('ws_demo', peer.threadId), {
+      Object.assign(store.getThread('ws_00000000-0000-7000-8000-000000000001', peer.threadId), {
         visibility: 'workspace',
         privateOwnerUserId: undefined,
       });
       store.createItem({
         ...itemFields,
-        id: 'it_peer_oversized',
+        id: testEntityId('it', 'it_peer_oversized'),
         createdAt: '2026-09-30T01:00:00.000Z',
         type: 'assistant-message',
         text: 'x'.repeat(524_288),
@@ -1156,18 +1208,18 @@ describe('worker MCP routes', () => {
       });
       coreDb.sqlite
         .prepare('DELETE FROM agent_session_runtime_bindings WHERE agent_session_id = ?')
-        .run('as_native_peer');
+        .run(testEntityId('as', 'as_native_peer'));
       await expect(
         client.callTool({ name: 'work_read_peer', arguments: { handle: readable.handle } })
       ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
       // Restore the same binding; a later Turn still cannot use its predecessor's handle.
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'c'.repeat(64),
-        agentSessionId: 'as_native_peer',
+        agentSessionId: testEntityId('as', 'as_native_peer'),
         agentSessionRuntimeBindingId: 'binding_peer',
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness_shared',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: peer.threadId,
         timestamp,
       });
@@ -1179,10 +1231,10 @@ describe('worker MCP routes', () => {
           .prepare(
             'SELECT current_attempt_id, current_turn_id FROM agent_session_runtime_bindings WHERE agent_session_id = ?'
           )
-          .get('as_native_caller')
+          .get(testEntityId('as', 'as_native_caller'))
       ).toEqual({ current_attempt_id: null, current_turn_id: null });
       const closedCaller = markSchedulerExecutionAttemptClosing(coreDb, {
-        attemptId: `lease_${turns[0]!.id}`,
+        attemptId: testEntityId('attempt', `lease_${turns[0]!.id}`),
         cause: 'worker-final-status',
         outcomeRef: 'fixture-caller:completed',
       });
@@ -1206,16 +1258,21 @@ describe('worker MCP routes', () => {
       });
       coreDb.sqlite
         .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status)
-        VALUES ('user_peer_admin', 'Peer Admin', 'peer-admin@example.com', 0, ?, ?, 'human', 'active')`)
+        VALUES ('usr_00000000-0000-7ea2-a10a-dd9edb0e2650', 'Peer Admin', 'peer-admin@example.com', 0, ?, ?, 'human', 'active')`)
         .run(Date.now(), Date.now());
-      const later = store.createTurn('ws_demo', turns[0]!.threadId, 'Later read', {
-        kind: 'user',
-        id: 'user_peer_admin',
-      });
-      store.updateTurn(later.id, { agentSessionId: 'as_native_caller' });
+      const later = store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        turns[0]!.threadId,
+        'Later read',
+        {
+          kind: 'user',
+          id: 'usr_00000000-0000-7ea2-a10a-dd9edb0e2650',
+        }
+      );
+      store.updateTurn(later.id, { agentSessionId: testEntityId('as', 'as_native_caller') });
       environmentPackage = resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
-        agentSessionId: 'as_native_caller',
+        agentSessionId: testEntityId('as', 'as_native_caller'),
         agentSetup: createTestAgentSetup(),
         backend: { kind: 'openshell' },
         createdAt: timestamp,
@@ -1227,7 +1284,7 @@ describe('worker MCP routes', () => {
       });
       const adminToken = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2099-01-01T00:00:00.000Z',
-        ownerUserId: 'user_peer_admin',
+        ownerUserId: 'usr_00000000-0000-7ea2-a10a-dd9edb0e2650',
         scope: 'server-admin',
         workspaceIds: [],
       });
@@ -1277,24 +1334,33 @@ describe('worker MCP routes', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const now = Date.now();
     coreDb.sqlite
       .prepare(
-        "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status) VALUES ('user_mcp_admin', 'MCP Admin', 'mcp-admin@example.com', false, ?, ?, 'human', 'active')"
+        "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status) VALUES ('usr_00000000-0000-72be-94ef-6b69d9d89870', 'MCP Admin', 'mcp-admin@example.com', false, ?, ?, 'human', 'active')"
       )
       .run(now, now);
     createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',
-      ownerUserId: 'user_mcp_admin',
+      ownerUserId: 'usr_00000000-0000-72be-94ef-6b69d9d89870',
       scope: 'server-admin',
       tokenId: 'token_mcp_admin',
       workspaceIds: [],
     });
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Call MCP as admin', {
-      id: 'user_mcp_admin',
-      kind: 'user',
-    });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Call MCP as admin',
+      {
+        id: 'usr_00000000-0000-72be-94ef-6b69d9d89870',
+        kind: 'user',
+      }
+    );
     const catalog = {
       schemaVersion: 1 as const,
       servers: [
@@ -1319,7 +1385,7 @@ describe('worker MCP routes', () => {
     };
     const environmentPackage = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
-      agentSessionId: 'as_mcp_admin',
+      agentSessionId: testEntityId('as', 'as_mcp_admin'),
       agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
       backend: { kind: 'openshell' },
       createdAt: new Date().toISOString(),
@@ -1342,7 +1408,11 @@ describe('worker MCP routes', () => {
           dataRoot,
           agentManifests: [],
           workspaceMcpServerCatalogs: [
-            { catalog, path: join(dataRoot, 'catalog/catalog.json'), workspaceId: 'ws_demo' },
+            {
+              catalog,
+              path: join(dataRoot, 'catalog/catalog.json'),
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            },
           ],
         }),
       store,
@@ -1427,22 +1497,34 @@ describe('worker MCP routes', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Call echo', {
-      kind: 'user',
-      id: 'user_local',
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Call echo',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     store.createAgentSession({
-      id: 'as_pending_echo',
+      id: testEntityId('as', 'as_pending_echo'),
       agentId: 'agent_codex_host',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       status: 'busy',
       message: null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
-    store.updateTurn(turn.id, { agentId: 'agent_codex_host', agentSessionId: 'as_pending_echo' });
+    store.updateTurn(turn.id, {
+      agentId: 'agent_codex_host',
+      agentSessionId: testEntityId('as', 'as_pending_echo'),
+    });
     const vaultUnlockState = createVaultUnlockState({
       backendKind: 'encrypted-file',
       storeDir: join(dataRoot, 'server', 'vault'),
@@ -1450,28 +1532,29 @@ describe('worker MCP routes', () => {
     vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 7) });
     vaultUnlockState.backend().store({
       material: 'pending-secret-canary',
-      metadata: { ownerScope: 'workspace', workspaceId: 'ws_demo' },
-      referenceId: 'vault_pending_echo',
+      metadata: { ownerScope: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+      referenceId: 'vault_00000000-0000-7ca0-a71c-0b929d838497',
     });
     createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://workspace/ws_demo/vault/vault_pending_echo',
+      backendLocator:
+        'encrypted-file://workspace/ws_00000000-0000-7000-8000-000000000001/vault/vault_00000000-0000-7ca0-a71c-0b929d838497',
       displayName: 'Pending echo credential',
       ownerScope: 'workspace',
-      referenceId: 'vault_pending_echo',
+      referenceId: 'vault_00000000-0000-7ca0-a71c-0b929d838497',
       secretKind: 'api-key',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const issuer = createApp({ coreDb, dataRoot, store, vaultUnlockState });
     const grantResponse = await issuer.request(
       ...operationRequest(
         'vault.grant-create',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            referenceId: 'vault_pending_echo',
+            referenceId: 'vault_00000000-0000-7ca0-a71c-0b929d838497',
             injectionPath: 'gateway-only',
           }),
         }
@@ -1511,7 +1594,7 @@ describe('worker MCP routes', () => {
     };
     const environmentPackage = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
-      agentSessionId: 'as_pending_echo',
+      agentSessionId: testEntityId('as', 'as_pending_echo'),
       agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
       backend: { kind: 'openshell' },
       createdAt: new Date().toISOString(),
@@ -1537,7 +1620,11 @@ describe('worker MCP routes', () => {
       dataRoot,
       agentManifests: [createTestAgentSetup({ mcpIds: ['echo'] }).manifest],
       workspaceMcpServerCatalogs: [
-        { catalog, path: join(dataRoot, 'catalog.json'), workspaceId: 'ws_demo' },
+        {
+          catalog,
+          path: join(dataRoot, 'catalog.json'),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        },
       ],
     });
     const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
@@ -1576,7 +1663,7 @@ describe('worker MCP routes', () => {
       expect(pending.structuredContent).toMatchObject({ status: 'pending-approval' });
       expect(upstream).not.toHaveBeenCalled();
       if (change === 'unchanged') {
-        const boundDb = openWorkspaceDb(dataRoot, 'ws_demo');
+        const boundDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
         const countCalls = () =>
           (
             boundDb.sqlite.prepare('SELECT COUNT(*) AS count FROM capability_calls').get() as {
@@ -1607,11 +1694,11 @@ describe('worker MCP routes', () => {
         boundDb.sqlite.close();
       }
       if (change === 'unchanged') {
-        const evidenceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+        const evidenceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
         const captured = evidenceDb.sqlite
           .prepare('SELECT request_id FROM pending_requests ORDER BY request_id')
           .all() as { request_id: string }[];
-        const project = (id: string, userId = 'user_local') =>
+        const project = (id: string, userId = 'usr_00000000-0000-7000-8000-000000000001') =>
           projectApprovalEffect({
             record: readPendingRequest(evidenceDb.sqlite, id)!,
             store,
@@ -1643,14 +1730,17 @@ describe('worker MCP routes', () => {
       }
       expect(store.getTurnById(turn.id).status).toBe('running');
       const approvalItem = store
-        .listThreadItems('ws_demo', 'th_demo')
+        .listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
         .find((item) => item.type === 'approval-request');
       if (!approvalItem || approvalItem.type !== 'approval-request')
         throw new Error('Missing approval request.');
       store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
       if (change === 'revoke') revokeVaultGrant(coreDb, { grantId: publicGrant.grantId });
       if (change === 'schema-drift') {
-        const schemaDb = openWorkspaceDb(dataRoot, 'ws_demo');
+        const schemaDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
         try {
           recordMcpToolSchemaSnapshot({
             environmentPackage,
@@ -1659,7 +1749,7 @@ describe('worker MCP routes', () => {
             schemaSnapshotId: 'mcpsnap_changed_before_grant',
             tools: [{ name: 'echo', inputSchema: { type: 'object', required: ['newField'] } }],
             workspaceDb: schemaDb,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           });
         } finally {
           schemaDb.sqlite.close();
@@ -1695,7 +1785,7 @@ describe('worker MCP routes', () => {
         const callTool = originalCallTool;
         upstream.mockImplementationOnce(async (input) => {
           expect(resolved).toHaveBeenCalled();
-          const db = openWorkspaceDb(dataRoot, 'ws_demo');
+          const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
           try {
             expect(
               db.sqlite
@@ -1744,8 +1834,8 @@ describe('worker MCP routes', () => {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               turnId: turn.id,
               requestId: '00000000-0000-4000-8000-000000000117',
               decision: change === 'deny' ? 'denied' : 'granted',
@@ -1763,7 +1853,7 @@ describe('worker MCP routes', () => {
           credentials: { environment: { PENDING_ECHO_SECRET: 'pending-secret-canary' } },
         });
       }
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         if (executed) {
           expect(
@@ -1833,7 +1923,7 @@ describe('worker MCP routes', () => {
               source: 'live',
               tools,
               workspaceDb,
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             });
           }
         } finally {
@@ -1844,7 +1934,7 @@ describe('worker MCP routes', () => {
             catalogEntryId: 'echo',
             pinnedSchemaSnapshotId: null,
             workspaceDb,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           })
         ).toMatchObject({ schemaSnapshotId: 'mcpsnap_a' });
         const importedTools = [{ inputSchema: { type: 'object' }, name: 'imported' }];
@@ -1859,7 +1949,7 @@ describe('worker MCP routes', () => {
             source: 'live',
             sourceRef: null,
             tools: importedTools,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
         ]);
         expect(
@@ -1867,7 +1957,7 @@ describe('worker MCP routes', () => {
             catalogEntryId: 'echo',
             pinnedSchemaSnapshotId: null,
             workspaceDb,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           })
         ).not.toMatchObject({ schemaSnapshotId: 'mcpsnap_imported_history' });
         const captureCountBeforePromotion = workspaceDb.sqlite
@@ -1883,7 +1973,7 @@ describe('worker MCP routes', () => {
           source: 'live',
           tools: importedTools,
           workspaceDb,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         });
         recordMcpToolSchemaSnapshot({
           environmentPackage,
@@ -1892,7 +1982,7 @@ describe('worker MCP routes', () => {
           source: 'live',
           tools: importedTools,
           workspaceDb,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         });
         expect(
           workspaceDb.sqlite
@@ -1909,7 +1999,7 @@ describe('worker MCP routes', () => {
             catalogEntryId: 'echo',
             pinnedSchemaSnapshotId: null,
             workspaceDb,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           })
         ).toMatchObject({ schemaSnapshotId: 'mcpsnap_imported_history' });
         importMcpToolSchemaSnapshots(workspaceDb, [
@@ -1922,7 +2012,7 @@ describe('worker MCP routes', () => {
             source: 'aep',
             sourceRef: 'aep_history',
             tools: crossCatalogTools,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
         ]);
         expect(() =>
@@ -1933,7 +2023,7 @@ describe('worker MCP routes', () => {
             source: 'live',
             tools: importedTools,
             workspaceDb,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           })
         ).toThrow('MCP schema snapshot identity conflicts');
         expect(
@@ -1958,7 +2048,7 @@ describe('worker MCP routes', () => {
             source: 'live',
             tools: [{ inputSchema: { const: index }, name: 'echo' }],
             workspaceDb,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           });
         }
         expect(
@@ -2022,7 +2112,11 @@ describe('worker MCP routes', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const agentSetup = createTestAgentSetup({
       requiredCapabilities: ['trusted-worker-inference-relay'],
       mcpIds: ['echo'],
@@ -2075,15 +2169,27 @@ describe('worker MCP routes', () => {
                 name: 'Demo Workspace',
               },
             },
-            path: join(dataRoot, 'workspaces', 'ws_demo', 'config', 'workspace.jsonc'),
-            workspaceId: 'ws_demo',
+            path: join(
+              dataRoot,
+              'workspaces',
+              'ws_00000000-0000-7000-8000-000000000001',
+              'config',
+              'workspace.jsonc'
+            ),
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
         ],
         workspaceMcpServerCatalogs: [
           {
             catalog,
-            path: join(dataRoot, 'workspaces', 'ws_demo', 'config', 'catalog/catalog.json'),
-            workspaceId: 'ws_demo',
+            path: join(
+              dataRoot,
+              'workspaces',
+              'ws_00000000-0000-7000-8000-000000000001',
+              'config',
+              'catalog/catalog.json'
+            ),
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
         ],
       }),
@@ -2241,18 +2347,21 @@ describe('worker MCP routes', () => {
         | 'session.close'
     ) => {
       for (let attempt = 0; attempt < 1_000; attempt += 1) {
-        const binding = coreDb.sqlite
-          .prepare(
-            `SELECT sandbox_integration_binding_ref AS integrationRef
-             FROM sandbox_runtime_records
-             LIMIT 1`
-          )
-          .get() as { integrationRef: string } | undefined;
-        const command = binding
-          ? dispatchNanoHostHarnessOperation(coreDb, {
-              sandboxIntegrationBindingRef: binding.integrationRef,
-            })
-          : null;
+        const bindings = coreDb.sqlite
+          .prepare(`SELECT sandbox_integration_binding_ref AS integrationRef
+            FROM sandbox_runtime_records`)
+          .all() as { integrationRef: string }[];
+        let binding: { integrationRef: string } | undefined;
+        let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
+        for (const candidate of bindings) {
+          command = dispatchNanoHostHarnessOperation(coreDb, {
+            sandboxIntegrationBindingRef: candidate.integrationRef,
+          });
+          if (command) {
+            binding = candidate;
+            break;
+          }
+        }
         if (command) {
           if (operation === 'turn.start' && command.operation === 'session.inspect') {
             workerLifecycleRuntime.acceptNanoHostHarnessCommand(command);
@@ -2275,7 +2384,12 @@ describe('worker MCP routes', () => {
         await new Promise<void>((resolve) => setTimeout(resolve, 1));
       }
       throw new Error(
-        `Expected queued NanoHost Harness operation: ${operation}; Turns: ${JSON.stringify(store.listThreadTurns('ws_demo', 'th_demo').map((turn) => ({ id: turn.id, status: turn.status, error: turn.error })))}; Queue: ${JSON.stringify(coreDb.sqlite.prepare('SELECT status, denial_reason FROM scheduler_admission_entries').all())}`
+        `Expected queued NanoHost Harness operation: ${operation}; Turns: ${JSON.stringify(
+          store
+            .listThreads('ws_00000000-0000-7000-8000-000000000001')
+            .flatMap((thread) => store.listThreadTurns(thread.workspaceId, thread.id))
+            .map((turn) => ({ id: turn.id, status: turn.status, error: turn.error }))
+        )}; Queue: ${JSON.stringify(coreDb.sqlite.prepare('SELECT status, denial_reason FROM scheduler_admission_entries').all())}`
       );
     };
     const settle = (
@@ -2419,7 +2533,7 @@ describe('worker MCP routes', () => {
       ).rejects.toMatchObject({ data: { code: 'invalid_request' } });
       expect(
         store
-          .listArtifacts('ws_demo')
+          .listArtifacts('ws_00000000-0000-7000-8000-000000000001')
           .filter((artifact) => artifact.turnId === environmentPackage.scope.turnId)
       ).toHaveLength(0);
       expect(store.getTurnById(environmentPackage.scope.turnId).status).toBe('running');
@@ -2432,7 +2546,10 @@ describe('worker MCP routes', () => {
       expect(submitted.isError).toBe(false);
       const artifactId = String(submitted.structuredContent!.artifactId);
       const readback = await app.request(
-        ...operationRequest('artifact.read', { workspaceId: 'ws_demo', artifactId })
+        ...operationRequest('artifact.read', {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          artifactId,
+        })
       );
       expect(readback.status).toBe(200);
       expect(await readback.json()).toMatchObject({
@@ -2440,9 +2557,9 @@ describe('worker MCP routes', () => {
         content: { body: readFileSync(liveFilePath, 'utf8') },
       });
 
-      expect(store.getArtifact('ws_demo', artifactId).content.body).toBe(
-        readFileSync(liveFilePath, 'utf8')
-      );
+      expect(
+        store.getArtifact('ws_00000000-0000-7000-8000-000000000001', artifactId).content.body
+      ).toBe(readFileSync(liveFilePath, 'utf8'));
       const publishedBytes = readFileSync(liveFilePath);
       writeFileSync(liveFilePath, 'A later edit cannot mutate the committed output.');
       expect(
@@ -2450,9 +2567,9 @@ describe('worker MCP routes', () => {
           .structuredContent!.artifactId
       ).toBe(artifactId);
       expect(liveCaptureCount).toBe(capturesBefore + 1);
-      expect(store.getArtifact('ws_demo', artifactId).content.body).toBe(
-        publishedBytes.toString('utf8')
-      );
+      expect(
+        store.getArtifact('ws_00000000-0000-7000-8000-000000000001', artifactId).content.body
+      ).toBe(publishedBytes.toString('utf8'));
       await work.close();
       const client = new Client({ name: 'public-task-lifecycle-test', version: '1.0.0' });
       await client.connect(
@@ -2479,7 +2596,7 @@ describe('worker MCP routes', () => {
         toolCall = result;
         expect(existsSync(callFile)).toBe(false);
       } else {
-        const deliveryDb = openWorkspaceDb(dataRoot, 'ws_demo');
+        const deliveryDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
         try {
           expect(readPendingRequest(deliveryDb.sqlite, repositoryApprovalId!)?.delivery).toBe(
             'delivered'
@@ -2539,7 +2656,10 @@ describe('worker MCP routes', () => {
       const firstRequest = app.request(
         ...operationRequest(
           ownerCommand,
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             body: JSON.stringify({
               input: 'Implement the bounded MCP Task fix.',
@@ -2556,7 +2676,11 @@ describe('worker MCP routes', () => {
           }
         )
       );
-      const [firstResponse, firstRun] = await Promise.all([firstRequest, driveTask(true)]);
+      const admittedFirstRequest = firstRequest.then(async (response) => {
+        expect(response.status, await response.clone().text()).toBe(202);
+        return response;
+      });
+      const [firstResponse, firstRun] = await Promise.all([admittedFirstRequest, driveTask(true)]);
       expect(firstResponse.status, await firstResponse.clone().text()).toBe(202);
       const firstTask =
         ownerCommand === 'conversation.submit'
@@ -2569,6 +2693,12 @@ describe('worker MCP routes', () => {
       )
         await new Promise<void>((resolve) => setTimeout(resolve, 1));
       const durableTurn = store.getTurnById(firstTask.turn.id);
+      if (ownerCommand === 'conversation.submit') {
+        expect(durableTurn.threadId).not.toBe('th_00000000-0000-7000-8000-000000000001');
+        expect(store.getThread(durableTurn.workspaceId, durableTurn.threadId).parentThreadId).toBe(
+          'th_00000000-0000-7000-8000-000000000001'
+        );
+      }
       expect(durableTurn.status).toBe('completed');
       if ('outcome' in firstTask) expect(firstTask.outcome).toBe('accepted');
       expect(store.getAgentSession(firstRun.agentSessionId).status).toBe('idle');
@@ -2583,8 +2713,8 @@ describe('worker MCP routes', () => {
       ).toEqual([ownerCommand]);
       // Settled owner replay is compared across all three projections without another Worker launch.
       const replayInput = {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         input: 'Implement the bounded MCP Task fix.',
         requestId: '0190f4c8-0000-7000-8000-000000000501',
         ...(ownerCommand === 'conversation.submit'
@@ -2617,7 +2747,11 @@ describe('worker MCP routes', () => {
       ).toEqual(replayResult);
       expect(repositoryApprovalId).not.toBeNull();
       const attentionResponse = await app.request(
-        ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)
+        ...operationRequest(
+          'attention.list',
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+          undefined
+        )
       );
       expect(
         ListHumanAttentionResponseSchema.parse(await attentionResponse.json()).items
@@ -2643,7 +2777,10 @@ describe('worker MCP routes', () => {
       const detailResponse = await app.request('/api/app/operations/thread.dashboard', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ workspaceId: 'ws_demo', threadId: 'th_demo' }),
+        body: JSON.stringify({
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: firstTask.turn.threadId,
+        }),
       });
       expect(detailResponse.status, await detailResponse.clone().text()).toBe(200);
       const detailDashboard = await detailResponse.json();
@@ -2655,8 +2792,8 @@ describe('worker MCP routes', () => {
       const responseInput = {
         decision,
         requestId: '0190f4c8-0000-7000-8000-000000000502',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: firstTask.turn.threadId,
         turnId: firstTask.turn.id,
       };
       const approvalResponse = app.request(
@@ -2674,7 +2811,7 @@ describe('worker MCP routes', () => {
       let continuation: Awaited<ReturnType<typeof driveTask>>;
       if (refuseFirst) {
         responded = await approvalResponse;
-        const reviewDb = openWorkspaceDb(dataRoot, 'ws_demo');
+        const reviewDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
         for (let n = 0; n < 2000; n++) {
           const record = readPendingRequest(reviewDb.sqlite, repositoryApprovalId!);
           if (record?.delivery === 'undelivered' && record.publicationTurnId) break;
@@ -2702,9 +2839,17 @@ describe('worker MCP routes', () => {
               )
               .get(refused.publicationTurnId)
           ).toEqual({ phase: 'closed', disposition: 'not_accepted', operation_id: null });
-          const count = store.listThreadTurns('ws_demo', 'th_demo').length;
+          const count = store.listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            firstTask.turn.threadId
+          ).length;
           await new Promise((resolve) => setTimeout(resolve, 20));
-          expect(store.listThreadTurns('ws_demo', 'th_demo')).toHaveLength(count);
+          expect(
+            store.listThreadTurns(
+              'ws_00000000-0000-7000-8000-000000000001',
+              firstTask.turn.threadId
+            )
+          ).toHaveLength(count);
           preparationFault!.mockRestore();
           reviewDb.sqlite.close();
           return;
@@ -2724,14 +2869,22 @@ describe('worker MCP routes', () => {
             )
             .get(refused.publicationTurnId)
         ).toEqual({ count: 0 });
-        const count = store.listThreadTurns('ws_demo', 'th_demo').length;
+        const count = store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          firstTask.turn.threadId
+        ).length;
         await new Promise((resolve) => setTimeout(resolve, 20));
-        expect(store.listThreadTurns('ws_demo', 'th_demo')).toHaveLength(count);
+        expect(
+          store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', firstTask.turn.threadId)
+        ).toHaveLength(count);
         providerFault!.mockRestore();
         const user = app.request(
           ...operationRequest(
             'conversation.submit',
-            { workspaceId: 'ws_demo', threadId: 'th_demo' },
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: firstTask.turn.threadId,
+            },
             {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
@@ -2739,7 +2892,7 @@ describe('worker MCP routes', () => {
                 input: 'Continue after refused admission.',
                 requestId: '0190f4c8-0000-7000-8000-000000000599',
                 artifactRefs: [],
-                targetRef: `warm-worker:${agentSetup.manifest.id}:default`,
+                targetRef: `running-worker:${encodeURIComponent(firstTask.turn.threadId)}:${encodeURIComponent(agentSetup.manifest.id)}`,
               }),
             }
           )
@@ -2782,14 +2935,14 @@ describe('worker MCP routes', () => {
         )
       );
       expect(replay.status).toBe(200);
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         expect(readPendingRequest(workspaceDb.sqlite, repositoryApprovalId!)?.delivery).toBe(
           'delivered'
         );
         expect(
           store
-            .listThreadItems('ws_demo', 'th_demo')
+            .listThreadItems('ws_00000000-0000-7000-8000-000000000001', firstTask.turn.threadId)
             .filter(
               (item) =>
                 item.type === 'approval-decision' && item.approvalRequestId === repositoryApprovalId
@@ -2797,7 +2950,7 @@ describe('worker MCP routes', () => {
         ).toHaveLength(1);
         expect(
           store
-            .listThreadTurns('ws_demo', 'th_demo')
+            .listThreadTurns('ws_00000000-0000-7000-8000-000000000001', firstTask.turn.threadId)
             .filter((turn) => turn.triggerSource?.kind === 'approval-resolution')
         ).toHaveLength(1);
       } finally {
@@ -2824,14 +2977,14 @@ describe('worker MCP routes', () => {
       .prepare(
         `INSERT INTO users (
           id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at
-        ) VALUES ('user_backup_owner', 'Backup owner', 'backup@example.com', false, ?, ?, 'human', 'active', NULL)`
+        ) VALUES ('usr_00000000-0000-780b-b93c-e2479beb99f1', 'Backup owner', 'backup@example.com', false, ?, ?, 'human', 'active', NULL)`
       )
       .run(ownerCreatedAt, ownerCreatedAt);
     const store = createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_backup_owner',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-780b-b93c-e2479beb99f1',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const memberCreatedAt = new Date().toISOString();
     coreDb.sqlite
@@ -2839,13 +2992,18 @@ describe('worker MCP routes', () => {
         `INSERT INTO workspace_members (
           workspace_id, user_id, status, access_level, invitation_id, joined_at,
           removed_at, revision, created_at, updated_at
-        ) VALUES ('ws_demo', 'user_local', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+        ) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7000-8000-000000000001', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
       )
       .run(memberCreatedAt, memberCreatedAt, memberCreatedAt);
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Classify MCP failures', {
-      id: 'user_local',
-      kind: 'user',
-    });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Classify MCP failures',
+      {
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+        kind: 'user',
+      }
+    );
     const server = (id: string, schemaPolicy: 'pinned' | 'tracking' = 'tracking') => ({
       allowedTools: ['echo'],
       approvalRequiredTools: [],
@@ -2873,7 +3031,7 @@ describe('worker MCP routes', () => {
     };
     let environmentPackage = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
-      agentSessionId: 'as_mcp_failures',
+      agentSessionId: testEntityId('as', 'as_mcp_failures'),
       agentSetup: createTestAgentSetup({
         mcpIds: [
           'echo',
@@ -2910,7 +3068,7 @@ describe('worker MCP routes', () => {
       updatedAt: '2026-09-03T00:00:00.000Z',
       workspaceId: turn.workspaceId,
     });
-    const snapshotDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const snapshotDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(snapshotDb);
     try {
       recordAgentEnvironmentPackageSnapshot(snapshotDb, {
@@ -3070,7 +3228,11 @@ describe('worker MCP routes', () => {
           agentManifests: [],
           dataRoot,
           workspaceMcpServerCatalogs: [
-            { catalog, path: join(dataRoot, 'catalog/catalog.json'), workspaceId: 'ws_demo' },
+            {
+              catalog,
+              path: join(dataRoot, 'catalog/catalog.json'),
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            },
           ],
         }),
       store,
@@ -3126,7 +3288,7 @@ describe('worker MCP routes', () => {
         id: 424_242,
       });
       expect(callTool.mock.calls.length).toBe(typedIdCallsBefore + 2);
-      const typedIdDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const typedIdDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       const typedIdRows = typedIdDb.sqlite
         .prepare(
           `SELECT call_id, item_id
@@ -3135,10 +3297,24 @@ describe('worker MCP routes', () => {
            ORDER BY rowid`
         )
         .all() as Array<{ call_id: string; item_id: string }>;
-      expect(typedIdRows).toEqual([
-        { call_id: expect.stringMatching(/^cap_mcp_/), item_id: expect.stringMatching(/^it_mcp_/) },
-        { call_id: expect.stringMatching(/^cap_mcp_/), item_id: expect.stringMatching(/^it_mcp_/) },
-      ]);
+      expect(typedIdRows).toEqual(
+        [424_242, '424242'].map((requestId) => ({
+          call_id: deriveEntityId('cap', [
+            'mcp',
+            environmentPackage.snapshotId,
+            'echo',
+            'mcp.call_tool',
+            requestId,
+          ]),
+          item_id: deriveEntityId('it', [
+            'mcp',
+            environmentPackage.snapshotId,
+            'echo',
+            'echo',
+            requestId,
+          ]),
+        }))
+      );
       expect(new Set(typedIdRows.map((row) => row.call_id)).size).toBe(2);
       expect(new Set(typedIdRows.map((row) => row.item_id)).size).toBe(2);
       typedIdDb.sqlite.close();
@@ -3184,7 +3360,7 @@ describe('worker MCP routes', () => {
         echo.callTool({ arguments: { message: 'pre-cancelled' }, name: 'echo' })
       ).rejects.toMatchObject({ data: { code: 'mcp-call-failed' } });
       expect(callTool.mock.calls.length).toBe(callsBeforePreCancellation + 1);
-      const schemaDbBefore = openWorkspaceDb(dataRoot, 'ws_demo');
+      const schemaDbBefore = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       const schemaCountBefore = schemaDbBefore.sqlite
         .prepare('SELECT COUNT(*) AS count FROM mcp_tool_schema_snapshots')
         .get();
@@ -3197,7 +3373,7 @@ describe('worker MCP routes', () => {
       await expect(whitespace.listTools()).rejects.toMatchObject({
         data: { code: 'mcp-server-unavailable' },
       });
-      const schemaDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const schemaDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         expect(
           schemaDb.sqlite.prepare('SELECT COUNT(*) AS count FROM mcp_tool_schema_snapshots').get()
@@ -3218,7 +3394,10 @@ describe('worker MCP routes', () => {
       const schemaCancelBarrier = createListBarrier('schema-cancel');
       const schemaCancellation = new AbortController();
       const upstreamCallsBeforeSchemaCancellation = callTool.mock.calls.length;
-      const schemaCancellationDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const schemaCancellationDb = openWorkspaceDb(
+        dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       const usageBeforeSchemaCancellation = schemaCancellationDb.sqlite
         .prepare('SELECT COUNT(*) AS count FROM usage_records')
         .get();
@@ -3242,7 +3421,7 @@ describe('worker MCP routes', () => {
       schemaCancelBarrier.release();
       expect(String(await schemaCancelledOutcome)).toMatch(/AbortError/);
       await vi.waitFor(() => {
-        const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+        const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
         try {
           expect(
             workspaceDb.sqlite
@@ -3260,7 +3439,10 @@ describe('worker MCP routes', () => {
         }
       });
       expect(callTool).toHaveBeenCalledTimes(upstreamCallsBeforeSchemaCancellation);
-      const afterSchemaCancellationDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const afterSchemaCancellationDb = openWorkspaceDb(
+        dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       expect(
         afterSchemaCancellationDb.sqlite
           .prepare('SELECT COUNT(*) AS count FROM usage_records')
@@ -3280,7 +3462,7 @@ describe('worker MCP routes', () => {
         .prepare(
           `UPDATE workspace_members
            SET status = 'removed', removed_at = ?, revision = revision + 1, updated_at = ?
-           WHERE workspace_id = 'ws_demo' AND user_id = 'user_local'`
+           WHERE workspace_id = 'ws_00000000-0000-7000-8000-000000000001' AND user_id = 'usr_00000000-0000-7000-8000-000000000001'`
         )
         .run(new Date().toISOString(), new Date().toISOString());
       authorityBarrier.release();
@@ -3290,12 +3472,12 @@ describe('worker MCP routes', () => {
         .prepare(
           `UPDATE workspace_members
            SET status = 'active', removed_at = NULL, revision = revision + 1, updated_at = ?
-           WHERE workspace_id = 'ws_demo' AND user_id = 'user_local'`
+           WHERE workspace_id = 'ws_00000000-0000-7000-8000-000000000001' AND user_id = 'usr_00000000-0000-7000-8000-000000000001'`
         )
         .run(new Date().toISOString());
 
       const itemCountBeforeAuditFailure = store.listAllItems().length;
-      const auditFailureDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const auditFailureDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         auditFailureDb.sqlite.exec(`
           CREATE TRIGGER reject_mcp_finish_audit
@@ -3333,7 +3515,7 @@ describe('worker MCP routes', () => {
       }
 
       const itemCountBeforeUsageFailure = store.listAllItems().length;
-      const usageFailureDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const usageFailureDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         usageFailureDb.sqlite.exec(`
           CREATE TRIGGER reject_mcp_usage
@@ -3360,7 +3542,7 @@ describe('worker MCP routes', () => {
       ).resolves.toMatchObject({ content: [{ text: 'item-publication-failure' }] });
       createItem.mockRestore();
       expect(store.listAllItems()).toHaveLength(itemCountBeforePublicationFailure);
-      const terminalDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const terminalDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       const successfulUnpublished = terminalDb.sqlite
         .prepare(
           `SELECT call_id, item_id, status
@@ -3382,13 +3564,18 @@ describe('worker MCP routes', () => {
         })
       );
 
-      const deniedTurn = store.createTurn('ws_demo', 'th_demo', 'Reject unauthorized MCP use', {
-        id: 'user_outsider',
-        kind: 'user',
-      });
+      const deniedTurn = store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Reject unauthorized MCP use',
+        {
+          id: 'usr_00000000-0000-76a2-91eb-629d90835e80',
+          kind: 'user',
+        }
+      );
       environmentPackage = resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
-        agentSessionId: 'as_mcp_denied',
+        agentSessionId: testEntityId('as', 'as_mcp_denied'),
         agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
         backend: { kind: 'openshell' },
         createdAt: '2026-09-03T00:01:00.000Z',
@@ -3399,7 +3586,7 @@ describe('worker MCP routes', () => {
         workspaceMcpServerCatalog: catalog,
         workspaceRoots: [],
       });
-      const beforeDeniedDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const beforeDeniedDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       const beforeDenied = mcpEffectCounts(beforeDeniedDb);
       beforeDeniedDb.sqlite.close();
       const itemsBeforeDenied = store.listAllItems().length;
@@ -3407,14 +3594,14 @@ describe('worker MCP routes', () => {
       await expect(
         echo.callTool({ arguments: { message: 'denied' }, name: 'echo' })
       ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
-      const afterDeniedDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const afterDeniedDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       expect(mcpEffectCounts(afterDeniedDb)).toEqual(beforeDenied);
       afterDeniedDb.sqlite.close();
       expect(store.listAllItems()).toHaveLength(itemsBeforeDenied);
       expect(callTool).toHaveBeenCalledTimes(upstreamCallsBeforeDenied);
       expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
 
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       applyScopedMigrations(workspaceDb);
       try {
         expect(
@@ -3475,7 +3662,10 @@ describe('worker MCP routes', () => {
           name: 'echo',
         },
       ];
-      const nearLimitSchemaDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const nearLimitSchemaDb = openWorkspaceDb(
+        dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       recordMcpToolSchemaSnapshot({
         environmentPackage,
         schemaSnapshotId: 'mcpschema_near_limit',
@@ -3483,13 +3673,13 @@ describe('worker MCP routes', () => {
         source: 'live',
         tools: nearLimitTools,
         workspaceDb: nearLimitSchemaDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       nearLimitSchemaDb.sqlite.close();
       expect(Buffer.byteLength(JSON.stringify(nearLimitTools), 'utf8')).toBe(512 * 1024);
       const nearLimitList = await echo.listTools();
       expect(Buffer.byteLength(JSON.stringify(nearLimitList.tools), 'utf8')).toBe(512 * 1024);
-      const nearLimitListDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const nearLimitListDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       expect(
         nearLimitListDb.sqlite
           .prepare(
@@ -3515,7 +3705,7 @@ describe('worker MCP routes', () => {
         id: 'near-limit-id',
         result: nearLimitResult,
       });
-      const nearLimitDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const nearLimitDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       expect(
         nearLimitDb.sqlite
           .prepare(
@@ -3528,8 +3718,8 @@ describe('worker MCP routes', () => {
           .get()
       ).toEqual({ error_code: null, status: 'succeeded' });
       nearLimitDb.sqlite.close();
-      await workspaceMutationAdmission.close('ws_demo');
-      const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+      await workspaceMutationAdmission.close('ws_00000000-0000-7000-8000-000000000001');
+      const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
       rmSync(workspaceRoot, { recursive: true });
       const staleRequest = await rawCall('stale-after-delete');
       expect(staleRequest.status).toBe(200);
@@ -3559,24 +3749,27 @@ describe('worker MCP routes', () => {
   ] as const)('defers only unavailable named snapshot storage during real MCP boot reconciliation: %s', (failure) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-backfill-unavailable-'));
     const store = createDemoStore({ dataRoot });
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
     const timestamp = '2026-09-22T00:00:00.000Z';
     const packages: AgentEnvironmentPackage[] = [];
     try {
       for (const suffix of ['0_unavailable', '1_healthy']) {
-        const thread = store.createThread('ws_demo', `MCP backfill ${suffix}`);
+        const thread = store.createThread(
+          'ws_00000000-0000-7000-8000-000000000001',
+          `MCP backfill ${suffix}`
+        );
         const turn = store.createTurn(
-          'ws_demo',
+          'ws_00000000-0000-7000-8000-000000000001',
           thread.id,
           'Recover decided MCP publication',
-          { id: 'user_local', kind: 'user' },
+          { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
           null,
           { startedAt: timestamp }
         );
         // Store writes preserve retained package directories only for registered product sessions.
         const session = store.createAgentSession({
-          id: `as_mcp_${suffix}`,
+          id: testEntityId('as', `as_mcp_${suffix}`),
           agentId: 'agent_codex_host',
           workspaceId: turn.workspaceId,
           threadId: turn.threadId,
@@ -3606,10 +3799,10 @@ describe('worker MCP routes', () => {
           agentId: environmentPackage.agent.agentId,
           agentSessionId: environmentPackage.scope.agentSessionId,
           authorityActor: turn.triggerActor,
-          callId: `cap_mcp_${suffix}`,
+          callId: testEntityId('cap', `cap_mcp_${suffix}`),
           capabilityId: 'mcp.call_tool',
           family: 'mcp',
-          itemId: `it_mcp_${suffix}`,
+          itemId: testEntityId('it', `it_mcp_${suffix}`),
           now: new Date(timestamp),
           operation: 'mcp.call_tool',
           packageSnapshotId: environmentPackage.snapshotId,
@@ -3661,7 +3854,7 @@ describe('worker MCP routes', () => {
       } else if (['malformed-json', 'schema', 'digest', 'lineage'].includes(failure)) {
         const record = JSON.parse(originalBytes);
         if (failure === 'digest') record.contentDigest = '0'.repeat(64);
-        if (failure === 'lineage') record.threadId = 'th_contradictory';
+        if (failure === 'lineage') record.threadId = testEntityId('th', 'th_contradictory');
         writeFileSync(
           snapshotPath,
           failure === 'malformed-json' ? '{' : failure === 'schema' ? '{}' : JSON.stringify(record)
@@ -3697,12 +3890,14 @@ describe('worker MCP routes', () => {
         expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
         expect(publish).toHaveBeenCalledOnce();
         expect(publish.mock.calls[0]![0]).toMatchObject({
-          id: 'it_mcp_1_healthy',
-          causationId: 'cap_mcp_1_healthy',
+          id: testEntityId('it', 'it_mcp_1_healthy'),
+          causationId: testEntityId('cap', 'cap_mcp_1_healthy'),
           status: 'completed',
         });
         expect(
-          store.listAllItems().find((item) => item.id === 'it_mcp_0_unavailable')
+          store
+            .listAllItems()
+            .find((item) => item.id === testEntityId('it', 'it_mcp_0_unavailable'))
         ).toBeUndefined();
         expect(store.getTurnEvents(selected.scope.turnId)).toEqual(beforeEvents[0]);
         if (unavailableDirectory) {
@@ -3713,8 +3908,13 @@ describe('worker MCP routes', () => {
         expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
         expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
         expect(
-          store.listAllItems().find((item) => item.id === 'it_mcp_0_unavailable')
-        ).toMatchObject({ causationId: 'cap_mcp_0_unavailable', status: 'completed' });
+          store
+            .listAllItems()
+            .find((item) => item.id === testEntityId('it', 'it_mcp_0_unavailable'))
+        ).toMatchObject({
+          causationId: testEntityId('cap', 'cap_mcp_0_unavailable'),
+          status: 'completed',
+        });
       } else {
         const reconcile = () => reconcileWorkerMcpItems(dataRoot, store);
         if (fault) expect(reconcile).toThrow(fault);
@@ -3725,15 +3925,15 @@ describe('worker MCP routes', () => {
           expect(store.getTurnEvents(pkg.scope.turnId)).toEqual(beforeEvents[index]);
         });
       }
-      const reopened = openWorkspaceDb(dataRoot, 'ws_demo');
+      const reopened = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         expect(
           reopened.sqlite
             .prepare('SELECT call_id, status FROM capability_calls ORDER BY call_id')
             .all()
         ).toEqual([
-          { call_id: 'cap_mcp_0_unavailable', status: 'succeeded' },
-          { call_id: 'cap_mcp_1_healthy', status: 'succeeded' },
+          { call_id: testEntityId('cap', 'cap_mcp_0_unavailable'), status: 'succeeded' },
+          { call_id: testEntityId('cap', 'cap_mcp_1_healthy'), status: 'succeeded' },
         ]);
       } finally {
         reopened.sqlite.close();
@@ -3749,11 +3949,16 @@ describe('worker MCP routes', () => {
   it('recreates a missing terminal Item without changing its successful call', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-item-recovery-'));
     const store = createDemoStore({ dataRoot });
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Recover the MCP Item', {
-      id: 'user_local',
-      kind: 'user',
-    });
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Recover the MCP Item',
+      {
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+        kind: 'user',
+      }
+    );
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
     try {
       const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
@@ -3765,10 +3970,10 @@ describe('worker MCP routes', () => {
         agentId: 'agent_codex',
         agentSessionId: environmentPackage.scope.agentSessionId,
         authorityActor: turn.triggerActor,
-        callId: 'cap_mcp_recovery',
+        callId: testEntityId('cap', 'cap_mcp_recovery'),
         capabilityId: 'mcp.call_tool',
         family: 'mcp',
-        itemId: 'it_mcp_recovery',
+        itemId: testEntityId('it', 'it_mcp_recovery'),
         operation: 'mcp.call_tool',
         packageSnapshotId: environmentPackage.snapshotId,
         providerRef: 'echo',
@@ -3789,19 +3994,22 @@ describe('worker MCP routes', () => {
     expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
     expect(store.getTurnById(turn.id).items).toContainEqual(
       expect.objectContaining({
-        causationId: 'cap_mcp_recovery',
-        id: 'it_mcp_recovery',
+        causationId: testEntityId('cap', 'cap_mcp_recovery'),
+        id: testEntityId('it', 'it_mcp_recovery'),
         server: 'echo',
         status: 'completed',
         tool: 'echo',
       })
     );
-    const recoveredWorkspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const recoveredWorkspaceDb = openWorkspaceDb(
+      dataRoot,
+      'ws_00000000-0000-7000-8000-000000000001'
+    );
     try {
       expect(
         recoveredWorkspaceDb.sqlite
           .prepare('SELECT status FROM capability_calls WHERE call_id = ?')
-          .get('cap_mcp_recovery')
+          .get(testEntityId('cap', 'cap_mcp_recovery'))
       ).toEqual({ status: 'succeeded' });
     } finally {
       recoveredWorkspaceDb.sqlite.close();
@@ -3809,9 +4017,11 @@ describe('worker MCP routes', () => {
   });
 
   it.each([
-    'raw',
-    'bearer',
-  ] as const)('injects an HTTP %s Vault grant at the gateway and rejects the next call after revoke', async (presentation) => {
+    ['raw', 'target'],
+    ['bearer', 'target'],
+    ['raw', 'imported-history'],
+    ['bearer', 'imported-history'],
+  ] as const)('enforces HTTP %s grant issuance %s and explicit replacement binding', async (presentation, issuance) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-vault-'));
     const upstreamOptions: { credentialListEcho?: string } = {};
     const upstream = await createMcpHttpStub(upstreamOptions);
@@ -3819,11 +4029,20 @@ describe('worker MCP routes', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Call HTTP MCP', {
-      id: 'user_local',
-      kind: 'user',
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Call HTTP MCP',
+      {
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+        kind: 'user',
+      }
+    );
     const vaultUnlockState = createVaultUnlockState({
       backendKind: 'encrypted-file',
       storeDir: join(dataRoot, 'server', 'vault'),
@@ -3832,27 +4051,26 @@ describe('worker MCP routes', () => {
     const vaultCanary = 'vault-"quoted\\slash';
     vaultUnlockState.backend().store({
       material: vaultCanary,
-      metadata: { ownerScope: 'workspace', workspaceId: 'ws_demo' },
-      referenceId: 'vault_mcp_http',
+      metadata: { ownerScope: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+      referenceId: 'vault_00000000-0000-7e35-8665-00e561f3dbc4',
     });
     createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://workspace/vault_mcp_http',
+      backendLocator: 'encrypted-file://workspace/vault_00000000-0000-7e35-8665-00e561f3dbc4',
       displayName: 'HTTP MCP token',
       ownerScope: 'workspace',
-      referenceId: 'vault_mcp_http',
+      referenceId: 'vault_00000000-0000-7e35-8665-00e561f3dbc4',
       secretKind: 'http-bearer',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    createVaultGrant(coreDb, {
+    const grant = createVaultGrant(coreDb, {
       allowedInjectionPaths: ['gateway-only'],
-      grantId: 'grant_mcp_http',
-      lifetime: 'agent-session',
+      grantId: 'grant_00000000-0000-7018-b534-d496e34b4c6a',
+      lifetime: 'workspace',
       ownerScope: 'workspace',
-      targetAgentSessionId: 'as_mcp_vault',
-      targetCapabilityId: 'mcp',
-      vaultReferenceId: 'vault_mcp_http',
-      workspaceId: 'ws_demo',
+      targetCapabilityId: null,
+      vaultReferenceId: 'vault_00000000-0000-7e35-8665-00e561f3dbc4',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const catalog = {
       schemaVersion: 1 as const,
@@ -3865,7 +4083,7 @@ describe('worker MCP routes', () => {
               presentation,
               sink: { kind: 'header' as const, name: 'authorization' },
               slot: 'auth',
-              vaultGrantId: 'grant_mcp_http',
+              vaultGrantId: 'grant_00000000-0000-7018-b534-d496e34b4c6a',
             },
           ],
           deniedTools: [],
@@ -3882,7 +4100,7 @@ describe('worker MCP routes', () => {
     let activeCatalog = catalog;
     let environmentPackage = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
-      agentSessionId: 'as_mcp_vault',
+      agentSessionId: testEntityId('as', 'as_mcp_vault'),
       agentSetup: createTestAgentSetup({ mcpIds: ['http-echo'] }),
       backend: { kind: 'openshell' },
       createdAt: '2026-09-03T00:00:00.000Z',
@@ -3910,7 +4128,7 @@ describe('worker MCP routes', () => {
             {
               catalog: activeCatalog,
               path: join(dataRoot, 'catalog/catalog.json'),
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             },
           ],
         }),
@@ -3931,6 +4149,31 @@ describe('worker MCP routes', () => {
 
     try {
       await client.connect(transport);
+      if (issuance === 'imported-history') {
+        coreDb.sqlite.prepare('DELETE FROM vault_grants WHERE grant_id = ?').run(grant.grantId);
+        importWorkspaceVaultGrants(coreDb, [grant]);
+        const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
+        const upstreamBefore = upstream.observed.length;
+        const plansBefore = coreDb.sqlite
+          .prepare('SELECT COUNT(*) AS count FROM vault_injection_plans')
+          .get();
+        const receiptsBefore = coreDb.sqlite
+          .prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts')
+          .get();
+        await expect(
+          client.callTool({ arguments: { message: 'blocked history' }, name: 'echo' })
+        ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+        expect(resolve).not.toHaveBeenCalled();
+        expect(upstream.observed).toHaveLength(upstreamBefore);
+        expect(
+          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_plans').get()
+        ).toEqual(plansBefore);
+        expect(
+          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts').get()
+        ).toEqual(receiptsBefore);
+        resolve.mockRestore();
+        return;
+      }
       const initializationsBeforeCall = upstream.observed.filter((request) =>
         request.endsWith('|initialize')
       ).length;
@@ -3956,7 +4199,7 @@ describe('worker MCP routes', () => {
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts').get()
       ).toEqual({ count: 1 });
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       applyScopedMigrations(workspaceDb);
       try {
         expect(workspaceDb.sqlite.prepare('SELECT outcome FROM vault_use_records').all()).toEqual([
@@ -3975,7 +4218,7 @@ describe('worker MCP routes', () => {
         const exportResponse = await exportApp.request(
           ...operationRequest(
             'workspace.export',
-            { workspaceId: 'ws_demo' },
+            { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
             {
               method: 'POST',
             }
@@ -3988,14 +4231,17 @@ describe('worker MCP routes', () => {
           'server',
           'exports',
           'workspaces',
-          'ws_demo',
+          'ws_00000000-0000-7000-8000-000000000001',
           exported.exportId
         );
         const publicAndDurableValues = [
           environmentPackage,
           result,
           store.listAllItems(),
-          store.listThreadTurns('ws_demo', 'th_demo'),
+          store.listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          ),
           store.listCommandRequests(),
           readDatabaseRows(coreDb.sqlite),
           readDatabaseRows(workspaceDb.sqlite),
@@ -4018,7 +4264,7 @@ describe('worker MCP routes', () => {
         workspaceDb.sqlite.close();
       }
 
-      const schemaDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const schemaDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       const snapshotCount = schemaDb.sqlite
         .prepare('SELECT COUNT(*) AS count FROM mcp_tool_schema_snapshots')
         .get();
@@ -4031,7 +4277,7 @@ describe('worker MCP routes', () => {
         client.callTool({ arguments: { message: 'metadata-leak' }, name: 'echo' })
       ).rejects.toMatchObject({ data: { code: 'mcp-server-unavailable' } });
       delete upstreamOptions.credentialListEcho;
-      const rejectedSchemaDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const rejectedSchemaDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       expect(
         rejectedSchemaDb.sqlite
           .prepare('SELECT COUNT(*) AS count FROM mcp_tool_schema_snapshots')
@@ -4071,7 +4317,10 @@ describe('worker MCP routes', () => {
       ).resolves.toMatchObject({ content: [{ text: 'reestablish' }] });
       const oldResolved = resolveWorkspaceMcpServer({ catalog, serverId: 'http-echo' });
       expect(
-        workerMcpGateway.getServerHealth({ server: oldResolved, workspaceId: 'ws_demo' })
+        workerMcpGateway.getServerHealth({
+          server: oldResolved,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        })
       ).toBe('inactive');
 
       const toolCallsBeforeMalformedExpiry = upstream.observed.filter((request) =>
@@ -4080,14 +4329,14 @@ describe('worker MCP routes', () => {
       const receiptsBeforeMalformedExpiry = coreDb.sqlite
         .prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts')
         .get();
-      const useDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const useDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       const usesBeforeMalformedExpiry = useDb.sqlite
         .prepare('SELECT COUNT(*) AS count FROM vault_use_records')
         .get();
       useDb.sqlite.close();
       coreDb.sqlite
         .prepare('UPDATE vault_grants SET expires_at = ? WHERE grant_id = ?')
-        .run('not-a-date', 'grant_mcp_http');
+        .run('not-a-date', 'grant_00000000-0000-7018-b534-d496e34b4c6a');
       const closeFailure = vi
         .spyOn(workerMcpGateway, 'closeServer')
         .mockRejectedValueOnce(new Error('injected credential cleanup failure'));
@@ -4101,26 +4350,33 @@ describe('worker MCP routes', () => {
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts').get()
       ).toEqual(receiptsBeforeMalformedExpiry);
-      const rejectedUseDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const rejectedUseDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       expect(
         rejectedUseDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_use_records').get()
       ).toEqual(usesBeforeMalformedExpiry);
       rejectedUseDb.sqlite.close();
       coreDb.sqlite
         .prepare('UPDATE vault_grants SET expires_at = NULL WHERE grant_id = ?')
-        .run('grant_mcp_http');
+        .run('grant_00000000-0000-7018-b534-d496e34b4c6a');
 
       const toolCallsBeforeRevoke = upstream.observed.filter((request) =>
         request.endsWith('|tools/call')
       ).length;
-      revokeVaultGrant(coreDb, { grantId: 'grant_mcp_http' });
+      const replacement = narrowVaultGrant(coreDb, {
+        grantId: 'grant_00000000-0000-7018-b534-d496e34b4c6a',
+        replacementGrantId: testEntityId('grant', 'grant_mcp_http_narrowed'),
+        constraints: {
+          targetAgentId: environmentPackage.agent.agentId,
+          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        },
+      });
       activeCatalog = {
         ...catalog,
         servers: [{ ...catalog.servers[0], timeoutMs: catalog.servers[0]!.timeoutMs + 1 }],
       };
       environmentPackage = resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
-        agentSessionId: 'as_mcp_vault',
+        agentSessionId: testEntityId('as', 'as_mcp_vault'),
         agentSetup: createTestAgentSetup({ mcpIds: ['http-echo'] }),
         backend: { kind: 'openshell' },
         createdAt: '2026-09-03T00:01:00.000Z',
@@ -4138,14 +4394,83 @@ describe('worker MCP routes', () => {
         toolCallsBeforeRevoke
       );
       expect(
-        workerMcpGateway.getServerHealth({ server: oldResolved, workspaceId: 'ws_demo' })
+        workerMcpGateway.getServerHealth({
+          server: oldResolved,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        })
       ).toBe('inactive');
+      activeCatalog = {
+        ...catalog,
+        servers: [
+          {
+            ...catalog.servers[0]!,
+            credentialBindings: [
+              {
+                ...catalog.servers[0]!.credentialBindings[0]!,
+                vaultGrantId: replacement.grant.grantId,
+              },
+            ],
+          },
+        ],
+      };
+      store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+      const closing = markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId: testEntityId('attempt', `lease_${turn.id}`),
+        cause: 'worker-final-status',
+        outcomeRef: `turn:${turn.id}:completed`,
+      });
+      // This fixture submits no Worker. All fake upstream exchanges completed and the old route is inactive.
+      const proof = {
+        terminalHandoff: true,
+        output: true,
+        evidence: true,
+        outsideWorkspaceCollection: true,
+        integrationDrain: true,
+        routesRevoked: true,
+      } as const;
+      const correlation = schedulerExecutionCorrelation(closing);
+      const release = await new SimulatedTurnExecutor({ coreDb }).release({
+        ...correlation,
+        proof,
+      });
+      closeSchedulerExecutionAttemptWithFence(coreDb, {
+        correlation,
+        proof,
+        fenceRef: release.fenceRef!,
+      });
+      const replacementTurn = store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Use the explicitly rebound grant',
+        turn.triggerActor
+      );
+      environmentPackage = resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
+        agentSessionId: testEntityId('as', 'as_mcp_rebound'),
+        agentSetup: createTestAgentSetup({ mcpIds: ['http-echo'] }),
+        backend: { kind: 'openshell' },
+        createdAt: new Date().toISOString(),
+        requestId: randomUUID(),
+        triggerActor: turn.triggerActor,
+        turn: replacementTurn,
+        workspaceCwd: '/workspace',
+        workspaceMcpServerCatalog: activeCatalog,
+        workspaceRoots: [],
+      });
+      recordMcpWorkerLineage(coreDb, environmentPackage);
+      await expect(
+        client.callTool({ arguments: { message: 'explicit replacement' }, name: 'echo' })
+      ).resolves.toMatchObject({ content: [{ text: 'explicit replacement' }] });
+      expect(upstream.observed.filter((request) => request.endsWith('|tools/call'))).toHaveLength(
+        toolCallsBeforeRevoke + 1
+      );
     } finally {
       await client.close();
       await workerMcpGateway.close();
       await upstream.close();
       vaultUnlockState.lock();
       coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 });

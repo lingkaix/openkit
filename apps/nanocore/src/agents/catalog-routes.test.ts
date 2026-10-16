@@ -9,7 +9,6 @@ import {
 import { WorkspaceResourcesResponseSchema } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb } from '../storage/db.js';
@@ -17,6 +16,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { projectAgentCatalogEntries } from './catalog-projection.js';
@@ -54,7 +54,7 @@ describe('agent.list and agent.read operations', () => {
     ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: allowedWorkspace.id,
     });
     const app = createApp({
@@ -130,7 +130,7 @@ describe('agent.list and agent.read operations', () => {
     for (const workspace of [allowedWorkspace, deniedWorkspace]) {
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: workspace.id,
       });
     }
@@ -157,19 +157,19 @@ describe('agent.list and agent.read operations', () => {
     });
     const serverAdmin = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'server-admin',
       workspaceIds: [],
     });
     const workspace = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace',
       workspaceIds: [allowedWorkspace.id],
     });
     const readonly = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace-readonly',
       workspaceIds: [allowedWorkspace.id],
     });
@@ -318,7 +318,7 @@ describe('agent.list and agent.read operations', () => {
           .prepare(
             `INSERT INTO users
               (id, display_name, email, email_verified, created_at, updated_at, kind)
-             VALUES ('user_replacement_owner', 'Replacement Owner',
+             VALUES ('usr_00000000-0000-7cfc-ba59-df60b2f09c20', 'Replacement Owner',
                      'catalog-replacement@example.com', false, ?, ?, 'human')`
           )
           .run(Date.now(), Date.now());
@@ -327,19 +327,19 @@ describe('agent.list and agent.read operations', () => {
             `INSERT INTO workspace_members (
               workspace_id, user_id, status, access_level, invitation_id,
               joined_at, removed_at, revision, created_at, updated_at
-            ) VALUES (?, 'user_replacement_owner', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+            ) VALUES (?, 'usr_00000000-0000-7cfc-ba59-df60b2f09c20', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
           )
           .run(allowedWorkspace.id, transferredAt, transferredAt, transferredAt);
         coreDb.sqlite
           .prepare(
             `UPDATE workspace_registry
-             SET owner_user_id = 'user_replacement_owner', revision = revision + 1, updated_at = ?
+             SET owner_user_id = 'usr_00000000-0000-7cfc-ba59-df60b2f09c20', revision = revision + 1, updated_at = ?
              WHERE workspace_id = ?`
           )
           .run(transferredAt, allowedWorkspace.id);
         coreDb.sqlite
           .prepare('DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-          .run(allowedWorkspace.id, 'user_local');
+          .run(allowedWorkspace.id, 'usr_00000000-0000-7000-8000-000000000001');
       })();
 
       for (const token of [workspace, readonly]) {
@@ -406,7 +406,7 @@ describe('agent.list and agent.read operations', () => {
       workspace: { env: { OPENAI_API_KEY: secretEnv } },
     };
     const store = createDemoStore();
-    store.upsertAgent('ws_demo', {
+    store.upsertAgent('ws_00000000-0000-7000-8000-000000000001', {
       capabilities: [],
       defaultProfileId: null,
       health: { checkedAt: null, message: null, status: 'unknown' },
@@ -428,7 +428,7 @@ describe('agent.list and agent.read operations', () => {
     const resourcesRes = await app.request('/api/app/operations/workspace.resources', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ workspaceId: 'ws_demo' }),
+      body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
     });
     const listRes = await app.request(
       ...operationRequest(
@@ -481,7 +481,7 @@ describe('agent.list and agent.read operations', () => {
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ workspaceId: 'ws_demo' }),
+          body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
         }
       )
     );

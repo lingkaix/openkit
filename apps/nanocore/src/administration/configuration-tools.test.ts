@@ -1,8 +1,8 @@
 import { PrepareWorkerEnvironmentRequestSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
-
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { createAdministrationConfigurationTools } from './configuration-tools.js';
 
 const CONFIG_REVISION = `sha256:${'a'.repeat(64)}`;
@@ -35,6 +35,7 @@ describe('administration configuration Tools', () => {
       read: vi.fn(),
       schema: vi.fn(),
       propose: vi.fn(),
+      applyDelegated: vi.fn(),
     });
     expect(tools[0].inputSchema).toEqual({
       additionalProperties: false,
@@ -85,7 +86,7 @@ describe('administration configuration Tools', () => {
     expect(serialized).not.toContain('tenant-row');
     expect(
       PrepareWorkerEnvironmentRequestSchema.parse({
-        administrationThreadId: 'thread_administration',
+        administrationThreadId: testEntityId('th', 'thread_administration'),
         configuration: payload.configuration,
         declaration: payload.agent.runtime.image,
         mode: 'prepare',
@@ -125,6 +126,7 @@ describe('administration configuration Tools', () => {
       read: vi.fn(),
       schema: vi.fn(),
       propose: vi.fn(),
+      applyDelegated: vi.fn(),
     });
 
     const schema = await tools[1].execute(
@@ -133,5 +135,15 @@ describe('administration configuration Tools', () => {
     );
     expect(JSON.stringify(schema.content)).toContain('OpenKit agent config');
     expect(JSON.stringify(schema.content)).toContain('pullPolicy');
+    const body = JSON.parse((schema.content[0] as { text: string }).text);
+    expect(body.gitReadCorrection).toMatchObject({
+      additionalProperties: false,
+      required: ['targetFamily', 'targetId', 'expectedRevision', 'failure', 'changes'],
+      properties: { changes: { additionalProperties: false } },
+    });
+    expect(Object.keys(body.gitReadCorrection.properties.changes.properties)).toEqual([
+      'networkGrantId',
+      'rules',
+    ]);
   });
 });

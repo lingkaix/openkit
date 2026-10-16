@@ -29,12 +29,24 @@ const TIMESTAMP = '2026-07-21T12:00:00.000Z';
 const HOST_PATH = '/Users/secret/openkit-staging';
 const RAW_HANDLE = 'sandbox-pid-9999-gateway-xyz';
 const POISON_SECRET = 'sk-secret-should-never-render';
-const WORKSPACE = { id: 'ws1', name: 'Market research', kind: 'general' } as const;
-const WORKSPACE_B = { id: 'ws2', name: 'Second workspace', kind: 'general' } as const;
-const QUICK_CHAT_WORKSPACE = {
-  id: 'ws_quick_chat',
-  name: 'Quick Chat',
+const WORKSPACE = {
+  id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  name: 'Market research',
+  kind: 'general',
+} as const;
+const WORKSPACE_B = {
+  id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+  name: 'Second workspace',
+  kind: 'general',
+} as const;
+const PERSONAL_WORKSPACE = {
+  id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+  name: 'Personal',
   kind: 'personal',
+  status: 'active',
+  counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+  createdAt: TIMESTAMP,
+  updatedAt: TIMESTAMP,
 } as const;
 const EVIDENCE_BUNDLE_ID = 'evb_wrr_1';
 const PENDING_PATCH_TEXT = 'diff --git a/docs/spec.md b/docs/spec.md\n';
@@ -88,7 +100,7 @@ const MATERIALIZATION = WorkspaceMaterializationRecordSchema.parse({
   workspaceId: WORKSPACE.id,
   backendKind: 'openshell',
   packageSnapshotId: 'aepsnap_1',
-  workerSessionId: 'session_1',
+  workerSessionId: 'as_00000000-0000-7fee-81f4-cfcfc003f25f',
   strategy: 'git',
   materializedRootRef: HOST_PATH,
   base: { commit: 'abc123', contentDigest: null },
@@ -103,7 +115,7 @@ const BACKEND_HANDLE = BackendWorkspaceHandleSchema.parse({
   materializationRecordId: MATERIALIZATION.id,
   backendKind: 'openshell',
   packageSnapshotId: 'aepsnap_1',
-  workerSessionId: 'session_1',
+  workerSessionId: 'as_00000000-0000-7fee-81f4-cfcfc003f25f',
   transportRefs: [
     { kind: 'host-path', ref: HOST_PATH },
     { kind: 'runtime', ref: RAW_HANDLE },
@@ -119,11 +131,11 @@ const OUTPUT_MANIFEST = WorkerOutputManifestSchema.parse({
   workspaceId: WORKSPACE.id,
   materializationRecordId: MATERIALIZATION.id,
   inputSnapshotId: INPUT_SNAPSHOT.id,
-  workerSessionId: 'session_1',
+  workerSessionId: 'as_00000000-0000-7fee-81f4-cfcfc003f25f',
   backendKind: 'openshell',
   strategy: 'git',
   changedPaths: [{ path: 'docs/spec.md', status: 'modified', binary: false }],
-  artifactIds: ['ar_workspace_changes_1'],
+  artifactIds: ['ar_00000000-0000-7e93-b881-32f3f8c0b14a'],
   logRefs: [],
   testOutputRefs: [],
   ignoredOutputs: [],
@@ -143,8 +155,8 @@ const CHANGE_SET = WorkspaceChangeSetSchema.parse({
   changedPaths: [{ path: 'docs/spec.md', status: 'modified', binary: false }],
   patch: { ref: 'artifact://patch', digest: 'sha256:patch', bytes: PENDING_PATCH_TEXT.length },
   bundle: null,
-  artifactIds: ['ar_workspace_changes_1'],
-  evidenceRefs: [{ kind: 'worker', ref: 'turn_demo' }],
+  artifactIds: ['ar_00000000-0000-7e93-b881-32f3f8c0b14a'],
+  evidenceRefs: [{ kind: 'worker', ref: 'tu_00000000-0000-77e3-bfde-66477d556f64' }],
   redaction: { status: 'redacted', notes: [] },
   createdAt: TIMESTAMP,
 });
@@ -165,8 +177,10 @@ const PENDING_STAGED_REVIEW = StagedWorkspaceReviewSchema.parse({
     deletions: PENDING_PATCH_STATS.deletions,
   },
   riskSummary: '1 changed path staged for human review.',
-  validation: [{ command: 'worker', status: 'passed', ref: 'turn_demo' }],
-  actionCenterRowId: 'workspace-review:swr_pending',
+  validation: [
+    { command: 'worker', status: 'passed', ref: 'tu_00000000-0000-77e3-bfde-66477d556f64' },
+  ],
+  actionCenterRowId: 'ws_00000000-0000-760b-95ac-b784a71280a8:swr_pending',
   createdAt: TIMESTAMP,
   updatedAt: TIMESTAMP,
 });
@@ -179,11 +193,11 @@ const REJECTED_STAGED_REVIEW = StagedWorkspaceReviewSchema.parse({
     ...PENDING_STAGED_REVIEW.staging,
     branch: 'openkit/review/swr_rejected',
   },
-  actionCenterRowId: 'workspace-review:swr_rejected',
+  actionCenterRowId: 'ws_00000000-0000-760b-95ac-b784a71280a8:swr_rejected',
 });
 
 const PENDING_REVIEW = WorkspaceSyncReviewItemSchema.parse({
-  artifactId: 'ar_workspace_changes_1',
+  artifactId: 'ar_00000000-0000-7e93-b881-32f3f8c0b14a',
   changeSet: CHANGE_SET,
   patchPayload: {
     mediaType: 'text/x-diff',
@@ -196,7 +210,7 @@ const PENDING_REVIEW = WorkspaceSyncReviewItemSchema.parse({
 
 const REJECTED_REVIEW = WorkspaceSyncReviewItemSchema.parse({
   ...PENDING_REVIEW,
-  artifactId: 'ar_workspace_changes_rejected',
+  artifactId: 'ar_00000000-0000-70cd-a14b-0251218c0b23',
   review: REJECTED_STAGED_REVIEW,
 });
 
@@ -270,12 +284,12 @@ const RECOVERED_RECORD = WorkspaceReconciliationRecordSchema.parse({
 const PENDING_STAGED_REVIEW_B = StagedWorkspaceReviewSchema.parse({
   ...PENDING_STAGED_REVIEW,
   id: 'swr_pending_b',
-  actionCenterRowId: 'workspace-review:swr_pending_b',
+  actionCenterRowId: 'ws_00000000-0000-760b-95ac-b784a71280a8:swr_pending_b',
 });
 
 const PENDING_REVIEW_B = WorkspaceSyncReviewItemSchema.parse({
   ...PENDING_REVIEW,
-  artifactId: 'ar_workspace_changes_b',
+  artifactId: 'ar_00000000-0000-78e2-922f-ff9a01644bbe',
   review: PENDING_STAGED_REVIEW_B,
 });
 
@@ -325,7 +339,7 @@ const PREVIEW_ARTIFACT_BODY = 'Exact workspace preview artifact body for inspect
 const PREVIEW_CHANGE_SET = WorkspaceChangeSetSchema.parse({
   ...CHANGE_SET,
   id: 'wcs_preview',
-  artifactIds: ['ar_workspace_preview_1'],
+  artifactIds: ['ar_00000000-0000-7337-8118-bcbd0f176ce6'],
   changedPaths: [
     {
       path: 'docs/overview.md',
@@ -378,12 +392,12 @@ const PREVIEW_STAGED_REVIEW = StagedWorkspaceReviewSchema.parse({
     ...PENDING_STAGED_REVIEW.staging,
     branch: 'openkit/review/swr_preview',
   },
-  actionCenterRowId: 'workspace-review:swr_preview',
+  actionCenterRowId: 'ws_00000000-0000-760b-95ac-b784a71280a8:swr_preview',
 });
 
 const PREVIEW_REVIEW = WorkspaceSyncReviewItemSchema.parse({
   ...PENDING_REVIEW,
-  artifactId: 'ar_workspace_preview_1',
+  artifactId: 'ar_00000000-0000-7337-8118-bcbd0f176ce6',
   changeSet: PREVIEW_CHANGE_SET,
   patchPayload: {
     mediaType: 'text/x-diff',
@@ -397,8 +411,8 @@ const PREVIEW_REVIEW = WorkspaceSyncReviewItemSchema.parse({
 const PREVIEW_ARTIFACT = ArtifactSchema.parse({
   id: PREVIEW_REVIEW.artifactId,
   workspaceId: WORKSPACE.id,
-  threadId: 'th_workspace_preview',
-  turnId: 'tu_workspace_preview',
+  threadId: 'th_00000000-0000-763e-8d63-562643449819',
+  turnId: 'tu_00000000-0000-7a7f-a8c9-a687a87389df',
   kind: 'diff',
   title: 'Workspace preview patch',
   status: 'ready',
@@ -409,8 +423,8 @@ const PREVIEW_ARTIFACT = ArtifactSchema.parse({
   lastMutationRequestId: 'req_workspace_preview',
   origin: {
     kind: 'turn-output',
-    threadId: 'th_workspace_preview',
-    turnId: 'tu_workspace_preview',
+    threadId: 'th_00000000-0000-763e-8d63-562643449819',
+    turnId: 'tu_00000000-0000-7a7f-a8c9-a687a87389df',
     requestId: 'req_workspace_preview',
   },
   createdAt: TIMESTAMP,
@@ -440,20 +454,20 @@ const PRESENTATION_REVIEW = WorkspaceSyncReviewItemSchema.parse({
   review: {
     ...PENDING_STAGED_REVIEW,
     validation: [
-      { command: 'worker', status: 'failed', ref: 'turn_demo' },
-      { command: 'lint', status: 'passed', ref: 'turn_demo' },
+      { command: 'worker', status: 'failed', ref: 'tu_00000000-0000-77e3-bfde-66477d556f64' },
+      { command: 'lint', status: 'passed', ref: 'tu_00000000-0000-77e3-bfde-66477d556f64' },
     ],
   },
 });
 
 const MISSING_PATCH_REVIEW = WorkspaceSyncReviewItemSchema.parse({
   ...PENDING_REVIEW,
-  artifactId: 'ar_workspace_changes_missing_patch',
+  artifactId: 'ar_00000000-0000-7b8a-af4c-53586a262307',
   patchPayload: null,
   review: {
     ...PENDING_STAGED_REVIEW,
     id: 'swr_missing_patch',
-    actionCenterRowId: 'workspace-review:swr_missing_patch',
+    actionCenterRowId: 'ws_00000000-0000-760b-95ac-b784a71280a8:swr_missing_patch',
   },
 });
 
@@ -509,7 +523,7 @@ function makeClient(operations: OperationOverrides = {}, core: CoreOverrides = {
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         })
@@ -523,7 +537,7 @@ function makeClient(operations: OperationOverrides = {}, core: CoreOverrides = {
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
-                ownerUserId: 'user_local',
+                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
                 registryRevision: 1,
               })),
             })
@@ -913,11 +927,11 @@ describe('Workspace changes', () => {
 
   it('preserves authoritative rows and offers safe retry after a typed review failure', async () => {
     const user = userEvent.setup();
-    const submitWorkspaceSyncReviewDecision = vi
-      .fn()
-      .mockRejectedValue(
-        new ApiCallError(409, 'workspace-sync-private failure', { code: 'recovery_required' })
-      );
+    const submitWorkspaceSyncReviewDecision = vi.fn().mockRejectedValue(
+      new ApiCallError(409, 'ws_00000000-0000-7d13-8697-d4a979b4c6e2 failure', {
+        code: 'recovery_required',
+      })
+    );
     const client = makeClient({ 'sync.review-decide': submitWorkspaceSyncReviewDecision });
     renderApp('/workspace-changes', client);
 
@@ -929,7 +943,7 @@ describe('Workspace changes', () => {
 
     const alert = await screen.findByRole('alert');
     expect(within(alert).getByText('Recovery required', { exact: true })).toBeInTheDocument();
-    expect(alert).not.toHaveTextContent('workspace-sync-private failure');
+    expect(alert).not.toHaveTextContent('ws_00000000-0000-7d13-8697-d4a979b4c6e2 failure');
     expect(reviews).toHaveTextContent(PENDING_STAGED_REVIEW.riskSummary);
     expect(
       within(reviews).getByRole('button', { name: `Accept ${PENDING_STAGED_REVIEW.id}` })
@@ -949,53 +963,61 @@ describe('Workspace changes', () => {
     expect(document.documentElement.outerHTML).not.toContain(POISON_SECRET);
   });
 
-  it('does not publish Workspace changes or call Sync APIs for Quick Chat', async () => {
-    const surface = surfaceById('workspace-changes');
-    expect(surface).toMatchObject({
-      title: 'Workspace changes',
-      path: '/workspace-changes',
-      tier: 'A',
-      nav: 'workspace-compact',
-    });
-
-    const client = makeClient(
-      {},
-      {
-        'workspace.list': vi.fn().mockResolvedValue({
-          items: [QUICK_CHAT_WORKSPACE].map((workspace) => ({
-            membershipStatus: 'active' as const,
-            accessCause: 'membership' as const,
-            workspace,
+  it.each([
+    false,
+    true,
+  ])('shows ordinary personal Workspace changes with exact scoped reads and no hidden mutation (selected=%s)', async (selected) => {
+    if (selected) useWorkspaceStore.setState({ currentWorkspaceId: PERSONAL_WORKSPACE.id });
+    const client = makeClient();
+    vi.mocked(client.operations['workspace.list'])
+      .mockReset()
+      .mockResolvedValue({
+        items: [
+          {
+            workspace: PERSONAL_WORKSPACE,
+            membershipStatus: 'active',
+            accessCause: 'membership',
             effectiveRole: 'owner',
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
-          })),
-        }),
-      }
-    );
+          },
+        ],
+      });
+    const reads = [
+      'sync.review-list',
+      'sync.input-snapshot-list',
+      'sync.materialization-list',
+      'sync.backend-handle-list',
+      'sync.output-manifest-list',
+      'sync.change-set-list',
+      'sync.staged-review-list',
+      'sync.apply-plan-list',
+      'sync.apply-result-list',
+      'sync.reconciliation-list',
+      'sync.quarantine-list',
+    ] as const;
+    for (const operation of reads)
+      vi.mocked(client.operations[operation]).mockResolvedValue({ items: [] });
     renderApp('/workspace-changes', client);
 
-    expect(await screen.findByText(QUICK_CHAT_WORKSPACE.name, { exact: true })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Workspace changes' })).not.toBeInTheDocument();
     expect(
-      screen.queryByRole('heading', { level: 1, name: 'Workspace changes' })
-    ).not.toBeInTheDocument();
-    expect(syncCalls(client)).toEqual({
-      listReviews: [],
+      await screen.findByRole('heading', { level: 1, name: 'Workspace changes' })
+    ).toBeInTheDocument();
+    expect(screen.getByText(PERSONAL_WORKSPACE.name, { exact: true })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Workspace changes' })).toBeInTheDocument();
+    expect(await screen.findByText('No reviews', { exact: true })).toBeInTheDocument();
+    expect(screen.getByRole('main', { name: 'Workspace' })).not.toHaveTextContent(
+      /workspace changes is unavailable/i
+    );
+    for (const operation of reads)
+      expect(vi.mocked(client.operations[operation]).mock.calls, operation).toEqual([
+        [{ workspaceId: PERSONAL_WORKSPACE.id }],
+      ]);
+    expect(syncCalls(client)).toMatchObject({
       getReview: [],
       submitDecision: [],
-      listSnapshots: [],
-      listMaterializations: [],
-      listHandles: [],
-      listManifests: [],
-      listChangeSets: [],
-      listStaged: [],
-      listPlans: [],
-      listResults: [],
       getResult: [],
-      listRecovery: [],
-      listQuarantine: [],
       submitRecovery: [],
     });
   });
@@ -1032,7 +1054,7 @@ describe('Workspace changes', () => {
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         }),
@@ -1065,7 +1087,9 @@ describe('Workspace changes', () => {
 
     await act(async () => {
       workspaceADecision.reject(
-        new ApiCallError(409, 'workspace-sync-private failure', { code: 'recovery_required' })
+        new ApiCallError(409, 'ws_00000000-0000-7d13-8697-d4a979b4c6e2 failure', {
+          code: 'recovery_required',
+        })
       );
       await workspaceADecision.promise.catch(() => undefined);
     });
@@ -1088,7 +1112,7 @@ describe('Workspace changes', () => {
     const listWorkspaceSyncReviews = vi
       .fn()
       .mockResolvedValueOnce({ items: [PENDING_REVIEW, REJECTED_REVIEW] })
-      .mockRejectedValue(new Error('workspace-sync-private refetch failure'));
+      .mockRejectedValue(new Error('ws_00000000-0000-7d13-8697-d4a979b4c6e2 refetch failure'));
     const submitWorkspaceSyncReviewDecision = vi.fn().mockResolvedValue({
       review: ACCEPTED_REVIEW.review,
       workspaceApplyResult: APPLY_RESULT,
@@ -1109,7 +1133,7 @@ describe('Workspace changes', () => {
     await waitFor(() => expect(listWorkspaceSyncReviews).toHaveBeenCalledTimes(2));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/couldn't load/i);
-    expect(alert).not.toHaveTextContent('workspace-sync-private refetch failure');
+    expect(alert).not.toHaveTextContent('ws_00000000-0000-7d13-8697-d4a979b4c6e2 refetch failure');
     expect(reviews).toHaveTextContent(PENDING_STAGED_REVIEW.riskSummary);
     expect(within(reviews).getByText('Pending', { exact: true })).toBeInTheDocument();
     expect(
@@ -1431,48 +1455,5 @@ describe('Workspace changes', () => {
     expect(within(recovery).getByText(EVIDENCE_BUNDLE_ID)).toBeInTheDocument();
     expect(within(recovery).getByText(OUTPUT_MANIFEST.id)).toBeInTheDocument();
     expectNoRecoveryDecisionActions(recovery);
-  });
-
-  it('renders a truthful unsupported or empty state instead of a blank pane for Quick Chat', async () => {
-    useWorkspaceStore.setState({ currentWorkspaceId: QUICK_CHAT_WORKSPACE.id });
-    const client = makeClient(
-      {},
-      {
-        'workspace.list': vi.fn().mockResolvedValue({
-          items: [QUICK_CHAT_WORKSPACE].map((workspace) => ({
-            membershipStatus: 'active' as const,
-            accessCause: 'membership' as const,
-            workspace,
-            effectiveRole: 'owner',
-            membershipRevision: 1,
-            ownerUserId: 'user_local',
-            registryRevision: 1,
-          })),
-        }),
-      }
-    );
-    renderApp('/workspace-changes', client);
-
-    expect(await screen.findByText(QUICK_CHAT_WORKSPACE.name, { exact: true })).toBeInTheDocument();
-    const main = screen.getByRole('main', { name: 'Workspace' });
-    expect(main).toHaveTextContent(/workspace changes is unavailable/i);
-    expect(main).toHaveTextContent(/create or select an eligible project workspace/i);
-    expect(syncCalls(client)).toEqual({
-      listReviews: [],
-      getReview: [],
-      submitDecision: [],
-      listSnapshots: [],
-      listMaterializations: [],
-      listHandles: [],
-      listManifests: [],
-      listChangeSets: [],
-      listStaged: [],
-      listPlans: [],
-      listResults: [],
-      getResult: [],
-      listRecovery: [],
-      listQuarantine: [],
-      submitRecovery: [],
-    });
   });
 });

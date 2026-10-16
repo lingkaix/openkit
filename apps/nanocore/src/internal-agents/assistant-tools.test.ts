@@ -1,6 +1,12 @@
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createAssistantTools } from './assistant-tools.js';
 import type { AgentTool } from './internal-agent-loop.js';
+
+const workspaceId = allocateEntityId('ws');
+const threadId = allocateEntityId('th');
+const turnId = allocateEntityId('tu');
+const goalThreadId = allocateEntityId('th');
 
 const placeholder = (name: string): AgentTool => ({
   name,
@@ -19,9 +25,9 @@ function fixture(privateEntry = true) {
     invoke,
     assertCurrent,
     ...createAssistantTools({
-      workspaceId: 'selected-workspace',
-      threadId: 'querying-thread',
-      turnId: 'admitted-turn',
+      workspaceId,
+      threadId,
+      turnId,
       privateEntry,
       history: placeholder('thread.history.read'),
       skill: placeholder('skill.read'),
@@ -103,7 +109,7 @@ describe('ordinary Assistant fixed Tools', () => {
       AbortSignal,
     ];
     expect(first[0]).toBe('kernel.apps.retire');
-    expect(first[1]).toMatchObject({ ...value, workspaceId: 'selected-workspace' });
+    expect(first[1]).toMatchObject({ ...value, workspaceId });
     expect(first[1].requestId).not.toBe('model-correlation-only');
     expect(first[1].requestId).not.toBe(second[1].requestId);
     const repeatedAssembly = fixture();
@@ -127,7 +133,7 @@ describe('ordinary Assistant fixed Tools', () => {
     expect(result.isError).toBe(false);
     expect(run.proposedHandoff()).toEqual({
       kind: 'task',
-      targetWorkspaceId: 'selected-workspace',
+      targetWorkspaceId: workspaceId,
       input,
       agentId: 'selected-agent',
       modelId: 'logical-model',
@@ -143,7 +149,7 @@ describe('ordinary Assistant fixed Tools', () => {
     const tool = run.tools.find((tool) => tool.name === 'goal.card.create')!;
     const result = await tool.execute(
       {
-        targetThreadId: 'goal-coordinator-thread',
+        targetThreadId: goalThreadId,
         goalId: 'goal',
         description: 'A desired contribution',
       },
@@ -153,8 +159,8 @@ describe('ordinary Assistant fixed Tools', () => {
     expect(run.invoke).toHaveBeenCalledWith(
       'goal.card.create',
       expect.objectContaining({
-        workspaceId: 'selected-workspace',
-        threadId: 'goal-coordinator-thread',
+        workspaceId,
+        threadId: goalThreadId,
         goalId: 'goal',
         description: 'A desired contribution',
       }),

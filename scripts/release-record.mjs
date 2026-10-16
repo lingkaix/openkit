@@ -1,10 +1,12 @@
 #!/usr/bin/env node
+import { createHash } from 'node:crypto';
 /** Offline manifest, reviewed draft and private closeout projections of existing release evidence. */
-import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { createReleaseNotes, parseReleaseNotesInput } from './release-notes.mjs';
+import { parseVersionTag, readReleaseAssessment } from './release-preflight.mjs';
 import { noSecrets } from './release-safety.mjs';
 
 const SHA256 = /^sha256:[a-f0-9]{64}$/u;
@@ -14,9 +16,15 @@ export function createReleaseManifest({ repository, tag, sha, images, checksums,
   const fail = (message) => {
     throw Error(`Release Management: manifest refused: ${message}`);
   };
+  let version;
+  try {
+    version = parseVersionTag(tag);
+  } catch {
+    fail('source identity');
+  }
   if (
     !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/u.test(repository ?? '') ||
-    !/^v\d+\.\d+\.\d+-[a-z0-9.]+$/u.test(tag ?? '') ||
+    !version.includes('-') ||
     !/^[a-f0-9]{40}$/u.test(sha ?? '')
   )
     fail('source identity');
@@ -122,6 +130,63 @@ export function createReleaseManifest({ repository, tag, sha, images, checksums,
     assets: assets.sort((a, b) => a.name.localeCompare(b.name)),
     assertions,
   };
+}
+
+/** Produce or independently compare the fifth attachment and its non-circular checksum entry. */
+export function publicationManifest({
+  repoRoot,
+  tag,
+  sha,
+  repository,
+  recordsDir,
+  assetsDir,
+  verify = false,
+}) {
+  const name = `openkit-release-${tag}.json`;
+  const images = readdirSync(recordsDir)
+    .filter((n) => n.endsWith('.json'))
+    .map((n) => JSON.parse(readFileSync(join(recordsDir, n), 'utf8')));
+  const sumFile = join(assetsDir, 'SHA256SUMS');
+  const lines = readFileSync(sumFile, 'utf8').trimEnd().split('\n');
+  const selfLines = lines.filter((line) => line.endsWith(`  ${name}`));
+  if (selfLines.length !== (verify ? 1 : 0))
+    throw Error(
+      'Release Management: manifest checksum entry is missing, repeated or already written'
+    );
+  const archiveLines = lines.filter((line) => !line.endsWith(`  ${name}`));
+  const facts = readReleaseAssessment(repoRoot, tag);
+  const manifest = createReleaseManifest({
+    repository,
+    tag,
+    sha,
+    images,
+    checksums: `${archiveLines.join('\n')}\n`,
+    assertions: {
+      ...facts,
+      sourceCommit: sha,
+      appDigest: images.find((i) => i.id === 'app')?.digest,
+    },
+  });
+  const bytes = `${JSON.stringify(manifest, null, 2)}\n`;
+  const digest = (value) => createHash('sha256').update(value).digest('hex');
+  const entry = `${digest(bytes)}  ${name}`;
+  if (verify) {
+    if (
+      selfLines[0] !== entry ||
+      !lstatSync(join(assetsDir, name)).isFile() ||
+      readFileSync(join(assetsDir, name), 'utf8') !== bytes
+    )
+      throw Error('Release Management: downloaded manifest differs from publication facts');
+    for (const asset of manifest.assets) {
+      const file = join(assetsDir, asset.name);
+      if (!lstatSync(file).isFile() || digest(readFileSync(file)) !== asset.sha256)
+        throw Error('Release Management: downloaded portable checksum mismatch');
+    }
+  } else {
+    writeFileSync(join(assetsDir, name), bytes, { flag: 'wx' });
+    writeFileSync(sumFile, `${archiveLines.join('\n')}\n${entry}\n`);
+  }
+  return manifest;
 }
 
 const CHANGES_HEADING = 'Changes since the previous candidate';
@@ -233,6 +298,8 @@ function main() {
   const { values: args } = parseArgs({
     options: Object.fromEntries(
       [
+        'publication-assets',
+        'verify-publication-assets',
         'repo-root',
         'tag',
         'draft-input',
@@ -255,6 +322,18 @@ function main() {
   const tag = args.tag ?? '';
   if (!tag) throw Error('Release record tag is required.');
   const json = (file) => JSON.parse(readFileSync(file, 'utf8'));
+  if (args['publication-assets'] || args['verify-publication-assets']) {
+    publicationManifest({
+      repoRoot: args['repo-root'] ?? process.cwd(),
+      tag,
+      sha: args.sha,
+      repository: args.repository,
+      recordsDir: args.records,
+      assetsDir: args['publication-assets'] ?? args['verify-publication-assets'],
+      verify: Boolean(args['verify-publication-assets']),
+    });
+    return;
+  }
   if (args['draft-input']) {
     if (!args.output) throw Error('Release record output path is required.');
     const draft = draftReleaseNotes(json(args['draft-input']));

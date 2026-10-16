@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveWorkspaceMcpServer } from '@openkit/config-schema';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   projectWorkspaceCatalogExport,
   reconstructImportedWorkspaceCatalog,
@@ -86,6 +86,60 @@ function catalogHasStagingResidue(dataRoot: string, workspaceId: string): boolea
 }
 
 describe('workspace resource catalog', () => {
+  it('refuses candidate entropy failure before changing catalog or payload bytes', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-candidate-entropy-'));
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const producer = { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' as const };
+    try {
+      const created = importWorkspaceSkill({
+        activate: true,
+        createdAt: '2026-09-08T00:00:00.000Z',
+        dataRoot,
+        displayName: 'Repo Guidelines',
+        expectedRevision: 0,
+        producer,
+        tree: skillTree('# retained version'),
+        workspaceId,
+      });
+      /** Captures the isolated catalog and payload inventory with every exact file byte. */
+      const snapshot = () =>
+        readdirSync(dataRoot, { recursive: true, encoding: 'utf8' })
+          .sort()
+          .map((relative) => {
+            const path = join(dataRoot, relative);
+            return [
+              relative,
+              statSync(path).isFile() ? readFileSync(path).toString('base64') : null,
+            ];
+          });
+      const before = snapshot();
+      const entropy = vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation(() => {
+        throw new Error('Synthetic entropy failure.');
+      });
+      try {
+        expect(() =>
+          submitWorkspaceSkillCandidate({
+            baseDigest: created.version.digest,
+            createdAt: '2026-09-08T00:01:00.000Z',
+            dataRoot,
+            entryId: created.version.entryId,
+            expectedRevision: created.catalog.revision,
+            producer,
+            summary: 'Propose a new version.',
+            tree: skillTree('# candidate version'),
+            workspaceId,
+          })
+        ).toThrow('Synthetic entropy failure.');
+      } finally {
+        entropy.mockRestore();
+      }
+      expect(loadWorkspaceResourceCatalog(dataRoot, workspaceId)).toEqual(created.catalog);
+      expect(snapshot()).toEqual(before);
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
   it('preserves every descriptive catalog annotation through revision mutations and reopening', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-extensions-'));
     const packageRoot = join(dataRoot, 'plugin-source');
@@ -96,14 +150,14 @@ describe('workspace resource catalog', () => {
         dataRoot,
         expectedRevision: 0,
         install: true,
-        producer: { id: 'user_local', kind: 'user' },
+        producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
         treeRoot: packageRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const skill = imported.catalog.skills.versions[0]!;
       const pinned = setWorkspaceSkillPin({
         dataRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         entryId: skill.entryId,
         digest: skill.digest,
         expectedRevision: imported.catalog.revision,
@@ -117,14 +171,14 @@ describe('workspace resource catalog', () => {
         producer: { id: 'agent_one', kind: 'agent' },
         summary: 'Improve the Skill',
         tree: skillTree('# Improved'),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const mcp = candidate.catalog.mcp.versions[0]!;
       expect(mcp.packageRootDigest).toBe(imported.version.digest);
       expect(mcp.digest).not.toBe(imported.version.digest);
       const selected = selectWorkspaceMcpVersion({
         dataRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         entryId: mcp.entryId,
         digest: mcp.digest,
         expectedRevision: candidate.catalog.revision,
@@ -132,7 +186,7 @@ describe('workspace resource catalog', () => {
       });
       const bound = updateWorkspaceMcpBinding({
         dataRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         entryId: mcp.entryId,
         expectedRevision: selected.revision,
         binding: {
@@ -147,12 +201,15 @@ describe('workspace resource catalog', () => {
           timeoutMs: 1000,
         },
       });
-      const path = catalogDocumentPath(dataRoot, 'ws_demo');
+      const path = catalogDocumentPath(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       // Populate the override observation with a real package member, including its produced identity.
       bound.plugins.installations[0]!.memberOverrides.push(bound.plugins.versions[0]!.members[0]!);
       const extended = annotateCatalogHistory(bound);
       writeFileSync(path, JSON.stringify(extended));
-      const loaded = loadWorkspaceResourceCatalog(dataRoot, 'ws_demo');
+      const loaded = loadWorkspaceResourceCatalog(
+        dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       expect(loaded).toEqual(bound);
       expect(JSON.stringify(loaded)).not.toContain('futureAnnotation');
       const effective = projectEffectiveWorkspaceMcpCatalog(loaded);
@@ -166,24 +223,29 @@ describe('workspace resource catalog', () => {
       ).toBe(beforeDigest);
       const next = setWorkspaceSkillPin({
         dataRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         entryId: skill.entryId,
         digest: skill.digest,
         expectedRevision: loaded.revision,
       });
-      expect(loadWorkspaceResourceCatalog(dataRoot, 'ws_demo')).toEqual(next);
+      expect(
+        loadWorkspaceResourceCatalog(dataRoot, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual(next);
       expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({
         ...(extended as object),
         revision: next.revision,
       });
       const updated = updateWorkspaceMcpBinding({
         dataRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         entryId: mcp.entryId,
         expectedRevision: next.revision,
         binding: { ...bound.mcp.bindings[0]!, timeoutMs: 2000 },
       });
-      const reopened = loadWorkspaceResourceCatalog(dataRoot, 'ws_demo');
+      const reopened = loadWorkspaceResourceCatalog(
+        dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       expect(reopened.mcp.bindings[0]).toEqual({
         ...loaded.mcp.bindings[0],
         revision: 2,
@@ -202,7 +264,7 @@ describe('workspace resource catalog', () => {
       expect(() =>
         setWorkspaceSkillPin({
           dataRoot,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           entryId: skill.entryId,
           digest: skill.digest,
           expectedRevision: loaded.revision,
@@ -211,36 +273,42 @@ describe('workspace resource catalog', () => {
       const bad = structuredClone(reopened);
       Object.assign(bad.mcp.versions[0]!.declaration, { futureInstruction: 'execute' });
       writeFileSync(path, JSON.stringify(bad));
-      expect(() => loadWorkspaceResourceCatalog(dataRoot, 'ws_demo')).toThrow();
+      expect(() =>
+        loadWorkspaceResourceCatalog(dataRoot, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toThrow();
       const corrupt = structuredClone(extended) as typeof bound;
       const declaration = corrupt.mcp.versions[0]!.declaration;
       if (declaration.kind !== 'stdio') throw new Error('Expected a produced stdio declaration');
       declaration.command = 'different-command';
       writeFileSync(path, JSON.stringify(corrupt));
-      expect(() => loadWorkspaceResourceCatalog(dataRoot, 'ws_demo')).toThrow(
-        /configuration digest mismatch/
-      );
+      expect(() =>
+        loadWorkspaceResourceCatalog(dataRoot, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toThrow(/configuration digest mismatch/);
       for (const coreChange of [
         { schemaVersion: 2 },
         { revision: -1 },
         { futureAnnotation: 'Bearer sk-catalog-canary-not-a-real-secret' },
       ]) {
         writeFileSync(path, JSON.stringify({ ...(extended as object), ...coreChange }));
-        expect(() => loadWorkspaceResourceCatalog(dataRoot, 'ws_demo')).toThrow();
+        expect(() =>
+          loadWorkspaceResourceCatalog(dataRoot, 'ws_00000000-0000-7000-8000-000000000001')
+        ).toThrow();
       }
       const credentialChange = structuredClone(extended) as typeof bound;
       Object.assign(credentialChange.mcp.bindings[0]!, {
         credentialBindings: [
           {
             slot: 'token',
-            vaultGrantId: 'grant_one',
+            vaultGrantId: 'grant_00000000-0000-70f3-9fb5-882dd7cf73ef',
             sink: { kind: 'env', name: 'TOKEN' },
             futureInstruction: true,
           },
         ],
       });
       writeFileSync(path, JSON.stringify(credentialChange));
-      expect(() => loadWorkspaceResourceCatalog(dataRoot, 'ws_demo')).toThrow();
+      expect(() =>
+        loadWorkspaceResourceCatalog(dataRoot, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toThrow();
     } finally {
       rmSync(dataRoot, { force: true, recursive: true });
     }
@@ -448,7 +516,7 @@ describe('workspace resource catalog', () => {
   it('imports a Skill, pins it, and keeps candidate submission off the current pointer', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-'));
     try {
-      const producer = { id: 'user_local', kind: 'user' as const };
+      const producer = { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' as const };
       const created = importWorkspaceSkill({
         activate: true,
         createdAt: '2026-09-08T00:00:00.000Z',
@@ -457,7 +525,7 @@ describe('workspace resource catalog', () => {
         expectedRevision: 0,
         producer,
         tree: skillTree('# v1\n'),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(created.version.digest).toMatch(/^sha256:[a-f0-9]{64}$/);
       expect(created.catalog.skills.entries[0]?.currentDigest).toBe(created.version.digest);
@@ -467,7 +535,7 @@ describe('workspace resource catalog', () => {
         digest: created.version.digest,
         entryId: 'repo-guidelines',
         expectedRevision: created.catalog.revision,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const candidate = submitWorkspaceSkillCandidate({
         baseDigest: created.version.digest,
@@ -478,9 +546,12 @@ describe('workspace resource catalog', () => {
         producer,
         summary: 'Clarify the rollback section.',
         tree: skillTree('# v2\n'),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      const after = loadWorkspaceResourceCatalog(dataRoot, 'ws_demo');
+      const after = loadWorkspaceResourceCatalog(
+        dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       expect(after.skills.entries[0]?.currentDigest).toBe(created.version.digest);
       expect(candidate.candidate.disposition).toBe('proposed');
       expect(after.skills.pins[0]?.digest).toBe(created.version.digest);
@@ -500,13 +571,13 @@ describe('workspace resource catalog', () => {
           displayName: 'Generative',
           expectedRevision: 0,
           id,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).toThrow(CatalogForbiddenError);
       expect(() =>
         replaceWorkspaceEffectiveMcpCatalog({
           dataRoot,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           catalog: {
             schemaVersion: 1,
             servers: [
@@ -533,7 +604,10 @@ describe('workspace resource catalog', () => {
           },
         })
       ).toThrow(CatalogForbiddenError);
-      expect(loadWorkspaceResourceCatalog(dataRoot, 'ws_demo').mcp.entries).toEqual([]);
+      expect(
+        loadWorkspaceResourceCatalog(dataRoot, 'ws_00000000-0000-7000-8000-000000000001').mcp
+          .entries
+      ).toEqual([]);
     } finally {
       rmSync(dataRoot, { force: true, recursive: true });
     }
@@ -552,12 +626,12 @@ describe('workspace resource catalog', () => {
         displayName: 'Echo',
         expectedRevision: 0,
         selectCurrent: true,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const credential = {
         presentation,
         slot: 'token',
-        vaultGrantId: 'grant_canary',
+        vaultGrantId: 'grant_00000000-0000-7a77-8a56-84fc4fb5c8ba',
         sink: { kind: 'header' as const, name: 'Authorization' },
       };
       const raw = updateWorkspaceMcpBinding({
@@ -576,7 +650,7 @@ describe('workspace resource catalog', () => {
         dataRoot,
         entryId: 'echo',
         expectedRevision: created.catalog.revision,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const before = resolveWorkspaceMcpServer({
         catalog: projectEffectiveWorkspaceMcpCatalog(raw),
@@ -587,9 +661,12 @@ describe('workspace resource catalog', () => {
         dataRoot,
         entryId: 'echo',
         expectedRevision: raw.revision,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      const retained = loadWorkspaceResourceCatalog(dataRoot, 'ws_demo');
+      const retained = loadWorkspaceResourceCatalog(
+        dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       expect(retained.mcp.bindings[0]!.credentialBindings).toEqual([credential]);
       const after = resolveWorkspaceMcpServer({
         catalog: projectEffectiveWorkspaceMcpCatalog(retained),
@@ -636,13 +713,16 @@ describe('workspace resource catalog', () => {
           createdAt: '2026-10-03T00:00:00.000Z',
           dataRoot,
           expectedRevision: 0,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           install: false,
-          producer: { id: 'user_local', kind: 'user' },
+          producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
           treeRoot,
         })
       ).toThrow(reason);
-      expect(loadWorkspaceResourceCatalog(dataRoot, 'ws_demo').mcp.entries).toEqual([]);
+      expect(
+        loadWorkspaceResourceCatalog(dataRoot, 'ws_00000000-0000-7000-8000-000000000001').mcp
+          .entries
+      ).toEqual([]);
     } finally {
       rmSync(dataRoot, { force: true, recursive: true });
       rmSync(treeRoot, { force: true, recursive: true });
@@ -663,12 +743,15 @@ describe('workspace resource catalog', () => {
         createdAt: '2026-10-03T00:00:00.000Z',
         dataRoot,
         expectedRevision: 0,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         install: false,
-        producer: { id: 'user_local', kind: 'user' },
+        producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
         treeRoot,
       });
-      const retained = loadWorkspaceResourceCatalog(dataRoot, 'ws_demo');
+      const retained = loadWorkspaceResourceCatalog(
+        dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       expect(retained.mcp.entries).toHaveLength(1);
       expect(retained.mcp.entries[0]!.id).toBe('echo');
       expect(retained.mcp.versions).toHaveLength(1);
@@ -682,7 +765,7 @@ describe('workspace resource catalog', () => {
         digest: retained.mcp.versions[0]!.digest,
         entryId: 'echo',
         expectedRevision: retained.revision,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       updateWorkspaceMcpBinding({
         binding: {
@@ -698,10 +781,10 @@ describe('workspace resource catalog', () => {
         dataRoot,
         entryId: 'echo',
         expectedRevision: selected.revision,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const effective = projectEffectiveWorkspaceMcpCatalog(
-        loadWorkspaceResourceCatalog(dataRoot, 'ws_demo')
+        loadWorkspaceResourceCatalog(dataRoot, 'ws_00000000-0000-7000-8000-000000000001')
       );
       expect(effective.servers).toHaveLength(1);
       expect(effective.servers[0]!.transport).toEqual({ endpoint, headers: {}, kind: 'http' });
@@ -720,7 +803,7 @@ describe('workspace resource catalog', () => {
         declaration: { args: ['fixtures/echo.mjs'], command: 'node', kind: 'stdio' },
         displayName: 'Echo',
         expectedRevision: 0,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(projectEffectiveWorkspaceMcpCatalog(created.catalog).servers).toEqual([]);
       const selected = selectWorkspaceMcpVersion({
@@ -728,7 +811,7 @@ describe('workspace resource catalog', () => {
         digest: created.version.digest,
         entryId: 'echo',
         expectedRevision: created.catalog.revision,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const bound = updateWorkspaceMcpBinding({
         binding: {
@@ -744,7 +827,7 @@ describe('workspace resource catalog', () => {
         dataRoot,
         entryId: 'echo',
         expectedRevision: selected.revision,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const projected = projectEffectiveWorkspaceMcpCatalog(bound);
       expect(projected.servers).toHaveLength(1);
@@ -781,9 +864,9 @@ describe('workspace resource catalog', () => {
         dataRoot,
         expectedRevision: 0,
         install: true,
-        producer: { id: 'user_local', kind: 'user' },
+        producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
         treeRoot: packageRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(imported.version.members).toHaveLength(3);
       expect(imported.catalog.plugins.installations[0]?.selectedPackageKeys).toHaveLength(3);
@@ -812,18 +895,21 @@ describe('workspace resource catalog', () => {
         dataRoot,
         displayName: 'Repo Guidelines',
         expectedRevision: 0,
-        producer: { id: 'user_local', kind: 'user' },
+        producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
         tree: skillTree('# v1\n'),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       setWorkspaceSkillPin({
         dataRoot,
         digest: created.version.digest,
         entryId: 'repo-guidelines',
         expectedRevision: created.catalog.revision,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      const projection = projectWorkspaceCatalogExport(dataRoot, 'ws_demo');
+      const projection = projectWorkspaceCatalogExport(
+        dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       expect(projection.payloads).toHaveLength(1);
       const reconstructed = reconstructImportedWorkspaceCatalog(
         projection.catalog,
@@ -850,11 +936,14 @@ describe('workspace resource catalog', () => {
         dataRoot,
         displayName: 'Repo Guidelines',
         expectedRevision: 0,
-        producer: { id: 'user_local', kind: 'user' },
+        producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
         tree: skillTree('# v1\n'),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      const projection = projectWorkspaceCatalogExport(dataRoot, 'ws_demo');
+      const projection = projectWorkspaceCatalogExport(
+        dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       const payload = projection.payloads[0]?.payload;
       const version = projection.catalog.skills.versions[0];
       if (!payload || !version) {
@@ -901,7 +990,7 @@ describe('workspace resource catalog', () => {
         declaration,
         displayName: 'Echo',
         expectedRevision: 0,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const second = createWorkspaceMcpConfig({
         createdAt: '2026-09-08T00:00:00.000Z',
@@ -909,7 +998,7 @@ describe('workspace resource catalog', () => {
         declaration,
         displayName: 'Echo Two',
         expectedRevision: first.catalog.revision,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(second.catalog.mcp.versions).toHaveLength(2);
       expect(second.catalog.mcp.versions.map((item) => item.entryId).sort()).toEqual([
@@ -932,7 +1021,7 @@ describe('workspace resource catalog', () => {
         displayName: 'Echo',
         expectedRevision: 0,
         selectCurrent: true,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       updateWorkspaceMcpBinding({
         binding: {
@@ -949,7 +1038,7 @@ describe('workspace resource catalog', () => {
         dataRoot,
         entryId: 'echo',
         expectedRevision: created.catalog.revision,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const next = createWorkspaceMcpConfig({
         createdAt: '2026-09-08T00:01:00.000Z',
@@ -960,7 +1049,7 @@ describe('workspace resource catalog', () => {
         id: 'echo',
         persist: true,
         selectCurrent: false,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(() =>
         selectWorkspaceMcpVersion({
@@ -968,7 +1057,7 @@ describe('workspace resource catalog', () => {
           digest: next.version.digest,
           entryId: 'echo',
           expectedRevision: next.catalog.revision,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).toThrow(CatalogForbiddenError);
     } finally {
@@ -985,14 +1074,22 @@ describe('workspace resource catalog', () => {
         dataRoot,
         displayName: 'Repo Guidelines',
         expectedRevision: 0,
-        producer: { id: 'user_local', kind: 'user' },
+        producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
         tree: skillTree('# v1\n'),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      unlinkSync(join(dataRoot, 'workspaces', 'ws_demo', 'catalog', 'catalog.json'));
-      expect(() => loadWorkspaceResourceCatalog(dataRoot, 'ws_demo')).toThrow(
-        CatalogIntegrityError
+      unlinkSync(
+        join(
+          dataRoot,
+          'workspaces',
+          'ws_00000000-0000-7000-8000-000000000001',
+          'catalog',
+          'catalog.json'
+        )
       );
+      expect(() =>
+        loadWorkspaceResourceCatalog(dataRoot, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toThrow(CatalogIntegrityError);
     } finally {
       rmSync(dataRoot, { force: true, recursive: true });
     }
@@ -1012,7 +1109,7 @@ describe('workspace resource catalog', () => {
           },
           displayName: 'Remote',
           expectedRevision: 0,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).toThrow(/raw-secret/);
     } finally {
@@ -1030,9 +1127,9 @@ describe('workspace resource catalog', () => {
         dataRoot,
         expectedRevision: 0,
         install: true,
-        producer: { id: 'user_local', kind: 'user' },
+        producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
         treeRoot: packageRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const firstVersion = first.catalog.mcp.versions.find(
         (item) => item.packageRootDigest === first.version.digest
@@ -1045,7 +1142,7 @@ describe('workspace resource catalog', () => {
         digest: firstVersion.digest,
         entryId: 'echo',
         expectedRevision: first.catalog.revision,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const bound = updateWorkspaceMcpBinding({
         binding: {
@@ -1061,7 +1158,7 @@ describe('workspace resource catalog', () => {
         dataRoot,
         entryId: 'echo',
         expectedRevision: selected.revision,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const firstDigest = resolveWorkspaceMcpServer({
         catalog: projectEffectiveWorkspaceMcpCatalog(bound),
@@ -1073,9 +1170,9 @@ describe('workspace resource catalog', () => {
         dataRoot,
         expectedRevision: bound.revision,
         install: true,
-        producer: { id: 'user_local', kind: 'user' },
+        producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
         treeRoot: packageRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const secondVersion = second.catalog.mcp.versions.find(
         (item) => item.packageRootDigest === second.version.digest
@@ -1090,7 +1187,7 @@ describe('workspace resource catalog', () => {
         entryId: 'echo',
         expectedRevision: second.catalog.revision,
         stdioHostAuthorized: true,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const projected = projectEffectiveWorkspaceMcpCatalog(reselected);
       expect(projected.servers[0]?.packageRootDigest).toBe(second.version.digest);
@@ -1117,7 +1214,7 @@ describe('workspace resource catalog', () => {
           dataRoot,
           displayName: 'Broken Tree',
           expectedRevision: 0,
-          producer: { id: 'user_local', kind: 'user' },
+          producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
           tree: [
             {
               contentBase64: Buffer.from('# Skill\n', 'utf8').toString('base64'),
@@ -1135,11 +1232,16 @@ describe('workspace resource catalog', () => {
               path: 'scripts/run.sh',
             },
           ],
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).toThrow();
-      expect(catalogHasStagingResidue(dataRoot, 'ws_demo')).toBe(false);
-      const afterFailure = loadWorkspaceResourceCatalog(dataRoot, 'ws_demo');
+      expect(catalogHasStagingResidue(dataRoot, 'ws_00000000-0000-7000-8000-000000000001')).toBe(
+        false
+      );
+      const afterFailure = loadWorkspaceResourceCatalog(
+        dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       expect(afterFailure.revision).toBe(0);
       expect(afterFailure.skills.entries).toEqual([]);
       const recovered = importWorkspaceSkill({
@@ -1148,9 +1250,9 @@ describe('workspace resource catalog', () => {
         dataRoot,
         displayName: 'Broken Tree',
         expectedRevision: 0,
-        producer: { id: 'user_local', kind: 'user' },
+        producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
         tree: skillTree('# recovered\n'),
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(recovered.catalog.revision).toBe(1);
       expect(recovered.catalog.skills.entries[0]?.currentDigest).toBe(recovered.version.digest);
@@ -1165,7 +1267,7 @@ describe('workspace resource catalog', () => {
       const staged = join(
         dataRoot,
         'workspaces',
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         'catalog',
         'skill-snapshots',
         'broken',
@@ -1173,7 +1275,10 @@ describe('workspace resource catalog', () => {
       );
       mkdirSync(staged, { recursive: true });
       writeFileSync(join(staged, 'SKILL.md'), '# leftover\n');
-      const catalog = loadWorkspaceResourceCatalog(dataRoot, 'ws_demo');
+      const catalog = loadWorkspaceResourceCatalog(
+        dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       expect(catalog.revision).toBe(0);
       expect(catalog.skills.entries).toEqual([]);
     } finally {

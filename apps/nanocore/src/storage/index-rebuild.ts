@@ -9,6 +9,7 @@ import {
   RetrieveKnowledgeRequestSchema,
 } from '@openkit/app-api-schemas';
 import {
+  allocateEntityId,
   type PageReference,
   parseReferenceScope,
   type RetrievalTraceReference,
@@ -45,11 +46,7 @@ import {
 } from '../retrieval-knowledge-adapter.js';
 import { getRetrievalService } from '../retrieval-service.js';
 import { resolveDataRootPath } from './fs-layout.js';
-import {
-  allocateRetrievalTraceId,
-  publishRetrievalTrace,
-  readRetrievalTrace,
-} from './retrieval-traces.js';
+import { publishRetrievalTrace, readRetrievalTrace } from './retrieval-traces.js';
 import { assertCanonicalDirectory, readCanonicalTextFile } from './workspace-file-records.js';
 
 export type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
@@ -614,7 +611,7 @@ export async function retrieveWorkspaceKnowledge(
   const pinnedPageIds = new Set(normalizedPinnedReferences.map((reference) => reference.objectId));
   const limit = normalized.limit;
   const createdAt = input.now?.() ?? new Date().toISOString();
-  const traceId = input.traceId ?? allocateRetrievalTraceId();
+  const traceId = input.traceId ?? allocateEntityId('krt');
   const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
   const admittedPages = readAuthorizedWorkspaceNotebookPages(input);
   const notebookRevision = admittedPages.notebookRevision;

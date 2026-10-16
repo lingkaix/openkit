@@ -1,5 +1,6 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 
 import type { CoreDb } from '../storage/db.js';
 
@@ -167,7 +168,7 @@ export function createWorkerStorageBinding(
       'Worker storage RuntimeTarget is unavailable.'
     );
   }
-  const storageRef = `wst_${randomUUID().replaceAll('-', '')}`;
+  const storageRef = allocateEntityId('wst');
   const now = input.now ?? new Date().toISOString();
   const targets: WorkerStorageTarget[] = layout.targets.map(({ target: targetPath }) => ({
     active: true,

@@ -27,7 +27,9 @@ import {
 } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb } from './db.js';
@@ -139,13 +141,13 @@ describe('workspace portable file state', () => {
       mkdirSync(traceDirectory, { recursive: true });
       const tempPath = join(
         traceDirectory,
-        '.krt_00000000-0000-4000-8000-000000000882.00000000-0000-4000-8000-000000000883.tmp'
+        '.krt_00000000-0000-7d0b-95d7-2834cc1f705c.00000000-0000-4000-8000-000000000883.tmp'
       );
       mkdirSync(tempPath);
 
       expect(() =>
         readWorkspacePortableFileState(workspaceRoot, {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threads: [{ threadId }],
           turns: [],
         })
@@ -165,14 +167,14 @@ describe('workspace portable file state', () => {
       writeFileSync(
         join(
           traceDirectory,
-          '.krt_00000000-0000-4000-8000-000000000882.00000000-0000-4000-8000-000000000883.tmp'
+          '.krt_00000000-0000-7d0b-95d7-2834cc1f705c.00000000-0000-4000-8000-000000000883.tmp'
         ),
         'incomplete'
       );
 
       expect(
         readWorkspacePortableFileState(workspaceRoot, {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threads: [{ threadId }],
           turns: [],
         }).retrievalTraceFiles.size
@@ -210,11 +212,11 @@ describe('workspace portable file state', () => {
     });
 
     store.recordKnowledgeObservation({
-      id: 'ko_portable_first',
+      id: 'ko_00000000-0000-72ae-82a2-428025c60c1b',
       workspaceId: sourceWorkspaceId,
       kind: 'maintenance',
       summary: 'First portable observation.',
-      sourceReferences: ['claim:kc_portable_source'],
+      sourceReferences: ['claim:kc_00000000-0000-71a7-90bd-9df60db5bd84'],
       scope: 'workspace',
       producer: 'portability-test',
       confidence: 0.9,
@@ -224,11 +226,11 @@ describe('workspace portable file state', () => {
       createdAt: firstTimestamp,
     });
     store.recordKnowledgeObservation({
-      id: 'ko_portable_second',
+      id: 'ko_00000000-0000-79e1-b411-0955d1d4fab5',
       workspaceId: sourceWorkspaceId,
       kind: 'maintenance',
       summary: 'Second portable observation.',
-      sourceReferences: ['claim:kc_portable_source'],
+      sourceReferences: ['claim:kc_00000000-0000-71a7-90bd-9df60db5bd84'],
       scope: 'workspace',
       producer: 'portability-test',
       confidence: 1,
@@ -238,7 +240,7 @@ describe('workspace portable file state', () => {
       createdAt: secondTimestamp,
     });
     store.recordKnowledgeClaim({
-      id: 'kc_portable_first',
+      id: 'kc_00000000-0000-707a-a7d4-e48c361c5546',
       workspaceId: sourceWorkspaceId,
       statement: 'First portable claim.',
       sourceReferences: [`knowledge:${knowledge.id}`],
@@ -252,7 +254,7 @@ describe('workspace portable file state', () => {
       updatedAt: firstTimestamp,
     });
     store.recordKnowledgeClaim({
-      id: 'kc_portable_source',
+      id: 'kc_00000000-0000-71a7-90bd-9df60db5bd84',
       workspaceId: sourceWorkspaceId,
       statement: 'Source-backed portable claim.',
       sourceReferences: [`knowledge:${knowledge.id}`],
@@ -266,9 +268,12 @@ describe('workspace portable file state', () => {
       updatedAt: secondTimestamp,
     });
     store.recordKnowledgeConflict({
-      id: 'kf_portable',
+      id: 'kf_00000000-0000-72bb-b75d-46dfe72603e1',
       workspaceId: sourceWorkspaceId,
-      subjectReferences: [`knowledge:${knowledge.id}`, 'claim:kc_portable_source'],
+      subjectReferences: [
+        `knowledge:${knowledge.id}`,
+        'claim:kc_00000000-0000-71a7-90bd-9df60db5bd84',
+      ],
       sourceReferences: [`knowledge:${knowledge.id}`],
       status: 'needs_review',
       summary: 'Portable conflict needs review.',
@@ -279,7 +284,7 @@ describe('workspace portable file state', () => {
     });
     store.resolveKnowledgeConflict({
       workspaceId: sourceWorkspaceId,
-      conflictId: 'kf_portable',
+      conflictId: 'kf_00000000-0000-72bb-b75d-46dfe72603e1',
       status: 'resolved',
       resolution: 'Portable conflict resolved.',
       resolvedBy: 'portability-test',
@@ -469,7 +474,7 @@ describe('workspace portable file state', () => {
         () =>
           readWorkspaceImportSnapshot({
             verified: { ...verified, fileContents },
-            targetWorkspaceId: `ws_${name}_page_import`,
+            targetWorkspaceId: testEntityId('ws', `ws_${name}_page_import`),
           }),
         name
       ).toThrow(/Knowledge Page/i);
@@ -733,7 +738,7 @@ describe('workspace portable file state', () => {
         requestActor: { kind: 'local', userId: LOCAL_USER_ID },
         outputThreadId: thread.id,
       },
-      traceId: 'krt_00000000-0000-4000-8000-000000000883',
+      traceId: 'krt_00000000-0000-7da4-9723-d3b248482ae2',
       now: () => '2026-07-06T00:00:00.000Z',
     });
     expect(result.retrievalTraceRef).toBeDefined();

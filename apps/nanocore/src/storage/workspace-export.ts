@@ -9,7 +9,13 @@ import {
   WorkspaceConfigSchema,
   type WorkspaceExportManifest,
 } from '@openkit/config-schema';
-import { ItemSchema, KnowledgeEntrySchema, ThreadSchema, TurnSchema } from '@openkit/protocol';
+import {
+  deriveEntityId,
+  ItemSchema,
+  KnowledgeEntrySchema,
+  ThreadSchema,
+  TurnSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import type { ResolvedAgentSetupRecord } from '../agents/setup-ledger.js';
 import {
@@ -816,7 +822,7 @@ export function dryRunWorkspaceImport(
     ? {
         status: 'collides' as const,
         workspaceId,
-        suggestedWorkspaceId: `ws_imported_${workspaceId}`,
+        suggestedWorkspaceId: deriveEntityId('ws', ['imported', workspaceId, 1]),
       }
     : { status: 'available' as const, workspaceId };
 

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { VaultGrantIdSchema } from '@openkit/protocol';
 
 import { z } from 'zod';
 import { AuthoredAgentMcpEntrySchema, AuthoredAgentSandboxSchema } from './agent.js';
@@ -10,7 +11,7 @@ import { AuthoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
 export const WorkspaceCredentialBindingSchema = z
   .object({
     requirementId: z.string().min(1),
-    vaultGrantId: z.string().min(1),
+    vaultGrantId: VaultGrantIdSchema,
   })
   .strict();
 

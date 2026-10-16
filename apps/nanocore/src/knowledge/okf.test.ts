@@ -9,6 +9,7 @@ import {
   parseOkfDocument,
   parseScopeKnowledgeSchema,
   REQUIRED_SCOPED_KNOWLEDGE_FEATURES,
+  resolveRegisteredKnowledgeSourceReference,
   stringListFrontmatterField,
   updateOkfFrontmatter,
   validateOpenKitKnowledgeProfile,
@@ -292,9 +293,52 @@ describe('parseOkfDocument', () => {
   });
 });
 
+describe('registered Knowledge Source identity', () => {
+  const sourceId = 'ks_01890f3e-0000-7000-8000-000000000001';
+  const digest = `sha256:${'a'.repeat(64)}`;
+  const registered = new Map([[sourceId, digest]]);
+
+  it('resolves canonical source ids and exact digest pins through the source owner', () => {
+    expect(resolveRegisteredKnowledgeSourceReference(`source:${sourceId}`, registered)).toEqual({
+      targetId: sourceId,
+      resolved: true,
+    });
+    expect(
+      resolveRegisteredKnowledgeSourceReference(`source:${sourceId}@${digest}`, registered)
+    ).toEqual({
+      targetId: sourceId,
+      resolved: true,
+    });
+    expect(
+      resolveRegisteredKnowledgeSourceReference(
+        `source:${sourceId}@sha256:${'b'.repeat(64)}`,
+        registered
+      )
+    ).toEqual({
+      targetId: sourceId,
+      resolved: false,
+    });
+  });
+
+  it('refuses old versions, wrong kinds and malformed pins without unpinned fallback', () => {
+    for (const reference of [
+      `source:${sourceId.replace('-7000-', '-4000-')}`,
+      `source:${sourceId.replace('ks_', 'ws_')}`,
+      `source:${sourceId}@sha256:short`,
+      `source:${sourceId}@${digest}\n`,
+      `source:${sourceId}%40${digest}`,
+    ]) {
+      expect(resolveRegisteredKnowledgeSourceReference(reference, registered)).toEqual({
+        targetId: null,
+        resolved: false,
+      });
+    }
+  });
+});
+
 describe('knowledgeReferenceErrors', () => {
   it('checks registered-source pins against the registry even when a closed proof is supplied', () => {
-    const reference = `source:ks_123e4567-e89b-42d3-a456-426614174000@sha256:${'0'.repeat(64)}`;
+    const reference = `source:ks_00000000-0000-7e28-9211-1f67fd14ca84@sha256:${'0'.repeat(64)}`;
     const parsed = parseOkfDocument({
       path: 'knowledge/pages/digest-reference.md',
       content: [
@@ -314,7 +358,7 @@ describe('knowledgeReferenceErrors', () => {
     expect(
       knowledgeReferenceErrors(
         parsed.document,
-        new Map([['ks_123e4567-e89b-42d3-a456-426614174000', null]]),
+        new Map([['ks_00000000-0000-7e28-9211-1f67fd14ca84', null]]),
         new Set()
       )
     ).toContainEqual(expect.objectContaining({ code: 'reference.unresolved_source' }));
@@ -324,7 +368,7 @@ describe('knowledgeReferenceErrors', () => {
     expect(
       knowledgeReferenceErrors(
         parsed.document,
-        new Map([['ks_123e4567-e89b-42d3-a456-426614174000', `sha256:${'0'.repeat(64)}`]]),
+        new Map([['ks_00000000-0000-7e28-9211-1f67fd14ca84', `sha256:${'0'.repeat(64)}`]]),
         new Set()
       )
     ).toEqual([]);

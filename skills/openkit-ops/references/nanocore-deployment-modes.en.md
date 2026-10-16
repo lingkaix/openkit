@@ -92,7 +92,7 @@ A missing, invalid, or wrong key leaves Vault locked and readiness degraded with
 
 ### Local Mode
 
-Local mode uses the implicit local user `user_local` and does not require server-mode session cookies for product APIs.
+Local mode reuses the recorded canonical local User. Product APIs use that identity without a server-mode session cookie.
 
 ```bash
 OPENKIT_CORE_MODE=local \
@@ -121,6 +121,8 @@ Use the public Web sign-in/bootstrap flow for the configured server origin. Keep
 NanoHost can start with an empty Worker Image Store and establish its authenticated NanoCore connection before Worker images are available. The current pinned stock OpenShell Gateway may still access GHCR to obtain its Supervisor image during startup, before Gateway health and NanoCore readiness. This is accepted upstream behavior: empty Worker-image storage does not mean completely offline startup. If bootstrap cannot reach the required registry, inspect the NanoHost/Gateway logs and host DNS, HTTPS and proxy access to GHCR; do not bypass TLS, change the pinned release or erase retained Worker data to repair it. Worker images are checked and imported at point of use; that path does not remove this stock Supervisor dependency. The private Docker daemon and Gateway must resolve names through the epoch projection of `/run/systemd/resolve/resolv.conf`; container `--dns` settings alone do not prove that daemon registry lookups work. A private-daemon error naming the host stub `127.0.0.53` indicates a resolver-projection defect. Preserve its startup evidence and correct that projection rather than replacing the host resolver or repeatedly restarting the failed epoch.
 
 NanoCore accepts Worker Agent work only through the configured NanoHost identity and NanoHost-initiated authenticated HTTP/2 session. The App API remains on its HTTP/1.1 listener; `nanohost.bind` selects a separate native HTTP/2 listener on a different local port, while `nanohost.rendezvousUrl` is the endpoint advertised to NanoHost after any deployment mapping. The RuntimeTarget must be ready, predecessor-fenced, and fresh-empty before admission.
+
+For HTTPS, use a separate issuer CA and a server leaf with `CA:FALSE`, `serverAuth` usage and the exact advertised host in its subject alternative names. Select the issuer CA as the NanoHost trust input. Do not present the CA itself as the server leaf. NanoHost reports `nanohost NanoCore TLS certificate verification failed` before admission when certificate verification fails. A successful request from another TLS client does not prove NanoHost verification. For `epoch rebuild hard bound exceeded`, follow [bounded NanoHost recovery](nanocore-operations.en.md#recover-a-nanohost-at-the-rebuild-bound); repeated starts do not renew that deadline.
 
 Use [NanoHost Real-Use Host](https://github.com/lingkaix/openkit/blob/main/docs/cookbooks/nanohost-real-use-host.md) for the current reviewed-host workflow:
 
@@ -183,6 +185,28 @@ The [pinned official Codex source](https://github.com/openai/codex/blob/2dae757b
 
 Use the same public interface for local and remote NanoCore endpoints. Do not assume that a local endpoint authorizes unauthenticated access; follow the result returned by `doctor`.
 
+## Connect With A Named Workspace Token
+
+Use this procedure for a scoped member connection through the bundled CLI. It requires Node.js 24, the complete operations package, and the named Token already stored for the exact endpoint in the caller's protected local store. The administrator issues it with `token.create` or `token.rotate` and an explicit `destination`. Issuance must occur in the intended authorized local credential context. A slot on another machine or under another operating-system user is not available here. Do not copy encrypted files between users or expose the secret to transfer it.
+
+1. Set `OPENKIT_NANOCORE_URL` to the exact endpoint used for issuance. Remote connections require HTTPS.
+2. Clear any `OPENKIT_NANOCORE_TOKEN` override from this process. A named selector and a non-empty override conflict.
+3. Run the following bounded caller read, replacing `member` with the non-secret destination used at issuance.
+
+```sh
+printf '%s' '{}' | scripts/openkit ops call caller.read --input - --credential member
+```
+
+4. Check the returned actor and credential scope against the intended member. Stop if they differ.
+5. Discover the next operation with `ops search` and `ops describe`. These local commands need no selector.
+6. Submit the described JSON through stdin and append the same `--credential member` to every authenticated member call.
+
+For service diagnostics, use `scripts/openkit doctor --credential member`. Doctor can report unknown administrator-only readiness fields for a member. Use the caller read above to verify actor and scope. Connection success does not prove permission for a write.
+
+The selector reads only the exact endpoint/name slot. Missing, unreadable or unsafe storage returns `credential_unavailable` before network contact. Invalid or reserved names fail locally. A revoked, expired or insufficiently scoped Token produces the server's refusal. Do not remove the selector or substitute the administrator credential to bypass it. Ask the administrator to inspect Token inventory and explicitly reissue or rotate when appropriate. Local selection neither changes the endpoint administrator slot nor persists as a default.
+
+This CLI procedure needs no raw-token export or client launcher. Remote MCP still requires the protected header delivery described above. When that client prerequisite is unavailable, use this explicit CLI path for the authorized bounded member operation. Do not claim that a CLI connection configured the MCP client.
+
 ## Handle credentials safely
 
 Store persistent bearer credentials through the endpoint-keyed credential operation and supported local credential store. Use `OPENKIT_NANOCORE_TOKEN` only as an explicit ephemeral automation override.
@@ -207,7 +231,7 @@ Interpret CLI exit statuses consistently:
 
 When `doctor` reports a capability or contract incompatibility, update the complete operations Skill artifact or connect to a matching NanoCore deployment. Do not add a compatibility alias or bypass the check.
 
-Named slots are distinct per endpoint and name. Names contain 1–64 lowercase letters, digits, underscores or hyphens, start with a letter, and cannot be `admin`, `endpoint`, `default`, `current` or start with the token prefix. Reusing a name replaces only that named credential. Named writes prefer a safe keychain writer and otherwise use the warned encrypted fallback. Reads honor the persisted backend selection; they never revive older credentials when a backend returns. Local slot deletion prevents rediscovery even if unavailable keychain cleanup leaves an orphan, and does not revoke the server token. Named storage does not change subsequent CLI authentication. A preflight storage failure prevents issuance. A storage failure after issuance requires token inventory inspection and a new explicit recovery decision; never ask to print the one-time secret or blindly retry.
+Named slots are distinct per endpoint and name. Names contain 1–64 lowercase letters, digits, underscores or hyphens, start with a letter, and cannot be `admin`, `endpoint`, `default`, `current` or start with the token prefix. Reusing a name replaces only that named credential. Named writes prefer a safe keychain writer and otherwise use the warned encrypted fallback. Reads honor the persisted backend selection; they never revive older credentials when a backend returns. Local slot deletion prevents rediscovery even if unavailable keychain cleanup leaves an orphan, and does not revoke the server token. Named storage does not change subsequent CLI authentication unless that invocation explicitly selects the name with `--credential <name>`. A preflight storage failure prevents issuance. A storage failure after issuance requires token inventory inspection and a new explicit recovery decision; never ask to print the one-time secret or blindly retry.
 
 Use `workspace.dashboard` for eligible work and counts, `thread.dashboard` for one eligible Thread, and `app.search` with `query` for product content search. These differ from `ops search`, which discovers operation metadata. An ordinary caller needs current Workspace membership. A currently usable administrator credential is eligible for another user's private Threads under the administrator eligibility rule in [Core Permissions](https://github.com/lingkaix/openkit/blob/main/docs/core/permissions.md#administrator-eligibility). `thread.create` defaults to private; create formal Task/Goal work with explicit `visibility: workspace` and admitted inputs. These reads do not implement conversation sharing or private-to-shared handoff.
 

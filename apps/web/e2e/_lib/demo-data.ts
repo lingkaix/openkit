@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import {
   seedDemoWorkspaceAuthority,
   seedDemoWorkspaceDataRoot as seedSharedDemoWorkspaceDataRoot,
@@ -184,7 +185,7 @@ async function seedSimulatorAgent(dataRoot: string): Promise<void> {
   const [
     { openCoreDb },
     { commandInputHash },
-    { admitWorkerImageEnvironment, writeWorkerImageSettlement },
+    { admitWorkerImageEnvironment, readWorkerImageSettlement, writeWorkerImageSettlement },
   ] = await Promise.all([
     import('../../../nanocore/dist/storage/db.js'),
     import('../../../nanocore/dist/runtime/idempotent-command.js'),
@@ -195,8 +196,9 @@ async function seedSimulatorAgent(dataRoot: string): Promise<void> {
     const inputDigest = commandInputHash(runtimeImage);
     const requestId = createHash('sha256').update(`web-e2e:${inputDigest}`).digest('hex');
     const imageDigest = `sha256:${'a'.repeat(64)}`;
+    const prior = readWorkerImageSettlement(coreDb, requestId);
     const candidate = {
-      authoredArtifactId: `ar_web_e2e_${requestId}`,
+      authoredArtifactId: prior?.authoredArtifactId ?? allocateEntityId('ar'),
       authoredArtifactVersion: 1 as const,
       authoredContentDigest: inputDigest,
       inputDigest,

@@ -1,11 +1,13 @@
 import { z } from 'zod';
-
 import {
   AgentIdSchema,
+  ArtifactIdSchema,
   ItemIdSchema,
   KnowledgeEntryIdSchema,
+  PresentationIdSchema,
   ThreadIdSchema,
   TurnIdSchema,
+  UserIdSchema,
   UserInputRequestIdSchema,
   WorkspaceIdSchema,
 } from '../common/ids.js';
@@ -124,7 +126,7 @@ export const ReasoningItemSchema = BaseItemSchema.extend({
  */
 export const ArtifactReferenceItemSchema = BaseItemSchema.extend({
   type: z.literal('artifact-reference'),
-  artifactId: z.string().min(1),
+  artifactId: ArtifactIdSchema,
   artifactVersion: z.number().int().positive(),
   lastMutationRequestId: z.string().min(1),
   title: z.string().min(1),
@@ -238,7 +240,7 @@ export type AssistantHandoff = z.infer<typeof AssistantHandoffSchema>;
  */
 export const UserInputRequestItemSchema = BaseItemSchema.extend({
   type: z.literal('user-input-request'),
-  responsibleUserId: z.string().min(1),
+  responsibleUserId: UserIdSchema,
   userInputRequestId: UserInputRequestIdSchema,
   prompt: z.string().min(1),
   questions: z.array(UserInputQuestionSchema).min(1),
@@ -333,7 +335,7 @@ export const KnowledgeInjectionItemSchema = BaseItemSchema.extend({
  */
 export const GenerativeUiReferenceItemSchema = BaseItemSchema.extend({
   type: z.literal('generative-ui-reference'),
-  presentationId: z.string().uuid(),
+  presentationId: PresentationIdSchema,
   title: z.string().min(1),
   fallbackText: z.string().min(1),
 });

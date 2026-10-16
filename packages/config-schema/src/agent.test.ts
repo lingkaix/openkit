@@ -174,7 +174,7 @@ describe('AuthoredAgentConfigSchema', () => {
               id: 'ambiguous_token',
               requirementId: 'github-token',
               targetEnvVarName: 'GITHUB_TOKEN',
-              vaultGrantId: 'grant_github',
+              vaultGrantId: 'grant_00000000-0000-7fe9-9377-b84721e910b4',
               visibility: 'runtime-env',
             },
           ],

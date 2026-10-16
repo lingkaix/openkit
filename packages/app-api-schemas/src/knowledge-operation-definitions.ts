@@ -1,7 +1,9 @@
 import {
   CreateKnowledgeEntryRequestSchema,
   DeleteKnowledgeEntryRequestSchema,
+  KnowledgeConflictIdSchema,
   KnowledgeEntrySchema,
+  KnowledgeSourceIdSchema,
   ListKnowledgeEntriesResponseSchema,
   UpdateKnowledgeEntryRequestSchema,
   WorkspaceIdSchema,
@@ -113,7 +115,7 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 200,
     description: 'Read one scoped Knowledge Source and its derived metadata.',
-    inputSchema: z.object({ ...workspaceSelector, sourceId: z.string().min(1) }).strict(),
+    inputSchema: z.object({ ...workspaceSelector, sourceId: KnowledgeSourceIdSchema }).strict(),
     outputSchema: ReadKnowledgeSourceResponseSchema,
     credentials: publicCredentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
@@ -206,7 +208,7 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     description: 'Resolve one scoped Knowledge conflict.',
     inputSchema: ResolveKnowledgeConflictRequestSchema.extend({
       ...workspaceSelector,
-      conflictId: z.string().min(1),
+      conflictId: KnowledgeConflictIdSchema,
     }).strict(),
     outputSchema: ResolveKnowledgeConflictResponseSchema,
     credentials: publicCredentials,

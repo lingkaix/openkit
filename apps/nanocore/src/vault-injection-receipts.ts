@@ -70,7 +70,7 @@ export interface CreateVaultInjectionReceiptInput {
  * @param coreDb Open Core database handle.
  * @param input Receipt metadata to store.
  * @returns Stored injection receipt record.
- * @throws Error when the referenced plan is missing or receipt linkage is invalid.
+ * @throws Error when the plan is missing, receipt linkage is invalid, or the identity conflicts.
  */
 export function createVaultInjectionReceipt(
   coreDb: CoreDb,
@@ -116,7 +116,21 @@ export function createVaultInjectionReceipt(
       input.auditEventId ?? null
     );
 
-  return requireVaultInjectionReceipt(coreDb, input.receiptId);
+  const stored = requireVaultInjectionReceipt(coreDb, input.receiptId);
+  // A replay may observe later revocation, but cannot rewrite the completed injection or its lineage.
+  if (
+    stored.planId !== input.planId ||
+    stored.grantId !== input.grantId ||
+    stored.agentSessionId !== (input.agentSessionId ?? null) ||
+    stored.capabilityCallId !== (input.capabilityCallId ?? null) ||
+    stored.backendSummary !== input.backendSummary ||
+    stored.injectedAt !== input.injectedAt ||
+    stored.expiresAt !== (input.expiresAt ?? null) ||
+    stored.auditEventId !== (input.auditEventId ?? null)
+  ) {
+    throw new Error('Vault injection receipt identity conflict.');
+  }
+  return stored;
 }
 
 /**

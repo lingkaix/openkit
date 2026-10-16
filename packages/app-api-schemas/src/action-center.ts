@@ -1,8 +1,16 @@
 import {
   ActorRefSchema,
   KnowledgeOwnerScopeSchema,
+  ArtifactIdSchema,
+  ArtifactReviewIdSchema,
+  ExecutionAttemptIdSchema,
+  ItemIdSchema,
+  KnowledgeReviewIdSchema,
   RequestIdSchema,
+  ThreadIdSchema,
   TimestampSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import {
@@ -63,10 +71,10 @@ export const ProtocolItemHumanAttentionSourceSchema = z
   .object({
     type: z.literal('protocol_item'),
     itemType: z.string().min(1),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
-    itemId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
+    itemId: ItemIdSchema,
   })
   .strict();
 
@@ -75,10 +83,10 @@ export const ApprovalHumanAttentionSourceSchema = z
   .object({
     type: z.literal('approval'),
     approvalRequestId: z.string().min(1),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
-    itemId: z.string().min(1).optional(),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
+    itemId: ItemIdSchema.optional(),
   })
   .strict();
 
@@ -89,9 +97,9 @@ export const SchedulerAdmissionHumanAttentionSourceSchema = z
     queueEntryId: z.string().min(1),
     status: z.enum(['queued', 'denied']),
     denialReason: z.string().min(1).optional(),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
     requestedAgentId: z.string().min(1),
   })
   .strict();
@@ -101,9 +109,9 @@ export const WorkerControlRejectionHumanAttentionSourceSchema = z
   .object({
     type: z.literal('worker_control_rejection'),
     rejectionId: z.string().min(1),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
     packageSnapshotId: z.string().min(1),
     route: z.string().min(1),
     operation: z.string().min(1),
@@ -116,13 +124,13 @@ export const WorkerControlRejectionHumanAttentionSourceSchema = z
 export const ExecutionAttemptHumanAttentionSourceSchema = z
   .object({
     type: z.literal('execution_attempt'),
-    attemptId: z.string().min(1),
+    attemptId: ExecutionAttemptIdSchema,
     backendId: z.string().min(1),
     phase: z.enum(['open', 'closing', 'closed']),
     disposition: z.enum(['not_accepted', 'accepted', 'unknown']),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
   })
   .strict();
 
@@ -131,9 +139,9 @@ export const WorkerCheckpointHumanAttentionSourceSchema = z
   .object({
     type: z.literal('worker_checkpoint'),
     checkpointId: z.string().min(1),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
     stage: z.string().min(1),
     stopReason: z.string().min(1).nullable().optional(),
   })
@@ -144,7 +152,7 @@ export const AgentReadinessHumanAttentionSourceSchema = z
   .object({
     type: z.literal('agent_readiness'),
     agentId: z.string().min(1),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     status: z.string().min(1),
   })
   .strict();
@@ -153,12 +161,12 @@ export const AgentReadinessHumanAttentionSourceSchema = z
 export const ArtifactReviewHumanAttentionSourceSchema = z
   .object({
     type: z.literal('artifact_review'),
-    reviewId: z.string().min(1),
-    artifactId: z.string().min(1),
+    reviewId: ArtifactReviewIdSchema,
+    artifactId: ArtifactIdSchema,
     artifactVersion: z.number().int().positive(),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
   })
   .strict();
 
@@ -168,8 +176,8 @@ export const WorkspaceReviewHumanAttentionSourceSchema = z
     type: z.literal('workspace_review'),
     reviewId: z.string().min(1),
     changeSetId: z.string().min(1),
-    artifactId: z.string().min(1).optional(),
-    workspaceId: z.string().min(1),
+    artifactId: ArtifactIdSchema.optional(),
+    workspaceId: WorkspaceIdSchema,
     status: z.string().min(1),
   })
   .strict();
@@ -179,7 +187,7 @@ export const WorkspaceRecoveryHumanAttentionSourceSchema = z
   .object({
     type: z.literal('workspace_recovery'),
     reconciliationRecordId: z.string().min(1),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     triggerReason: z.enum(['restart', 'backend_takeover', 'manual']),
     stateAfter: z.literal('requires-human'),
     affectedRecordIds: z.array(z.string().min(1)),
@@ -196,7 +204,7 @@ export const KnowledgeHumanAttentionSourceSchema = z
     proposalDigest: KnowledgeProposalContentDigestSchema,
     baseRevision: z.string().min(1),
     candidateRevision: z.string().min(1),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     status: z.string().min(1),
   })
   .strict();
@@ -233,12 +241,12 @@ export const HumanAttentionRowSchema = z
   .object({
     id: z.string().min(1),
     kind: HumanAttentionKindSchema,
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1).optional(),
-    turnId: z.string().min(1).optional(),
-    itemId: z.string().min(1).optional(),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema.optional(),
+    turnId: TurnIdSchema.optional(),
+    itemId: ItemIdSchema.optional(),
     reviewId: z.string().min(1).optional(),
-    artifactId: z.string().min(1).optional(),
+    artifactId: ArtifactIdSchema.optional(),
     artifactVersion: z.number().int().positive().optional(),
     goalId: z.string().min(1).optional(),
     taskId: z.string().min(1).optional(),
@@ -325,11 +333,11 @@ export const SubmitKnowledgeProposalDecisionRequestSchema = z
 export const KnowledgeProposalReviewSchema = z
   .object({
     proposalId: z.string().min(1),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     ownerScope: KnowledgeOwnerScopeSchema,
     baseRevision: z.string().min(1),
     candidateRevision: z.string().min(1),
-    reviewId: z.string().min(1),
+    reviewId: KnowledgeReviewIdSchema,
     requestId: RequestIdSchema,
     decision: KnowledgeProposalDecisionSchema,
     actor: ActorRefSchema,
@@ -389,7 +397,7 @@ export const ReverseKnowledgeProposalRequestSchema = z
     requestId: RequestIdSchema,
     baseRevision: z.string().min(1),
     confirmRemoval: z.literal(true).optional(),
-    reviewId: z.string().min(1),
+    reviewId: KnowledgeReviewIdSchema,
     knowledgePageId: KnowledgeProposalPageIdSchema,
     expectedContentDigest: KnowledgeProposalContentDigestSchema,
   })
@@ -399,7 +407,7 @@ export const ReverseKnowledgeProposalRequestSchema = z
 export const ReverseKnowledgeProposalResponseSchema = z
   .object({
     proposalId: z.string().min(1),
-    reviewId: z.string().min(1),
+    reviewId: KnowledgeReviewIdSchema,
     application: KnowledgeProposalApplicationSchema,
   })
   .strict();

@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import type {
   KnowledgeManagerAnswerResponse,
   KnowledgeManagerCallerSchema,
@@ -8,6 +7,7 @@ import type {
   KnowledgeManagerSuggestRepairResponse,
 } from '@openkit/app-api-schemas';
 import type { KnowledgeEntrySchema, RetrievalTraceReference } from '@openkit/protocol';
+import { allocateEntityId } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { KnowledgeProposalRecord } from './lib/store.js';
 import { analyzeKnowledgePage } from './retrieval-knowledge-adapter.js';
@@ -136,7 +136,7 @@ export async function answerKnowledgeManager(
     query: input.query,
     limit: input.limit ?? 5,
     pinnedReferences: [],
-    traceId: `krt_${randomUUID()}`,
+    traceId: allocateEntityId('krt'),
   });
   const pages = resolveWorkspaceKnowledgeRetrievalPages({
     access: input.access,
@@ -248,7 +248,7 @@ export async function prepareKnowledgeContext(
     query: input.query,
     limit: input.limit ?? 5,
     pinnedReferences: [],
-    traceId: `krt_${randomUUID()}`,
+    traceId: allocateEntityId('krt'),
   });
 
   return {

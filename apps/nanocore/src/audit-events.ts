@@ -1,8 +1,8 @@
-import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
   type AuditEvent,
   AuditEventSchema,
+  allocateEntityId,
   type KnowledgeOwnerScope,
   RequestIdSchema,
 } from '@openkit/protocol';
@@ -372,7 +372,7 @@ function recordAuditEvent(
   const createdAt = (input.now ?? new Date()).toISOString();
   const occurredAt = (input.occurredAt ?? input.now ?? new Date()).toISOString();
   const event = AuditEventSchema.parse({
-    id: input.auditEventId ?? `aud_${randomUUID()}`,
+    id: input.auditEventId ?? allocateEntityId('aud'),
     workspaceId: input.workspaceId,
     protocolVersion: input.protocolVersion,
     threadId: input.threadId ?? null,

@@ -11,6 +11,7 @@ export const registryJob = 'Prerelease registry admission';
 export const candidateJobs = [
   'L0-L2 static, unit, contract',
   'L3 NanoCore e2e',
+  'L4 Web e2e',
   'L5 smoke',
   'Workspace portability source',
   'Workspace portability target',
@@ -128,6 +129,12 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
       .split('\n'))
       if (/^scripts\/retrieval-[^/]+\.(?:py|sh)$/.test(file)) pending.add(file);
   }
+  // Stable promotion has its own tag-only workflow and must be in the same immutable input proof.
+  const promotionWorkflow = '.github/workflows/release-promotion.yml';
+  if (git(['ls-tree', sourceCommit, '--', promotionWorkflow]).trim()) {
+    jobs['stable-promotion-workflow'] = read(promotionWorkflow).blob;
+    pending.add(promotionWorkflow);
+  }
   requireFact(pending.size > 0, 'publication jobs have no admitted script inputs');
   // Current publication scripts use relative static imports and literal URL file reads.
   // Follow that actual dependency closure; a missing or untracked dependency refuses proof.
@@ -223,7 +230,9 @@ export function checkPublication(e, { now = new Date(), repoRoot = process.cwd()
     c?.sha === e.sha &&
       Number.isSafeInteger(c.attempt) &&
       c.attempt > 0 &&
-      ((c.event === 'push' && c.ref === 'refs/heads/main' && c.gate === 'release-gate') ||
+      ((c.event === 'push' &&
+        c.ref === 'refs/heads/main' &&
+        ['release-gate', 'full'].includes(c.gate)) ||
         (c.event === 'workflow_dispatch' && ['release-gate', 'full'].includes(c.gate))) &&
       successfulJobs(c, [
         ...candidateJobs,

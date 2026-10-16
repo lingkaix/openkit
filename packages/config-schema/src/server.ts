@@ -1,4 +1,6 @@
+import { isIP } from 'node:net';
 import { isAbsolute } from 'node:path';
+import { DeploymentIdSchema, UserIdSchema } from '@openkit/protocol';
 
 import { HARNESS_DEFAULT_MAX_ACTIVE_TURNS } from '@openkit/worker-protocol';
 import { z } from 'zod';
@@ -175,7 +177,7 @@ export const OpenKitNanoHostConfigSchema = z
         B: OpenKitNanoHostCredentialSlotSchema,
       })
       .strict(),
-    deploymentId: z.string().min(1),
+    deploymentId: DeploymentIdSchema,
     identityId: z.string().min(1),
     /** Positive backend-private Sandbox bound; omission uses the current default. */
     maxActiveTurnsPerSandbox: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
@@ -228,9 +230,86 @@ export const OpenKitAppUpdateConfigSchema = z
     addRawSecretIssues(value, ctx, []);
   });
 
-/**
- * File-backed NanoCore configuration schema.
- */
+/** One exact repository path; glob and URL aliases cannot enlarge maintenance authority. */
+const MaintenanceRepositoryPathSchema = z
+  .string()
+  .refine(
+    (value) =>
+      /^\/(?:[A-Za-z0-9_~.-]+\/)*[A-Za-z0-9_~.-]+$/.test(value) &&
+      value.split('/').every((segment) => segment !== '.' && segment !== '..'),
+    'Expected a canonical exact repository path.'
+  );
+
+/** Finite Server-owned authority for a registered Worker's Git-read rule correction. */
+export const WorkerGitReadMaintenanceAssignmentSchema = z
+  .object({
+    responsibleUserId: UserIdSchema,
+    agentId: z.string().min(1),
+    networkGrantId: z.string().min(1),
+    host: z.string().refine((value) => {
+      try {
+        if (
+          !value.split('.').every((label) => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label)) &&
+          !(value.startsWith('[') && value.endsWith(']') && isIP(value.slice(1, -1)) === 6)
+        )
+          return false;
+        const url = new URL(`https://${value}`);
+        return (
+          url.hostname === value &&
+          url.host === value &&
+          url.pathname === '/' &&
+          !url.username &&
+          !url.password &&
+          !url.search &&
+          !url.hash
+        );
+      } catch {
+        return false;
+      }
+    }, 'Expected an exact canonical host.'),
+    port: z.number().int().min(1).max(65_535),
+    protocol: z.literal('rest'),
+    repositoryPaths: z
+      .array(MaintenanceRepositoryPathSchema)
+      .min(1)
+      .refine(
+        (values) => new Set(values).size === values.length,
+        'Repository paths must be unique.'
+      ),
+    binaries: z
+      .array(
+        z
+          .string()
+          .refine(
+            (value) =>
+              isAbsolute(value) &&
+              [...value].every(
+                (character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127
+              ) &&
+              !value.split('/').some((segment) => segment === '.' || segment === '..') &&
+              !value.includes('//') &&
+              !value.endsWith('/'),
+            'Expected a canonical absolute binary path.'
+          )
+      )
+      .min(1)
+      .refine((values) => new Set(values).size === values.length, 'Binaries must be unique.'),
+    validFrom: z.iso.datetime({ precision: 3 }),
+    expiresAt: z.iso.datetime({ precision: 3 }),
+    enabled: z.boolean(),
+  })
+  .strict()
+  .refine((value) => Date.parse(value.validFrom) < Date.parse(value.expiresAt), {
+    message: 'Maintenance validity must be a nonempty finite interval.',
+    path: ['expiresAt'],
+  });
+
+/** Authored finite assignment; runtime admission must also evaluate current authority. */
+export type WorkerGitReadMaintenanceAssignment = z.infer<
+  typeof WorkerGitReadMaintenanceAssignmentSchema
+>;
+
+/** File-backed NanoCore configuration schema. */
 export const OpenKitConfigSchema = z
   .object({
     knowledgeMaintenance: KnowledgeMaintenanceSchema.optional(),
@@ -240,6 +319,18 @@ export const OpenKitConfigSchema = z
     mode: CoreModeSchema.optional(),
     policy: z
       .object({
+        workerGitReadMaintenance: z
+          .array(WorkerGitReadMaintenanceAssignmentSchema)
+          .refine(
+            (entries) =>
+              new Set(
+                entries.map((entry) =>
+                  JSON.stringify([entry.responsibleUserId, entry.agentId, entry.networkGrantId])
+                )
+              ).size === entries.length,
+            'Maintenance assignments must have unique responsible-user, Agent and grant tuples.'
+          )
+          .optional(),
         workDataCapture: z
           .object({
             value: z.enum(['off', 'on']).default('off'),

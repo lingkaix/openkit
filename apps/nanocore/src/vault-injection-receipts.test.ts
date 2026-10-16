@@ -1,10 +1,10 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
-import { createVaultGrant } from './vault/vault-grants.js';
+import { createVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultInjectionPlan } from './vault-injection-plans.js';
 import {
@@ -13,6 +13,12 @@ import {
   listVaultInjectionReceipts,
 } from './vault-injection-receipts.js';
 
+const fixtureRoots = new Set<string>();
+afterEach(() => {
+  for (const root of fixtureRoots) rmSync(root, { recursive: true, force: true });
+  fixtureRoots.clear();
+});
+
 /**
  * Opens a migrated Core database for injection receipt tests.
  *
@@ -20,6 +26,7 @@ import {
  */
 function createCoreDb(): CoreDb {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-injection-receipt-'));
+  fixtureRoots.add(dataRoot);
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   return coreDb;
@@ -35,39 +42,49 @@ describe('injection receipts', () => {
       const created = createVaultInjectionReceipt(coreDb, {
         agentSessionId: 'session_1',
         auditEventId: 'audit_1',
-        backendSummary: 'encrypted-file:vault_github:v1',
+        backendSummary: 'encrypted-file:vault_00000000-0000-7f73-bffa-d96a61ee4d70:v1',
         expiresAt: '2026-07-05T01:00:00.000Z',
-        grantId: 'grant_github_turn',
+        grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
         injectedAt: '2026-07-05T00:10:00.000Z',
         planId: 'plan_github_file',
         receiptId: 'receipt_github_file',
         revocationStatus: 'active',
       });
       const duplicate = createVaultInjectionReceipt(coreDb, {
-        backendSummary: 'changed',
-        capabilityCallId: 'call_1',
-        grantId: 'grant_github_turn',
-        injectedAt: '2026-07-05T00:20:00.000Z',
-        planId: 'plan_github_file',
-        receiptId: 'receipt_github_file',
-        revocationStatus: 'revoked',
+        ...created,
       });
-
       expect(duplicate).toEqual(created);
+      for (const patch of [
+        { backendSummary: 'changed' },
+        { agentSessionId: null, capabilityCallId: 'call_1' },
+        { auditEventId: null },
+        { injectedAt: '2026-07-05T00:20:00.000Z' },
+        { expiresAt: null },
+      ] as const) {
+        expect(() => createVaultInjectionReceipt(coreDb, { ...created, ...patch })).toThrow(
+          'Vault injection receipt identity conflict.'
+        );
+        expect(listVaultInjectionReceipts(coreDb)).toEqual([created]);
+      }
+
       expect(getVaultInjectionReceipt(coreDb, 'receipt_github_file')).toEqual(created);
       expect(listVaultInjectionReceipts(coreDb)).toEqual([created]);
       expect(created).toMatchObject({
         agentSessionId: 'session_1',
         auditEventId: 'audit_1',
-        backendSummary: 'encrypted-file:vault_github:v1',
+        backendSummary: 'encrypted-file:vault_00000000-0000-7f73-bffa-d96a61ee4d70:v1',
         expiresAt: '2026-07-05T01:00:00.000Z',
-        grantId: 'grant_github_turn',
+        grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
         injectedAt: '2026-07-05T00:10:00.000Z',
         planId: 'plan_github_file',
         receiptId: 'receipt_github_file',
         revocationStatus: 'active',
       });
       expect(JSON.stringify(created)).not.toContain('ghp_');
+      revokeVaultGrant(coreDb, { grantId: created.grantId });
+      const revoked = getVaultInjectionReceipt(coreDb, created.receiptId);
+      expect(revoked?.revocationStatus).not.toBe('active');
+      expect(createVaultInjectionReceipt(coreDb, { ...created })).toEqual(revoked);
     } finally {
       coreDb.sqlite.close();
     }
@@ -79,9 +96,9 @@ describe('injection receipts', () => {
     try {
       expect(() =>
         createVaultInjectionReceipt(coreDb, {
-          backendSummary: 'encrypted-file:vault_github:v1',
+          backendSummary: 'encrypted-file:vault_00000000-0000-7f73-bffa-d96a61ee4d70:v1',
           capabilityCallId: 'call_1',
-          grantId: 'grant_missing',
+          grantId: 'grant_00000000-0000-7278-b714-46e2d53cb316',
           injectedAt: '2026-07-05T00:10:00.000Z',
           planId: 'plan_missing',
           receiptId: 'receipt_missing',
@@ -93,9 +110,9 @@ describe('injection receipts', () => {
 
       expect(() =>
         createVaultInjectionReceipt(coreDb, {
-          backendSummary: 'encrypted-file:vault_github:v1',
+          backendSummary: 'encrypted-file:vault_00000000-0000-7f73-bffa-d96a61ee4d70:v1',
           capabilityCallId: 'call_1',
-          grantId: 'grant_other',
+          grantId: 'grant_00000000-0000-7cdc-be0b-b3cce2871c66',
           injectedAt: '2026-07-05T00:10:00.000Z',
           planId: 'plan_github_file',
           receiptId: 'receipt_wrong_grant',
@@ -104,8 +121,8 @@ describe('injection receipts', () => {
       ).toThrow('Injection receipt grant id must match the injection plan grant id.');
       expect(() =>
         createVaultInjectionReceipt(coreDb, {
-          backendSummary: 'encrypted-file:vault_github:v1',
-          grantId: 'grant_github_turn',
+          backendSummary: 'encrypted-file:vault_00000000-0000-7f73-bffa-d96a61ee4d70:v1',
+          grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
           injectedAt: '2026-07-05T00:10:00.000Z',
           planId: 'plan_github_file',
           receiptId: 'receipt_no_actor',
@@ -128,21 +145,21 @@ function createPlan(coreDb: CoreDb): void {
     backendKind: 'encrypted-file',
     displayName: 'GitHub token',
     ownerScope: 'server',
-    referenceId: 'vault_github',
+    referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     secretKind: 'repository-token',
   });
   createVaultGrant(coreDb, {
     allowedInjectionPaths: ['runtime-file'],
-    grantId: 'grant_github_turn',
+    grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
     lifetime: 'turn',
     ownerScope: 'workspace',
-    vaultReferenceId: 'vault_github',
-    workspaceId: 'ws_1',
+    vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
+    workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
   });
   createVaultInjectionPlan(coreDb, {
     backendCapabilityRequirement: 'encrypted-file:resolve',
     expirationBehavior: 'delete-on-turn-end',
-    grantId: 'grant_github_turn',
+    grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
     injectionVisibility: 'runtime-file',
     planId: 'plan_github_file',
     redactionRule: 'path-only',

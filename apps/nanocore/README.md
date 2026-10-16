@@ -59,7 +59,7 @@ The same-Sandbox peer route regression seeds history in memory and publishes com
 - local-mode implicit single-user operation
 - server-mode registered-user small-team operation with HTTP-only session auth and bounded Workspace sharing
 - optional file-backed state through `OPENKIT_DATA_ROOT`
-- implicit local actor `user_local`
+- local actor bound to the unique recorded canonical User
 - governed container Worker AgentSessions
 - provider-neutral subscription account state for `openai-codex` and `xai`
 - agent-facing LLM Gateway endpoints for Chat Completions and Responses, with one-level function namespace identity preserved on the chat-native bridge
@@ -311,7 +311,7 @@ First prove the predecessor NanoHost effect domain fully stopped and preserve it
 
 If an existing authoritative Core, User, or Workspace SQLite database fails its boot integrity check, NanoCore stops before product admission, bootstrap credential issuance, or listener binding and leaves the original file unchanged. Derived indexes remain disposable and rebuildable.
 
-In local mode, NanoCore upserts the implicit `user_local` row on boot and accepts requests without auth headers. Local mode binds to `127.0.0.1` by default; set `OPENKIT_BIND_HOST` to override the HTTP bind host.
+In local mode, NanoCore allocates one canonical User only on a fresh data root and uses the unique recorded local User on later boots. Missing or ambiguous local User authority on an initialized root stops boot. Local requests use that exact recorded identity and need no auth header. Local mode binds to `127.0.0.1` by default; set `OPENKIT_BIND_HOST` to override the HTTP bind host.
 
 ## Release Verification
 
@@ -456,7 +456,7 @@ Workspace dashboard, Thread dashboard and App search resolve the current actor's
 
 Canonical Thread envelopes require `openkit.thread-visibility.v1`. On predecessor cutover, owner-bound Quick Chat becomes private and Threads with formal Task/Goal inception become shared. Ambiguous project history blocks startup for explicit classification; missing or contradictory current visibility fails closed. The Core route guard also checks addressed Thread paths, conversation-target queries, Turn inputs and opaque feedback/approval lineage. Core lists and Workspace counts exclude inaccessible Threads; creation replay is actor-bound. SSE rechecks current Workspace authority, presented Token usability and audience before publication. Attention, scheduler and recovery projections admit candidate audiences before dependent reads, and generated presentations preserve Item-source audience by refusing private Item publication into a shared or differently owned private Thread, including administrator requests. Standalone Artifact delivery follows immutable origin. Explicit sharing, private-to-shared work handoff, export/import audience enforcement and remaining runtime context retrieval are still incomplete under the visibility specification.
 
-Deployment administrators can manage workspace secrets through `POST /api/app/operations/vault.secret-create`, `vault.secret-rotate`, and `vault.secret-revoke`, and ordinary gateway-only grants with no capability target or GitHub Worker runtime-env grants through `vault.grant-create` and `vault.grant-revoke`. All material is request-only; reference and grant ids remain redacted lifecycle history after revocation.
+Deployment administrators can manage Workspace secrets through `POST /api/app/operations/vault.secret-create`, `vault.secret-rotate`, and `vault.secret-revoke`, and supported gateway-only or GitHub Worker runtime-env grants through `vault.grant-create`, `vault.grant-narrow` and `vault.grant-revoke`. Grant inventory retains exact targets, paths, lifetime and expiry for review. Narrowing atomically revokes the original, creates a strictly narrower replacement and links both in initiating-human Audit; binding the replacement is an explicit separate action. See the [Vault guide](src/vault/README.md) for supported target restrictions and checks. All material is request-only; reference and grant ids remain redacted lifecycle history after revocation.
 
 Authored `server.jsonc.policy.workspaceApprovalModes` entries for `repo.push`, including `require_human_approval` and `auto_allow`, remain parseable for configuration loadability only. They have no grant or execution consumer and do not control vendor MCP approval. Selected vendor tools retain their per-tool approval rules under [Worker MCP Tool Supply](../../docs/specs/20260704-worker_mcp_tool_supply.md) and [Pending Requests](../../docs/specs/20260930-pending_requests.md).
 
@@ -493,6 +493,8 @@ Workspace list/resources, Thread creation/read/items/dashboard and Turn read now
 Artifact operations derive their HTTP bindings and admission posture from `ARTIFACT_OPERATION_DEFINITIONS`. `src/artifact-operations.ts` joins inventory, inline content, import, introduction and version-owned Review decisions to the existing domain owners; import and introduction retain HTTP 201. The retired Artifact routes, including raw content, have no alias. Run `pnpm --filter @openkit/nanocore exec vitest run src/artifact-operation-projections.test.ts src/artifact-routes.test.ts` for projection parity and retained lifecycle checks.
 
 Automatic Assistant-to-Goal routing refuses private source input before any shared Goal write when disclosure admission is absent. Explicit Goal commands and handoffs from shared history retain their existing owner checks.
+
+Goal Coordinator Worker discovery reads only its currently authorized Workspace through native `agent.list`. Current Task setup determines readiness, and ordinary Task admission rechecks the exact selection. Plan activation and completion consumption require the captured operation and source tuple; a mismatched call leaves the exact grant available for its correct operation.
 
 Workspace MCP bindings support raw and bearer credential presentation under [Worker MCP Tool Supply](../../docs/specs/20260704-worker_mcp_tool_supply.md#credential-injection). Bearer delivery uses the SDK inside NanoCore; Worker supply remains secret-free. The HTTP plugin importer refuses an explicit `auth` object with the deferred onboarding reason and a `query` field with the unsupported-query reason, and accepts a query string already part of the endpoint URL. Run `pnpm --filter @openkit/nanocore exec vitest run src/runtime/worker-mcp-gateway.test.ts src/worker-mcp-routes.test.ts src/catalog/resource-catalog.test.ts` for the local synthetic conformance slice.
 
@@ -549,3 +551,11 @@ Native Responses admits complete undeclared local-tool history as context while 
 The shared Harness native-length regression in `src/runtime/worker-governance-turn-executor.test.ts` covers authenticated `blocked/length` publication through real Task closeout, including the backend fence, checkpoint cleanup and zero automatic successor launches; the [runtime guide](src/runtime/README.md) describes its boundary.
 
 The App-update family includes an administrator-only content-free deployment preflight over the existing shared store, scheduler queue, execution attempts and in-flight command map. No new storage or runtime query is introduced. Preparation projects the helper checksum and complete approval summary; status retains named refusal reasons and preparation evidence. Operational diagnostics distinguish service availability, product-work readiness, update qualification and maintenance safety, including stored execution-host observation age.
+
+Vault injection plans and receipts preserve immutable intent and completion lineage under repeated creation. Changed input for an existing identity fails without mutation. Exact replay preserves current revocation state and original timestamps. See the [Vault guide](src/vault/README.md) for the focused checks.
+
+All NanoCore Vitest unit and e2e configurations use the shared [temporary-directory setup](../../tests/support/vitest-global-setup.mjs), including the default-off real Codex gate. Workers inherit one private invocation directory; normal teardown reclaims it after success or failure. Tests close database handles and remove owned fixtures before the run-level backstop.
+
+Direct Task command replay uses the current worker Turn and existing command owner. Historical Task-to-Goal replay is removed under the authorized pre-stable reset because its producer is retired. Run the complete `src/server.test.ts` suite for current replay and lineage refusal.
+
+Command receipt normalization selects the existing per-kind validator from the response discriminator before memory, SQLite or owner-directory publication and on retained-row readback. Direct Workspace, User, Thread, Turn, Artifact, Material, Review, Knowledge, invitation, presentation and Worker storage pointers use their declared owners; composite, request, Goal and native keys retain their own opaque contracts. Run the complete `src/storage/command-request-records.test.ts` suite for malformed and wrong-kind refusal, unchanged inventory, retained-row refusal and opaque-owner controls.

@@ -33,7 +33,7 @@ function makeClient(): CoreClient {
           membershipStatus: 'active',
           accessCause: 'membership',
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       } satisfies Awaited<ReturnType<CoreClient['operations']['workspace.list']>>),

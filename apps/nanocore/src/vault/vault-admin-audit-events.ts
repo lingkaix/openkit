@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { allocateEntityId } from '@openkit/protocol';
 import { recordServerAuditEvent } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import type { CoreDb } from '../storage/db.js';
@@ -14,7 +14,7 @@ export interface RecordVaultAdminAuditEventInput {
   readonly actor?: Actor;
   /** Stable admin action name. */
   readonly action:
-    | `vault.workspace_${'create' | 'rotate' | 'revoke' | 'grant' | 'revoke-grant'}`
+    | `vault.workspace_${'create' | 'rotate' | 'revoke' | 'grant' | 'revoke-grant' | 'narrow-grant'}`
     | 'vault.unlock'
     | 'vault.lock'
     | 'vault.bootstrap_codex_auth_json'
@@ -30,6 +30,12 @@ export interface RecordVaultAdminAuditEventInput {
   readonly errorCode?: string | null;
   /** Backend kind administered by the action. */
   readonly backendKind: VaultBackendKind;
+  /** Exact affected Workspace when the administrative effect is Workspace-scoped. */
+  readonly workspaceId?: string;
+  /** Grant created by the administrative effect, when applicable. */
+  readonly vaultGrantId?: string;
+  /** Exact redacted source resource, including a replaced grant when applicable. */
+  readonly resource?: string;
   /** Event creation time. */
   readonly now?: Date;
 }
@@ -40,7 +46,7 @@ export interface RecordVaultAdminAuditEventInput {
  * @param input Vault admin audit event input.
  */
 export function recordVaultAdminAuditEvent(input: RecordVaultAdminAuditEventInput): void {
-  const auditEventId = input.auditEventId ?? `aud_${randomUUID()}`;
+  const auditEventId = input.auditEventId ?? allocateEntityId('aud');
   const severity = input.severity ?? (input.outcome === 'succeeded' ? 'info' : 'warning');
   const now = input.now ?? new Date();
 
@@ -73,6 +79,7 @@ export function recordVaultAdminAuditEvent(input: RecordVaultAdminAuditEventInpu
     );
 
   recordServerAuditEvent({
+    actor: input.actor ? { kind: 'user', id: input.actor.userId } : null,
     action: input.action,
     auditEventId,
     category: 'system',
@@ -80,7 +87,9 @@ export function recordVaultAdminAuditEvent(input: RecordVaultAdminAuditEventInpu
     errorCode: input.errorCode ?? null,
     now,
     outcome: input.outcome,
-    resource: `vault:${input.backendKind}`,
+    resource: input.resource ?? `vault:${input.backendKind}`,
+    workspaceId: input.workspaceId ?? null,
+    vaultGrantId: input.vaultGrantId ?? null,
     severity,
     summary: input.summary,
   });

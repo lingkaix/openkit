@@ -118,7 +118,7 @@ Items preserve visible inputs, outputs, summaries, decisions, state changes, han
 
 Runtime-private traces and chain-of-thought are not Items unless an owning design intentionally promotes a safe, product-visible summary.
 
-A source-bound internal continuation summary is an ordinary canonical Item. Its containing Thread retains the exact source history; the summary names and verifies that history without replacing it or granting authority. [Context Management](../specs/20260902-agent_runtime_context_compaction.md#source-bound-summary-items) owns its required provenance, production, invalidation and acceptance semantics.
+A source-bound internal continuation summary is an ordinary canonical Item. Its containing Thread retains the exact source history; the summary names and verifies that history without replacing it or granting authority. Summary production, source verification and invalidation must preserve this Item boundary.
 
 ## Related Root Concepts
 

@@ -1,5 +1,12 @@
 import { WORKSPACE_EXPORT_FORMAT_VERSION } from '@openkit/config-schema/workspace-export';
-import { WorkspaceRecordSchema } from '@openkit/protocol';
+import {
+  DataRootBackupIdSchema,
+  DeploymentIdSchema,
+  UserIdSchema,
+  WorkspaceExportIdSchema,
+  WorkspaceIdSchema,
+  WorkspaceRecordSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import { addRawSecretIssues } from './raw-secrets.js';
 
@@ -39,7 +46,7 @@ export const StorageQuarantineEntrySchema = z.discriminatedUnion('scope', [
   z
     .object({
       scope: z.literal('user'),
-      userId: z.string().min(1),
+      userId: UserIdSchema,
       path: z.string().min(1),
       bytes: z.number().int().nonnegative(),
     })
@@ -47,7 +54,7 @@ export const StorageQuarantineEntrySchema = z.discriminatedUnion('scope', [
   z
     .object({
       scope: z.literal('workspace'),
-      workspaceId: z.string().min(1),
+      workspaceId: WorkspaceIdSchema,
       path: z.string().min(1),
       bytes: z.number().int().nonnegative(),
     })
@@ -57,7 +64,7 @@ export const StorageQuarantineEntrySchema = z.discriminatedUnion('scope', [
 /** Workspace subtree in the storage layout report. */
 export const StorageWorkspaceReportSchema = z
   .object({
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     workspaceDb: StorageDatabaseReportSchema,
     indexesDir: StorageDirectoryReportSchema,
   })
@@ -66,7 +73,7 @@ export const StorageWorkspaceReportSchema = z
 /** User subtree in the storage layout report. */
 export const StorageUserReportSchema = z
   .object({
-    userId: z.string().min(1),
+    userId: UserIdSchema,
     userDb: StorageDatabaseReportSchema,
   })
   .strict();
@@ -99,9 +106,9 @@ export const WorkspaceExportManifestSchema = z
   .object({
     schemaVersion: z.number().int().positive(),
     recordType: z.literal('workspace-export'),
-    id: z.string().min(1),
+    id: WorkspaceExportIdSchema,
     ownerScope: z.literal('workspace'),
-    lineage: z.object({ workspaceId: z.string().min(1) }).strict(),
+    lineage: z.object({ workspaceId: WorkspaceIdSchema }).strict(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
     contentDigest: z.string().min(1),
@@ -109,8 +116,8 @@ export const WorkspaceExportManifestSchema = z
     sensitivity: z.enum(['public', 'internal', 'restricted']),
     requiredFeatures: z.array(z.string().min(1)),
     extensions: z.record(z.string(), z.unknown()),
-    sourceDeploymentId: z.string().min(1),
-    workspaceId: z.string().min(1),
+    sourceDeploymentId: DeploymentIdSchema,
+    workspaceId: WorkspaceIdSchema,
     exportCreatedAt: z.string().datetime(),
     exportFormatVersion: z.literal(WORKSPACE_EXPORT_FORMAT_VERSION),
     knowledgeNotebookRevision: z.string().min(1).optional(),
@@ -123,7 +130,7 @@ export const DataRootBackupManifestSchema = z
   .object({
     schemaVersion: z.number().int().positive(),
     recordType: z.literal('data-root-backup'),
-    id: z.string().min(1),
+    id: DataRootBackupIdSchema,
     ownerScope: z.literal('server'),
     lineage: z.record(z.string(), z.unknown()),
     createdAt: z.string().datetime(),
@@ -133,7 +140,7 @@ export const DataRootBackupManifestSchema = z
     sensitivity: z.enum(['public', 'internal', 'restricted']),
     requiredFeatures: z.array(z.string().min(1)),
     extensions: z.record(z.string(), z.unknown()),
-    sourceDeploymentId: z.string().min(1),
+    sourceDeploymentId: DeploymentIdSchema,
     backupStartedAt: z.string().datetime(),
     backupCompletedAt: z.string().datetime(),
     backupMode: z.enum(['cold', 'hot']),
@@ -146,8 +153,8 @@ export const DataRootBackupManifestSchema = z
 /** Response returned after creating and verifying one workspace export tree. */
 export const WorkspaceExportResponseSchema = z
   .object({
-    exportId: z.string().min(1),
-    workspaceId: z.string().min(1),
+    exportId: WorkspaceExportIdSchema,
+    workspaceId: WorkspaceIdSchema,
     manifest: WorkspaceExportManifestSchema,
     fileCount: z.number().int().nonnegative(),
     totalBytes: z.number().int().nonnegative(),
@@ -161,7 +168,7 @@ export const WorkspaceExportResponseSchema = z
 /** Response returned after creating one server-managed data-root backup. */
 export const DataRootBackupCreateResponseSchema = z
   .object({
-    backupId: z.string().min(1),
+    backupId: DataRootBackupIdSchema,
     manifest: DataRootBackupManifestSchema,
     fileCount: z.number().int().nonnegative(),
     totalBytes: z.number().int().nonnegative(),
@@ -204,14 +211,14 @@ export const WorkspaceImportCollisionSchema = z.discriminatedUnion('status', [
   z
     .object({
       status: z.literal('available'),
-      workspaceId: z.string().min(1),
+      workspaceId: WorkspaceIdSchema,
     })
     .strict(),
   z
     .object({
       status: z.literal('collides'),
-      workspaceId: z.string().min(1),
-      suggestedWorkspaceId: z.string().min(1),
+      workspaceId: WorkspaceIdSchema,
+      suggestedWorkspaceId: WorkspaceIdSchema,
     })
     .strict(),
 ]);
@@ -220,9 +227,9 @@ export const WorkspaceImportCollisionSchema = z.discriminatedUnion('status', [
 export const WorkspaceImportDryRunResponseSchema = z
   .object({
     mode: z.literal('dry-run'),
-    exportId: z.string().min(1),
-    sourceWorkspaceId: z.string().min(1),
-    exportedWorkspaceId: z.string().min(1),
+    exportId: WorkspaceExportIdSchema,
+    sourceWorkspaceId: WorkspaceIdSchema,
+    exportedWorkspaceId: WorkspaceIdSchema,
     manifest: WorkspaceExportManifestSchema,
     verification: WorkspaceImportDryRunVerificationSchema,
     collision: WorkspaceImportCollisionSchema,
@@ -242,10 +249,10 @@ export const WorkspaceImportResponseSchema = z
   .object({
     mode: z.literal('imported'),
     requestId: z.string().min(1).nullable(),
-    exportId: z.string().min(1),
-    sourceWorkspaceId: z.string().min(1),
-    exportedWorkspaceId: z.string().min(1),
-    importedWorkspaceId: z.string().min(1),
+    exportId: WorkspaceExportIdSchema,
+    sourceWorkspaceId: WorkspaceIdSchema,
+    exportedWorkspaceId: WorkspaceIdSchema,
+    importedWorkspaceId: WorkspaceIdSchema,
     manifest: WorkspaceExportManifestSchema,
     verification: WorkspaceImportDryRunVerificationSchema,
     collision: WorkspaceImportCollisionSchema,

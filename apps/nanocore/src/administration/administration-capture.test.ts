@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { Hono } from 'hono';
 import { expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
@@ -22,6 +21,7 @@ import {
   type WorkObservationRecord,
 } from '../storage/work-observations.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -38,23 +38,24 @@ it('binds the actual Administration prompt and ordered tools before model access
     ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: quickChatWorkspaceIdForUser('user_local'),
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: quickChatWorkspaceIdForUser('usr_00000000-0000-7000-8000-000000000001'),
     });
     const token = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'server-admin',
-      tokenId: 'tok_administration_capture',
+      tokenId: 'tok_00000000-0000-788c-8362-50ad2f3e3257',
       workspaceIds: [],
     });
     const store = createDemoStore({ dataRoot });
-    const workspaceId = quickChatWorkspaceIdForUser('user_local');
+    const workspaceId = quickChatWorkspaceIdForUser('usr_00000000-0000-7000-8000-000000000001');
     const thread = store.createThread(
       workspaceId,
       'Administration',
-      'th_administration_capture',
-      'administration'
+      'th_00000000-0000-7eb0-81a4-c2a65cc0dcba',
+      'administration',
+      { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
     );
     const profile = {
       id: 'provider',
@@ -116,7 +117,7 @@ it('binds the actual Administration prompt and ordered tools before model access
         tokenId: token.tokenId,
         tokenScope: 'server-admin',
         tokenWorkspaceIds: [],
-        userId: 'user_local',
+        userId: 'usr_00000000-0000-7000-8000-000000000001',
       });
       await next();
     });
@@ -180,6 +181,7 @@ it('binds the actual Administration prompt and ordered tools before model access
       'administration_configuration_read',
       'administration_schema_read',
       'administration_configuration_propose',
+      'administration_configuration_apply',
       'worker_environment_list',
       'worker_environment_status',
       'worker_environment_prepare',

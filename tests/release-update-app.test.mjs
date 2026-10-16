@@ -21,6 +21,35 @@ const deployment = {
   machineId: 'a'.repeat(32),
   container: 'openkit-app',
 };
+
+test('App evidence retains image attribution without the raw installation identifier', async (t) => {
+  const { p, dir, io } = await setup(t);
+  const result = await updateApp(target, p, dir, io);
+  assert.equal(result.identities.appDigest, digest);
+  assert.equal(result.identities.sourceCommit, sha);
+  assert.equal(Object.hasOwn(result.identities, 'machineId'), false);
+  const retained = JSON.parse(await fs.readFile(path.join(dir, 'app-result.json'), 'utf8'));
+  assert.equal(Object.hasOwn(retained.identities, 'machineId'), false);
+});
+
+test('selected retained content is compared in memory and only its digest enters evidence', async (t) => {
+  const { p, dir, io } = await setup(t);
+  const original = io.call;
+  io.call = async (operation, input) =>
+    operation === 'thread.read'
+      ? { content: 'invented-private-retained-content' }
+      : original(operation, input);
+  assert.equal((await updateApp(target, p, dir, io)).outcome, 'passed');
+  for (const file of await fs.readdir(dir)) {
+    const text = await fs.readFile(path.join(dir, file), 'utf8');
+    assert.equal(text.includes('invented-private-retained-content'), false);
+    if (file.startsWith('thread.read-')) {
+      const observation = JSON.parse(text);
+      assert.match(observation.responseSha256, /^[a-f0-9]{64}$/);
+      assert.match(observation.inputSha256, /^[a-f0-9]{64}$/);
+    }
+  }
+});
 /** Synthetic admitted inputs with exact reviewed assessment and public retained-record selector. */
 function params() {
   const manifest = createReleaseManifest({
@@ -62,7 +91,10 @@ function params() {
     retainedReads: [
       {
         operation: 'thread.read',
-        input: { workspaceId: 'example-workspace', threadId: 'example-retained-thread' },
+        input: {
+          workspaceId: 'ws_0190f4c8-0000-7000-8000-000000000007',
+          threadId: 'th_0190f4c8-0000-7000-8000-000000000008',
+        },
       },
     ],
     grant: {

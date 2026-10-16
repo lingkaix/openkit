@@ -49,9 +49,14 @@ export function remintAssistantThreadParents(
   threads: Thread[],
   threadIds: ReadonlyMap<string, string>
 ): void {
+  const targets = new Set(threadIds.values());
   for (const thread of threads) {
-    if (thread.parentThreadId && threadIds.has(thread.parentThreadId))
-      thread.parentThreadId = threadIds.get(thread.parentThreadId)!;
+    const parent = thread.parentThreadId;
+    if (!parent) continue;
+    const mapped = threadIds.get(parent);
+    if (mapped) thread.parentThreadId = mapped;
+    else if (targets.has(parent))
+      throw new Error('Unresolved source Thread parent collides with a target Thread.');
   }
 }
 
@@ -329,21 +334,7 @@ export function reconcileImportedAssistantContext(
     );
     if (item.type !== 'context-summary')
       throw new Error('Portable continuation summary kind changed.');
-    const range = importedContextRange(
-      canonical.turns,
-      item.threadId,
-      item.turnId,
-      item.sourceRange.firstItemId,
-      item.sourceRange.lastItemId
-    );
-    if (
-      range.length !== originals.length ||
-      range.some((candidate, index) => candidate.id !== context.itemIds.get(originals[index]!.id))
-    ) {
-      // A changed canonical order cannot authorize reuse of the source summary; retain its stale proof for safe refusal.
-      updated.set(item.id, item);
-      continue;
-    }
+    // Verify the original chain before a changed target order can retain an unusable proof.
     let previousSummary = item.previousSummary;
     if (source.previousSummary) {
       const originalPrevious = requiredMapValue(
@@ -359,6 +350,21 @@ export function reconcileImportedAssistantContext(
         'Summary'
       );
       previousSummary = { itemId: previous.id, digest: internalContextDigest(previous) };
+    }
+    const range = importedContextRange(
+      canonical.turns,
+      item.threadId,
+      item.turnId,
+      item.sourceRange.firstItemId,
+      item.sourceRange.lastItemId
+    );
+    if (
+      range.length !== originals.length ||
+      range.some((candidate, index) => candidate.id !== context.itemIds.get(originals[index]!.id))
+    ) {
+      // A changed canonical order cannot authorize reuse of the source summary; retain its stale proof for safe refusal.
+      updated.set(item.id, item);
+      continue;
     }
     updated.set(
       item.id,

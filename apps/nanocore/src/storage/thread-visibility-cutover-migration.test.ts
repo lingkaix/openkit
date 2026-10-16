@@ -26,6 +26,8 @@ function predecessorRecord(value: Record<string, unknown>) {
   const predecessor = { ...value };
   delete predecessor.visibility;
   delete predecessor.privateOwnerUserId;
+  delete predecessor.threadSource;
+  delete predecessor.parentThreadId;
   predecessor.requiredFeatures = ['openkit.thread-entry.v1'];
   const { id, workspaceId, name, preview, status, entryPath, createdAt, updatedAt } = predecessor;
   predecessor.contentDigest = `sha256:${createHash('sha256').update(JSON.stringify({ id, workspaceId, name, preview, status, entryPath, createdAt, updatedAt })).digest('hex')}`;
@@ -42,7 +44,7 @@ describe('Thread visibility cutover migration', () => {
     const ambiguous = store.createThread(workspace.id, 'Empty ambiguous history');
     const turn = store.createTurn(workspace.id, formal.id, 'Work', {
       kind: 'user',
-      id: 'user_local',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
 

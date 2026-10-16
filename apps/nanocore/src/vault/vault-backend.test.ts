@@ -28,17 +28,21 @@ describe('vault backend boundary', () => {
     });
     const material: VaultSecretMaterial = 'live_secret_value';
 
-    expect(() => backend.resolve({ referenceId: 'vault_demo' })).toThrow(VaultBackendError);
-    expect(() => backend.resolve({ referenceId: 'vault_demo' })).toThrow('vault-locked');
+    expect(() =>
+      backend.resolve({ referenceId: 'vault_00000000-0000-78b6-b4ac-a24bcc5d78a3' })
+    ).toThrow(VaultBackendError);
+    expect(() =>
+      backend.resolve({ referenceId: 'vault_00000000-0000-78b6-b4ac-a24bcc5d78a3' })
+    ).toThrow('vault-locked');
 
     try {
       backend.store({
         material,
         metadata: {
           ownerScope: 'workspace',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
-        referenceId: 'vault_demo',
+        referenceId: 'vault_00000000-0000-78b6-b4ac-a24bcc5d78a3',
       });
     } catch (error) {
       expect(error).toBeInstanceOf(VaultBackendError);
@@ -96,7 +100,7 @@ describe('vault backend boundary', () => {
     for (const metadata of [
       {
         ownerScope: 'workspace',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         providerSubscriptionAccount: {
           accountSlotId: 'slot_1',
           subscriptionProviderId: 'openai-codex',
@@ -104,7 +108,7 @@ describe('vault backend boundary', () => {
       },
       {
         ownerScope: 'user',
-        userId: 'user_demo',
+        userId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
         providerSubscriptionAccount: {
           accountSlotId: 'slot_1',
           subscriptionProviderId: 'xai',

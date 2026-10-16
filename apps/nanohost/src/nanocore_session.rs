@@ -14,7 +14,7 @@
 #![allow(dead_code, clippy::assertions_on_constants)]
 
 use std::future::Future;
-use std::io::{Cursor, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -579,6 +579,23 @@ pub struct AsyncRustlsClientStream<S = TcpStream> {
     pending_tls_offset: usize,
 }
 
+/// Polls a socket into rustls's own receive buffer, preserving partial-read ownership.
+struct RustlsSocketReader<'a, 'cx, S> {
+    socket: &'a mut S,
+    context: &'a mut Context<'cx>,
+}
+
+impl<S: AsyncRead + Unpin> Read for RustlsSocketReader<'_, '_, S> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let mut buffer = ReadBuf::new(buffer);
+        match Pin::new(&mut *self.socket).poll_read(self.context, &mut buffer) {
+            Poll::Pending => Err(std::io::ErrorKind::WouldBlock.into()),
+            Poll::Ready(Err(error)) => Err(error),
+            Poll::Ready(Ok(())) => Ok(buffer.filled().len()),
+        }
+    }
+}
+
 impl VerifiedSessionTransport {
     /// Returns whether this transport requires server-authenticated TLS.
     pub fn requires_server_authenticated_tls(&self) -> bool {
@@ -635,6 +652,59 @@ impl<S> AsyncRustlsClientStream<S>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    /// Completes verified TLS before H2 can hide a definite certificate rejection.
+    fn poll_handshake(&mut self, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        loop {
+            let flushed = match self.poll_flush_tls(cx) {
+                Poll::Ready(Ok(())) => true,
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                Poll::Pending => false,
+            };
+            if !self.connection.is_handshaking() {
+                return if flushed {
+                    Poll::Ready(Ok(()))
+                } else {
+                    Poll::Pending
+                };
+            }
+            // Read even under write backpressure; the peer may need input consumed before it can receive the rest of our handshake flight.
+            match self.poll_receive_tls(cx) {
+                Poll::Ready(Ok(())) => {}
+                other => return other,
+            }
+        }
+    }
+
+    /// Reads and processes one TLS record batch without exposing peer error text.
+    fn poll_receive_tls(&mut self, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        // rustls can consume less than an offered socket batch. Let its Read buffer select the socket read size so no encrypted suffix is discarded.
+        let mut reader = RustlsSocketReader {
+            socket: &mut self.socket,
+            context: cx,
+        };
+        let received = match self.connection.read_tls(&mut reader) {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Poll::Pending,
+            Err(error) => return Poll::Ready(Err(error)),
+            Ok(received) => received,
+        };
+        if received == 0 {
+            return Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "nanohost TLS socket read closed",
+            )));
+        }
+        self.connection.process_new_packets().map_err(|error| {
+            // H2 retains only the I/O kind and stringifies its source. Observe the typed cause here without exposing that text or retaining another connection projection.
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "{}",
+                format_tls_processing_failure(&error)
+            );
+            std::io::Error::other(error)
+        })?;
+        Poll::Ready(Ok(()))
+    }
+
     /// Flushes queued rustls records to the underlying nonblocking socket.
     fn poll_flush_tls(&mut self, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         loop {
@@ -707,18 +777,9 @@ where
                 }
             }
 
-            let mut encrypted = [0_u8; 16 * 1024];
-            let mut encrypted_buffer = ReadBuf::new(&mut encrypted);
-            match Pin::new(&mut self.socket).poll_read(cx, &mut encrypted_buffer) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-                Poll::Ready(Ok(())) => {
-                    self.connection
-                        .read_tls(&mut Cursor::new(encrypted_buffer.filled()))?;
-                    self.connection
-                        .process_new_packets()
-                        .map_err(std::io::Error::other)?;
-                }
+            match self.poll_receive_tls(cx) {
+                Poll::Ready(Ok(())) => {}
+                other => return other,
             }
         }
     }
@@ -792,12 +853,32 @@ pub async fn connect_verified_session_transport(
     let server_name = ServerName::try_from(host).map_err(|_| "nanohost TLS server name invalid")?;
     let connection = ClientConnection::new(config, server_name)
         .map_err(|_| "nanohost TLS client unavailable")?;
-    Ok(VerifiedSessionIo::Tls(Box::new(AsyncRustlsClientStream {
+    let mut stream = AsyncRustlsClientStream {
         socket,
         connection,
         pending_tls: Vec::new(),
         pending_tls_offset: 0,
-    })))
+    };
+    tokio::time::timeout_at(
+        startup_deadline,
+        std::future::poll_fn(|cx| stream.poll_handshake(cx)),
+    )
+    .await
+    .map_err(|_| "nanohost NanoCore rendezvous timed out")?
+    .map_err(|error| {
+        // Keep certificate and endpoint details inside rustls. The outer H2 driver otherwise reduces this definite trust failure to a retryable close.
+        if matches!(
+            error
+                .get_ref()
+                .and_then(|cause| cause.downcast_ref::<rustls::Error>()),
+            Some(rustls::Error::InvalidCertificate(_))
+        ) {
+            "nanohost NanoCore TLS certificate verification failed"
+        } else {
+            "nanohost NanoCore TLS handshake failed"
+        }
+    })?;
+    Ok(VerifiedSessionIo::Tls(Box::new(stream)))
 }
 
 /// Classifies whether the NanoCore rendezvous URL requires verified TLS.
@@ -1121,7 +1202,7 @@ impl From<RuntimeEffectKind> for OuterSessionOperation {
 
 impl OuterSessionOperation {
     /// Returns the exact fixed operation literal or `none`.
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
             Self::CreateSandbox => "sandbox.create",
@@ -1297,6 +1378,85 @@ fn is_physical_epoch(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Classifies a TLS processing failure before H2 erases its typed I/O source.
+fn format_tls_processing_failure(error: &rustls::Error) -> String {
+    let cause = match error {
+        rustls::Error::InvalidCertificate(_) => "certificate",
+        rustls::Error::AlertReceived(_) => "peer_alert",
+        rustls::Error::InvalidMessage(_) => "invalid_message",
+        rustls::Error::DecryptError => "decrypt_error",
+        rustls::Error::PeerMisbehaved(_) => "peer_misbehaved",
+        rustls::Error::PeerIncompatible(_) => "peer_incompatible",
+        rustls::Error::InappropriateMessage { .. }
+        | rustls::Error::InappropriateHandshakeMessage { .. } => "unexpected_message",
+        _ => "other",
+    };
+    format!("nanohost TLS processing failed: cause={cause}")
+}
+
+/// Projects the actual H2 driver's completion into closed, value-free journal fields.
+/// Peer debug bytes and underlying I/O messages are never formatted.
+fn format_h2_driver_close(result: &Result<(), h2::Error>) -> String {
+    let (outcome, initiator, reason, io) = match result {
+        Ok(()) => ("clean_end", "none", "none", "none"),
+        Err(error) => {
+            let outcome = if error.is_io() {
+                "io_error"
+            } else if error.is_go_away() {
+                "goaway"
+            } else if error.is_reset() {
+                "reset"
+            } else {
+                "protocol_error"
+            };
+            let initiator = if error.is_io() {
+                "none"
+            } else if error.is_remote() {
+                "remote"
+            } else if error.is_library() {
+                "library"
+            } else {
+                "other"
+            };
+            let reason = match error.reason() {
+                None => "none",
+                Some(h2::Reason::NO_ERROR) => "no_error",
+                Some(h2::Reason::PROTOCOL_ERROR) => "protocol_error",
+                Some(h2::Reason::INTERNAL_ERROR) => "internal_error",
+                Some(h2::Reason::FLOW_CONTROL_ERROR) => "flow_control_error",
+                Some(h2::Reason::SETTINGS_TIMEOUT) => "settings_timeout",
+                Some(h2::Reason::STREAM_CLOSED) => "stream_closed",
+                Some(h2::Reason::FRAME_SIZE_ERROR) => "frame_size_error",
+                Some(h2::Reason::REFUSED_STREAM) => "refused_stream",
+                Some(h2::Reason::CANCEL) => "cancel",
+                Some(h2::Reason::COMPRESSION_ERROR) => "compression_error",
+                Some(h2::Reason::CONNECT_ERROR) => "connect_error",
+                Some(h2::Reason::ENHANCE_YOUR_CALM) => "enhance_your_calm",
+                Some(h2::Reason::INADEQUATE_SECURITY) => "inadequate_security",
+                Some(h2::Reason::HTTP_1_1_REQUIRED) => "http_1_1_required",
+                Some(_) => "unknown",
+            };
+            let io = match error.get_io().map(std::io::Error::kind) {
+                None => "none",
+                Some(std::io::ErrorKind::ConnectionReset) => "connection_reset",
+                Some(std::io::ErrorKind::ConnectionAborted) => "connection_aborted",
+                Some(std::io::ErrorKind::UnexpectedEof) => "unexpected_eof",
+                Some(std::io::ErrorKind::TimedOut) => "timed_out",
+                Some(std::io::ErrorKind::BrokenPipe) => "broken_pipe",
+                Some(std::io::ErrorKind::NotConnected) => "not_connected",
+                Some(std::io::ErrorKind::InvalidData) => "invalid_data",
+                Some(std::io::ErrorKind::Interrupted) => "interrupted",
+                Some(std::io::ErrorKind::WouldBlock) => "would_block",
+                Some(_) => "other",
+            };
+            (outcome, initiator, reason, io)
+        }
+    };
+    format!(
+        "nanohost physical connection ended: source=h2_driver outcome={outcome} initiator={initiator} reason={reason} io={io}"
+    )
 }
 
 /// Runs one authenticated outbound HTTP/2 connection to NanoCore.
@@ -1708,6 +1868,11 @@ where
     let lost_inspection = inspection.clone();
     let mut connection = tokio::spawn(async move {
         let result = connection.await;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "{}",
+            format_h2_driver_close(&result)
+        );
         if let Some(inspection) = lost_inspection {
             inspection.clear();
         }
@@ -1733,7 +1898,17 @@ where
             let generation = admitted_generation.load(Ordering::Acquire);
             Err(startup_failure().with_reconnect_after((generation != 0).then_some(generation).or(reconnect_after)))
         },
-        _ = &mut connection => {
+        result = &mut connection => {
+            if let Err(error) = result {
+                let outcome = if error.is_cancelled() {
+                    "cancelled"
+                } else if error.is_panic() {
+                    "panicked"
+                } else {
+                    "unknown"
+                };
+                let _ = writeln!(std::io::stderr().lock(), "nanohost physical connection ended: source=driver_task outcome={outcome} initiator=local reason=none io=none");
+            }
             let generation = admitted_generation.load(Ordering::Acquire);
             Err(OuterSessionFailure::reconnect(
                 OuterSessionStage::Connect,
@@ -2880,7 +3055,15 @@ impl OuterSessionState {
 
 #[cfg(test)]
 #[path = "nanocore_tls_tests.rs"]
-mod native_tls_tests;
+pub(crate) mod native_tls_tests;
+
+#[cfg(test)]
+#[path = "nanocore_connection_tests.rs"]
+mod nanocore_connection_tests;
+
+#[cfg(test)]
+#[path = "nanocore_tls_io_tests.rs"]
+mod nanocore_tls_io_tests;
 
 #[cfg(test)]
 mod tests {

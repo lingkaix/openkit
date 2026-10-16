@@ -1,5 +1,6 @@
 import { type KnowledgeManagerAnswerResponse, operationHttpPath } from '@openkit/app-api-schemas';
 import { createCoreClient } from '@openkit/core-client';
+import { allocateEntityId } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -11,7 +12,9 @@ import { workspaceKeys } from './data';
 import { KnowledgeScreen } from './KnowledgeScreen';
 
 const TIMESTAMP = '2026-10-16T00:00:00.000Z';
-const WORKSPACE_ID = 'ws_citations';
+const WORKSPACE_ID = allocateEntityId('ws');
+const OTHER_WORKSPACE_ID = allocateEntityId('ws');
+const OWNER_USER_ID = allocateEntityId('usr');
 const QUESTION = 'When does the reading room open?';
 const PAGE = {
   id: 'reading-room',
@@ -63,7 +66,7 @@ function renderKnowledge(answer: KnowledgeManagerAnswerResponse) {
       switch (path) {
         case operationHttpPath('workspace.list'):
           body = {
-            items: [WORKSPACE_ID, 'ws_other'].map((workspaceId) => ({
+            items: [WORKSPACE_ID, OTHER_WORKSPACE_ID].map((workspaceId) => ({
               workspace: {
                 id: workspaceId,
                 name: 'Reading room team',
@@ -77,7 +80,7 @@ function renderKnowledge(answer: KnowledgeManagerAnswerResponse) {
               accessCause: 'membership',
               effectiveRole: 'owner',
               membershipRevision: 1,
-              ownerUserId: 'user_reader',
+              ownerUserId: OWNER_USER_ID,
               registryRevision: 1,
             })),
           };
@@ -178,7 +181,7 @@ describe('Knowledge Manager answer citations', () => {
 
     expect(within(manager).getByText(CITATION.title)).toBeVisible();
     const link = within(manager).getByRole('link', { name: new RegExp(CITATION.title) });
-    expect(link).toHaveAttribute('href', '#knowledge-content-ws_citations-reading-room');
+    expect(link).toHaveAttribute('href', `#knowledge-content-${WORKSPACE_ID}-reading-room`);
     const target = document.getElementById(
       decodeURIComponent(link.getAttribute('href')?.slice(1) ?? '')
     );
@@ -195,7 +198,7 @@ describe('Knowledge Manager answer citations', () => {
   it.each([
     {
       name: 'another Workspace with the same page id',
-      scopeId: 'page/workspace/ws_other',
+      scopeId: `page/workspace/${OTHER_WORKSPACE_ID}`,
       objectId: PAGE.id,
     },
     {
@@ -277,7 +280,7 @@ describe('Knowledge Manager answer citations', () => {
     await user.paste(QUESTION);
     await user.click(within(manager).getByRole('button', { name: 'Answer' }));
     await waitFor(() => expect(finishAnswer).toBeTypeOf('function'));
-    act(() => useWorkspaceStore.setState({ currentWorkspaceId: 'ws_other' }));
+    act(() => useWorkspaceStore.setState({ currentWorkspaceId: OTHER_WORKSPACE_ID }));
     await act(async () => {
       finishAnswer(
         new Response(JSON.stringify(ANSWER), { headers: { 'content-type': 'application/json' } })

@@ -1,15 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OPERATION_DEFINITIONS, type OperationId } from '@openkit/app-api-schemas';
-import { ThreadSchema } from '@openkit/protocol';
+import { allocateEntityId, ThreadSchema } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -56,15 +56,19 @@ async function request(
 function retainExchange(store: FsStore, workspaceId: string, threadId: string) {
   const turn = store.createTurn(workspaceId, threadId, 'Keep this request.', {
     kind: 'user',
-    id: 'user_local',
+    id: 'usr_00000000-0000-7000-8000-000000000001',
   });
   const createdAt = '2026-10-15T00:00:00.000Z';
   for (const [type, text, actor] of [
-    ['user-message', 'Keep this request.', { kind: 'user', id: 'user_local' }],
+    [
+      'user-message',
+      'Keep this request.',
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+    ],
     ['assistant-message', 'Keep this response.', { kind: 'agent', id: 'assistant' }],
   ] as const) {
     store.createItem({
-      id: randomUUID(),
+      id: allocateEntityId('it'),
       workspaceId,
       threadId,
       turnId: turn.id,
@@ -82,7 +86,9 @@ function retainExchange(store: FsStore, workspaceId: string, threadId: string) {
 
 /** Creates a distinct canonical fixture user using the existing local fixture's email domain. */
 function insertUser(coreDb: ReturnType<typeof openCoreDb>, userId: string) {
-  const local = coreDb.sqlite.prepare('SELECT email FROM users WHERE id = ?').get('user_local') as {
+  const local = coreDb.sqlite
+    .prepare('SELECT email FROM users WHERE id = ?')
+    .get('usr_00000000-0000-7000-8000-000000000001') as {
     email: string;
   };
   const email = `${randomUUID()}${local.email.slice(local.email.indexOf('@'))}`;
@@ -105,18 +111,18 @@ describe('Personal Assistant Timeline admission', () => {
       recordWorkspaceOwnerMembership({
         coreDb: current.coreDb,
         workspaceId: entry.id,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       });
     }
-    insertUser(current.coreDb, 'user_member');
+    insertUser(current.coreDb, 'usr_00000000-0000-7d50-8000-326c8e4a263a');
     const timestamp = new Date().toISOString();
     current.coreDb.sqlite
       .prepare(
         `INSERT INTO workspace_members (workspace_id, user_id, status, access_level, joined_at, revision, created_at, updated_at)
-         VALUES (?, 'user_member', 'active', 'editor', ?, 1, ?, ?)`
+         VALUES (?, 'usr_00000000-0000-7d50-8000-326c8e4a263a', 'active', 'editor', ?, 1, ?, ?)`
       )
       .run(workspace.id, timestamp, timestamp, timestamp);
-    let actor = 'user_local';
+    let actor = 'usr_00000000-0000-7000-8000-000000000001';
     const app = createApp({
       coreDb: current.coreDb,
       store: current.store,
@@ -128,15 +134,15 @@ describe('Personal Assistant Timeline admission', () => {
     });
     const input = { workspaceId: workspace.id, name: 'Assistant', requestId: randomUUID() };
     const owner = await request(app, 'thread.create', input);
-    actor = 'user_member';
+    actor = 'usr_00000000-0000-7d50-8000-326c8e4a263a';
     const member = await request(app, 'thread.create', input);
     expect(owner.status).toBe(200);
     expect(member.status).toBe(200);
-    expect(member.body.privateOwnerUserId).toBe('user_member');
+    expect(member.body.privateOwnerUserId).toBe('usr_00000000-0000-7d50-8000-326c8e4a263a');
     expect(member.body.id).not.toBe(owner.body.id);
     const visible = await request(app, 'thread.list', { workspaceId: workspace.id });
     expect(visible.body.items.map((entry: { id: string }) => entry.id)).toEqual([member.body.id]);
-    actor = 'user_local';
+    actor = 'usr_00000000-0000-7000-8000-000000000001';
     const other = await request(app, 'thread.create', { ...input, workspaceId: otherWorkspace.id });
     expect(other.status).toBe(200);
     expect(other.body.id).not.toBe(owner.body.id);
@@ -149,7 +155,7 @@ describe('Personal Assistant Timeline admission', () => {
     recordWorkspaceOwnerMembership({
       coreDb: current.coreDb,
       workspaceId: workspace.id,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     });
     const input = { workspaceId: workspace.id, name: 'Assistant', requestId: randomUUID() };
     const first = await request(current.app, 'thread.create', input);
@@ -157,7 +163,7 @@ describe('Personal Assistant Timeline admission', () => {
     const timeline = ThreadSchema.parse(first.body);
     expect(timeline).toMatchObject({
       visibility: 'private',
-      privateOwnerUserId: 'user_local',
+      privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       entryPath: 'conversation',
     });
     const history = retainExchange(current.store, workspace.id, timeline.id);
@@ -222,25 +228,9 @@ describe('Personal Assistant Timeline admission', () => {
       'Retained administration',
       undefined,
       'administration',
-      { visibility: 'private', privateOwnerUserId: 'user_local' }
+      { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
     );
     const administrationHistory = retainExchange(current.store, workspace.id, administration.id);
-    // This is retained input from the former kind, not a supported current write shape.
-    const workspacePath = join(
-      current.store.getDataRoot()!,
-      'workspaces',
-      workspace.id,
-      'workspace-record.json'
-    );
-    const retainedRecord = JSON.parse(readFileSync(workspacePath, 'utf8'));
-    writeFileSync(
-      workspacePath,
-      JSON.stringify({
-        ...retainedRecord,
-        kind: 'quick-chat',
-        migrationAnnotation: { retained: 'Keep authored descriptive additions.' },
-      })
-    );
     current.coreDb.sqlite.close();
 
     const restarted = current.reopen();
@@ -268,44 +258,6 @@ describe('Personal Assistant Timeline admission', () => {
         .sort()
     ).toEqual([thread.id, administration.id].sort());
     expect(restarted.store.getWorkspace(workspace.id).kind).toBe('personal');
-    expect(JSON.parse(readFileSync(workspacePath, 'utf8'))).toMatchObject({
-      kind: 'personal',
-      migrationAnnotation: { retained: 'Keep authored descriptive additions.' },
-    });
-  });
-
-  it('does not publish the home-kind migration when retained canonical history is invalid', () => {
-    const current = fixture();
-    const home = current.store.listWorkspaces()[0]!;
-    const thread = current.store.createThread(
-      home.id,
-      'Retained history',
-      undefined,
-      'conversation',
-      {
-        visibility: 'private',
-        privateOwnerUserId: 'user_local',
-      }
-    );
-    retainExchange(current.store, home.id, thread.id);
-    const root = join(current.store.getDataRoot()!, 'workspaces', home.id);
-    const workspacePath = join(root, 'workspace-record.json');
-    const record = JSON.parse(readFileSync(workspacePath, 'utf8'));
-    const retained = JSON.stringify({
-      ...record,
-      kind: 'quick-chat',
-      migrationAnnotation: 'Keep unchanged on failure.',
-    });
-    writeFileSync(workspacePath, retained);
-    const threadPath = join(root, 'threads', thread.id, 'thread.json');
-    const malformed = JSON.stringify({
-      ...JSON.parse(readFileSync(threadPath, 'utf8')),
-      visibility: 'unknown-core-value',
-    });
-    writeFileSync(threadPath, malformed);
-    expect(() => new FsStore({ dataRoot: current.store.getDataRoot()! })).toThrow();
-    expect(readFileSync(workspacePath, 'utf8')).toBe(retained);
-    expect(readFileSync(threadPath, 'utf8')).toBe(malformed);
   });
 
   it('keeps retained extra private conversations readable but refuses new submissions before inference', async () => {
@@ -321,7 +273,7 @@ describe('Personal Assistant Timeline admission', () => {
       'conversation',
       {
         visibility: 'private',
-        privateOwnerUserId: 'user_local',
+        privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
     vi.advanceTimersByTime(1);
@@ -332,7 +284,7 @@ describe('Personal Assistant Timeline admission', () => {
       'conversation',
       {
         visibility: 'private',
-        privateOwnerUserId: 'user_local',
+        privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
     vi.useRealTimers();
@@ -375,12 +327,12 @@ describe('Personal Assistant Timeline admission', () => {
       restarted.coreDb.sqlite
         .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
         .get(home.id)
-    ).toEqual({ owner_user_id: 'user_local' });
+    ).toEqual({ owner_user_id: 'usr_00000000-0000-7000-8000-000000000001' });
     expect(
       restarted.coreDb.sqlite
         .prepare('SELECT user_id, status FROM workspace_members WHERE workspace_id = ?')
         .all(home.id)
-    ).toEqual([{ user_id: 'user_local', status: 'active' }]);
+    ).toEqual([{ user_id: 'usr_00000000-0000-7000-8000-000000000001', status: 'active' }]);
     expect(home.kind).toBe('personal');
   });
 
@@ -409,7 +361,7 @@ describe('Personal Assistant Timeline admission', () => {
   it('refuses member invitation before changing owner-only membership or invitation records', async () => {
     const current = fixture();
     const home = current.store.listWorkspaces()[0]!;
-    const inviteeEmail = insertUser(current.coreDb, 'user_invitee');
+    const inviteeEmail = insertUser(current.coreDb, 'usr_00000000-0000-78b9-8b32-6a5ac623024f');
     const membersBefore = current.coreDb.sqlite
       .prepare('SELECT * FROM workspace_members WHERE workspace_id = ?')
       .all(home.id);

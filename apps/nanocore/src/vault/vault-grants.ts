@@ -1,3 +1,4 @@
+import { isEntityId } from '@openkit/protocol';
 import type { CoreDb } from '../storage/db.js';
 import type {
   VaultGrantLifetime,
@@ -5,12 +6,15 @@ import type {
   VaultGrantStatus,
 } from '../storage/schema/index.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
+import { revokeVaultInjectionReceipts } from './vault-receipt-revocation.js';
 import { getVaultReference } from './vault-references.js';
 
 /** Durable non-secret vault grant record. */
 export interface VaultGrantRecord {
   /** Stable vault grant id. */
   readonly grantId: string;
+  /** Immutable issuance provenance; imported history never authorizes target effects. */
+  readonly issuance: 'target' | 'imported-history';
   /** Vault reference authorized by this grant. */
   readonly vaultReferenceId: string;
   /** Scope that owns this grant metadata. */
@@ -46,6 +50,7 @@ export interface VaultGrantRecord {
 /** Raw SQLite row for one vault grant. */
 interface VaultGrantRow {
   readonly grant_id: string;
+  readonly issuance: 'target' | 'imported-history';
   readonly vault_reference_id: string;
   readonly owner_scope: VaultGrantOwnerScope;
   readonly workspace_id: string | null;
@@ -105,18 +110,143 @@ export interface RevokeVaultGrantInput {
   readonly now?: () => string;
 }
 
+/** Constraints that can only reduce an existing grant's authority. */
+export interface NarrowVaultGrantConstraints {
+  /** Exact Agent restriction, added only when previously unconstrained. */
+  readonly targetAgentId?: string | undefined;
+  /** Exact AgentSession restriction, added only when previously unconstrained. */
+  readonly targetAgentSessionId?: string | undefined;
+  /** Exact capability restriction, added only when previously unconstrained. */
+  readonly targetCapabilityId?: string | undefined;
+  /** Non-empty subset of the original visibility classes. */
+  readonly allowedInjectionPaths?: readonly string[] | undefined;
+  /** Canonical future timestamp no later than the original bound. */
+  readonly expiresAt?: string | undefined;
+}
+
+/** A redacted grant-narrowing refusal that the public owner can classify. */
+export class VaultGrantNarrowingError extends Error {
+  /** Classifies invalid constraints separately from unavailable current authority. */
+  constructor(readonly status: 400 | 409) {
+    super(
+      status === 400
+        ? 'Grant constraints do not strictly reduce authority.'
+        : 'Grant authority is not current.'
+    );
+    this.name = 'VaultGrantNarrowingError';
+  }
+}
+
+/**
+ * Replaces a current grant with a strictly narrower grant in one Core transaction.
+ *
+ * Bindings stay on the revoked original until their owner explicitly changes them.
+ *
+ * @param coreDb Open Core database handle.
+ * @param input Original identity, fresh replacement identity, reduced constraints and clock.
+ * @returns Original revoked grant and its active replacement.
+ * @throws VaultGrantNarrowingError for inactive authority or widening, empty or unchanged constraints.
+ */
+export function narrowVaultGrant(
+  coreDb: CoreDb,
+  input: {
+    readonly grantId: string;
+    readonly replacementGrantId: string;
+    readonly constraints: NarrowVaultGrantConstraints;
+    readonly now?: () => string;
+  }
+): { revokedGrant: VaultGrantRecord; grant: VaultGrantRecord } {
+  return coreDb.sqlite.transaction(() => {
+    const original = getVaultGrant(coreDb, input.grantId);
+    const timestamp = input.now?.() ?? new Date().toISOString();
+    const currentTime = Date.parse(timestamp);
+    const reference = original ? getVaultReference(coreDb, original.vaultReferenceId) : null;
+    if (
+      !original ||
+      original.issuance !== 'target' ||
+      (original.approvalId !== null &&
+        (!isTargetIssuedEffectAuthority(original.approvalId) ||
+          original.policyDecisionId === null)) ||
+      original.status !== 'active' ||
+      !reference ||
+      reference.status !== 'active' ||
+      !Number.isFinite(currentTime) ||
+      (original.expiresAt !== null &&
+        (!Number.isFinite(Date.parse(original.expiresAt)) ||
+          Date.parse(original.expiresAt) <= currentTime ||
+          new Date(original.expiresAt).toISOString() !== original.expiresAt))
+    ) {
+      throw new VaultGrantNarrowingError(409);
+    }
+    if (
+      !isTargetIssuedEffectAuthority(input.replacementGrantId) ||
+      getVaultGrant(coreDb, input.replacementGrantId)
+    ) {
+      throw new VaultGrantNarrowingError(409);
+    }
+    const constraints = input.constraints;
+    let reduced = false;
+    for (const field of ['targetAgentId', 'targetAgentSessionId', 'targetCapabilityId'] as const) {
+      const next = constraints[field];
+      if (next === undefined) continue;
+      if (
+        typeof next !== 'string' ||
+        next.trim().length === 0 ||
+        (original[field] !== null && next !== original[field])
+      )
+        throw new VaultGrantNarrowingError(400);
+      if (original[field] === null) reduced = true;
+    }
+    const paths = constraints.allowedInjectionPaths ?? original.allowedInjectionPaths;
+    if (
+      paths.length === 0 ||
+      new Set(paths).size !== paths.length ||
+      paths.some((path) => !original.allowedInjectionPaths.includes(path))
+    ) {
+      throw new VaultGrantNarrowingError(400);
+    }
+    if (paths.length < new Set(original.allowedInjectionPaths).size) reduced = true;
+    if (constraints.expiresAt !== undefined) {
+      const expiry = Date.parse(constraints.expiresAt);
+      if (
+        !Number.isFinite(expiry) ||
+        expiry <= currentTime ||
+        new Date(expiry).toISOString() !== constraints.expiresAt ||
+        (original.expiresAt !== null && expiry > Date.parse(original.expiresAt))
+      )
+        throw new VaultGrantNarrowingError(400);
+      if (original.expiresAt === null || expiry < Date.parse(original.expiresAt)) reduced = true;
+    }
+    if (!reduced) throw new VaultGrantNarrowingError(400);
+    const grant = createVaultGrant(coreDb, {
+      ...original,
+      grantId: input.replacementGrantId,
+      targetAgentId: constraints.targetAgentId ?? original.targetAgentId,
+      targetAgentSessionId: constraints.targetAgentSessionId ?? original.targetAgentSessionId,
+      targetCapabilityId: constraints.targetCapabilityId ?? original.targetCapabilityId,
+      allowedInjectionPaths: paths,
+      expiresAt: constraints.expiresAt ?? original.expiresAt,
+      now: () => timestamp,
+    });
+    const revokedGrant = revokeVaultGrant(coreDb, { grantId: original.grantId });
+    return { revokedGrant, grant };
+  })();
+}
+
 /**
  * Creates one non-secret vault grant idempotently.
  *
  * @param coreDb Open Core database handle.
  * @param input Grant metadata to store.
  * @returns Stored vault grant record.
- * @throws Error when the grant id is reserved for imported history or referenced Vault and scope fields are invalid.
+ * @throws Error when the id is malformed, a retained grant is imported, or reference and scope fields are invalid.
  */
 export function createVaultGrant(coreDb: CoreDb, input: CreateVaultGrantInput): VaultGrantRecord {
-  if (!isTargetIssuedEffectAuthority(input.grantId)) {
-    throw new Error('Vault grant id uses the reserved portable-import authority namespace.');
-  }
+  if (!isEntityId('grant', input.grantId))
+    throw new Error('Vault grant identifier is not canonical.');
+  const existing = getVaultGrant(coreDb, input.grantId);
+  if (existing && existing.issuance !== 'target')
+    throw new Error('Imported VaultGrant cannot become target-issued.');
 
   assertVaultGrantScope(input);
   assertAllowedInjectionPaths(input.allowedInjectionPaths);
@@ -131,6 +261,7 @@ export function createVaultGrant(coreDb: CoreDb, input: CreateVaultGrantInput): 
     .prepare(
       `INSERT OR IGNORE INTO vault_grants (
         grant_id,
+        issuance,
         vault_reference_id,
         owner_scope,
         workspace_id,
@@ -146,10 +277,11 @@ export function createVaultGrant(coreDb: CoreDb, input: CreateVaultGrantInput): 
         status,
         created_at,
         expires_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.grantId,
+      'target',
       input.vaultReferenceId,
       input.ownerScope,
       input.workspaceId ?? null,
@@ -171,7 +303,7 @@ export function createVaultGrant(coreDb: CoreDb, input: CreateVaultGrantInput): 
 }
 
 /**
- * Revokes one vault grant and marks dependent injection receipts stale.
+ * Revokes one vault grant and projects dependent receipt reachability.
  *
  * @param coreDb Open Core database handle.
  * @param input Grant revocation input.
@@ -245,10 +377,17 @@ export function importWorkspaceVaultGrants(
   grants: readonly VaultGrantRecord[]
 ): void {
   for (const grant of grants) {
+    assertIssuance(grant.issuance);
+    const existing = getVaultGrant(coreDb, grant.grantId);
+    if (existing && existing.issuance !== 'imported-history')
+      throw new Error('Imported grant collides with target authority.');
+  }
+  for (const grant of grants) {
     coreDb.sqlite
       .prepare(
         `INSERT OR IGNORE INTO vault_grants (
           grant_id,
+          issuance,
           vault_reference_id,
           owner_scope,
           workspace_id,
@@ -264,10 +403,11 @@ export function importWorkspaceVaultGrants(
           status,
           created_at,
           expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         grant.grantId,
+        'imported-history',
         grant.vaultReferenceId,
         grant.ownerScope,
         grant.workspaceId,
@@ -320,11 +460,7 @@ function cascadeGrantRevocation(coreDb: CoreDb, grantId: string): void {
       "UPDATE vault_injection_plans SET status = 'revoked' WHERE grant_id = ? AND status = 'active'"
     )
     .run(grantId);
-  coreDb.sqlite
-    .prepare(
-      "UPDATE vault_injection_receipts SET revocation_status = 'stale-session' WHERE grant_id = ? AND revocation_status = 'active'"
-    )
-    .run(grantId);
+  revokeVaultInjectionReceipts(coreDb, { grantId });
 }
 
 /**
@@ -375,6 +511,7 @@ function assertAllowedInjectionPaths(allowedInjectionPaths: readonly string[]): 
 function vaultGrantSelectSql(): string {
   return `SELECT
     grant_id,
+    issuance,
     vault_reference_id,
     owner_scope,
     workspace_id,
@@ -400,7 +537,11 @@ function vaultGrantSelectSql(): string {
  * @returns Vault grant record.
  */
 function mapVaultGrantRow(row: VaultGrantRow): VaultGrantRecord {
+  if (!isEntityId('grant', row.grant_id) || !isEntityId('vault', row.vault_reference_id))
+    throw new Error('Invalid canonical VaultGrant identity.');
+  assertIssuance(row.issuance);
   return {
+    issuance: row.issuance,
     allowedInjectionPaths: parseAllowedInjectionPaths(row.allowed_injection_paths),
     approvalId: row.approval_id,
     createdAt: row.created_at,
@@ -435,4 +576,10 @@ function parseAllowedInjectionPaths(value: string): string[] {
   }
 
   return parsed;
+}
+
+/** Fails closed rather than assigning target authority to missing or unknown retained provenance. */
+function assertIssuance(value: unknown): asserts value is VaultGrantRecord['issuance'] {
+  if (value !== 'target' && value !== 'imported-history')
+    throw new Error('Invalid canonical VaultGrant issuance.');
 }

@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-
 import {
   type PrepareWorkerEnvironmentRequest,
   PrepareWorkerEnvironmentRequestSchema,
@@ -21,7 +20,7 @@ import {
   AuthoredAgentConfigSchema,
   AuthoredAgentRuntimeSchema,
 } from '@openkit/config-schema';
-import { isSealedTurnTerminal } from '@openkit/protocol';
+import { deriveEntityId, isSealedTurnTerminal } from '@openkit/protocol';
 import { type ParseError, parse } from 'jsonc-parser';
 import type { z } from 'zod';
 
@@ -605,7 +604,7 @@ export function createWorkerEnvironmentPreparation(
       ...(input.causationId ? { causationId: input.causationId } : {}),
       completedAt: turn.startedAt,
       createdAt: turn.startedAt ?? now(),
-      id: `it_worker_environment_prepare_${stableSuffix([turn.id])}`,
+      id: deriveEntityId('it', ['worker_environment_prepare', turn.id]),
       level: 'info',
       status: 'completed',
       summary: 'Worker environment preparation request accepted.',
@@ -985,26 +984,22 @@ function findArtifact(store: FsStore, workspaceId: string, artifactId: string) {
 
 /** Deterministic authored Artifact identity bound to the direct command lineage. */
 function authoredArtifactId(workspaceId: string, threadId: string, requestId: string): string {
-  return `ar_worker_environment_authored_${stableSuffix([workspaceId, threadId, requestId])}`;
+  return deriveEntityId('ar', ['worker_environment_authored', workspaceId, threadId, requestId]);
 }
 
 /** Deterministic resolved Artifact identity bound only to its immutable authored candidate. */
 function resolvedArtifactId(authored: WorkerEnvironmentCandidateRef): string {
-  return `ar_worker_environment_resolved_${stableSuffix([
+  return deriveEntityId('ar', [
+    'worker_environment_resolved',
     authored.artifactId,
     authored.artifactVersion,
     authored.contentDigest,
-  ])}`;
+  ]);
 }
 
 /** Deterministic direct administration Turn identity for one preparation request. */
 function preparationTurnId(userId: string, threadId: string, requestId: string): string {
-  return `tu_worker_environment_${stableSuffix([userId, threadId, requestId])}`;
-}
-
-/** Stable bounded lowercase identifier suffix. */
-function stableSuffix(parts: readonly unknown[]): string {
-  return createHash('sha256').update(JSON.stringify(parts), 'utf8').digest('hex').slice(0, 24);
+  return deriveEntityId('tu', ['worker_environment', userId, threadId, requestId]);
 }
 
 /** Exact lowercase SHA-256 digest of canonical content bytes. */

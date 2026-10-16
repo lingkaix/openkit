@@ -1,3 +1,14 @@
+import {
+  AgentSessionIdSchema,
+  ArtifactIdSchema,
+  CapabilityCallIdSchema,
+  ItemIdSchema,
+  PermissionDecisionIdSchema,
+  ThreadIdSchema,
+  TurnIdSchema,
+  VaultGrantIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 
 /**
@@ -112,18 +123,18 @@ export const RecordOwnerScopeSchema = z.enum(['server', 'user', 'workspace', 'or
  */
 export const RecordLineageSchema = z
   .object({
-    workspaceId: z.string().min(1).optional(),
-    threadId: z.string().min(1).optional(),
-    turnId: z.string().min(1).optional(),
-    itemId: z.string().min(1).optional(),
-    artifactId: z.string().min(1).optional(),
+    workspaceId: WorkspaceIdSchema.optional(),
+    threadId: ThreadIdSchema.optional(),
+    turnId: TurnIdSchema.optional(),
+    itemId: ItemIdSchema.optional(),
+    artifactId: ArtifactIdSchema.optional(),
     knowledgeId: z.string().min(1).optional(),
     agentId: z.string().min(1).optional(),
-    agentSessionId: z.string().min(1).optional(),
+    agentSessionId: AgentSessionIdSchema.optional(),
     aepSnapshotId: z.string().min(1).optional(),
-    capabilityCallId: z.string().min(1).optional(),
-    policyDecisionId: z.string().min(1).optional(),
-    vaultGrantId: z.string().min(1).optional(),
+    capabilityCallId: CapabilityCallIdSchema.optional(),
+    policyDecisionId: PermissionDecisionIdSchema.optional(),
+    vaultGrantId: VaultGrantIdSchema.optional(),
     requestId: z.string().min(1).optional(),
     evidenceBundleId: z.string().min(1).optional(),
   })

@@ -23,7 +23,7 @@ describe('NanoHost epoch audit projection', () => {
         .all();
       const invalidation = recordNanoHostEpochInvalidationAudit({
         affectedSessionLineage: ['session-redacted-a', 'session-redacted-b'],
-        auditEventId: 'aud_epoch_invalidate',
+        auditEventId: 'aud_00000000-0000-7b5e-8784-ad9288b3ca1c',
         classification: 'member-exit',
         coreDb,
         epochLifetimeMs: 45_000,
@@ -32,7 +32,7 @@ describe('NanoHost epoch audit projection', () => {
         reportRef: 'nanohost-report:report-redacted-17',
       });
       const ready = recordNanoHostEpochReadyAudit({
-        auditEventId: 'aud_epoch_ready',
+        auditEventId: 'aud_00000000-0000-7579-9385-bde5c81efc37',
         coreDb,
         fenceToReadyMs: 120_000,
         now: new Date('2026-08-09T04:02:00.000Z'),
@@ -43,7 +43,7 @@ describe('NanoHost epoch audit projection', () => {
         action: 'runtime.epoch.invalidate',
         agentSessionId: null,
         category: 'system',
-        id: 'aud_epoch_invalidate',
+        id: 'aud_00000000-0000-7b5e-8784-ad9288b3ca1c',
         outcome: 'failed',
         workspaceId: null,
       });
@@ -51,7 +51,7 @@ describe('NanoHost epoch audit projection', () => {
         action: 'runtime.epoch.ready',
         agentSessionId: null,
         category: 'system',
-        id: 'aud_epoch_ready',
+        id: 'aud_00000000-0000-7579-9385-bde5c81efc37',
         outcome: 'succeeded',
         workspaceId: null,
       });
@@ -92,7 +92,7 @@ describe('NanoHost epoch audit projection', () => {
       expect(() =>
         recordNanoHostEpochInvalidationAudit({
           affectedSessionLineage: ['session-redacted-c'],
-          auditEventId: 'aud_epoch_unsafe',
+          auditEventId: 'aud_00000000-0000-7cfb-b025-5bf09bd77a18',
           classification: 'member-exit',
           coreDb,
           epochLifetimeMs: 1,
@@ -129,7 +129,7 @@ describe('NanoHost epoch audit projection', () => {
         expect(() =>
           recordNanoHostEpochInvalidationAudit({
             ...secretProjection,
-            auditEventId: 'aud_epoch_secret_projection',
+            auditEventId: 'aud_00000000-0000-73ac-902c-7cddf8fade1a',
             classification: 'member-exit',
             coreDb,
             epochLifetimeMs: 1,
@@ -140,7 +140,7 @@ describe('NanoHost epoch audit projection', () => {
       expect(() =>
         recordNanoHostEpochInvalidationAudit({
           affectedSessionLineage: [],
-          auditEventId: 'aud_epoch_unknown_trigger',
+          auditEventId: 'aud_00000000-0000-7894-895d-c282754c6a11',
           classification: 'member-exit-other',
           coreDb,
           epochLifetimeMs: 1,

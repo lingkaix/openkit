@@ -99,7 +99,7 @@ and are not listed here.
 - `docs/specs/20260704-workspace_data_source_catalog.md` — Accepted, Partial — The workspace-owned catalog of named external and local data sources available to agent work in one workspace.
 - `docs/specs/20260708-container_image_packaging.md` — Accepted, Partial — The canonical OpenKit container image taxonomy.
 - `docs/specs/20260708-pi_ai_unified_llm_backend.md` — Accepted, Partial — This spec is the sole owner of NanoCore LLM provider transport and routing through `@earendil-works/pi-ai`, including request, response, streaming, provider-er…
-- `docs/specs/20260709-quick_chat_workspace.md` — Accepted, Partial — The default personal Workspace, its owner-only provisioning, and the one-way migration from the former Quick Chat kind.
+- `docs/specs/20260709-quick_chat_workspace.md` — Accepted, Partial — The default personal Workspace and its owner-only fresh provisioning under the pre-stable reset boundary.
 - `docs/specs/20260709-worker_credential_access_declarations.md` — Accepted, Partial — The generic resolved worker credential declaration contract that replaces hard-coded worker credential use cases with list-driven launch-time resolution.
 - `docs/specs/20260709-worker_sandbox_freedom_policy.md` — Accepted, Partial — Worker sandbox freedom principles for process execution, filesystem access, network access, and user-provided secret injection.
 - `docs/specs/20260710-self_improvement_evaluation_loop.md` — Accepted, Partial — The V1 composition by which an authorized agent explicitly reviews exact completed Workspace work and may create one existing source-linked pending Knowledge P…
@@ -141,7 +141,7 @@ and are not listed here.
 - `docs/specs/20260910-app_update_delivery.md` — Accepted, Partial — This specification owns administrator-authorized NanoCore and Web replacement on one configured deployment: the bounded public update command, process-independ…
 - `docs/specs/20260910-persistent_worker_volumes.md` — Accepted, Partial — This specification owns the user-selectable Sandbox as the existing retained Worker environment association, administrator templates, exact worker Thread selec…
 - `docs/specs/20260921-work_data_retention_format.md` — Accepted, Partial — The purpose of retained work data and the judgement that admits a fact into the work-data record.
-- `docs/specs/20260922-delegated_worker_policy_maintenance.md` — Accepted, Not Started — The bounded class of non-secret worker sandbox/network configuration that an internal operator may inspect, compare, validate and apply under a responsible adm…
+- `docs/specs/20260922-delegated_worker_policy_maintenance.md` — Accepted, Partial — The bounded class of non-secret worker sandbox/network configuration that an internal operator may inspect, compare, validate and apply under a responsible adm…
 - `docs/specs/20260930-deepseek_worker_adapter.md` — Accepted, Partial — Native ACP session identity, prompt, cancellation, and close for one DeepSeek binding
 - `docs/specs/20260930-pending_requests.md` — Accepted, Not Started — The pending request concept for approval requests and user-input requests: its definition, its durable record, and its lifecycle of raise, resolve, end, and de…
 - `docs/specs/20261002-goal.md` — Accepted, Partial — The Goal, its work-intent cards, its immutable Plan versions, the wake marker, the completion disposition, and the Goal operations.
@@ -250,7 +250,7 @@ Decision records are not indexed. Owners link them; list `docs/decisions/` to se
 - `skills/openkit-ops/references/getting-started.en.md` — Accepted — This procedure requires an authorized host, a supported container runtime for App-image deployment, persistent storage and a selected release or source revisio…
 - `skills/openkit-ops/references/nanocore-data-root-config.en.md` — Accepted — This manual describes the authored JSONC configuration loaded by NanoCore from `OPENKITDATAROOT`.
 - `skills/openkit-ops/references/nanocore-deployment-modes.en.md` — Accepted — This manual explains the two supported NanoCore product modes and their shared NanoHost worker-runtime boundary.
-- `skills/openkit-ops/references/nanocore-operations.en.md` — Accepted — Operate only the selected deployment and requested effect.
+- `skills/openkit-ops/references/nanocore-operations.en.md` — Accepted — In Web, open Settings → Administration → Server operations to inspect current server health, boot subsystem and Policy reasons, process memory, Telemetry confi…
 - `skills/openkit-ops/references/sandbox-container-tests.en.md` — Accepted — A Worker Agent sandbox carries the OpenKit worker baseline and can provision a declared toolchain through mise, and that sandbox cannot start a container of it…
 - `skills/openkit-ops/references/using-openkit.en.md` — Accepted — Use Web for ordinary conversation, delegated work, human decisions and outputs.
 
@@ -265,6 +265,7 @@ Decision records are not indexed. Owners link them; list `docs/decisions/` to se
 - `docs/cookbooks/docker-app.md` — Docker App Image
 - `docs/cookbooks/docker-test-env.md` — Test Execution Image
 - `docs/cookbooks/go-setup.md` — Go Setup Cookbook
+- `docs/cookbooks/identifier-cutover.md` — Identifier Cutover And Protected Accounts
 - `docs/cookbooks/nanohost-real-use-host.md` — NanoHost Real-Use Host
 - `docs/cookbooks/openshell-upgrade.md` — OpenShell Upgrade
 - `docs/cookbooks/persistent-live-acceptance.md` — Persistent Live Acceptance

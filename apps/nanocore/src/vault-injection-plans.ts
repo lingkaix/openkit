@@ -1,6 +1,5 @@
 import type { CoreDb } from './storage/db.js';
 import type { InjectionVisibility, VaultInjectionPlanStatus } from './storage/schema/index.js';
-import { isTargetIssuedEffectAuthority } from './storage/workspace-import-authority.js';
 import { getVaultGrant } from './vault/vault-grants.js';
 
 /** Durable non-secret injection plan record. */
@@ -84,7 +83,7 @@ export interface CreateVaultInjectionPlanInput {
  * @param coreDb Open Core database handle.
  * @param input Plan metadata to store.
  * @returns Stored injection plan record.
- * @throws Error when the referenced grant is imported, missing, or has inconsistent target fields.
+ * @throws Error when the grant is imported or missing, targets are invalid, or the identity conflicts.
  */
 export function createVaultInjectionPlan(
   coreDb: CoreDb,
@@ -92,12 +91,10 @@ export function createVaultInjectionPlan(
 ): VaultInjectionPlanRecord {
   assertVaultInjectionPlanTargets(input);
 
-  if (!isTargetIssuedEffectAuthority(input.grantId)) {
+  const grant = getVaultGrant(coreDb, input.grantId);
+  if (!grant) throw new Error(`Vault grant not found: ${input.grantId}`);
+  if (grant.issuance !== 'target') {
     throw new Error('Vault grant is portable-import history and cannot authorize effects.');
-  }
-
-  if (!getVaultGrant(coreDb, input.grantId)) {
-    throw new Error(`Vault grant not found: ${input.grantId}`);
   }
 
   const timestamp = input.now?.() ?? new Date().toISOString();
@@ -136,7 +133,23 @@ export function createVaultInjectionPlan(
       timestamp
     );
 
-  return requireVaultInjectionPlan(coreDb, input.planId);
+  const stored = requireVaultInjectionPlan(coreDb, input.planId);
+  // The clock and lifecycle status are not creation input identity; replay preserves their stored facts.
+  if (
+    stored.grantId !== input.grantId ||
+    stored.packageSnapshotId !== (input.packageSnapshotId ?? null) ||
+    stored.capabilityId !== (input.capabilityId ?? null) ||
+    stored.injectionVisibility !== input.injectionVisibility ||
+    stored.targetPath !== (input.targetPath ?? null) ||
+    stored.targetEnvVarName !== (input.targetEnvVarName ?? null) ||
+    stored.expirationBehavior !== input.expirationBehavior ||
+    stored.revocationBehavior !== input.revocationBehavior ||
+    stored.redactionRule !== input.redactionRule ||
+    stored.backendCapabilityRequirement !== input.backendCapabilityRequirement
+  ) {
+    throw new Error('Vault injection plan identity conflict.');
+  }
+  return stored;
 }
 
 /**

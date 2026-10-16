@@ -36,6 +36,8 @@ Provider-subscription payload schemas consume the browser-safe `@openkit/config-
 
 Vault administration schemas keep provider API keys in strict request-only payloads and expose only redacted configuration status responses. `ProviderApiKeyProfileIdSchema` is the shared file-, Vault-reference-, and response-safe id boundary used by NanoCore and Web.
 
+Workspace grant creation and narrowing share exact supported Agent, AgentSession and Gateway capability restrictions. `vault.grant-narrow` declares a strict constraint request and redacted original/replacement response; NanoCore owns strict reduction, current authority, atomic replacement and Audit. Runtime-env capability targets remain unavailable. These schemas add no authority or request lifecycle.
+
 Workspace export response schemas reuse the format version owned by `@openkit/config-schema` so manifests cannot drift between the storage and App API contracts.
 
 Workspace export manifests include optional `knowledgeNotebookRevision` provenance for the exact published source Notebook commit. An imported Workspace creates its own Notebook authority; this source value grants no access and does not become the target revision.
@@ -52,7 +54,7 @@ Capability usage read models extend the canonical protocol `CapabilityCall` whil
 
 Runtime configuration file metadata includes the deployment-admin-only Workspace MCP catalog kind; the App API carries its source text and JSON Schema but does not project server topology into worker or ordinary product read models.
 
-Artifact and Material interaction schemas remain App API projections: the version-owned Artifact Review view excludes private decision request proof, Material views expose immutable revision identity without mutation lineage, and every decision body targets its exact owning route rather than a generic review verdict.
+Artifact and Material interaction schemas remain App API projections: the version-owned Artifact Review view excludes private decision request proof, Material views admit canonical `mrev` revisions and `arev` Review identities, including nested revision links and operation inputs, without mutation lineage, and every decision body targets its exact owning route rather than a generic review verdict.
 
 Knowledge Proposal page ids and page-source references reserve the final `index` and `log` segments at every hierarchy level, matching OKF reserved filenames.
 
@@ -162,3 +164,7 @@ Task Mode's attempt state includes queued for an accepted pending Turn whose wor
 The App-update family has four operations, including the content-free deployment-admin preflight. Its count/state refinement rejects false idleness. Preparation requires the complete approval summary and helper identities; retained status observations can lack older preparation evidence. Diagnostics project independent readiness dimensions and execution-host observation age. Known source/current-image bindings remain strict while descriptive reader annotations are discarded.
 
 Knowledge derived-index inspection exposes only link, validation and source-reference projections. The Retrieval Kernel owns lexical state; no JSON term/posting read model remains. Governed Knowledge retrieval accepts qualified `pinnedReferences`, narrowing-only `sourceScope` and explicit app-only state inspection. Scored selection responses and immutable `KnowledgeRetrievalTraceSchema` evidence are separate: scores remain local result facts and never enter trace files. Threadless direct User calls return no trace reference. Query-owned evidence uses `retrievalTraceRef`; citations retain the qualified page reference. Current byte revisions do not claim retained notebook commits; `notebookRevision` remains null until the notebook owner is implemented.
+
+Named entity fields reuse Protocol kind schemas, including User and automation ActorRef identity, Material and Vault lineage, Light App collection/field identity and prefixed presentation ids. Bare Light App app/record UUIDs and authored/native selectors remain with their existing owners. Workspace grant projections require explicit immutable issuance; they never default imported history to target authority.
+
+`administration.ts` admits a closed Agent Git-read proposal branch beside the existing catalog branch. It carries exact registered identity/base, a failed-Turn reference and only existing-grant rules. Immutable Agent candidates additionally retain server-derived AEP and explanation digests. The private delegated apply input contains only request identity and exact candidate reference; human apply retains its digest-bound confirmation. NanoCore owns audience, provenance, current finite Policy and file effects; schema acceptance supplies none of them.

@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { allocateEntityId } from '../common/entity-id.js';
 import { ItemSchema } from './item.js';
 
 const summary = {
-  id: 'summary',
-  workspaceId: 'workspace',
-  threadId: 'thread',
-  turnId: 'turn',
+  id: allocateEntityId('it'),
+  workspaceId: allocateEntityId('ws'),
+  threadId: allocateEntityId('th'),
+  turnId: allocateEntityId('tu'),
   type: 'context-summary',
   status: 'completed',
   createdAt: '2026-10-16T00:00:00.000Z',
@@ -13,8 +14,8 @@ const summary = {
   text: 'Retain the deployment constraint and unresolved decision.',
   environmentDigest: `sha256:${'1'.repeat(64)}`,
   sourceRange: {
-    firstItemId: 'first',
-    lastItemId: 'last',
+    firstItemId: allocateEntityId('it'),
+    lastItemId: allocateEntityId('it'),
     itemCount: 2,
     sourceDigest: `sha256:${'2'.repeat(64)}`,
     evidenceDigest: `sha256:${'3'.repeat(64)}`,

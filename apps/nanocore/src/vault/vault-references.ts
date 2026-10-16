@@ -1,9 +1,11 @@
+import { isEntityId } from '@openkit/protocol';
 import type { CoreDb } from '../storage/db.js';
 import type {
   VaultReferenceBackendKind,
   VaultReferenceOwnerScope,
   VaultReferenceStatus,
 } from '../storage/schema/index.js';
+import { revokeVaultInjectionReceipts } from './vault-receipt-revocation.js';
 
 /** Durable non-secret vault reference record. */
 export interface VaultReferenceRecord {
@@ -242,7 +244,7 @@ export function advanceActiveVaultReferenceVersion(
 }
 
 /**
- * Revokes one vault reference and marks dependent grants and sessions stale.
+ * Revokes one vault reference, dependent grants and the corresponding receipt use.
  *
  * @param coreDb Open Core database handle.
  * @param input Reference revocation input.
@@ -262,16 +264,7 @@ export function revokeVaultReference(
         "UPDATE vault_references SET status = 'revoked', updated_at = ? WHERE reference_id = ?"
       )
       .run(timestamp, input.referenceId);
-    coreDb.sqlite
-      .prepare(
-        `UPDATE vault_injection_receipts
-          SET revocation_status = 'stale-session'
-          WHERE revocation_status = 'active'
-            AND grant_id IN (
-              SELECT grant_id FROM vault_grants WHERE vault_reference_id = ?
-            )`
-      )
-      .run(input.referenceId);
+    revokeVaultInjectionReceipts(coreDb, { referenceId: input.referenceId });
     coreDb.sqlite
       .prepare(
         `UPDATE vault_injection_plans
@@ -457,6 +450,8 @@ function requireVaultReference(coreDb: CoreDb, referenceId: string): VaultRefere
  * @throws Error when scope identity fields are inconsistent.
  */
 function assertVaultReferenceScope(input: CreateVaultReferenceInput): void {
+  if (!isEntityId('vault', input.referenceId))
+    throw new Error('Vault reference identity must use the canonical vault kind.');
   if (input.ownerScope === 'server' && (input.workspaceId || input.userId)) {
     throw new Error('Server-scoped vault references cannot include workspaceId or userId.');
   }
@@ -507,6 +502,8 @@ function vaultReferenceSelectSql(): string {
  * @returns Vault reference record.
  */
 function mapVaultReferenceRow(row: VaultReferenceRow): VaultReferenceRecord {
+  if (!isEntityId('vault', row.reference_id))
+    throw new Error('Invalid canonical Vault reference identity.');
   return {
     backendKind: row.backend_kind,
     backendLocator: row.backend_locator,

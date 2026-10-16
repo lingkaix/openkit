@@ -7,7 +7,7 @@ kind: concept
 
 ## Owns
 
-- The default personal Workspace, its owner-only provisioning, and the one-way migration from the former Quick Chat kind.
+- The default personal Workspace and its owner-only fresh provisioning under the pre-stable reset boundary.
 - Its full ordinary Workspace capability under existing Task, Goal, Artifact, Sandbox, repository, and data-source owners.
 - The prohibition on adding members, transferring ownership, or implicitly converting it to a team Workspace.
 - Initial Web selection and the personal Workspace placement of the private administration entry.
@@ -64,7 +64,7 @@ Use `kind: personal` instead of `quick-chat`. Remove the former non-worker capab
 
 NanoCore ensures one personal Workspace, and no Demo Workspace, for every active local or server user. Local boot ensures the local user's owner relationship, and Better Auth ensures a server user's Workspace and owner relationship before recording each new active session; both paths are idempotent, so a pre-existing project Workspace never suppresses the personal Workspace and an interrupted first attempt can retry on the next sign-in without a repair workflow. A presented usable server-admin bearer may also first enter through an actor-derived personal-Workspace operation, including the private administration Assistant, without a prior browser session. After validating the current credential and active canonical user, that resolver invokes the same idempotent provisioner only for the authenticated actor’s deterministic home before the requested operation is authorized. That provisioning creates only the authenticated actor's own personal Workspace. A currently usable administrator credential may read another user's personal Workspace under the administrator eligibility rule in [Core Permissions](../core/permissions.md). That read does not create their home, transfer ownership, or revive a tombstone. Invalid credentials create nothing; conflicting ownership or retained membership tombstones fail closed without revival. A denied or interrupted attempt never deletes retained Workspace files as a cleanup shortcut; a subsequent authorized request reuses the same existing provisioning path.
 
-Migrate each existing `quick-chat` Workspace one way to `personal`, preserving its identity, owner, membership tombstones, Threads, Knowledge, and other retained records. No compatibility kind, dual write, or parallel Workspace is added. A conflict or interrupted migration fails closed under the existing storage/migration owner; it never resets retained data. Completed migration and exact provisioning retry reuse the same Workspace.
+Fresh initialization creates `personal` Workspaces directly. The engineer ruling of 2026-10-16 removes conversion of pre-v0.1.0 `quick-chat` data: the approved prerelease reset boundary applies, with no predecessor qualification or legacy reader. Current personal Workspace provisioning remains idempotent. The existing pre-stable decision and deployment owner govern any actual reset; this feature grants no reset effect.
 
 The personal Workspace is the initial selection without a separate `defaultWorkspaceId` record. Use kind and authenticated ownership, never a hard-coded Workspace id.
 
@@ -120,11 +120,11 @@ Service-side refusals remain authoritative even when a client renders a stale or
 
 ## Proposed Design
 
-Reuse the existing Workspace record, owner-independent storage, authenticated per-user provisioner, ordinary configuration resolution, and shared internal Agent loop. Retain Demo creation only as an explicit test/development helper. Replace `quick-chat` with `personal` through one migration and delete the former project-only guards. No special runtime or second provisioning owner is added.
+Reuse the existing Workspace record, owner-independent storage, authenticated per-user provisioner, ordinary configuration resolution, and shared internal Agent loop. Retain Demo creation only as an explicit test/development helper. Create `personal` Workspaces directly and delete the former project-only guards; do not convert pre-stable home records. No special runtime or second provisioning owner is added.
 
 ## Current Implementation Projection
 
-The canonical Workspace kind is `personal`. Loading a retained `quick-chat` Workspace validates its complete canonical history, then atomically replaces only the former kind in its system record. This one-way migration preserves the Workspace identity, authored configuration, descriptive annotations, Threads, Items, Knowledge and Core membership records. An invalid record or history fails without publishing the kind change. Current protocol schemas do not admit the former kind.
+The canonical Workspace kind is `personal`. Fresh provisioning writes that kind, and current readers validate it directly. Current protocol schemas do not admit the former kind. No home-to-personal conversion or legacy kind reader is included before v0.1.0; the approved prerelease reset is the cutover boundary.
 
 `packages/protocol/src/models/workspace.ts` owns `WorkspaceKindSchema` and `WorkspaceRecordSchema`.
 
@@ -144,7 +144,7 @@ The engineer chose an ordinary personal Workspace over the former lightweight Qu
 
 ## Testing Strategy / Acceptance Criteria
 
-Check ordinary work admission, owner-only membership, initial selection, exact provisioning retry, and the migration/restart predicates above. Preserve invalid-credential, wrong-owner, tombstone, no-reset, current-authority, disclosure, and command-replay checks. The shared loop remains required for model-backed Chat; personal placement grants no direct Provider exception.
+Check ordinary work admission, owner-only membership, initial selection, exact provisioning retry, and the fresh initialization and restart predicates above. Preserve invalid-credential, wrong-owner, tombstone, no-reset, current-authority, disclosure, and command-replay checks. The shared loop remains required for model-backed Chat; personal placement grants no direct Provider exception.
 
 ## Open Questions
 

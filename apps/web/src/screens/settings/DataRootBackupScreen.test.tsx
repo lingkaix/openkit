@@ -8,7 +8,7 @@ import { SURFACE_ELEMENTS } from '../../app/routes';
 import { surfaceById, surfacesInGroup } from '../../app/surfaces';
 
 const POISON = '/private/backup/okt_secret_must_not_escape';
-const BACKUP_ID = 'drb_example';
+const BACKUP_ID = 'drb_00000000-0000-76fe-b8e8-0165f027791b';
 const RESPONSE = {
   backupId: BACKUP_ID,
   manifest: {
