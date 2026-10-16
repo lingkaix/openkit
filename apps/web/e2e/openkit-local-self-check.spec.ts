@@ -244,7 +244,9 @@ async function startTaskTurn(page: Page, threadId: string, input: string): Promi
 test('completes the fixed visible Material handoff and proposal-conflict sequence', async ({
   page,
 }) => {
-  test.setTimeout(55_000);
+  // Cold startup, two worker turns, and two Core restarts share this bounded harness budget.
+  // Per-action and assertion timeouts still detect stalled progress.
+  test.setTimeout(120_000);
   const browserRuntimeErrors: string[] = [];
   page.on('pageerror', (error) => browserRuntimeErrors.push(error.message));
   stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
