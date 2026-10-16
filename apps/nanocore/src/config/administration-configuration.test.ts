@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAdministrationConfigurationTools } from '../administration/configuration-tools.js';
@@ -40,7 +41,7 @@ function fixture() {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const token = createOpenKitAccessTokenRecord(coreDb, {
-    tokenId: `tok_${randomUUID()}`,
+    tokenId: allocateEntityId('tok'),
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: 'server-admin',
     workspaceIds: [],
@@ -58,8 +59,9 @@ function fixture() {
   const thread = store.createThread(
     workspaceId,
     'Catalog update',
-    `thread_${randomUUID()}`,
-    'administration'
+    allocateEntityId('th'),
+    'administration',
+    { visibility: 'private', privateOwnerUserId: actor.userId }
   );
   const turn = store.createTurn(
     workspaceId,
@@ -329,7 +331,11 @@ describe('administration catalog configuration', () => {
     const result = await f.service.apply(request);
     const outcome = f.store
       .listArtifacts(f.workspaceId)
-      .find((artifact) => artifact.id.startsWith('artifact_configuration_result_'))!;
+      .find(
+        (artifact) =>
+          artifact.id ===
+          deriveEntityId('ar', ['configuration_result', { userId: f.actor.userId, request }])
+      )!;
     const root = join(f.dataRoot, 'workspaces', f.workspaceId, 'artifacts', outcome.id);
     const body = {
       ...result,
@@ -390,8 +396,9 @@ describe('administration catalog configuration', () => {
     const foreign = f.store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Project thread',
-      'thread_foreign',
-      'administration'
+      allocateEntityId('th'),
+      'administration',
+      { visibility: 'private', privateOwnerUserId: f.actor.userId }
     );
     expect(() => session.propose(f.request, { ...f.home, threadId: foreign.id })).toThrow();
     expect((await session.apply(f.confirm(proposal))).persisted).toBe(true);

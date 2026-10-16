@@ -141,7 +141,7 @@ function fixture(repositoryCount = 1) {
   const failedThread = store.createThread(
     'ws_00000000-0000-7000-8000-000000000001',
     'Failed materialization',
-    randomUUID()
+    allocateEntityId('th')
   );
   const sessionId = allocateEntityId('as');
   const failedTurn = store.createTurn(
@@ -236,8 +236,9 @@ function fixture(repositoryCount = 1) {
   const thread = store.createThread(
     workspaceId,
     'Repair the Git-read rule',
-    randomUUID(),
-    'administration'
+    allocateEntityId('th'),
+    'administration',
+    { visibility: 'private', privateOwnerUserId: actor.userId }
   );
   const turn = store.createTurn(workspaceId, thread.id, 'Repair the assigned rule', {
     kind: 'user',
