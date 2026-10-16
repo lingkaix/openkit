@@ -888,7 +888,10 @@ it.skipIf(process.platform !== 'linux')(
     const f = await sourceToolFixture(image, 'image/png');
     const args = { path: f.packagePath, crop: { left: 1, top: 1, width: 3, height: 2 } };
     const result = await dispatchOpenkitWorkTool(f.input, 'work_view_source', args);
-    expect(result.structuredContent).toMatchObject({
+    expect(result.structuredContent).toBeUndefined();
+    const facts = result.content.find((entry) => entry.type === 'text');
+    if (!facts || facts.type !== 'text') throw new Error('The vision facts are unavailable.');
+    expect(JSON.parse(facts.text)).toMatchObject({
       status: 'available',
       source: { originalDigest: f.source.originalDigest },
       delivered: { width: 3, height: 2, mediaType: 'image/jpeg' },

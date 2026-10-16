@@ -276,3 +276,5 @@ Explicitly selected PDF Artifacts use the same App-owned file admission for isol
 
 
 The `openkit-work` source Tools resolve only exact inventory paths in the accepted Turn package. `work_read_source` serves bounded text ranges, `work_search_source` searches retained PDF text with original/representation/page provenance, and `work_view_source` explicitly returns a bounded JPEG for a selected image or PDF page. The source resolver repeats live Turn, scheduler credential, current source and receiving-audience checks; each asynchronous handler rechecks before disclosure. Images travel as standard MCP image content with separate bounded metadata, inside the existing 512 KiB result envelope. Missing, revoked, unsupported or resource-limited sources produce value-free unavailable descriptors. No Tool selects a host path or changes the original.
+
+Successful explicit vision results put provenance in the leading MCP text block and omit structured content so native Codex retains the accompanying image blocks. The standard content array is the image delivery carrier.

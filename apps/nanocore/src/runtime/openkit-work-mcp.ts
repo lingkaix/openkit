@@ -502,7 +502,9 @@ async function viewSource(
     const { bytes, ...metadata } = projection;
     const result = {
       isError: false,
-      structuredContent: { ...metadata } as Record<string, unknown>,
+      // Codex prefers structuredContent over content, which would discard the image blocks.
+      // Metadata stays in the leading text block; undefined is omitted from the wire response.
+      structuredContent: undefined,
       content: [
         { type: 'text' as const, text: JSON.stringify(metadata) },
         {

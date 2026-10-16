@@ -278,6 +278,10 @@ export function mediaProcessInvocation(
             '/etc/ImageMagick-7',
           ]
         : []),
+      // Poppler reads installed font caches without giving the processor a writable cache or home.
+      ...(executable === '/usr/bin/pdftoppm'
+        ? ['--ro-bind-try', '/var/cache/fontconfig', '/var/cache/fontconfig']
+        : []),
       ...(sourcePath ? ['--ro-bind', sourcePath, '/input.pdf'] : []),
       '--remount-ro',
       '/',
