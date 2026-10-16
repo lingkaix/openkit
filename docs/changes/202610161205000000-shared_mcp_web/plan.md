@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: implemented
 date: "2026-10-16"
 branch: lane/ga-mcp-web
 ---
@@ -23,3 +23,5 @@ Finish deciding UI states/races, typecheck and lint, update local guide/manual, 
 The first complete Web run passed typecheck and seven UI cases after correcting unsupported multiline TextField props and a closed schema-policy setter. The following state run passed nine cases, Web typecheck and Web lint (eight warnings, one informational finding; zero errors) in `p22-web-mcp-states.log`. Additional immutable version and removal evidence remains pending.
 
 Final native-backed configuration evidence: `p22-web-mcp-final.log` passed eleven cases, repository check, Web typecheck and production build. The added published-route and retained-Server-removal predicates passed with the complete thirteen-case rerun and Web typecheck in `p22-web-mcp-publication.log`. Independent review and full integrated CI remain required. This feature changes twelve files, one owning specification/projection across existing catalog/Web ownership, and adds one route registry row; it creates no durable entity or owner.
+
+The Web dependency31bb4473 was merged into the shared-MCP native feature for one supported whole landing. The follow-up typed-operation dispatcher validates schema and common pasted credential shapes before mutation-cache admission; fourteen UI cases, exact public operation contract, Web typecheck and lint passed in p22-server-web-input-safe.log. A previously untracked-file lint gap exposed an array-index key after merge; use the canonical unique slot key instead. No warning or check was bypassed. Final integrated review/CI remain open.

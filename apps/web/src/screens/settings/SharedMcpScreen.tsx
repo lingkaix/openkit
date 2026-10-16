@@ -1,3 +1,4 @@
+import { type OperationInput, SERVER_MCP_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient, createRequestId } from '@openkit/core-client';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
@@ -15,9 +16,13 @@ import {
   Skeleton,
   TextField,
 } from '../../primitives';
+import { redactSecretShapedText } from './secret-safe';
 
+type Definitions = typeof SERVER_MCP_OPERATION_DEFINITIONS;
+type MutationId = Extract<keyof Definitions, `administration.server-mcp-${string}`>;
+type Mutation = { [K in MutationId]: { operation: K; input: OperationInput<K> } }[MutationId];
+type Run = <K extends MutationId>(operation: K, input: OperationInput<K>) => void;
 type Detail = Awaited<ReturnType<CoreClient['operations']['administration.server-mcp-read']>>;
-
 /** Parse explicit comma-separated tool names without inventing an allowlist. */
 function tools(value: string) {
   return [
@@ -40,7 +45,6 @@ function safeFailure(error: unknown) {
 function denied(error: unknown) {
   return error instanceof ApiCallError && [401, 403].includes(error.status);
 }
-
 /** Configure Server-owned MCP supply through the current administrator's typed operations. */
 export function SharedMcpScreen() {
   const client = useCoreClient();
@@ -53,6 +57,7 @@ export function SharedMcpScreen() {
   const [newArgs, setNewArgs] = useState('');
   const [newTools, setNewTools] = useState('');
   const [kind, setKind] = useState('http');
+  const [validationError, setValidationError] = useState(false);
   const supply = useQuery({
     queryKey: ['settings', 'shared-mcp'],
     queryFn: async () => {
@@ -79,9 +84,9 @@ export function SharedMcpScreen() {
     refetchOnWindowFocus: false,
   });
   const action = useMutation({
-    mutationFn: async (effect: () => Promise<unknown>) => {
+    mutationFn: async (write: Mutation) => {
       try {
-        await effect();
+        await client.operations[write.operation](write.input as never);
       } catch (error) {
         throw safeFailure(error);
       }
@@ -92,6 +97,21 @@ export function SharedMcpScreen() {
       if (selected) await detail.refetch();
     },
   });
+  /** Validate before a cache entry can retain the draft, including common pasted credential shapes. */
+  const run: Run = (operation, input) => {
+    const bytes = JSON.stringify(input);
+    const parsed = SERVER_MCP_OPERATION_DEFINITIONS[operation].inputSchema.safeParse(input);
+    if (
+      !SERVER_MCP_OPERATION_DEFINITIONS[operation].mutating ||
+      redactSecretShapedText(bytes) !== bytes ||
+      !parsed.success
+    ) {
+      setValidationError(true);
+      return;
+    }
+    setValidationError(false);
+    action.mutate({ operation, input: parsed.data } as Mutation);
+  };
   const busy =
     connection.checking ||
     connection.failed ||
@@ -100,7 +120,6 @@ export function SharedMcpScreen() {
     action.isPending;
   const blocked = busy || supply.isError || detail.isError || action.isError;
   const accessDenied = [supply.error, detail.error, action.error].some(denied);
-
   /** Explicit read after an uncertain write; this never repeats the write. */
   async function refresh() {
     const currentSupply = await supply.refetch();
@@ -111,7 +130,6 @@ export function SharedMcpScreen() {
     }
     action.reset();
   }
-
   return (
     <Page>
       <PageHeader
@@ -137,6 +155,9 @@ export function SharedMcpScreen() {
         <ErrorBanner message="Couldn't read current Server supply." />
       ) : (
         <div className="flex flex-col gap-6">
+          {validationError ? (
+            <ErrorBanner message="Check configuration fields. No change was sent. Use Vault for credential material." />
+          ) : null}
           {action.isError ? (
             <ErrorBanner message="The change failed or its outcome is unknown. Your draft is kept. Inspect current state with Reload current configuration before another change." />
           ) : null}
@@ -190,7 +211,7 @@ export function SharedMcpScreen() {
               key={`${selected}:${detail.dataUpdatedAt}`}
               data={detail.data}
               blocked={blocked}
-              run={action.mutate}
+              run={run}
             />
           ) : null}
           <Card className="flex flex-col gap-3">
@@ -252,23 +273,21 @@ export function SharedMcpScreen() {
                 !(kind === 'http' ? newEndpoint : newCommand).trim()
               }
               onPress={() =>
-                action.mutate(() =>
-                  client.operations['administration.server-mcp-create']({
-                    id: newId.trim(),
-                    displayName: newName.trim(),
-                    allowedTools: tools(newTools),
-                    expectedRevision: supply.data?.revision ?? 0,
-                    requestId: createRequestId(),
-                    declaration:
-                      kind === 'http'
-                        ? { kind: 'http', endpoint: newEndpoint.trim() }
-                        : {
-                            kind: 'stdio',
-                            command: newCommand.trim(),
-                            args: newArgs.split('\n').filter(Boolean),
-                          },
-                  })
-                )
+                run('administration.server-mcp-create', {
+                  id: newId.trim(),
+                  displayName: newName.trim(),
+                  allowedTools: tools(newTools),
+                  expectedRevision: supply.data?.revision ?? 0,
+                  requestId: createRequestId(),
+                  declaration:
+                    kind === 'http'
+                      ? { kind: 'http', endpoint: newEndpoint.trim() }
+                      : {
+                          kind: 'stdio',
+                          command: newCommand.trim(),
+                          args: newArgs.split('\n').filter(Boolean),
+                        },
+                })
               }
             >
               Add inactive shared configuration
@@ -283,18 +302,8 @@ export function SharedMcpScreen() {
     </Page>
   );
 }
-
 /** Keep an exact read's editable draft until a deliberate reread or completed mutation. */
-function McpEditor({
-  data,
-  blocked,
-  run,
-}: {
-  data: Detail;
-  blocked: boolean;
-  run: (effect: () => Promise<unknown>) => void;
-}) {
-  const client = useCoreClient();
+function McpEditor({ data, blocked, run }: { data: Detail; blocked: boolean; run: Run }) {
   const { entry } = data;
   const selected = data.versions.find((version) => version.digest === entry.currentVersionDigest);
   const [allowed, setAllowed] = useState(entry.allowedTools.join(', '));
@@ -329,22 +338,20 @@ function McpEditor({
   const unavailable = blocked || entry.availability === 'removed';
   /** Preserve omitted credential bindings unless the user explicitly edits their full list. */
   function save(enabled: boolean) {
-    run(() =>
-      client.operations['administration.server-mcp-update-binding']({
-        mcpId: entry.id,
-        expectedRevision: data.revision,
-        bindingRevision: entry.bindingRevision,
-        requestId: createRequestId(),
-        allowedTools: tools(allowed),
-        approvalRequiredTools: tools(approval),
-        deniedTools: tools(deniedTools),
-        enabled,
-        schemaPolicy: schemaPolicy as 'tracking' | 'pinned',
-        timeoutMs: Number(timeout),
-        ...(schemaPolicy === 'pinned' ? { pinnedSchemaSnapshotId: pin.trim() } : {}),
-        ...(bindingsChanged ? { credentialBindings: bindings } : {}),
-      })
-    );
+    run('administration.server-mcp-update-binding', {
+      mcpId: entry.id,
+      expectedRevision: data.revision,
+      bindingRevision: entry.bindingRevision,
+      requestId: createRequestId(),
+      allowedTools: tools(allowed),
+      approvalRequiredTools: tools(approval),
+      deniedTools: tools(deniedTools),
+      enabled,
+      schemaPolicy: schemaPolicy as 'tracking' | 'pinned',
+      timeoutMs: Number(timeout),
+      ...(schemaPolicy === 'pinned' ? { pinnedSchemaSnapshotId: pin.trim() } : {}),
+      ...(bindingsChanged ? { credentialBindings: bindings } : {}),
+    });
   }
   return (
     <Card className="flex flex-col gap-3">
@@ -396,11 +403,11 @@ function McpEditor({
       ) : null}
       <h3 className="text-sm font-bold text-fg">Credential grant bindings</h3>
       <p className="text-xs text-fg-muted">
-        Use an existing Server MCP Vault grant. Enter no secret material. Saving an edited list
-        explicitly replaces the current bindings.
+        Use an existing Server MCP Vault grant issued through the administrator CLI. Enter no secret
+        material. Saving an edited list explicitly replaces the current bindings.
       </p>
       {bindings.map((binding, index) => (
-        <ListRow key={`${binding.slot}:${index}`} className="flex-wrap">
+        <ListRow key={binding.slot} className="flex-wrap">
           <p className="min-w-0 flex-1 text-xs text-fg-muted">
             {binding.slot} · {binding.sink.kind}: {binding.sink.name} · {binding.vaultGrantId} ·{' '}
             {binding.presentation ?? 'raw'}
@@ -496,14 +503,12 @@ function McpEditor({
             size="sm"
             isDisabled={unavailable || version.digest === entry.currentVersionDigest}
             onPress={() =>
-              run(() =>
-                client.operations['administration.server-mcp-select-version']({
-                  mcpId: entry.id,
-                  digest: version.digest,
-                  expectedRevision: data.revision,
-                  requestId: createRequestId(),
-                })
-              )
+              run('administration.server-mcp-select-version', {
+                mcpId: entry.id,
+                digest: version.digest,
+                expectedRevision: data.revision,
+                requestId: createRequestId(),
+              })
             }
           >
             Select version {version.digest}
@@ -542,24 +547,22 @@ function McpEditor({
               !(selected.declaration.kind === 'http' ? endpoint : command).trim()
             }
             onPress={() =>
-              run(() =>
-                client.operations['administration.server-mcp-stage-version']({
-                  mcpId: entry.id,
-                  id: entry.id,
-                  displayName: entry.displayName,
-                  allowedTools: tools(allowed),
-                  expectedRevision: data.revision,
-                  requestId: createRequestId(),
-                  declaration:
-                    selected.declaration.kind === 'http'
-                      ? { ...selected.declaration, endpoint: endpoint.trim() }
-                      : {
-                          ...selected.declaration,
-                          command: command.trim(),
-                          args: args.split('\n').filter(Boolean),
-                        },
-                })
-              )
+              run('administration.server-mcp-stage-version', {
+                mcpId: entry.id,
+                id: entry.id,
+                displayName: entry.displayName,
+                allowedTools: tools(allowed),
+                expectedRevision: data.revision,
+                requestId: createRequestId(),
+                declaration:
+                  selected.declaration.kind === 'http'
+                    ? { ...selected.declaration, endpoint: endpoint.trim() }
+                    : {
+                        ...selected.declaration,
+                        command: command.trim(),
+                        args: args.split('\n').filter(Boolean),
+                      },
+              })
             }
           >
             Stage version without selecting
@@ -581,13 +584,11 @@ function McpEditor({
         <Button
           isDisabled={unavailable}
           onPress={() =>
-            run(() =>
-              client.operations['administration.server-mcp-remove']({
-                mcpId: entry.id,
-                expectedRevision: data.revision,
-                requestId: createRequestId(),
-              })
-            )
+            run('administration.server-mcp-remove', {
+              mcpId: entry.id,
+              expectedRevision: data.revision,
+              requestId: createRequestId(),
+            })
           }
         >
           Confirm removal of {entry.displayName}
@@ -596,7 +597,6 @@ function McpEditor({
     </Card>
   );
 }
-
 /** Keep argument boundaries explicit through the existing React Aria text-area behavior. */
 function ArgumentsField({
   label,
