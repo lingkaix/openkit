@@ -207,6 +207,8 @@ An injection plan should carry:
 
 The AEP snapshot may reference injection plans and grants, but it must not include secret values.
 
+A plan identity binds its original grant, package snapshot, capability, visibility, runtime targets, expiration and revocation behavior, redaction rule and backend requirement. An exact creation replay returns the stored plan, including its original creation time and current lifecycle status. A repeated identity with different immutable content fails without mutation. A replay clock does not replace the original creation fact. Lifecycle changes use their existing owners and cannot change plan intent.
+
 ## Vault Injection Receipt
 
 An injection receipt should carry:
@@ -223,7 +225,9 @@ An injection receipt should carry:
 
 The receipt is written only after the sink effect completes successfully. Authorization refusal, backend resolution failure, sink failure, interruption, or an unproven completion may emit redacted `VaultUse` or audit evidence but MUST NOT create a receipt. The receipt remains immutable evidence and never becomes authority for a later injection.
 
-The receipt id, successful completion fact, original plan and grant linkage, AgentSession or capability-call lineage, backend summary, injection time, and original audit linkage are immutable. `revocationStatus` and other explicitly owned lifecycle projections may advance after completion, but they do not alter the original completion fact, rewrite lineage, or prove that exposed material was recalled.
+The receipt id, successful completion fact, original plan and grant linkage, AgentSession or capability-call lineage, backend summary, injection time, original expiry and original audit linkage are immutable. `revocationStatus` and other explicitly owned lifecycle projections may advance after completion, but they do not alter the original completion fact, rewrite lineage, or prove that exposed material was recalled.
+
+An exact receipt creation replay returns the stored receipt with its current revocation projection. A repeated identity with different immutable content fails without changing any receipt. Creation replay cannot advance or restore lifecycle status and cannot count as another successful injection. An omitted nullable field and explicit null have the same identity meaning.
 
 ## Lifecycle And Failure Rules
 

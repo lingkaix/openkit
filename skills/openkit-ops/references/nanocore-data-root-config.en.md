@@ -315,7 +315,7 @@ For an Agent explicitly selected for Git or code-host work that needs a read-onl
 
 The same Agent Manifest can be used by many Workspaces with different accounts and permissions. A manifest declares a stable `requirementId`, and each Workspace Agent binding maps it to that Workspace's `vaultGrantId`. A required missing binding fails Agent setup; an optional missing binding is omitted. The worker sees only the configured target such as an environment variable, file, or Provider attachment and does not see the Workspace's routing decision.
 
-Secret material never belongs in JSONC. Vault references, grants, injection plans, receipts, and use records remain Core control-plane records. A plan is written before attempted resolution, `VaultUse` records resolution success or failure, backend-private sinks receive material, and a receipt is written only after the sink completes successfully.
+Secret material never belongs in JSONC. Vault references, grants, injection plans, receipts, and use records remain Core control-plane records. A plan is written before attempted resolution, `VaultUse` records resolution success or failure, backend-private sinks receive material, and a receipt is written only after the sink completes successfully. A repeated plan or receipt identity with changed immutable content is rejected without changing history. Exact creation replay returns the retained record and current revocation state; it does not prove another injection. If an identity conflict occurs, inspect the original Task and Vault records before any new request. Do not edit these records or infer that an attempted sink completed.
 
 ## Reload Behavior
 
