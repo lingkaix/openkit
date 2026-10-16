@@ -28,7 +28,7 @@ export async function acquireGitEcosystemSkill(
   readonly digest: string;
   readonly tree: readonly CatalogTreeFile[];
 }> {
-  const directory = mkdtempSync(join(tmpdir(), 'openkit-skill-git-'));
+  const directory = mkdtempSync(join(tmpdir(), 'openkit-catalog-git-'));
   try {
     const git = async (args: readonly string[], maxBuffer = 2 * 1024 * 1024): Promise<Buffer> =>
       (
