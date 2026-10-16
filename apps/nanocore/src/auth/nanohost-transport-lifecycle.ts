@@ -80,8 +80,15 @@ export interface DecommissionNanoHostTransportAndFenceInput {
   readonly now?: Date;
 }
 
-/** Fences process authority and clears the same identity's durable readiness witness. */
-function fenceNanoHostTransportAuthority(
+/**
+ * Fences process authority and clears the same identity's durable readiness witness without changing enrollment or credentials.
+ *
+ * @param coreDb Existing Core database handle.
+ * @param authority Process-local NanoHost transport authority.
+ * @param identityId Exact configured predecessor identity.
+ * @param observedAt Server observation timestamp.
+ */
+export function fenceNanoHostTransportAuthority(
   coreDb: CoreDb,
   authority: NanoHostTransportSessionAuthority,
   identityId: string,
