@@ -46,6 +46,7 @@ import {
 } from '../lib/store.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
+import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { resolveWorkspaceKnowledgeRetrievalPages } from '../storage/index-rebuild.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -261,10 +262,11 @@ export interface PreparedWorkerTurnContext {
  * @param store Product store containing canonical Thread Items.
  * @param checkpoint Exact Task diagnostic checkpoint, or null for an outcome-initiated Turn.
  * @param input Exact worker Turn, command, and request bytes.
+ * @param admission Existing App-owned disk reservation shared by all file producers.
  * @returns Prepared immutable package state.
  * @throws TurnStartValidationError when checkpoint or requested Item authority is contradictory.
  */
-export function prepareWorkerTurnContextPackage(
+export async function prepareWorkerTurnContextPackage(
   coreDb: CoreDb | null,
   workspaceDb: WorkspaceDb,
   store: FsStore,
@@ -276,8 +278,9 @@ export function prepareWorkerTurnContextPackage(
     readonly workspaceId: string;
     readonly threadId: string;
     readonly turnId: string;
-  }
-): PreparedWorkerTurnContext {
+  },
+  admission: FileStorageAdmission
+): Promise<PreparedWorkerTurnContext> {
   if (
     !input.requestId ||
     (checkpoint &&
@@ -449,7 +452,7 @@ export function prepareWorkerTurnContextPackage(
     input.turnId,
     'context-package'
   );
-  writeWorkerContextPackageFiles(workspaceRoot, packageFiles);
+  await writeWorkerContextPackageFiles(workspaceRoot, packageFiles, { admission });
   return {
     checkpoint,
     requestId: input.requestId,
@@ -537,6 +540,8 @@ export function acceptPreparedWorkerTurnContextPackage(input: {
  * Options for the worker-governance-backed turn executor.
  */
 export interface WorkerGovernanceTurnExecutorOptions {
+  /** App-owned disk reservation shared with upload, capture and package writers. */
+  fileAdmission?: FileStorageAdmission | undefined;
   /** Active configuration snapshot for resolution-time public-route admission. */
   readRuntimeConfig?: (() => PublicNetworkConfiguration) | undefined;
   /** Optional durable completion barrier used after a detached backend launch. */
@@ -603,6 +608,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   /** Configured four-operation boundary; the executor retains its existing preparation and closeout responsibility. */
   public readonly executionBackend: import('./execution-backend.js').ExecutionBackend;
   private readonly coreDb: CoreDb | null;
+  private readonly fileAdmission: FileStorageAdmission | undefined;
   private readonly createAgentSessionId: () => string;
   private readonly now: () => string;
   private readonly resolveResidentWorkerStorageWorkSlotRef:
@@ -634,6 +640,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       workspaceKnowledgeEditing: false,
     };
     this.coreDb = options.coreDb ?? null;
+    this.fileAdmission = options.fileAdmission;
     this.createAgentSessionId = options.createAgentSessionId ?? (() => generateUuidV7());
     this.now = options.now ?? (() => new Date().toISOString());
     this.resolveResidentWorkerStorageWorkSlotRef =
@@ -1571,7 +1578,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         );
       }
       if (workspaceDb && (checkpoint || outcomeInitiated) && context.sandboxBindingRef) {
-        preparedWorkerContext = prepareWorkerTurnContextPackage(
+        if (!this.fileAdmission) {
+          throw new TurnStartValidationError(
+            'source_unavailable',
+            'Worker Context Package storage admission is unavailable.',
+            503
+          );
+        }
+        preparedWorkerContext = await prepareWorkerTurnContextPackage(
           this.coreDb,
           workspaceDb,
           store,
@@ -1583,7 +1597,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             turnId: turn.id,
             workerRequest: contextRequest,
             workspaceId: turn.workspaceId,
-          }
+          },
+          this.fileAdmission
         );
       }
       if (preparedWorkerContext && !turn.startedAt) {

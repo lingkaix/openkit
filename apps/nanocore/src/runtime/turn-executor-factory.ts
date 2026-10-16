@@ -345,6 +345,7 @@ function createNanoHostWorkerLifecycleRuntime(
     env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
       ? new SimulatedTurnExecutor({ coreDb, fileAdmission })
       : new WorkerGovernanceTurnExecutor({
+          fileAdmission,
           awaitWorkerCompletion: (environmentPackage, attemptId) =>
             waitForWorkerControlFinalStatus(coreDb, {
               attemptId: attemptId,

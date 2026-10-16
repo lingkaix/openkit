@@ -7,6 +7,7 @@ import { ensureLocalUser } from '../auth/identity.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -103,7 +104,11 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
     collectTranscript: async () => ({ itemsJsonl: '' }),
     collectWorkspaceChanges: async () => [],
   };
-  const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+  const executor = new WorkerGovernanceTurnExecutor({
+    fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+    backend,
+    coreDb,
+  });
   const setup = createTestAgentSetup({
     requiredCapabilities: provenance ? ['worker.runtime-provenance.v1'] : [],
   });
@@ -203,7 +208,11 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
         getWorkerCheckpoint(workspaceDb, 'ws_demo', anchor.threadId, turnId) ?? checkpoint,
     });
   const pkg = requireAgentEnvironmentPackageSnapshot(workspaceDb, 'ws_demo', attempt.inputRef!);
-  const restartedExecutor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+  const restartedExecutor = new WorkerGovernanceTurnExecutor({
+    fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+    backend,
+    coreDb,
+  });
   const restartedApp = createApp({
     coreDb,
     dataRoot,

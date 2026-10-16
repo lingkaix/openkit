@@ -28,6 +28,7 @@ import {
   listQueuedSchedulerAdmissionEntries,
   requireSchedulerExecutionAttemptAdmissionContext,
 } from '../scheduler-records.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import {
   openCoreDb,
   openWorkspaceDb,
@@ -1761,7 +1762,11 @@ describe('terminal failed-start product recovery', () => {
       collectTranscript: async () => ({ itemsJsonl: '' }),
       collectWorkspaceChanges: async () => [],
     };
-    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb: f.coreDb });
+    const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(f.coreDb.dataRoot, () => 0n),
+      backend,
+      coreDb: f.coreDb,
+    });
     const prepare = vi.spyOn(executor, 'prepareAgentSessionForTurn');
     const starts = vi.spyOn(executor, 'startTurn');
     const app = createApp({

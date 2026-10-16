@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
+  planSessionWorkspaceMaterialization,
 } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 import { importWorkspaceSkill } from '../catalog/resource-catalog.js';
@@ -486,9 +487,25 @@ it('prepares a large Context Package original as a verified bounded source and r
       agentSessionId,
       packageRootDigest: rootDigest,
     });
-    const environmentPackage = AgentEnvironmentPackageSchema.parse({
+    const withInput = AgentEnvironmentPackageSchema.parse({
       ...base,
       workspace: { ...base.workspace, inputs: [...base.workspace.inputs, workspaceInput] },
+    });
+    const openkit = withInput.extensions.openkit as Record<string, unknown> & {
+      workerStorage: { workSlotRef: string };
+    };
+    const environmentPackage = AgentEnvironmentPackageSchema.parse({
+      ...withInput,
+      extensions: {
+        ...withInput.extensions,
+        openkit: {
+          ...openkit,
+          sessionWorkspace: planSessionWorkspaceMaterialization({
+            environmentPackage: withInput,
+            workSlotRef: openkit.workerStorage.workSlotRef,
+          }),
+        },
+      },
     });
     const context = {
       workspaceRoots: [
