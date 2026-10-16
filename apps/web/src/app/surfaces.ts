@@ -337,6 +337,16 @@ export const SURFACES: Surface[] = [
     wp: 'WP-2',
   },
   {
+    id: 'server-operations',
+    title: 'Server operations',
+    path: '/settings/server-operations',
+    tier: 'A',
+    nav: 'settings-admin',
+    icon: 'settings',
+    board: '10/11/22',
+    wp: 'P28',
+  },
+  {
     id: 'administration',
     title: 'Administration',
     path: '/settings/administration',
@@ -368,6 +378,16 @@ export const SURFACES: Surface[] = [
     wp: 'WP-7',
   },
 
+  {
+    id: 'shared-mcp',
+    title: 'Shared MCP',
+    path: '/settings/shared-mcp',
+    tier: 'A',
+    nav: 'settings-admin',
+    icon: 'connect',
+    board: '10',
+    wp: 'WP-7',
+  },
   {
     id: 'vault-admin',
     title: 'Vault backend',

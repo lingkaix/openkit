@@ -14,7 +14,7 @@ import {
   WorkerSandboxAccessSchema,
 } from '@openkit/config-schema';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
@@ -156,11 +156,20 @@ const resolveAgentEnvironmentPackage: typeof resolvePackage = (input) =>
 const resolveAgentEnvironmentPackageMetadata: typeof resolveMetadata = (input) =>
   resolveMetadata(preparedInput(input));
 
+const fixtureDatabases: ReturnType<typeof openCoreDb>[] = [];
+afterAll(() => {
+  for (const coreDb of fixtureDatabases.splice(0)) {
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
+    rmSync(coreDb.dataRoot, { recursive: true, force: true });
+  }
+});
+
 /** Creates the durable deployment identity required by real executor construction. */
 function createFactoryCoreDb() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-turn-executor-factory-'));
   ensureLayout(dataRoot);
   const coreDb = openCoreDb(dataRoot);
+  fixtureDatabases.push(coreDb);
   applyMigrations(coreDb);
   for (const adapter of ['codex', 'pi', 'opencode'])
     admitTestNativeEnvironment(coreDb, createTestAgentSetup({ adapter }).manifest);

@@ -24,8 +24,17 @@ export function ServerAuditScreen() {
         eyebrow="Administration"
         title="Server audit"
         subtitle="Read-only server audit events and permission decisions recorded by NanoCore."
+        actions={
+          <Button
+            variant="outline"
+            isDisabled={records.isFetching}
+            onPress={() => void records.refetch()}
+          >
+            Refresh audit
+          </Button>
+        }
       />
-      {records.isLoading ? (
+      {records.isLoading || records.isFetching || !records.isFetchedAfterMount ? (
         <Skeleton lines={8} />
       ) : records.isError ? (
         denied ? (

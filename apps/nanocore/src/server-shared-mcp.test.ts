@@ -10,7 +10,12 @@ import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createDefaultWorkerControlGateway } from './app.js';
-import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import { listServerAuditEvents } from './audit-events.js';
+import {
+  createOpenKitAccessTokenRecord,
+  revokeOpenKitAccessTokenRecord,
+  setDefaultServerAdminTokenId,
+} from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import {
   composeWorkspaceMcpCatalog,
@@ -20,8 +25,12 @@ import {
   setSharedMcpDisabled,
   updateMcpBinding,
 } from './catalog/resource-catalog.js';
-import { createRuntimeConfigManager } from './config/runtime-config.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from './config/runtime-config.js';
 import { FsStore } from './lib/store.js';
+import { ProviderRegistry } from './providers/registry.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import {
@@ -29,15 +38,18 @@ import {
   schedulerExecutionCorrelation,
 } from './runtime/execution-attempt-records.js';
 import { bindNanoHostAttemptRouteTokenHashes } from './runtime/nanohost-attempt-records.js';
+import { listThreadPendingRequests, readPendingRequest } from './runtime/pending-requests.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { createTestAgentSetup } from './test-support/agent-environment.js';
+import { users } from './storage/schema/index.js';
+import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
 import { admitTestNativeEnvironment } from './test-support/native-environment.js';
+import { advanceActiveVaultReferenceVersion } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -147,10 +159,27 @@ async function fixture() {
     vaultUnlockState.lock();
   });
   const materialResolution = vi.spyOn(vaultUnlockState.backend(), 'resolve');
-  const manager = createRuntimeConfigManager({ dataRoot });
+  const manager = createRuntimeConfigManager({
+    dataRoot,
+    initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+      dataRoot,
+      openKitConfig: { mode: 'server' },
+      agentManifests: [createTestAgentSetup({ mcpIds: [serverId] }).manifest],
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Synthetic provider',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+    }),
+  });
   const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
   const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
   cleanups.push(() => workerMcpGateway.close());
+  let sessionUserId: string | null = null;
   const app = createApp({
     coreDb,
     dataRoot,
@@ -161,25 +190,39 @@ async function fixture() {
     workerControlGateway,
     workerMcpGateway,
     auth: {
-      api: { getSession: async () => null },
+      api: {
+        getSession: async () => (sessionUserId ? { user: { id: sessionUserId } } : null),
+      },
       handler: async () => new Response(null, { status: 404 }),
     },
   });
   const outputs: unknown[] = [];
-  const send = (operation: string, input: Record<string, unknown> = {}, secret = admin.secret) => {
+  const send = (
+    operation: string,
+    input: Record<string, unknown> = {},
+    secret: string | null = admin.secret
+  ) => {
     const { requestId = randomUUID(), ...body } = input;
     return app.request(`/api/app/operations/${operation}`, {
       method: 'POST',
       headers: {
-        authorization: `Bearer ${secret}`,
+        ...(secret ? { authorization: `Bearer ${secret}` } : {}),
         'content-type': 'application/json',
         'x-openkit-request-id': String(requestId),
       },
       body: JSON.stringify(body),
     });
   };
-  const call = async (operation: string, input: Record<string, unknown> = {}) => {
-    const response = await send(operation, input);
+  const sessionSend = (userId: string, operation: string, input: Record<string, unknown>) => {
+    sessionUserId = userId;
+    return send(operation, input, null);
+  };
+  const call = async (
+    operation: string,
+    input: Record<string, unknown> = {},
+    secret = admin.secret
+  ) => {
+    const response = await send(operation, input, secret);
     expect([200, 201], await response.clone().text()).toContain(response.status);
     const body = await response.json();
     outputs.push(body);
@@ -275,28 +318,33 @@ async function fixture() {
       })?.disposition
     ).toBe('accepted');
     outputs.push(pkg);
+    const invokeMcp = async (
+      method: 'tools/call' | 'tools/list',
+      params: Record<string, unknown>
+    ) => {
+      const response = await app.request(`/api/worker-capabilities/mcp/${serverId}`, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json, text/event-stream',
+          'content-type': 'application/json',
+          authorization: `Bearer ${registration.workerCapabilityToken}`,
+        },
+        body: JSON.stringify({
+          id: randomUUID(),
+          jsonrpc: '2.0',
+          method,
+          params,
+        }),
+      });
+      const body = await response.json();
+      outputs.push(body);
+      return { status: response.status, body };
+    };
     return {
       pkg,
       workspaceId,
-      call: async (message: string) => {
-        const response = await app.request(`/api/worker-capabilities/mcp/${serverId}`, {
-          method: 'POST',
-          headers: {
-            accept: 'application/json, text/event-stream',
-            'content-type': 'application/json',
-            authorization: `Bearer ${registration.workerCapabilityToken}`,
-          },
-          body: JSON.stringify({
-            id: randomUUID(),
-            jsonrpc: '2.0',
-            method: 'tools/call',
-            params: { name: 'echo', arguments: { message } },
-          }),
-        });
-        const body = await response.json();
-        outputs.push(body);
-        return { status: response.status, body };
-      },
+      call: (message: string) => invokeMcp('tools/call', { name: 'echo', arguments: { message } }),
+      list: () => invokeMcp('tools/list', {}),
     };
   };
   const noLocalCatalog = () => {
@@ -309,6 +357,7 @@ async function fixture() {
     app,
     call,
     send,
+    sessionSend,
     coreDb,
     store,
     dataRoot,
@@ -748,6 +797,203 @@ describe('Server-shared MCP through governed Worker routes', () => {
     expectRefusal(await worker.call('must-not-resolve'));
     expect(f.materialResolution).not.toHaveBeenCalled();
     expect(f.upstream.methods).toEqual([]);
+  });
+
+  it.each([
+    'current',
+    'other-administrator',
+    'administrator-session',
+    'revoked-administrator-session',
+    'ordinary-session',
+    'grant-revoked',
+    'server-disabled',
+  ] as const)('executes captured shared approval only with %s authority', async (authority) => {
+    const f = await fixture();
+    const { grant } = await sharedSetup(f);
+    const catalog = loadResourceCatalog(f.dataRoot, { kind: 'server' });
+    const binding = catalog.mcp.bindings.find((item) => item.entryId === serverId)!;
+    await f.call('administration.server-mcp-update-binding', {
+      mcpId: serverId,
+      expectedRevision: catalog.revision,
+      bindingRevision: binding.revision,
+      enabled: true,
+      allowedTools: ['echo'],
+      approvalRequiredTools: ['echo'],
+      schemaPolicy: 'tracking',
+    });
+    const worker = await f.worker(f.workspaces[0]!.id);
+    expect((await worker.list()).body).toMatchObject({ result: { tools: expect.any(Array) } });
+    expect((await worker.call('approved-shared-message')).body).toMatchObject({
+      result: { structuredContent: { status: 'pending-approval' } },
+    });
+    const db = f.workspaceDbs[0]!;
+    const records = listThreadPendingRequests(
+      db.sqlite,
+      worker.workspaceId,
+      worker.pkg.scope.threadId
+    );
+    expect(records).toHaveLength(1);
+    const pending = records[0]!;
+    expect(f.upstream.methods).not.toContain('tools/call');
+    if (authority === 'grant-revoked') {
+      await f.call('vault.server-mcp-grant-revoke', { grantId: grant.grantId });
+    } else if (authority === 'server-disabled') {
+      const current = loadResourceCatalog(f.dataRoot, { kind: 'server' });
+      const currentBinding = current.mcp.bindings.find((item) => item.entryId === serverId)!;
+      await f.call('administration.server-mcp-update-binding', {
+        mcpId: serverId,
+        expectedRevision: current.revision,
+        bindingRevision: currentBinding.revision,
+        enabled: false,
+        allowedTools: ['echo'],
+        approvalRequiredTools: ['echo'],
+        schemaPolicy: 'tracking',
+      });
+    }
+    let approvingUserId = 'user_local';
+    let approvingCredential = f.admin.secret;
+    const session =
+      authority === 'administrator-session' ||
+      authority === 'revoked-administrator-session' ||
+      authority === 'ordinary-session';
+    if (authority === 'other-administrator' || session) {
+      approvingUserId = randomUUID();
+      f.coreDb.db
+        .insert(users)
+        .values({
+          id: approvingUserId,
+          displayName: 'Synthetic approving administrator',
+          email: `${approvingUserId}@openkit.invalid`,
+        })
+        .run();
+      if (authority !== 'ordinary-session') {
+        const token = createOpenKitAccessTokenRecord(f.coreDb, {
+          ownerUserId: approvingUserId,
+          scope: 'server-admin',
+          workspaceIds: [],
+          expiresAt: '2999-01-01T00:00:00.000Z',
+        });
+        approvingCredential = token.secret;
+        if (session)
+          expect(setDefaultServerAdminTokenId(f.coreDb, approvingUserId, token.tokenId)).toBe(true);
+        if (authority === 'revoked-administrator-session')
+          revokeOpenKitAccessTokenRecord(f.coreDb, token.tokenId);
+      }
+    }
+    const membership = () =>
+      f.coreDb.sqlite
+        .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+        .all(worker.workspaceId, approvingUserId);
+    if (session) expect(membership()).toEqual([]);
+    const resolutions = f.materialResolution.mock.calls.length;
+    const contacts = f.upstream.methods.length;
+    const approval = {
+      workspaceId: worker.workspaceId,
+      threadId: pending.threadId,
+      turnId: pending.raisingTurnId,
+      approvalRequestId: pending.requestId,
+      decision: 'granted',
+    };
+    const response = session
+      ? await f.sessionSend(approvingUserId, 'approval.respond', approval)
+      : await f.send('approval.respond', approval, approvingCredential);
+    const responseBody = await response.json();
+    f.outputs.push(responseBody);
+    const settled = readPendingRequest(db.sqlite, pending.requestId)!;
+    if (authority === 'revoked-administrator-session' || authority === 'ordinary-session') {
+      expect(response.status).toBe(403);
+      expect(settled).toEqual(pending);
+      expect(f.materialResolution).toHaveBeenCalledTimes(resolutions);
+      expect(f.upstream.methods).toHaveLength(contacts);
+    } else {
+      expect(response.status, JSON.stringify(responseBody)).toBe(200);
+    }
+    if (
+      authority === 'current' ||
+      authority === 'other-administrator' ||
+      authority === 'administrator-session'
+    ) {
+      expect(settled.disposition, settled.dispositionReason ?? 'No disposition reason.').toBe(
+        'approved-executed'
+      );
+      expect(f.upstream.methods.filter((method) => method === 'tools/call')).toHaveLength(1);
+      expect(settled.responsibleUserId).toBe('user_local');
+      if (session)
+        expect(settled.decidingActorContext).toMatchObject({
+          kind: 'session',
+          userId: approvingUserId,
+        });
+      expect(listServerAuditEvents(f.coreDb)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: 'vault.resolve',
+            capabilityCallId: settled.executionCallId,
+            actor: { kind: 'user', id: approvingUserId },
+            workspaceId: worker.workspaceId,
+            agentSessionId: worker.pkg.scope.agentSessionId,
+          }),
+        ])
+      );
+    } else {
+      expect(settled.disposition).not.toBe('approved-executed');
+      expect(f.upstream.methods).not.toContain('tools/call');
+    }
+    if (session) expect(membership()).toEqual([]);
+    expect(JSON.stringify(f.outputs)).not.toContain(canary);
+  });
+
+  it.each([
+    'rotate',
+    'rotate-canonical-only',
+    'lock',
+  ] as const)('rechecks %s material after asynchronous discovery and sends no tools/call', async (change) => {
+    const f = await fixture();
+    const { reference } = await sharedSetup(f);
+    const worker = await f.worker(f.workspaces[0]!.id);
+    const entered = f.upstream.holdDiscovery();
+    const pending = worker.call('must-not-use-stale-material');
+    try {
+      await Promise.race([
+        entered,
+        pending.then(() => {
+          throw new Error('Worker request settled before the discovery gate.');
+        }),
+      ]);
+      let mutation: Promise<unknown> = Promise.resolve();
+      if (change === 'lock') {
+        f.vaultUnlockState.lock();
+      } else if (change === 'rotate-canonical-only') {
+        // Keep the connection alive to isolate the final material identity check from teardown.
+        const rotated = f.vaultUnlockState.backend().rotate({
+          referenceId: reference.referenceId,
+          material: 'synthetic-rotated-shared-material',
+        });
+        advanceActiveVaultReferenceVersion(f.coreDb, {
+          referenceId: reference.referenceId,
+          currentVersion: rotated.currentVersion,
+        });
+      } else {
+        mutation = f.call('vault.server-mcp-secret-rotate', {
+          referenceId: reference.referenceId,
+          material: 'synthetic-rotated-shared-material',
+        });
+        await vi.waitFor(() => {
+          expect(
+            f.vaultUnlockState
+              .backend()
+              .listReferences()
+              .find((item) => item.referenceId === reference.referenceId)?.currentVersion
+          ).toBe(2);
+        });
+      }
+      f.upstream.releaseDiscovery();
+      await mutation;
+      expectRefusal(await pending);
+      expect(f.upstream.methods).not.toContain('tools/call');
+    } finally {
+      f.upstream.releaseDiscovery();
+      await pending;
+    }
   });
 
   it.each([

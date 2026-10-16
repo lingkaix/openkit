@@ -95,11 +95,11 @@ The four `automation.list`, `automation.create`, `automation.update`, and `autom
 
 ### Inclusion and exclusions
 
-An ordinary-user Web operation is included when it is a `PUBLIC_OPERATION_ACCESS` key whose `scope` is `user` or `workspace` and whose `authentication` is not `gateway-actor`. The count of that set is 147. Inventory derivation MUST use `PUBLIC_OPERATION_ACCESS` together with generated App API OpenAPI and `@openkit/core-client`; it MUST NOT use screen titles as the source list.
+An ordinary-user Web operation is included when it is a `PUBLIC_OPERATION_ACCESS` key whose `scope` is `user` or `workspace` and whose `authentication` is not `gateway-actor`. The count of that set is 183. Inventory derivation MUST use `PUBLIC_OPERATION_ACCESS` together with generated App API OpenAPI and `@openkit/core-client`; it MUST NOT use screen titles as the source list.
 
 The following are excluded from ordinary-user Web and MUST NOT appear on a published ordinary-user route:
 
-- Server-scoped catalog operations, including deployment-admin and bootstrap-secret authentication, currently 46 keys. Roadmap R048 owns their future separate admin surface.
+- Server-scoped catalog operations, including deployment-admin and bootstrap-secret authentication, currently 73 keys. Roadmap R048 owns their future separate admin surface.
 - Gateway-actor operations `POST /v1/chat/completions` and `POST /v1/responses`.
 - Worker-private routes that are not public catalog operations, including `/api/worker-control/*`.
 
@@ -177,6 +177,24 @@ The published Tier-A **Configuration** screen is a separately authorized deploym
 Saving changes only the authored file. Applying saved configuration is a separate explicit `client.operations['runtime.reload']({ mode: "safe" })` action, and Web projects the returned applied, deferred, restart-required, rejected, warning, and runtime-version truth without inventing hot-reload success. The screen does not expose arbitrary filesystem paths, create unsupported file kinds, or bypass the NanoCore file allowlist and schema boundary.
 
 The tree contains exactly the existing files NanoCore returns: server, Provider, Agent, Workspace, and data-source documents. Policy-bearing settings remain visible in their current owning documents. Web MUST NOT fabricate a standalone Policy file until an accepted Policy owner gives that file a current runtime consumer, schema, lifecycle, and enforcement semantics. Future Agent-authored configuration uses the same runtime-config routes rather than a hidden parallel management path.
+
+Server audit rechecks both session-authorized reads on every mount and explicit **Refresh audit**. Cached rows stay hidden until the current mount read succeeds. A failed or denied read hides prior rows; retry only re-reads `audit.server-list` and `permission.server-list` with server scope.
+
+### Server Operations Projection
+
+Settings Administration publishes a separate **Server operations** destination for the supported `diagnostics.app` and `administration.cleanup-read` observations. Both use current session-derived server-admin authority and are independent of Workspace selection. This surface adds no credential input, filesystem inspection, host probe, Policy editor or cleanup command. Each read has independent loading, denial, failure and explicit read-only refresh states. A denied or failed read hides its prior observation; a mounted observer checks current authority before showing cached data. A new mount starts its own read even when prior data is fresh; an unmounted pending read is canceled and cannot satisfy a later mount or account. Whitelist display fields and redact free text before retaining query data; raw diagnostics, source payloads and error bodies remain outside this projection.
+
+Successful sign-in, sign-up and sign-out remove Settings read caches before the new account admission read. A previous account's pending read cannot restore these removed observations. Settings mutation completion cannot publish a previous account's response into a replacement shared query. Refresh the current authorized read where it owns the result; immediate Gateway login status may update only the same query instance captured when that mutation started. Configuration saves may retain their local saved revision and mark the file read stale without an immediate refresh that would replace an unsaved draft. Account transitions preserve unrelated queries and pending mutation state; they do not imply cancellation or rollback of a server command.
+
+Health preserves the existing diagnostic distinctions: boot subsystem state and exact blocking reasons, service availability, product-work admission, update-helper configuration with preparation still required, maintenance observation, and stored execution-host state with observation time and age. Missing optional observations remain unavailable. Host `freshEmpty` and ready state do not prove deployment-wide idleness. Process memory and uptime describe NanoCore only; Telemetry flags describe configuration rather than successful export. Policy shows its boot state and reasons, with the existing Configuration and Server audit destinations retaining configuration and decision inspection. This does not create a standalone Policy file.
+
+Cleanup displays all declared sources with their separate availability, incompleteness and reasons, plus each returned exact target, recorded state, source time, observation time, recorded or unknown evidence and next source-record inspection correlation. Count or byte limits, source changes and unavailable owners never become a complete-cleanup claim. Closed work, cleaned transport state and Epoch differences retain their source meanings; Web neither infers physical cleanup nor offers a new retry or destructive action. Existing Worker environment inspection and deletion remain in Administration under their own guards. Navigation links reach the existing Vault, Gateway, Audit, App update, access recovery, deployment data-root backup and Portability surfaces; no link promises whole-server recovery or changes those owners' authority.
+
+### Shared MCP Configuration Projection
+
+The deployment-admin Shared MCP settings screen projects the existing Server catalog owner, with explicit create-disabled configuration, immutable version staging and selection, exact binding revisions and removal. Configuration declarations contain no inline credential material. Credential administration remains with Vault; configuration binds only exact grant references. Saved configuration, enabled supply, consuming Workspace selection and an upstream tool effect remain distinct observations. Web does not connect upstream during configuration editing, infer a schema pin or replay an uncertain change. Current administrator denial hides previously loaded detail; conflict preserves the draft and requires explicit refresh. A failed refresh cannot establish current state.
+
+The selected-Workspace Catalog separately lists redacted shared MCP supply, current tool rules, local disablement and same-id collisions through the existing shared-supply operations. Its explicit disable or restore changes only that Workspace's catalog at the observed revision. A retained local entry or removal remains a collision, so restore is not offered as a collision repair. No endpoint, secret material or Server edit control enters this ordinary projection. Disconnection, pending writes, stale reads and denied authority disable effects; unknown outcomes require inspection and never automatic mutation retry.
 
 ### Unified Gateway Settings Projection
 

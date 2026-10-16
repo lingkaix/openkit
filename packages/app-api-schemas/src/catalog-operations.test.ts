@@ -45,7 +45,7 @@ describe('Agent, Worker and resource catalog definitions', () => {
         displayName: 'Proof MCP',
         expectedRevision: 1,
         allowedTools: ['proof'],
-        declaration: { kind: 'http', url: 'https://example.com/mcp' },
+        declaration: { kind: 'http', endpoint: 'https://example.com/mcp' },
       },
       'catalog.mcp-select': { mcpId: 'proof', digest, expectedRevision: 1 },
       'catalog.mcp-binding': {

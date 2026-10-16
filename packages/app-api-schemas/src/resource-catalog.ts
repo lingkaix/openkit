@@ -1,4 +1,7 @@
-import { WorkspaceMcpCredentialBindingSchema } from '@openkit/config-schema/mcp-credentials';
+import {
+  McpHttpEndpointSchema,
+  WorkspaceMcpCredentialBindingSchema,
+} from '@openkit/config-schema/mcp-credentials';
 import { RequestIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
@@ -204,7 +207,21 @@ export const CatalogMutationResponseSchema = z
 export const CreateMcpConfigRequestSchema = z
   .object({
     allowedTools: z.array(z.string().min(1)).min(1),
-    declaration: z.unknown(),
+    declaration: z.unknown().superRefine((value, context) => {
+      if (
+        value &&
+        typeof value === 'object' &&
+        'kind' in value &&
+        value.kind === 'http' &&
+        (!('endpoint' in value) || !McpHttpEndpointSchema.safeParse(value.endpoint).success)
+      ) {
+        context.addIssue({
+          code: 'custom',
+          message: 'MCP HTTP endpoints must be credential-free HTTP URLs.',
+          path: ['endpoint'],
+        });
+      }
+    }),
     displayName: z.string().min(1),
     expectedRevision: z.number().int().nonnegative(),
     id: z.string().regex(CATALOG_ID).optional(),

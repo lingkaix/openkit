@@ -56,6 +56,7 @@ import {
 } from './auth/operation-authorizer.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
+import { composeWorkspaceMcpCatalog } from './catalog/resource-catalog.js';
 import { createAgentNativeEnvironmentService } from './config/agent-native-environment.js';
 import type { CoreMode } from './config/mode.js';
 import { loadOpenKitConfig, type OpenKitConfig } from './config/openkit-config.js';
@@ -1709,6 +1710,19 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         return workspaceDb;
       },
     });
+  /** Uses current canonical shared supply without activating saved but unadmitted local configuration. */
+  const capturedMcpCatalog = (workspaceId: string, snapshot = runtimeConfig()) => {
+    const local = snapshot.workspaceMcpServerCatalogs.find(
+      (entry) => entry.workspaceId === workspaceId
+    )?.catalog;
+    if (!options.coreDb) return local ?? null;
+    const composed = composeWorkspaceMcpCatalog({
+      dataRoot: options.coreDb.dataRoot,
+      workspaceId,
+      workspaceCatalog: local ?? { schemaVersion: 1, servers: [] },
+    });
+    return local || composed.servers.length ? composed : null;
+  };
   const pendingRequestServices: NonNullable<
     OperationInvocationDependencies['pendingRequestServices']
   > = {
@@ -1722,15 +1736,13 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     agentAuthority: (record) =>
       runtimeConfig().agentManifests.some((manifest) => manifest.id === record.agentId),
     coreDb: options.coreDb,
-    prepareCapturedCall: (record, workspaceDb) =>
+    prepareCapturedCall: (record, workspaceDb, actor) =>
       prepareCapturedPendingCall({
+        actor,
         record,
         workspaceDb,
         coreDb: options.coreDb,
-        catalog:
-          runtimeConfig().workspaceMcpServerCatalogs.find(
-            (entry) => entry.workspaceId === record.workspaceId
-          )?.catalog ?? null,
+        catalog: capturedMcpCatalog(record.workspaceId),
         vaultBackend: vaultUnlockState ? () => vaultUnlockState.backend() : undefined,
         workerMcpGateway,
       }),
@@ -1757,10 +1769,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         selectedMcpServerIds: setup?.manifest.mcp?.map((server) => server.id) ?? [],
         manifest:
           snapshot.agentManifests.find((manifest) => manifest.id === record.agentId) ?? null,
-        catalog:
-          snapshot.workspaceMcpServerCatalogs.find(
-            (entry) => entry.workspaceId === record.workspaceId
-          )?.catalog ?? null,
+        catalog: capturedMcpCatalog(record.workspaceId, snapshot),
         coreDb: options.coreDb,
         record,
         sqlite,
@@ -1770,13 +1779,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     executeCapturedCall: (record, _actor, workspaceDb, prepared, executionCall) => {
       const snapshot = runtimeConfig();
       return executeCapturedPendingCall({
-        catalog:
-          snapshot.workspaceMcpServerCatalogs.find(
-            (entry) => entry.workspaceId === record.workspaceId
-          )?.catalog ?? null,
+        catalog: capturedMcpCatalog(record.workspaceId, snapshot),
         coreDb: options.coreDb,
         record,
         workerMcpGateway,
+        vaultBackend: vaultUnlockState ? () => vaultUnlockState.backend() : undefined,
         workspaceDb,
         prepared,
         executionCall,

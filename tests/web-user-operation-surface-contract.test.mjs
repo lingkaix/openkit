@@ -8,10 +8,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 240;
-const EXPECTED_SERVER_SIZE = 58;
+const EXPECTED_CATALOG_SIZE = 257;
+const EXPECTED_SERVER_SIZE = 73;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 180;
+const EXPECTED_INCLUDED_SIZE = 182;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -95,6 +95,8 @@ const WEB_OPERATION_GROUPS = {
     'catalog.mcp-create': { disposition: 'live', surface: 'Catalog' },
     'catalog.skill-candidate-decide': { disposition: 'live', surface: 'Catalog' },
     'catalog.read': { disposition: 'live', surface: 'Catalog' },
+    'catalog.shared-mcp-list': { disposition: 'live', surface: 'Catalog' },
+    'catalog.shared-mcp-set-disabled': { disposition: 'live', surface: 'Catalog' },
     'catalog.plugin-import': { disposition: 'live', surface: 'Catalog' },
     'catalog.skill-import': { disposition: 'live', surface: 'Catalog' },
     'catalog.mcp-list': { disposition: 'live', surface: 'Catalog' },

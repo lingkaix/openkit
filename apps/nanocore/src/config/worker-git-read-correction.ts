@@ -89,12 +89,18 @@ export function prepareWorkerGitReadCorrection(input: {
     session.agentId !== request.targetId
   )
     refuse('configuration_failure_unproved');
-  const retained = findNamedAgentEnvironmentPackageSnapshot(
-    input.repositoryWorkspaceDb(workspaceId),
-    workspaceId,
-    session.id,
-    session.environmentPackageSnapshotId
-  );
+  const snapshotDb = input.repositoryWorkspaceDb(workspaceId);
+  let retained: ReturnType<typeof findNamedAgentEnvironmentPackageSnapshot>;
+  try {
+    retained = findNamedAgentEnvironmentPackageSnapshot(
+      snapshotDb,
+      workspaceId,
+      session.id,
+      session.environmentPackageSnapshotId
+    );
+  } finally {
+    snapshotDb.sqlite.close();
+  }
   if (!retained) refuse('configuration_failure_unproved');
   if (
     retained.turnId !== turnId ||

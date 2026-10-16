@@ -2,7 +2,7 @@
 type: change-plan
 status: in-progress
 date: "2026-10-16"
-branch: lane/ga-equal
+branch: lane/ga-equal-next
 ---
 # Equal Active-Member Access Cutover
 
@@ -10,7 +10,17 @@ branch: lane/ga-equal
 
 Source: P22 inventory #159/R049 and D53, coordinator dispatch on 2026-10-16. Implement the accepted equal active-member eligibility in [Core Permissions](../../core/permissions.md) and [Multi-User Workspace System](../../specs/20260715-multi_user_workspace_system.md#active-member-authorization-target). Remove obsolete editor/viewer fields and access-changing surfaces consistently. Preserve Policy, credential intersection, exact human gates, private audiences, owner-transfer integrity and deletion recovery. The release-coupled deletion attribution and narrow private recovery export predicates are frozen in the existing owner before production edits. No new membership tier, recovery owner, bypass, workflow or external effect is authorized.
 
+## Intent Revision 2
+
+Source: L-GA primary Builder dispatch on 2026-10-17 after the smaller Server shared-MCP cut. Prepare the existing Equal feature for a later increment, without landing it. Preserve the previous Equal branch, create `lane/ga-equal-next` from `bb485e1fc573598875a1f19b194b78c26844e6ee`, and normally merge the committed Server parent `91c5aa3eef18f8432388013ede4a8a299a02374e`. Inspect actual production, contract, regression and fixture paths before selecting a smaller coherent cut. Do not implement a speculative split, import the full Vault request workflow or unfinished preview, or treat this preparation as feature acceptance. P14 retains landing priority. The engineer's current pre-stable simplicity ruling applies before any later landing.
+
 ## Working Checkpoint
+
+This preparation joins only the previous Equal feature and the committed Server parent. The historical Equal delta from `e4f423d58bfff6b9e82f1b2c104d86c1ec6462bd` to `bb485e1fc573598875a1f19b194b78c26844e6ee` contains 119 paths: 24 production or contract paths, 76 tests or fixtures, 17 documentation paths and 2 generated artifacts. The ordinary merge requires additive guide joins, an operation-inventory count join and regeneration of the existing OpenAPI and CLI artifacts. Incoming Server/main changes are parent history, not new Equal implementation. No broad suite, whole-feature gate or landing is part of this preparation. The existing prerequisite package builds, OpenAPI generation/validation and CLI bundle completed successfully through the FIFO slot. The resulting public inventory is 257 total operations: 73 Server, 2 Gateway and 182 ordinary. Exact output is backlog `evidence/L-GA/equal-next-generation.log`; it is artifact-generation evidence, not feature behavior proof.
+
+The external backlog report `evidence/L-GA/equal-next-scope.md` records exact paths and the source-derived decomposition. The Equal cutover crosses membership storage, central Policy and authorization, deletion initiation, strict public schemas, CLI and Web controls. Removing the tier columns and changing the shared relationship DTO require their existing test and fixture consumers to change with them. The narrow private deletion-recovery export is a separate candidate prerequisite: it can use the existing exact deleting-request authority without granting member eligibility. No extraction is implemented here. Current code also contains the older omitted-initiator read rule and retained-tier qualification; they need alignment with the newer pre-v0.1 ruling before landing. The Web opaque selected-Workspace/member correction and later actual Server, preview and P14 parent joins remain explicit later work. Prior checks below are historical evidence, not proof of this merged head.
+
+## Prior Builder Evidence
 
 The branch starts at `e4f423d58bfff6b9e82f1b2c104d86c1ec6462bd`; the base implementation is `d762113323e7e05020c13b785ebe47c3468f1a35`, and the post-review authority correction is pushed at `0dcc20b64f569b46061573b5bf6601e2ded66019`. Full filesystem access provides no operating-system enforcement of the exclusive worktree scope. The migration and equal-member Policy, lifecycle, public schema, API, CLI and Web cutover are implemented. Ownership remains a continuity identity. New deletion requests bind their exact initiating human separately from the recovery owner. The internal private export rechecks the canonical deleting request, target and registry revision. D06, Server MCP, Vault request/review, Goal and general Web feature production code remain outside this change.
 

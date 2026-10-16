@@ -1112,13 +1112,13 @@ console.log(JSON.stringify({ push: workflow.on.push, aggregate, shard, plan: sha
         result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=REPO_ROOT, check=True, capture_output=True, text=True)
         workflow = json.loads(result.stdout)
         condition = "github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('[\"l0-l2\",\"release-gate\",\"full\"]'), inputs.gate))"
-        self.assertEqual(workflow["push"]["tags"], ["v*.*.*"])
+        self.assertEqual(workflow["push"]["tags"], ["v*.*.*-*"])
         self.assertEqual(workflow["shard"]["if"], condition)
         self.assertEqual(workflow["aggregate"]["if"], f"always() && ({condition})")
-        self.assertEqual(workflow["aggregate"]["needs"], ["l0-l2-plan", "l0-l2-shards"])
+        self.assertEqual(workflow["aggregate"]["needs"], ["l0-l2-plan", "l0-l2-shards", "l0-l2-coverage"])
         self.assertFalse(any("app-update-helper.test.py" in step.get("run", "") for step in workflow["prSteps"]))
         self.assertEqual(len([shard for shard in workflow["plan"] if shard["kind"] == "root" and shard["id"] == "root"]), 1)
-        helper_command = "command(['python3', '-I', '-B', 'scripts/docker/app-update-helper.test.py'], root);"
+        helper_command = "execute(['python3', '-I', '-B', 'scripts/docker/app-update-helper.test.py'], root);"
         self.assertEqual(workflow["runner"].count(helper_command), 1)
         self.assertIn("rootSuite({ root });\n    " + helper_command, workflow["runner"])
         matching = [step for step in workflow["shard"]["steps"] if 'node scripts/ci-l0-l2.mjs --run "${SHARD_ID}"' in step.get("run", "")]

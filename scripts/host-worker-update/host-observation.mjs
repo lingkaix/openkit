@@ -30,11 +30,8 @@ const processStamp = z.object({
       (value) => /^[1-9][0-9]{0,19}$/.test(value) && BigInt(value) <= 18_446_744_073_709_551_615n
     ),
 });
-// P12 owns the public projection. Remove this local draft extension when its SHA lands.
-// Missing physicalEpoch must fail while producer implementations are pending; no old-response fallback exists.
-const StoredRuntimeTargetSchema = NanoHostRuntimeTargetStatusResponseSchema.strip().extend({
-  physicalEpoch: digest.nullable(),
-});
+// The public owner now carries the nullable stored witness. No local wire extension or old-response fallback is needed.
+const StoredRuntimeTargetSchema = NanoHostRuntimeTargetStatusResponseSchema.strip();
 // P02's accepted Live Operator Inspection owner (08b252dc) defines this wire shape.
 // The effective-unit digest is opaque here; P02 owns its 40-property normalization.
 const inspectionSchema = z.object({

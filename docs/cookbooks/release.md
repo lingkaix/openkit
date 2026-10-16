@@ -112,7 +112,7 @@ pnpm release:preflight -- --tag "${OPENKIT_RELEASE_TAG}"
 
 ### Candidate CI
 
-Use the main-push release gate, or dispatch `gate=release-gate` or `gate=full`, on the exact commit you will tag. Retain its successful completed run and job evidence. A run on another commit does not establish this commit. Each complete L0-L2 shard and the NanoCore e2e tag job reuses only its own successful latest-attempt job in a completed same-workflow candidate run on the exact tagged commit, records the supporting run, and otherwise runs its tests as before.
+Use the complete main-push gate, or dispatch `gate=release-gate` or `gate=full`, on the exact commit you will tag. Each selection includes L4 Web e2e; express landing does not replace a release candidate's exact-head full CI. Retain its successful completed run and job evidence. A run on another commit does not establish this commit. Each complete L0-L2 shard and the NanoCore e2e tag job reuses only its own successful latest-attempt job in a completed same-workflow candidate run on the exact tagged commit, records the supporting run, and otherwise runs its tests as before.
 
 L0-L2 now runs complete package coverage suites in parallel with separate static/build, native and root shards. Its aggregate retains the existing candidate job name and refuses any incomplete shard set. Each coverage shard compares collected file identities with its actual execution report and requires every selected file exactly once. The unchanged coverage thresholds and skip guard still decide success. Build caches are partitioned by runner architecture, shard, toolchain and lock inputs; tests still execute on each new P. Use `node scripts/ci-l0-l2.mjs --matrix` to inspect ownership. Use `node scripts/ci-l0-l2.mjs --run <id>` for one focused shard.
 
@@ -207,7 +207,7 @@ git tag "${OPENKIT_RELEASE_TAG}"
 git push origin "${OPENKIT_RELEASE_TAG}"
 ```
 
-The tag push is the only publication trigger.
+The tag push is the only publication trigger. Prerelease tags run `ci.yml`; synthetic stable rehearsal tags run the separately bounded `release-promotion.yml` path. Production stable publication is refused while R001 remains open.
 
 The workflow then:
 
@@ -221,7 +221,7 @@ The workflow then:
 - smokes each exact candidate digest on every declared platform,
 - promotes the passed digest to immutable version and source-revision tags,
 - preserves `latest` for prereleases,
-- creates the GitHub prerelease with the three portable archives and their shared checksum attachment,
+- creates the GitHub prerelease with the three portable archives, machine-readable manifest and shared checksum attachment,
 - downloads and independently verifies the final assets and image digests,
 - logs out of GHCR and verifies the exact `worker-common` digest anonymously.
 
@@ -253,7 +253,16 @@ gh release view "${OPENKIT_RELEASE_TAG}" --json tagName,isDraft,isPrerelease,ass
 gh run view <run-id>
 ```
 
-Close the release change record only when the workflow is green, the GitHub Release is published with exactly the three archives and `SHA256SUMS` until manifest delivery is admitted, both downloaded NanoHost archives pass the shared contained staging verifier, and `worker-common` is anonymously inspectable by digest.
+Close the release change record only when the workflow is green, the GitHub Release is published with exactly the three archives, `openkit-release-<tag>.json` and `SHA256SUMS`, both downloaded NanoHost archives pass the shared contained staging verifier, and `worker-common` is anonymously inspectable by digest.
+
+
+### Synthetic Stable Promotion Rehearsal
+
+Use only the coordinator's [bounded exception](../decisions/20261016-bounded_stable_promotion_rehearsal.md). Select one unused synthetic stable version `v0.0.N` and a prerelease in that version, then prepare and publish the prerelease in `notrucked/openkit` through the actual candidate, manifest and download-verification path. A synthetic reviewed assessment belongs only to that fixture. Retain the production repository's releases, tags, image identities and Latest observations before and after the rehearsal and prove equality.
+
+After the source prerelease and its exact-P tag run pass, push the one authorized unused synthetic stable tag on that same commit. Watch `release-promotion.yml` through verified publication. The workflow checks the source run's current attempt and required native/publication jobs, the source manifest and reviewed notes, all platform indexes and immutable tags, and all five attachments before changing scratch pointers. It copies the same indexes and attachments without rebuilding or repacking. The stable title names the stable tag; attachment names and the manifest retain the source prerelease identity.
+
+Rerun the entire stable workflow once to prove complete immutable reuse. It must verify without image promotion or Release edits, and Latest must still identify that stable release. Run a separate no-write negative retry check against altered source or superseded-Latest observations and retain its refusal; do not move a live pointer to produce the negative case. A partial or unknown outcome stops for inspection. A rehearsal success authorizes no production stable release and closes no R001, story or Worker gate.
 
 ## Failure And Retry
 
@@ -289,7 +298,7 @@ node scripts/release-record.mjs --tag v0.1.0-rc.6 --draft-input /example/private
 
 The draft input has nonempty `changes` and `knownIssues` arrays. Commit only the reviewed two-section notes input. The primary owns release notes and change records.
 
-The workflow attachment remains blocked by the frozen publication jobs' exact four-asset list; do not add an asset through an alternate uploader. A publication-job amendment and scratch rehearsal are planned together with #225. The manifest is required only after both `github-release` and `verify-release` carry it; prereleases close with the existing four assets until that delivery is admitted. Generate the manifest from existing image JSON, portable checksums, and the explicit reviewed compatibility assessment:
+The existing uploader and verifier require the fifth manifest attachment. Commit `release-notes/<tag>.manifest.json` with the six reviewed compatibility/recovery facts before freezing P; see [Release Management](../specs/20260829-release_management.md#machine-readable-release-manifest). The tag preflight refuses missing or unassessed facts. Neither CI success nor an authorized reset is a compatibility assertion. The producer joins P and the observed App index digest instead of accepting authored substitutes. The manifest lists the three archive checksums; `SHA256SUMS` additionally checksums the manifest itself without a circular entry. Existing four-attachment releases remain immutable. Generate the manifest from existing image JSON, portable checksums, and the explicit reviewed compatibility assessment:
 
 ```bash
 node scripts/release-record.mjs --tag v0.1.0-rc.6 --sha FULL_COMMIT --repository example/project --records /example/private/image-records --checksum-file /example/private/SHA256SUMS --assertions /example/private/assertions.json --manifest-output /example/private/openkit-release-v0.1.0-rc.6.json
@@ -303,7 +312,9 @@ For a private closeout projection, supply `--header /example/private/header.json
 
 Apply [Bounded Test Deployment Update](../specs/20260829-release_management.md#bounded-test-deployment-update). `a1` is staging; `a2`, the earlier persistent test deployment, is now stable production and excluded from automation. Supply the target explicitly, retain separate component results, and prove selected existing Workspace content through public reads. App receipt authentication predicates alone do not establish that content continuity. The App procedure uses prepare, idle preflight, start once, and status of the known request ID. Unknown handoff results require inspection of that ID, never a new start.
 
-`release-update-app.mjs` currently admits its App procedure through offline injected operation adapters only. Its CLI refuses live execution pending an exact live platform-identity adapter. The App owner now admits the bounded administrator-run path, preserving WP2's helper replacement and first-upgrade refusal. Private inputs pin the verified target helper checksum and refer to the independently retained `a1` deployment binding; the adapter must read the current retained grant before start, and missing or changed helper/summary/authority evidence refuses before interruption. The NanoHost installer refuses differing installed bytes; it is not an unattended replacement operation. Do not bypass its fencing, inhibition, compatibility, or retention contract. Worker activation retains its exact administrator-decision boundary. The coordinator must supply the admitted replacement and activation paths before calling the complete automatic sequence ready.
+Use the external [component update command](../../scripts/host-worker-update/README.md#external-operator-command) for the bounded App→NanoHost→Worker sequence. It requires protected invocation inputs, an independent retained deployment binding and current grant, verified old and target NanoHost archives, and the qualified canonical systemd posture. Its concrete adapters invoke the existing component owners. The standalone App-only CLI in `release-update-app.mjs` remains disabled.
+
+The App stage preserves the existing helper replacement and first-upgrade refusal. Private inputs pin the verified target helper checksum; current helper, summary, identity and authority evidence must agree before interruption. The NanoHost stage uses the unchanged installer after complete fencing, inhibition and old-payload retention. Worker activation retains its exact administrator-decision boundary. Each component records its own outcome; an unknown result stops dependent work without replay or automatic recovery. Configuration and activation success do not prove a Worker Turn, retained-work continuation or release qualification.
 
 Before the first workflow substitution, run `node scripts/release-tests.mjs --inventory-only`. Repeat this proof when suite-selection or command inputs change. Routine CI executes only the admitted coverage recipe. The initial WP5 local admission check collected equal inventories for all ten Vitest suites, totaling 9,340 cases, in about eight minutes; the post-WP2 rebase repeated the comparison with 9,351 equal cases; that local timing is not a CI timing guarantee.
 

@@ -1,3 +1,4 @@
+import { McpHttpEndpointSchema } from '@openkit/config-schema/mcp-credentials';
 import { RequestIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import type { OperationDefinition } from './operation-contract.js';
@@ -49,7 +50,7 @@ const declaration = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('http'),
-      endpoint: z.string().url(),
+      endpoint: McpHttpEndpointSchema,
       headers: z.record(z.string(), z.string()),
     })
     .strict(),
@@ -85,7 +86,7 @@ function serverOperation<const I extends z.ZodObject, const O extends z.ZodType>
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
-    credentials: ['local-user', 'deployment-administrator'],
+    credentials: ['local-user', 'user-session', 'deployment-administrator'],
     scope: { kind: 'server' },
     target: { kind: 'server' },
     policyOperation: 'api.call',

@@ -6,12 +6,13 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 
 import { checkDocIndex, generateDocIndex, writeDocIndex } from '../scripts/generate-doc-index.mjs';
 import { classifyDocuments, validateDocModel } from '../scripts/validate-doc-model.mjs';
@@ -20,6 +21,12 @@ const repoRoot = resolve(import.meta.dirname, '..');
 const changeExecutionPath = 'docs/change-execution.md';
 const legacyChangeTrackingPath = 'docs/change-tracking.md';
 
+const fixtureRoots = new Set();
+afterEach(() => {
+  for (const root of fixtureRoots) rmSync(root, { recursive: true, force: true });
+  fixtureRoots.clear();
+});
+
 /**
  * Creates one minimal valid documentation fixture tree.
  *
@@ -27,6 +34,7 @@ const legacyChangeTrackingPath = 'docs/change-tracking.md';
  * @returns {string} Fixture repository root.
  */
 function createFixture(root = mkdtempSync(join(tmpdir(), 'doc-model-'))) {
+  fixtureRoots.add(root);
   mkdirSync(join(root, 'docs/core'), { recursive: true });
   mkdirSync(join(root, 'docs/specs'), { recursive: true });
   mkdirSync(join(root, 'docs/changes'), { recursive: true });
@@ -289,6 +297,7 @@ describe('documentation model validator', () => {
 
   it('rejects filesystem documentation targets outside the repository', () => {
     const container = mkdtempSync(join(tmpdir(), 'doc-model-containment-'));
+    fixtureRoots.add(container);
     const root = createFixture(join(container, 'repository'));
     const sourcePath = 'docs/cookbooks/setup.md';
     const externalPath = join(container, 'outside.md');

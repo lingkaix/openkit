@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -7,7 +7,7 @@ import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import type Database from 'better-sqlite3';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../app.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
@@ -129,9 +129,18 @@ import {
   recordWorkspaceMaterializationRecords,
 } from './workspace-sync-records.js';
 
+const fixtureDatabases: ReturnType<typeof openCoreDb>[] = [];
+afterEach(() => {
+  for (const coreDb of fixtureDatabases.splice(0)) {
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
+    rmSync(coreDb.dataRoot, { recursive: true, force: true });
+  }
+});
+
 /** Creates an isolated migrated Core database for restart recovery tests. */
 function createMigratedCoreDb() {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-scheduler-restart-')));
+  fixtureDatabases.push(coreDb);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId: 'ws_demo' });

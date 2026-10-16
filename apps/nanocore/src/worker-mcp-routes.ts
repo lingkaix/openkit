@@ -1354,7 +1354,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     }
     if (observed.credentials || input.resolved.scope === 'server') {
       try {
-        assertCurrentMcpVaultBindings(input);
+        assertCurrentMcpVaultBindings(input, observed.injections);
       } catch {
         publishTerminalItem = false;
         try {
@@ -1633,6 +1633,7 @@ async function observeWorkerMcpTools(input: {
   readonly workspaceDb: WorkspaceDb;
 }): Promise<{
   credentials?: WorkerMcpGatewayCredentials;
+  injections: readonly PendingMcpVaultInjection[];
   snapshotId: string;
   snapshotTools: Array<{ inputSchema: Record<string, unknown>; name: string }>;
   visibleTools: Array<{ inputSchema: Record<string, unknown>; name: string }>;
@@ -1733,6 +1734,7 @@ async function observeWorkerMcpTools(input: {
   }
   return {
     ...(resolvedCredentials.credentials ? { credentials: resolvedCredentials.credentials } : {}),
+    injections: resolvedCredentials.injections,
     snapshotId,
     snapshotTools,
     visibleTools: snapshotTools.filter(
@@ -1847,6 +1849,7 @@ export async function resolveWorkerMcpCredentials(input: {
         injectedAt: now,
         planId,
         receiptId,
+        referenceVersion: reference!.currentVersion,
       });
     }
   } catch {
@@ -1955,10 +1958,14 @@ export function assertCurrentMcpVaultAuthority(
 }
 
 /** Rechecks every credential binding immediately before the tool effect boundary. */
-function assertCurrentMcpVaultBindings(input: WorkerMcpToolCallInput): void {
+function assertCurrentMcpVaultBindings(
+  input: WorkerMcpToolCallInput,
+  injections: readonly PendingMcpVaultInjection[]
+): void {
   assertCurrentSharedMcpBinding(input);
   for (const binding of input.resolved.credentialBindings) {
     const grant = getVaultGrant(input.input.coreDb!, binding.vaultGrantId);
+    const reference = grant ? getVaultReference(input.input.coreDb!, grant.vaultReferenceId) : null;
     assertCurrentMcpVaultAuthority(
       {
         environmentPackage: input.environmentPackage,
@@ -1966,8 +1973,21 @@ function assertCurrentMcpVaultBindings(input: WorkerMcpToolCallInput): void {
         resolved: input.resolved,
       },
       grant,
-      grant ? getVaultReference(input.input.coreDb!, grant.vaultReferenceId) : null
+      reference
     );
+    if (input.resolved.scope === 'server') {
+      const observed = injections.find((item) => item.grant.grantId === grant.grantId);
+      const backend = input.input.vaultUnlockState?.backend();
+      if (
+        !reference ||
+        !backend ||
+        !observed ||
+        observed.grant.vaultReferenceId !== reference.referenceId ||
+        observed.referenceVersion !== reference.currentVersion ||
+        !isCurrentServerMcpMaterial(backend, reference)
+      )
+        throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
+    }
   }
 }
 
@@ -2003,6 +2023,8 @@ export interface PendingMcpVaultInjection {
   readonly injectedAt: string;
   readonly planId: string;
   readonly receiptId: string;
+  /** Exact material version observed before asynchronous discovery; this grants no grace for stale use. */
+  readonly referenceVersion: number;
 }
 
 /** Builds a target-issued deterministic Vault record id for one binding and call. */
