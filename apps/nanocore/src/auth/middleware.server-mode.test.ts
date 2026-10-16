@@ -69,7 +69,7 @@ describe('server-mode auth middleware', () => {
     const app = createApp({
       auth: createAuthStub({
         session: { id: 'session_1' },
-        user: { id: 'user_1' },
+        user: { id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
       }),
       mode: 'server',
     });
@@ -92,11 +92,11 @@ describe('server-mode auth middleware', () => {
           ) VALUES (?, 'Disabled', 'disabled@example.com', false, NULL, ?, ?, 'human', NULL,
             'disabled', '2026-07-19T01:02:03.000Z')`
         )
-        .run('user_disabled', now, now);
+        .run('usr_00000000-0000-7e63-b85a-c188de8ee1c3', now, now);
       const app = createApp({
         auth: createAuthStub({
           session: { id: 'session_disabled' },
-          user: { id: 'user_disabled' },
+          user: { id: 'usr_00000000-0000-7e63-b85a-c188de8ee1c3' },
         }),
         coreDb,
         mode: 'server',
@@ -131,7 +131,10 @@ describe('server-mode auth middleware', () => {
 
   it('keeps LLM Gateway routes usable for authenticated server actors and local mode', async () => {
     const serverApp = createApp({
-      auth: createAuthStub({ session: { id: 'session_1' }, user: { id: 'user_1' } }),
+      auth: createAuthStub({
+        session: { id: 'session_1' },
+        user: { id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
+      }),
       mode: 'server',
     });
     const localApp = createApp({ mode: 'local' });
@@ -149,7 +152,7 @@ describe('server-mode auth middleware', () => {
 
     expect(metaRes.status).toBe(200);
     expect(await metaRes.json()).toEqual({
-      protocolVersion: '0.5.0',
+      protocolVersion: '0.6.0',
       capabilities: [],
       eventFamilies: [],
     });
@@ -158,8 +161,8 @@ describe('server-mode auth middleware', () => {
   });
 
   it('maps Better Auth sessions through the identity facade', () => {
-    expect(actorFromSession({ user: { id: 'user_1' } })).toEqual({
-      userId: 'user_1',
+    expect(actorFromSession({ user: { id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' } })).toEqual({
+      userId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
       kind: 'session',
     });
   });

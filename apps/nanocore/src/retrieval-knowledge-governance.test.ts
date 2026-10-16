@@ -6,20 +6,55 @@ import { join } from 'node:path';
 import type { ActorRef } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FsStore } from './lib/store.js';
+import { admitKnowledgeRetrieval } from './retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import {
   type KnowledgeRetrievalAccess,
   retrieveWorkspaceKnowledge,
 } from './storage/index-rebuild.js';
+import { testEntityId } from './test-support/entity-ids.js';
 
-const ACTOR = { kind: 'user', id: 'user_local' } as const satisfies ActorRef;
-const REQUEST_ACTOR = { kind: 'local', userId: 'user_local' } as const;
+const ACTOR = {
+  kind: 'user',
+  id: 'usr_00000000-0000-7000-8000-000000000001',
+} as const satisfies ActorRef;
+const REQUEST_ACTOR = {
+  kind: 'local',
+  userId: 'usr_00000000-0000-7000-8000-000000000001',
+} as const;
 const NOW = '2026-10-15T00:00:00.000Z';
 
 const testRoots: string[] = [];
 afterEach(async () => {
   await closeRetrievalServices();
   for (const root of testRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+describe('canonical local retrieval identity', () => {
+  it('requires the exact canonical local actor pair before generation access', () => {
+    const f = createFixture('local-identity');
+    expect(() =>
+      admitKnowledgeRetrieval({ workspaceId: f.workspaceId, access: f.access })
+    ).not.toThrow();
+    for (const actorId of [
+      'user_local',
+      'usr_00000000-0000-4000-8000-000000000001',
+      'usr_00000000-0000-7000-8000-000000000002',
+    ]) {
+      expect(() =>
+        admitKnowledgeRetrieval({
+          workspaceId: f.workspaceId,
+          access: { ...f.access, actor: { kind: 'user', id: actorId } },
+        })
+      ).toThrow('Knowledge retrieval access denied.');
+    }
+    expect(() =>
+      admitKnowledgeRetrieval({
+        workspaceId: f.workspaceId,
+        access: { ...f.access, requestActor: undefined },
+      })
+    ).toThrow('Knowledge retrieval access denied.');
+  });
 });
 
 describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
@@ -49,7 +84,7 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
       sensitivity: 'confidential',
     });
     fixture.store.recordKnowledgeConflict({
-      id: 'kf_governance_first_match',
+      id: 'kf_00000000-0000-7c2b-96dc-273a402e04ac',
       workspaceId: fixture.workspaceId,
       subjectReferences: [`knowledge:${conflicted.id}`, `knowledge:${sensitive.id}`],
       sourceReferences: [],
@@ -173,20 +208,20 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
       'Private destination',
       undefined,
       'conversation',
-      { visibility: 'private', privateOwnerUserId: 'user_local' }
+      { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
     );
     const sourceThread = fixture.store.createThread(
       fixture.workspaceId,
       'Private source',
       undefined,
       'conversation',
-      { visibility: 'private', privateOwnerUserId: 'user_local' }
+      { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
     );
     fixture.access.outputThreadId = destination.id;
     const material = 'source audience material';
     const source = fixture.store.createKnowledgeSource(
       {
-        id: 'ks_00000000-0000-4000-8000-000000000501',
+        id: 'ks_00000000-0000-78f8-b8d2-1dd7a79cb16e',
         workspaceId: fixture.workspaceId,
         kind: 'document',
         title: 'Private source',
@@ -216,7 +251,7 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
       expect.arrayContaining([sourcePage.id, control.id])
     );
 
-    Object.assign(sourceThread, { privateOwnerUserId: 'user_other' });
+    Object.assign(sourceThread, { privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' });
     const after = await retrieveWorkspaceKnowledge({
       ...retrievalInput(fixture, 'audience-marker'),
       limit: 20,
@@ -426,5 +461,5 @@ function sha256(value: string): `sha256:${string}` {
 }
 
 function traceId(index: number): string {
-  return `krt_00000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+  return testEntityId('krt', `retrieval-trace-${index}`);
 }

@@ -155,7 +155,7 @@ describe('persistLlmCapabilityCallSystemPromptDigest', () => {
     } as unknown as WorkspaceDb['sqlite']);
 
     persistLlmCapabilityCallSystemPromptDigest({
-      callId: 'cap_llm',
+      callId: 'cap_00000000-0000-7778-bed1-7052f64c5b45',
       systemPromptDigest: digest,
       workspaceDb,
     });
@@ -180,10 +180,12 @@ describe('persistLlmCapabilityCallSystemPromptDigest', () => {
 
     expect(() =>
       persistLlmCapabilityCallSystemPromptDigest({
-        callId: 'cap_mcp',
+        callId: 'cap_00000000-0000-7a46-8a8c-842fc3cca76c',
         systemPromptDigest: digest,
         workspaceDb,
       })
-    ).toThrow('LLM capability call system-prompt digest was not recorded: cap_mcp');
+    ).toThrow(
+      'LLM capability call system-prompt digest was not recorded: cap_00000000-0000-7a46-8a8c-842fc3cca76c'
+    );
   });
 });

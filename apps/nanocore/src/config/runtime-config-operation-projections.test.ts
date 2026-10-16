@@ -7,12 +7,12 @@ import {
 } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { computeBootReadinessSnapshot } from '../bootstrap/readiness.js';
 import { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 
 const roots: string[] = [];
@@ -150,7 +150,7 @@ it('gates every B4 mutation before exact effects and preserves owner failures an
   const profileBytes = readFileSync(profilePath);
   const inventory = backend.listReferences();
   const token = createOpenKitAccessTokenRecord(coreDb, {
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: 'server-admin',
     expiresAt: '2099-01-01T00:00:00.000Z',
     workspaceIds: [],

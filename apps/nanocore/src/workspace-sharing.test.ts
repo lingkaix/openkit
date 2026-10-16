@@ -88,7 +88,11 @@ function insertMember(
 }
 
 /** Creates one registered Workspace with its active owner membership. */
-function insertWorkspace(coreDb: CoreDb, workspaceId: string, ownerUserId = 'user_owner'): void {
+function insertWorkspace(
+  coreDb: CoreDb,
+  workspaceId: string,
+  ownerUserId = 'usr_00000000-0000-7011-88df-c2b1e8466b6f'
+): void {
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId,
@@ -111,74 +115,138 @@ afterEach(() => {
 describe('Workspace sharing lifecycle', () => {
   it('projects only active canonical-user access, member facts, and safe recovery facts', () => {
     const coreDb = openTestDb();
-    insertUser(coreDb, 'user_owner', 'owner@example.com');
-    insertUser(coreDb, 'user_editor', 'editor@example.com');
-    insertUser(coreDb, 'user_viewer', 'viewer@example.com');
-    insertUser(coreDb, 'user_removed', 'removed@example.com');
-    insertWorkspace(coreDb, 'ws_shared');
-    insertMember(coreDb, 'ws_shared', 'user_editor', 'editor');
-    insertMember(coreDb, 'ws_shared', 'user_viewer', 'viewer');
-    insertMember(coreDb, 'ws_shared', 'user_removed', 'editor', 'removed');
+    insertUser(coreDb, 'usr_00000000-0000-7011-88df-c2b1e8466b6f', 'owner@example.com');
+    insertUser(coreDb, 'usr_00000000-0000-7609-aed5-db4b5c95e76c', 'editor@example.com');
+    insertUser(coreDb, 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8', 'viewer@example.com');
+    insertUser(coreDb, 'usr_00000000-0000-7171-af76-f9d024000442', 'removed@example.com');
+    insertWorkspace(coreDb, 'ws_00000000-0000-7978-8378-5b5c5e93f76d');
+    insertMember(
+      coreDb,
+      'ws_00000000-0000-7978-8378-5b5c5e93f76d',
+      'usr_00000000-0000-7609-aed5-db4b5c95e76c',
+      'editor'
+    );
+    insertMember(
+      coreDb,
+      'ws_00000000-0000-7978-8378-5b5c5e93f76d',
+      'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
+      'viewer'
+    );
+    insertMember(
+      coreDb,
+      'ws_00000000-0000-7978-8378-5b5c5e93f76d',
+      'usr_00000000-0000-7171-af76-f9d024000442',
+      'editor',
+      'removed'
+    );
 
-    expect(listAuthorizedWorkspaceRegistryFacts(coreDb, 'user_editor')).toEqual([
+    expect(
+      listAuthorizedWorkspaceRegistryFacts(coreDb, 'usr_00000000-0000-7609-aed5-db4b5c95e76c')
+    ).toEqual([
       {
         effectiveRole: 'editor',
         membershipRevision: 1,
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         registryRevision: 1,
-        workspaceId: 'ws_shared',
+        workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
       },
     ]);
-    expect(listWorkspaceMembers(coreDb, 'ws_shared')).toMatchObject([
-      { effectiveRole: 'editor', status: 'active', userId: 'user_editor' },
-      { effectiveRole: 'owner', status: 'active', userId: 'user_owner' },
-      { effectiveRole: null, status: 'removed', userId: 'user_removed' },
-      { effectiveRole: 'viewer', status: 'active', userId: 'user_viewer' },
+    expect(listWorkspaceMembers(coreDb, 'ws_00000000-0000-7978-8378-5b5c5e93f76d')).toMatchObject([
+      {
+        effectiveRole: 'owner',
+        status: 'active',
+        userId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+      },
+      {
+        effectiveRole: null,
+        status: 'removed',
+        userId: 'usr_00000000-0000-7171-af76-f9d024000442',
+      },
+      {
+        effectiveRole: 'editor',
+        status: 'active',
+        userId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
+      },
+      {
+        effectiveRole: 'viewer',
+        status: 'active',
+        userId: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
+      },
     ]);
-    expect(getWorkspaceAccessRecoveryState(coreDb, 'ws_shared', 'user_viewer')).toEqual({
+    expect(
+      getWorkspaceAccessRecoveryState(
+        coreDb,
+        'ws_00000000-0000-7978-8378-5b5c5e93f76d',
+        'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8'
+      )
+    ).toEqual({
       administratorRole: 'viewer',
-      ownerUserId: 'user_owner',
+      ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       registryRevision: 1,
-      workspaceId: 'ws_shared',
+      workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
     });
 
     coreDb.sqlite
       .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = ?")
-      .run('2026-07-19T01:00:00.000Z', 'user_editor');
+      .run('2026-07-19T01:00:00.000Z', 'usr_00000000-0000-7609-aed5-db4b5c95e76c');
 
-    expect(listAuthorizedWorkspaceRegistryFacts(coreDb, 'user_editor')).toEqual([]);
-    expect(getWorkspaceAccessRecoveryState(coreDb, 'ws_shared', 'user_editor')).toBeNull();
-    expect(getWorkspaceAccessRecoveryState(coreDb, 'ws_missing', 'user_viewer')).toBeNull();
+    expect(
+      listAuthorizedWorkspaceRegistryFacts(coreDb, 'usr_00000000-0000-7609-aed5-db4b5c95e76c')
+    ).toEqual([]);
+    expect(
+      getWorkspaceAccessRecoveryState(
+        coreDb,
+        'ws_00000000-0000-7978-8378-5b5c5e93f76d',
+        'usr_00000000-0000-7609-aed5-db4b5c95e76c'
+      )
+    ).toBeNull();
+    expect(
+      getWorkspaceAccessRecoveryState(
+        coreDb,
+        'ws_00000000-0000-7490-845b-dcfa3ee49925',
+        'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8'
+      )
+    ).toBeNull();
   });
 
   it('creates fixed-expiry invitations and atomically revokes an earlier pending invitation', () => {
     const coreDb = openTestDb();
-    insertUser(coreDb, 'user_owner', 'owner@example.com');
-    insertUser(coreDb, 'user_invitee', 'Invitee@Example.com');
-    insertUser(coreDb, 'user_member', 'member@example.com');
-    insertUser(coreDb, 'user_disabled', 'disabled@example.com', 'disabled');
-    insertWorkspace(coreDb, 'ws_shared');
-    insertMember(coreDb, 'ws_shared', 'user_member', 'viewer');
+    insertUser(coreDb, 'usr_00000000-0000-7011-88df-c2b1e8466b6f', 'owner@example.com');
+    insertUser(coreDb, 'usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'Invitee@Example.com');
+    insertUser(coreDb, 'usr_00000000-0000-7d56-82f8-ec994b63859b', 'member@example.com');
+    insertUser(
+      coreDb,
+      'usr_00000000-0000-7e63-b85a-c188de8ee1c3',
+      'disabled@example.com',
+      'disabled'
+    );
+    insertWorkspace(coreDb, 'ws_00000000-0000-7978-8378-5b5c5e93f76d');
+    insertMember(
+      coreDb,
+      'ws_00000000-0000-7978-8378-5b5c5e93f76d',
+      'usr_00000000-0000-7d56-82f8-ec994b63859b',
+      'viewer'
+    );
     const now = new Date('2026-07-19T12:00:00.000Z');
 
     const first = mutate(coreDb, () =>
       createWorkspaceInvitation({
         coreDb,
-        inviterUserId: 'user_owner',
+        inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         inviteeEmail: ' invitee@example.com ',
         now,
         proposedAccessLevel: 'viewer',
-        workspaceId: 'ws_shared',
+        workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
       })
     );
     const second = mutate(coreDb, () =>
       createWorkspaceInvitation({
         coreDb,
-        inviterUserId: 'user_owner',
+        inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         inviteeEmail: 'INVITEE@example.com',
         now: new Date('2026-07-19T13:00:00.000Z'),
         proposedAccessLevel: 'editor',
-        workspaceId: 'ws_shared',
+        workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
       })
     );
 
@@ -187,24 +255,28 @@ describe('Workspace sharing lifecycle', () => {
       invitation: {
         effectiveStatus: 'pending',
         expiresAt: '2026-07-26T12:00:00.000Z',
-        inviteeUserId: 'user_invitee',
+        inviteeUserId: 'usr_00000000-0000-7a9e-8345-2bce44a3dce0',
       },
     });
     expect(second).toMatchObject({ kind: 'created', invitation: { effectiveStatus: 'pending' } });
-    expect(listWorkspaceInvitations(coreDb, 'ws_shared', now)).toMatchObject([
+    expect(
+      listWorkspaceInvitations(coreDb, 'ws_00000000-0000-7978-8378-5b5c5e93f76d', now)
+    ).toMatchObject([
       { effectiveStatus: 'pending', proposedAccessLevel: 'editor' },
       { effectiveStatus: 'revoked', proposedAccessLevel: 'viewer', revision: 2 },
     ]);
-    expect(listMyWorkspaceInvitations(coreDb, 'user_invitee', now)).toHaveLength(2);
+    expect(
+      listMyWorkspaceInvitations(coreDb, 'usr_00000000-0000-7a9e-8345-2bce44a3dce0', now)
+    ).toHaveLength(2);
     expect(
       mutate(coreDb, () =>
         createWorkspaceInvitation({
           coreDb,
-          inviterUserId: 'user_owner',
+          inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
           inviteeEmail: 'member@example.com',
           now,
           proposedAccessLevel: 'viewer',
-          workspaceId: 'ws_shared',
+          workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
         })
       )
     ).toEqual({ kind: 'invitee_unavailable' });
@@ -212,11 +284,11 @@ describe('Workspace sharing lifecycle', () => {
       mutate(coreDb, () =>
         createWorkspaceInvitation({
           coreDb,
-          inviterUserId: 'user_owner',
+          inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
           inviteeEmail: 'disabled@example.com',
           now,
           proposedAccessLevel: 'viewer',
-          workspaceId: 'ws_shared',
+          workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
         })
       )
     ).toEqual({ kind: 'invitee_unavailable' });
@@ -224,41 +296,47 @@ describe('Workspace sharing lifecycle', () => {
 
   it('accepts once, reactivates a tombstone, and classifies terminal, expired, and stale invitations', () => {
     const coreDb = openTestDb();
-    insertUser(coreDb, 'user_owner', 'owner@example.com');
-    insertUser(coreDb, 'user_invitee', 'invitee@example.com');
-    insertUser(coreDb, 'user_stale', 'stale@example.com');
-    insertUser(coreDb, 'user_expired', 'expired@example.com');
-    insertWorkspace(coreDb, 'ws_shared');
-    insertMember(coreDb, 'ws_shared', 'user_invitee', 'viewer', 'removed');
+    insertUser(coreDb, 'usr_00000000-0000-7011-88df-c2b1e8466b6f', 'owner@example.com');
+    insertUser(coreDb, 'usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'invitee@example.com');
+    insertUser(coreDb, 'usr_00000000-0000-7a46-93a0-6f3fc1a9be33', 'stale@example.com');
+    insertUser(coreDb, 'usr_00000000-0000-796f-8f66-052d57328c92', 'expired@example.com');
+    insertWorkspace(coreDb, 'ws_00000000-0000-7978-8378-5b5c5e93f76d');
+    insertMember(
+      coreDb,
+      'ws_00000000-0000-7978-8378-5b5c5e93f76d',
+      'usr_00000000-0000-7a9e-8345-2bce44a3dce0',
+      'viewer',
+      'removed'
+    );
     const now = new Date('2026-07-19T12:00:00.000Z');
     const acceptedInvitation = mutate(coreDb, () =>
       createWorkspaceInvitation({
         coreDb,
-        inviterUserId: 'user_owner',
+        inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         inviteeEmail: 'invitee@example.com',
         now,
         proposedAccessLevel: 'editor',
-        workspaceId: 'ws_shared',
+        workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
       })
     );
     const staleInvitation = mutate(coreDb, () =>
       createWorkspaceInvitation({
         coreDb,
-        inviterUserId: 'user_owner',
+        inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         inviteeEmail: 'stale@example.com',
         now,
         proposedAccessLevel: 'viewer',
-        workspaceId: 'ws_shared',
+        workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
       })
     );
     const expiredInvitation = mutate(coreDb, () =>
       createWorkspaceInvitation({
         coreDb,
-        inviterUserId: 'user_owner',
+        inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         inviteeEmail: 'expired@example.com',
         now,
         proposedAccessLevel: 'viewer',
-        workspaceId: 'ws_shared',
+        workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
       })
     );
     if (
@@ -277,7 +355,7 @@ describe('Workspace sharing lifecycle', () => {
         coreDb,
         expectedRevision: 1,
         invitationId: acceptedInvitation.invitation.invitationId,
-        inviteeUserId: 'user_invitee',
+        inviteeUserId: 'usr_00000000-0000-7a9e-8345-2bce44a3dce0',
         now,
       })
     );
@@ -293,7 +371,7 @@ describe('Workspace sharing lifecycle', () => {
           coreDb,
           expectedRevision: 1,
           invitationId: acceptedInvitation.invitation.invitationId,
-          inviteeUserId: 'user_invitee',
+          inviteeUserId: 'usr_00000000-0000-7a9e-8345-2bce44a3dce0',
           now,
         })
       )
@@ -307,7 +385,7 @@ describe('Workspace sharing lifecycle', () => {
           coreDb,
           expectedRevision: 1,
           invitationId: staleInvitation.invitation.invitationId,
-          inviteeUserId: 'user_stale',
+          inviteeUserId: 'usr_00000000-0000-7a46-93a0-6f3fc1a9be33',
           now,
         })
       )
@@ -318,7 +396,7 @@ describe('Workspace sharing lifecycle', () => {
           coreDb,
           expectedRevision: 1,
           invitationId: expiredInvitation.invitation.invitationId,
-          inviteeUserId: 'user_expired',
+          inviteeUserId: 'usr_00000000-0000-796f-8f66-052d57328c92',
           now: new Date('2026-07-27T12:00:00.000Z'),
         })
       )
@@ -328,19 +406,19 @@ describe('Workspace sharing lifecycle', () => {
   it.each([
     {
       boundary: 'wrong invitee',
-      callerUserId: 'user_other',
+      callerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
       disableInvitee: false,
       deactivateWorkspace: false,
     },
     {
       boundary: 'disabled invitee',
-      callerUserId: 'user_invitee',
+      callerUserId: 'usr_00000000-0000-7a9e-8345-2bce44a3dce0',
       disableInvitee: true,
       deactivateWorkspace: false,
     },
     {
       boundary: 'inactive Workspace',
-      callerUserId: 'user_invitee',
+      callerUserId: 'usr_00000000-0000-7a9e-8345-2bce44a3dce0',
       disableInvitee: false,
       deactivateWorkspace: true,
     },
@@ -350,19 +428,19 @@ describe('Workspace sharing lifecycle', () => {
     disableInvitee,
   }) => {
     const coreDb = openTestDb();
-    insertUser(coreDb, 'user_owner', 'owner@example.com');
-    insertUser(coreDb, 'user_invitee', 'invitee@example.com');
-    insertUser(coreDb, 'user_other', 'other@example.com');
-    insertWorkspace(coreDb, 'ws_shared');
+    insertUser(coreDb, 'usr_00000000-0000-7011-88df-c2b1e8466b6f', 'owner@example.com');
+    insertUser(coreDb, 'usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'invitee@example.com');
+    insertUser(coreDb, 'usr_00000000-0000-73d4-904a-d4c4b905df7c', 'other@example.com');
+    insertWorkspace(coreDb, 'ws_00000000-0000-7978-8378-5b5c5e93f76d');
     const now = new Date('2026-07-19T12:00:00.000Z');
     const created = mutate(coreDb, () =>
       createWorkspaceInvitation({
         coreDb,
-        inviterUserId: 'user_owner',
+        inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         inviteeEmail: 'invitee@example.com',
         now,
         proposedAccessLevel: 'viewer',
-        workspaceId: 'ws_shared',
+        workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
       })
     );
     if (created.kind !== 'created') {
@@ -371,12 +449,12 @@ describe('Workspace sharing lifecycle', () => {
     if (disableInvitee) {
       coreDb.sqlite
         .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = ?")
-        .run(now.toISOString(), 'user_invitee');
+        .run(now.toISOString(), 'usr_00000000-0000-7a9e-8345-2bce44a3dce0');
     }
     if (deactivateWorkspace) {
       coreDb.sqlite
         .prepare("UPDATE workspace_registry SET status = 'deleting' WHERE workspace_id = ?")
-        .run('ws_shared');
+        .run('ws_00000000-0000-7978-8378-5b5c5e93f76d');
     }
 
     expect(
@@ -398,35 +476,35 @@ describe('Workspace sharing lifecycle', () => {
     expect(
       coreDb.sqlite
         .prepare('SELECT user_id FROM workspace_members WHERE workspace_id = ? AND user_id <> ?')
-        .all('ws_shared', 'user_owner')
+        .all('ws_00000000-0000-7978-8378-5b5c5e93f76d', 'usr_00000000-0000-7011-88df-c2b1e8466b6f')
     ).toEqual([]);
   });
 
   it('declines and revokes only one pending invitation revision', () => {
     const coreDb = openTestDb();
-    insertUser(coreDb, 'user_owner', 'owner@example.com');
-    insertUser(coreDb, 'user_first', 'first@example.com');
-    insertUser(coreDb, 'user_second', 'second@example.com');
-    insertWorkspace(coreDb, 'ws_shared');
+    insertUser(coreDb, 'usr_00000000-0000-7011-88df-c2b1e8466b6f', 'owner@example.com');
+    insertUser(coreDb, 'usr_00000000-0000-7036-b7d6-6d53799d5d56', 'first@example.com');
+    insertUser(coreDb, 'usr_00000000-0000-750e-951f-bebbf278d045', 'second@example.com');
+    insertWorkspace(coreDb, 'ws_00000000-0000-7978-8378-5b5c5e93f76d');
     const now = new Date('2026-07-19T12:00:00.000Z');
     const first = mutate(coreDb, () =>
       createWorkspaceInvitation({
         coreDb,
-        inviterUserId: 'user_owner',
+        inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         inviteeEmail: 'first@example.com',
         now,
         proposedAccessLevel: 'viewer',
-        workspaceId: 'ws_shared',
+        workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
       })
     );
     const second = mutate(coreDb, () =>
       createWorkspaceInvitation({
         coreDb,
-        inviterUserId: 'user_owner',
+        inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         inviteeEmail: 'second@example.com',
         now,
         proposedAccessLevel: 'viewer',
-        workspaceId: 'ws_shared',
+        workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
       })
     );
     if (first.kind !== 'created' || second.kind !== 'created') {
@@ -439,7 +517,7 @@ describe('Workspace sharing lifecycle', () => {
           coreDb,
           expectedRevision: 1,
           invitationId: first.invitation.invitationId,
-          inviteeUserId: 'user_first',
+          inviteeUserId: 'usr_00000000-0000-7036-b7d6-6d53799d5d56',
           now,
         })
       )
@@ -450,9 +528,9 @@ describe('Workspace sharing lifecycle', () => {
           coreDb,
           expectedRevision: 1,
           invitationId: second.invitation.invitationId,
-          ownerUserId: 'user_owner',
+          ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
           now,
-          workspaceId: 'ws_shared',
+          workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
         })
       )
     ).toMatchObject({ kind: 'revoked', invitation: { effectiveStatus: 'revoked' } });
@@ -462,9 +540,9 @@ describe('Workspace sharing lifecycle', () => {
           coreDb,
           expectedRevision: 1,
           invitationId: second.invitation.invitationId,
-          ownerUserId: 'user_owner',
+          ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
           now,
-          workspaceId: 'ws_shared',
+          workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
         })
       )
     ).toMatchObject({ kind: 'invitation_not_pending' });
@@ -472,12 +550,22 @@ describe('Workspace sharing lifecycle', () => {
 
   it('changes, removes, and leaves memberships with owner and revision safeguards', () => {
     const coreDb = openTestDb();
-    insertUser(coreDb, 'user_owner', 'owner@example.com');
-    insertUser(coreDb, 'user_editor', 'editor@example.com');
-    insertUser(coreDb, 'user_viewer', 'viewer@example.com');
-    insertWorkspace(coreDb, 'ws_shared');
-    insertMember(coreDb, 'ws_shared', 'user_editor', 'editor');
-    insertMember(coreDb, 'ws_shared', 'user_viewer', 'viewer');
+    insertUser(coreDb, 'usr_00000000-0000-7011-88df-c2b1e8466b6f', 'owner@example.com');
+    insertUser(coreDb, 'usr_00000000-0000-7609-aed5-db4b5c95e76c', 'editor@example.com');
+    insertUser(coreDb, 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8', 'viewer@example.com');
+    insertWorkspace(coreDb, 'ws_00000000-0000-7978-8378-5b5c5e93f76d');
+    insertMember(
+      coreDb,
+      'ws_00000000-0000-7978-8378-5b5c5e93f76d',
+      'usr_00000000-0000-7609-aed5-db4b5c95e76c',
+      'editor'
+    );
+    insertMember(
+      coreDb,
+      'ws_00000000-0000-7978-8378-5b5c5e93f76d',
+      'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
+      'viewer'
+    );
     const now = new Date('2026-07-19T12:00:00.000Z');
 
     expect(
@@ -486,10 +574,10 @@ describe('Workspace sharing lifecycle', () => {
           accessLevel: 'editor',
           coreDb,
           expectedRevision: 1,
-          memberUserId: 'user_editor',
+          memberUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
           now,
-          ownerUserId: 'user_owner',
-          workspaceId: 'ws_shared',
+          ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
         })
       )
     ).toMatchObject({ kind: 'unchanged', member: { accessLevel: 'editor', revision: 1 } });
@@ -499,10 +587,10 @@ describe('Workspace sharing lifecycle', () => {
           accessLevel: 'editor',
           coreDb,
           expectedRevision: 1,
-          memberUserId: 'user_viewer',
+          memberUserId: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
           now,
-          ownerUserId: 'user_owner',
-          workspaceId: 'ws_shared',
+          ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
         })
       )
     ).toMatchObject({ kind: 'changed', member: { accessLevel: 'editor', revision: 2 } });
@@ -512,10 +600,10 @@ describe('Workspace sharing lifecycle', () => {
           accessLevel: 'viewer',
           coreDb,
           expectedRevision: 1,
-          memberUserId: 'user_viewer',
+          memberUserId: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
           now,
-          ownerUserId: 'user_owner',
-          workspaceId: 'ws_shared',
+          ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
         })
       )
     ).toMatchObject({ kind: 'revision_conflict', member: { revision: 2 } });
@@ -524,10 +612,10 @@ describe('Workspace sharing lifecycle', () => {
         removeWorkspaceMember({
           coreDb,
           expectedRevision: 1,
-          memberUserId: 'user_editor',
+          memberUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
           now,
-          ownerUserId: 'user_owner',
-          workspaceId: 'ws_shared',
+          ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
         })
       )
     ).toMatchObject({ kind: 'removed', member: { status: 'removed' } });
@@ -536,10 +624,10 @@ describe('Workspace sharing lifecycle', () => {
         removeWorkspaceMember({
           coreDb,
           expectedRevision: 2,
-          memberUserId: 'user_editor',
+          memberUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
           now,
-          ownerUserId: 'user_owner',
-          workspaceId: 'ws_shared',
+          ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
         })
       )
     ).toMatchObject({ kind: 'revision_conflict', member: { revision: 2, status: 'removed' } });
@@ -548,9 +636,9 @@ describe('Workspace sharing lifecycle', () => {
         leaveWorkspace({
           coreDb,
           expectedRevision: 2,
-          memberUserId: 'user_viewer',
+          memberUserId: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
           now,
-          workspaceId: 'ws_shared',
+          workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
         })
       )
     ).toMatchObject({ kind: 'removed', member: { status: 'removed' } });
@@ -559,9 +647,9 @@ describe('Workspace sharing lifecycle', () => {
         leaveWorkspace({
           coreDb,
           expectedRevision: 3,
-          memberUserId: 'user_viewer',
+          memberUserId: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
           now,
-          workspaceId: 'ws_shared',
+          workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
         })
       )
     ).toMatchObject({ kind: 'revision_conflict', member: { revision: 3, status: 'removed' } });
@@ -570,9 +658,9 @@ describe('Workspace sharing lifecycle', () => {
         leaveWorkspace({
           coreDb,
           expectedRevision: 1,
-          memberUserId: 'user_owner',
+          memberUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
           now,
-          workspaceId: 'ws_shared',
+          workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
         })
       )
     ).toEqual({ kind: 'owner_transfer_required' });
@@ -580,21 +668,26 @@ describe('Workspace sharing lifecycle', () => {
 
   it('transfers ownership to an active member and promotes a viewer without removing the former owner', () => {
     const coreDb = openTestDb();
-    insertUser(coreDb, 'user_owner', 'owner@example.com');
-    insertUser(coreDb, 'user_viewer', 'viewer@example.com');
-    insertWorkspace(coreDb, 'ws_shared');
-    insertMember(coreDb, 'ws_shared', 'user_viewer', 'viewer');
+    insertUser(coreDb, 'usr_00000000-0000-7011-88df-c2b1e8466b6f', 'owner@example.com');
+    insertUser(coreDb, 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8', 'viewer@example.com');
+    insertWorkspace(coreDb, 'ws_00000000-0000-7978-8378-5b5c5e93f76d');
+    insertMember(
+      coreDb,
+      'ws_00000000-0000-7978-8378-5b5c5e93f76d',
+      'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
+      'viewer'
+    );
     const now = new Date('2026-07-19T12:00:00.000Z');
 
     expect(
       mutate(coreDb, () =>
         transferWorkspaceOwnership({
           coreDb,
-          currentOwnerUserId: 'user_owner',
+          currentOwnerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
           expectedRegistryRevision: 99,
           now,
-          targetUserId: 'user_missing',
-          workspaceId: 'ws_shared',
+          targetUserId: 'usr_00000000-0000-7241-80d8-0d46cb74b40d',
+          workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
         })
       )
     ).toEqual({ kind: 'workspace_access_denied' });
@@ -602,53 +695,62 @@ describe('Workspace sharing lifecycle', () => {
       mutate(coreDb, () =>
         transferWorkspaceOwnership({
           coreDb,
-          currentOwnerUserId: 'user_owner',
+          currentOwnerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
           expectedRegistryRevision: 1,
           now,
-          targetUserId: 'user_viewer',
-          workspaceId: 'ws_shared',
+          targetUserId: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
+          workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
         })
       )
     ).toEqual({
       kind: 'transferred',
       registry: {
-        ownerUserId: 'user_viewer',
+        ownerUserId: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
         registryRevision: 2,
-        workspaceId: 'ws_shared',
+        workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
       },
     });
-    expect(listWorkspaceMembers(coreDb, 'ws_shared')).toMatchObject([
-      { accessLevel: 'editor', effectiveRole: 'editor', userId: 'user_owner' },
-      { accessLevel: 'editor', effectiveRole: 'owner', revision: 2, userId: 'user_viewer' },
+    expect(listWorkspaceMembers(coreDb, 'ws_00000000-0000-7978-8378-5b5c5e93f76d')).toMatchObject([
+      {
+        accessLevel: 'editor',
+        effectiveRole: 'editor',
+        userId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+      },
+      {
+        accessLevel: 'editor',
+        effectiveRole: 'owner',
+        revision: 2,
+        userId: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
+      },
     ]);
     expect(
       mutate(coreDb, () =>
         transferWorkspaceOwnership({
           coreDb,
-          currentOwnerUserId: 'user_viewer',
+          currentOwnerUserId: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
           expectedRegistryRevision: 2,
           now,
-          targetUserId: 'user_viewer',
-          workspaceId: 'ws_shared',
+          targetUserId: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
+          workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
         })
       )
     ).toEqual({
       kind: 'unchanged',
       registry: {
-        ownerUserId: 'user_viewer',
+        ownerUserId: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
         registryRevision: 2,
-        workspaceId: 'ws_shared',
+        workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
       },
     });
     expect(
       mutate(coreDb, () =>
         transferWorkspaceOwnership({
           coreDb,
-          currentOwnerUserId: 'user_viewer',
+          currentOwnerUserId: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
           expectedRegistryRevision: 1,
           now,
-          targetUserId: 'user_owner',
-          workspaceId: 'ws_shared',
+          targetUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
         })
       )
     ).toMatchObject({ kind: 'revision_conflict', registry: { registryRevision: 2 } });
@@ -656,62 +758,67 @@ describe('Workspace sharing lifecycle', () => {
 
   it('performs only the two bounded administrator recovery actions with registry CAS', () => {
     const coreDb = openTestDb();
-    insertUser(coreDb, 'user_owner', 'owner@example.com');
-    insertUser(coreDb, 'user_admin', 'admin@example.com');
-    insertWorkspace(coreDb, 'ws_add');
-    insertWorkspace(coreDb, 'ws_transfer');
-    insertMember(coreDb, 'ws_transfer', 'user_admin', 'viewer');
+    insertUser(coreDb, 'usr_00000000-0000-7011-88df-c2b1e8466b6f', 'owner@example.com');
+    insertUser(coreDb, 'usr_00000000-0000-768a-8658-44c33d82c1f5', 'admin@example.com');
+    insertWorkspace(coreDb, 'ws_00000000-0000-7b7f-bc69-8dfda4d7e144');
+    insertWorkspace(coreDb, 'ws_00000000-0000-7b70-9226-5a63046ecd09');
+    insertMember(
+      coreDb,
+      'ws_00000000-0000-7b70-9226-5a63046ecd09',
+      'usr_00000000-0000-768a-8658-44c33d82c1f5',
+      'viewer'
+    );
     const now = new Date('2026-07-19T12:00:00.000Z');
 
     expect(
       mutate(coreDb, () =>
         recoverWorkspaceAccess({
           action: 'add-self-as-editor',
-          administratorUserId: 'user_admin',
+          administratorUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
           coreDb,
           expectedRegistryRevision: 1,
           now,
-          workspaceId: 'ws_add',
+          workspaceId: 'ws_00000000-0000-7b7f-bc69-8dfda4d7e144',
         })
       )
     ).toEqual({
       kind: 'recovered',
       recovery: {
         administratorRole: 'editor',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         registryRevision: 2,
-        workspaceId: 'ws_add',
+        workspaceId: 'ws_00000000-0000-7b7f-bc69-8dfda4d7e144',
       },
     });
     expect(
       mutate(coreDb, () =>
         recoverWorkspaceAccess({
           action: 'add-self-as-editor',
-          administratorUserId: 'user_admin',
+          administratorUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
           coreDb,
           expectedRegistryRevision: 2,
           now,
-          workspaceId: 'ws_add',
+          workspaceId: 'ws_00000000-0000-7b7f-bc69-8dfda4d7e144',
         })
       )
     ).toEqual({
       kind: 'unchanged',
       recovery: {
         administratorRole: 'editor',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         registryRevision: 2,
-        workspaceId: 'ws_add',
+        workspaceId: 'ws_00000000-0000-7b7f-bc69-8dfda4d7e144',
       },
     });
     expect(
       mutate(coreDb, () =>
         recoverWorkspaceAccess({
           action: 'add-self-as-editor',
-          administratorUserId: 'user_admin',
+          administratorUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
           coreDb,
           expectedRegistryRevision: 1,
           now,
-          workspaceId: 'ws_add',
+          workspaceId: 'ws_00000000-0000-7b7f-bc69-8dfda4d7e144',
         })
       )
     ).toMatchObject({ kind: 'revision_conflict', recovery: { registryRevision: 2 } });
@@ -719,31 +826,31 @@ describe('Workspace sharing lifecycle', () => {
       mutate(coreDb, () =>
         recoverWorkspaceAccess({
           action: 'transfer-ownership-to-self',
-          administratorUserId: 'user_admin',
+          administratorUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
           coreDb,
           expectedRegistryRevision: 1,
           now,
-          workspaceId: 'ws_transfer',
+          workspaceId: 'ws_00000000-0000-7b70-9226-5a63046ecd09',
         })
       )
     ).toEqual({
       kind: 'recovered',
       recovery: {
         administratorRole: 'owner',
-        ownerUserId: 'user_admin',
+        ownerUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
         registryRevision: 2,
-        workspaceId: 'ws_transfer',
+        workspaceId: 'ws_00000000-0000-7b70-9226-5a63046ecd09',
       },
     });
     expect(
       mutate(coreDb, () =>
         recoverWorkspaceAccess({
           action: 'transfer-ownership-to-self',
-          administratorUserId: 'user_admin',
+          administratorUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
           coreDb,
           expectedRegistryRevision: 2,
           now,
-          workspaceId: 'ws_transfer',
+          workspaceId: 'ws_00000000-0000-7b70-9226-5a63046ecd09',
         })
       )
     ).toMatchObject({ kind: 'unchanged', recovery: { registryRevision: 2 } });
@@ -751,19 +858,25 @@ describe('Workspace sharing lifecycle', () => {
 
   it('revokes a pending invitation before recovery reactivates its administrator membership', () => {
     const coreDb = openTestDb();
-    insertUser(coreDb, 'user_owner', 'owner@example.com');
-    insertUser(coreDb, 'user_admin', 'admin@example.com');
-    insertWorkspace(coreDb, 'ws_shared');
-    insertMember(coreDb, 'ws_shared', 'user_admin', 'viewer', 'removed');
+    insertUser(coreDb, 'usr_00000000-0000-7011-88df-c2b1e8466b6f', 'owner@example.com');
+    insertUser(coreDb, 'usr_00000000-0000-768a-8658-44c33d82c1f5', 'admin@example.com');
+    insertWorkspace(coreDb, 'ws_00000000-0000-7978-8378-5b5c5e93f76d');
+    insertMember(
+      coreDb,
+      'ws_00000000-0000-7978-8378-5b5c5e93f76d',
+      'usr_00000000-0000-768a-8658-44c33d82c1f5',
+      'viewer',
+      'removed'
+    );
     const now = new Date('2026-07-19T12:00:00.000Z');
     const created = mutate(coreDb, () =>
       createWorkspaceInvitation({
         coreDb,
-        inviterUserId: 'user_owner',
+        inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         inviteeEmail: 'admin@example.com',
         now,
         proposedAccessLevel: 'viewer',
-        workspaceId: 'ws_shared',
+        workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
       })
     );
     if (created.kind !== 'created') {
@@ -774,11 +887,11 @@ describe('Workspace sharing lifecycle', () => {
       mutate(coreDb, () =>
         recoverWorkspaceAccess({
           action: 'add-self-as-editor',
-          administratorUserId: 'user_admin',
+          administratorUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
           coreDb,
           expectedRegistryRevision: 1,
           now,
-          workspaceId: 'ws_shared',
+          workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
         })
       )
     ).toMatchObject({ kind: 'recovered', recovery: { administratorRole: 'editor' } });
@@ -788,7 +901,7 @@ describe('Workspace sharing lifecycle', () => {
           coreDb,
           expectedRevision: 1,
           invitationId: created.invitation.invitationId,
-          inviteeUserId: 'user_admin',
+          inviteeUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
           now,
         })
       )
@@ -796,7 +909,13 @@ describe('Workspace sharing lifecycle', () => {
       kind: 'invitation_not_pending',
       invitation: { effectiveStatus: 'revoked', revision: 2 },
     });
-    expect(getWorkspaceMember(coreDb, 'ws_shared', 'user_admin')).toMatchObject({
+    expect(
+      getWorkspaceMember(
+        coreDb,
+        'ws_00000000-0000-7978-8378-5b5c5e93f76d',
+        'usr_00000000-0000-768a-8658-44c33d82c1f5'
+      )
+    ).toMatchObject({
       accessLevel: 'editor',
       invitationId: null,
       revision: 2,

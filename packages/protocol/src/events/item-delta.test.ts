@@ -5,17 +5,17 @@ import { ItemDeltaEventSchema, validateItemDelta } from './envelope.js';
 
 const baseDelta = {
   type: 'item-delta',
-  itemId: 'it_cmd_demo',
+  itemId: 'it_00000000-0000-7a80-9e75-ec0915e1f8ca',
   itemType: 'command-execution',
   deltaKind: 'output-delta',
   delta: 'stdout line\n',
 } as const;
 
 const baseItem = {
-  id: 'it_cmd_demo',
-  workspaceId: 'ws_demo',
-  threadId: 'th_demo',
-  turnId: 'tu_demo',
+  id: 'it_00000000-0000-7a80-9e75-ec0915e1f8ca',
+  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  threadId: 'th_00000000-0000-7000-8000-000000000001',
+  turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
   status: 'in_progress',
   createdAt: '2026-05-17T00:00:00Z',
   completedAt: null,
@@ -54,7 +54,7 @@ const itemDeltaPayloads = {
     delta: 'interactive output',
   },
   'artifact-updated': {
-    artifactId: 'ar_demo',
+    artifactId: 'ar_00000000-0000-7f52-a2ff-8f9bfabc26a1',
     summary: 'Artifact changed.',
   },
   'knowledge-injection-updated': {
@@ -119,7 +119,7 @@ describe('item delta validation', () => {
         expect(() =>
           ItemDeltaEventSchema.parse({
             type: 'item-delta',
-            itemId: `it_${deltaKind}`,
+            itemId: baseItem.id,
             itemType,
             deltaKind,
             ...itemDeltaPayloads[deltaKind as keyof typeof itemDeltaPayloads],
@@ -134,7 +134,7 @@ describe('item delta validation', () => {
       expect(() =>
         ItemDeltaEventSchema.parse({
           type: 'item-delta',
-          itemId: `it_${deltaKind}`,
+          itemId: baseItem.id,
           itemType,
           deltaKind,
           ...itemDeltaPayloads[deltaKind],
@@ -209,7 +209,7 @@ describe('item delta validation', () => {
   it('rejects deltas whose supplied itemType differs from the referenced item snapshot', () => {
     const assistantItem = ItemSchema.parse({
       ...baseItem,
-      id: 'it_assistant_demo',
+      id: 'it_00000000-0000-7087-9ee5-fdce2705f2fa',
       type: 'assistant-message',
       text: '',
     });
@@ -225,7 +225,7 @@ describe('item delta validation', () => {
         },
         assistantItem
       )
-    ).toThrow(/itemType reasoning does not match assistant-message item it_assistant_demo/);
+    ).toThrow(`itemType reasoning does not match assistant-message item ${assistantItem.id}`);
   });
 
   it('rejects output deltas against non-command item snapshots', () => {
@@ -236,17 +236,17 @@ describe('item delta validation', () => {
     });
 
     expect(() => validateItemDelta(baseDelta, assistantItem)).toThrow(
-      /itemType command-execution does not match assistant-message item it_cmd_demo/
+      `itemType command-execution does not match assistant-message item ${assistantItem.id}`
     );
   });
 
   it('accepts artifact-reference artifact updates with explicit itemType', () => {
     const parsed = ItemDeltaEventSchema.parse({
       ...baseDelta,
-      itemId: 'it_artifact_demo',
+      itemId: 'it_00000000-0000-7b7c-87e5-09f6aff91ab9',
       deltaKind: 'artifact-updated',
       itemType: 'artifact-reference',
-      artifactId: 'ar_demo',
+      artifactId: 'ar_00000000-0000-7f52-a2ff-8f9bfabc26a1',
       summary: 'Artifact changed.',
     });
 
@@ -257,7 +257,7 @@ describe('item delta validation', () => {
     expect(() =>
       ItemDeltaEventSchema.parse({
         ...baseDelta,
-        itemId: 'it_artifact_demo',
+        itemId: 'it_00000000-0000-7b7c-87e5-09f6aff91ab9',
         deltaKind: 'text-delta',
         itemType: 'artifact-reference',
         delta: 'invalid artifact text',
@@ -268,9 +268,9 @@ describe('item delta validation', () => {
   it('rejects text deltas against artifact-reference item snapshots', () => {
     const artifactItem = ItemSchema.parse({
       ...baseItem,
-      id: 'it_artifact_demo',
+      id: 'it_00000000-0000-7b7c-87e5-09f6aff91ab9',
       type: 'artifact-reference',
-      artifactId: 'ar_demo',
+      artifactId: 'ar_00000000-0000-7f52-a2ff-8f9bfabc26a1',
       artifactVersion: 1,
       lastMutationRequestId: 'req_artifact_demo',
       title: 'Artifact',

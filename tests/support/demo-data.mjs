@@ -9,8 +9,8 @@ import { join } from 'node:path';
  * @returns {void}
  */
 export function seedDemoWorkspaceDataRoot(dataRoot) {
-  const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
-  const quickChatRoot = join(dataRoot, 'workspaces', 'ws_quick_chat');
+  const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
+  const quickChatRoot = join(dataRoot, 'workspaces', 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28');
   const workspacePath = join(workspaceRoot, 'workspace-record.json');
   const quickChatPath = join(quickChatRoot, 'workspace-record.json');
 
@@ -23,22 +23,22 @@ export function seedDemoWorkspaceDataRoot(dataRoot) {
 
   const timestamp = new Date().toISOString();
   const workspace = {
-    id: 'ws_demo',
+    id: 'ws_00000000-0000-7000-8000-000000000001',
     kind: 'code',
     status: 'active',
     createdAt: timestamp,
     updatedAt: timestamp,
   };
   const quickChatWorkspace = {
-    id: 'ws_quick_chat',
+    id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
     kind: 'quick-chat',
     status: 'active',
     createdAt: timestamp,
     updatedAt: timestamp,
   };
   const thread = {
-    id: 'th_demo',
-    workspaceId: 'ws_demo',
+    id: 'th_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     name: 'Protocol design review',
     preview: 'Review the UI-first workspace protocol slice and tighten payload boundaries.',
     status: 'active',
@@ -57,7 +57,7 @@ export function seedDemoWorkspaceDataRoot(dataRoot) {
       updatedAt: timestamp,
     },
   ];
-  const threadRoot = join(workspaceRoot, 'threads', 'th_demo');
+  const threadRoot = join(workspaceRoot, 'threads', 'th_00000000-0000-7000-8000-000000000001');
   const knowledgePage = [
     '---',
     'type: "KnowledgePage"',
@@ -136,27 +136,25 @@ export function seedDemoWorkspaceDataRoot(dataRoot) {
  */
 export async function seedDemoWorkspaceAuthority(dataRoot) {
   const [
-    { ensureLocalUser },
+    { ensureLocalUser: ensureFixtureLocalUser },
     { openCoreDb },
     { applyMigrations },
-    { LOCAL_USER_ID },
     { recordWorkspaceOwnerMembership },
   ] = await Promise.all([
-    import('../../apps/nanocore/dist/auth/identity.js'),
+    import('../../apps/nanocore/dist/test-support/local-user.js'),
     import('../../apps/nanocore/dist/storage/db.js'),
     import('../../apps/nanocore/dist/storage/migrate.js'),
-    import('../../apps/nanocore/dist/storage/fs-layout.js'),
     import('../../apps/nanocore/dist/workspace-membership.js'),
   ]);
   const coreDb = openCoreDb(dataRoot);
 
   try {
     applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
+    const localUserId = ensureFixtureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: LOCAL_USER_ID,
-      workspaceId: 'ws_demo',
+      ownerUserId: localUserId,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
   } finally {
     coreDb.sqlite.close();

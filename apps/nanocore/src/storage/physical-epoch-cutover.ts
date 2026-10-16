@@ -1,7 +1,8 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 
+import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 
 import { acquireDataRootLock, DataRootLockError } from '../bootstrap/lock.js';
@@ -228,6 +229,7 @@ export function migratePhysicalEpochs(
     const counts = preflightPredecessorDatabase(databasePath);
     const predecessorInventory = inventoryPredecessorFiles(input.dataRoot, lock.path);
     const backupStartedAt = now();
+    const backupId = allocateEntityId('drb');
 
     copyColdDataRoot({
       backupRoot: input.backupRoot,
@@ -237,7 +239,7 @@ export function migratePhysicalEpochs(
     const backupCompletedAt = now();
     const backup = writeColdDataRootBackupManifest({
       backupRoot: input.backupRoot,
-      backupId: createBackupId(marker.deploymentId, backupStartedAt),
+      backupId,
       sourceDeploymentId: marker.deploymentId,
       startedAt: backupStartedAt,
       completedAt: backupCompletedAt,
@@ -832,15 +834,6 @@ function inventoryPredecessorFiles(
   return inventoryRegularFiles(dataRoot).filter(
     (entry) => resolve(dataRoot, entry.path) !== resolvedLockPath
   );
-}
-
-/** Creates a stable backup id from deployment lineage and capture time. */
-function createBackupId(deploymentId: string, startedAt: string): string {
-  const suffix = createHash('sha256')
-    .update(`${deploymentId}\0${startedAt}`)
-    .digest('hex')
-    .slice(0, 24);
-  return `backup_physical_epoch_${suffix}`;
 }
 
 /** Compares two stable file inventories exactly. */

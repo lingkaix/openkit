@@ -29,8 +29,8 @@ describe('native environment configuration client', () => {
             reload: { ...view.reload, note: 'inert' },
             applied: [
               {
-                workspaceId: 'ws',
-                threadId: 'thread',
+                workspaceId: 'ws_01890f3e-0000-7000-8000-000000000001',
+                threadId: 'th_01890f3e-0000-7000-8000-000000000001',
                 state: 'pending',
                 environment: { ...view.desired, note: 'inert' },
                 matchesDesired: true,
@@ -48,8 +48,8 @@ describe('native environment configuration client', () => {
       ...view,
       applied: [
         {
-          workspaceId: 'ws',
-          threadId: 'thread',
+          workspaceId: 'ws_01890f3e-0000-7000-8000-000000000001',
+          threadId: 'th_01890f3e-0000-7000-8000-000000000001',
           state: 'pending',
           environment: view.desired,
           matchesDesired: true,

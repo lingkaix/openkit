@@ -20,13 +20,13 @@ import {
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
 import { createBetterAuth } from '../auth/better-auth.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { createBootReadinessSnapshot } from '../bootstrap/readiness.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -147,7 +147,7 @@ describe('Workspace synchronization operation cutover', () => {
   it.each(routes)('retires the authorized former $id binding', async ({ verb, path }) => {
     const f = fixture();
     const url = path
-      .replace('{workspaceId}', 'ws_demo')
+      .replace('{workspaceId}', 'ws_00000000-0000-7000-8000-000000000001')
       .replace('{reviewId}', f.item.review.id)
       .replace('{applyResultId}', 'war_projection')
       .replace('{reconciliationRecordId}', 'wrr_projection');
@@ -178,14 +178,14 @@ function workspaceSyncReviewRouteItem(): Parameters<typeof recordWorkspaceSyncRe
   const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
 
   return {
-    artifactId: 'ar_workspace_review_route',
+    artifactId: 'ar_00000000-0000-7e94-81d0-07c899686379',
     changeSet: {
-      artifactIds: ['ar_workspace_review_route'],
+      artifactIds: ['ar_00000000-0000-7e94-81d0-07c899686379'],
       base: { commit: 'abc123', contentDigest: null },
       bundle: null,
       changedPaths: [{ binary: false, path: 'docs/sync.md', status: 'modified' }],
       createdAt: '2026-07-06T00:00:00.000Z',
-      evidenceRefs: [{ kind: 'worker', ref: 'turn_route_1' }],
+      evidenceRefs: [{ kind: 'worker', ref: 'tu_00000000-0000-7134-8501-76dbee7ab54a' }],
       head: { commit: 'def456', contentDigest: null },
       id: 'wcs_route_1',
       inputSnapshotId: 'wis_route_1',
@@ -198,7 +198,7 @@ function workspaceSyncReviewRouteItem(): Parameters<typeof recordWorkspaceSyncRe
       redaction: { notes: [], status: 'redacted' },
       resourceId: 'repo_default',
       strategy: 'git',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     },
     patchPayload: {
       bytes: Buffer.byteLength(patchText, 'utf8'),
@@ -221,7 +221,7 @@ function workspaceSyncReviewRouteItem(): Parameters<typeof recordWorkspaceSyncRe
       status: 'pending',
       updatedAt: '2026-07-06T00:00:00.000Z',
       validation: [],
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     },
   };
 }
@@ -249,15 +249,17 @@ function fixture(
   if (options.administrator)
     coreDb.sqlite
       .prepare(
-        "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, last_seen_at) SELECT 'user_foreign', kind, display_name, 'foreign@local.openkit.invalid', email_verified, created_at, updated_at, last_seen_at FROM users WHERE id = 'user_local'"
+        "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, last_seen_at) SELECT 'usr_00000000-0000-7ed5-9b62-226e0a66887f', kind, display_name, 'foreign@local.openkit.invalid', email_verified, created_at, updated_at, last_seen_at FROM users WHERE id = 'usr_00000000-0000-7000-8000-000000000001'"
       )
       .run();
   recordWorkspaceOwnerMembership({
     coreDb,
-    ownerUserId: options.administrator ? 'user_foreign' : 'user_local',
-    workspaceId: 'ws_demo',
+    ownerUserId: options.administrator
+      ? 'usr_00000000-0000-7ed5-9b62-226e0a66887f'
+      : 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const db = openWorkspaceDb(dataRoot, 'ws_demo');
+  const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(db);
   const item = workspaceSyncReviewRouteItem();
   recordTestWorkspaceReviewMaterialization(db, item);
@@ -266,7 +268,7 @@ function fixture(
     requestId: 'seed-apply-result',
     result: {
       id: 'war_projection',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       reviewId: item.review.id,
       changeSetId: item.changeSet.id,
       status: 'applied',
@@ -280,7 +282,7 @@ function fixture(
   });
   recordWorkspaceReconciliationRecord(db, {
     id: 'wrr_projection',
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     triggerReason: 'manual',
     affectedRecordIds: [item.changeSet.materializationRecordId],
     backendHandleSummary: {},
@@ -300,13 +302,13 @@ function fixture(
     finishedAt: null,
   });
   const issued = createOpenKitAccessTokenRecord(coreDb, {
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: options.readonly
       ? 'workspace-readonly'
       : options.administrator
         ? 'server-admin'
         : 'workspace',
-    workspaceIds: options.administrator ? [] : ['ws_demo'],
+    workspaceIds: options.administrator ? [] : ['ws_00000000-0000-7000-8000-000000000001'],
     expiresAt: '2099-01-01T00:00:00.000Z',
   });
   const mutationAdmission = new WorkspaceMutationAdmission();
@@ -379,10 +381,10 @@ function fixture(
     };
   };
   const observed = () => ({
-    review: getWorkspaceSyncReview(db, 'ws_demo', item.review.id),
-    recovery: listWorkspaceReconciliationRecords(db, 'ws_demo'),
-    plans: listWorkspaceApplyPlans(db, 'ws_demo'),
-    results: listWorkspaceApplyResults(db, 'ws_demo'),
+    review: getWorkspaceSyncReview(db, 'ws_00000000-0000-7000-8000-000000000001', item.review.id),
+    recovery: listWorkspaceReconciliationRecords(db, 'ws_00000000-0000-7000-8000-000000000001'),
+    plans: listWorkspaceApplyPlans(db, 'ws_00000000-0000-7000-8000-000000000001'),
+    results: listWorkspaceApplyResults(db, 'ws_00000000-0000-7000-8000-000000000001'),
     receipts: store.listCommandRequests(),
   });
   cleanups.push(() => {
@@ -399,7 +401,7 @@ function inputs() {
     Object.entries(SYNC_OPERATION_DEFINITIONS).map(([id, definition]) => [
       id,
       {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ...('reviewId' in definition.inputSchema.shape ? { reviewId: 'swr_route_1' } : {}),
         ...('applyResultId' in definition.inputSchema.shape
           ? { applyResultId: 'war_projection' }
@@ -433,7 +435,7 @@ async function foreignFilesystemFixture() {
   const common = {
     createdAt: f.item.review.createdAt,
     resourceId: 'fs_admin',
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   };
   const before = await createFilesystemSnapshotManifest({ ...common, rootPath: targetRoot });
   const after = await createFilesystemSnapshotManifest({ ...common, rootPath: workerRoot });
@@ -448,7 +450,7 @@ async function foreignFilesystemFixture() {
   await stageFilesystemWorkspaceChanges({ changeSet, sourceRoot: workerRoot, stagingRoot });
   const item = {
     ...f.item,
-    artifactId: 'ar_admin',
+    artifactId: 'ar_00000000-0000-7259-b0c0-4b07125ffdae',
     changeSet,
     patchPayload: null,
     review: {
@@ -472,15 +474,15 @@ async function foreignFilesystemFixture() {
     reviewId: item.review.id,
     stagingRootPath: stagingRoot,
     targetRootPath: targetRoot,
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   const observedFilesystem = () => ({
     targetBytes: readFileSync(join(targetRoot, 'review.txt')),
-    review: getWorkspaceSyncReview(f.db, 'ws_demo', item.review.id),
-    plans: listWorkspaceApplyPlans(f.db, 'ws_demo').filter(
+    review: getWorkspaceSyncReview(f.db, 'ws_00000000-0000-7000-8000-000000000001', item.review.id),
+    plans: listWorkspaceApplyPlans(f.db, 'ws_00000000-0000-7000-8000-000000000001').filter(
       (plan) => plan.reviewId === item.review.id
     ),
-    results: listWorkspaceApplyResults(f.db, 'ws_demo').filter(
+    results: listWorkspaceApplyResults(f.db, 'ws_00000000-0000-7000-8000-000000000001').filter(
       (result) => result.reviewId === item.review.id
     ),
     receipts: f.store.listCommandRequests(),
@@ -517,10 +519,10 @@ function workspaceOwnership(f: ReturnType<typeof fixture>) {
   return {
     owner: f.coreDb.sqlite
       .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
-      .get('ws_demo'),
+      .get('ws_00000000-0000-7000-8000-000000000001'),
     members: f.coreDb.sqlite
       .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? ORDER BY user_id')
-      .all('ws_demo'),
+      .all('ws_00000000-0000-7000-8000-000000000001'),
   };
 }
 
@@ -566,16 +568,20 @@ describe('Workspace synchronization native projections', () => {
       kind === 'bearer'
         ? {
             kind: 'token' as const,
-            userId: 'user_local',
+            userId: 'usr_00000000-0000-7000-8000-000000000001',
             tokenId: f.issued.record.tokenId,
             tokenScope: 'server-admin' as const,
             tokenWorkspaceIds: [],
           }
-        : { kind: 'session' as const, userId: 'user_local', adminTokenId: f.issued.record.tokenId };
+        : {
+            kind: 'session' as const,
+            userId: 'usr_00000000-0000-7000-8000-000000000001',
+            adminTokenId: f.issued.record.tokenId,
+          };
     const result = await invoke(
       'sync.review-decide',
       {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         reviewId: item.review.id,
         requestId: 'admin-apply',
         decision: 'accepted',
@@ -588,8 +594,8 @@ describe('Workspace synchronization native projections', () => {
     expect(
       f.coreDb.sqlite
         .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
-        .get('ws_demo')
-    ).toMatchObject({ owner_user_id: 'user_foreign' });
+        .get('ws_00000000-0000-7000-8000-000000000001')
+    ).toMatchObject({ owner_user_id: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' });
   });
 
   it.each([
@@ -598,7 +604,7 @@ describe('Workspace synchronization native projections', () => {
   ] as const)('authenticates an administrator %s over HTTP and applies the foreign Workspace without manufacturing membership', async (kind) => {
     const f = await foreignFilesystemFixture();
     const session = kind === 'session' ? await webSession(f) : null;
-    const userId = session?.userId ?? 'user_local';
+    const userId = session?.userId ?? 'usr_00000000-0000-7000-8000-000000000001';
     const issued = session
       ? createOpenKitAccessTokenRecord(f.coreDb, {
           ownerUserId: userId,
@@ -609,13 +615,15 @@ describe('Workspace synchronization native projections', () => {
       : f.issued;
     const credentials = session?.credentials ?? { authorization: `Bearer ${issued.secret}` };
     const ownership = workspaceOwnership(f);
-    expect(ownership.owner).toEqual({ owner_user_id: 'user_foreign' });
-    expect(ownership.members).toEqual([expect.objectContaining({ user_id: 'user_foreign' })]);
+    expect(ownership.owner).toEqual({ owner_user_id: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' });
+    expect(ownership.members).toEqual([
+      expect.objectContaining({ user_id: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' }),
+    ]);
     const owner = vi.spyOn(workspaceReviewApplication, 'decideWorkspaceSyncReview');
     const response = await f.http(
       'sync.review-decide',
       {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         reviewId: f.filesystemItem.review.id,
         requestId: 'http-admin-apply',
         decision: 'accepted',
@@ -624,10 +632,14 @@ describe('Workspace synchronization native projections', () => {
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
-      review: { id: f.filesystemItem.review.id, workspaceId: 'ws_demo', status: 'accepted' },
+      review: {
+        id: f.filesystemItem.review.id,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        status: 'accepted',
+      },
       workspaceApplyResult: {
         reviewId: f.filesystemItem.review.id,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         status: 'applied',
         commitIds: [],
       },
@@ -648,7 +660,10 @@ describe('Workspace synchronization native projections', () => {
       expect.objectContaining({
         command: 'workspace_sync.review.decide',
         requestId: 'http-admin-apply',
-        scope: { workspaceId: 'ws_demo', reviewId: f.filesystemItem.review.id },
+        scope: {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          reviewId: f.filesystemItem.review.id,
+        },
       }),
     ]);
     expect(workspaceOwnership(f)).toEqual(ownership);
@@ -666,7 +681,8 @@ describe('Workspace synchronization native projections', () => {
       const issued = createOpenKitAccessTokenRecord(f.coreDb, {
         ownerUserId: session.userId,
         scope: condition === 'non-member bearer' ? 'workspace' : 'server-admin',
-        workspaceIds: condition === 'non-member bearer' ? ['ws_demo'] : [],
+        workspaceIds:
+          condition === 'non-member bearer' ? ['ws_00000000-0000-7000-8000-000000000001'] : [],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
       if (condition === 'non-member bearer') {
@@ -702,7 +718,7 @@ describe('Workspace synchronization native projections', () => {
     const response = await f.http(
       'sync.review-decide',
       {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         reviewId: f.filesystemItem.review.id,
         requestId: 'denied-http-admin-apply',
         decision: 'accepted',
@@ -745,7 +761,7 @@ describe('Workspace synchronization native projections', () => {
     const response = await f.http(
       'sync.review-decide',
       {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         reviewId: f.filesystemItem.review.id,
         requestId: 'effect-time-revocation',
         decision: 'accepted',
@@ -754,7 +770,7 @@ describe('Workspace synchronization native projections', () => {
     );
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ code: 'workspace_access_denied' });
-    expect(admission).toHaveBeenCalledExactlyOnceWith('ws_demo');
+    expect(admission).toHaveBeenCalledExactlyOnceWith('ws_00000000-0000-7000-8000-000000000001');
     expect(owner).toHaveBeenCalledOnce();
     expect(f.observedFilesystem()).toEqual(before);
     expect(workspaceOwnership(f)).toEqual(ownership);
@@ -829,12 +845,12 @@ describe('Workspace synchronization native projections', () => {
       inflightCommands: new WeakMap(),
       command: 'workspace_sync.review.decide',
       requestId: input.requestId,
-      scope: { workspaceId: 'ws_demo', reviewId: f.item.review.id },
+      scope: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', reviewId: f.item.review.id },
       input,
       responseKind: 'workspace_sync_review',
       execute: () =>
         decideWorkspaceSyncReview({
-          authorityActor: { kind: 'user', id: 'user_local' },
+          authorityActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           coreDb: f.coreDb,
           decidedAt: f.item.review.createdAt,
           decision: input.decision,
@@ -842,7 +858,7 @@ describe('Workspace synchronization native projections', () => {
           reviewId: f.item.review.id,
           store: f.store,
           workspaceDb: f.db,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         }),
       replay: () => {
         throw new Error('Unexpected seed replay');
@@ -851,7 +867,7 @@ describe('Workspace synchronization native projections', () => {
     });
     const before = f.observed();
     const response = await f.http('sync.review-decide', {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       reviewId: f.item.review.id,
       ...input,
     });
@@ -861,7 +877,7 @@ describe('Workspace synchronization native projections', () => {
     });
     expect(f.observed()).toEqual(before);
     const conflict = await f.http('sync.review-decide', {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       reviewId: f.item.review.id,
       ...input,
       message: 'Different captured intent.',
@@ -913,7 +929,8 @@ describe('Workspace synchronization native projections', () => {
       if (id === 'sync.review-decide') input.reviewId = 'missing';
       else input.reconciliationRecordId = 'missing';
     }
-    if (condition === 'deletion fence') await f.mutationAdmission.close('ws_demo');
+    if (condition === 'deletion fence')
+      await f.mutationAdmission.close('ws_00000000-0000-7000-8000-000000000001');
     if (condition === 'revoked') {
       revokeOpenKitAccessTokenRecord(f.coreDb, f.issued.record.tokenId);
       const before = f.observed();
@@ -960,7 +977,7 @@ it.each([
       ? { reviewId: f.item.review.id }
       : { reconciliationRecordId: 'wrr_projection' };
   const first = await f.http(id, {
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     ...selectors,
     decision: id === 'sync.review-decide' ? 'rejected' : 'abandon',
     requestId: crypto.randomUUID(),
@@ -968,7 +985,7 @@ it.each([
   expect(first.status).toBe(200);
   const before = structuredClone(f.observed());
   const input = {
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     ...selectors,
     decision: id === 'sync.review-decide' ? 'accepted' : 'abandon',
     requestId: crypto.randomUUID(),
@@ -985,7 +1002,7 @@ it.each([
       : 'Workspace reconciliation record is already terminal: wrr_projection';
   if (result instanceof Response) {
     expect(result.status).toBe(404);
-    expect(await result.json()).toEqual({ protocolVersion: '0.5.0', code, message });
+    expect(await result.json()).toEqual({ protocolVersion: '0.6.0', code, message });
   } else {
     expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
   }
@@ -1001,10 +1018,10 @@ it.each([
   if (id === 'sync.recovery-decide')
     f.db.sqlite
       .prepare('DELETE FROM worker_output_manifests WHERE workspace_id = ?')
-      .run('ws_demo');
+      .run('ws_00000000-0000-7000-8000-000000000001');
   const before = structuredClone(f.observed());
   const input = {
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     requestId: crypto.randomUUID(),
     ...(id === 'sync.review-decide'
       ? { reviewId: f.item.review.id, decision: 'accepted' }
@@ -1022,7 +1039,7 @@ it.each([
       : 'Workspace recovery collection has no durable output manifest: wrr_projection';
   if (result instanceof Response) {
     expect(result.status).toBe(404);
-    expect(await result.json()).toEqual({ protocolVersion: '0.5.0', code, message });
+    expect(await result.json()).toEqual({ protocolVersion: '0.6.0', code, message });
   } else {
     expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
   }
@@ -1038,17 +1055,17 @@ it.each([
     .prepare(
       'UPDATE staged_workspace_reviews SET patch_payload_json = ? WHERE workspace_id = ? AND review_id = ?'
     )
-    .run(JSON.stringify(patchPayload), 'ws_demo', f.item.review.id);
+    .run(JSON.stringify(patchPayload), 'ws_00000000-0000-7000-8000-000000000001', f.item.review.id);
   const observed = () => ({
     reviews: f.db.sqlite.prepare('SELECT * FROM staged_workspace_reviews ORDER BY review_id').all(),
-    recovery: listWorkspaceReconciliationRecords(f.db, 'ws_demo'),
-    plans: listWorkspaceApplyPlans(f.db, 'ws_demo'),
-    results: listWorkspaceApplyResults(f.db, 'ws_demo'),
+    recovery: listWorkspaceReconciliationRecords(f.db, 'ws_00000000-0000-7000-8000-000000000001'),
+    plans: listWorkspaceApplyPlans(f.db, 'ws_00000000-0000-7000-8000-000000000001'),
+    results: listWorkspaceApplyResults(f.db, 'ws_00000000-0000-7000-8000-000000000001'),
     receipts: f.store.listCommandRequests(),
   });
   const before = structuredClone(observed());
   const input = {
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     reviewId: f.item.review.id,
     decision: 'rejected',
     requestId: crypto.randomUUID(),
@@ -1062,7 +1079,7 @@ it.each([
   const message = 'The record could not be processed.';
   if (result instanceof Response) {
     expect(result.status).toBe(404);
-    expect(await result.json()).toEqual({ protocolVersion: '0.5.0', code, message });
+    expect(await result.json()).toEqual({ protocolVersion: '0.6.0', code, message });
   } else {
     expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
   }
@@ -1081,7 +1098,7 @@ it.each([
   const { plans: beforePlans, ...before } = f.observedFilesystem();
   expect(beforePlans).toEqual([]);
   const input = {
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     reviewId: f.filesystemItem.review.id,
     decision: 'accepted',
     requestId: crypto.randomUUID(),
@@ -1093,12 +1110,15 @@ it.each([
   const { plans, ...after } = f.observedFilesystem();
   expect(after).toEqual(before);
   expect(plans).toHaveLength(1);
-  expect(plans[0]).toMatchObject({ workspaceId: 'ws_demo', reviewId: f.filesystemItem.review.id });
+  expect(plans[0]).toMatchObject({
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    reviewId: f.filesystemItem.review.id,
+  });
   const code = 'workspace_sync_review_failed';
   const message = 'Filesystem workspace root identity changed after review staging.';
   if (result instanceof Response) {
     expect(result.status).toBe(404);
-    expect(await result.json()).toEqual({ protocolVersion: '0.5.0', code, message });
+    expect(await result.json()).toEqual({ protocolVersion: '0.6.0', code, message });
   } else {
     expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
   }
@@ -1120,7 +1140,7 @@ it.each([
   });
   const before = structuredClone(f.observed());
   const input = {
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     reviewId: f.item.review.id,
     decision: 'rejected',
     requestId: crypto.randomUUID(),
@@ -1155,7 +1175,7 @@ it.each([
 ] as const)('preserves classified native %s refusal through %s without changes', async (subject, projection) => {
   const f = await foreignFilesystemFixture();
   const input = {
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     reviewId: f.filesystemItem.review.id,
     decision: 'accepted',
     requestId: crypto.randomUUID(),
@@ -1165,7 +1185,7 @@ it.each([
       .prepare(
         'UPDATE workspace_filesystem_staging_roots SET before_manifest_json = ? WHERE workspace_id = ? AND review_id = ?'
       )
-      .run('{}', 'ws_demo', input.reviewId);
+      .run('{}', 'ws_00000000-0000-7000-8000-000000000001', input.reviewId);
   } else {
     const heldRoot = `${f.targetRoot}.held`;
     renameSync(f.targetRoot, heldRoot);
@@ -1179,7 +1199,11 @@ it.each([
       .prepare(
         'UPDATE workspace_apply_plans SET payload_json = ? WHERE workspace_id = ? AND apply_plan_id = ?'
       )
-      .run(JSON.stringify({ ...plan, plannedWrites: [] }), 'ws_demo', plan.id);
+      .run(
+        JSON.stringify({ ...plan, plannedWrites: [] }),
+        'ws_00000000-0000-7000-8000-000000000001',
+        plan.id
+      );
     input.requestId = crypto.randomUUID();
   }
   const observed = () => ({
@@ -1201,7 +1225,7 @@ it.each([
       : `Workspace apply plan replay conflict: wap_${input.reviewId}`;
   if (result instanceof Response) {
     expect(result.status).toBe(404);
-    expect(await result.json()).toEqual({ protocolVersion: '0.5.0', code, message });
+    expect(await result.json()).toEqual({ protocolVersion: '0.6.0', code, message });
   } else expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
 });
 
@@ -1214,7 +1238,7 @@ it.each([
   const f = await foreignFilesystemFixture();
   const rollbackName =
     '.openkit-workspace-rollback-' +
-    createHash('sha256').update('ws_demo\0swr_admin').digest('hex');
+    createHash('sha256').update('ws_00000000-0000-7000-8000-000000000001\0swr_admin').digest('hex');
   const rollbackRoot = join(f.stagingRoot, rollbackName);
   const outside = join(f.targetRoot, 'outside.txt');
   writeFileSync(outside, 'private external bytes');
@@ -1224,7 +1248,7 @@ it.each([
   expect(before.review?.review.status).toBe('pending');
   expect(before.receipts).toEqual([]);
   const input = {
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     reviewId: f.filesystemItem.review.id,
     decision: 'accepted',
     requestId: crypto.randomUUID(),
@@ -1244,6 +1268,6 @@ it.each([
   const message = 'Unsafe filesystem rollback root.';
   if (result instanceof Response) {
     expect(result.status).toBe(404);
-    expect(await result.json()).toEqual({ protocolVersion: '0.5.0', code, message });
+    expect(await result.json()).toEqual({ protocolVersion: '0.6.0', code, message });
   } else expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
 });

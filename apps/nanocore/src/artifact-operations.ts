@@ -8,6 +8,9 @@ import {
   type SubmitArtifactReviewDecisionResponse,
 } from '@openkit/app-api-schemas';
 import {
+  type ActorRef,
+  canonicalIdentifierName,
+  deriveEntityId,
   isSealedTurnTerminal,
   ListArtifactsResponseSchema,
   responsibleUserIdForActor,
@@ -122,7 +125,6 @@ export function createArtifactOperationImplementations(
     'artifact.import': async (input, context) => {
       const actor = context.actorRef;
       const { workspaceId } = input;
-      const actorId = responsibleUserIdForActor(actor)!;
       try {
         store.getWorkspace(workspaceId);
       } catch (error) {
@@ -133,8 +135,8 @@ export function createArtifactOperationImplementations(
       } catch (error) {
         artifactOperationFailure(error);
       }
-      const artifactId = deterministicArtifactCommandId('ar_import', [
-        actorId,
+      const artifactId = deriveEntityId('ar', [
+        actor,
         workspaceId,
         'artifact.import',
         input.requestId,
@@ -178,7 +180,7 @@ export function createArtifactOperationImplementations(
                 sourceKind: 'direct-import',
                 sourceId: input.requestId,
                 sourceDigest: input.contentDigest,
-                actor: { kind: 'user', id: actorId },
+                actor,
                 requestId: input.requestId,
                 recordedAt: acceptedAt,
               },
@@ -192,7 +194,7 @@ export function createArtifactOperationImplementations(
           },
           replay: (record) =>
             replayArtifactImport(store, {
-              actorId,
+              actor,
               artifactId,
               input,
               record,
@@ -217,8 +219,8 @@ export function createArtifactOperationImplementations(
       } catch (error) {
         artifactOperationFailure(error);
       }
-      const turnId = deterministicArtifactCommandId('tu_artifact', [
-        actorId,
+      const turnId = deriveEntityId('tu', [
+        actor,
         workspaceId,
         threadId,
         'artifact.introduce',
@@ -256,13 +258,13 @@ export function createArtifactOperationImplementations(
                 requestId: input.requestId,
                 acceptedAt: new Date().toISOString(),
                 turnId,
-                triggerActor: { kind: 'user', id: actorId },
+                triggerActor: actor,
               })
             );
           },
           replay: (record) =>
             replayArtifactIntroduction(store, {
-              actorId,
+              actor,
               artifactId,
               expectedArtifactVersion: input.expectedArtifactVersion,
               record,
@@ -406,6 +408,7 @@ export function createArtifactOperationImplementations(
               const review = getArtifactReview(workspaceDb, artifactId, artifactVersion);
               const artifact = requireCurrentReviewedArtifact(store, review);
               const decisionInput = {
+                actor,
                 actorId,
                 artifactContent: artifact.content.body,
                 artifactId,
@@ -507,7 +510,7 @@ export function createArtifactOperationImplementations(
               await new Promise<void>((resolve, reject) => {
                 void startModeWorkerTurn({
                   store,
-                  triggerActor: { kind: 'user', id: actorId },
+                  triggerActor: actor,
                   ...(context.kind === 'public' ? { requestActor: context.actor } : {}),
                   workspaceId,
                   threadId: sourceThreadId,
@@ -570,6 +573,7 @@ export function createArtifactOperationImplementations(
                 assertArtifactReviewProposalTrace(coreDb, store, workspaceDb, review);
               }
               return decideArtifactReview(workspaceDb, {
+                actor,
                 actorId,
                 artifactContent: artifact.content.body,
                 artifactId,
@@ -839,7 +843,7 @@ function artifactMediaType(
 function replayArtifactImport(
   store: FsStore,
   expected: {
-    readonly actorId: string;
+    readonly actor: ActorRef;
     readonly artifactId: string;
     readonly input: {
       readonly requestId: string;
@@ -872,8 +876,7 @@ function replayArtifactImport(
     origin.sourceKind !== 'direct-import' ||
     origin.sourceId !== expected.input.requestId ||
     origin.sourceDigest !== expected.input.contentDigest ||
-    origin.actor.kind !== 'user' ||
-    origin.actor.id !== expected.actorId ||
+    canonicalIdentifierName(origin.actor) !== canonicalIdentifierName(expected.actor) ||
     origin.requestId !== expected.input.requestId ||
     origin.recordedAt !== artifact.createdAt
   ) {
@@ -897,7 +900,7 @@ function replayArtifactImport(
 function replayArtifactIntroduction(
   store: FsStore,
   expected: {
-    readonly actorId: string;
+    readonly actor: ActorRef;
     readonly artifactId: string;
     readonly expectedArtifactVersion: number;
     readonly record: CommandRequestRecord;
@@ -934,8 +937,7 @@ function replayArtifactIntroduction(
     origin.recordedAt !== artifact.createdAt ||
     turn.workspaceId !== expected.workspaceId ||
     turn.threadId !== expected.threadId ||
-    turn.triggerActor.kind !== 'user' ||
-    turn.triggerActor.id !== expected.actorId ||
+    canonicalIdentifierName(turn.triggerActor) !== canonicalIdentifierName(expected.actor) ||
     turn.status !== 'completed' ||
     turn.error !== null ||
     turn.configVersion !== null ||
@@ -991,23 +993,6 @@ function assertArtifactContentDigest(content: string, expectedDigest: string): v
  */
 function artifactContentDigest(content: string): string {
   return `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`;
-}
-
-/**
- * Derives one deterministic command-owned resource identity.
- *
- * @param prefix Resource namespace.
- * @param scope Immutable actor and command scope.
- * @returns Stable non-secret resource id.
- */
-function deterministicArtifactCommandId(
-  prefix: 'ar_import' | 'tu_artifact',
-  scope: readonly string[]
-): string {
-  return `${prefix}_${createHash('sha256')
-    .update(JSON.stringify(scope), 'utf8')
-    .digest('hex')
-    .slice(0, 24)}`;
 }
 
 /**

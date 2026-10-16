@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import type { OpenCodeClient } from '@opencode/client';
+import { allocateEntityId } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenCodeAdapter } from './adapters/opencode.js';
@@ -134,6 +135,8 @@ describe('real native child environment through Harness', () => {
       agentSessionRuntimeBindingId: `binding-${id}`,
     });
     const open = async (id: string, values: Record<string, string>) => {
+      const threadId = allocateEntityId('th');
+      const turnId = allocateEntityId('tu');
       // Core imports the session's initial workspace package before opening its native runtime.
       const sandboxRoot = join(root, 'sandbox');
       const packagePath = join(
@@ -146,9 +149,9 @@ describe('real native child environment through Harness', () => {
         JSON.stringify({
           scope: {
             agentSessionId: id,
-            threadId: `thread-${id}`,
-            workspaceId: 'workspace',
-            turnId: 'initial',
+            threadId,
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            turnId,
           },
           workspace: { root: sandboxRoot, inputs: [] },
           runtime: {
@@ -185,14 +188,14 @@ describe('real native child environment through Harness', () => {
         effectiveSetupGeneration: 1,
         resume: null,
         nativeEnvironment: values,
-        threadId: `thread-${id}`,
-        workspaceId: 'workspace',
+        threadId,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
     };
     try {
       expect(
         (
-          await open('as-primary', {
+          await open('as_00000000-0000-78a2-b06c-d417ea60c9b7', {
             N_ENV_PUBLIC: 'hello',
             N_ENV_EMPTY: '',
             OPENCODE_BENIGN_SETTING: 'yes',
@@ -216,7 +219,9 @@ describe('real native child environment through Harness', () => {
           language: null,
         });
       const siblingStart = children.length;
-      expect((await open('as-sibling', {})).disposition).toBe('succeeded');
+      expect((await open('as_00000000-0000-7ab7-b38f-79a3e328c12f', {})).disposition).toBe(
+        'succeeded'
+      );
       const sibling = children
         .slice(siblingStart)
         .find((child) => child.pid && child.exitCode === null);
@@ -239,8 +244,8 @@ describe('real native child environment through Harness', () => {
       expect(Object.hasOwn(harnessEnvironment, 'N_ENV_PUBLIC')).toBe(false);
       expect(process.env.N_ENV_PUBLIC).toBeUndefined();
     } finally {
-      await send('session.close', selector('as-primary'));
-      await send('session.close', selector('as-sibling'));
+      await send('session.close', selector('as_00000000-0000-78a2-b06c-d417ea60c9b7'));
+      await send('session.close', selector('as_00000000-0000-7ab7-b38f-79a3e328c12f'));
       await rm(root, { recursive: true, force: true });
     }
   }, 120_000);

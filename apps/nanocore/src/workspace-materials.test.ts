@@ -53,7 +53,7 @@ function materialAuthoritySnapshot(workspaceDb: WorkspaceDb): unknown {
 describe('Workspace Material authority', () => {
   it('owns one linear revision graph and one explicit Material binding per Thread', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-materials-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_materials');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7a9e-899a-fcc8ac1a4a55');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -62,7 +62,7 @@ describe('Workspace Material authority', () => {
       const secondCreatedAt = firstCreatedAt;
       const firstCreate = {
         acceptedAt: firstCreatedAt,
-        actorId: 'user_local',
+        actor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
         kind: 'markdown' as const,
         requestId: 'request_create_first',
         sensitivity: 'internal' as const,
@@ -80,7 +80,7 @@ describe('Workspace Material authority', () => {
       const first = createWorkspaceMaterial(workspaceDb, firstCreate);
       const second = createWorkspaceMaterial(workspaceDb, {
         acceptedAt: secondCreatedAt,
-        actorId: 'user_local',
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         kind: 'text',
         requestId: 'request_create_second',
         sensitivity: 'public',
@@ -95,7 +95,7 @@ describe('Workspace Material authority', () => {
         [first.materialId, second.materialId].sort()
       );
       expect(getWorkspaceMaterial(workspaceDb, first.materialId)).toEqual({
-        workspaceId: 'ws_materials',
+        workspaceId: 'ws_00000000-0000-7a9e-899a-fcc8ac1a4a55',
         materialId: first.materialId,
         title: 'First material',
         kind: 'markdown',
@@ -116,7 +116,7 @@ describe('Workspace Material authority', () => {
       expect(() =>
         saveWorkspaceMaterialRevision(workspaceDb, {
           acceptedAt: '2026-07-18T00:00:03.000Z',
-          actorId: 'user_local',
+          actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           content: 'first revision',
           contentDigest: `sha256:${'0'.repeat(64)}`,
           expectedRevisionId: null,
@@ -131,7 +131,7 @@ describe('Workspace Material authority', () => {
       const firstRevisionAt = '2026-07-18T00:00:04.000Z';
       const firstSave = {
         acceptedAt: firstRevisionAt,
-        actorId: 'user_local',
+        actor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
         content: firstContent,
         contentDigest: contentDigest(firstContent),
         expectedRevisionId: null,
@@ -163,7 +163,7 @@ describe('Workspace Material authority', () => {
         .prepare(
           'UPDATE workspace_materials SET current_revision_id = ? WHERE workspace_id = ? AND material_id = ?'
         )
-        .run('missing_revision', 'ws_materials', first.materialId);
+        .run('missing_revision', 'ws_00000000-0000-7a9e-899a-fcc8ac1a4a55', first.materialId);
       const corruptPointer = materialAuthoritySnapshot(workspaceDb);
       expect(() =>
         saveWorkspaceMaterialRevision(workspaceDb, {
@@ -178,7 +178,7 @@ describe('Workspace Material authority', () => {
         .prepare(
           'UPDATE workspace_materials SET current_revision_id = ? WHERE workspace_id = ? AND material_id = ?'
         )
-        .run(firstRevision.revisionId, 'ws_materials', first.materialId);
+        .run(firstRevision.revisionId, 'ws_00000000-0000-7a9e-899a-fcc8ac1a4a55', first.materialId);
 
       expect(
         bindThreadMaterial(workspaceDb, {
@@ -217,7 +217,12 @@ describe('Workspace Material authority', () => {
         .prepare(
           'UPDATE thread_material_bindings SET latest_queued_revision_id = ? WHERE workspace_id = ? AND thread_id = ? AND material_id = ?'
         )
-        .run('missing_revision', 'ws_materials', 'thread_one', first.materialId);
+        .run(
+          'missing_revision',
+          'ws_00000000-0000-7a9e-899a-fcc8ac1a4a55',
+          'thread_one',
+          first.materialId
+        );
       const corruptQueue = materialAuthoritySnapshot(workspaceDb);
       expect(() =>
         excludeThreadMaterial(workspaceDb, {
@@ -235,7 +240,12 @@ describe('Workspace Material authority', () => {
         .prepare(
           'UPDATE thread_material_bindings SET latest_queued_revision_id = ? WHERE workspace_id = ? AND thread_id = ? AND material_id = ?'
         )
-        .run(firstRevision.revisionId, 'ws_materials', 'thread_one', first.materialId);
+        .run(
+          firstRevision.revisionId,
+          'ws_00000000-0000-7a9e-899a-fcc8ac1a4a55',
+          'thread_one',
+          first.materialId
+        );
 
       expect(() =>
         excludeThreadMaterial(workspaceDb, {
@@ -264,7 +274,7 @@ describe('Workspace Material authority', () => {
       const secondRevisionAt = firstRevisionAt;
       const secondRevision = saveWorkspaceMaterialRevision(workspaceDb, {
         acceptedAt: secondRevisionAt,
-        actorId: 'user_local',
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         content: secondContent,
         contentDigest: contentDigest(secondContent),
         expectedRevisionId: firstRevision.revisionId,
@@ -292,7 +302,7 @@ describe('Workspace Material authority', () => {
         parentRevisionId: firstRevision.revisionId,
       });
       expect(getThreadMaterial(workspaceDb, 'thread_one')).toMatchObject({
-        workspaceId: 'ws_materials',
+        workspaceId: 'ws_00000000-0000-7a9e-899a-fcc8ac1a4a55',
         threadId: 'thread_one',
         inclusionState: 'excluded',
         latestQueuedRevisionId: secondRevision.revisionId,
@@ -311,7 +321,12 @@ describe('Workspace Material authority', () => {
         .prepare(
           'UPDATE thread_material_bindings SET latest_queued_revision_id = ? WHERE workspace_id = ? AND thread_id = ? AND material_id = ?'
         )
-        .run(firstRevision.revisionId, 'ws_materials', 'thread_one', first.materialId);
+        .run(
+          firstRevision.revisionId,
+          'ws_00000000-0000-7a9e-899a-fcc8ac1a4a55',
+          'thread_one',
+          first.materialId
+        );
       const historicalQueue = materialAuthoritySnapshot(workspaceDb);
       expect(() =>
         restoreThreadMaterial(workspaceDb, {
@@ -328,14 +343,19 @@ describe('Workspace Material authority', () => {
         .prepare(
           'UPDATE thread_material_bindings SET latest_queued_revision_id = ? WHERE workspace_id = ? AND thread_id = ? AND material_id = ?'
         )
-        .run(secondRevision.revisionId, 'ws_materials', 'thread_one', first.materialId);
+        .run(
+          secondRevision.revisionId,
+          'ws_00000000-0000-7a9e-899a-fcc8ac1a4a55',
+          'thread_one',
+          first.materialId
+        );
 
       const rejectedContent = 'must not branch';
       const beforeConflict = materialAuthoritySnapshot(workspaceDb);
       expect(() =>
         saveWorkspaceMaterialRevision(workspaceDb, {
           acceptedAt: '2026-07-18T00:00:11.000Z',
-          actorId: 'user_local',
+          actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           content: rejectedContent,
           contentDigest: contentDigest(rejectedContent),
           expectedRevisionId: firstRevision.revisionId,
@@ -383,7 +403,7 @@ describe('Workspace Material authority', () => {
             latest_queued_revision_id AS latestQueuedRevisionId
             FROM thread_material_bindings
             WHERE workspace_id = ? AND thread_id = ? AND material_id = ?`)
-          .get('ws_materials', 'thread_one', first.materialId)
+          .get('ws_00000000-0000-7a9e-899a-fcc8ac1a4a55', 'thread_one', first.materialId)
       ).toEqual({
         bindingState: 'unbound',
         inclusionState: 'included',
@@ -452,7 +472,7 @@ describe('Workspace Material authority', () => {
         workspaceDb.sqlite.transaction(() =>
           saveWorkspaceMaterialRevision(workspaceDb, {
             acceptedAt: '2026-07-18T00:00:19.000Z',
-            actorId: 'user_local',
+            actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
             content: rollbackContent,
             contentDigest: contentDigest(rollbackContent),
             expectedRevisionId: secondRevision.revisionId,
@@ -468,7 +488,7 @@ describe('Workspace Material authority', () => {
       const plainContent = 'plain text';
       const plainRevision = saveWorkspaceMaterialRevision(workspaceDb, {
         acceptedAt: '2026-07-18T00:00:20.000Z',
-        actorId: 'user_local',
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         content: plainContent,
         contentDigest: contentDigest(plainContent),
         expectedRevisionId: null,
@@ -486,14 +506,14 @@ describe('Workspace Material authority', () => {
 
   it('selects and consumes only the exact bound queued revision proof', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-material-handoff-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_handoff');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-71c4-b2f4-f9c81445576b');
 
     try {
       applyScopedMigrations(workspaceDb);
       const content = '# Exact queued revision\n';
       const material = createWorkspaceMaterial(workspaceDb, {
         acceptedAt: '2026-07-18T01:00:00.000Z',
-        actorId: 'user_local',
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         kind: 'markdown',
         requestId: 'request_create_handoff',
         sensitivity: 'internal',
@@ -501,7 +521,7 @@ describe('Workspace Material authority', () => {
       });
       const revision = saveWorkspaceMaterialRevision(workspaceDb, {
         acceptedAt: '2026-07-18T01:00:01.000Z',
-        actorId: 'user_local',
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         content,
         contentDigest: contentDigest(content),
         expectedRevisionId: null,
@@ -539,7 +559,7 @@ describe('Workspace Material authority', () => {
       const revisionOwner = {
         materialId: material.materialId,
         revisionId: revision.revisionId,
-        workspaceId: 'ws_handoff',
+        workspaceId: 'ws_00000000-0000-71c4-b2f4-f9c81445576b',
       };
       const invalidRevisionCases = [
         {
@@ -558,7 +578,7 @@ describe('Workspace Material authority', () => {
           content,
           mediaType: 'text/markdown',
           name: 'missing parent revision',
-          parentRevisionId: 'mrev_missing',
+          parentRevisionId: 'mrev_00000000-0000-7dd6-ad6d-05f41582f248',
         },
         {
           content,
@@ -585,7 +605,7 @@ describe('Workspace Material authority', () => {
       const bindingOwner = {
         materialId: material.materialId,
         threadId: 'thread_handoff',
-        workspaceId: 'ws_handoff',
+        workspaceId: 'ws_00000000-0000-71c4-b2f4-f9c81445576b',
       };
       const setBinding = workspaceDb.sqlite.prepare(`UPDATE thread_material_bindings SET
         binding_state = @bindingState, latest_queued_revision_id = @queuedRevisionId,
@@ -710,7 +730,7 @@ describe('Workspace Material authority', () => {
           inclusionState: 'included',
           lastMutationRequestId: 'request_bind_handoff',
           name: 'same-proof different queue',
-          queuedRevisionId: 'mrev_contradictory',
+          queuedRevisionId: 'mrev_00000000-0000-76b9-99af-54ce148e54b4',
         },
       ] as const;
 

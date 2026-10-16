@@ -749,8 +749,9 @@ describe('LLMGatewayProviderDispatcher Codex chat bridge admission', () => {
         {
           models: pairModels,
           promptCacheScope: {
-            sessionId: 'chat-mode:ws_probe:th_probe',
-            workspaceId: 'ws_probe',
+            sessionId:
+              'chat-mode:ws_00000000-0000-7210-b610-cfb6bd7096ee:th_00000000-0000-7f5f-834d-441994676939',
+            workspaceId: 'ws_00000000-0000-7210-b610-cfb6bd7096ee',
           },
           usageEndpoint: 'quick_chat',
         }
@@ -782,7 +783,11 @@ describe('LLMGatewayProviderDispatcher Codex chat bridge admission', () => {
         ...(withMetadata
           ? {
               metadata: {
-                openkit: { sessionId: 'chat-mode:ws_probe:th_probe', workspaceId: 'ws_probe' },
+                openkit: {
+                  sessionId:
+                    'chat-mode:ws_00000000-0000-7210-b610-cfb6bd7096ee:th_00000000-0000-7f5f-834d-441994676939',
+                  workspaceId: 'ws_00000000-0000-7210-b610-cfb6bd7096ee',
+                },
               },
             }
           : {}),
@@ -790,8 +795,9 @@ describe('LLMGatewayProviderDispatcher Codex chat bridge admission', () => {
       {
         models: pairModels,
         promptCacheScope: {
-          sessionId: 'chat-mode:ws_probe:th_probe',
-          workspaceId: 'ws_probe',
+          sessionId:
+            'chat-mode:ws_00000000-0000-7210-b610-cfb6bd7096ee:th_00000000-0000-7f5f-834d-441994676939',
+          workspaceId: 'ws_00000000-0000-7210-b610-cfb6bd7096ee',
         },
         usageEndpoint: 'quick_chat',
       }

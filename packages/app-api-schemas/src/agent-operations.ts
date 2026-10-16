@@ -34,7 +34,7 @@ export const AGENT_OPERATION_DEFINITIONS = {
     description: 'List product-visible Agents across authorized Workspaces.',
     inputSchema: z.object({}).strict(),
     outputSchema: ListAgentCatalogResponseSchema,
-    credentials,
+    credentials: [...credentials, 'coordinator'],
     scope: { kind: 'authorized-workspace-set' },
     target: { kind: 'authorized-workspaces' },
     policyOperation: 'workspace.read',

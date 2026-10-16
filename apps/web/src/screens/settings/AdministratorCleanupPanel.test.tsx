@@ -15,16 +15,20 @@ const OBSERVED = '2026-10-16T00:00:00.000Z';
 const UPDATED = '2026-10-15T12:00:00.000Z';
 const BRANCHES = [
   {
-    target: { kind: 'workspace-deletion', workspaceId: 'workspace-one', requestId: 'request-one' },
+    target: {
+      kind: 'workspace-deletion',
+      workspaceId: 'ws_3c919bf6-f4bd-7d60-8755-c67c20dcf237',
+      requestId: 'request-one',
+    },
     state: { phase: 'deleted', retainedStaging: true, cleanedAt: null },
   },
   {
     target: {
       kind: 'execution-attempt',
-      attemptId: 'attempt-one',
-      workspaceId: 'workspace-one',
-      threadId: 'thread-one',
-      turnId: 'turn-one',
+      attemptId: 'attempt_f9c6cef9-2db3-75ed-a8c5-99206a9d11f5',
+      workspaceId: 'ws_3c919bf6-f4bd-7d60-8755-c67c20dcf237',
+      threadId: 'th_ff796616-1965-7eef-acb4-499c0037e154',
+      turnId: 'tu_e4a5f46a-b4b1-74ec-af04-0a61497a90db',
       agentSessionId: null,
     },
     state: { phase: 'closed', disposition: 'unknown' },
@@ -32,11 +36,11 @@ const BRANCHES = [
   {
     target: {
       kind: 'backend-session',
-      attemptId: 'attempt-two',
-      workspaceId: 'workspace-two',
-      threadId: 'thread-two',
-      turnId: 'turn-two',
-      agentSessionId: 'session-two',
+      attemptId: 'attempt_072ae584-6557-7309-be35-7e25ceeed815',
+      workspaceId: 'ws_2a45e7bf-14f3-75a5-b6ba-4c882c39b860',
+      threadId: 'th_44a0ec5a-ea17-71c2-b5a5-cf5aec8b20fa',
+      turnId: 'tu_ad0b0bac-3955-7171-a6e6-94c53ef0f7d6',
+      agentSessionId: 'as_e88d664a-fd4b-799e-a5bf-3bf7f663b027',
     },
     state: {
       state: 'cleanup-failed',
@@ -49,9 +53,9 @@ const BRANCHES = [
     target: {
       kind: 'agent-session-binding',
       agentSessionRuntimeBindingId: 'binding-three',
-      agentSessionId: 'session-three',
-      workspaceId: 'workspace-three',
-      threadId: 'thread-three',
+      agentSessionId: 'as_fee220fe-1629-7f75-9f57-87629c409d80',
+      workspaceId: 'ws_683c43e2-2c97-7b27-8e0c-41c76f7818c9',
+      threadId: 'th_48e5122c-8863-775b-be40-6388b0b26140',
     },
     state: { lifecycleState: 'closed', cleanupState: 'unknown' },
   },
@@ -72,8 +76,8 @@ const BRANCHES = [
   {
     target: {
       kind: 'worker-storage',
-      storageRef: 'storage-five',
-      workspaceId: 'workspace-five',
+      storageRef: 'wst_2809c9c9-3f50-781c-897b-f0ec89bb00bb',
+      workspaceId: 'ws_20d19367-bd48-7cea-9dea-f5f2e5f3c240',
       runtimeTargetId: 'runtime-five',
     },
     state: { state: 'purge-pending', revision: 4, purgedAt: null },

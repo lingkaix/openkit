@@ -1,3 +1,4 @@
+import { deriveEntityId } from '@openkit/protocol';
 import { recordServerAuditEvent } from '../audit-events.js';
 import type { CoreDb } from '../storage/db.js';
 import type { BootPhaseRunResult } from './phases.js';
@@ -88,7 +89,7 @@ export function recordBootStartAuditEvent(input: RecordBootStartAuditEventInput)
     );
   recordServerAuditEvent({
     action: 'boot.start',
-    auditEventId: `aud_${input.bootId}_start`,
+    auditEventId: deriveEntityId('aud', [input.bootId, 'start']),
     category: 'system',
     coreDb: input.coreDb,
     outcome: 'succeeded',
@@ -135,7 +136,7 @@ export function recordBootAuditEvent(input: RecordBootAuditEventInput): void {
     );
   recordServerAuditEvent({
     action: 'boot.outcome',
-    auditEventId: `aud_${readiness.bootId}_outcome`,
+    auditEventId: deriveEntityId('aud', [readiness.bootId, 'outcome']),
     category: 'system',
     coreDb: input.coreDb,
     errorCode: failed ? 'boot_failed' : degraded ? 'boot_degraded' : null,
@@ -188,7 +189,7 @@ export function recordShutdownAuditEvent(input: RecordShutdownAuditEventInput): 
     );
   recordServerAuditEvent({
     action: 'boot.shutdown',
-    auditEventId: `aud_${input.bootId}_shutdown`,
+    auditEventId: deriveEntityId('aud', [input.bootId, 'shutdown']),
     category: 'system',
     coreDb: input.coreDb,
     errorCode: input.deadlineForcedExit ? 'shutdown_deadline_forced_exit' : null,

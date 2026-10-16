@@ -1,4 +1,4 @@
-import { RequestIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
+import { PresentationIdSchema, RequestIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import {
   GenerativePresentationDataModelResponseSchema,
@@ -37,7 +37,7 @@ const workspace = { workspaceId: WorkspaceIdSchema };
 const app = { ...workspace, appId: z.string().uuid() };
 const collection = { ...app, collection: z.string().min(1) };
 const record = { ...collection, recordId: z.string().uuid() };
-const presentation = { ...workspace, presentationId: z.string().uuid() };
+const presentation = { ...workspace, presentationId: PresentationIdSchema };
 const revision = z.number().int().positive();
 const paging = { page: revision.optional(), perPage: revision.max(100).optional() };
 
