@@ -76,6 +76,46 @@ function tree(text: string) {
 }
 
 describe('Skill catalog lifecycle', () => {
+  it.each([
+    '???',
+    'Zg',
+    'Zg===',
+    'Zg==\n',
+    'Zh==',
+    'Zm9=',
+    '-w==',
+    '_w==',
+  ])('rejects noncanonical transport base64 %j instead of changing its bytes', (contentBase64) => {
+    expect(() =>
+      validateCatalogTree([{ kind: 'file', path: 'source.bin', contentBase64 }])
+    ).toThrow(CatalogInputError);
+  });
+
+  it.each([
+    { contentBase64: 'eA==' },
+    { contentBase64: '' },
+    { executable: true },
+  ])('rejects contradictory transport directory fields %j instead of dropping them', (fields) => {
+    expect(() => validateCatalogTree([{ kind: 'directory', path: 'assets', ...fields }])).toThrow(
+      CatalogInputError
+    );
+  });
+
+  it('preserves canonical binary and empty transport bytes and non-executable directories', () => {
+    const result = validateCatalogTree([
+      { kind: 'file', path: 'source.bin', contentBase64: 'AP/+' },
+      { kind: 'file', path: 'empty.bin', contentBase64: '' },
+      { kind: 'file', path: 'padded.bin', contentBase64: 'AQ==' },
+      { kind: 'directory', path: 'assets', executable: false },
+    ]);
+    expect(result.entries).toEqual([
+      { kind: 1, path: 'source.bin', content: Buffer.from([0, 255, 254]) },
+      { kind: 1, path: 'empty.bin', content: Buffer.alloc(0) },
+      { kind: 1, path: 'padded.bin', content: Buffer.from([1]) },
+      { kind: 0, path: 'assets' },
+    ]);
+  });
+
   it('validates transport trees through the shared bounded hash without filesystem effects', () => {
     const source = [
       { kind: 'file' as const, path: 'references/source.bin', contentBase64: 'AAEC' },
