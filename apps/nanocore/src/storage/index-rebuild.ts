@@ -1015,6 +1015,32 @@ function currentKnowledgeReferenceContent(
       );
     throw knowledgeTraceUnavailable();
   }
+  admitKnowledgeRetrieval(input);
+  const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
+  const current = readWorkspaceNotebookIndexSource(workspaceRoot, undefined, [reference.objectId]);
+  const pinned =
+    input.notebookRevision !== undefined && input.notebookRevision !== current.notebookRevision
+      ? readWorkspaceNotebookIndexSource(workspaceRoot, input.notebookRevision, [reference.objectId])
+      : current;
+  if (!pinned.pages.has(reference.objectId)) return null;
+  // Retained bytes prove selection; current sensitivity still controls trace disclosure.
+  const currentContent = current.pages.get(reference.objectId);
+  if (currentContent !== undefined) {
+    const currentDocument = parseOkfDocument({
+      path: `knowledge/pages/${reference.objectId}.md`,
+      content: currentContent,
+    });
+    const sensitivity = currentDocument.document
+      ? stringFrontmatterField(currentDocument.document, 'sensitivity')
+      : null;
+    if (
+      !currentDocument.ok ||
+      sensitivity === null ||
+      sensitivity === 'restricted' ||
+      sensitivity === 'confidential'
+    )
+      throw knowledgeTraceUnavailable();
+  }
   const selected = readAuthorizedWorkspaceNotebookPages({
     ...input,
     pageIds: [reference.objectId],
