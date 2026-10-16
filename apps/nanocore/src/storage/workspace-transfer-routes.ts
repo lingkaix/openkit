@@ -11,7 +11,7 @@ import {
   WorkspaceImportResponseSchema,
 } from '@openkit/app-api-schemas';
 import { parseWorkspaceDataSourceCatalog } from '@openkit/config-schema';
-import type { ActorRef } from '@openkit/protocol';
+import type { ActorRef, Item } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 
 import {
@@ -166,7 +166,7 @@ import {
   type CaptureCoverageBinding,
   readCanonicalFile,
   readCanonicalTextFile,
-  readPublishedTurnRecord,
+  readPublishedTurnFileRecords,
   writeFileAtomic,
 } from './workspace-file-records.js';
 import {
@@ -1156,13 +1156,15 @@ export function createVerifiedWorkspaceExport({
     turns: turns.map(({ threadId, id }) => ({ threadId, turnId: id })),
   });
   const portableFileState = retainedPortableState;
+  const canonicalItemRevisions: Item[] = [];
   const retainedTurns = turns.map((turn) => {
-    const published = readPublishedTurnRecord(dataRoot, workspaceId, turn.threadId, turn.id);
+    const published = readPublishedTurnFileRecords(dataRoot, workspaceId, turn.threadId, turn.id);
     if (!published) throw new Error('Workspace export cannot claim an unpublished Turn.');
     // Serialize only the exact published Turn and Items, never an in-memory write that failed.
-    if (!isDeepStrictEqual(turn, published))
+    if (!isDeepStrictEqual(turn, published.turn))
       throw new Error('Workspace export requires canonical Turn publication before export.');
-    return { id: published.id, threadId: published.threadId };
+    for (const item of published.itemRevisions) canonicalItemRevisions.push(item);
+    return { id: published.turn.id, threadId: published.turn.threadId };
   });
   // A missing current file cannot establish that a reserved Turn was never published.
   if (coreDb) {
@@ -1265,7 +1267,7 @@ export function createVerifiedWorkspaceExport({
     knowledge: store.listKnowledge(workspaceId),
     knowledgeSources: store.listKnowledgeSources(workspaceId),
     knowledgeSourceMaterials: store.listKnowledgeSourceMaterials(workspaceId),
-    itemRevisions: store.listWorkspaceItemRevisions(workspaceId),
+    itemRevisions: canonicalItemRevisions,
     artifacts: store.listArtifacts(workspaceId),
     artifactReviews: workspaceRowFamilies.artifactReviews,
     threadMaterialBindings: workspaceRowFamilies.workspaceMaterialRows.bindings,

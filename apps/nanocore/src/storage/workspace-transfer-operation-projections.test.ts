@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
@@ -20,9 +21,10 @@ import { createApp } from '../test-support/app.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
-import { readPublishedTurnRecord } from './workspace-file-records.js';
+import { readPublishedTurnFileRecords } from './workspace-file-records.js';
 
 const fixtures: Array<{ root: string; db: ReturnType<typeof openCoreDb> }> = [];
+const nodeFs = createRequire(import.meta.url)('node:fs') as typeof import('node:fs');
 afterEach(() => {
   for (const { root, db } of fixtures.splice(0)) {
     if (db.sqlite.open) db.sqlite.close();
@@ -89,6 +91,97 @@ function exportUsage(root: string) {
 }
 
 describe('Workspace JSON transfer cutover', () => {
+  it('exports complete canonical Item history after an unacknowledged append and later update', async () => {
+    const { root, store, app } = fixture();
+    const thread = store.listThreads('ws_demo')[0]!;
+    const turn = store.createTurn('ws_demo', thread.id, 'Retain history', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const item = store.createItem({
+      id: 'it_export_history',
+      type: 'assistant-message',
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      turnId: turn.id,
+      text: 'A',
+      status: 'completed',
+      createdAt: '2026-10-16T00:00:00.000Z',
+      completedAt: '2026-10-16T00:00:00.000Z',
+    });
+    const fsync = nodeFs.fsyncSync;
+    let faults = 0;
+    nodeFs.fsyncSync = () => {
+      faults++;
+      throw new Error('Append synchronization interrupted');
+    };
+    syncBuiltinESMExports();
+    try {
+      expect(() => store.updateItem(item.id, { text: 'B' })).toThrow(
+        'Append synchronization interrupted'
+      );
+    } finally {
+      nodeFs.fsyncSync = fsync;
+      syncBuiltinESMExports();
+    }
+    expect(faults).toBe(1);
+    store.updateItem(item.id, { text: 'C' });
+    const cachedTexts = () =>
+      store
+        .listWorkspaceItemRevisions('ws_demo')
+        .filter((row) => row.id === item.id)
+        .map((row) => (row.type === 'assistant-message' ? row.text : null));
+    expect(cachedTexts()).toEqual(['A', 'C']);
+    expect(readPublishedTurnFileRecords(root, 'ws_demo', thread.id, turn.id)?.turn).toEqual(
+      store.getTurn('ws_demo', thread.id, turn.id)
+    );
+    const sourcePath = join(
+      root,
+      'workspaces',
+      'ws_demo',
+      'threads',
+      thread.id,
+      'turns',
+      turn.id,
+      'items.jsonl'
+    );
+    const originalBytes = readFileSync(sourcePath, 'utf8');
+    expect(
+      originalBytes
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line).text)
+    ).toEqual(['A', 'B', 'C']);
+    const exported = await app.request(
+      ...request('/api/app/operations/workspace.export', { workspaceId: 'ws_demo' })
+    );
+    expect(exported.status, await exported.clone().text()).toBe(200);
+    const { exportId } = await exported.json();
+    const artifact = readFileSync(
+      join(
+        root,
+        'server',
+        'exports',
+        'workspaces',
+        'ws_demo',
+        exportId,
+        'records',
+        'item-revisions.jsonl'
+      ),
+      'utf8'
+    );
+    expect(
+      artifact
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line))
+        .filter((row) => row.id === item.id)
+        .map((row) => row.text)
+    ).toEqual(['A', 'B', 'C']);
+    expect(readFileSync(sourcePath, 'utf8')).toBe(originalBytes);
+    expect(cachedTexts()).toEqual(['A', 'C']);
+  });
+
   it('refuses an unpublished cached Turn change instead of serializing it after a failed write', async () => {
     const { root, store, app } = fixture();
     const thread = store.listThreads('ws_demo')[0]!;
@@ -100,9 +193,9 @@ describe('Workspace JSON transfer cutover', () => {
       null,
       { status: 'pending' }
     );
-    const published = readPublishedTurnRecord(root, 'ws_demo', thread.id, turn.id);
+    const published = readPublishedTurnFileRecords(root, 'ws_demo', thread.id, turn.id);
     expect(published).not.toBeNull();
-    expect(published?.status).toBe('pending');
+    expect(published?.turn.status).toBe('pending');
     // Fail before the persistence owner publishes files; the actual Store has already advanced its cache.
     const fault = vi
       .spyOn(store as unknown as { persist(workspaceId: string): void }, 'persist')
@@ -117,12 +210,12 @@ describe('Workspace JSON transfer cutover', () => {
       fault.mockRestore();
     }
     expect(store.getTurn('ws_demo', thread.id, turn.id).status).toBe('running');
-    expect(readPublishedTurnRecord(root, 'ws_demo', thread.id, turn.id)).toEqual(published);
+    expect(readPublishedTurnFileRecords(root, 'ws_demo', thread.id, turn.id)).toEqual(published);
     const exported = await app.request(
       ...request('/api/app/operations/workspace.export', { workspaceId: 'ws_demo' })
     );
     expect(exported.status).toBe(500);
-    expect(readPublishedTurnRecord(root, 'ws_demo', thread.id, turn.id)).toEqual(published);
+    expect(readPublishedTurnFileRecords(root, 'ws_demo', thread.id, turn.id)).toEqual(published);
   });
 
   it('round-trips actual archive bytes and Knowledge through the Web session streaming bindings', async () => {
