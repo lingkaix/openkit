@@ -328,7 +328,7 @@ describe('FsStore canonical reload', () => {
     const knowledgeSourceContent = 'Reload source material.';
     const knowledgeSource = store.createKnowledgeSource(
       {
-        id: `ks_${turn.id}`,
+        id: testEntityId('ks', `ks_${turn.id}`),
         workspaceId: workspace.id,
         kind: 'upload',
         title: 'Reload source',
@@ -719,7 +719,7 @@ describe('FsStore canonical reload', () => {
     });
     const source = store.createKnowledgeSource(
       {
-        id: `ks_${turn.id}`,
+        id: testEntityId('ks', `ks_${turn.id}`),
         workspaceId: workspace.id,
         kind: 'upload',
         title: 'Canonical source',
@@ -1122,7 +1122,7 @@ describe('FsStore canonical reload', () => {
       'Reject the linked artifact root',
       localActor
     );
-    const artifactId = `ar_linked_${turn.id}`;
+    const artifactId = testEntityId('ar', `ar_linked_${turn.id}`);
     const artifactBody = 'Must not escape through the linked parent.';
     const outsideRoot = join(dataRoot, 'outside-artifact-root');
     const linkedRoot = join(dataRoot, 'workspaces', workspace.id, 'artifacts', artifactId);
@@ -1500,7 +1500,7 @@ describe('FsStore canonical reload', () => {
   ] as const)('rejects a canonical Workspace with %s', (_name, recordKind, itemType, field, invalidValue) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-invalid-attribution-'));
     const store = new FsStore({ dataRoot });
-    const workspaceId = `ws_attribution_${itemType ?? 'turn'}`;
+    const workspaceId = testEntityId('ws', `ws_attribution_${itemType ?? 'turn'}`);
     const input = workspaceImportPayload(
       workspaceId,
       'th_00000000-0000-7b11-b339-beca8166a3ac',
@@ -1588,11 +1588,11 @@ describe('FsStore canonical reload', () => {
   ] as const)('rejects imported workspace history with %s', (violation, expectedError) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-invalid-import-history-'));
     const store = new FsStore({ dataRoot });
-    const workspaceId = `ws_${violation.replaceAll(' ', '_')}`;
+    const workspaceId = testEntityId('ws', `ws_${violation.replaceAll(' ', '_')}`);
     const input = workspaceImportPayload(
       workspaceId,
-      `th_${violation.replaceAll(' ', '_')}`,
-      `it_${violation.replaceAll(' ', '_')}`
+      testEntityId('th', `th_${violation.replaceAll(' ', '_')}`),
+      testEntityId('it', `it_${violation.replaceAll(' ', '_')}`)
     );
     const turn = input.turns[0]!;
 

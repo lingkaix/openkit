@@ -214,7 +214,7 @@ describe('direct canonical write boundaries', () => {
   ] as const)('rejects a symlinked staged source %s parent without writing outside', (family) => {
     const { store, workspace } = createFixture(`openkit-staged-source-${family}-`);
     const workspaceRoot = mkdtempSync(join(tmpdir(), `openkit-staged-source-root-${family}-`));
-    const sourceId = `ks_staged_${family}_symlink`;
+    const sourceId = testEntityId('ks', `ks_staged_${family}_symlink`);
     const source = knowledgeSource(workspace.id, sourceId);
     const outsideRoot = installOutsideParent(
       join(workspaceRoot, 'sources', family, sourceId),

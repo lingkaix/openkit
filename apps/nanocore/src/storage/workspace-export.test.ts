@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ArchivedGitPushRecordSchema } from '@openkit/app-api-schemas';
-import { isEntityId, PROTOCOL_VERSION } from '@openkit/protocol';
+import { deriveEntityId, isEntityId, PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createArtifactReview } from '../artifact-reviews.js';
 import { FsStore } from '../lib/store.js';
@@ -297,15 +297,11 @@ describe('workspace export verifier', () => {
         {
           proposalId: proposal.id,
           workspaceId: proposal.workspaceId,
-          reviewId: `kr_${createHash('sha256')
-            .update(
-              JSON.stringify({
-                workspaceId: proposal.workspaceId,
-                proposalId: proposal.id,
-                requestId: reviewRequestId,
-              })
-            )
-            .digest('hex')}`,
+          reviewId: deriveEntityId('kr', {
+            ownerScope: { kind: 'workspace', workspaceId: proposal.workspaceId },
+            proposalId: proposal.id,
+            requestId: reviewRequestId,
+          }),
           requestId: reviewRequestId,
           decision: 'deferred',
           actor: localActor,

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
+import { deriveEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -10,6 +11,7 @@ import {
   KnowledgePageValidationError,
 } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   assertKnowledgeRetrievalTraceReadable,
   resolveWorkspaceKnowledgeRetrievalPages,
@@ -30,8 +32,8 @@ function digest(content: string): string {
   return `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`;
 }
 
-/** Derives the identifier required by the S61 canonical JSON tuple. */
-function deterministicId(prefix: 'kp_' | 'kr_', tuple: object): string {
+/** Computes the retained Proposal identity from its canonical JSON tuple. */
+function deterministicId(prefix: 'kp_', tuple: object): string {
   return `${prefix}${createHash('sha256').update(JSON.stringify(tuple), 'utf8').digest('hex')}`;
 }
 
@@ -258,8 +260,8 @@ describe('knowledge proposal authority', () => {
     const proposalDigest = digest(readFileSync(fixture.proposalPath, 'utf8'));
 
     expect(deferred.review).toEqual({
-      reviewId: deterministicId('kr_', {
-        workspaceId: fixture.workspaceId,
+      reviewId: deriveEntityId('kr', {
+        ownerScope: { kind: 'workspace', workspaceId: fixture.workspaceId },
         proposalId: fixture.proposal.id,
         requestId: authorityRequestId(`review-defer-${terminalDecision}`),
       }),
@@ -275,8 +277,8 @@ describe('knowledge proposal authority', () => {
       decidedAt: DECIDED_AT,
     });
     expect(terminal.review).toEqual({
-      reviewId: deterministicId('kr_', {
-        workspaceId: fixture.workspaceId,
+      reviewId: deriveEntityId('kr', {
+        ownerScope: { kind: 'workspace', workspaceId: fixture.workspaceId },
         proposalId: fixture.proposal.id,
         requestId: authorityRequestId(`review-terminal-${terminalDecision}`),
       }),
@@ -682,7 +684,7 @@ describe('knowledge proposal authority', () => {
     },
   ])('blocks publication while $name has an unresolved conflict', ({ name, subjectReference }) => {
     const fixture = createFixture(`proposal-unresolved-${name.replaceAll(' ', '-')}`);
-    const conflictId = `kf_${name.replaceAll(' ', '_')}`;
+    const conflictId = testEntityId('kf', `kf_${name.replaceAll(' ', '_')}`);
     fixture.store.recordKnowledgeConflict({
       id: conflictId,
       workspaceId: fixture.workspaceId,

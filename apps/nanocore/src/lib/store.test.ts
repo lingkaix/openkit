@@ -9,7 +9,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
-import { AgentSessionSchema, RequestIdSchema } from '@openkit/protocol';
+import { AgentSessionSchema, deriveEntityId, RequestIdSchema } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { uuidv5 } from '../generative-kernel/uuid.js';
@@ -449,10 +449,7 @@ describe('FsStore persistence', () => {
       LOCAL_ACTOR
     );
     const currentRequestId = 'artifact-save-revision-lineage';
-    const currentReferenceId = `it_artifact_${createHash('sha256')
-      .update(JSON.stringify([artifact.id, communicatingTurn.id]), 'utf8')
-      .digest('hex')
-      .slice(0, 24)}`;
+    const currentReferenceId = deriveEntityId('it', [artifact.id, communicatingTurn.id]);
     const currentReference = {
       id: currentReferenceId,
       workspaceId: workspace.id,
