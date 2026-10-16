@@ -1,6 +1,7 @@
 import { createHash, createPublicKey, randomBytes, verify } from 'node:crypto';
 import {
   AnswerUserInputRequestSchema,
+  isUserId,
   RequestIdSchema,
   RespondToApprovalRequestSchema,
 } from '@openkit/protocol';
@@ -42,6 +43,15 @@ export interface DiscordChannelOptions {
   readonly sqlite: Database.Database;
   readonly applicationId: string;
   readonly publicKey: string;
+  /** Trusted public App origin, independent of the inbound request Host. */
+  readonly appBaseUrl: string;
+  /** Returns an exact App link only after current source and audience admission. */
+  readonly requestLink: (input: {
+    actor: Actor;
+    workspaceId: string;
+    threadId: string;
+    pendingRequestId: string;
+  }) => string | null;
   readonly newRequestId: () => string;
   readonly now?: () => number;
   /** Resolves a live ordinary actor without inheriting the pairing credential's administrator grant. */
@@ -173,10 +183,74 @@ export interface DiscordAccountBinding {
   readonly pairedAt: number;
 }
 
+/** Reads the account owner independently of whether a Discord adapter is configured. */
+export function readDiscordAccountBinding(
+  sqlite: Database.Database,
+  userId: string
+): DiscordAccountBinding | null {
+  const row = sqlite
+    .prepare(`SELECT discord_user_id AS discordUserId,user_id AS userId,revision,paired_at AS pairedAt
+    FROM discord_account_bindings WHERE user_id = ? AND revoked_at IS NULL`)
+    .get(userId);
+  if (!row) return null;
+  const parsed = z
+    .object({
+      discordUserId: snowflake,
+      userId: z.string().refine(isUserId),
+      revision: RequestIdSchema,
+      pairedAt: z.number().int().nonnegative(),
+    })
+    .safeParse(row);
+  if (!parsed.success)
+    throw new OperationError(
+      'channel_binding_unavailable',
+      'The retained account binding is unavailable.',
+      409
+    );
+  return parsed.data;
+}
+
+/** Revokes account control and outstanding challenges without contacting or configuring Discord. */
+export function revokeDiscordAccountBinding(
+  sqlite: Database.Database,
+  userId: string,
+  now = Date.now()
+): void {
+  sqlite
+    .transaction(() => {
+      sqlite
+        .prepare(
+          'UPDATE discord_account_bindings SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL'
+        )
+        .run(now, userId);
+      sqlite
+        .prepare(
+          'UPDATE discord_pairing_challenges SET consumed_at = ? WHERE user_id = ? AND consumed_at IS NULL'
+        )
+        .run(now, userId);
+    })
+    .immediate();
+}
+
 /** Creates the Discord projection over migration-owned tables, without network or schema creation. */
 export function createDiscordChannel(options: DiscordChannelOptions) {
   const { sqlite } = options;
   const now = options.now ?? Date.now;
+  const appUrl = new URL(options.appBaseUrl);
+  if (
+    appUrl.protocol !== 'https:' ||
+    appUrl.origin !== options.appBaseUrl ||
+    appUrl.username ||
+    appUrl.password
+  )
+    throw new OperationError(
+      'channel_configuration_invalid',
+      'A public HTTPS App origin is required.',
+      503
+    );
+  const appLink = `Open OpenKit: ${appUrl.origin}`;
+  const reply = (text: string, link = appUrl.origin) =>
+    discordPrivateReply(`${text}\nOpen OpenKit: ${link}`);
   // A prior unfinished dispatch is uncertain. Never replay it, even if Core's receipt is absent.
   sqlite
     .prepare(
@@ -186,12 +260,7 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
 
   /** Reads the current active account binding for a Core user. */
   function binding(actor: Actor): DiscordAccountBinding | null {
-    return (
-      (sqlite
-        .prepare(`SELECT discord_user_id AS discordUserId,user_id AS userId,revision,paired_at AS pairedAt
-      FROM discord_account_bindings WHERE user_id = ? AND revoked_at IS NULL`)
-        .get(actor.userId) as DiscordAccountBinding | undefined) ?? null
-    );
+    return readDiscordAccountBinding(sqlite, actor.userId);
   }
 
   /** Starts a one-use, five-minute challenge for the authenticated Core user, storing only its digest. */
@@ -223,20 +292,7 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
 
   /** Revokes the binding and every unused challenge before later responses or sends can use them. */
   function revoke(actor: Actor): void {
-    sqlite
-      .transaction(() => {
-        sqlite
-          .prepare(
-            'UPDATE discord_account_bindings SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL'
-          )
-          .run(now(), actor.userId);
-        sqlite
-          .prepare(
-            'UPDATE discord_pairing_challenges SET consumed_at = ? WHERE user_id = ? AND consumed_at IS NULL'
-          )
-          .run(now(), actor.userId);
-      })
-      .immediate();
+    revokeDiscordAccountBinding(sqlite, actor.userId, now());
   }
 
   /** Atomically consumes external account proof and the Core-issued pairing challenge. */
@@ -291,12 +347,11 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
       envelope.context !== 1 ||
       !commandSchema.safeParse(envelope).success
     )
-      return discordPrivateReply(
+      return reply(
         'Use a private DM with the OpenKit bot. Unsupported input must be handled in OpenKit.'
       );
     const command = commandSchema.parse(envelope);
-    if (envelope.type !== 2)
-      return discordPrivateReply('This interaction is unsupported. Use OpenKit.');
+    if (envelope.type !== 2) return reply('This interaction is unsupported. Use OpenKit.');
     const receipt = sqlite
       .transaction(() => {
         const existing = sqlite
@@ -316,10 +371,8 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
       .immediate();
     if (receipt.existing) {
       if (receipt.existing.payloadDigest !== input.payloadDigest)
-        return discordPrivateReply(
-          'Interaction identity conflict. Inspect the request in OpenKit.'
-        );
-      return discordPrivateReply(
+        return reply('Interaction identity conflict. Inspect the request in OpenKit.');
+      return reply(
         receipt.existing.state === 'settled'
           ? 'This interaction was already handled. Inspect the request in OpenKit or inspect it again in Discord.'
           : 'The response outcome is unknown. Inspect the request in OpenKit before a new attempt.'
@@ -350,12 +403,6 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
               : 'disclosure,request,thread,workspace';
         if (names !== expectedNames)
           throw new OperationError('unsupported_input', 'Unsupported input.', 400);
-        if (subcommand.name === 'approve')
-          throw new OperationError(
-            'channel_grant_requires_app',
-            'Approve this request in OpenKit with its complete confirmation disclosure.',
-            403
-          );
         const row = sqlite
           .prepare(`SELECT discord_user_id AS discordUserId,user_id AS userId,revision,paired_at AS pairedAt
           FROM discord_account_bindings WHERE discord_user_id = ? AND revoked_at IS NULL`)
@@ -383,6 +430,12 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
           threadId: values.thread!,
           pendingRequestId: values.request!,
         };
+        if (subcommand.name === 'approve') {
+          const link = options.requestLink({ actor, ...target });
+          text = 'Approval grants require the complete App confirmation.';
+          settle(envelope.id, 'settled');
+          return reply(text, link ?? appUrl.origin);
+        }
         if (subcommand.name !== 'inspect') {
           const disclosure = sqlite
             .prepare(`SELECT content_digest AS contentDigest,kind FROM discord_disclosures
@@ -446,7 +499,7 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
           const view = currentView(actor, target);
           const token = randomBytes(32).toString('base64url');
           text = `${view.content}\nDigest: ${viewDigest(view)}\nDisclosure: ${token}\nUse this disclosure only for this exact request. It expires in five minutes.`;
-          if (text.length > 2_000)
+          if (text.length + appLink.length + 1 > 2_000)
             throw new OperationError(
               'channel_disclosure_too_large',
               'The complete request requires OpenKit.',
@@ -469,19 +522,19 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
         }
       }
       settle(envelope.id, 'settled');
-      return discordPrivateReply(text);
+      return reply(text);
     } catch (error) {
       const unknown = submitted && (!(error instanceof OperationError) || error.status >= 500);
       settle(envelope.id, unknown ? 'response-unknown' : 'settled');
       if (unknown)
-        return discordPrivateReply(
+        return reply(
           'The response outcome is unknown. Inspect the request in OpenKit before a new attempt.'
         );
       const code =
         error instanceof OperationError && /^[a-z0-9_-]{1,80}$/.test(error.code)
           ? error.code
           : 'unsupported_input';
-      return discordPrivateReply(
+      return reply(
         `OpenKit refused this input: ${code}. Inspect the request in OpenKit. Unsupported input must be handled there.`
       );
     }

@@ -281,7 +281,15 @@ export const OpenKitConfigSchema = z
     server: OpenKitServerRuntimeSchema.optional(),
     vault: OpenKitVaultConfigSchema.optional(),
   })
-  .strip();
+  .strip()
+  .superRefine((config, context) => {
+    if (config.channels?.discord && !config.server?.publicBaseUrl?.startsWith('https://'))
+      context.addIssue({
+        code: 'custom',
+        path: ['server', 'publicBaseUrl'],
+        message: 'Discord requires a public HTTPS App origin for authenticated request links.',
+      });
+  });
 
 /**
  * File-backed NanoCore configuration.

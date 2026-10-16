@@ -5,7 +5,12 @@ import type { Actor } from './auth/identity.js';
 import { currentWorkspaceAuthority } from './auth/operation-authorizer.js';
 import { isThreadIdVisible } from './auth/thread-visibility.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
-import { createDiscordChannel, type DiscordPendingView } from './channels/discord.js';
+import {
+  createDiscordChannel,
+  type DiscordPendingView,
+  readDiscordAccountBinding,
+  revokeDiscordAccountBinding,
+} from './channels/discord.js';
 import type { createDiscordRestTransport } from './channels/discord-rest.js';
 import type { CoreMode } from './config/mode.js';
 import type { FsStore } from './lib/store.js';
@@ -34,6 +39,7 @@ export function createChannelServices(input: {
   readonly coreDb: CoreDb;
   readonly store: FsStore;
   readonly mode: CoreMode;
+  readonly publicBaseUrl?: string;
   readonly discordConfig?: NonNullable<OpenKitConfig['channels']>['discord'];
   readonly transport?: DiscordAttentionTransport;
   readonly openWorkspace: (workspaceId: string) => WorkspaceDb;
@@ -137,11 +143,30 @@ export function createChannelServices(input: {
   };
   const notifications = new AttentionNotifications(coreDb.sqlite, { buildAppPath: attentionPath });
   notifications.reconcileIncompleteAttempts();
+  if (input.discordConfig && !input.publicBaseUrl)
+    throw new OperationError(
+      'channel_configuration_invalid',
+      'A public HTTPS App origin is required.',
+      503
+    );
   const discord = input.discordConfig
     ? createDiscordChannel({
         sqlite: coreDb.sqlite,
         ...input.discordConfig,
         newRequestId: randomUUID,
+        appBaseUrl: input.publicBaseUrl!,
+        requestLink: (query) => {
+          try {
+            const record = currentRequest(
+              query.actor,
+              { ...query, requestId: query.pendingRequestId },
+              false
+            );
+            return record ? new URL(attentionPath(record), input.publicBaseUrl!).href : null;
+          } catch {
+            return null;
+          }
+        },
         resolveActor: ordinaryActor,
         inspectPending,
         invoke: input.invokePending,
@@ -262,6 +287,8 @@ export function createChannelServices(input: {
 
   return {
     discord,
+    binding: (actor: Actor) => readDiscordAccountBinding(coreDb.sqlite, actor.userId),
+    revokeBinding: (actor: Actor) => revokeDiscordAccountBinding(coreDb.sqlite, actor.userId),
     notifications,
     inspectPending,
     eligible,
@@ -290,7 +317,7 @@ export function createChannelOperationImplementations(services: ChannelServices 
       return {
         configured: Boolean(services?.discord),
         sendingAvailable: services?.sendingAvailable ?? false,
-        binding: services?.discord?.binding(actor) ?? null,
+        binding: services?.binding(actor) ?? null,
       };
     },
     'channel.discord.pair': (_input, context) => {
@@ -300,7 +327,7 @@ export function createChannelOperationImplementations(services: ChannelServices 
       return discord.beginPairing(publicOperationActor(context));
     },
     'channel.discord.revoke': (_input, context) => {
-      requireServices().discord?.revoke(publicOperationActor(context));
+      requireServices().revokeBinding(publicOperationActor(context));
       return null;
     },
     'notification.list': (input, context) => ({

@@ -434,3 +434,5 @@ App update administration displays separate operational readiness observations a
 Vitest uses the shared [per-run temporary-directory setup](../../tests/support/vitest-global-setup.mjs), which contains worker temporary files and removes them at normal success or failure teardown.
 
 The live Channels settings surface uses the shared channel operation family for one-use account pairing, revocation, and current-authority delivery observations. It disables mutations while disconnected, keeps the challenge only in transient component state, and offers retry only for an exact definite no-send attempt. Unknown delivery directs the user to the source request. The retired multi-adapter fixture is removed.
+
+The account transition owner clears the Channels query and mutation prefix before new account admission. This removes prior-user bindings, private notification routes and transient pairing results instead of showing them from a fresh or stale cache.

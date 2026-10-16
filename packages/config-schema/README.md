@@ -98,4 +98,4 @@ Authored Gateway, Provider, model-catalog, internal-role, Agent image, logical-m
 
 Read-only REST access grants may explicitly declare boolean `allowEncodedSlash`; omission stays absent and means strict parsing. Rules, non-REST and read-write grants reject the field, and composed grants must agree at one canonical host/port. Authored configuration and retained AEP validation share this boundary; generated editor schemas expose the qualifying closed shape. See [Agent Manifest And AEP Resolution](../../docs/specs/20260703-agent_manifest_aep_resolution.md).
 
-`OpenKitChannelsConfigSchema` validates the optional startup-owned Discord application identity, public signature key, and environment credential reference. Unknown channel authority fields fail closed. No credential value is admitted by this shape.
+`OpenKitChannelsConfigSchema` validates the optional startup-owned Discord application identity, public signature key, and environment credential reference. A configured Discord adapter requires an HTTPS `server.publicBaseUrl` for App link-back. Unknown channel authority fields fail closed. No credential value is admitted by this shape.

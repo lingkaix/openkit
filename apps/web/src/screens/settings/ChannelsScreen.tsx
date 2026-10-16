@@ -12,9 +12,10 @@ import {
   Skeleton,
   StatusChip,
 } from '../../primitives';
+import { accountChannelsKey } from '../account/session';
 
-const channelKey = ['settings', 'discord-channel'] as const;
-const notificationKey = ['settings', 'notification-deliveries'] as const;
+const channelKey = [...accountChannelsKey, 'status'] as const;
+const notificationKey = [...accountChannelsKey, 'deliveries'] as const;
 const labels = {
   queued: 'Queued',
   sending: 'Sending',
@@ -44,10 +45,12 @@ export function ChannelsScreen() {
     void queries.invalidateQueries({ queryKey: notificationKey });
   };
   const pair = useMutation({
+    mutationKey: [...accountChannelsKey, 'pair'],
     mutationFn: () => client.operations['channel.discord.pair']({}),
     onSuccess: setChallenge,
   });
   const revoke = useMutation({
+    mutationKey: [...accountChannelsKey, 'revoke'],
     mutationFn: () => client.operations['channel.discord.revoke']({}),
     onSuccess: () => {
       setChallenge(null);
@@ -56,6 +59,7 @@ export function ChannelsScreen() {
     },
   });
   const send = useMutation({
+    mutationKey: [...accountChannelsKey, 'send'],
     mutationFn: (input: { deliveryId: string; expectedAttemptId: number | null }) =>
       client.operations['notification.send'](input),
     onSettled: refresh,
@@ -136,17 +140,17 @@ export function ChannelsScreen() {
                   </p>
                 </div>
               ) : null}
-              {status.data.binding || challenge ? (
-                <Button
-                  variant="outline"
-                  isDisabled={disconnected || busy}
-                  onPress={() => revoke.mutate()}
-                >
-                  Revoke Discord binding
-                </Button>
-              ) : null}
             </>
           )}
+          {status.data?.binding || challenge ? (
+            <Button
+              variant="outline"
+              isDisabled={disconnected || busy}
+              onPress={() => revoke.mutate()}
+            >
+              Revoke Discord binding
+            </Button>
+          ) : null}
           {pair.isError || revoke.isError ? (
             <ErrorBanner message="The account change could not be completed. Refresh before a new attempt." />
           ) : null}

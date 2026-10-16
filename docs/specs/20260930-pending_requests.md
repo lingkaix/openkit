@@ -279,13 +279,13 @@ This version starts from a new data root and reads no data that an earlier versi
 
 External attention is a delivery projection of an approval request or user-input request. Core retains one source reference per exact request and responsible recipient. Delivery records own only transport state. They never copy the request lifecycle or decide an outcome. Server control storage owns account bindings, inbound deduplication, attention references, and delivery attempts. Portable Workspace import does not import these deployment-local account or transport authorities.
 
-Discord is the first adapter. Its first direct-response allowlist is approval denials and answers to non-secret user-input requests. Approval grants return to the App, which owns their additional confirmation and irreversible-effect disclosure. All other interactions link to the App. Email carries only digest or attention links. No adapter's implementation proves acceptance of another adapter.
+Discord is the first adapter. Its first direct-response allowlist is approval denials and answers to non-secret user-input requests. Approval grants return to the App, which owns their additional confirmation and irreversible-effect disclosure. All other interactions link to the App. A configured adapter requires a trusted public HTTPS App origin. Approval grant responses include an exact request link only when current source access permits it; otherwise they include the App home link. Email carries only digest or attention links. No adapter's implementation proves acceptance of another adapter.
 
 All first-release Discord interactions occur in a private direct message to the bound account. Shared channels cannot receive request content or submit decisions. Current source access and destination audience admission precede every disclosure and send. Attention messages contain an App link, with no request arguments or protected summary. A link still requires App authentication and current source access.
 
 ### Account Binding
 
-A currently authenticated Core user starts a one-use, expiring pairing challenge. Only the authenticated Web pairing flow receives its plaintext. The CLI excludes pairing with this owning reason; its access-token sink must not store a channel challenge. MCP also excludes this one-time-secret result. Core stores only its digest. A verified Discord interaction consumes that challenge and binds the proven Discord account to that user. A challenge cannot replace another user's active binding. Revoke ends the binding and pending pairing challenges. Rebinding never restores prior response authority or replays prior input.
+A currently authenticated Core user starts a one-use, expiring pairing challenge. Only the authenticated Web pairing flow receives its plaintext. The CLI excludes pairing with this owning reason; its access-token sink must not store a channel challenge. MCP also excludes this one-time-secret result. Core stores only its digest. A verified Discord interaction consumes that challenge and binds the proven Discord account to that user. A challenge cannot replace another user's active binding. Revoke ends the binding and pending pairing challenges, including when the deployment removes Discord configuration. Rebinding never restores prior response authority or replays prior input.
 
 The channel resolves a currently active ordinary Core actor for each input. It never inherits an administrator credential from pairing. The existing response owner checks responsible user, Workspace membership, Thread audience, exact request lineage, and current execution authority at response time.
 
@@ -306,6 +306,7 @@ The channel invokes the existing approval or answer command with one stable comm
 ### Observable Acceptance
 
 - A pairing challenge cannot bind twice, bind after expiry, or transfer another user's account.
+- After an account transition, Web shows only the current actor's binding and delivery history, including cached data and pending query results.
 - Invalid signatures, shared-channel input, disabled actors, revoked bindings, changed duplicate input, and stale disclosures cause no command dispatch.
 - Duplicate input and restart after incomplete dispatch cause no second dispatch or inferred decision.
 - A response after membership or audience revocation fails under the current owner, even if pairing and disclosure succeeded earlier.
