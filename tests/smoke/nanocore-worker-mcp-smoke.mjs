@@ -689,7 +689,7 @@ async function seedFixture(dataRoot, fixtureRoot, callFile, nanoHostPort) {
           secretPath: join(fixtureRoot, 'transport-b.token'),
         },
       },
-      deploymentId: 'deployment-worker-mcp-smoke',
+      deploymentId: 'dep_0190f4c8-0000-7000-8000-000000000602',
       identityId: 'nanohost-worker-mcp-smoke',
       rendezvousUrl: `http://127.0.0.1:${nanoHostPort}`,
     },
@@ -805,7 +805,7 @@ async function seedFixture(dataRoot, fixtureRoot, callFile, nanoHostPort) {
     const inputDigest = commandInputHash(runtimeImage);
     const requestId = createHash('sha256').update(`worker-mcp-smoke:${inputDigest}`).digest('hex');
     const candidate = {
-      authoredArtifactId: `ar_smoke_${requestId}`,
+      authoredArtifactId: 'ar_0190f4c8-0000-7000-8000-000000000603',
       authoredArtifactVersion: 1,
       authoredContentDigest: inputDigest,
       inputDigest,
@@ -839,9 +839,13 @@ async function issueNanoHostToken(dataRoot) {
           identity_id, deployment_id, status, created_at
         ) VALUES (?, ?, 'active', ?)`
       )
-      .run('nanohost-worker-mcp-smoke', 'deployment-worker-mcp-smoke', '2026-09-05T00:00:00.000Z');
+      .run(
+        'nanohost-worker-mcp-smoke',
+        'dep_0190f4c8-0000-7000-8000-000000000602',
+        '2026-09-05T00:00:00.000Z'
+      );
     return createNanoHostTransportTokenRecord(coreDb, {
-      deploymentId: 'deployment-worker-mcp-smoke',
+      deploymentId: 'dep_0190f4c8-0000-7000-8000-000000000602',
       expiresAt: '2999-01-01T00:00:00.000Z',
       ownerNanoHostIdentityId: 'nanohost-worker-mcp-smoke',
       responsibleServerAdminActorId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -853,9 +857,10 @@ async function issueNanoHostToken(dataRoot) {
 
 /** Reads the normalized durable call, policy, schema, audit, usage, Item, backend, and attempt facts. */
 async function readDurableOutcome(dataRoot, turnId) {
-  const [{ FsStore }, { openCoreDb, openWorkspaceDb }] = await Promise.all([
+  const [{ FsStore }, { openCoreDb, openWorkspaceDb }, { ItemIdSchema }] = await Promise.all([
     import('../../apps/nanocore/dist/lib/store.js'),
     import('../../apps/nanocore/dist/storage/db.js'),
+    import('../../packages/protocol/dist/index.js'),
   ]);
   const coreDb = openCoreDb(dataRoot);
   let backend;
@@ -941,7 +946,7 @@ async function readDurableOutcome(dataRoot, turnId) {
       call === null
         ? null
         : {
-            itemIdValid: /^it_mcp_/u.test(call.itemId),
+            itemIdValid: ItemIdSchema.safeParse(call.itemId).success,
             schemaSnapshotIdValid: /^mcpsnap_echo_/u.test(call.schemaSnapshotId),
             status: call.status,
           },
