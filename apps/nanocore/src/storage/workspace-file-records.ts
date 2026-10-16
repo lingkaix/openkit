@@ -960,8 +960,15 @@ export function readPublishedTurnRecord(
   assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
   assertSafeWorkspacePathSegment(threadId, 'Thread id');
   assertSafeWorkspacePathSegment(turnId, 'Turn id');
-  const turnsRoot = join(dataRoot, 'workspaces', workspaceId, 'threads', threadId, 'turns');
-  const turnPath = join(turnsRoot, turnId, 'turn.json');
+  let turnRoot = dataRoot;
+  assertCanonicalDirectory(turnRoot);
+  // Direct scoped reads must keep the parent checks that directory enumeration supplied.
+  for (const segment of ['workspaces', workspaceId, 'threads', threadId, 'turns', turnId]) {
+    turnRoot = join(turnRoot, segment);
+    if (!lstatSync(turnRoot, { throwIfNoEntry: false })) return null;
+    assertCanonicalDirectory(turnRoot);
+  }
+  const turnPath = join(turnRoot, 'turn.json');
   if (!existsSync(turnPath)) {
     return null;
   }
@@ -985,7 +992,7 @@ export function readPublishedTurnRecord(
   ) {
     throw new Error(`Turn record ${turnWithoutItems.id} has invalid lineage.`);
   }
-  const itemsPath = join(turnsRoot, turnId, 'items.jsonl');
+  const itemsPath = join(turnRoot, 'items.jsonl');
   if (!existsSync(itemsPath)) {
     return null;
   }
