@@ -86,6 +86,42 @@ afterEach(async () => {
 });
 
 describe('KnowledgeNotebook real Git content publication', () => {
+  it('returns bounded metadata history without reading any page body', async () => {
+    const { notebook, revision } = await fixture({ 'a.md': page('A', 'BODY-MUST-STAY-UNREAD') });
+    const versions = [revision];
+    for (let index = 0; index < 3; index += 1) {
+      const baseRevision = versions.at(-1)!;
+      const candidateRevision = notebook.prepare({
+        baseRevision,
+        changes: { 'a.md': page('A', `BODY-MUST-STAY-UNREAD-${index}`) },
+        metadata: metadata(`history-${index}`),
+      });
+      notebook.publish({ baseRevision, candidateRevision });
+      versions.push(candidateRevision);
+    }
+    const first = notebook.history({ limit: 2 });
+    expect(first).toEqual({
+      revisions: [
+        { revision: versions[3], parentRevision: versions[2], metadata: metadata('history-2') },
+        { revision: versions[2], parentRevision: versions[1], metadata: metadata('history-1') },
+      ],
+      nextRevision: versions[1],
+    });
+    expect(JSON.stringify(first)).not.toContain('BODY-MUST-STAY-UNREAD');
+    expect(notebook.history({ revision: first.nextRevision!, limit: 2 })).toEqual({
+      revisions: [
+        { revision: versions[1], parentRevision: versions[0], metadata: metadata('history-0') },
+        { revision: versions[0], parentRevision: null, metadata: metadata() },
+      ],
+      nextRevision: null,
+    });
+  });
+
+  it.each([0, -1, 101, 1.5, Number.NaN])('refuses invalid history limit %s', async (limit) => {
+    const { notebook } = await fixture();
+    expect(() => notebook.history({ limit })).toThrowError();
+  });
+
   it('creates one root revision with a versioned empty OKF bundle and no parent', async () => {
     const { notebook, repositoryPath, revision } = await fixture();
 
@@ -302,10 +338,11 @@ describe('KnowledgeNotebook real Git content publication', () => {
     expect((await reopened.readRevision(published)).files['a.md']).toBe(page('A', 'published'));
     expect((await reopened.readRevision(revision)).files['a.md']).toBe(page('A', 'original'));
     expect((await reopened.readRevision(candidate)).files['a.md']).toBe(page('A', 'pending'));
-    expect((await reopened.history({})).map((entry) => entry.revision)).toEqual([
+    expect((await reopened.history({})).revisions.map((entry) => entry.revision)).toEqual([
       published,
       revision,
     ]);
+    expect(() => reopened.history({ revision: candidate })).toThrowError();
     expect(await git(repositoryPath, ['rev-parse', `refs/proposals/kp_${'2'.repeat(64)}`])).toBe(
       candidate
     );
