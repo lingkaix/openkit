@@ -23,6 +23,7 @@ function renderNotebook({ deferDiff = false } = {}) {
   const restores: Array<Record<string, unknown>> = [];
   const diffs: Array<Record<string, unknown>> = [];
   let currentRevision = BASE;
+  let historyDenied = false;
   let resolveOldDiff: (() => void) | undefined;
   const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
     const path = new URL(String(input)).pathname;
@@ -80,6 +81,16 @@ function renderNotebook({ deferDiff = false } = {}) {
       case operationHttpPath('attention.list'):
         return Response.json({ items: [] });
       case operationHttpPath('knowledge.notebook.history'):
+        if (historyDenied)
+          return Response.json({
+            notebookRevision: currentRevision,
+            nextRevision: null,
+            revisions: [currentRevision, FROM].map((revision) => ({
+              revision,
+              parentRevision: null,
+              availability: 'unavailable',
+            })),
+          });
         return Response.json({
           notebookRevision: currentRevision,
           nextRevision: null,
@@ -105,6 +116,11 @@ function renderNotebook({ deferDiff = false } = {}) {
         });
       case operationHttpPath('knowledge.notebook.diff'):
         diffs.push(body);
+        if (historyDenied)
+          return Response.json(
+            { code: 'workspace_access_denied', message: 'Knowledge page is unavailable.' },
+            { status: 403 }
+          );
         if (deferDiff && body.workspaceId === WORKSPACE)
           return new Promise<Response>((resolve) => {
             resolveOldDiff = () =>
@@ -178,6 +194,7 @@ function renderNotebook({ deferDiff = false } = {}) {
     restores,
     diffs,
     queryClient,
+    denyHistory: () => { historyDenied = true; },
     hasDeferredDiff: () => Boolean(resolveOldDiff),
     resolveOldDiff: () => resolveOldDiff?.(),
   };
@@ -192,6 +209,22 @@ afterEach(() => {
 });
 
 describe('Notebook history and restore', () => {
+  it('withholds a cached diff when refreshed history and current page access become unavailable', async () => {
+    const user = userEvent.setup();
+    const f = renderNotebook();
+    await user.click(await screen.findByRole('button', { name: 'Notebook history' }));
+    await user.click(await screen.findByRole('radio', { name: 'Earlier human edit' }));
+    await screen.findByRole('region', { name: 'Historical notes/one.md' });
+    f.denyHistory();
+    await user.click(screen.getByRole('button', { name: 'Refresh history' }));
+    await waitFor(() => expect(f.diffs).toHaveLength(2));
+    await waitFor(() => expect(screen.queryByRole('radio', { name: 'Earlier human edit' })).not.toBeInTheDocument());
+    expect(screen.queryByRole('region', { name: 'Historical notes/one.md' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Current exact text.')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Prepare restore' })).not.toBeInTheDocument();
+    expect(f.restores).toHaveLength(0);
+  });
+
   it('shows exact normalized changes and removal before confirmation, then retries the identical command after an unknown result', async () => {
     const user = userEvent.setup();
     const f = renderNotebook();
