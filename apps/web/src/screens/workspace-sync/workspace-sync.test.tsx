@@ -35,6 +35,10 @@ const PERSONAL_WORKSPACE = {
   id: 'ws_quick_chat',
   name: 'Personal',
   kind: 'personal',
+  status: 'active',
+  counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+  createdAt: TIMESTAMP,
+  updatedAt: TIMESTAMP,
 } as const;
 const EVIDENCE_BUNDLE_ID = 'evb_wrr_1';
 const PENDING_PATCH_TEXT = 'diff --git a/docs/spec.md b/docs/spec.md\n';

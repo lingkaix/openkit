@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { SubmitConversationResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { ensureLocalUser } from './auth/identity.js';
+import { readAssistantTaskHandoffSource } from './internal-agents/assistant-handoff-source.js';
+import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
+import * as workerCoordinator from './internal-agents/worker-coordinator.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
 import type {
@@ -15,11 +18,31 @@ import type {
 import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import { ProviderRegistry } from './providers/registry.js';
-import { listThreadPendingRequests, readPendingRequest } from './runtime/pending-requests.js';
-import { getSchedulerPreparationClaims } from './runtime/scheduler-dispatch-loop.js';
-import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
+import { commandInputHash } from './runtime/idempotent-command.js';
+import {
+  answerPendingRequest,
+  assistantPendingOutcomeSourceHash,
+  freezeReadyOutcomes,
+  listThreadPendingRequests,
+  pendingRequestItemId,
+  proveFrozenDelivery,
+  raisePendingRequest,
+  readPendingRequest,
+} from './runtime/pending-requests.js';
+import {
+  getSchedulerPreparationClaims,
+  runSchedulerDispatchLoop,
+} from './runtime/scheduler-dispatch-loop.js';
+import {
+  createWorkerCheckpointContextDiagnostics,
+  getWorkerCheckpoint,
+  upsertWorkerCheckpoint,
+} from './runtime/worker-checkpoints.js';
 import { WorkerGovernanceCapacityUnavailableError } from './runtime/worker-governance-backend.js';
-import { listSchedulerAdmissionEntriesForWorkspace } from './scheduler-records.js';
+import {
+  createSchedulerAdmissionEntry,
+  listSchedulerAdmissionEntriesForWorkspace,
+} from './scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -202,6 +225,310 @@ function fixture(targetWorkspaceId?: string) {
 }
 
 describe('Assistant semantic Task handoff', () => {
+  it('keeps a retained predecessor receipt-free Task inspect-only after reopen without resuming it', async () => {
+    const f = fixture();
+    // Reconstruct the queued boundary from origin/main acceptPendingInput, before Worker closeout.
+    // The old receiving Thread has no parent/source, and an ordinary answer has no exact selection.
+    f.store.setTurnAdmissionHooks(null);
+    const now = '2026-10-14T00:00:00.000Z';
+    const actor = { kind: 'user' as const, id: LOCAL_USER_ID };
+    const input = 'Implement the bounded sample change.';
+    const raising = f.store.createTurn(
+      f.workspace.id,
+      f.thread.id,
+      'Clarify the work.',
+      actor,
+      null,
+      {
+        turnId: 'tu_predecessor_clarification',
+        agentId: 'quick-chat',
+        startedAt: now,
+      }
+    );
+    const requestId = `ui_chat_clarify_${raising.id}`;
+    const requestItemId = `it_chat_clarify_${raising.id}`;
+    const questions = [
+      {
+        id: 'chat_clarification',
+        header: 'Clarify',
+        question: 'What should the Assistant answer or help route?',
+        options: null,
+        isOther: true,
+        isSecret: false,
+      },
+    ];
+    f.store.createItem({
+      id: requestItemId,
+      workspaceId: f.workspace.id,
+      threadId: f.thread.id,
+      turnId: raising.id,
+      type: 'user-input-request',
+      userInputRequestId: requestId,
+      responsibleUserId: LOCAL_USER_ID,
+      prompt: 'Chat Mode needs a more specific request.',
+      questions,
+      status: 'completed',
+      createdAt: now,
+      completedAt: now,
+    });
+    raisePendingRequest(f.workspaceDb.sqlite, {
+      requestId,
+      requestItemId,
+      workspaceId: f.workspace.id,
+      threadId: f.thread.id,
+      raisingTurnId: raising.id,
+      kind: 'user-input',
+      requesterKind: 'assistant',
+      responsibleUserId: LOCAL_USER_ID,
+      questions,
+      now,
+    });
+    f.store.updateTurn(raising.id, { status: 'completed', completedAt: now });
+    const answers = { chat_clarification: [input] as [string] };
+    expect(
+      answerPendingRequest(f.workspaceDb.sqlite, requestId, actor, answers, now)
+    ).not.toBeNull();
+    const source = f.store.createTurn(
+      f.workspace.id,
+      f.thread.id,
+      'User-input outcomes',
+      actor,
+      null,
+      {
+        turnId: 'tu_predecessor_outcome',
+        agentId: 'quick-chat',
+        executorKind: 'assistant',
+        startedAt: now,
+        triggerSource: { kind: 'user-input', summary: 'User-input outcomes are ready.' },
+      }
+    );
+    expect(
+      freezeReadyOutcomes(f.workspaceDb.sqlite, {
+        workspaceId: f.workspace.id,
+        threadId: f.thread.id,
+        turnId: source.id,
+        executor: 'assistant',
+        cause: 'outcome',
+        now,
+      })
+    ).toHaveLength(1);
+    f.store.createItem({
+      id: pendingRequestItemId(requestId, 'answer'),
+      workspaceId: f.workspace.id,
+      threadId: f.thread.id,
+      turnId: source.id,
+      type: 'user-input-response',
+      actor,
+      causationId: requestItemId,
+      userInputRequestId: requestId,
+      answers,
+      answeredAt: now,
+      status: 'completed',
+      createdAt: now,
+      completedAt: now,
+    });
+    expect(proveFrozenDelivery(f.workspaceDb.sqlite, source.id, now)).toHaveLength(1);
+    const record = readPendingRequest(f.workspaceDb.sqlite, requestId)!;
+    expect(record.assistantHandoff).toBeNull();
+    expect(record).toMatchObject({
+      state: 'resolved',
+      resolution: 'answered',
+      delivery: 'delivered',
+    });
+    // This is the prior declared hash input, without a new nullable descriptor field.
+    const priorHash = commandInputHash({
+      workspaceId: f.workspace.id,
+      threadId: f.thread.id,
+      turnId: source.id,
+      responsibleUserId: LOCAL_USER_ID,
+      input: [
+        {
+          requestId,
+          requestItemId,
+          publicationTurnId: source.id,
+          resolution: 'answered',
+          ending: null,
+          disposition: null,
+          answerMap: answers,
+          decidedAt: now,
+          endedAt: null,
+        },
+      ],
+    });
+    expect(assistantPendingOutcomeSourceHash(source, [record], LOCAL_USER_ID)).toBe(priorHash);
+    const receiving = f.store.createThread(
+      f.workspace.id,
+      input,
+      `th_task_${priorHash.slice(0, 24)}`,
+      'conversation',
+      { visibility: 'workspace', threadSource: undefined }
+    );
+    const turnId = `tu_task_${priorHash.slice(0, 24)}`;
+    const workerRequestId = `pending_${priorHash}`;
+    const workerRequest = StructuredWorkerDelegationRequestSchema.parse({
+      schemaVersion: 1,
+      objective: input,
+      acceptanceCriteria: ['The bounded worker task satisfies the requested objective.'],
+      contextRefs: [
+        { kind: 'workspace', id: f.workspace.id },
+        { kind: 'thread', id: f.thread.id },
+        { kind: 'item', id: requestItemId },
+      ],
+      resources: [],
+      expectedArtifacts: [],
+      constraints: { maxContextTokens: 240_000, maxWorkerIterations: 1 },
+      verification: [{ kind: 'manual', description: 'Check the result against the objective.' }],
+      reviewPolicy: { required: false, reviewers: ['human'], instructions: 'Review the result.' },
+      escalationConditions: [],
+      reviewContext: null,
+    });
+    const turnInput = JSON.stringify(workerRequest);
+    const contextDigest = commandInputHash(workerRequest);
+    const worker = f.store.createTurn(f.workspace.id, receiving.id, turnInput, actor, null, {
+      turnId,
+      status: 'pending',
+      agentId: f.selected.manifest.id,
+      startedAt: now,
+    });
+    upsertWorkerCheckpoint(f.workspaceDb, {
+      workspaceId: f.workspace.id,
+      threadId: receiving.id,
+      turnId,
+      requestId: workerRequestId,
+      requestInputHash: priorHash,
+      stage: 'preparing',
+      iteration: 0,
+      contextDigest,
+      diagnosticsSummary: createWorkerCheckpointContextDiagnostics({
+        contextDigest,
+        contextRefs: workerRequest.contextRefs,
+        knowledgeSelectionInput: null,
+      }),
+      now: () => now,
+    });
+    const admission = createSchedulerAdmissionEntry(f.coreDb, {
+      backendId: f.executor.id,
+      queueEntryId: 'queue_predecessor_assistant',
+      requestId: workerRequestId,
+      triggerActor: actor,
+      workspaceId: f.workspace.id,
+      threadId: receiving.id,
+      turnId,
+      turnInput,
+      requestedAgentId: f.selected.manifest.id,
+      modelId: f.modelId,
+      now: () => now,
+    });
+    expect(receiving.parentThreadId).toBeUndefined();
+    expect(receiving.threadSource).toBeUndefined();
+    // At this prior queued boundary the source is running: its old it_chat_task_ result is not yet written.
+    expect(f.store.getTurnById(source.id).status).toBe('running');
+    expect(f.store.listCommandRequests()).toEqual([]);
+
+    /** Captures canonical history bytes and raw SQL values, including exact retained JSON strings. */
+    const retained = (coreDb: typeof f.coreDb, workspaceDb: typeof f.workspaceDb) => {
+      const history: Record<string, string> = {};
+      const visit = (directory: string) => {
+        for (const entry of readdirSync(directory, { withFileTypes: true })) {
+          const path = join(directory, entry.name);
+          if (entry.isDirectory()) visit(path);
+          else history[path] = readFileSync(path).toString('hex');
+        }
+      };
+      visit(join(f.dataRoot, 'workspaces', f.workspace.id, 'threads'));
+      return {
+        history,
+        requests: workspaceDb.sqlite
+          .prepare('SELECT * FROM pending_requests ORDER BY request_id')
+          .all(),
+        checkpoints: workspaceDb.sqlite
+          .prepare('SELECT * FROM worker_turn_checkpoints ORDER BY checkpoint_id')
+          .all(),
+        receipts: workspaceDb.sqlite
+          .prepare('SELECT * FROM idempotency_requests ORDER BY request_id')
+          .all(),
+        admissions: coreDb.sqlite
+          .prepare('SELECT * FROM scheduler_admission_entries ORDER BY queue_entry_id')
+          .all(),
+        attempts: coreDb.sqlite
+          .prepare('SELECT * FROM scheduler_execution_attempts ORDER BY attempt_id')
+          .all(),
+      };
+    };
+    const before = retained(f.coreDb, f.workspaceDb);
+    f.workspaceDb.sqlite.close();
+    f.coreDb.sqlite.close();
+    const coreDb = openCoreDb(f.dataRoot);
+    const workspaceDb = openWorkspaceDb(f.dataRoot, f.workspace.id);
+    const store = new FsStore({ dataRoot: f.dataRoot });
+    const coordinator = vi.spyOn(workerCoordinator, 'createWorkerCoordinatorDecision');
+    const submit = vi.spyOn(f.executor, 'submit');
+    const inspect = vi.spyOn(f.executor, 'inspect');
+    const cancel = vi.spyOn(f.executor, 'cancel');
+    const release = vi.spyOn(f.executor, 'release');
+    try {
+      expect(retained(coreDb, workspaceDb)).toEqual(before);
+      expect(store.getTurnById(worker.id)).toEqual(worker);
+      expect(readPendingRequest(workspaceDb.sqlite, requestId)).toEqual(record);
+      const checkpoint = getWorkerCheckpoint(workspaceDb, f.workspace.id, receiving.id, turnId)!;
+      expect(
+        readAssistantTaskHandoffSource(store, workspaceDb, {
+          ...checkpoint,
+          turnInput,
+          modelId: admission.modelId,
+          triggerActor: actor,
+        })
+      ).toBeNull();
+      for (let pass = 0; pass < 2; pass++) {
+        await expect(
+          classifyDirectTaskCheckpointAfterSchedulerRecovery({
+            coreDb,
+            store,
+            workspaceDb,
+            checkpoint,
+          })
+        ).rejects.toMatchObject({
+          code: 'recovery_required',
+          message: 'The sessionless Task has no exact initiating command receipt.',
+        });
+        expect(
+          await runSchedulerDispatchLoop({
+            coreDb,
+            store,
+            turnExecutor: f.executor,
+            executionBackend: f.executor.executionBackend,
+            agentManifests: [f.selected.manifest],
+            gatewayConfig: createTestGatewayConfig(),
+            providerRegistry: new ProviderRegistry([]),
+            maxDispatches: 1,
+          })
+        ).toEqual({
+          startedTurns: [],
+          terminalResult: { status: 'queued', reason: 'entry-publication-pending' },
+        });
+        expect(retained(coreDb, workspaceDb)).toEqual(before);
+        expect(store.listCommandRequests()).toEqual([]);
+        expect(f.requests).toEqual([]);
+        expect(coordinator).not.toHaveBeenCalled();
+        expect(f.preparation).not.toHaveBeenCalled();
+        expect(f.launches).not.toHaveBeenCalled();
+        expect(submit).not.toHaveBeenCalled();
+        expect(inspect).not.toHaveBeenCalled();
+        expect(cancel).not.toHaveBeenCalled();
+        expect(release).not.toHaveBeenCalled();
+        expect(getSchedulerPreparationClaims(coreDb).size).toBe(0);
+      }
+    } finally {
+      coordinator.mockRestore();
+      submit.mockRestore();
+      inspect.mockRestore();
+      cancel.mockRestore();
+      release.mockRestore();
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
   it.each([
     false,
     true,
