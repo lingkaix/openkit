@@ -1,3 +1,4 @@
+import { WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
 /** Quick chat request body for a completed non-streaming response. */
@@ -12,7 +13,7 @@ export const QuickChatRequestSchema = z
 export const QuickChatResponseSchema = z.object({
   id: z.string().min(1),
   status: z.literal('completed'),
-  workspaceId: z.string().min(1),
+  workspaceId: WorkspaceIdSchema,
   modelId: z.string().min(1),
   content: z.string(),
 });

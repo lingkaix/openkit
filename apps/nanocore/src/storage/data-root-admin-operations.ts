@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type {
   DATA_ROOT_ADMIN_OPERATION_DEFINITIONS,
@@ -10,6 +9,7 @@ import {
   DataRootBackupVerifyResponseSchema,
   StorageLayoutReportResponseSchema,
 } from '@openkit/app-api-schemas';
+import { allocateEntityId } from '@openkit/protocol';
 import { OperationError } from '../operation-error.js';
 import {
   type VerifiedDataRootBackupManifest,
@@ -69,7 +69,7 @@ export function createDataRootAdminOperationImplementations(dataRoot: string | n
         return failure('Data-root backup is unavailable.', 'data_root_backup_unavailable', 503);
       }
 
-      const backupId = `drb_${randomUUID()}`;
+      const backupId = allocateEntityId('drb');
 
       try {
         const verified = await writeHotDataRootBackup({

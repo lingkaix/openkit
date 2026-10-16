@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-
 import type { ActorRef, SubmitTurnInputRequestSchema, TurnSchema } from '@openkit/protocol';
+import { deriveEntityId } from '@openkit/protocol';
 import type { z } from 'zod';
 import { computeReadiness } from '../agents/readiness.js';
 import { selectAgent } from '../agents/selector.js';
@@ -153,7 +153,15 @@ export async function startProductTurn(input: StartProductTurnInput) {
     input.reservedTurnId
   );
   const queueEntryId = `queue_${input.input.requestId}_${suffix}`;
-  const turnId = input.reservedTurnId ?? `turn_${input.input.requestId}_${suffix}`;
+  const turnId =
+    input.reservedTurnId ??
+    deriveEntityId('tu', [
+      JSON.stringify(canonicalTriggerActor),
+      input.input.workspaceId,
+      input.input.threadId,
+      input.input.requestId,
+      null,
+    ]);
   // Product pending state is real nonterminal ownership, before any backend acquisition.
   if (
     input.store
@@ -483,7 +491,9 @@ export function validateLiveProductTurnAdmission(input: {
       (!attempt && admission.status !== 'queued')
     )
       throw new Error('Live Turn admission contradicts its exact request or attempt.');
-    const initiatingItem = turn.items.find((item) => item.id === `it_user_${turn.id}`);
+    const initiatingItem = turn.items.find(
+      (item) => item.id === deriveEntityId('it', ['task-user', turn.id])
+    );
     if (
       initiatingItem &&
       (initiatingItem.type !== 'user-message' ||

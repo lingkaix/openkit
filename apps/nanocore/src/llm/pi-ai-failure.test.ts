@@ -532,8 +532,16 @@ const affirmativeControls = [
   { message: 'insufficient_quota: out of budget', kind: 'quota_exhausted', settled: 'wrapped' },
   { message: 'rate_limit_exceeded: too many requests', kind: 'rate_limited', settled: 'wrapped' },
   { message: 'Rate limit reached', kind: 'rate_limited', settled: false },
-  { message: 'invalid_api_key', kind: 'auth_rejected', settled: 'wrapped' },
-  { message: 'Incorrect API key provided', kind: 'auth_rejected', settled: false },
+  {
+    message: 'invalid_api_key',
+    kind: 'auth_rejected',
+    settled: 'wrapped',
+  },
+  {
+    message: 'Incorrect API key provided',
+    kind: 'auth_rejected',
+    settled: false,
+  },
   {
     message: 'Your input exceeds the context window of this model',
     kind: 'context_overflow',
@@ -563,7 +571,12 @@ const affirmativeControls = [
     kind: 'quota_exhausted',
     settled: true,
   },
-  { message: 'Connection error.', code: 'invalid_api_key', kind: 'auth_rejected', settled: true },
+  {
+    message: 'Connection error.',
+    code: 'invalid_api_key',
+    kind: 'auth_rejected',
+    settled: true,
+  },
   { message: 'Safety timeout', code: 'SAFETY', kind: 'refused', settled: true },
   {
     message: 'socket hang up',

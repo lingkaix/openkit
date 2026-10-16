@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { WorkerResidentAdapter, WorkerResidentSession } from '../adapter-registry.js';
 import { WorkerHarness } from '../harness.js';
@@ -114,7 +115,11 @@ it.each([
     writeFileSync(
       join(config, 'package.json'),
       JSON.stringify({
-        scope: { agentSessionId: id, threadId: 'thread-one', workspaceId: 'workspace-one' },
+        scope: {
+          agentSessionId: id,
+          threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
+          workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
+        },
         workspace: { root: sandboxRoot, inputs: [] },
         extensions: {
           openkit: {
@@ -141,11 +146,20 @@ it.each([
       inferenceLoopbackCredential: credential(`inf-${id}`),
       effectiveSetupGeneration: 1,
       resume,
-      threadId: 'thread-one',
-      workspaceId: 'workspace-one',
+      threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
+      workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
     });
   };
-  const start = (id: string, turnId: string, models: string[], preferred: string, text: string) => {
+  const turnIds = new Map<string, string>();
+  const start = (
+    id: string,
+    turnKey: string,
+    models: string[],
+    preferred: string,
+    text: string
+  ) => {
+    const turnId = turnIds.get(turnKey) ?? allocateEntityId('tu');
+    turnIds.set(turnKey, turnId);
     const inputRoot = join(sandboxRoot, 'sessions', id);
     const config = join(inputRoot, 'config');
     mkdirSync(config, { recursive: true });
@@ -155,7 +169,7 @@ it.each([
       packagePath,
       JSON.stringify({
         capabilities:
-          kind === 'close-flush' && id === 'as-refused'
+          kind === 'close-flush' && id === 'as_00000000-0000-70ba-9934-6a70762ca1b9'
             ? {
                 mode: 'enabled',
                 protocol: 'openkit-worker-capability-v1',
@@ -192,10 +206,18 @@ it.each([
         },
         observability: { captureCoverage: { scope: 'server', value: 'off' } },
         runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: sandboxRoot } },
-        scope: { agentSessionId: id, threadId: 'thread-one', turnId, workspaceId: 'workspace-one' },
+        scope: {
+          agentSessionId: id,
+          threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
+          turnId,
+          workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
+        },
         snapshotId: `package-${turnId}`,
         supply: {
-          mcpServers: kind === 'close-flush' && id === 'as-refused' ? [{ id: 'alpha' }] : [],
+          mcpServers:
+            kind === 'close-flush' && id === 'as_00000000-0000-70ba-9934-6a70762ca1b9'
+              ? [{ id: 'alpha' }]
+              : [],
         },
       })
     );
@@ -209,11 +231,11 @@ it.each([
       inferenceToken: credential(`inf-turn-${turnId}`),
       leaseId: `lease-${turnId}`,
       packageSnapshotId: `package-${turnId}`,
-      threadId: 'thread-one',
+      threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
       turnId,
       turnSequence: 0,
       workerControlToken: credential(`control-${turnId}`),
-      workspaceId: 'workspace-one',
+      workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
     });
   };
   const settled = (id: string) =>
@@ -225,23 +247,47 @@ it.each([
       { timeout: 20_000, interval: 10 }
     );
   try {
-    expect(await open('as-first', null)).toMatchObject({ disposition: 'succeeded' });
-    const seed = await start('as-first', 'seed-b', ['a', 'b'], 'b', 'STARTUP-B');
-    expect(seed, JSON.stringify(seed.body)).toMatchObject({ disposition: 'succeeded' });
-    await settled('as-first');
-    expect(await start('as-first', 'seed-a', ['a', 'b'], 'a', 'HARNESS-RETAINED-A')).toMatchObject({
+    expect(await open('as_00000000-0000-7397-a3ad-a996640592a3', null)).toMatchObject({
       disposition: 'succeeded',
     });
-    await settled('as-first');
-    const reference = readFileSync(
-      join(nativeRoot, 'thread-one', 'deepseek', 'agent-session-references', 'as-first')
+    const seed = await start(
+      'as_00000000-0000-7397-a3ad-a996640592a3',
+      'seed-b',
+      ['a', 'b'],
+      'b',
+      'STARTUP-B'
     );
-    const resume = { locator: 'as-first', digest: hash(reference) };
-    expect(await send('session.close', selector('as-first'))).toMatchObject({
+    expect(seed, JSON.stringify(seed.body)).toMatchObject({ disposition: 'succeeded' });
+    await settled('as_00000000-0000-7397-a3ad-a996640592a3');
+    expect(
+      await start(
+        'as_00000000-0000-7397-a3ad-a996640592a3',
+        'seed-a',
+        ['a', 'b'],
+        'a',
+        'HARNESS-RETAINED-A'
+      )
+    ).toMatchObject({
+      disposition: 'succeeded',
+    });
+    await settled('as_00000000-0000-7397-a3ad-a996640592a3');
+    const reference = readFileSync(
+      join(
+        nativeRoot,
+        'th_00000000-0000-730e-88b8-d76794f39a2f',
+        'deepseek',
+        'agent-session-references',
+        'as_00000000-0000-7397-a3ad-a996640592a3'
+      )
+    );
+    const resume = { locator: 'as_00000000-0000-7397-a3ad-a996640592a3', digest: hash(reference) };
+    expect(
+      await send('session.close', selector('as_00000000-0000-7397-a3ad-a996640592a3'))
+    ).toMatchObject({
       disposition: 'succeeded',
       body: { state: 'closed' },
     });
-    expect(await open('as-refused', resume)).toMatchObject({
+    expect(await open('as_00000000-0000-70ba-9934-6a70762ca1b9', resume)).toMatchObject({
       disposition: 'succeeded',
       body: { nativeHandleState: 'ready', nativeHandleDigest: resume.digest },
     });
@@ -254,14 +300,14 @@ it.each([
     const count = inference.requests.length;
     expect(
       await start(
-        'as-refused',
+        'as_00000000-0000-70ba-9934-6a70762ca1b9',
         'removed-model',
         kind === 'removed-model' ? ['b'] : kind === 'resume-timeout' ? ['a', 'b', 'c'] : ['a', 'b'],
         'b',
         'must-not-prompt'
       )
     ).toMatchObject({ disposition: 'refused', body: { reasonCode: 'dependency_failed' } });
-    await settled('as-refused');
+    await settled('as_00000000-0000-70ba-9934-6a70762ca1b9');
     if (calls)
       expect(calls).toEqual([
         kind === 'resume-timeout'
@@ -271,8 +317,10 @@ it.each([
             : 'closeSession',
       ]);
     expect(inference.requests).toHaveLength(count);
-    expect(accepted).toEqual(['seed-b', 'seed-a']);
-    expect(await send('session.inspect', selector('as-refused'))).toMatchObject({
+    expect(accepted).toEqual([turnIds.get('seed-b'), turnIds.get('seed-a')]);
+    expect(
+      await send('session.inspect', selector('as_00000000-0000-70ba-9934-6a70762ca1b9'))
+    ).toMatchObject({
       disposition: 'succeeded',
       body: {
         state: 'open',
@@ -283,10 +331,13 @@ it.each([
       },
     });
     expect((harness as unknown as { activeTurnCount(): number }).activeTurnCount()).toBe(0);
-    const refusedClose = await send('session.close', selector('as-refused'));
+    const refusedClose = await send(
+      'session.close',
+      selector('as_00000000-0000-70ba-9934-6a70762ca1b9')
+    );
     const afterRefusedClose =
       refusedClose.disposition === 'refused'
-        ? (await send('session.inspect', selector('as-refused'))).body
+        ? (await send('session.inspect', selector('as_00000000-0000-70ba-9934-6a70762ca1b9'))).body
         : null;
     if (kind !== 'removed-model') {
       expect(refusedClose, JSON.stringify(refusedClose)).toMatchObject({
@@ -301,14 +352,24 @@ it.each([
         nativeHandleDigest: null,
       });
       expect((harness as unknown as { activeTurnCount(): number }).activeTurnCount()).toBe(0);
-      expect(await send('session.close', selector('as-refused'))).toMatchObject({
+      expect(
+        await send('session.close', selector('as_00000000-0000-70ba-9934-6a70762ca1b9'))
+      ).toMatchObject({
         disposition: 'refused',
         body: { reasonCode: 'cleanup_required' },
       });
-      expect(await open('as-fenced-successor', resume)).toMatchObject({ disposition: 'refused' });
+      expect(await open('as_00000000-0000-7c64-82f5-9ac034a04571', resume)).toMatchObject({
+        disposition: 'refused',
+      });
       expect(
         readFileSync(
-          join(nativeRoot, 'thread-one', 'deepseek', 'agent-session-references', 'as-refused')
+          join(
+            nativeRoot,
+            'th_00000000-0000-730e-88b8-d76794f39a2f',
+            'deepseek',
+            'agent-session-references',
+            'as_00000000-0000-70ba-9934-6a70762ca1b9'
+          )
         )
       ).toEqual(reference);
       return;
@@ -327,28 +388,53 @@ it.each([
     // Even the refused successor's accepted idle proof keeps its exact resume reference.
     expect(
       readFileSync(
-        join(nativeRoot, 'thread-one', 'deepseek', 'agent-session-references', 'as-refused')
+        join(
+          nativeRoot,
+          'th_00000000-0000-730e-88b8-d76794f39a2f',
+          'deepseek',
+          'agent-session-references',
+          'as_00000000-0000-70ba-9934-6a70762ca1b9'
+        )
       )
     ).toEqual(reference);
-    const failedResume = { locator: 'as-refused', digest: resume.digest };
-    expect(await open('as-recovered', failedResume)).toMatchObject({
+    const failedResume = {
+      locator: 'as_00000000-0000-70ba-9934-6a70762ca1b9',
+      digest: resume.digest,
+    };
+    expect(await open('as_00000000-0000-7429-892b-d1d94ce87a03', failedResume)).toMatchObject({
       disposition: 'succeeded',
       body: { nativeHandleState: 'ready', nativeHandleDigest: resume.digest },
     });
-    expect(await start('as-recovered', 'recovered', ['a', 'b'], 'a', 'recover')).toMatchObject({
+    expect(
+      await start(
+        'as_00000000-0000-7429-892b-d1d94ce87a03',
+        'recovered',
+        ['a', 'b'],
+        'a',
+        'recover'
+      )
+    ).toMatchObject({
       disposition: 'succeeded',
     });
-    await settled('as-recovered');
+    await settled('as_00000000-0000-7429-892b-d1d94ce87a03');
     expect(JSON.stringify(inference.requests.at(-1)?.body.messages)).toContain(
       'HARNESS-RETAINED-A'
     );
     expect(inference.requests.at(-1)?.body.model).toBe('a');
     expect(
       readFileSync(
-        join(nativeRoot, 'thread-one', 'deepseek', 'agent-session-references', 'as-recovered')
+        join(
+          nativeRoot,
+          'th_00000000-0000-730e-88b8-d76794f39a2f',
+          'deepseek',
+          'agent-session-references',
+          'as_00000000-0000-7429-892b-d1d94ce87a03'
+        )
       )
     ).toEqual(reference);
-    expect(await send('session.close', selector('as-recovered'))).toMatchObject({
+    expect(
+      await send('session.close', selector('as_00000000-0000-7429-892b-d1d94ce87a03'))
+    ).toMatchObject({
       disposition: 'succeeded',
     });
     expect(await send('harness.drain', {})).toMatchObject({

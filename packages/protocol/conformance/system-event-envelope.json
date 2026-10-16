@@ -1,17 +1,17 @@
 {
-  "protocolVersion": "0.5.0",
+  "protocolVersion": "0.6.0",
   "schema": "system-event-envelope",
   "data": {
-    "protocolVersion": "0.5.0",
+    "protocolVersion": "0.6.0",
     "event": "workspace.updated",
     "sequence": 1,
     "requestId": null,
     "timestamp": "2026-05-15T10:08:00Z",
-    "workspaceId": "0190f4c8-0001-7abc-8def-000000000001",
+    "workspaceId": "ws_00000000-0000-7667-bedb-3b13951da31a",
     "data": {
       "type": "workspace-updated",
       "workspace": {
-        "id": "0190f4c8-0001-7abc-8def-000000000001",
+        "id": "ws_00000000-0000-7667-bedb-3b13951da31a",
         "name": "Protocol Conformance Workspace",
         "kind": "code",
         "status": "active",

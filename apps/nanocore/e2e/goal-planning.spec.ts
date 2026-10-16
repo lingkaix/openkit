@@ -27,12 +27,12 @@ describe('Goal atomic cutover e2e', () => {
       return (await response.json()) as GoalView;
     }
     const created = await operation('goal.create', {
-      workspaceId: 'ws_demo',
-      originThreadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      originThreadId: 'th_00000000-0000-7000-8000-000000000001',
       intent: 'Review a release design',
     });
     const scope = {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: created.goal!.threadId,
       goalId: created.goal!.goalId,
     };
@@ -95,7 +95,7 @@ describe('Goal atomic cutover e2e', () => {
     expect(ended.goal!.disposition?.kind).toBe('cancelled');
     expect((await operation('goal.read', scope)).goal!.intentHistory).toHaveLength(2);
     const retired = await fetch(
-      `${harness.baseUrl}/api/app/workspaces/ws_demo/threads/${scope.threadId}/goal/step`,
+      `${harness.baseUrl}/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/${scope.threadId}/goal/step`,
       { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }
     );
     expect(retired.status).toBe(404);

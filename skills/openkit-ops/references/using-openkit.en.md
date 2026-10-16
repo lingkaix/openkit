@@ -45,6 +45,8 @@ Do not promote work to a heavier mode merely because that mode exists. Let NanoC
 
 Use `goal.create` to capture current intent and `goal.read` to inspect intent, cards, separate proposed and active immutable Plans, exact Pending Requests, linked ordinary Tasks and disposition. `goal.intent.revise`, `goal.card.create`, `goal.card.edit` and `goal.card.cancel` change current desired work without steering a running worker. Human Plan and completion decisions use `goal.plan.approve` and `goal.completion.accept` with the captured Pending Request identity. A grant waits for the Goal owner to consume it; activation alone starts no worker. `goal.cancel` closes the Goal and invalidates unconsumed requests.
 
+The Coordinator discovers eligible Workers from the current Goal Workspace. It rechecks the exact Worker when it admits an ordinary Task. A Worker result leaves the Goal open. Review the exact completion candidate and its unresolved work before accepting it. The Goal screen shows the responsible person, the actual decision actor and whether a grant still waits for application. Use each request's captured operation; a Plan request cannot accept completion, and a completion request cannot activate a Plan.
+
 Use `usage.read` for durably recorded model usage; process-local diagnostics are not the Workspace ledger.
 
 ## Run bounded work

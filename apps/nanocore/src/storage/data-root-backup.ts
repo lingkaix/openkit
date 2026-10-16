@@ -20,6 +20,7 @@ import {
   type DataRootBackupManifest,
   parseDataRootBackupManifest,
 } from '@openkit/config-schema';
+import { DataRootBackupIdSchema, DeploymentIdSchema } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { writeFileAtomic } from './workspace-file-records.js';
 
@@ -203,11 +204,13 @@ export function writeStorageJsonAtomically(path: string, value: unknown): void {
  *
  * @param input Backup metadata and root to inventory.
  * @returns Parsed manifest plus checked inventory paths.
- * @throws Error when the written manifest does not verify.
+ * @throws Error when an identifier is invalid or the written manifest does not verify.
  */
 export function writeColdDataRootBackupManifest(
   input: WriteColdDataRootBackupManifestInput
 ): VerifiedDataRootBackupManifest {
+  DataRootBackupIdSchema.parse(input.backupId);
+  DeploymentIdSchema.parse(input.sourceDeploymentId);
   return writeDataRootBackupManifest({
     backupRoot: input.backupRoot,
     backupId: input.backupId,
@@ -224,11 +227,13 @@ export function writeColdDataRootBackupManifest(
  *
  * @param input Live data root and backup destination.
  * @returns Parsed manifest plus checked inventory paths.
- * @throws Error when copy, SQLite backup, or manifest verification fails.
+ * @throws Error when an identifier is invalid, or copy, SQLite backup, or manifest verification fails.
  */
 export async function writeHotDataRootBackup(
   input: WriteHotDataRootBackupInput
 ): Promise<VerifiedDataRootBackupManifest> {
+  DataRootBackupIdSchema.parse(input.backupId);
+  DeploymentIdSchema.parse(input.sourceDeploymentId);
   assertBackupRootOutsideDataRoot(input.dataRoot, input.backupRoot);
   const appsBefore = listLightAppDirectoryPaths(input.dataRoot);
   rmSync(input.backupRoot, { recursive: true, force: true });
@@ -280,7 +285,7 @@ interface WriteDataRootBackupManifestInput extends WriteColdDataRootBackupManife
  *
  * @param input Backup metadata and root to inventory.
  * @returns Parsed manifest plus checked inventory paths.
- * @throws Error when the written manifest does not verify.
+ * @throws Error when an identifier is invalid or the written manifest does not verify.
  */
 function writeDataRootBackupManifest(
   input: WriteDataRootBackupManifestInput

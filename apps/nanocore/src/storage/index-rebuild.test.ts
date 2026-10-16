@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { createHash } from 'node:crypto';
 import {
   existsSync,
@@ -18,7 +19,8 @@ import { DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION } from '../knowledge/okf.js'
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { LOCAL_USER_ID } from './fs-layout.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
   rebuildExistingWorkspaceDerivedIndexes,
   rebuildInvalidExistingWorkspaceDerivedIndexes,
@@ -42,8 +44,8 @@ function createDataRoot(): string {
 function localRetrievalAccess(dataRoot: string, store = new FsStore({ dataRoot })) {
   return {
     store,
-    actor: { kind: 'user' as const, id: 'user_local' },
-    requestActor: { kind: 'local' as const, userId: 'user_local' },
+    actor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
+    requestActor: { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' },
   };
 }
 
@@ -84,15 +86,15 @@ describe('workspace derived index rebuild', () => {
   it('uses the same registered-source resolution for validation and reference indexing', () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
-    const sourceId = 'ks_123e4567-e89b-42d3-a456-426614174000';
-    const missingId = 'ks_123e4567-e89b-42d3-a456-426614174001';
-    const noDigestId = 'ks_123e4567-e89b-42d3-a456-426614174002';
-    const foreignId = 'ks_123e4567-e89b-42d3-a456-426614174003';
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
+    const sourceId = 'ks_00000000-0000-7e28-9211-1f67fd14ca84';
+    const missingId = 'ks_00000000-0000-799e-8f8f-c45b5a7f6de6';
+    const noDigestId = 'ks_00000000-0000-7b37-b1ba-f647a038d171';
+    const foreignId = 'ks_00000000-0000-7da0-a360-7ab1e8d5225c';
     const digest = sha256Digest('Registered capture evidence.');
     const source = store.createKnowledgeSource({
       id: sourceId,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       kind: 'document',
       title: 'Registered capture',
       uri: null,
@@ -111,7 +113,11 @@ describe('workspace derived index rebuild', () => {
     );
     writeFileSync(
       join(workspaceRoot, 'sources', 'registry', `${foreignId}.json`),
-      JSON.stringify({ ...source, id: foreignId, workspaceId: 'ws_foreign' })
+      JSON.stringify({
+        ...source,
+        id: foreignId,
+        workspaceId: 'ws_00000000-0000-7f9c-aa14-53566c621405',
+      })
     );
     const cases = [
       { id: 'bare', reference: `source:${sourceId}`, targetId: sourceId, resolved: true },
@@ -171,7 +177,12 @@ describe('workspace derived index rebuild', () => {
         targetId: null,
         resolved: false,
       },
-      { id: 'invalid-id', reference: 'source:ks_invalid', targetId: null, resolved: false },
+      {
+        id: 'invalid-id',
+        reference: 'source:invalid-id',
+        targetId: null,
+        resolved: false,
+      },
       {
         id: 'trailing-newline',
         reference: `source:${sourceId}@${digest}\n`,
@@ -185,7 +196,10 @@ describe('workspace derived index rebuild', () => {
         sourceReferencePage(entry.id, entry.reference)
       );
     }
-    rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: 'ws_demo' });
+    rebuildWorkspaceDerivedIndexes({
+      dataRoot,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const indexes = join(workspaceRoot, 'indexes');
     const validation = JSON.parse(readFileSync(join(indexes, 'knowledge-validation.json'), 'utf8'));
     const references = JSON.parse(
@@ -230,8 +244,8 @@ describe('workspace derived index rebuild', () => {
     const material = 'Registered capture evidence.';
     const source = store.createKnowledgeSource(
       {
-        id: 'ks_123e4567-e89b-42d3-a456-426614174000',
-        workspaceId: 'ws_demo',
+        id: 'ks_00000000-0000-7e28-9211-1f67fd14ca84',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         kind: 'document',
         title: 'Registered capture',
         uri: null,
@@ -248,7 +262,7 @@ describe('workspace derived index rebuild', () => {
     const reference = `source:${source.id}@${source.contentDigest}`;
     const canonicalPageBytes = sourceReferencePage('accepted-pin', reference);
     const proposal = store.createKnowledgeProposal({
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       knowledgePageId: 'accepted-pin',
       canonicalPageBytes,
       contentDigest: sha256Digest(canonicalPageBytes),
@@ -256,24 +270,27 @@ describe('workspace derived index rebuild', () => {
       requestId: '00000000-0000-4000-8000-000000000801',
       rationale: 'Preserve registered evidence.',
       confidence: 1,
-      producer: { kind: 'user', id: 'user_local' },
+      producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       verifiedExternalReferences: [],
       createdAt: '2026-10-08T00:00:00.000Z',
     });
     store.recordKnowledgeProposalReviewDecision({
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       proposalId: proposal.id,
       decision: 'accepted',
       requestId: '00000000-0000-4000-8000-000000000802',
-      actor: { kind: 'user', id: 'user_local' },
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       verifiedExternalReferences: [],
       decidedAt: '2026-10-08T00:00:00.000Z',
     });
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const pagePath = join(workspaceRoot, 'knowledge', 'pages', 'accepted-pin.md');
     const before = readFileSync(pagePath);
     expect(before).toEqual(Buffer.from(canonicalPageBytes));
-    rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: 'ws_demo' });
+    rebuildWorkspaceDerivedIndexes({
+      dataRoot,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     expect(readFileSync(pagePath)).toEqual(before);
     const validation = JSON.parse(
       readFileSync(join(workspaceRoot, 'indexes', 'knowledge-validation.json'), 'utf8')
@@ -292,21 +309,26 @@ describe('workspace derived index rebuild', () => {
       )
     ).toMatchObject({ reference, targetId: source.id, resolved: true });
     expect(
-      new FsStore({ dataRoot }).getWorkspaceResources('ws_demo').knowledge.map((entry) => entry.id)
+      new FsStore({ dataRoot })
+        .getWorkspaceResources('ws_00000000-0000-7000-8000-000000000001')
+        .knowledge.map((entry) => entry.id)
     ).toContain('accepted-pin');
   });
 
   it('excludes reserved index and log files at every Knowledge bundle depth', () => {
     const dataRoot = createDataRoot();
     createDemoStore({ dataRoot });
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const nestedRoot = join(workspaceRoot, 'knowledge', 'pages', 'nested');
     mkdirSync(nestedRoot, { recursive: true });
     writeFileSync(join(nestedRoot, 'index.md'), '# Nested index\n\nNavigation only.\n');
     writeFileSync(join(nestedRoot, 'log.md'), '# Nested log\n\n## 2026-09-06\n* Update.\n');
 
     expect(() =>
-      rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: 'ws_demo' })
+      rebuildWorkspaceDerivedIndexes({
+        dataRoot,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     ).not.toThrow();
 
     const validation = JSON.parse(
@@ -325,15 +347,15 @@ describe('workspace derived index rebuild', () => {
   it('persists the exact governed retrieval row and omits unaddressed pages', async () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const createdAt = '2026-07-12T00:00:00.000Z';
-    const sourceId = 'ks_00000000-0000-4000-8000-000000000001';
+    const sourceId = 'ks_00000000-0000-7a5f-abd1-664e5a6aadee';
     const sourceReference = `source:${sourceId}`;
 
     store.createKnowledgeSource(
       {
         id: sourceId,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         kind: 'document',
         title: 'Governed retrieval source',
         uri: null,
@@ -347,34 +369,46 @@ describe('workspace derived index rebuild', () => {
       },
       'Governed retrieval source.'
     );
-    const selected = store.createKnowledgeEntry('ws_demo', {
+    const selected = store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Selected page',
       content: 'retrievalneedle',
       sourceReferences: [sourceReference],
     });
-    const overflow = store.createKnowledgeEntry('ws_demo', {
+    const overflow = store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Overflow page',
       content: 'retrievalneedle',
     });
-    const zeroScore = store.createKnowledgeEntry('ws_demo', {
+    const zeroScore = store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Unaddressed page',
       content: 'No matching term.',
     });
-    const traceId = 'krt_00000000-0000-4000-8000-000000000003';
+    const traceId = 'krt_00000000-0000-7a4b-9b29-0556f2c2a5bd';
     const input = {
-      access: { ...localRetrievalAccess(dataRoot, store), outputThreadId: 'th_demo' },
+      access: {
+        ...localRetrievalAccess(dataRoot, store),
+        outputThreadId: 'th_00000000-0000-7000-8000-000000000001',
+      },
       dataRoot,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       caller: 'task-mode' as const,
       query: 'retrievalneedle',
       limit: 1,
       pinnedReferences: [
-        { scopeId: 'page/workspace/ws_demo', objectId: overflow.id },
-        { scopeId: 'page/workspace/ws_demo', objectId: selected.id },
-        { scopeId: 'page/workspace/ws_demo', objectId: selected.id },
+        {
+          scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+          objectId: overflow.id,
+        },
+        {
+          scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+          objectId: selected.id,
+        },
+        {
+          scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+          objectId: selected.id,
+        },
       ],
       traceId,
       now: () => createdAt,
@@ -390,14 +424,20 @@ describe('workspace derived index rebuild', () => {
       resolveWorkspaceKnowledgeRetrievalPages({
         caller: 'task-mode',
         dataRoot,
-        access: { ...localRetrievalAccess(dataRoot, store), outputThreadId: 'th_demo' },
-        workspaceId: 'ws_demo',
+        access: {
+          ...localRetrievalAccess(dataRoot, store),
+          outputThreadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         retrievalTraceRef: trace.retrievalTraceRef!,
       })
     ).toEqual([
       {
         body: 'retrievalneedle',
-        reference: { scopeId: 'page/workspace/ws_demo', objectId: selected.id },
+        reference: {
+          scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+          objectId: selected.id,
+        },
         knowledgePageId: selected.id,
         contentDigest: sha256Digest(selectedPageBytes),
         kind: 'project-context',
@@ -410,7 +450,7 @@ describe('workspace derived index rebuild', () => {
     const tracePath = join(
       workspaceRoot,
       'threads',
-      'th_demo',
+      'th_00000000-0000-7000-8000-000000000001',
       'retrieval-traces',
       `${traceId}.json`
     );
@@ -419,26 +459,35 @@ describe('workspace derived index rebuild', () => {
       traceId,
       queryContext: {
         serverId: expect.any(String),
-        workspaceId: 'ws_demo',
-        actor: { kind: 'user', id: 'user_local' },
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
       },
-      sourceScope: 'page/workspace/ws_demo',
+      sourceScope: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
       notebookRevision: null,
       caller: 'task-mode',
       requestDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       retrievalParameters: {
         limit: 1,
         pinnedReferences: [
-          { scopeId: 'page/workspace/ws_demo', objectId: selected.id },
-          { scopeId: 'page/workspace/ws_demo', objectId: overflow.id },
+          {
+            scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+            objectId: selected.id,
+          },
+          {
+            scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+            objectId: overflow.id,
+          },
         ],
         states: ['active'],
         sourceScope: 'workspace',
       },
       selected: [
         {
-          reference: { scopeId: 'page/workspace/ws_demo', objectId: selected.id },
+          reference: {
+            scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+            objectId: selected.id,
+          },
           revision: sha256Digest(selectedPageBytes),
           contentDigest: sha256Digest(selectedPageBytes),
           sourceReferences: [sourceReference],
@@ -446,7 +495,10 @@ describe('workspace derived index rebuild', () => {
       ],
       excluded: [
         {
-          reference: { scopeId: 'page/workspace/ws_demo', objectId: overflow.id },
+          reference: {
+            scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+            objectId: overflow.id,
+          },
           revision: sha256Digest(
             readFileSync(join(workspaceRoot, 'knowledge', 'pages', `${overflow.id}.md`), 'utf8')
           ),
@@ -468,9 +520,9 @@ describe('workspace derived index rebuild', () => {
   it('does not let a persisted retrieval trace authorize an accepted page', async () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const knowledgePageId = 'reviewed-task-proof';
-    const evidence = store.createKnowledgeEntry('ws_demo', {
+    const evidence = store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Reviewed evidence source',
       content: 'The current page supplies exact proposal evidence.',
@@ -502,7 +554,7 @@ describe('workspace derived index rebuild', () => {
     ].join('\n');
     const contentDigest = sha256Digest(content);
     const proposal = store.createKnowledgeProposal({
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       knowledgePageId,
       canonicalPageBytes: content,
       contentDigest,
@@ -510,43 +562,52 @@ describe('workspace derived index rebuild', () => {
       requestId: '00000000-0000-4000-8000-000000000702',
       rationale: 'Retain the reviewed page for retrieval.',
       confidence: 1,
-      producer: { kind: 'user', id: 'user_local' },
+      producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       verifiedExternalReferences: [],
       createdAt: '2026-07-12T00:00:00.000Z',
     });
     store.recordKnowledgeProposalReviewDecision({
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       proposalId: proposal.id,
       decision: 'accepted',
       requestId: '00000000-0000-4000-8000-000000000703',
-      actor: { kind: 'user', id: 'user_local' },
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       verifiedExternalReferences: [],
       decidedAt: '2026-07-12T00:00:00.000Z',
     });
     const retrieval = await retrieveWorkspaceKnowledge({
-      access: { ...localRetrievalAccess(dataRoot, store), outputThreadId: 'th_demo' },
+      access: {
+        ...localRetrievalAccess(dataRoot, store),
+        outputThreadId: 'th_00000000-0000-7000-8000-000000000001',
+      },
       caller: 'task-mode',
       dataRoot,
       query: 'Reviewed task proof',
-      traceId: 'krt_00000000-0000-4000-8000-000000000702',
-      workspaceId: 'ws_demo',
+      traceId: 'krt_00000000-0000-7844-b67e-28649519a95e',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       now: () => '2026-07-12T00:00:00.000Z',
     });
 
     expect(retrieval.selected).toContainEqual(
       expect.objectContaining({
-        reference: { scopeId: 'page/workspace/ws_demo', objectId: knowledgePageId },
+        reference: {
+          scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+          objectId: knowledgePageId,
+        },
       })
     );
     rmSync(join(workspaceRoot, 'knowledge', 'reviews', `${proposal.id}.json`));
     const afterStore = new FsStore({ dataRoot });
     expect(() =>
       resolveWorkspaceKnowledgeRetrievalPages({
-        access: { ...localRetrievalAccess(dataRoot, afterStore), outputThreadId: 'th_demo' },
+        access: {
+          ...localRetrievalAccess(dataRoot, afterStore),
+          outputThreadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         caller: 'task-mode',
         dataRoot,
         retrievalTraceRef: retrieval.retrievalTraceRef!,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
     ).toThrow('Knowledge retrieval trace no longer matches authoritative pages.');
   });
@@ -554,7 +615,7 @@ describe('workspace derived index rebuild', () => {
   it('requires exact page-bound proof for every accepted page', async () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const knowledgePageId = 'accepted-without-proof';
     const content = [
       '---',
@@ -579,13 +640,21 @@ describe('workspace derived index rebuild', () => {
     writeFileSync(join(workspaceRoot, 'knowledge', 'pages', `${knowledgePageId}.md`), content);
 
     const retrieval = await retrieveWorkspaceKnowledge({
-      access: { ...localRetrievalAccess(dataRoot, store), outputThreadId: 'th_demo' },
+      access: {
+        ...localRetrievalAccess(dataRoot, store),
+        outputThreadId: 'th_00000000-0000-7000-8000-000000000001',
+      },
       caller: 'task-mode',
       dataRoot,
-      pinnedReferences: [{ scopeId: 'page/workspace/ws_demo', objectId: knowledgePageId }],
+      pinnedReferences: [
+        {
+          scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+          objectId: knowledgePageId,
+        },
+      ],
       query: 'accepted page',
-      traceId: 'krt_00000000-0000-4000-8000-000000000703',
-      workspaceId: 'ws_demo',
+      traceId: 'krt_00000000-0000-72e4-a657-4a9a30f3569e',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       now: () => '2026-07-12T00:00:00.000Z',
     });
     const validationIndex = JSON.parse(
@@ -595,7 +664,10 @@ describe('workspace derived index rebuild', () => {
     expect(retrieval.selected).toEqual([]);
     expect(retrieval.excluded).toContainEqual({
       contentDigest: sha256Digest(content),
-      reference: { scopeId: 'page/workspace/ws_demo', objectId: knowledgePageId },
+      reference: {
+        scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+        objectId: knowledgePageId,
+      },
       revision: sha256Digest(content),
       sourceReferences: [],
       reason: 'lower_conformance',
@@ -619,7 +691,7 @@ describe('workspace derived index rebuild', () => {
       'retrieval-traces'
     );
     mkdirSync(traceRoot, { recursive: true });
-    const interruptedPath = join(traceRoot, '.krt_interrupted.tmp');
+    const interruptedPath = join(traceRoot, '.krt_00000000-0000-7b84-9036-54ad1961c1f0.tmp');
     writeFileSync(interruptedPath, '{"interrupted":true');
     const input = {
       access: { ...localRetrievalAccess(dataRoot, store), outputThreadId: thread.id },
@@ -629,7 +701,7 @@ describe('workspace derived index rebuild', () => {
       query: 'canonical recovery',
       now: () => '2026-07-12T00:00:00.000Z',
     };
-    const firstTraceId = 'krt_00000000-0000-4000-8000-000000000001';
+    const firstTraceId = 'krt_00000000-0000-780e-b78f-51422afca1e9';
 
     const first = await retrieveWorkspaceKnowledge({ ...input, traceId: firstTraceId });
     const tracePath = join(traceRoot, `${firstTraceId}.json`);
@@ -653,7 +725,7 @@ describe('workspace derived index rebuild', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Retrieval trace symlink');
     const thread = store.createThread(workspace.id, 'Retrieval owner');
-    const traceId = 'krt_00000000-0000-4000-8000-000000000004';
+    const traceId = 'krt_00000000-0000-77b7-88ff-44dd0f21d48d';
     const tracePath = join(
       dataRoot,
       'workspaces',
@@ -685,15 +757,23 @@ describe('workspace derived index rebuild', () => {
   it('fails closed when the workspace projection is missing', () => {
     const dataRoot = createDataRoot();
 
-    expect(() => rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: 'missing' })).toThrow(
-      'Workspace projection is missing: workspaces/missing/workspace-record.json'
+    expect(() =>
+      rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: testEntityId('ws', 'missing') })
+    ).toThrow(
+      `Workspace projection is missing: workspaces/${testEntityId('ws', 'missing')}/workspace-record.json`
     );
   });
 
   it('rejects a symlinked canonical subtree instead of reading external content', () => {
     const dataRoot = createDataRoot();
     createDemoStore({ dataRoot });
-    const pagesRoot = join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'pages');
+    const pagesRoot = join(
+      dataRoot,
+      'workspaces',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'knowledge',
+      'pages'
+    );
     const outsidePagesRoot = mkdtempSync(join(tmpdir(), 'openkit-outside-pages-'));
 
     writeFileSync(join(outsidePagesRoot, 'outside.md'), 'External content must not be indexed.\n');
@@ -703,7 +783,7 @@ describe('workspace derived index rebuild', () => {
     expect(() =>
       rebuildWorkspaceDerivedIndexes({
         dataRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
     ).toThrow();
   });
@@ -711,7 +791,12 @@ describe('workspace derived index rebuild', () => {
   it('rejects a symlinked indexes directory without deleting its external target', () => {
     const dataRoot = createDataRoot();
     createDemoStore({ dataRoot });
-    const indexesRoot = join(dataRoot, 'workspaces', 'ws_demo', 'indexes');
+    const indexesRoot = join(
+      dataRoot,
+      'workspaces',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'indexes'
+    );
     const outsideIndexesRoot = mkdtempSync(join(tmpdir(), 'openkit-outside-indexes-'));
     const sentinelPath = join(outsideIndexesRoot, 'sentinel.txt');
 
@@ -723,7 +808,7 @@ describe('workspace derived index rebuild', () => {
     try {
       rebuildWorkspaceDerivedIndexes({
         dataRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
     } catch (error) {
       failure = error;
@@ -738,7 +823,7 @@ describe('workspace derived index rebuild', () => {
   it('rebuilds validation reports for file-backed knowledge pages', () => {
     const dataRoot = createDataRoot();
     createDemoStore({ dataRoot });
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const timestamp = '2026-07-07T00:00:00.000Z';
 
     writeFileSync(
@@ -792,7 +877,7 @@ describe('workspace derived index rebuild', () => {
         'openkit_status: "active"',
         'status: "stable"',
         'scope: "workspace"',
-        'source_refs: ["source:ks_missing"]',
+        'source_refs: ["source:ks_00000000-0000-7e65-a399-d53a84c98ecb"]',
         'review_state: "accepted"',
         'sensitivity: "normal"',
         'freshness: "current"',
@@ -806,14 +891,14 @@ describe('workspace derived index rebuild', () => {
 
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     expect(
       JSON.parse(readFileSync(join(workspaceRoot, 'indexes', 'knowledge-validation.json'), 'utf8'))
     ).toMatchObject({
       schemaVersion: 1,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       records: expect.arrayContaining([
         expect.objectContaining({
           conceptId: 'valid',
@@ -850,12 +935,12 @@ describe('workspace derived index rebuild', () => {
   it('uses the workspace schema when rebuilding extension knowledge pages', () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
-    store.createKnowledgeEntry('ws_demo', {
+    store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Seed knowledge',
       content: 'Seed body.',
     });
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     writeFileSync(
       join(workspaceRoot, 'knowledge', 'schema', 'workspace-schema.yaml'),
       [
@@ -893,7 +978,7 @@ describe('workspace derived index rebuild', () => {
 
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     const validation = JSON.parse(
@@ -908,12 +993,12 @@ describe('workspace derived index rebuild', () => {
   it('does not rebuild knowledge pages when the workspace schema is invalid', () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
-    store.createKnowledgeEntry('ws_demo', {
+    store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Schema blocked knowledge',
       content: 'This body should not be indexed.',
     });
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     writeFileSync(
       join(workspaceRoot, 'knowledge', 'schema', 'workspace-schema.yaml'),
       'schema_version: "openkit-workspace-knowledge-schema-v2"\n'
@@ -921,7 +1006,7 @@ describe('workspace derived index rebuild', () => {
 
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     const validation = JSON.parse(
@@ -935,17 +1020,17 @@ describe('workspace derived index rebuild', () => {
   it('requires active knowledge page source references to resolve to registered records', () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const timestamp = '2026-07-07T00:00:00.000Z';
-    const knowledge = store.createKnowledgeEntry('ws_demo', {
+    const knowledge = store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Registered knowledge',
       content: 'Registered knowledge body.',
     });
 
     store.createKnowledgeSource({
-      id: 'ks_123e4567-e89b-42d3-a456-426614174000',
-      workspaceId: 'ws_demo',
+      id: 'ks_00000000-0000-7e28-9211-1f67fd14ca84',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       kind: 'document',
       title: 'Registered source',
       uri: null,
@@ -967,7 +1052,7 @@ describe('workspace derived index rebuild', () => {
         'openkit_status: "active"',
         'status: "stable"',
         'scope: "workspace"',
-        'source_refs: ["source:ks_123e4567-e89b-42d3-a456-426614174000"]',
+        'source_refs: ["source:ks_00000000-0000-7e28-9211-1f67fd14ca84"]',
         'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
@@ -1009,7 +1094,7 @@ describe('workspace derived index rebuild', () => {
         'openkit_status: "active"',
         'status: "stable"',
         'scope: "workspace"',
-        'source_refs: ["source:ks_missing"]',
+        'source_refs: ["source:ks_00000000-0000-7e65-a399-d53a84c98ecb"]',
         'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
@@ -1086,7 +1171,7 @@ describe('workspace derived index rebuild', () => {
 
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     const validation = JSON.parse(
@@ -1122,17 +1207,17 @@ describe('workspace derived index rebuild', () => {
   it('rebuilds the knowledge source-reference index from file-backed pages', () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const timestamp = '2026-07-07T00:00:00.000Z';
-    const knowledge = store.createKnowledgeEntry('ws_demo', {
+    const knowledge = store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Registered knowledge',
       content: 'Registered knowledge body.',
     });
 
     store.createKnowledgeSource({
-      id: 'ks_123e4567-e89b-42d3-a456-426614174000',
-      workspaceId: 'ws_demo',
+      id: 'ks_00000000-0000-7e28-9211-1f67fd14ca84',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       kind: 'document',
       title: 'Registered source',
       uri: null,
@@ -1155,11 +1240,11 @@ describe('workspace derived index rebuild', () => {
         'status: "stable"',
         'scope: "workspace"',
         `source_refs: ${JSON.stringify([
-          'source:ks_123e4567-e89b-42d3-a456-426614174000',
-          `source:ks_123e4567-e89b-42d3-a456-426614174000@sha256:${'a'.repeat(64)}`,
+          'source:ks_00000000-0000-7e28-9211-1f67fd14ca84',
+          `source:ks_00000000-0000-7e28-9211-1f67fd14ca84@sha256:${'a'.repeat(64)}`,
           `knowledge:${knowledge.id}`,
           `knowledge:${knowledge.id}@sha256:${'b'.repeat(64)}`,
-          'source:ks_missing',
+          'source:ks_00000000-0000-7e65-a399-d53a84c98ecb',
           'knowledge:kn_missing',
           'https://example.com/source',
           'not-a-valid-external-reference',
@@ -1177,7 +1262,7 @@ describe('workspace derived index rebuild', () => {
 
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     const sourceReferenceIndex = JSON.parse(
@@ -1197,22 +1282,22 @@ describe('workspace derived index rebuild', () => {
 
     expect(sourceReferenceIndex).toMatchObject({
       schemaVersion: 1,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       references: expect.arrayContaining([
         {
           conceptId: 'source-reference-index',
           path: 'knowledge/pages/source-reference-index.md',
-          reference: 'source:ks_123e4567-e89b-42d3-a456-426614174000',
+          reference: 'source:ks_00000000-0000-7e28-9211-1f67fd14ca84',
           kind: 'registered-source',
-          targetId: 'ks_123e4567-e89b-42d3-a456-426614174000',
+          targetId: 'ks_00000000-0000-7e28-9211-1f67fd14ca84',
           resolved: true,
         },
         {
           conceptId: 'source-reference-index',
           path: 'knowledge/pages/source-reference-index.md',
-          reference: `source:ks_123e4567-e89b-42d3-a456-426614174000@sha256:${'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}`,
+          reference: `source:ks_00000000-0000-7e28-9211-1f67fd14ca84@sha256:${'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}`,
           kind: 'registered-source',
-          targetId: 'ks_123e4567-e89b-42d3-a456-426614174000',
+          targetId: 'ks_00000000-0000-7e28-9211-1f67fd14ca84',
           resolved: true,
         },
         {
@@ -1234,9 +1319,9 @@ describe('workspace derived index rebuild', () => {
         {
           conceptId: 'source-reference-index',
           path: 'knowledge/pages/source-reference-index.md',
-          reference: 'source:ks_missing',
+          reference: 'source:ks_00000000-0000-7e65-a399-d53a84c98ecb',
           kind: 'registered-source',
-          targetId: null,
+          targetId: 'ks_00000000-0000-7e65-a399-d53a84c98ecb',
           resolved: false,
         },
         {
@@ -1270,10 +1355,10 @@ describe('workspace derived index rebuild', () => {
   it('rebuilds the knowledge link graph from active file-backed pages', () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const timestamp = '2026-07-07T00:00:00.000Z';
 
-    store.createKnowledgeEntry('ws_demo', {
+    store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Seed knowledge',
       content: 'Seed body.',
@@ -1323,7 +1408,7 @@ describe('workspace derived index rebuild', () => {
 
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     const graph = JSON.parse(
@@ -1336,7 +1421,7 @@ describe('workspace derived index rebuild', () => {
 
     expect(graph).toMatchObject({
       schemaVersion: 1,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       edges: expect.arrayContaining([
         {
           fromId: 'alpha',
@@ -1358,8 +1443,13 @@ describe('workspace derived index rebuild', () => {
   it('rebuilds existing workspace indexes during boot scan', () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
-    store.createThread('ws_demo', 'Boot rebuild thread');
-    const indexesRoot = join(dataRoot, 'workspaces', 'ws_demo', 'indexes');
+    store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Boot rebuild thread');
+    const indexesRoot = join(
+      dataRoot,
+      'workspaces',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'indexes'
+    );
     const retrievalSentinel = join(indexesRoot, 'retrieval', 'CURRENT');
     mkdirSync(indexesRoot, { recursive: true });
     mkdirSync(join(indexesRoot, 'retrieval'));
@@ -1373,8 +1463,9 @@ describe('workspace derived index rebuild', () => {
     expect(results).toEqual(
       expect.arrayContaining([
         {
-          workspaceId: 'ws_demo',
-          indexPath: 'workspaces/ws_demo/indexes/knowledge-validation.json',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          indexPath:
+            'workspaces/ws_00000000-0000-7000-8000-000000000001/indexes/knowledge-validation.json',
           itemCount: expect.any(Number),
           removedEntries: ['stale.json'],
         },
@@ -1387,11 +1478,12 @@ describe('workspace derived index rebuild', () => {
     ) as { rebuiltAt: string; workspaceId: string; records: unknown[] };
     expect(validation).toMatchObject({
       rebuiltAt: '2026-07-05T00:00:00.000Z',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    expect(results.find((result) => result.workspaceId === 'ws_demo')?.itemCount).toBe(
-      validation.records.length
-    );
+    expect(
+      results.find((result) => result.workspaceId === 'ws_00000000-0000-7000-8000-000000000001')
+        ?.itemCount
+    ).toBe(validation.records.length);
     expect(readdirSync(indexesRoot).sort()).toEqual([
       'knowledge-links.json',
       'knowledge-source-refs.json',
@@ -1413,14 +1505,19 @@ describe('workspace derived index rebuild', () => {
     const dataRoot = createDataRoot();
     createDemoStore({ dataRoot });
     const keptAt = '2026-07-05T00:00:00.000Z';
-    const demoIndexes = join(dataRoot, 'workspaces', 'ws_demo', 'indexes');
+    const demoIndexes = join(
+      dataRoot,
+      'workspaces',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'indexes'
+    );
     const quickChatIndexes = join(
       dataRoot,
       'workspaces',
       quickChatWorkspaceIdForUser(LOCAL_USER_ID),
       'indexes'
     );
-    writeCurrentDerivedIndexSet(demoIndexes, 'ws_demo', keptAt);
+    writeCurrentDerivedIndexSet(demoIndexes, 'ws_00000000-0000-7000-8000-000000000001', keptAt);
     writeCurrentDerivedIndexSet(
       quickChatIndexes,
       quickChatWorkspaceIdForUser(LOCAL_USER_ID),
@@ -1447,7 +1544,7 @@ describe('workspace derived index rebuild', () => {
     const dataRoot = createDataRoot();
     createDemoStore({ dataRoot });
     const keptAt = '2026-07-05T00:00:00.000Z';
-    const siblingId = 'ws_demo';
+    const siblingId = 'ws_00000000-0000-7000-8000-000000000001';
     const badId = quickChatWorkspaceIdForUser(LOCAL_USER_ID);
     const siblingIndexes = join(dataRoot, 'workspaces', siblingId, 'indexes');
     const badIndexes = join(dataRoot, 'workspaces', badId, 'indexes');
@@ -1484,11 +1581,20 @@ describe('workspace derived index rebuild', () => {
   it('rebuilds stale nonlexical indexes before kernel retrieval reads canonical pages', async () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
-    const indexesRoot = join(dataRoot, 'workspaces', 'ws_demo', 'indexes');
-    writeCurrentDerivedIndexSet(indexesRoot, 'ws_demo', '1999-01-01T00:00:00.000Z');
+    const indexesRoot = join(
+      dataRoot,
+      'workspaces',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'indexes'
+    );
+    writeCurrentDerivedIndexSet(
+      indexesRoot,
+      'ws_00000000-0000-7000-8000-000000000001',
+      '1999-01-01T00:00:00.000Z'
+    );
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       now: () => '2026-07-05T00:00:00.000Z',
     });
 
@@ -1499,13 +1605,16 @@ describe('workspace derived index rebuild', () => {
       limit: 5,
       now: () => '2026-07-05T00:00:00.000Z',
       query: 'protocol',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     expect(retrieval.selected).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          reference: { scopeId: 'page/workspace/ws_demo', objectId: 'mem_project' },
+          reference: {
+            scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+            objectId: 'mem_project',
+          },
         }),
       ])
     );
@@ -1589,7 +1698,7 @@ const invalidDerivedIndexCases: InvalidDerivedIndexCase[] = [
     name: 'a wrong workspaceId',
     mutate: (indexesRoot) => {
       editDerivedIndex(indexesRoot, 'knowledge-links.json', (record) => {
-        record.workspaceId = 'ws_other';
+        record.workspaceId = 'ws_00000000-0000-71f5-922f-6fd42f52f580';
       });
       return undefined;
     },

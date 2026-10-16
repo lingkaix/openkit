@@ -1,4 +1,4 @@
-import { TimestampSchema, WorkspaceIdSchema } from '@openkit/protocol';
+import { TimestampSchema, UserIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { OpenKitAccessTokenScopeSchema } from './auth.js';
 import { WorkspaceAccessRelationSchema } from './workspace-sharing.js';
@@ -33,7 +33,7 @@ export const CallerWorkspaceObservationSchema = WorkspaceAccessRelationSchema.sa
 /** Current identity with no contact, credential value, global inventory, or retained summary. */
 export const ReadCallerResponseSchema = z
   .object({
-    userId: z.string().min(1),
+    userId: UserIdSchema,
     credential: CallerCredentialSchema,
     workspace: CallerWorkspaceObservationSchema.optional(),
   })

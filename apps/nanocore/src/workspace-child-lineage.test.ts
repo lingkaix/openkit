@@ -9,6 +9,7 @@ import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -27,6 +28,7 @@ function createLineageFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-child-lineage-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
   const app = createApp({ coreDb, dataRoot, store });
   const allowedWorkspace = store.createWorkspace('Allowed lineage Workspace');
@@ -35,7 +37,7 @@ function createLineageFixture() {
   for (const workspace of [allowedWorkspace, foreignWorkspace]) {
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
   }
@@ -46,7 +48,7 @@ function createLineageFixture() {
     foreignWorkspace.id,
     foreignThread.id,
     'Foreign lineage Turn',
-    { kind: 'user', id: 'user_local' }
+    { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
   );
   const foreignKnowledge = store.createKnowledgeEntry(foreignWorkspace.id, {
     kind: 'project-context',
@@ -55,7 +57,7 @@ function createLineageFixture() {
   });
   const timestamp = new Date().toISOString();
   const foreignKnowledgeSource = store.createKnowledgeSource({
-    id: 'ks_foreign_lineage',
+    id: 'ks_00000000-0000-756d-9b79-fde0d969c5fa',
     workspaceId: foreignWorkspace.id,
     kind: 'document',
     title: 'Foreign knowledge source',
@@ -71,7 +73,7 @@ function createLineageFixture() {
   const artifactBody = 'Foreign Artifact content.';
   const artifactRequestId = 'foreign-artifact-lineage';
   const foreignArtifact = store.createArtifact({
-    id: 'ar_foreign_lineage',
+    id: 'ar_00000000-0000-7ef1-bb38-38a02dd7b18c',
     workspaceId: foreignWorkspace.id,
     threadId: foreignThread.id,
     turnId: foreignTurn.id,
@@ -266,7 +268,7 @@ describe('Workspace child lineage', () => {
       );
       expect(response.status).toBe(404);
       expect(await response.json()).toEqual({
-        protocolVersion: '0.5.0',
+        protocolVersion: '0.6.0',
         code: 'not_found',
         message: 'Artifact not found.',
       });

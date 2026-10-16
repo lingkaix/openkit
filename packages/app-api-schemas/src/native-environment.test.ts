@@ -25,8 +25,8 @@ const response = {
   reload: { matchesDesired: true, snapshotVersion: 1 },
   applied: [
     {
-      workspaceId: 'ws',
-      threadId: 'thread',
+      workspaceId: 'ws_00000000-0000-7f76-957b-975dd48d69d1',
+      threadId: 'th_00000000-0000-73eb-9a38-397e2c3d8bd1',
       state: 'acknowledged',
       environment: identity,
       matchesDesired: true,
