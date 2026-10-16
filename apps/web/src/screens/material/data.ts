@@ -99,7 +99,13 @@ export function useWorkspaceMaterialRevision(
 export function useMaterialProposalText(workspaceId: string, artifact: GetArtifactResponse | null) {
   const client = useCoreClient();
   return useQuery({
-    queryKey: ['material-proposal-text', workspaceId, artifact?.id ?? '', artifact?.version ?? 0, artifact?.contentDigest ?? ''],
+    queryKey: [
+      'material-proposal-text',
+      workspaceId,
+      artifact?.id ?? '',
+      artifact?.version ?? 0,
+      artifact?.contentDigest ?? '',
+    ],
     enabled: artifact?.content.format === 'file',
     staleTime: 0,
     retry: false,
@@ -107,19 +113,32 @@ export function useMaterialProposalText(workspaceId: string, artifact: GetArtifa
       const content = artifact?.content;
       // This is the existing Material text-processing ceiling, not the arbitrary-file limit.
       const maximumBytes = 16_777_216;
-      if (!artifact || artifact.workspaceId !== workspaceId || content?.format !== 'file' ||
-          content.byteLength > maximumBytes ||
-          (content.mediaType !== 'text/markdown' && content.mediaType !== 'text/plain'))
+      if (
+        !artifact ||
+        artifact.workspaceId !== workspaceId ||
+        content?.format !== 'file' ||
+        content.byteLength > maximumBytes ||
+        (content.mediaType !== 'text/markdown' && content.mediaType !== 'text/plain')
+      )
         throw new Error('The reviewed proposal text is unavailable.');
       signal.throwIfAborted();
-      const download = await client.artifactFiles.download({ workspaceId, artifactId: artifact.id, artifactVersion: artifact.version });
+      const download = await client.artifactFiles.download({
+        workspaceId,
+        artifactId: artifact.id,
+        artifactVersion: artifact.version,
+      });
       const reader = download.body.getReader();
       const hash = sha256.create();
-      const cancel = () => { void reader.cancel().catch(() => undefined); };
+      const cancel = () => {
+        void reader.cancel().catch(() => undefined);
+      };
       signal.addEventListener('abort', cancel, { once: true });
       try {
         signal.throwIfAborted();
-        if (download.byteLength !== content.byteLength || download.contentDigest !== artifact.contentDigest)
+        if (
+          download.byteLength !== content.byteLength ||
+          download.contentDigest !== artifact.contentDigest
+        )
           throw new Error('The reviewed proposal text is unavailable.');
         // Preserve BOM and exact Unicode/newline bytes; replacement decoding cannot prove the original.
         const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
@@ -137,7 +156,10 @@ export function useMaterialProposalText(workspaceId: string, artifact: GetArtifa
           parts.push(decoder.decode(value, { stream: true }));
         }
         parts.push(decoder.decode());
-        if (byteLength !== content.byteLength || `sha256:${bytesToHex(hash.digest())}` !== artifact.contentDigest)
+        if (
+          byteLength !== content.byteLength ||
+          `sha256:${bytesToHex(hash.digest())}` !== artifact.contentDigest
+        )
           throw new Error('The reviewed proposal text is unavailable.');
         return parts.join('');
       } finally {

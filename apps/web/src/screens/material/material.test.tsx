@@ -9,8 +9,8 @@ import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { AppRoutes } from '../../app/routes';
 import { SURFACES } from '../../app/surfaces';
-import { useWorkspaceStore } from '../workspace-store';
 import type { ArtifactReview } from '../goal/data';
+import { useWorkspaceStore } from '../workspace-store';
 import { useSaveWorkspaceMaterialRevision } from './data';
 import { ProposalReview } from './ProposalReview';
 
@@ -976,19 +976,48 @@ function proposalFixture(text = '\ufeff# Proposed release notes\n界 ships.\n', 
   const bytes = new TextEncoder().encode(text);
   const contentDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
   const artifact: GetArtifactResponse = {
-    id: 'artifact_proposal', workspaceId: WORKSPACE_ID, threadId: THREAD_ID, turnId: 'turn_proposal',
-    kind: 'report', title: 'Proposal', status: 'ready', summary: null, version,
+    id: 'artifact_proposal',
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId: 'turn_proposal',
+    kind: 'report',
+    title: 'Proposal',
+    status: 'ready',
+    summary: null,
+    version,
     content: { format: 'file', mediaType: 'text/markdown', byteLength: bytes.length },
-    contentDigest, lastMutationRequestId: 'req_proposal',
-    origin: { kind: 'turn-output', threadId: THREAD_ID, turnId: 'turn_proposal', requestId: 'req_proposal' },
-    createdAt: TIMESTAMP, updatedAt: TIMESTAMP,
+    contentDigest,
+    lastMutationRequestId: 'req_proposal',
+    origin: {
+      kind: 'turn-output',
+      threadId: THREAD_ID,
+      turnId: 'turn_proposal',
+      requestId: 'req_proposal',
+    },
+    createdAt: TIMESTAMP,
+    updatedAt: TIMESTAMP,
   };
   const review: ArtifactReview = {
-    workspaceId: WORKSPACE_ID, reviewId: 'review_proposal', artifactId: artifact.id,
-    artifactVersion: version, contentDigest, sourceThreadId: THREAD_ID, sourceTurnId: 'turn_proposal',
-    sourceAgentId: 'agent_proposal', materialProposal: { materialId: MATERIAL_ID, baseRevisionId: REVISION_2.revisionId, baseContentDigest: REVISION_2.contentDigest },
-    decision: null, decisionActorId: null, feedback: null, decidedAt: null,
-    followUpTurnId: null, appliedMaterialRevisionId: null, createdAt: TIMESTAMP,
+    workspaceId: WORKSPACE_ID,
+    reviewId: 'review_proposal',
+    artifactId: artifact.id,
+    artifactVersion: version,
+    contentDigest,
+    sourceThreadId: THREAD_ID,
+    sourceTurnId: 'turn_proposal',
+    sourceAgentId: 'agent_proposal',
+    materialProposal: {
+      materialId: MATERIAL_ID,
+      baseRevisionId: REVISION_2.revisionId,
+      baseContentDigest: REVISION_2.contentDigest,
+    },
+    decision: null,
+    decisionActorId: null,
+    feedback: null,
+    decidedAt: null,
+    followUpTurnId: null,
+    appliedMaterialRevisionId: null,
+    createdAt: TIMESTAMP,
   };
   const cancel = vi.fn();
   const downloaded = () => ({
@@ -998,23 +1027,43 @@ function proposalFixture(text = '\ufeff# Proposed release notes\n界 ships.\n', 
         controller.enqueue(bytes.subarray(0, 1));
         controller.enqueue(bytes.subarray(1));
         controller.close();
-      }, cancel,
-    }), byteLength: bytes.length, mediaType: 'text/markdown', contentDigest,
+      },
+      cancel,
+    }),
+    byteLength: bytes.length,
+    mediaType: 'text/markdown',
+    contentDigest,
   });
   return { artifact, review, bytes, text, downloaded, cancel };
 }
 
 /** Keeps one QueryClient across rerenders to expose stale-query display. */
-function renderProposal(download: CoreClient['artifactFiles']['download'], initial: ReturnType<typeof proposalFixture>) {
-  const client: CoreClient = { ...makeClient(), artifactFiles: { download, import: vi.fn(), browserDownloadUrl: vi.fn() } };
+function renderProposal(
+  download: CoreClient['artifactFiles']['download'],
+  initial: ReturnType<typeof proposalFixture>
+) {
+  const client: CoreClient = {
+    ...makeClient(),
+    artifactFiles: { download, import: vi.fn(), browserDownloadUrl: vi.fn() },
+  };
   const queries = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = (fixture: ReturnType<typeof proposalFixture>) => (
-    <QueryClientProvider client={queries}><CoreClientProvider client={client}>
-      <ProposalReview workspaceId={WORKSPACE_ID} artifact={fixture.artifact} review={fixture.review} conflict={false} onRefresh={vi.fn()} />
-    </CoreClientProvider></QueryClientProvider>
+    <QueryClientProvider client={queries}>
+      <CoreClientProvider client={client}>
+        <ProposalReview
+          workspaceId={WORKSPACE_ID}
+          artifact={fixture.artifact}
+          review={fixture.review}
+          conflict={false}
+          onRefresh={vi.fn()}
+        />
+      </CoreClientProvider>
+    </QueryClientProvider>
   );
   const result = render(view(initial));
-  return { rerender: (fixture: ReturnType<typeof proposalFixture>) => result.rerender(view(fixture)) };
+  return {
+    rerender: (fixture: ReturnType<typeof proposalFixture>) => result.rerender(view(fixture)),
+  };
 }
 
 describe('exact Material proposal text', () => {
@@ -1024,13 +1073,24 @@ describe('exact Material proposal text', () => {
     const download = vi.fn().mockReturnValue(pending.promise);
     const view = renderProposal(download, fixture);
     expect(await screen.findByText('Loading reviewed proposal text.')).toBeInTheDocument();
-    expect(download).toHaveBeenCalledExactlyOnceWith({ workspaceId: WORKSPACE_ID, artifactId: fixture.artifact.id, artifactVersion: 1 });
+    expect(download).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: WORKSPACE_ID,
+      artifactId: fixture.artifact.id,
+      artifactVersion: 1,
+    });
     pending.resolve(fixture.downloaded());
-    await waitFor(() => expect(screen.getByRole('region', { name: 'Reviewed artifact proposal' }).querySelector('pre')?.textContent).toBe(fixture.text));
+    await waitFor(() =>
+      expect(
+        screen.getByRole('region', { name: 'Reviewed artifact proposal' }).querySelector('pre')
+          ?.textContent
+      ).toBe(fixture.text)
+    );
     const inline = proposalFixture('Inline proposal', 2);
     inline.artifact.content = { format: 'text', body: inline.text };
     view.rerender(inline);
-    expect(screen.getByRole('region', { name: 'Reviewed artifact proposal' })).toHaveTextContent('Inline proposal');
+    expect(screen.getByRole('region', { name: 'Reviewed artifact proposal' })).toHaveTextContent(
+      'Inline proposal'
+    );
     expect(download).toHaveBeenCalledOnce();
   });
 
@@ -1038,41 +1098,81 @@ describe('exact Material proposal text', () => {
     const first = proposalFixture('Original version');
     const next = proposalFixture('Changed version!', 2);
     const pending = createDeferred<ReturnType<typeof next.downloaded>>();
-    const download = vi.fn().mockResolvedValueOnce(first.downloaded()).mockReturnValueOnce(pending.promise);
+    const download = vi
+      .fn()
+      .mockResolvedValueOnce(first.downloaded())
+      .mockReturnValueOnce(pending.promise);
     const view = renderProposal(download, first);
     await screen.findByText(first.text);
     view.rerender(next);
     await screen.findByText('Loading reviewed proposal text.');
     expect(screen.queryByText(first.text)).not.toBeInTheDocument();
     const corrupt = first.downloaded();
-    pending.resolve({ ...corrupt, byteLength: next.bytes.length, contentDigest: next.artifact.contentDigest });
-    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load the reviewed proposal text.");
+    pending.resolve({
+      ...corrupt,
+      byteLength: next.bytes.length,
+      contentDigest: next.artifact.contentDigest,
+    });
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "Couldn't load the reviewed proposal text."
+    );
     expect(screen.queryByText(first.text)).not.toBeInTheDocument();
     expect(screen.queryByText(next.text)).not.toBeInTheDocument();
-    expect(download).toHaveBeenLastCalledWith({ workspaceId: WORKSPACE_ID, artifactId: next.artifact.id, artifactVersion: 2 });
+    expect(download).toHaveBeenLastCalledWith({
+      workspaceId: WORKSPACE_ID,
+      artifactId: next.artifact.id,
+      artifactVersion: 2,
+    });
   });
 
   it('refuses oversized metadata, invalid UTF-8 and an oversized actual stream before display', async () => {
     const fixture = proposalFixture();
-    fixture.artifact.content = { format: 'file', mediaType: 'text/markdown', byteLength: 16_777_217 };
+    fixture.artifact.content = {
+      format: 'file',
+      mediaType: 'text/markdown',
+      byteLength: 16_777_217,
+    };
     const download = vi.fn();
     const view = renderProposal(download, fixture);
-    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load the reviewed proposal text.");
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "Couldn't load the reviewed proposal text."
+    );
     expect(download).not.toHaveBeenCalled();
     const invalid = proposalFixture('a', 2);
     const bytes = new Uint8Array([255]);
     invalid.artifact.contentDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
     invalid.review.contentDigest = invalid.artifact.contentDigest;
-    download.mockResolvedValue({ ...invalid.downloaded(), contentDigest: invalid.artifact.contentDigest, body: new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } }) });
+    download.mockResolvedValue({
+      ...invalid.downloaded(),
+      contentDigest: invalid.artifact.contentDigest,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(bytes);
+          controller.close();
+        },
+      }),
+    });
     view.rerender(invalid);
     await waitFor(() => expect(download).toHaveBeenCalledOnce());
-    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load the reviewed proposal text.");
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "Couldn't load the reviewed proposal text."
+    );
     expect(screen.queryByText('\ufffd')).not.toBeInTheDocument();
     const overflow = proposalFixture('a', 3);
     const cancelled = vi.fn();
-    download.mockResolvedValue({ ...overflow.downloaded(), body: new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([97, 97])); }, cancel: cancelled }) });
+    download.mockResolvedValue({
+      ...overflow.downloaded(),
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array([97, 97]));
+        },
+        cancel: cancelled,
+      }),
+    });
     view.rerender(overflow);
     await waitFor(() => expect(cancelled).toHaveBeenCalledOnce());
-    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load the reviewed proposal text.");
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "Couldn't load the reviewed proposal text."
+    );
   });
 });
