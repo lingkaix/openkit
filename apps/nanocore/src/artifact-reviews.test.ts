@@ -490,17 +490,76 @@ it('chooses an accepted Material candidate after whole-revision apply advances i
   const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
   const timestamp = '2026-10-17T00:00:00.000Z';
   try {
-    const { materialId } = createWorkspaceMaterial(db, { actor, acceptedAt: timestamp, requestId: 'create', title: 'Material', kind: 'text', sensitivity: 'internal' });
-    const { revisionId } = saveWorkspaceMaterialRevision(db, { actor, acceptedAt: timestamp, requestId: 'base', materialId, expectedRevisionId: null, content: 'Base.', contentDigest: contentDigest('Base.') });
+    const { materialId } = createWorkspaceMaterial(db, {
+      actor,
+      acceptedAt: timestamp,
+      requestId: 'create',
+      title: 'Material',
+      kind: 'text',
+      sensitivity: 'internal',
+    });
+    const { revisionId } = saveWorkspaceMaterialRevision(db, {
+      actor,
+      acceptedAt: timestamp,
+      requestId: 'base',
+      materialId,
+      expectedRevisionId: null,
+      content: 'Base.',
+      contentDigest: contentDigest('Base.'),
+    });
     const artifactId = 'ar_00000000-0000-7000-8000-000000000001';
-    createArtifactReview(db, { artifactId, artifactVersion: 1, contentDigest: contentDigest('Candidate.'), sourceThreadId: null, sourceTurnId: null, sourceAgentId: null, materialProposal: { materialId, baseRevisionId: revisionId, baseContentDigest: contentDigest('Base.') }, createdAt: timestamp });
-    decideArtifactReview(db, { actor, actorId: actor.id, artifactId, artifactVersion: 1, requestId: 'accept', decidedAt: timestamp, decision: 'accepted', feedback: null, artifactContent: 'Candidate.', artifactMediaType: 'text/plain' });
+    createArtifactReview(db, {
+      artifactId,
+      artifactVersion: 1,
+      contentDigest: contentDigest('Candidate.'),
+      sourceThreadId: null,
+      sourceTurnId: null,
+      sourceAgentId: null,
+      materialProposal: {
+        materialId,
+        baseRevisionId: revisionId,
+        baseContentDigest: contentDigest('Base.'),
+      },
+      createdAt: timestamp,
+    });
+    decideArtifactReview(db, {
+      actor,
+      actorId: actor.id,
+      artifactId,
+      artifactVersion: 1,
+      requestId: 'accept',
+      decidedAt: timestamp,
+      decision: 'accepted',
+      feedback: null,
+      artifactContent: 'Candidate.',
+      artifactMediaType: 'text/plain',
+    });
     const before = getArtifactReview(db, artifactId, 1);
     const materials = db.sqlite.prepare('SELECT * FROM workspace_material_revisions').all();
     const turns = db.sqlite.prepare('SELECT * FROM worker_turn_checkpoints').all();
-    const choice = selectArtifactReviewCandidate(db, { actorId: actor.id, artifactId, artifactVersion: 1, contentDigest: contentDigest('Candidate.'), requestId: 'choose', reason: 'Use the accepted candidate.', selectedAt: timestamp });
-    expect(choice).toMatchObject({ ...before, candidateSelections: [{ actorId: actor.id, requestId: 'choose', reason: 'Use the accepted candidate.', selectedAt: timestamp }] });
-    expect(db.sqlite.prepare('SELECT * FROM workspace_material_revisions').all()).toEqual(materials);
+    const choice = selectArtifactReviewCandidate(db, {
+      actorId: actor.id,
+      artifactId,
+      artifactVersion: 1,
+      contentDigest: contentDigest('Candidate.'),
+      requestId: 'choose',
+      reason: 'Use the accepted candidate.',
+      selectedAt: timestamp,
+    });
+    expect(choice).toMatchObject({
+      ...before,
+      candidateSelections: [
+        {
+          actorId: actor.id,
+          requestId: 'choose',
+          reason: 'Use the accepted candidate.',
+          selectedAt: timestamp,
+        },
+      ],
+    });
+    expect(db.sqlite.prepare('SELECT * FROM workspace_material_revisions').all()).toEqual(
+      materials
+    );
     expect(db.sqlite.prepare('SELECT * FROM worker_turn_checkpoints').all()).toEqual(turns);
   } finally {
     db.sqlite.close();

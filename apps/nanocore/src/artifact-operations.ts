@@ -25,8 +25,8 @@ import {
   getArtifactReview,
   listArtifactReviews,
   replayArtifactReviewDecision,
-  serializeArtifactReviewFollowUpRequest,
   selectArtifactReviewCandidate,
+  serializeArtifactReviewFollowUpRequest,
 } from './artifact-reviews.js';
 import {
   isCurrentDeploymentAdministrator,
@@ -340,32 +340,75 @@ export function createArtifactOperationImplementations(
     'artifact.review.select': async (input, context) => {
       const actorId = responsibleUserIdForActor(context.actorRef)!;
       const { workspaceId, artifactId, artifactVersion } = input;
-      assertArtifactWorkspaceLineage(actorId, administratorEligible(context), store, workspaceId, artifactId);
+      assertArtifactWorkspaceLineage(
+        actorId,
+        administratorEligible(context),
+        store,
+        workspaceId,
+        artifactId
+      );
       const workspaceDb = openReceiptDb(workspaceId);
       try {
-        if (listWorkspaceSyncReviews(workspaceDb, workspaceId).some((review) => review.artifactId === artifactId)) throw recoveryRequired('A Workspace Sync Review already owns the target Artifact presentation.');
-        const choiceInput = { actorId, artifactId, artifactVersion, contentDigest: input.contentDigest, requestId: input.requestId, ...(input.reason === undefined ? {} : { reason: input.reason }), selectedAt: new Date().toISOString() };
+        if (
+          listWorkspaceSyncReviews(workspaceDb, workspaceId).some(
+            (review) => review.artifactId === artifactId
+          )
+        )
+          throw recoveryRequired(
+            'A Workspace Sync Review already owns the target Artifact presentation.'
+          );
+        const choiceInput = {
+          actorId,
+          artifactId,
+          artifactVersion,
+          contentDigest: input.contentDigest,
+          requestId: input.requestId,
+          ...(input.reason === undefined ? {} : { reason: input.reason }),
+          selectedAt: new Date().toISOString(),
+        };
         const requireCandidate = () => {
           const review = getArtifactReview(workspaceDb, artifactId, artifactVersion);
           const artifact = store.getArtifact(workspaceId, artifactId);
-          if (artifact.version !== artifactVersion || artifact.contentDigest !== input.contentDigest || review.contentDigest !== input.contentDigest || artifact.status !== 'ready') throw new ArtifactReviewError('stale', 'The exact Artifact candidate is unavailable.');
+          if (
+            artifact.version !== artifactVersion ||
+            artifact.contentDigest !== input.contentDigest ||
+            review.contentDigest !== input.contentDigest ||
+            artifact.status !== 'ready'
+          )
+            throw new ArtifactReviewError('stale', 'The exact Artifact candidate is unavailable.');
           requireCurrentReviewedArtifact(store, review);
         };
         return await runIdempotentCommand({
-          store, inflightCommands, command: 'artifact.review.select', requestId: input.requestId,
+          store,
+          inflightCommands,
+          command: 'artifact.review.select',
+          requestId: input.requestId,
           scope: { workspaceId, artifactId, artifactVersion: String(artifactVersion) },
           input: { contentDigest: input.contentDigest, reason: input.reason ?? null },
-          responseKind: 'artifact_review', workspaceDb, workspaceTransaction: true,
+          responseKind: 'artifact_review',
+          workspaceDb,
+          workspaceTransaction: true,
           responseId: (result) => result.review.reviewId,
-          execute: () => { requireCandidate(); return { review: selectArtifactReviewCandidate(workspaceDb, choiceInput) }; },
+          execute: () => {
+            requireCandidate();
+            return { review: selectArtifactReviewCandidate(workspaceDb, choiceInput) };
+          },
           replay: (record) => {
             requireCandidate();
             const review = selectArtifactReviewCandidate(workspaceDb, choiceInput, true);
-            if (record.response.kind !== 'artifact_review' || record.response.id !== review.reviewId) throw recoveryRequired('The candidate choice receipt has invalid response lineage.');
+            if (
+              record.response.kind !== 'artifact_review' ||
+              record.response.id !== review.reviewId
+            )
+              throw recoveryRequired('The candidate choice receipt has invalid response lineage.');
             return { review };
           },
         });
-      } catch (error) { artifactOperationFailure(error); } finally { workspaceDb.sqlite.close(); }
+      } catch (error) {
+        artifactOperationFailure(error);
+      } finally {
+        workspaceDb.sqlite.close();
+      }
     },
     'artifact.review.decide': async (input, context) => {
       const actor = context.actorRef;
