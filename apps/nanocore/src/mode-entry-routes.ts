@@ -2611,7 +2611,7 @@ export function createConversationService({
    *
    * @param input Provider selection, prompt, lineage metadata, and caller cancellation signal.
    * @returns Provider response identity, text, and optional usage payload.
-   * @throws TurnStartValidationError for timeout, caller cancellation, or invalid content.
+   * @throws TurnStartValidationError for request admission, timeout, cancellation, or invalid content.
    * @throws Error when provider resolution or dispatch fails.
    */
   async function callQuickChatProvider(input: {

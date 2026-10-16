@@ -2507,9 +2507,15 @@ describe('quick chat app API', () => {
         ...options.gatewayConfig,
         logicalModels: options.gatewayConfig.logicalModels.map((model) => ({
           ...model,
-          contract: { context: 6_000 },
+          contextManagement: [{ type: 'compaction', compactThreshold: 1_000 }],
         })),
       },
+      providerRegistry: new ProviderRegistry([
+        {
+          ...options.providerRegistry.get('ollama')!,
+          modelMetadata: { 'openai/gpt-5.2': { limit: { context: 6_000, output: 1_000 } } },
+        },
+      ]),
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: { createChatCompletion } as unknown as PiAiGatewayClient,
     });
