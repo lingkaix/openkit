@@ -159,7 +159,7 @@ function createCapabilitySummary(
   sequence: number
 ): WorkerCapabilityCallSummary {
   return {
-    capabilityCallId: 'capability_1',
+    capabilityCallId: testEntityId('cap', 'capability_1'),
     diagnostics: [],
     family: 'knowledge.search',
     inputSummary: 'Search project knowledge.',
@@ -948,7 +948,10 @@ describe('WorkerControlGateway', () => {
       schemaVersion: 2,
     });
     expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.capabilitySummaries).toEqual([
-      expect.objectContaining({ capabilityCallId: 'capability_1', status: 'succeeded' }),
+      expect.objectContaining({
+        capabilityCallId: testEntityId('cap', 'capability_1'),
+        status: 'succeeded',
+      }),
     ]);
   });
 

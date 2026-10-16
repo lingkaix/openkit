@@ -265,7 +265,7 @@ describe('data-root backup manifest', () => {
     });
     writeFileSync(
       join(dataRoot, 'server', 'layout.json'),
-      '{"schemaVersion":1,"layoutVersion":2,"deploymentId":"deployment_backup_test"}\n'
+      `${JSON.stringify({ schemaVersion: 1, layoutVersion: 2, deploymentId: testEntityId('dep', 'deployment_backup_test') })}\n`
     );
     writeFileSync(
       join(dataRoot, 'users', 'usr_00000000-0000-7000-8000-000000000001', 'profile.json'),
@@ -540,7 +540,7 @@ describe('data-root backup manifest', () => {
     mkdirSync(join(dataRoot, 'server', 'db'), { recursive: true });
     writeFileSync(
       join(dataRoot, 'server', 'layout.json'),
-      '{"schemaVersion":1,"layoutVersion":2,"deploymentId":"deployment_backup_test"}\n'
+      `${JSON.stringify({ schemaVersion: 1, layoutVersion: 2, deploymentId: testEntityId('dep', 'deployment_backup_test') })}\n`
     );
     const store = createDemoStore({ dataRoot });
     const schema: LightAppSchemaInput = {

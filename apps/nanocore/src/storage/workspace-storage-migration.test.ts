@@ -19,6 +19,7 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { inventoryRegularFiles, verifyDataRootBackupManifest } from './data-root-backup.js';
 import { type CoreDb, openWorkspaceDbAtRoot } from './db.js';
@@ -602,7 +603,7 @@ describe('workspace storage migration', () => {
     const automationSnapshot = writeLegacyAepSnapshot(
       fixture,
       'migration_automation',
-      'automation_migration',
+      testEntityId('auto', 'automation_migration'),
       fixture.ownerUserId
     );
     const backupRoot = join(
