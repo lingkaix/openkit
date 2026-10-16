@@ -19,7 +19,7 @@ const timestamp = '2026-10-16T00:00:00.000Z';
 const clients: QueryClient[] = [];
 
 /** Real hooks and public Core client replace only HTTP, including one unknown restore result. */
-function renderNotebook({ deferDiff = false } = {}) {
+function renderNotebook({ deferDiff = false, truncatedDiff = false } = {}) {
   const restores: Array<Record<string, unknown>> = [];
   const diffs: Array<Record<string, unknown>> = [];
   let currentRevision = BASE;
@@ -129,6 +129,7 @@ function renderNotebook({ deferDiff = false } = {}) {
                   baseRevision: body.baseRevision,
                   fromRevision: body.fromRevision,
                   forRestore: Boolean(body.forRestore),
+                  truncated: truncatedDiff && !body.forRestore,
                   changes: [
                     {
                       path: 'notes/one.md',
@@ -143,6 +144,7 @@ function renderNotebook({ deferDiff = false } = {}) {
           baseRevision: body.baseRevision,
           fromRevision: body.fromRevision,
           forRestore: Boolean(body.forRestore),
+                  truncated: truncatedDiff && !body.forRestore,
           changes: [
             {
               path: 'notes/one.md',
@@ -152,7 +154,7 @@ function renderNotebook({ deferDiff = false } = {}) {
                 : 'review_state: accepted\nEarlier exact text.',
             },
             { path: 'notes/obsolete.md', before: 'Obsolete exact text.', after: null },
-          ],
+          ].filter((change) => !body.pageIds || body.pageIds.includes(change.path.slice(0, -3))),
         });
       case operationHttpPath('knowledge.notebook.restore'): {
         const requestId = new Headers(init?.headers).get('x-openkit-request-id');
@@ -211,6 +213,23 @@ afterEach(() => {
 });
 
 describe('Notebook history and restore', () => {
+  it('labels a truncated display and requests a complete preview only for the selected pages', async () => {
+    const user = userEvent.setup();
+    const f = renderNotebook({ truncatedDiff: true });
+    await user.click(await screen.findByRole('button', { name: 'Notebook history' }));
+    await user.click(await screen.findByRole('radio', { name: 'Earlier human edit' }));
+    expect(await screen.findByText(/This diff is truncated/)).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Review restore' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('checkbox', { name: /notes\/obsolete.md/ }));
+    await user.click(screen.getByRole('button', { name: 'Prepare restore' }));
+    await screen.findByRole('region', { name: 'Restored notes/one.md' });
+    expect(f.diffs.at(-1)).toMatchObject({ forRestore: true, pageIds: ['notes/one'] });
+    expect(screen.queryByText(/This diff is truncated/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Restored notes/obsolete.md' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review restore' })).toBeEnabled();
+    expect(f.restores).toHaveLength(0);
+  });
+
   it('withholds a cached diff when refreshed history and current page access become unavailable', async () => {
     const user = userEvent.setup();
     const f = renderNotebook();

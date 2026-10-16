@@ -36,6 +36,7 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
   const [cursor, setCursor] = useState<string | null>(null);
   const [fromRevision, setFromRevision] = useState<string | null>(null);
   const [forRestore, setForRestore] = useState(false);
+  const [previewPageIds, setPreviewPageIds] = useState<string[] | null>(null);
   const [selectedPaths, setSelectedPaths] = useState<string[] | null>(null);
   const [summary, setSummary] = useState('Restore selected Notebook pages');
   const [intent, setIntent] = useState<RestoreCommand | null>(null);
@@ -58,13 +59,14 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
       baseRevision,
       fromRevision,
       forRestore,
+      forRestore ? previewPageIds : null,
     ],
     queryFn: () =>
       client.operations['knowledge.notebook.diff']({
         workspaceId,
         baseRevision: baseRevision!,
         fromRevision: fromRevision!,
-        ...(forRestore ? { forRestore: true as const } : {}),
+        ...(forRestore ? { forRestore: true as const, pageIds: previewPageIds! } : {}),
       }),
     enabled: open && Boolean(baseRevision && fromRevision),
     retry: false,
@@ -111,12 +113,14 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
     !history.isFetching &&
     forRestore &&
     preview !== null &&
+    !preview.truncated &&
     chosen.length > 0 &&
     summary.trim().length > 0 &&
     new TextEncoder().encode(summary).length <= 4096;
   const intentMatches =
     intent !== null &&
     preview !== null &&
+    !preview.truncated &&
     intent.baseRevision === preview.baseRevision &&
     intent.fromRevision === preview.fromRevision &&
     intent.pageIds.every((id) => preview.changes.some((change) => change.path === `${id}.md`));
@@ -243,6 +247,20 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
                 </div>
               </>
             ) : null}
+            {forRestore ? (
+              <Button
+                size="sm"
+                variant="quiet"
+                isDisabled={blocked}
+                onPress={() => {
+                  setForRestore(false);
+                  setPreviewPageIds(null);
+                  setSelectedPaths(null);
+                }}
+              >
+                View historical diff
+              </Button>
+            ) : null}
             {fromRevision && (diff.isPending || diff.isFetching) ? <Skeleton lines={3} /> : null}
             {fromRevision && diff.isError ? (
               <ErrorBanner
@@ -266,28 +284,24 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
                   <p className="text-sm text-fg-muted">No page changes to restore.</p>
                 ) : (
                   <>
+                    {preview.truncated ? (
+                      <p role="status" className="text-sm text-fg-muted">
+                        This diff is truncated. Select fewer pages to request a complete restore preview.
+                      </p>
+                    ) : null}
                     {!forRestore ? (
                       <Button
                         size="sm"
                         variant="outline"
-                        isDisabled={blocked}
-                        onPress={() => setForRestore(true)}
+                        isDisabled={blocked || chosen.length === 0}
+                        onPress={() => {
+                          setPreviewPageIds(chosen.map((change) => change.path.slice(0, -3)));
+                          setForRestore(true);
+                        }}
                       >
                         Prepare restore
                       </Button>
-                    ) : (
-                      <>
-                        <Button
-                          size="sm"
-                          variant="quiet"
-                          isDisabled={blocked}
-                          onPress={() => {
-                            setForRestore(false);
-                            setSelectedPaths(null);
-                          }}
-                        >
-                          View historical diff
-                        </Button>
+                    ) : null}
                         <CheckboxGroup
                           aria-label="Pages to restore"
                           value={selectedPaths ?? changes.map((change) => change.path)}
@@ -313,8 +327,6 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
                             </Checkbox>
                           ))}
                         </CheckboxGroup>
-                      </>
-                    )}
                     {chosen.map((change) => (
                       <DiffView
                         key={change.path}
