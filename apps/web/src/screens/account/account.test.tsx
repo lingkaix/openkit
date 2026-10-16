@@ -1853,12 +1853,14 @@ describe('selected-Workspace member management', () => {
     ['Remove', /remove member/i],
     ['Transfer', /transfer ownership/i],
   ] as const)('closes %s confirmation when the same member is selected in another cached Workspace', async (_operation, action) => {
-    const listWorkspaceMembers = vi.fn().mockImplementation(async ({ workspaceId }: { workspaceId: string }) => ({
-      items: [
-        { ...OWNER_MEMBER, workspaceId },
-        { ...EDITOR_MEMBER, workspaceId },
-      ],
-    }));
+    const listWorkspaceMembers = vi
+      .fn()
+      .mockImplementation(async ({ workspaceId }: { workspaceId: string }) => ({
+        items: [
+          { ...OWNER_MEMBER, workspaceId },
+          { ...EDITOR_MEMBER, workspaceId },
+        ],
+      }));
     const { client, methods } = makeSharingClient({ methods: { listWorkspaceMembers } });
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
     const { queryClient } = renderApp('/settings/account', client);
