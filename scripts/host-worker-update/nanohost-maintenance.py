@@ -1,10 +1,6 @@
 """Bounded external operator maintenance for the fixed installed NanoHost service.
 
-The caller owns the exclusive maintenance window, verified release inputs and
-retained-input admission. This module neither installs payloads nor judges Core
-readiness. Its injected root and command transport exist for contained tests;
-the privileged operator entry must use the fixed real root. Command uncertainty
-retains custody for inspection and never authorizes replay or automatic repair.
+The caller owns the exclusive maintenance window, verified release inputs and retained-input admission. This module neither installs payloads nor judges Core readiness. Its injected root and command transport exist for contained tests; the privileged operator entry must use the fixed real root. Command uncertainty retains custody for inspection and never authorizes replay or automatic repair.
 """
 
 import importlib.util
@@ -68,10 +64,7 @@ def _identity(info):
 class Maintenance(_systemd.SystemdMaintenance):
     """Establish inhibition, attempt one controlled start, and restore supervision.
 
-    The inherited public fence predicate remains the custody module's observer.
-    Guard and attempt files are interruption evidence, never resume authority.
-    A fresh instance can finalize only from current measured facts and the exact
-    supplied incarnation. It cannot repeat begin or start from existing custody.
+    The public fence predicate remains the custody module's observer. Guard and attempt files are interruption evidence, never resume authority. A fresh instance can finalize only from current measured facts and the exact supplied incarnation. It cannot repeat begin or start from existing custody.
     """
 
     def _selectors(self):
@@ -118,9 +111,7 @@ class Maintenance(_systemd.SystemdMaintenance):
     def _unit_roots(self, guarded):
         """Inspect every actual manager root and applicable exact, prefix and type drop-in.
 
-        Only the standard /lib to /usr/lib directory alias is admitted. All other
-        links fail closed, including links that would escape an injected root.
-        Absent roots are allowed only after checking their existing ancestors.
+        Only the standard /lib to /usr/lib directory alias is admitted. All other links fail closed, including links that would escape an injected root. Absent roots are allowed only after checking their existing ancestors.
         """
         paths = self._bus("UnitPath", "as")
         if type(paths) is not list or not 0 < len(paths) <= 64:
@@ -298,11 +289,10 @@ class Maintenance(_systemd.SystemdMaintenance):
             self._effect("daemon-reload")
             self._effect("stop", _UNIT)
             self._effect("stop", "openkit-nanohost.slice")
-            self._unit_roots(True)
-            self._activation()
-            self.assert_fenced_and_inhibited()
+            self._old_unit(old_unit_sha256)
             if self._service()["NeedDaemonReload"] != "no":
                 _refuse()
+            self.assert_fenced_and_inhibited()
         except Exception:
             _refuse()
 
@@ -313,22 +303,19 @@ class Maintenance(_systemd.SystemdMaintenance):
             self._admit()
             self._absent(self.attempt)
             self._absent(str(Path(self.permit).parent))
-            self._unit_roots(True)
-            self._activation()
             original = self._payloads(target_payload_hashes)
             self.assert_fenced_and_inhibited()
             self._effect("daemon-reload")
-            self._unit_roots(True)
-            self._activation()
+            if self._service()["NeedDaemonReload"] != "no":
+                _refuse()
             self.assert_fenced_and_inhibited()
-            if self._service()["NeedDaemonReload"] != "no" or original != self._payloads(target_payload_hashes):
+            if original != self._payloads(target_payload_hashes):
                 _refuse()
             with self._directory(_FRAGMENT + ".d", config=True) as parent:
                 self._create(parent, Path(self.attempt).name, self._attempt_bytes(), 0o644, durable=True)
             # Attempt custody survives interruption before this volatile permit.
             # There is no promise that the permit survives a host restart.
             self.assert_fenced_and_inhibited()
-            self._activation()
             if original != self._payloads(target_payload_hashes):
                 _refuse()
             with self._directory("/run", config=True) as parent:
@@ -361,6 +348,8 @@ class Maintenance(_systemd.SystemdMaintenance):
             incarnation = self._incarnation(True)
             if original != self._payloads(target_payload_hashes) or incarnation != self._incarnation(True):
                 _refuse()
+            self._guard()
+            self._owned(self.attempt, self._attempt_bytes(), 0o644)
             return incarnation
         except Exception:
             _refuse()
