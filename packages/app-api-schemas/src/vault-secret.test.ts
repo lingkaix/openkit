@@ -26,6 +26,22 @@ describe('workspace Vault secret input', () => {
       }).success
     ).toBe(false);
     expect(
+      vault.CreateWorkspaceVaultGrantRequestSchema.parse({
+        referenceId: 'vault_example',
+        targetAgentId: 'agent-selected',
+        targetCapabilityId: 'mcp.call_tool',
+      })
+    ).toMatchObject({ targetAgentId: 'agent-selected', targetCapabilityId: 'mcp.call_tool' });
+    for (const constraints of [
+      { targetCapabilityId: 'mcp' },
+      { targetAgentId: null },
+      { allowedInjectionPaths: [] },
+      { lifetime: 'until-revoked' },
+    ])
+      expect(vault.NarrowWorkspaceVaultGrantRequestSchema.safeParse({ constraints }).success).toBe(
+        false
+      );
+    expect(
       vault.CreateWorkspaceVaultGrantRequestSchema.parse({ referenceId: 'vault_example' })
     ).toMatchObject({ referenceId: 'vault_example' });
     expect(

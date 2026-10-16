@@ -60,7 +60,7 @@ import {
   ThreadSchema,
 } from '@openkit/protocol';
 import { Hono } from 'hono';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type CreateAppOptions, createApp as createNanoCoreApp } from './app.js';
 import { createArtifactReview } from './artifact-reviews.js';
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from './audit-events.js';
@@ -218,6 +218,14 @@ function artifactDigest(content: string): string {
   return `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`;
 }
 
+const fixtureDatabases: ReturnType<typeof openCoreDb>[] = [];
+afterEach(() => {
+  for (const coreDb of fixtureDatabases.splice(0)) {
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
+    rmSync(coreDb.dataRoot, { recursive: true, force: true });
+  }
+});
+
 /**
  * Opens a migrated Core database for turn-start repository tests.
  *
@@ -226,6 +234,7 @@ function artifactDigest(content: string): string {
 function createCoreDb(): CoreDb {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-turn-repository-db-'));
   const coreDb = openCoreDb(dataRoot);
+  fixtureDatabases.push(coreDb);
 
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);

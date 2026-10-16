@@ -289,6 +289,7 @@ const CODEX_PROVIDER_MODEL = 'openai-codex/gpt-5.6-sol';
 afterEach(() => {
   for (const coreDb of ownedCoreDatabases.splice(0)) {
     coreDb.sqlite.close();
+    rmSync(coreDb.dataRoot, { recursive: true, force: true });
   }
 });
 

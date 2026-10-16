@@ -4,6 +4,7 @@ import type {
   VaultReferenceOwnerScope,
   VaultReferenceStatus,
 } from '../storage/schema/index.js';
+import { revokeVaultInjectionReceipts } from './vault-receipt-revocation.js';
 
 /** Durable non-secret vault reference record. */
 export interface VaultReferenceRecord {
@@ -242,7 +243,7 @@ export function advanceActiveVaultReferenceVersion(
 }
 
 /**
- * Revokes one vault reference and marks dependent grants and sessions stale.
+ * Revokes one vault reference, dependent grants and the corresponding receipt use.
  *
  * @param coreDb Open Core database handle.
  * @param input Reference revocation input.
@@ -262,16 +263,7 @@ export function revokeVaultReference(
         "UPDATE vault_references SET status = 'revoked', updated_at = ? WHERE reference_id = ?"
       )
       .run(timestamp, input.referenceId);
-    coreDb.sqlite
-      .prepare(
-        `UPDATE vault_injection_receipts
-          SET revocation_status = 'stale-session'
-          WHERE revocation_status = 'active'
-            AND grant_id IN (
-              SELECT grant_id FROM vault_grants WHERE vault_reference_id = ?
-            )`
-      )
-      .run(input.referenceId);
+    revokeVaultInjectionReceipts(coreDb, { referenceId: input.referenceId });
     coreDb.sqlite
       .prepare(
         `UPDATE vault_injection_plans

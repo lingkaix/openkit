@@ -1,10 +1,10 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
-import { createVaultGrant } from './vault/vault-grants.js';
+import { createVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultInjectionPlan } from './vault-injection-plans.js';
 import {
@@ -13,6 +13,12 @@ import {
   listVaultInjectionReceipts,
 } from './vault-injection-receipts.js';
 
+const fixtureRoots = new Set<string>();
+afterEach(() => {
+  for (const root of fixtureRoots) rmSync(root, { recursive: true, force: true });
+  fixtureRoots.clear();
+});
+
 /**
  * Opens a migrated Core database for injection receipt tests.
  *
@@ -20,6 +26,7 @@ import {
  */
 function createCoreDb(): CoreDb {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-injection-receipt-'));
+  fixtureRoots.add(dataRoot);
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   return coreDb;
@@ -44,16 +51,22 @@ describe('injection receipts', () => {
         revocationStatus: 'active',
       });
       const duplicate = createVaultInjectionReceipt(coreDb, {
-        backendSummary: 'changed',
-        capabilityCallId: 'call_1',
-        grantId: 'grant_github_turn',
-        injectedAt: '2026-07-05T00:20:00.000Z',
-        planId: 'plan_github_file',
-        receiptId: 'receipt_github_file',
-        revocationStatus: 'revoked',
+        ...created,
       });
-
       expect(duplicate).toEqual(created);
+      for (const patch of [
+        { backendSummary: 'changed' },
+        { agentSessionId: null, capabilityCallId: 'call_1' },
+        { auditEventId: null },
+        { injectedAt: '2026-07-05T00:20:00.000Z' },
+        { expiresAt: null },
+      ] as const) {
+        expect(() => createVaultInjectionReceipt(coreDb, { ...created, ...patch })).toThrow(
+          'Vault injection receipt identity conflict.'
+        );
+        expect(listVaultInjectionReceipts(coreDb)).toEqual([created]);
+      }
+
       expect(getVaultInjectionReceipt(coreDb, 'receipt_github_file')).toEqual(created);
       expect(listVaultInjectionReceipts(coreDb)).toEqual([created]);
       expect(created).toMatchObject({
@@ -68,6 +81,10 @@ describe('injection receipts', () => {
         revocationStatus: 'active',
       });
       expect(JSON.stringify(created)).not.toContain('ghp_');
+      revokeVaultGrant(coreDb, { grantId: created.grantId });
+      const revoked = getVaultInjectionReceipt(coreDb, created.receiptId);
+      expect(revoked?.revocationStatus).not.toBe('active');
+      expect(createVaultInjectionReceipt(coreDb, { ...created })).toEqual(revoked);
     } finally {
       coreDb.sqlite.close();
     }

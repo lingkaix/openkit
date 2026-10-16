@@ -1883,9 +1883,7 @@ export function assertCurrentMcpVaultAuthority(
       grant.targetAgentId !== input.environmentPackage.agent.agentId) ||
     (grant.targetAgentSessionId !== null &&
       grant.targetAgentSessionId !== input.environmentPackage.scope.agentSessionId) ||
-    (grant.targetCapabilityId !== null &&
-      grant.targetCapabilityId !== 'mcp' &&
-      grant.targetCapabilityId !== input.operation) ||
+    (grant.targetCapabilityId !== null && grant.targetCapabilityId !== input.operation) ||
     reference.status !== 'active' ||
     reference.ownerScope !== 'workspace' ||
     reference.workspaceId !== workspaceId

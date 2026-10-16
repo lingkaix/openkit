@@ -635,6 +635,52 @@ impl<S> AsyncRustlsClientStream<S>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    /// Completes verified TLS before H2 can hide a definite certificate rejection.
+    fn poll_handshake(&mut self, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        loop {
+            let flushed = match self.poll_flush_tls(cx) {
+                Poll::Ready(Ok(())) => true,
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                Poll::Pending => false,
+            };
+            if !self.connection.is_handshaking() {
+                return if flushed {
+                    Poll::Ready(Ok(()))
+                } else {
+                    Poll::Pending
+                };
+            }
+            // Read even under write backpressure; the peer may need input consumed before it can receive the rest of our handshake flight.
+            match self.poll_receive_tls(cx) {
+                Poll::Ready(Ok(())) => {}
+                other => return other,
+            }
+        }
+    }
+
+    /// Reads and processes one TLS record batch without exposing peer error text.
+    fn poll_receive_tls(&mut self, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let mut encrypted = [0_u8; 16 * 1024];
+        let mut encrypted_buffer = ReadBuf::new(&mut encrypted);
+        match Pin::new(&mut self.socket).poll_read(cx, &mut encrypted_buffer) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+            Poll::Ready(Ok(())) => {}
+        }
+        if encrypted_buffer.filled().is_empty() {
+            return Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "nanohost TLS socket read closed",
+            )));
+        }
+        self.connection
+            .read_tls(&mut Cursor::new(encrypted_buffer.filled()))?;
+        self.connection
+            .process_new_packets()
+            .map_err(std::io::Error::other)?;
+        Poll::Ready(Ok(()))
+    }
+
     /// Flushes queued rustls records to the underlying nonblocking socket.
     fn poll_flush_tls(&mut self, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         loop {
@@ -707,18 +753,9 @@ where
                 }
             }
 
-            let mut encrypted = [0_u8; 16 * 1024];
-            let mut encrypted_buffer = ReadBuf::new(&mut encrypted);
-            match Pin::new(&mut self.socket).poll_read(cx, &mut encrypted_buffer) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-                Poll::Ready(Ok(())) => {
-                    self.connection
-                        .read_tls(&mut Cursor::new(encrypted_buffer.filled()))?;
-                    self.connection
-                        .process_new_packets()
-                        .map_err(std::io::Error::other)?;
-                }
+            match self.poll_receive_tls(cx) {
+                Poll::Ready(Ok(())) => {}
+                other => return other,
             }
         }
     }
@@ -792,12 +829,32 @@ pub async fn connect_verified_session_transport(
     let server_name = ServerName::try_from(host).map_err(|_| "nanohost TLS server name invalid")?;
     let connection = ClientConnection::new(config, server_name)
         .map_err(|_| "nanohost TLS client unavailable")?;
-    Ok(VerifiedSessionIo::Tls(Box::new(AsyncRustlsClientStream {
+    let mut stream = AsyncRustlsClientStream {
         socket,
         connection,
         pending_tls: Vec::new(),
         pending_tls_offset: 0,
-    })))
+    };
+    tokio::time::timeout_at(
+        startup_deadline,
+        std::future::poll_fn(|cx| stream.poll_handshake(cx)),
+    )
+    .await
+    .map_err(|_| "nanohost NanoCore rendezvous timed out")?
+    .map_err(|error| {
+        // Keep certificate and endpoint details inside rustls. The outer H2 driver otherwise reduces this definite trust failure to a retryable close.
+        if matches!(
+            error
+                .get_ref()
+                .and_then(|cause| cause.downcast_ref::<rustls::Error>()),
+            Some(rustls::Error::InvalidCertificate(_))
+        ) {
+            "nanohost NanoCore TLS certificate verification failed"
+        } else {
+            "nanohost NanoCore TLS handshake failed"
+        }
+    })?;
+    Ok(VerifiedSessionIo::Tls(Box::new(stream)))
 }
 
 /// Classifies whether the NanoCore rendezvous URL requires verified TLS.
@@ -2891,7 +2948,7 @@ impl OuterSessionState {
 
 #[cfg(test)]
 #[path = "nanocore_tls_tests.rs"]
-mod native_tls_tests;
+pub(crate) mod native_tls_tests;
 
 #[cfg(test)]
 mod tests {

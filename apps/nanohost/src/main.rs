@@ -9,6 +9,7 @@ mod epoch_coordinator;
 #[cfg(not(test))]
 mod epoch_evidence;
 mod file_transfer;
+mod filesystem_capacity;
 mod image_acquisition;
 mod image_store;
 mod image_store_cli;
@@ -765,7 +766,6 @@ async fn run() -> Result<(), NanoHostRunFailure> {
         .map_err(|_| "nanohost evidence root unavailable")?;
     let recovery = observe_recovery(Path::new("/var/lib/openkit/nanohost"))
         .map_err(|_| "nanohost recovery observation failed")?;
-    let prior_epoch_writers_fenced = recovery.prior_epoch_writers_fenced();
     let mut fence_started = recovery.fence_started;
     if let Some(prior_epochs) = &recovery.absent_prior_epochs {
         let observed_fence = SystemTime::now();
@@ -832,14 +832,9 @@ async fn run() -> Result<(), NanoHostRunFailure> {
         }
     };
     let mut image_backend = Some(DockerImageBackend::new(plan.docker_socket().to_path_buf()));
-    let mut persistent_volume_store =
-        PersistentVolumeStore::open(plan.docker_socket().to_path_buf())
+    let persistent_volume_store =
+        PersistentVolumeStore::open_after_epoch_fence(plan.docker_socket().to_path_buf())
             .map_err(|_| "nanohost persistent volume store unavailable")?;
-    if prior_epoch_writers_fenced {
-        persistent_volume_store
-            .release_fenced_attachments()
-            .map_err(|_| "nanohost persistent attachment recovery unavailable")?;
-    }
     let mut persistent_volumes = Some(persistent_volume_store);
     let client = NanoHostOpenShellClient::new(
         plan.gateway_endpoint(),
@@ -938,6 +933,7 @@ async fn run_sessions(
                     }
                 }
                 Err(reason) => {
+                    coordinator.invalidate_startup();
                     return Err(terminal_connect(reason).into());
                 }
             }
@@ -1367,6 +1363,9 @@ fn main() {
 
 #[cfg(test)]
 mod openshell_upgrade_tests;
+
+#[cfg(test)]
+mod startup_tls_tests;
 
 #[cfg(test)]
 mod tests {

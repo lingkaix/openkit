@@ -21,11 +21,11 @@ const DEFAULT_ENDPOINT = 'http://127.0.0.1:3000';
 const COMMAND_USAGE = Object.freeze({
   '': 'openkit --help',
   help: 'openkit help [command]',
-  doctor: 'openkit doctor',
+  doctor: 'openkit doctor [--credential <name>]',
   ops: 'openkit ops <search|describe|call>',
   'ops search': 'openkit ops search <query> [--schema]',
   'ops describe': 'openkit ops describe <operation-id> [--schema]',
-  'ops call': 'openkit ops call <operation-id> --input -',
+  'ops call': 'openkit ops call <operation-id> --input - [--credential <name>]',
 });
 
 /** Typed local failure projected through the CLI error envelope. */
@@ -111,9 +111,16 @@ async function dispatch(argv, env, state) {
     state.command = 'help';
     return help(argv[0] === 'help' ? argv.slice(1) : argv.slice(0, -1));
   }
+  const destination = argv.at(-2) === '--credential' ? argv.at(-1) : undefined;
+  if (destination !== undefined) {
+    argv = argv.slice(0, -2);
+  }
+  if (destination !== undefined && argv[0] !== 'doctor' && argv[1] !== 'call') {
+    throw usageFailure();
+  }
   if (argv.length === 1 && argv[0] === 'doctor') {
     state.command = 'doctor';
-    return doctor(env, state);
+    return doctor(env, state, destination);
   }
   if (argv[0] !== 'ops') {
     throw usageFailure();
@@ -141,7 +148,7 @@ async function dispatch(argv, env, state) {
   if (argv[1] === 'call' && argv.length === 5 && argv[3] === '--input' && argv[4] === '-') {
     state.command = 'ops.call';
     state.operation = argv[2];
-    return callOperation(argv[2], env, state);
+    return callOperation(argv[2], env, state, destination);
   }
   throw usageFailure();
 }
@@ -177,6 +184,8 @@ function help(command) {
       { command: 'openkit ops describe app-update.prepare' },
       { command: 'openkit ops describe app-update.start' },
     ],
+    credentials:
+      'Append --credential <name> to doctor or an authenticated ops call to use only that endpoint-scoped named credential. Clear OPENKIT_NANOCORE_TOKEN first. Missing named credentials fail without fallback. Omit the selector for endpoint administration.',
     schemas: 'Add --schema to search or describe for full shared JSON schemas.',
   };
 }
@@ -186,15 +195,16 @@ function help(command) {
  *
  * @param {NodeJS.ProcessEnv} env Process environment.
  * @param {{requestId?: string, secrets: string[]}} state Envelope context.
+ * @param {string} [destination] Explicit named credential selection.
  * @returns {Promise<unknown>} Redacted diagnostic data.
  */
-async function doctor(env, state) {
+async function doctor(env, state, destination) {
   if (Number.parseInt(process.versions.node, 10) !== 24) {
     throw new CliFailure('unsupported_host', 'OpenKit requires Node.js 24.', 2);
   }
   const endpoint = resolveEndpoint(env);
   const credentialStore = createDefaultOpenKitCredentialStore();
-  const credential = resolveCredential({ endpoint, env, store: credentialStore });
+  const credential = resolveCredential({ endpoint, env, store: credentialStore, destination });
   if (credential) {
     state.secrets.push(credential.token);
   }
@@ -244,12 +254,20 @@ async function doctor(env, state) {
  * @param {string} operationId Catalog operation id.
  * @param {NodeJS.ProcessEnv} env Process environment.
  * @param {{requestId?: string, secrets: string[]}} state Envelope context.
+ * @param {string} [destination] Explicit named credential selection.
  * @returns {Promise<unknown>} Operation result.
  */
-async function callOperation(operationId, env, state) {
+async function callOperation(operationId, env, state, destination) {
   const operation = operationCatalog.find((entry) => entry.id === operationId);
   if (!operation) {
     throw new CliFailure('operation_not_found', `Unknown operation: ${operationId}`, 2);
+  }
+  if (
+    destination !== undefined &&
+    (operation.source === 'local-only' ||
+      (operation.credentials?.length === 1 && operation.credentials[0] === 'bootstrap-secret'))
+  ) {
+    throw usageFailure();
   }
   const rawInput = await readStdinObject();
   const input = validateInput(operation, rawInput);
@@ -266,7 +284,7 @@ async function callOperation(operationId, env, state) {
   const credential =
     operation.credentials?.length === 1 && operation.credentials[0] === 'bootstrap-secret'
       ? null
-      : resolveCredential({ endpoint, env, store: credentialStore });
+      : resolveCredential({ endpoint, env, store: credentialStore, destination });
   if (credential) {
     state.secrets.push(credential.token);
   }
