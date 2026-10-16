@@ -437,12 +437,12 @@ function credentialsStillValid(
     } catch {
       return false;
     }
-    const resolved = prepared?.grants.find((candidate) => candidate.id === binding.vaultGrantId);
+    const observed = prepared?.grants.find((candidate) => candidate.id === binding.vaultGrantId);
     return Boolean(
-      resolved &&
+      observed &&
         reference &&
-        resolved.referenceId === reference.referenceId &&
-        resolved.version === reference.currentVersion &&
+        observed.referenceId === reference.referenceId &&
+        observed.version === reference.currentVersion &&
         (grant!.expiresAt === null || Date.parse(grant!.expiresAt) > now)
     );
   });

@@ -9672,6 +9672,971 @@
         }
       }
     },
+    "/api/app/operations/administration.server-mcp-list": {
+      "post": {
+        "operationId": "administration.server-mcp-list",
+        "tags": [
+          "administration"
+        ],
+        "summary": "List redacted Server MCP supply.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/administration.server-mcp-list.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List redacted Server MCP supply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/administration.server-mcp-list.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/administration.server-mcp-read": {
+      "post": {
+        "operationId": "administration.server-mcp-read",
+        "tags": [
+          "administration"
+        ],
+        "summary": "Read one Server MCP binding and non-secret immutable configurations.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/administration.server-mcp-read.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read one Server MCP binding and non-secret immutable configurations.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/administration.server-mcp-read.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/administration.server-mcp-create": {
+      "post": {
+        "operationId": "administration.server-mcp-create",
+        "tags": [
+          "administration"
+        ],
+        "summary": "Create disabled Server MCP supply.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/administration.server-mcp-create.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Create disabled Server MCP supply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/administration.server-mcp-create.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/administration.server-mcp-stage-version": {
+      "post": {
+        "operationId": "administration.server-mcp-stage-version",
+        "tags": [
+          "administration"
+        ],
+        "summary": "Stage an immutable Server MCP version without selecting it.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/administration.server-mcp-stage-version.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Stage an immutable Server MCP version without selecting it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/administration.server-mcp-stage-version.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/administration.server-mcp-select-version": {
+      "post": {
+        "operationId": "administration.server-mcp-select-version",
+        "tags": [
+          "administration"
+        ],
+        "summary": "Select a retained Server MCP version.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/administration.server-mcp-select-version.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Select a retained Server MCP version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/administration.server-mcp-select-version.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/administration.server-mcp-update-binding": {
+      "post": {
+        "operationId": "administration.server-mcp-update-binding",
+        "tags": [
+          "administration"
+        ],
+        "summary": "Update the Server MCP binding and exact Vault grants.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/administration.server-mcp-update-binding.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Update the Server MCP binding and exact Vault grants.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/administration.server-mcp-update-binding.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/administration.server-mcp-remove": {
+      "post": {
+        "operationId": "administration.server-mcp-remove",
+        "tags": [
+          "administration"
+        ],
+        "summary": "Remove Server MCP supply while retaining its history.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/administration.server-mcp-remove.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Remove Server MCP supply while retaining its history.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/administration.server-mcp-remove.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/vault.server-mcp-secret-create": {
+      "post": {
+        "operationId": "vault.server-mcp-secret-create",
+        "tags": [
+          "vault"
+        ],
+        "summary": "Create a Server MCP credential from request-only material.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/vault.server-mcp-secret-create.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Create a Server MCP credential from request-only material.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/vault.server-mcp-secret-create.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/vault.server-mcp-secret-rotate": {
+      "post": {
+        "operationId": "vault.server-mcp-secret-rotate",
+        "tags": [
+          "vault"
+        ],
+        "summary": "Rotate a Server MCP credential.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/vault.server-mcp-secret-rotate.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Rotate a Server MCP credential.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/vault.server-mcp-secret-rotate.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/vault.server-mcp-secret-revoke": {
+      "post": {
+        "operationId": "vault.server-mcp-secret-revoke",
+        "tags": [
+          "vault"
+        ],
+        "summary": "Revoke a Server MCP credential.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/vault.server-mcp-secret-revoke.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Revoke a Server MCP credential.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/vault.server-mcp-secret-revoke.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/vault.server-mcp-reference-list": {
+      "post": {
+        "operationId": "vault.server-mcp-reference-list",
+        "tags": [
+          "vault"
+        ],
+        "summary": "List Server MCP credential metadata.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/vault.server-mcp-reference-list.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List Server MCP credential metadata.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/vault.server-mcp-reference-list.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/vault.server-mcp-grant-create": {
+      "post": {
+        "operationId": "vault.server-mcp-grant-create",
+        "tags": [
+          "vault"
+        ],
+        "summary": "Authorize Gateway-only Server MCP credential use.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/vault.server-mcp-grant-create.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authorize Gateway-only Server MCP credential use.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/vault.server-mcp-grant-create.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/vault.server-mcp-grant-list": {
+      "post": {
+        "operationId": "vault.server-mcp-grant-list",
+        "tags": [
+          "vault"
+        ],
+        "summary": "List Server MCP grants.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/vault.server-mcp-grant-list.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List Server MCP grants.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/vault.server-mcp-grant-list.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/vault.server-mcp-grant-revoke": {
+      "post": {
+        "operationId": "vault.server-mcp-grant-revoke",
+        "tags": [
+          "vault"
+        ],
+        "summary": "Revoke a Server MCP grant.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/vault.server-mcp-grant-revoke.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Revoke a Server MCP grant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/vault.server-mcp-grant-revoke.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/vault.server-mcp-grant-narrow": {
+      "post": {
+        "operationId": "vault.server-mcp-grant-narrow",
+        "tags": [
+          "vault"
+        ],
+        "summary": "Replace a Server MCP grant with strictly less authority.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/vault.server-mcp-grant-narrow.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Replace a Server MCP grant with strictly less authority.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/vault.server-mcp-grant-narrow.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/catalog.shared-mcp-list": {
+      "post": {
+        "operationId": "catalog.shared-mcp-list",
+        "tags": [
+          "catalog"
+        ],
+        "summary": "List redacted shared MCP supply and local collisions.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/catalog.shared-mcp-list.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List redacted shared MCP supply and local collisions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/catalog.shared-mcp-list.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/catalog.shared-mcp-set-disabled": {
+      "post": {
+        "operationId": "catalog.shared-mcp-set-disabled",
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Disable or restore shared MCP supply in the selected Workspace.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/catalog.shared-mcp-set-disabled.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Disable or restore shared MCP supply in the selected Workspace.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/catalog.shared-mcp-set-disabled.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/worker.list": {
       "post": {
         "operationId": "worker.list",
@@ -71436,6 +72401,2632 @@
         ],
         "additionalProperties": false
       },
+      "administration.server-mcp-list.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "administration.server-mcp-list.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "availability": {
+                  "type": "string",
+                  "enum": [
+                    "available",
+                    "removed"
+                  ]
+                },
+                "bindingRevision": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "currentVersionDigest": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "displayName": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                },
+                "allowedTools": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "approvalRequiredTools": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "deniedTools": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "schemaPolicy": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "pinned",
+                        "tracking"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "timeoutMs": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "transportKind": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "stdio",
+                        "http"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "versions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "createdAt": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "digest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      },
+                      "transportKind": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "stdio",
+                              "http"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "createdAt",
+                      "digest",
+                      "transportKind"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "availability",
+                "bindingRevision",
+                "currentVersionDigest",
+                "displayName",
+                "enabled",
+                "id",
+                "allowedTools",
+                "approvalRequiredTools",
+                "deniedTools",
+                "schemaPolicy",
+                "timeoutMs",
+                "transportKind",
+                "versions"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "entries",
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "administration.server-mcp-read.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "mcpId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "mcpId"
+        ],
+        "additionalProperties": false
+      },
+      "administration.server-mcp-read.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "entry": {
+            "type": "object",
+            "properties": {
+              "availability": {
+                "type": "string",
+                "enum": [
+                  "available",
+                  "removed"
+                ]
+              },
+              "bindingRevision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "currentVersionDigest": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "displayName": {
+                "type": "string",
+                "minLength": 1
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+              },
+              "allowedTools": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "approvalRequiredTools": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "deniedTools": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "schemaPolicy": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "pinned",
+                      "tracking"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "timeoutMs": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "transportKind": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "stdio",
+                      "http"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "versions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "createdAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "digest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "transportKind": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "stdio",
+                            "http"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "createdAt",
+                    "digest",
+                    "transportKind"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "availability",
+              "bindingRevision",
+              "currentVersionDigest",
+              "displayName",
+              "enabled",
+              "id",
+              "allowedTools",
+              "approvalRequiredTools",
+              "deniedTools",
+              "schemaPolicy",
+              "timeoutMs",
+              "transportKind",
+              "versions"
+            ],
+            "additionalProperties": false
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "credentialBindings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "slot": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                },
+                "vaultGrantId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sink": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "env"
+                        },
+                        "name": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "header"
+                        },
+                        "name": {
+                          "type": "string",
+                          "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "query"
+                        },
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "presentation": {
+                  "type": "string",
+                  "enum": [
+                    "raw",
+                    "bearer"
+                  ]
+                }
+              },
+              "required": [
+                "slot",
+                "vaultGrantId",
+                "sink"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "pinnedSchemaSnapshotId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "digest": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "createdAt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "declaration": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "http"
+                        },
+                        "endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "headers": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "endpoint",
+                        "headers"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "stdio"
+                        },
+                        "command": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "args": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "cwd": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "environment": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "environmentSlots": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                              "credentialSlot": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            },
+                            "required": [
+                              "credentialSlot"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "command",
+                        "args",
+                        "cwd",
+                        "environment",
+                        "environmentSlots"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "packageRootDigest": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "digest",
+                "createdAt",
+                "declaration",
+                "packageRootDigest"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "entry",
+          "revision",
+          "credentialBindings",
+          "pinnedSchemaSnapshotId",
+          "versions"
+        ],
+        "additionalProperties": false
+      },
+      "administration.server-mcp-create.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "allowedTools": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "declaration": {},
+          "displayName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          }
+        },
+        "required": [
+          "allowedTools",
+          "declaration",
+          "displayName",
+          "expectedRevision"
+        ],
+        "additionalProperties": false
+      },
+      "administration.server-mcp-create.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "entry": {
+            "type": "object",
+            "properties": {
+              "availability": {
+                "type": "string",
+                "enum": [
+                  "available",
+                  "removed"
+                ]
+              },
+              "bindingRevision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "currentVersionDigest": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "displayName": {
+                "type": "string",
+                "minLength": 1
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+              },
+              "allowedTools": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "approvalRequiredTools": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "deniedTools": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "schemaPolicy": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "pinned",
+                      "tracking"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "timeoutMs": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "transportKind": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "stdio",
+                      "http"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "versions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "createdAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "digest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "transportKind": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "stdio",
+                            "http"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "createdAt",
+                    "digest",
+                    "transportKind"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "availability",
+              "bindingRevision",
+              "currentVersionDigest",
+              "displayName",
+              "enabled",
+              "id",
+              "allowedTools",
+              "approvalRequiredTools",
+              "deniedTools",
+              "schemaPolicy",
+              "timeoutMs",
+              "transportKind",
+              "versions"
+            ],
+            "additionalProperties": false
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "versionDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "entry",
+          "revision",
+          "versionDigest"
+        ],
+        "additionalProperties": false
+      },
+      "administration.server-mcp-stage-version.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "allowedTools": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "declaration": {},
+          "displayName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "mcpId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "allowedTools",
+          "declaration",
+          "displayName",
+          "expectedRevision",
+          "mcpId"
+        ],
+        "additionalProperties": false
+      },
+      "administration.server-mcp-stage-version.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "entry": {
+            "type": "object",
+            "properties": {
+              "availability": {
+                "type": "string",
+                "enum": [
+                  "available",
+                  "removed"
+                ]
+              },
+              "bindingRevision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "currentVersionDigest": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "displayName": {
+                "type": "string",
+                "minLength": 1
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+              },
+              "allowedTools": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "approvalRequiredTools": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "deniedTools": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "schemaPolicy": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "pinned",
+                      "tracking"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "timeoutMs": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "transportKind": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "stdio",
+                      "http"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "versions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "createdAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "digest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "transportKind": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "stdio",
+                            "http"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "createdAt",
+                    "digest",
+                    "transportKind"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "availability",
+              "bindingRevision",
+              "currentVersionDigest",
+              "displayName",
+              "enabled",
+              "id",
+              "allowedTools",
+              "approvalRequiredTools",
+              "deniedTools",
+              "schemaPolicy",
+              "timeoutMs",
+              "transportKind",
+              "versions"
+            ],
+            "additionalProperties": false
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "versionDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "entry",
+          "revision",
+          "versionDigest"
+        ],
+        "additionalProperties": false
+      },
+      "administration.server-mcp-select-version.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "mcpId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "digest",
+          "expectedRevision",
+          "mcpId"
+        ],
+        "additionalProperties": false
+      },
+      "administration.server-mcp-select-version.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "administration.server-mcp-update-binding.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "allowedTools": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "approvalRequiredTools": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "bindingRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "credentialBindings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "slot": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                },
+                "vaultGrantId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sink": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "env"
+                        },
+                        "name": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "header"
+                        },
+                        "name": {
+                          "type": "string",
+                          "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "query"
+                        },
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "presentation": {
+                  "type": "string",
+                  "enum": [
+                    "raw",
+                    "bearer"
+                  ]
+                }
+              },
+              "required": [
+                "slot",
+                "vaultGrantId",
+                "sink"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "deniedTools": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "schemaPolicy": {
+            "type": "string",
+            "enum": [
+              "pinned",
+              "tracking"
+            ]
+          },
+          "timeoutMs": {
+            "default": 60000,
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 2147483647
+          },
+          "mcpId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "pinnedSchemaSnapshotId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "allowedTools",
+          "approvalRequiredTools",
+          "bindingRevision",
+          "deniedTools",
+          "enabled",
+          "expectedRevision",
+          "schemaPolicy",
+          "timeoutMs",
+          "mcpId"
+        ],
+        "additionalProperties": false
+      },
+      "administration.server-mcp-update-binding.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "administration.server-mcp-remove.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "mcpId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "mcpId",
+          "expectedRevision"
+        ],
+        "additionalProperties": false
+      },
+      "administration.server-mcp-remove.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "vault.server-mcp-secret-create.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "material": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "material"
+        ],
+        "additionalProperties": false
+      },
+      "vault.server-mcp-secret-create.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "backendKind": {
+            "type": "string",
+            "enum": [
+              "encrypted-file"
+            ]
+          },
+          "currentVersion": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "ownerScope": {
+            "type": "string",
+            "const": "server"
+          },
+          "referenceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "secretKind": {
+            "type": "string",
+            "const": "mcp-credential"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "revoked",
+              "unbound"
+            ]
+          },
+          "workspaceId": {
+            "type": "null"
+          }
+        },
+        "required": [
+          "backendKind",
+          "currentVersion",
+          "ownerScope",
+          "referenceId",
+          "secretKind",
+          "status",
+          "workspaceId"
+        ],
+        "additionalProperties": false
+      },
+      "vault.server-mcp-secret-rotate.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "referenceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "material": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "referenceId",
+          "material"
+        ],
+        "additionalProperties": false
+      },
+      "vault.server-mcp-secret-rotate.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "backendKind": {
+            "type": "string",
+            "enum": [
+              "encrypted-file"
+            ]
+          },
+          "currentVersion": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "ownerScope": {
+            "type": "string",
+            "const": "server"
+          },
+          "referenceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "secretKind": {
+            "type": "string",
+            "const": "mcp-credential"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "revoked",
+              "unbound"
+            ]
+          },
+          "workspaceId": {
+            "type": "null"
+          }
+        },
+        "required": [
+          "backendKind",
+          "currentVersion",
+          "ownerScope",
+          "referenceId",
+          "secretKind",
+          "status",
+          "workspaceId"
+        ],
+        "additionalProperties": false
+      },
+      "vault.server-mcp-secret-revoke.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "referenceId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "referenceId"
+        ],
+        "additionalProperties": false
+      },
+      "vault.server-mcp-secret-revoke.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "backendKind": {
+            "type": "string",
+            "enum": [
+              "encrypted-file"
+            ]
+          },
+          "currentVersion": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "ownerScope": {
+            "type": "string",
+            "const": "server"
+          },
+          "referenceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "secretKind": {
+            "type": "string",
+            "const": "mcp-credential"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "revoked",
+              "unbound"
+            ]
+          },
+          "workspaceId": {
+            "type": "null"
+          }
+        },
+        "required": [
+          "backendKind",
+          "currentVersion",
+          "ownerScope",
+          "referenceId",
+          "secretKind",
+          "status",
+          "workspaceId"
+        ],
+        "additionalProperties": false
+      },
+      "vault.server-mcp-reference-list.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "vault.server-mcp-reference-list.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "backendKind": {
+                  "type": "string",
+                  "enum": [
+                    "encrypted-file"
+                  ]
+                },
+                "currentVersion": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "ownerScope": {
+                  "type": "string",
+                  "const": "server"
+                },
+                "referenceId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "secretKind": {
+                  "type": "string",
+                  "const": "mcp-credential"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "revoked",
+                    "unbound"
+                  ]
+                },
+                "workspaceId": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "backendKind",
+                "currentVersion",
+                "ownerScope",
+                "referenceId",
+                "secretKind",
+                "status",
+                "workspaceId"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "vault.server-mcp-grant-create.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "referenceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          },
+          "targetAgentId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "targetAgentSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "targetCapabilityId": {
+            "type": "string",
+            "enum": [
+              "mcp.list_tools",
+              "mcp.call_tool"
+            ]
+          }
+        },
+        "required": [
+          "referenceId"
+        ],
+        "additionalProperties": false
+      },
+      "vault.server-mcp-grant-create.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "grantId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "vaultReferenceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "ownerScope": {
+            "type": "string",
+            "const": "server"
+          },
+          "workspaceId": {
+            "type": "null"
+          },
+          "userId": {
+            "type": "null"
+          },
+          "subjectSummary": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "targetAgentId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "targetAgentSessionId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "targetCapabilityId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "allowedInjectionPaths": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "lifetime": {
+            "type": "string",
+            "const": "server"
+          },
+          "policyDecisionId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "approvalId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "revoked",
+              "expired"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          },
+          "expiresAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "grantId",
+          "vaultReferenceId",
+          "ownerScope",
+          "workspaceId",
+          "userId",
+          "subjectSummary",
+          "targetAgentId",
+          "targetAgentSessionId",
+          "targetCapabilityId",
+          "allowedInjectionPaths",
+          "lifetime",
+          "policyDecisionId",
+          "approvalId",
+          "status",
+          "createdAt",
+          "expiresAt"
+        ],
+        "additionalProperties": false
+      },
+      "vault.server-mcp-grant-list.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "vault.server-mcp-grant-list.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "grantId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "vaultReferenceId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "ownerScope": {
+                  "type": "string",
+                  "const": "server"
+                },
+                "workspaceId": {
+                  "type": "null"
+                },
+                "userId": {
+                  "type": "null"
+                },
+                "subjectSummary": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "targetAgentId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "targetAgentSessionId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "targetCapabilityId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "allowedInjectionPaths": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "lifetime": {
+                  "type": "string",
+                  "const": "server"
+                },
+                "policyDecisionId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "approvalId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "revoked",
+                    "expired"
+                  ]
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                },
+                "expiresAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "grantId",
+                "vaultReferenceId",
+                "ownerScope",
+                "workspaceId",
+                "userId",
+                "subjectSummary",
+                "targetAgentId",
+                "targetAgentSessionId",
+                "targetCapabilityId",
+                "allowedInjectionPaths",
+                "lifetime",
+                "policyDecisionId",
+                "approvalId",
+                "status",
+                "createdAt",
+                "expiresAt"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "vault.server-mcp-grant-revoke.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "grantId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "grantId"
+        ],
+        "additionalProperties": false
+      },
+      "vault.server-mcp-grant-revoke.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "grantId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "vaultReferenceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "ownerScope": {
+            "type": "string",
+            "const": "server"
+          },
+          "workspaceId": {
+            "type": "null"
+          },
+          "userId": {
+            "type": "null"
+          },
+          "subjectSummary": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "targetAgentId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "targetAgentSessionId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "targetCapabilityId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "allowedInjectionPaths": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "lifetime": {
+            "type": "string",
+            "const": "server"
+          },
+          "policyDecisionId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "approvalId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "revoked",
+              "expired"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          },
+          "expiresAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "grantId",
+          "vaultReferenceId",
+          "ownerScope",
+          "workspaceId",
+          "userId",
+          "subjectSummary",
+          "targetAgentId",
+          "targetAgentSessionId",
+          "targetCapabilityId",
+          "allowedInjectionPaths",
+          "lifetime",
+          "policyDecisionId",
+          "approvalId",
+          "status",
+          "createdAt",
+          "expiresAt"
+        ],
+        "additionalProperties": false
+      },
+      "vault.server-mcp-grant-narrow.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "grantId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "constraints": {
+            "type": "object",
+            "properties": {
+              "targetAgentId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "targetAgentSessionId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "targetCapabilityId": {
+                "type": "string",
+                "enum": [
+                  "mcp.list_tools",
+                  "mcp.call_tool"
+                ]
+              },
+              "expiresAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "allowedInjectionPaths": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "gateway-only",
+                    "backend-provider",
+                    "runtime-file",
+                    "runtime-env",
+                    "runtime-token",
+                    "external-handle"
+                  ]
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "grantId",
+          "constraints"
+        ],
+        "additionalProperties": false
+      },
+      "vault.server-mcp-grant-narrow.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revokedGrant": {
+            "type": "object",
+            "properties": {
+              "grantId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "vaultReferenceId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ownerScope": {
+                "type": "string",
+                "const": "server"
+              },
+              "workspaceId": {
+                "type": "null"
+              },
+              "userId": {
+                "type": "null"
+              },
+              "subjectSummary": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "targetAgentId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "targetAgentSessionId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "targetCapabilityId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "allowedInjectionPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "lifetime": {
+                "type": "string",
+                "const": "server"
+              },
+              "policyDecisionId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "approvalId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "revoked",
+                  "expired"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "expiresAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "grantId",
+              "vaultReferenceId",
+              "ownerScope",
+              "workspaceId",
+              "userId",
+              "subjectSummary",
+              "targetAgentId",
+              "targetAgentSessionId",
+              "targetCapabilityId",
+              "allowedInjectionPaths",
+              "lifetime",
+              "policyDecisionId",
+              "approvalId",
+              "status",
+              "createdAt",
+              "expiresAt"
+            ],
+            "additionalProperties": false
+          },
+          "grant": {
+            "type": "object",
+            "properties": {
+              "grantId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "vaultReferenceId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ownerScope": {
+                "type": "string",
+                "const": "server"
+              },
+              "workspaceId": {
+                "type": "null"
+              },
+              "userId": {
+                "type": "null"
+              },
+              "subjectSummary": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "targetAgentId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "targetAgentSessionId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "targetCapabilityId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "allowedInjectionPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "lifetime": {
+                "type": "string",
+                "const": "server"
+              },
+              "policyDecisionId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "approvalId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "revoked",
+                  "expired"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "expiresAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "grantId",
+              "vaultReferenceId",
+              "ownerScope",
+              "workspaceId",
+              "userId",
+              "subjectSummary",
+              "targetAgentId",
+              "targetAgentSessionId",
+              "targetCapabilityId",
+              "allowedInjectionPaths",
+              "lifetime",
+              "policyDecisionId",
+              "approvalId",
+              "status",
+              "createdAt",
+              "expiresAt"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "revokedGrant",
+          "grant"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.shared-mcp-list.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "workspaceId"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.shared-mcp-list.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "availability": {
+                  "type": "string",
+                  "enum": [
+                    "available",
+                    "removed"
+                  ]
+                },
+                "bindingRevision": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "currentVersionDigest": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "displayName": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                },
+                "allowedTools": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "approvalRequiredTools": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "deniedTools": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "schemaPolicy": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "pinned",
+                        "tracking"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "timeoutMs": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "transportKind": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "stdio",
+                        "http"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "versions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "createdAt": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "digest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      },
+                      "transportKind": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "stdio",
+                              "http"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "createdAt",
+                      "digest",
+                      "transportKind"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "disabled": {
+                  "type": "boolean"
+                },
+                "shadowed": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "availability",
+                "bindingRevision",
+                "currentVersionDigest",
+                "displayName",
+                "enabled",
+                "id",
+                "allowedTools",
+                "approvalRequiredTools",
+                "deniedTools",
+                "schemaPolicy",
+                "timeoutMs",
+                "transportKind",
+                "versions",
+                "disabled",
+                "shadowed"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "revision",
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.shared-mcp-set-disabled.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mcpId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "disabled": {
+            "type": "boolean"
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "workspaceId",
+          "mcpId",
+          "disabled",
+          "expectedRevision"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.shared-mcp-set-disabled.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "additionalProperties": false
+      },
       "worker.list.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -94826,5 +98417,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:99579ebc20ea32fbe961ac5e1b4684d97e47bfe4003280f004b23e1f10368f85"
+  "x-openkit-source-digest": "sha256:cd3089e75c2ecf67d811ccd0acb379bb93948267a667945ca691bc75e45e854f"
 }

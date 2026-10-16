@@ -10,6 +10,7 @@ import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createDefaultWorkerControlGateway } from './app.js';
+import { listServerAuditEvents } from './audit-events.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import {
@@ -38,6 +39,7 @@ import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { users } from './storage/schema/index.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
@@ -200,8 +202,12 @@ async function fixture() {
       body: JSON.stringify(body),
     });
   };
-  const call = async (operation: string, input: Record<string, unknown> = {}) => {
-    const response = await send(operation, input);
+  const call = async (
+    operation: string,
+    input: Record<string, unknown> = {},
+    secret = admin.secret
+  ) => {
+    const response = await send(operation, input, secret);
     expect([200, 201], await response.clone().text()).toContain(response.status);
     const body = await response.json();
     outputs.push(body);
@@ -779,6 +785,7 @@ describe('Server-shared MCP through governed Worker routes', () => {
 
   it.each([
     'current',
+    'other-administrator',
     'grant-revoked',
     'server-disabled',
   ] as const)('executes captured shared approval only with %s authority', async (authority) => {
@@ -824,17 +831,54 @@ describe('Server-shared MCP through governed Worker routes', () => {
         schemaPolicy: 'tracking',
       });
     }
-    await f.call('approval.respond', {
-      workspaceId: worker.workspaceId,
-      threadId: pending.threadId,
-      turnId: pending.raisingTurnId,
-      approvalRequestId: pending.requestId,
-      decision: 'granted',
-    });
+    let approvingUserId = 'user_local';
+    let approvingCredential = f.admin.secret;
+    if (authority === 'other-administrator') {
+      approvingUserId = randomUUID();
+      f.coreDb.db
+        .insert(users)
+        .values({
+          id: approvingUserId,
+          displayName: 'Synthetic approving administrator',
+          email: `${approvingUserId}@openkit.invalid`,
+        })
+        .run();
+      approvingCredential = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: approvingUserId,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2999-01-01T00:00:00.000Z',
+      }).secret;
+    }
+    await f.call(
+      'approval.respond',
+      {
+        workspaceId: worker.workspaceId,
+        threadId: pending.threadId,
+        turnId: pending.raisingTurnId,
+        approvalRequestId: pending.requestId,
+        decision: 'granted',
+      },
+      approvingCredential
+    );
     const settled = readPendingRequest(db.sqlite, pending.requestId)!;
-    if (authority === 'current') {
-      expect(settled.disposition).toBe('approved-executed');
+    if (authority === 'current' || authority === 'other-administrator') {
+      expect(settled.disposition, settled.dispositionReason ?? 'No disposition reason.').toBe(
+        'approved-executed'
+      );
       expect(f.upstream.methods.filter((method) => method === 'tools/call')).toHaveLength(1);
+      expect(settled.responsibleUserId).toBe('user_local');
+      expect(listServerAuditEvents(f.coreDb)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: 'vault.resolve',
+            capabilityCallId: settled.executionCallId,
+            actor: { kind: 'user', id: approvingUserId },
+            workspaceId: worker.workspaceId,
+            agentSessionId: worker.pkg.scope.agentSessionId,
+          }),
+        ])
+      );
     } else {
       expect(settled.disposition).not.toBe('approved-executed');
       expect(f.upstream.methods).not.toContain('tools/call');
