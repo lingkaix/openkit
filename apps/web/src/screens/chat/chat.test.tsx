@@ -267,6 +267,7 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
             activity: 'chat' as const,
             lastActivityAt: thread.updatedAt,
             state: 'idle' as const,
+            unreadCount: 0,
             thread: {
               ...thread,
               entryPath: 'conversation' as const,
