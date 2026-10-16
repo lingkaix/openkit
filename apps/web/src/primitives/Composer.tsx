@@ -580,13 +580,11 @@ export function Composer({
           <ConfirmationDialog title="Share selected files with Worker">
             <p>This work brief and the selected inputs will enter shared Worker work in:</p>
             <p className="font-bold">{fileHandoff?.workspaceLabel}</p>
-            <pre
-              role="region"
-              aria-label="Work brief"
-              className="whitespace-pre-wrap break-words rounded-ok bg-overlay p-3"
-            >
-              {fileHandoff?.draft.input}
-            </pre>
+            <section aria-label="Work brief">
+              <pre className="whitespace-pre-wrap break-words rounded-ok bg-overlay p-3">
+                {fileHandoff?.draft.input}
+              </pre>
+            </section>
             <ul aria-label="Files to share">
               {fileHandoff?.draft.files?.map((file, ordinal) => (
                 <li key={ordinal}>{file.name}</li>
