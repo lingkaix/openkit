@@ -3,10 +3,8 @@
 #![allow(dead_code, clippy::assertions_on_constants)]
 
 use std::collections::VecDeque;
-use std::fs::{self, DirBuilder, OpenOptions};
 use std::future::Future;
 use std::io::{self, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -17,7 +15,6 @@ use bytes::Bytes;
 use h2::server::SendResponse;
 use http::{Method, Request, Response, StatusCode};
 use openshell_sdk::raw::proto::{TcpForwardFrame, tcp_forward_frame};
-use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinHandle;
@@ -68,8 +65,7 @@ pub(crate) const FORWARD_FRAME_CHANNEL_CAPACITY: usize = 4;
 const PRODUCED_FACT_CAPACITY_BYTES: usize = 8 * 1024 * 1024;
 const PRODUCED_FACT_MAX_AGE: Duration = Duration::from_secs(300);
 const EFFECT_REFERENCE_MAX_BYTES: usize = 4096;
-pub(crate) const FILE_EFFECT_CHUNK_BYTES: usize = 64 * 1024;
-pub(crate) const FILE_EFFECT_MAX_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const FILE_EFFECT_MAX_BYTES: u64 = crate::file_transfer::EVIDENCE_BYTES;
 const FILE_EFFECT_HELPER: &str = "/usr/local/bin/openkit-file-effect";
 
 /// One of the three fixed Sandbox Integration route namespaces.
@@ -706,13 +702,21 @@ impl FileEffectRequest {
             FileEffectKind::ImportReference => {
                 self.presence == FileEffectPresence::Required
                     && digest_valid
-                    && self.byte_length <= FILE_EFFECT_MAX_BYTES
+                    && self.byte_length
+                        <= if matches!(
+                            self.slot.as_str(),
+                            "artifact-input" | "turn-inputs" | "context"
+                        ) {
+                            crate::file_transfer::FILE_BYTES
+                        } else {
+                            FILE_EFFECT_MAX_BYTES
+                        }
             }
             FileEffectKind::ExportFile => {
                 self.sha256.is_empty()
                     && if self.artifact_submission {
                         self.byte_length >= 1
-                            && self.byte_length <= 16 * 1024 * 1024 + 1
+                            && self.byte_length <= crate::file_transfer::FILE_BYTES + 1
                             && self.presence == FileEffectPresence::Optional
                     } else {
                         self.byte_length == FILE_EFFECT_MAX_BYTES
@@ -770,148 +774,79 @@ impl FileEffectRequest {
     }
 }
 
-/// One completely verified export retained for exact successor delivery.
+/// One completely verified export retained on disk for exact successor delivery.
 pub struct RetainedExportResult {
     request_id: String,
     slot: String,
     relative_path: PathBuf,
-    sha256: String,
-    byte_length: u64,
-    bytes: Vec<u8>,
-    staging_path: PathBuf,
-}
-
-impl Drop for RetainedExportResult {
-    /// Removes the request-private copy once delivery is settled or abandoned.
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.staging_path);
-    }
+    file: crate::file_transfer::VerifiedFile,
 }
 
 impl RetainedExportResult {
-    /// Returns the correlated effect identity.
+    /// Correlated effect identity.
     pub fn request_id(&self) -> &str {
         &self.request_id
     }
-
-    /// Returns the declared output slot.
+    /// Declared output slot.
     pub fn slot(&self) -> &str {
         &self.slot
     }
-
-    /// Returns the normalized slot-relative output path.
+    /// Normalized slot-relative output path.
     pub fn relative_path(&self) -> &Path {
         &self.relative_path
     }
-
-    /// Returns the actual lowercase SHA-256 identity.
+    /// Exact original digest.
     pub fn sha256(&self) -> &str {
-        &self.sha256
+        self.file.digest()
     }
-
-    /// Returns the actual complete byte length.
+    /// Actual complete byte length.
     pub fn byte_length(&self) -> u64 {
-        self.byte_length
+        self.file.length()
     }
-
-    /// Returns the complete verified body retained without rerunning export.
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+    /// Revalidates the retained source on every original or successor delivery.
+    pub fn reader(&self) -> Result<std::fs::File, &'static str> {
+        self.file
+            .reader()
+            .map_err(|_| "export staging integrity failed")
     }
 }
 
-/// Reads and verifies one regular request-private import source.
-///
-/// # Errors
-///
-/// Rejects symlinks, hard links, non-regular files, size drift, and digest drift.
+/// Verifies a complete private source before invoking the fixed helper.
 pub fn read_import_staging(
-    source: &Path,
+    source: &crate::file_transfer::VerifiedFile,
     request: &FileEffectRequest,
-) -> Result<Vec<u8>, &'static str> {
+) -> Result<std::fs::File, &'static str> {
     request.validate()?;
-    let metadata = fs::symlink_metadata(source).map_err(|_| "import staging unavailable")?;
-    if !metadata.file_type().is_file()
-        || metadata.file_type().is_symlink()
-        || metadata.nlink() != 1
-        || metadata.len() != request.byte_length
-    {
-        return Err("import staging is not the declared regular file");
+    if source.length() != request.byte_length || source.digest() != request.sha256 {
+        return Err("import staging identity mismatch");
     }
-    let bytes = fs::read(source).map_err(|_| "import staging unavailable")?;
-    verify_file_bytes(&bytes, request)?;
-    Ok(bytes)
+    source
+        .reader()
+        .map_err(|_| "import staging integrity failed")
 }
 
-/// Fsyncs and atomically places one verified export into private staging.
-///
-/// # Errors
-///
-/// Rejects missing terminal proof, byte drift, an existing destination, or any
-/// private staging operation that cannot prove the atomic final reference.
+/// Settles a streamed export only after the existing helper completion and barrier proofs.
 pub fn stage_export(
-    staging_root: &Path,
     request: &FileEffectRequest,
-    bytes: Vec<u8>,
+    stage: crate::file_transfer::FileStage,
     terminal_barrier_proved: bool,
 ) -> Result<RetainedExportResult, &'static str> {
     request.validate()?;
     if request.kind != FileEffectKind::ExportFile
         || (!request.artifact_submission && !terminal_barrier_proved)
+        || stage.length() > request.byte_length
     {
-        return Err("file export terminal barrier missing");
+        return Err("file export terminal barrier or size invalid");
     }
-    let byte_length = bytes.len() as u64;
-    if byte_length > request.byte_length {
-        return Err("single-file effect digest or length mismatch");
-    }
-    let sha256 = format!("sha256:{:x}", Sha256::digest(&bytes));
-    DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(staging_root)
-        .map_err(|_| "export staging unavailable")?;
-    let final_path = staging_root.join(&request.request_id);
-    let temporary = staging_root.join(format!(".{}.partial", request.request_id));
-    if final_path.exists() {
-        return Err("export staging unavailable");
-    }
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&temporary)
-        .map_err(|_| "export staging unavailable")?;
-    for chunk in bytes.chunks(FILE_EFFECT_CHUNK_BYTES) {
-        file.write_all(chunk)
-            .map_err(|_| "export staging unavailable")?;
-    }
-    file.sync_all().map_err(|_| "export staging unavailable")?;
-    fs::rename(&temporary, &final_path).map_err(|_| "export staging unavailable")?;
-    OpenOptions::new()
-        .read(true)
-        .open(staging_root)
-        .and_then(|directory| directory.sync_all())
+    let file = stage
+        .complete(None)
         .map_err(|_| "export staging unavailable")?;
     Ok(RetainedExportResult {
         request_id: request.request_id.clone(),
         slot: request.slot.clone(),
         relative_path: request.relative_path.clone(),
-        sha256,
-        byte_length,
-        bytes,
-        staging_path: final_path,
+        file,
     })
-}
-
-/// Verifies exact aggregate length and lowercase SHA-256 identity.
-fn verify_file_bytes(bytes: &[u8], request: &FileEffectRequest) -> Result<(), &'static str> {
-    if bytes.len() as u64 != request.byte_length
-        || format!("sha256:{:x}", Sha256::digest(bytes)) != request.sha256
-    {
-        return Err("single-file effect digest or length mismatch");
-    }
-    Ok(())
 }
 
 /// Bounded ordered epoch-local runtime-produced candidate facts.
@@ -1776,7 +1711,10 @@ mod tests {
             kind: FileEffectKind::ExportFile,
             presence: FileEffectPresence::Optional,
         };
-        let outcome = super::stage_export(&root, &request, b"finished report".to_vec(), false);
+        let mut stage = crate::file_transfer::FileStage::create(&root, request.byte_length, 0)
+            .expect("private file stage");
+        std::io::Write::write_all(&mut stage, b"finished report").expect("bounded export bytes");
+        let outcome = super::stage_export(&request, stage, false);
         let succeeded = outcome.is_ok();
         drop(outcome);
         let _ = std::fs::remove_dir_all(&root);
@@ -1862,11 +1800,8 @@ mod tests {
             .expect("bridge production section")
             .0;
         for required in [
-            "256 * 1024 * 1024",
-            "64 * 1024",
+            "crate::file_transfer::EVIDENCE_BYTES",
             "sha256",
-            "sync_all",
-            "rename",
             "reference.import",
             "file.export",
         ] {
@@ -1879,12 +1814,12 @@ mod tests {
             .split_once("pub fn read_import_staging(")
             .expect("import private staging owner")
             .1
-            .split_once("/// Fsyncs and atomically places one verified export")
+            .split_once("/// Settles a streamed export")
             .expect("end of import staging owner")
             .0;
         assert!(
             import
-                .find("verify_file_bytes")
+                .find("source.reader()")
                 .expect("complete import proof")
                 > 0
         );
@@ -1892,15 +1827,19 @@ mod tests {
             .split_once("pub fn stage_export(")
             .expect("export private staging owner")
             .1
-            .split_once("/// Verifies exact aggregate length")
+            .split_once("/// Bounded ordered epoch-local")
             .expect("end of export staging owner")
             .0;
-        assert!(export.contains("Sha256::digest"));
-        assert!(export.contains("bytes.len()"));
+        assert!(export.contains("stage.length() > request.byte_length"));
+        assert!(export.contains("stage.complete(None)"));
+        let stage = include_str!("file_transfer.rs");
         assert!(
-            export.find("sync_all").expect("export fsync")
-                < export.find("rename").expect("atomic export placement")
+            stage.find("self.file.sync_all()").expect("stream fsync")
+                < stage
+                    .find("fs::rename(self.directory")
+                    .expect("atomic private placement")
         );
+        assert!(stage.contains("hash.update(&buffer[..count])"));
         for bootstrap_rule in [
             "sandbox_integration_binding_ref",
             "harness_ready",

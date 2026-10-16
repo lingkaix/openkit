@@ -382,6 +382,77 @@ export function createAppOpenApiDocument() {
     'x-openkit-protocol-version': PROTOCOL_VERSION,
     paths: {
       ...operationPaths(),
+      '/api/app/operations/artifact.import': {
+        post: {
+          operationId: 'artifact.import',
+          tags: ['artifact'],
+          summary: OPERATION_DEFINITIONS['artifact.import'].description,
+          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          parameters: [
+            REQUEST_ID_HEADER,
+            ...Object.entries(OPERATION_DEFINITIONS['artifact.import'].inputSchema.shape)
+              .filter(([key]) => key !== 'requestId')
+              .map(([name, schema]) => ({
+                name,
+                in: 'query',
+                required: true,
+                schema: toJsonSchema(schema),
+              })),
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
+            },
+          },
+          responses: {
+            '201': {
+              description: 'Accepted exact immutable original.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: toJsonSchema(OPERATION_DEFINITIONS['artifact.import'].outputSchema),
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/operations/artifact.download': {
+        get: {
+          operationId: 'artifact.download',
+          tags: ['artifact'],
+          summary: OPERATION_DEFINITIONS['artifact.download'].description,
+          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          parameters: Object.entries(
+            OPERATION_DEFINITIONS['artifact.download'].inputSchema.shape
+          ).map(([name, schema]) => ({
+            name,
+            in: 'query',
+            required: true,
+            schema: toJsonSchema(schema),
+          })),
+          responses: {
+            '200': {
+              description: 'Exact immutable original; digest is in X-OpenKit-Content-Digest.',
+              content: {
+                'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
+              },
+            },
+          },
+        },
+      },
       '/api/app/workspaces/{workspaceId}/exports/{exportId}/archive': {
         get: {
           operationId: 'workspace.archive-download',

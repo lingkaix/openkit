@@ -33,8 +33,15 @@ export const ArtifactReviewFollowUpRequestSchema = z
     artifactId: z.string().min(1),
     artifactVersion: z.number().int().positive(),
     contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-    artifactContent: z.string().min(1),
-    artifactMediaType: z.enum(['text/markdown', 'text/plain', 'application/json']),
+    artifactContent: z.string().min(1).nullable(),
+    artifactMediaType: z.string().min(1).max(255),
+    artifactFile: z
+      .object({
+        byteLength: z.number().int().min(0).max(1_000_000_000),
+        contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+      })
+      .strict()
+      .optional(),
     sourceThreadId: z.string().min(1),
     sourceTurnId: z.string().min(1),
     sourceAgentId: z.string().min(1),
@@ -46,8 +53,26 @@ export const ArtifactReviewFollowUpRequestSchema = z
   })
   .strict()
   .superRefine((request, context) => {
+    if (request.artifactContent === null) {
+      if (
+        !request.artifactFile ||
+        request.artifactFile.contentDigest !== request.contentDigest ||
+        request.materialProposal !== null
+      ) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Artifact file follow-up proof is contradictory.',
+          path: ['artifactFile'],
+        });
+      }
+      return;
+    }
     const digest = `sha256:${createHash('sha256').update(request.artifactContent).digest('hex')}`;
-    if (request.contentDigest !== digest) {
+    if (
+      request.contentDigest !== digest ||
+      request.artifactFile !== undefined ||
+      !['text/markdown', 'text/plain', 'application/json'].includes(request.artifactMediaType)
+    ) {
       context.addIssue({
         code: 'custom',
         message: 'Artifact Review follow-up content digest is contradictory.',
@@ -117,14 +142,21 @@ export interface ReplayArtifactReviewDecisionInput {
 }
 
 /** Accepted command and current Artifact content proof for one fresh decision attempt. */
-export interface DecideArtifactReviewInput extends ReplayArtifactReviewDecisionInput {
-  /** Exact current canonical Artifact content. */
-  readonly artifactContent: string;
-  /** Media type mapped from the current Artifact content format. */
-  readonly artifactMediaType: ArtifactReviewMediaType;
+export type DecideArtifactReviewInput = ReplayArtifactReviewDecisionInput & {
   /** Timestamp captured by the first-writer decision attempt. */
   readonly decidedAt: string;
-}
+} & (
+    | {
+        readonly artifactContent: string;
+        readonly artifactMediaType: ArtifactReviewMediaType;
+        readonly artifactFile?: never;
+      }
+    | {
+        readonly artifactContent: null;
+        readonly artifactMediaType: string;
+        readonly artifactFile: { readonly byteLength: number; readonly contentDigest: string };
+      }
+  );
 
 /** Raw Artifact Review authority row including private request proof. */
 type ArtifactReviewRow = typeof artifactReviews.$inferSelect;
@@ -280,7 +312,7 @@ export function decideArtifactReview(
   return workspaceDb.sqlite.transaction(() => {
     const row = requireReview(workspaceDb, input.artifactId, input.artifactVersion);
     assertStoredReview(workspaceDb, row);
-    assertArtifactContent(row, input.artifactContent);
+    assertArtifactContent(row, input);
 
     if (row.decision !== null) {
       if (row.decisionRequestId !== input.requestId) {
@@ -298,6 +330,12 @@ export function decideArtifactReview(
 
     const proposal = materialProposal(row);
     if (proposal) {
+      if (input.artifactContent === null) {
+        throw reviewError(
+          'invalid_request',
+          'A file descriptor cannot be applied as a text Material.'
+        );
+      }
       requireProposalAuthority(workspaceDb, proposal);
     }
 
@@ -310,6 +348,8 @@ export function decideArtifactReview(
         throw reviewError('recovery_required', 'The Review source lineage is incomplete.');
       }
       if (proposal) {
+        if (input.artifactContent === null)
+          throw reviewError('invalid_request', 'Material refinement requires exact text.');
         requireCurrentProposalBase(workspaceDb, proposal, input.artifactMediaType);
       }
       const followUpTurnId = deriveArtifactReviewFollowUpTurnId(
@@ -419,6 +459,9 @@ function applyAcceptedProposal(
   proposal: ArtifactMaterialProposal,
   input: DecideArtifactReviewInput
 ): SubmitArtifactReviewDecisionResponse {
+  if (input.artifactContent === null) {
+    throw reviewError('invalid_request', 'Material apply requires exact text content.');
+  }
   requireCurrentProposalBase(workspaceDb, proposal, input.artifactMediaType);
   let revisionId: string;
   try {
@@ -494,16 +537,27 @@ function assertFreshDecisionInput(input: DecideArtifactReviewInput): void {
   assertDecisionInput(input);
   if (
     !input.decidedAt ||
-    input.artifactContent.length === 0 ||
-    !['text/markdown', 'text/plain', 'application/json'].includes(input.artifactMediaType)
+    (input.artifactContent !== null &&
+      (input.artifactContent.length === 0 ||
+        !['text/markdown', 'text/plain', 'application/json'].includes(input.artifactMediaType))) ||
+    (input.artifactContent === null &&
+      (!input.artifactMediaType ||
+        !Number.isSafeInteger(input.artifactFile.byteLength) ||
+        input.artifactFile.byteLength < 0 ||
+        input.artifactFile.byteLength > 1_000_000_000 ||
+        !/^sha256:[a-f0-9]{64}$/.test(input.artifactFile.contentDigest)))
   ) {
     throw reviewError('invalid_request', 'The Artifact Review decision input is invalid.');
   }
 }
 
 /** Verifies Artifact bytes. @param row Review owner. @param content Canonical content. @throws ArtifactReviewError for contradictory bytes. */
-function assertArtifactContent(row: ArtifactReviewRow, content: string): void {
-  if (contentDigest(content) !== row.contentDigest) {
+function assertArtifactContent(row: ArtifactReviewRow, input: DecideArtifactReviewInput): void {
+  const digest =
+    input.artifactContent === null
+      ? input.artifactFile.contentDigest
+      : contentDigest(input.artifactContent);
+  if (digest !== row.contentDigest) {
     throw reviewError('recovery_required', 'The reviewed Artifact content is contradictory.');
   }
 }

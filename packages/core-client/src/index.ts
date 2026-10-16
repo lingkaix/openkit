@@ -1,4 +1,5 @@
 export * from './app.js';
+export * from './artifact-files.js';
 export * from './auth.js';
 export * from './capabilities.js';
 export * from './client.js';

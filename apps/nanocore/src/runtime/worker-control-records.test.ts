@@ -486,3 +486,21 @@ describe('accepted worker final-status canonicalization', () => {
     ).toThrow('Accepted worker final status has no canonical Core StopReason.');
   });
 });
+
+/** Native final evidence remains the prerequisite; online and restart callers share the durable cause mapping. */
+it.each([
+  ['turn-cancelled', 'aborted'],
+  ['raw-output-exhausted', 'budget_exhausted'],
+  ['raw-output-unavailable', 'error'],
+] as const)('maps proved native stop for %s to %s', (cause, expected) => {
+  const accepted = {
+    acceptedAt: new Date().toISOString(),
+    status: 'cancelled' as const,
+    stopReason: 'aborted',
+    diagnostics: [],
+  };
+  expect(canonicalStopReasonForAcceptedWorkerFinalStatus(accepted, cause)).toBe(expected);
+  expect(() =>
+    canonicalStopReasonForAcceptedWorkerFinalStatus({ ...accepted, status: 'completed' }, cause)
+  ).toThrow('canonical');
+});

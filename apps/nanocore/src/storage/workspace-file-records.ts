@@ -33,6 +33,8 @@ import {
   AgentSandboxSummarySchema,
   AgentSessionSchema,
   ApprovalDecisionItemSchema,
+  ArtifactFileContentSchema,
+  ArtifactInlineContentSchema,
   ArtifactOriginSchema,
   ArtifactSchema,
   GitFailureExplanationReaderSchema,
@@ -68,6 +70,8 @@ import type {
   KnowledgeProposalReviewRecord,
   KnowledgeSourceRecord,
 } from '../lib/store.js';
+import { artifactFilePayloadPath, verifyArtifactFilePayload } from './artifacts/file-records.js';
+import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import {
   coreDbPath,
   ensureLayoutDirectories,
@@ -548,9 +552,12 @@ export function parseCanonicalWorkspaceHistory(input: {
         reference.summary === artifact.summary
     );
     const requiresCurrentReference = artifact.origin.kind === 'turn-output' || artifact.version > 1;
-    const contentDigest = `sha256:${createHash('sha256')
-      .update(artifact.content.body, 'utf8')
-      .digest('hex')}`;
+    // File identity is verified against its version-owned payload when loaded or
+    // transferred; this record-only validator has no source filesystem authority.
+    const contentDigest =
+      artifact.content.format === 'file'
+        ? artifact.contentDigest
+        : `sha256:${createHash('sha256').update(artifact.content.body, 'utf8').digest('hex')}`;
     if (
       artifact.workspaceId !== workspace.id ||
       artifact.contentDigest !== contentDigest ||
@@ -1074,12 +1081,12 @@ export function readPublishedAgentSessionIds(
 export function loadWorkspaceFileRecords(dataRoot: string): WorkspaceFileRecords[] {
   const workspacesRoot = ensureLayoutDirectories(dataRoot).workspaces;
   assertCanonicalDirectory(workspacesRoot);
-  rmSync(join(workspacesRoot, '.staging'), { recursive: true, force: true });
-
-  const records = listDirectoryNames(workspacesRoot).map((workspaceId) => {
-    assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
-    return loadWorkspace(join(workspacesRoot, workspaceId), workspaceId, dataRoot);
-  });
+  const records = listDirectoryNames(workspacesRoot)
+    .filter((name) => name !== '.staging')
+    .map((workspaceId) => {
+      assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
+      return loadWorkspace(join(workspacesRoot, workspaceId), workspaceId, dataRoot);
+    });
   const threadIds = new Set<string>();
   const turnIds = new Set<string>();
   const itemIds = new Set<string>();
@@ -1113,6 +1120,13 @@ export function loadWorkspaceFileRecords(dataRoot: string): WorkspaceFileRecords
   }
 
   return records;
+}
+
+/** Discards abandoned private staging at Store startup, before any live admission. Read-only canonical inspection must never delete a concurrent capture. */
+export function discardAbandonedWorkspaceStaging(dataRoot: string): void {
+  const root = ensureLayoutDirectories(dataRoot).workspaces;
+  assertCanonicalDirectory(root);
+  rmSync(join(root, '.staging'), { recursive: true, force: true });
 }
 
 /**
@@ -1980,16 +1994,33 @@ function loadArtifacts(
       throw new Error(`Canonical artifact metadata must not embed content body: ${artifactId}.`);
     }
 
-    if (format !== 'markdown' && format !== 'text' && format !== 'json') {
+    if (format !== 'markdown' && format !== 'text' && format !== 'json' && format !== 'file') {
       throw new Error(`Artifact ${artifactId} has an invalid content format.`);
     }
 
-    const contentPath = join(artifactRoot, 'files', artifactContentFileName(format));
-    assertCanonicalDirectory(join(artifactRoot, 'files'));
+    if (format !== 'file') assertCanonicalDirectory(join(artifactRoot, 'files'));
     const artifact = ArtifactReaderSchema.parse({
       ...metadata,
-      content: { ...metadataContent, format, body: readCanonicalTextFile(contentPath) },
+      content:
+        format === 'file'
+          ? metadataContent
+          : {
+              ...metadataContent,
+              format,
+              body: readCanonicalTextFile(
+                join(artifactRoot, 'files', artifactContentFileName(format))
+              ),
+            },
     });
+    if (artifact.content.format === 'file') {
+      verifyArtifactFilePayload({
+        workspaceRoot,
+        artifactId: artifact.id,
+        version: artifact.version,
+        byteLength: artifact.content.byteLength,
+        contentDigest: artifact.contentDigest,
+      });
+    }
 
     if (
       artifact.id !== artifactId ||
@@ -2360,6 +2391,32 @@ function writeTurnDirectory(turnRoot: string, turn: Turn, records: WorkspaceFile
   }
 }
 
+/** Publishes one complete new file-backed Artifact directory through the existing P01 tree owner. The exact payload and descriptor are staged together, so process loss cannot expose a canonical directory with missing metadata. No reference Item or command receipt is written here. */
+export function publishArtifactFileRecord(input: {
+  readonly workspaceRoot: string;
+  readonly artifact: Artifact;
+  readonly payloadPath: string;
+}): void {
+  if (input.artifact.content.format !== 'file') throw new Error('A file descriptor is required.');
+  const destination = artifactFilePayloadPath(
+    input.workspaceRoot,
+    input.artifact.id,
+    input.artifact.version
+  );
+  const artifactRoot = join(input.workspaceRoot, 'artifacts', input.artifact.id);
+  ensureCanonicalDirectory(dirname(artifactRoot));
+  if (lstatSync(artifactRoot, { throwIfNoEntry: false }))
+    throw new Error('The immutable Artifact already exists.');
+  publishNewRecordDirectory(input.workspaceRoot, artifactRoot, (stage) => {
+    const payload = join(stage, 'versions', String(input.artifact.version), 'payload');
+    ensureCanonicalDirectory(dirname(payload));
+    publishCanonicalPath(input.payloadPath, payload);
+    writeArtifactDirectory(stage, input.artifact);
+  });
+  // Keep the path guard above coupled to the same immutable owner spelling.
+  assertCanonicalRegularFile(destination);
+}
+
 /**
  * Writes one Artifact directory's metadata and body.
  *
@@ -2367,6 +2424,16 @@ function writeTurnDirectory(turnRoot: string, turn: Turn, records: WorkspaceFile
  * @param artifact Artifact record to write.
  */
 function writeArtifactDirectory(artifactRoot: string, artifact: Artifact): void {
+  if (artifact.content.format === 'file') {
+    ensureCanonicalDirectory(artifactRoot);
+    const payload = join(artifactRoot, 'versions', String(artifact.version), 'payload');
+    assertCanonicalRegularFile(payload);
+    if (lstatSync(payload).size !== artifact.content.byteLength) {
+      throw new Error('The Artifact file payload length is inconsistent.');
+    }
+    writeOwnedDescriptiveJson(join(artifactRoot, 'artifact.json'), artifact, ArtifactReaderSchema);
+    return;
+  }
   const filesRoot = join(artifactRoot, 'files');
   const contentFileName = artifactContentFileName(artifact.content.format);
 
@@ -2385,7 +2452,10 @@ function writeArtifactDirectory(artifactRoot: string, artifact: Artifact): void 
     },
     z.object({
       ...ArtifactReaderSchema.shape,
-      content: ArtifactSchema.shape.content.omit({ body: true }),
+      content: z.union([
+        ArtifactInlineContentSchema.omit({ body: true }),
+        ArtifactFileContentSchema,
+      ]),
     })
   );
   writeFileAtomic(join(filesRoot, contentFileName), artifact.content.body);
@@ -2948,47 +3018,50 @@ function normalizeAppendBoundary(path: string): void {
  * @param content Complete text to append.
  */
 export function appendCanonicalTextFile(path: string, content: string): void {
-  normalizeAppendBoundary(path);
-  const metadata = lstatSync(path, { throwIfNoEntry: false });
-
-  if (metadata) {
-    assertCanonicalRegularFile(path);
-  }
-
-  let descriptor: number;
+  const bytes = Buffer.from(content);
+  const reservation = reserveCanonicalFileWrite(bytes.byteLength);
+  let descriptor: number | undefined;
+  let safeToRelease = true;
   try {
-    descriptor = openSync(
-      path,
-      constants.O_WRONLY |
-        constants.O_APPEND |
-        constants.O_CREAT |
-        constants.O_NOFOLLOW |
-        constants.O_NONBLOCK,
-      0o600
-    );
-  } catch (error) {
-    throwCanonicalLinkError(path, error);
-  }
-
-  try {
-    if (!fstatSync(descriptor).isFile()) {
-      throw new Error(`Canonical path must be a regular file: ${path}.`);
+    normalizeAppendBoundary(path);
+    const metadata = lstatSync(path, { throwIfNoEntry: false });
+    if (metadata) assertCanonicalRegularFile(path);
+    try {
+      descriptor = openSync(
+        path,
+        constants.O_WRONLY |
+          constants.O_APPEND |
+          constants.O_CREAT |
+          constants.O_NOFOLLOW |
+          constants.O_NONBLOCK,
+        0o600
+      );
+    } catch (error) {
+      throwCanonicalLinkError(path, error);
     }
-    const bytes = Buffer.from(content);
+    safeToRelease = false;
+    if (!fstatSync(descriptor).isFile())
+      throw new Error(`Canonical path must be a regular file: ${path}.`);
     let offset = 0;
-
     while (offset < bytes.length) {
       const written = writeSync(descriptor, bytes, offset, bytes.length - offset);
-      if (written <= 0) {
-        throw new Error(`Canonical append made no progress: ${path}.`);
-      }
+      if (written <= 0) throw new Error(`Canonical append made no progress: ${path}.`);
+      reservation?.recordWritten(written);
       offset += written;
     }
     fsyncSync(descriptor);
-  } finally {
     closeSync(descriptor);
+    descriptor = undefined;
+    syncCanonicalDirectory(dirname(path));
+    reservation?.assertAvailable();
+    safeToRelease = true;
+  } finally {
+    try {
+      if (descriptor !== undefined) closeSync(descriptor);
+    } finally {
+      if (safeToRelease) reservation?.release();
+    }
   }
-  syncCanonicalDirectory(dirname(path));
 }
 
 /**
@@ -2999,21 +3072,25 @@ export function appendCanonicalTextFile(path: string, content: string): void {
  * @param mode Exact replacement mode when supplied; otherwise the private writer default.
  */
 export function writeFileAtomic(path: string, content: string | Uint8Array, mode?: number): void {
-  ensureCanonicalDirectory(dirname(path), 0o777);
-  const existingMetadata = lstatSync(path, { throwIfNoEntry: false });
-  if (existingMetadata) {
-    assertCanonicalRegularFile(path);
-  }
+  const byteLength = typeof content === 'string' ? Buffer.byteLength(content) : content.byteLength;
+  const reservation = reserveCanonicalFileWrite(byteLength);
   const temporaryPath = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
-
+  let safeToRelease = false;
+  let attemptedOpen = false;
+  let temporaryOwned = false;
   try {
+    ensureCanonicalDirectory(dirname(path), 0o777);
+    if (lstatSync(path, { throwIfNoEntry: false })) assertCanonicalRegularFile(path);
+    attemptedOpen = true;
     const descriptor = openSync(
       temporaryPath,
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
       mode ?? 0o600
     );
+    temporaryOwned = true;
     try {
       writeFileSync(descriptor, content);
+      reservation?.recordWritten(byteLength);
       if (mode !== undefined) fchmodSync(descriptor, mode);
       fsyncSync(descriptor);
     } finally {
@@ -3021,10 +3098,67 @@ export function writeFileAtomic(path: string, content: string | Uint8Array, mode
     }
     renameSync(temporaryPath, path);
     syncCanonicalDirectory(dirname(path));
+    reservation?.assertAvailable();
+    safeToRelease = true;
   } catch (error) {
-    rmSync(temporaryPath, { force: true });
+    if (temporaryOwned) {
+      rmSync(temporaryPath, { force: true });
+      safeToRelease = true;
+    } else {
+      // A refused path caused no effect.
+      // A failed exclusive open has no ownership proof; retain capacity and preserve the unowned file.
+      safeToRelease = !attemptedOpen;
+    }
     throw error;
+  } finally {
+    if (safeToRelease) reservation?.release();
   }
+}
+
+/** Measures one regular file's exact size and digest without materializing its body. */
+export function measureCanonicalFile(path: string): { byteLength: number; contentDigest: string } {
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    return measureCanonicalFileDescriptor(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+/** Measures an open no-follow regular file while preserving its offset for a later stream. */
+export function measureCanonicalFileDescriptor(descriptor: number): {
+  byteLength: number;
+  contentDigest: string;
+} {
+  const before = fstatSync(descriptor, { bigint: true });
+  if (!before.isFile() || before.size > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('The canonical file cannot be measured.');
+  }
+  const hash = createHash('sha256');
+  const buffer = Buffer.allocUnsafe(65_536);
+  let byteLength = 0;
+  while (byteLength < Number(before.size)) {
+    const count = readSync(
+      descriptor,
+      buffer,
+      0,
+      Math.min(buffer.byteLength, Number(before.size) - byteLength),
+      byteLength
+    );
+    if (count === 0) break;
+    byteLength += count;
+    hash.update(buffer.subarray(0, count));
+  }
+  const after = fstatSync(descriptor, { bigint: true });
+  if (
+    BigInt(byteLength) !== before.size ||
+    before.size !== after.size ||
+    before.mtimeNs !== after.mtimeNs ||
+    before.ctimeNs !== after.ctimeNs
+  ) {
+    throw new Error('The canonical file changed during integrity verification.');
+  }
+  return { byteLength, contentDigest: `sha256:${hash.digest('hex')}` };
 }
 
 /** Preserves owned annotations while replacing known fields; append-order arrays retain their member annotations. */

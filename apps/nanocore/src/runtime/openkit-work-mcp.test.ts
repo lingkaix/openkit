@@ -2,9 +2,13 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { decideArtifactReview, getArtifactReview } from '../artifact-reviews.js';
 import { FsStore } from '../lib/store.js';
+import { closeRetrievalServices } from '../retrieval-service.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -13,6 +17,7 @@ import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-e
 import { dispatchOpenkitWorkTool, OPENKIT_WORK_TOOLS } from './openkit-work-mcp.js';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 import type { WorkerCredentialCheckValues } from './worker-credential-guard.js';
+import { readWorkerRawOutput } from './worker-raw-output.js';
 
 /** Creates real canonical owners; the capture double stands outside the Core publication seam. */
 function submissionFixture() {
@@ -43,7 +48,8 @@ function submissionFixture() {
   });
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
   applyScopedMigrations(workspaceDb);
-  onTestFinished(() => {
+  onTestFinished(async () => {
+    await closeRetrievalServices();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
@@ -69,7 +75,33 @@ function submissionFixture() {
       maxByteLength: number;
     }) => ({ bytes: Buffer.from('Finished report\n'), credentialCheckValues })
   );
-  const input = { coreDb, environmentPackage, store, workspaceDb, captureArtifact };
+  const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
+  // Only the external capture is doubled. The actual Core stage, scan and publication owners
+  // consume a new stream per capture, so concurrent calls never share a consumed reader.
+  const input = {
+    coreDb,
+    environmentPackage,
+    store,
+    workspaceDb,
+    fileAdmission,
+    captureArtifact: async (request: Parameters<typeof captureArtifact>[0]) => {
+      const captured = await captureArtifact(request);
+      return {
+        source: Readable.from([captured.bytes]),
+        byteLength: captured.bytes.length,
+        contentDigest: `sha256:${createHash('sha256').update(captured.bytes).digest('hex')}`,
+        credentialCheckValues: captured.credentialCheckValues,
+        remove: async () => {},
+      };
+    },
+  };
+  const readBytes = (id: string) => {
+    const artifact = store.getArtifact('ws_demo', id);
+    expect(artifact.content.format).toBe('file');
+    return readFileSync(
+      artifactFilePayloadPath(join(dataRoot, 'workspaces', 'ws_demo'), id, artifact.version)
+    );
+  };
   const submit = (requestId = 'req_file_1', overrides: Record<string, unknown> = {}) =>
     dispatchOpenkitWorkTool(input, 'work_submit_artifact', {
       requestId,
@@ -92,7 +124,17 @@ function submissionFixture() {
     ).n,
     receipts: store.listCommandRequests().length,
   });
-  return { ...input, submit, counts, turn, dataRoot, credentialCheckValues };
+  return {
+    ...input,
+    input,
+    captureArtifact,
+    readBytes,
+    submit,
+    counts,
+    turn,
+    dataRoot,
+    credentialCheckValues,
+  };
 }
 
 /** Extracts the acknowledged id without inferring successful publication from assistant text. */
@@ -121,7 +163,7 @@ describe('synchronous Worker file submission', () => {
     });
     const id = acknowledgedArtifactId(await fixture.submit());
     expect(fixture.captureArtifact).toHaveBeenCalledOnce();
-    expect(fixture.store.getArtifact('ws_demo', id).content?.body).toBe('# Session report\n');
+    expect(fixture.readBytes(id)).toEqual(Buffer.from('# Session report\n'));
     expect(fixture.counts()).toEqual({ artifacts: 1, references: 1, reviews: 1, receipts: 1 });
     await expect(
       fixture.submit('req_undeclared', { path: '/workspace/outputs/report.md' })
@@ -143,7 +185,7 @@ describe('synchronous Worker file submission', () => {
     expect(
       fixture.store.listArtifacts('ws_demo').find((artifact) => artifact.id === id)
     ).toMatchObject({
-      content: { body: 'Finished report\n' },
+      content: { format: 'file', mediaType: 'text/markdown', byteLength: 16 },
       turnId: fixture.turn.id,
       origin: { kind: 'turn-output', requestId: 'req_file_1' },
     });
@@ -190,10 +232,7 @@ describe('synchronous Worker file submission', () => {
     expect(acknowledgedArtifactId(await fixture.submit())).toBe(first);
     expect(fixture.captureArtifact).toHaveBeenCalledTimes(1);
     expect(fixture.counts()).toEqual({ artifacts: 1, references: 1, reviews: 1, receipts: 1 });
-    expect(
-      fixture.store.listArtifacts('ws_demo').find((artifact) => artifact.id === first)?.content
-        ?.body
-    ).toBe('Finished report\n');
+    expect(fixture.readBytes(first)).toEqual(Buffer.from('Finished report\n'));
   });
 
   it('conflicts on changed path or metadata under the same accepted request', async () => {
@@ -226,11 +265,11 @@ describe('synchronous Worker file submission', () => {
     expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
   });
 
-  it('rejects unadmitted media without capture or publication and permits correction', async () => {
+  it('rejects malformed media without capture or publication and permits correction', async () => {
     const fixture = submissionFixture();
-    await expect(fixture.submit('req_bad_media', { mediaType: 'image/png' })).rejects.toMatchObject(
-      { code: 'invalid_request' }
-    );
+    await expect(
+      fixture.submit('req_bad_media', { mediaType: 'image/png; invalid' })
+    ).rejects.toMatchObject({ code: 'invalid_request' });
     expect(fixture.captureArtifact).not.toHaveBeenCalled();
     expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
     acknowledgedArtifactId(await fixture.submit('req_media_corrected'));
@@ -266,31 +305,23 @@ describe('synchronous Worker file submission', () => {
     acknowledgedArtifactId(await fixture.submit('req_safe_identity'));
   });
 
-  it('counts only published bytes and passes remaining capacity plus one sentinel to capture', async () => {
+  it('admits program-produced files independently of the sixteen MiB raw-output allowance', async () => {
     const fixture = submissionFixture();
-    const clean = await fixture.captureArtifact({
-      packageSnapshotId: '',
-      requestId: '',
-      path: '',
-      maxByteLength: 0,
+    fixture.captureArtifact.mockResolvedValue({
+      bytes: Buffer.alloc(8 * 1024 * 1024, 0xff),
+      credentialCheckValues: fixture.credentialCheckValues,
     });
-    fixture.captureArtifact.mockClear();
-    fixture.captureArtifact.mockResolvedValueOnce({
-      ...clean,
-      bytes: Buffer.alloc(16 * 1024 * 1024 + 1, 120),
-    });
-    await expect(fixture.submit('req_too_large')).rejects.toMatchObject({
-      code: 'invalid_request',
-    });
-    expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
-    await fixture.submit('req_small');
-    await fixture.submit('req_next');
+    await fixture.submit('file-1');
+    await fixture.submit('file-2');
+    await fixture.submit('file-3');
+    expect(fixture.counts()).toEqual({ artifacts: 3, references: 3, reviews: 3, receipts: 3 });
     expect(fixture.captureArtifact.mock.calls.map(([request]) => request.maxByteLength)).toEqual([
-      16 * 1024 * 1024 + 1,
-      16 * 1024 * 1024 + 1,
-      16 * 1024 * 1024 - clean.bytes.length + 1,
+      1_000_000_001, 1_000_000_001, 1_000_000_001,
     ]);
-    expect(fixture.counts()).toEqual({ artifacts: 2, references: 2, reviews: 2, receipts: 2 });
+    expect(readWorkerRawOutput(fixture.workspaceDb, fixture.environmentPackage.scope)).toEqual({
+      rawOutputBytes: 0,
+      exhausted: false,
+    });
   });
 
   it('publishes nothing when the Turn seals during capture', async () => {
@@ -416,7 +447,7 @@ describe('submission authority and byte evidence', () => {
     'empty',
     'invalid-utf8',
     'invalid-json',
-  ])('publishes nothing for %s bytes', async (kind) => {
+  ])('preserves exact arbitrary %s bytes', async (kind) => {
     const fixture = submissionFixture();
     const captured = await fixture.captureArtifact({
       packageSnapshotId: '',
@@ -434,12 +465,19 @@ describe('submission authority and byte evidence', () => {
             ? Buffer.from([0xff])
             : Buffer.from('{invalid'),
     });
-    await expect(
-      fixture.submit('format', {
-        mediaType: kind === 'invalid-json' ? 'application/json' : 'text/plain',
+    const id = acknowledgedArtifactId(
+      await fixture.submit('format', {
+        mediaType: kind === 'invalid-json' ? 'application/json' : 'application/octet-stream',
       })
-    ).rejects.toMatchObject({ code: 'invalid_request' });
-    expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
+    );
+    const expected =
+      kind === 'empty'
+        ? Buffer.alloc(0)
+        : kind === 'invalid-utf8'
+          ? Buffer.from([0xff])
+          : Buffer.from('{invalid');
+    expect(fixture.readBytes(id)).toEqual(expected);
+    expect(fixture.counts()).toEqual({ artifacts: 1, references: 1, reviews: 1, receipts: 1 });
   });
 
   it('refuses an authority tuple whose receipt is missing without recapture', async () => {
@@ -470,43 +508,47 @@ describe('submission authority and byte evidence', () => {
     expect(fixture.captureArtifact).toHaveBeenCalledTimes(1);
   });
 
-  it('admits the exact quota boundary and refuses the competing caller without consuming capacity', async () => {
+  it('admits concurrent independent files whose combined bytes exceed the raw-output allowance', async () => {
     const fixture = submissionFixture();
-    const captured = await fixture.captureArtifact({
-      packageSnapshotId: '',
-      requestId: '',
-      path: '',
-      maxByteLength: 0,
-    });
-    fixture.captureArtifact.mockClear();
     fixture.captureArtifact.mockResolvedValue({
-      ...captured,
-      bytes: Buffer.alloc(8 * 1024 * 1024, 10),
+      bytes: Buffer.alloc(8 * 1024 * 1024 + 1, 0xff),
+      credentialCheckValues: fixture.credentialCheckValues,
     });
-    await Promise.all([fixture.submit('quota-1'), fixture.submit('quota-2')]);
+    await Promise.all([fixture.submit('concurrent-1'), fixture.submit('concurrent-2')]);
     expect(fixture.counts()).toEqual({ artifacts: 2, references: 2, reviews: 2, receipts: 2 });
-    await expect(fixture.submit('quota-3')).rejects.toMatchObject({ code: 'invalid_request' });
-    expect(fixture.captureArtifact.mock.calls.at(-1)![0].maxByteLength).toBe(1);
   });
 
-  it('rechecks quota when two captures compete for insufficient remaining capacity', async () => {
+  it('reserves future disk writes before capture and refuses a competing request when capacity is held', async () => {
     const fixture = submissionFixture();
-    const captured = await fixture.captureArtifact({
-      packageSnapshotId: '',
-      requestId: '',
-      path: '',
-      maxByteLength: 0,
+    const fileAdmission = new FileStorageAdmission(
+      fixture.dataRoot,
+      () => 0n,
+      () => 1_000_065_536n
+    );
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => {
+      release = resolve;
     });
-    fixture.captureArtifact.mockClear();
-    fixture.captureArtifact.mockResolvedValue({
-      ...captured,
-      bytes: Buffer.alloc(8 * 1024 * 1024 + 1, 10),
+    const firstCapture = fixture.captureArtifact.getMockImplementation()!;
+    fixture.captureArtifact.mockImplementation(async (request) => {
+      await wait;
+      return firstCapture(request);
     });
-    const results = await Promise.allSettled([
-      fixture.submit('compete-1'),
-      fixture.submit('compete-2'),
-    ]);
-    expect(results.map((result) => result.status).sort()).toEqual(['fulfilled', 'rejected']);
+    const submit = (requestId: string) =>
+      dispatchOpenkitWorkTool({ ...fixture.input, fileAdmission }, 'work_submit_artifact', {
+        requestId,
+        path: '/openkit/sessions/as_submit_1/outputs/report.md',
+        kind: 'report',
+        title: 'Report',
+        mediaType: 'text/markdown',
+      });
+    const first = submit('capacity-1');
+    await expect(submit('capacity-2')).rejects.toMatchObject({
+      code: 'storage_capacity_unavailable',
+    });
+    expect(fixture.captureArtifact).toHaveBeenCalledOnce();
+    release();
+    await first;
     expect(fixture.counts()).toEqual({ artifacts: 1, references: 1, reviews: 1, receipts: 1 });
   });
 
@@ -525,7 +567,7 @@ describe('submission authority and byte evidence', () => {
       return captured;
     });
     await expect(
-      dispatchOpenkitWorkTool({ ...fixture, signal: abort.signal }, 'work_submit_artifact', {
+      dispatchOpenkitWorkTool({ ...fixture.input, signal: abort.signal }, 'work_submit_artifact', {
         requestId: 'cancelled',
         path: '/openkit/sessions/as_submit_1/outputs/report.md',
         kind: 'report',
@@ -580,14 +622,15 @@ describe('submission seals and immutable exact output', () => {
     const overrides = { title: 'synthetic-injected-secret report' };
     const id = acknowledgedArtifactId(await fixture.submit('exact-output', overrides));
     const artifact = fixture.store.getArtifact('ws_demo', id);
-    expect(artifact.content.body).toBe(bytes.toString('utf8'));
+    expect(fixture.readBytes(id)).toEqual(bytes);
     expect(artifact.contentDigest).toBe(
       `sha256:${createHash('sha256').update(bytes).digest('hex')}`
     );
     expect(artifact.title).toBe('[redacted] report');
     decideArtifactReview(fixture.workspaceDb, {
       actorId: 'user_local',
-      artifactContent: artifact.content.body,
+      artifactContent: null,
+      artifactFile: { byteLength: bytes.length, contentDigest: artifact.contentDigest },
       artifactId: id,
       artifactMediaType: 'text/markdown',
       artifactVersion: 1,

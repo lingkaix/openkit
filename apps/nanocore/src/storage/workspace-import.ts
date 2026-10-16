@@ -532,6 +532,8 @@ export interface ReadWorkspaceImportSnapshotInput {
 
 /** Importable record snapshot extracted from one workspace export. */
 export interface WorkspaceImportSnapshot {
+  /** Target-relative immutable payload paths mapped to their verified private export sources. */
+  artifactPayloadFiles: ReadonlyMap<string, string>;
   /** Validated current Goal records and Task terminal facts; approval grants remain source-local. */
   goalState: ReturnType<typeof readCurrentGoalImportState>;
   /** Verified dry-run report for the export. */
@@ -928,8 +930,25 @@ export function readWorkspaceImportSnapshot(
     retrievalTraces.files
   );
   const importedCatalog = readImportedAgentResourceCatalog(context.files);
+  const sourceArtifactIds = new Map(
+    [...context.artifactIds].map(([sourceId, targetId]) => [targetId, sourceId])
+  );
+  const artifactPayloadFiles = new Map<string, string>();
+  for (const artifact of canonical.artifacts) {
+    if (artifact.content.format !== 'file') continue;
+    const sourceId = sourceArtifactIds.get(artifact.id);
+    const sourcePath = input.verified.artifactPayloadFiles.get(
+      `artifacts/${sourceId}/versions/${artifact.version}/payload`
+    );
+    if (!sourceId || !sourcePath) throw new Error('Imported Artifact payload is unavailable.');
+    artifactPayloadFiles.set(
+      `artifacts/${artifact.id}/versions/${artifact.version}/payload`,
+      sourcePath
+    );
+  }
 
   return {
+    artifactPayloadFiles,
     report,
     goalState: readCurrentGoalImportState(context),
     workspace: canonical.workspace,
@@ -4020,8 +4039,25 @@ function readExportedArtifacts(
     const artifactId = metadataPath.split('/')[1] as string;
     const metadata = readImportJson(files, metadataPath) as Record<string, unknown>;
     const format = z
-      .enum(['markdown', 'text', 'json'])
+      .enum(['markdown', 'text', 'json', 'file'])
       .parse((metadata.content as { format?: unknown } | undefined)?.format);
+    if (format === 'file') {
+      const artifact = ArtifactSchema.parse(metadata);
+      const payloadPath = `artifacts/${artifactId}/versions/${artifact.version}/payload`;
+      const payload = manifest.contentInventory.find((entry) => entry.path === payloadPath);
+      if (
+        artifact.id !== artifactId ||
+        artifact.content.format !== 'file' ||
+        !payload ||
+        payload.bytes !== artifact.content.byteLength ||
+        payload.digest !== artifact.contentDigest
+      ) {
+        throw new Error('Artifact export payload ownership is inconsistent.');
+      }
+      expectedPaths.add(metadataPath);
+      expectedPaths.add(payloadPath);
+      return artifact;
+    }
     const bodyPath = `artifacts/${artifactId}/files/${artifactContentFileName(format)}`;
 
     expectedPaths.add(metadataPath);

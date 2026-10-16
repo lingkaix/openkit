@@ -1,5 +1,4 @@
-import { createHash } from 'node:crypto';
-import { isDeepStrictEqual, TextDecoder } from 'node:util';
+import { isDeepStrictEqual } from 'node:util';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { ArtifactSchema, ItemSchema } from '@openkit/protocol';
 import {
@@ -288,12 +287,12 @@ export function prepareWorkerArtifact(input: {
   readonly metadata: {
     kind: 'report' | 'diff' | 'file' | 'summary';
     title: string;
-    mediaType: 'text/markdown' | 'text/plain' | 'application/json';
+    mediaType: string;
     materialProposal?:
       | { materialId: string; baseRevisionId: string; baseContentDigest: string }
       | undefined;
   };
-  readonly bytes: Buffer;
+  readonly payload: { readonly byteLength: number; readonly contentDigest: string };
   readonly checkValues: CredentialCheckValues;
   readonly contextPackageTrace?: WorkerContextPackageTrace;
 }) {
@@ -305,13 +304,12 @@ export function prepareWorkerArtifact(input: {
     requestId,
     recordedAt,
     metadata,
-    bytes,
+    payload,
     checkValues,
     contextPackageTrace,
   } = input;
   if (workspaceDb.workspaceId !== environmentPackage.scope.workspaceId)
     throw transcriptError('recovery_required', 'Artifact Workspace authority is mismatched.');
-  if (bytes.length === 0) throw transcriptError('invalid_request', 'Artifact bytes are empty.');
   const sourceTurn = store
     .listThreadTurns(environmentPackage.scope.workspaceId, environmentPackage.scope.threadId)
     .find((turn) => turn.id === environmentPackage.scope.turnId);
@@ -324,23 +322,11 @@ export function prepareWorkerArtifact(input: {
     throw transcriptError('recovery_required', 'The canonical source Turn assignment is invalid.');
   }
   // The model-selected key is persisted verbatim in origin and receipt; redaction would change replay identity.
-  if (
-    findWorkerCredentialMatches(bytes, checkValues).length > 0 ||
-    findWorkerCredentialMatches(Buffer.from(requestId, 'utf8'), checkValues).length > 0
-  ) {
+  if (findWorkerCredentialMatches(Buffer.from(requestId, 'utf8'), checkValues).length > 0) {
     throw transcriptError(
       'invalid_request',
       'Worker Artifact content or request identity contains injected credential material.'
     );
-  }
-  let body: string;
-  try {
-    body = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-    if (metadata.mediaType === 'application/json') {
-      JSON.parse(body);
-    }
-  } catch {
-    throw transcriptError('invalid_request', 'Artifact bytes violate the declared format.');
   }
   const proposal = metadata.materialProposal ?? null;
   if (proposal) {
@@ -391,15 +377,11 @@ export function prepareWorkerArtifact(input: {
     summary: null,
     version: 1,
     content: {
-      format:
-        metadata.mediaType === 'text/markdown'
-          ? 'markdown'
-          : metadata.mediaType === 'text/plain'
-            ? 'text'
-            : 'json',
-      body,
+      format: 'file',
+      mediaType: metadata.mediaType,
+      byteLength: payload.byteLength,
     },
-    contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+    contentDigest: payload.contentDigest,
     lastMutationRequestId: requestId,
     origin: {
       kind: 'turn-output',

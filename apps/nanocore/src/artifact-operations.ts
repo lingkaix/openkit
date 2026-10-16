@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import type { ARTIFACT_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import {
   type ArtifactReviewView,
-  ImportWorkspaceArtifactResponseSchema,
   IntroduceWorkspaceArtifactResponseSchema,
   ListArtifactReviewsResponseSchema,
   type SubmitArtifactReviewDecisionResponse,
@@ -17,7 +16,6 @@ import { publishedErrorMessage } from './api-errors.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
 import {
   ArtifactReviewError,
-  type ArtifactReviewMediaType,
   decideArtifactReview,
   deriveArtifactReviewFollowUpTurnId,
   deriveArtifactReviewWorkerRequestId,
@@ -37,7 +35,7 @@ import {
   StoreRecordNotFoundError,
 } from './lib/store.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
-import type { OperationImplementations } from './operation-contract.js';
+import type { FamilyImplementations } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import {
   commandInputHash,
@@ -51,18 +49,8 @@ import { listSchedulerAdmissionEntriesForWorkspace } from './scheduler-records.j
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { resolveDataRootPath } from './storage/fs-layout.js';
 
-/** Exact protocol content format for each accepted Artifact import media type. */
-const ARTIFACT_FORMAT_BY_MEDIA_TYPE = {
-  'application/json': 'json',
-  'text/markdown': 'markdown',
-  'text/plain': 'text',
-} as const;
-
 /** Exact family join; the definition table alone owns ids and declarative facts. */
-type ArtifactImplementations = Pick<
-  OperationImplementations,
-  keyof typeof ARTIFACT_OPERATION_DEFINITIONS
->;
+type ArtifactImplementations = FamilyImplementations<typeof ARTIFACT_OPERATION_DEFINITIONS>;
 
 /** Joins the existing Artifact, command and version-owned Review lifecycles without HTTP context. */
 export function createArtifactOperationImplementations(
@@ -117,95 +105,6 @@ export function createArtifactOperationImplementations(
         return store.getArtifact(input.workspaceId, input.artifactId);
       } catch (error) {
         artifactOperationFailure(error);
-      }
-    },
-    'artifact.import': async (input, context) => {
-      const actor = context.actorRef;
-      const { workspaceId } = input;
-      const actorId = responsibleUserIdForActor(actor)!;
-      try {
-        store.getWorkspace(workspaceId);
-      } catch (error) {
-        artifactOperationFailure(error);
-      }
-      try {
-        assertArtifactContentDigest(input.content, input.contentDigest);
-      } catch (error) {
-        artifactOperationFailure(error);
-      }
-      const artifactId = deterministicArtifactCommandId('ar_import', [
-        actorId,
-        workspaceId,
-        'artifact.import',
-        input.requestId,
-      ]);
-      const workspaceDb = openReceiptDb(workspaceId);
-
-      try {
-        const response = await runIdempotentCommand({
-          store,
-          inflightCommands,
-          command: 'artifact.import',
-          requestId: input.requestId,
-          scope: { workspaceId },
-          input: {
-            title: input.title,
-            mediaType: input.mediaType,
-            contentDigest: input.contentDigest,
-          },
-          responseKind: 'artifact',
-          workspaceDb,
-          execute: () => {
-            const acceptedAt = new Date().toISOString();
-            const artifact = store.createArtifact({
-              id: artifactId,
-              workspaceId,
-              threadId: null,
-              turnId: null,
-              kind: 'file',
-              title: input.title,
-              status: 'ready',
-              summary: null,
-              version: 1,
-              content: {
-                format: ARTIFACT_FORMAT_BY_MEDIA_TYPE[input.mediaType],
-                body: input.content,
-              },
-              contentDigest: input.contentDigest,
-              lastMutationRequestId: input.requestId,
-              origin: {
-                kind: 'imported',
-                sourceKind: 'direct-import',
-                sourceId: input.requestId,
-                sourceDigest: input.contentDigest,
-                actor: { kind: 'user', id: actorId },
-                requestId: input.requestId,
-                recordedAt: acceptedAt,
-              },
-              createdAt: acceptedAt,
-              updatedAt: acceptedAt,
-            });
-            return ImportWorkspaceArtifactResponseSchema.parse({
-              artifactId: artifact.id,
-              artifactVersion: artifact.version,
-            });
-          },
-          replay: (record) =>
-            replayArtifactImport(store, {
-              actorId,
-              artifactId,
-              input,
-              record,
-              workspaceId,
-            }),
-          responseId: (result) => result.artifactId,
-        });
-
-        return response;
-      } catch (error) {
-        artifactOperationFailure(error);
-      } finally {
-        workspaceDb.sqlite.close();
       }
     },
     'artifact.introduce': async (input, context) => {
@@ -363,8 +262,7 @@ export function createArtifactOperationImplementations(
                 review,
                 input.decision,
                 feedback ?? '',
-                artifact.content.body,
-                artifactMediaType(artifact.content.format),
+                artifact,
                 input.requestId
               ),
               response,
@@ -407,9 +305,8 @@ export function createArtifactOperationImplementations(
               const artifact = requireCurrentReviewedArtifact(store, review);
               const decisionInput = {
                 actorId,
-                artifactContent: artifact.content.body,
+                ...artifactReviewContentProof(artifact),
                 artifactId,
-                artifactMediaType: artifactMediaType(artifact.content.format),
                 artifactVersion,
                 decidedAt: new Date().toISOString(),
                 decision,
@@ -480,8 +377,7 @@ export function createArtifactOperationImplementations(
                 review,
                 decision,
                 feedback,
-                artifact.content.body,
-                artifactMediaType(artifact.content.format),
+                artifact,
                 input.requestId
               );
               const workerRequestId = deriveArtifactReviewWorkerRequestId(input.requestId);
@@ -571,9 +467,8 @@ export function createArtifactOperationImplementations(
               }
               return decideArtifactReview(workspaceDb, {
                 actorId,
-                artifactContent: artifact.content.body,
+                ...artifactReviewContentProof(artifact),
                 artifactId,
-                artifactMediaType: artifactMediaType(artifact.content.format),
                 artifactVersion,
                 decidedAt: new Date().toISOString(),
                 decision: input.decision,
@@ -648,12 +543,12 @@ function requireCurrentReviewedArtifact(
   } catch {
     throw recoveryRequired('The reviewed Artifact is unavailable.');
   }
+  store.assertArtifactContent(artifact);
   const origin = artifact.origin;
   if (
     artifact.version !== review.artifactVersion ||
     artifact.status !== 'ready' ||
     artifact.contentDigest !== review.contentDigest ||
-    artifactContentDigest(artifact.content.body) !== review.contentDigest ||
     origin.kind !== 'turn-output' ||
     origin.threadId !== review.sourceThreadId ||
     origin.turnId !== review.sourceTurnId
@@ -775,8 +670,7 @@ function assertArtifactReviewFollowUpProof(input: {
  * @param review Version-owned Review input.
  * @param decision Refinement or redo choice.
  * @param feedback Required reviewer feedback.
- * @param artifactContent Exact reviewed Artifact content.
- * @param mediaType Exact reviewed Artifact media type.
+ * @param artifact Exact reviewed Artifact record with verified original identity.
  * @param decisionRequestId Original Review command identity.
  * @returns Canonical worker input retained by scheduler admission and S39.
  * @throws ArtifactAuthorityError when the required source lineage is incomplete.
@@ -785,8 +679,7 @@ function artifactReviewFollowUpPrompt(
   review: ArtifactReviewView,
   decision: 'needs_refinement' | 'redo',
   feedback: string,
-  artifactContent: string,
-  mediaType: ArtifactReviewMediaType,
+  artifact: ReturnType<FsStore['getArtifact']>,
   decisionRequestId: string
 ): string {
   if (!review.sourceThreadId || !review.sourceTurnId || !review.sourceAgentId) {
@@ -799,8 +692,7 @@ function artifactReviewFollowUpPrompt(
     artifactId: review.artifactId,
     artifactVersion: review.artifactVersion,
     contentDigest: review.contentDigest,
-    artifactContent,
-    artifactMediaType: mediaType,
+    ...artifactReviewContentProof(artifact),
     sourceThreadId: review.sourceThreadId,
     sourceTurnId: review.sourceTurnId,
     sourceAgentId: review.sourceAgentId,
@@ -812,6 +704,22 @@ function artifactReviewFollowUpPrompt(
   });
 }
 
+/** Projects verified original identity into Review input without a fabricated text body. */
+function artifactReviewContentProof(artifact: ReturnType<FsStore['getArtifact']>) {
+  const content = artifact.content;
+  if (content.format === 'file') {
+    return {
+      artifactContent: null,
+      artifactMediaType: content.mediaType,
+      artifactFile: { byteLength: content.byteLength, contentDigest: artifact.contentDigest },
+    } as const;
+  }
+  return {
+    artifactContent: content.body,
+    artifactMediaType: artifactMediaType(content.format),
+  } as const;
+}
+
 /**
  * Maps protocol Artifact content format to the immutable Review media type.
  *
@@ -819,71 +727,13 @@ function artifactReviewFollowUpPrompt(
  * @returns Exact accepted media type.
  */
 function artifactMediaType(
-  format: ReturnType<FsStore['getArtifact']>['content']['format']
+  format: 'markdown' | 'text' | 'json'
 ): 'text/markdown' | 'text/plain' | 'application/json' {
   return format === 'markdown'
     ? 'text/markdown'
     : format === 'text'
       ? 'text/plain'
       : 'application/json';
-}
-
-/**
- * Replays one import receipt after proving the exact imported Artifact owner.
- *
- * @param store Shared product store.
- * @param expected Expected request, identity, and receipt proof.
- * @returns Stable imported Artifact identity.
- * @throws ArtifactAuthorityError when the receipt and Artifact disagree.
- */
-function replayArtifactImport(
-  store: FsStore,
-  expected: {
-    readonly actorId: string;
-    readonly artifactId: string;
-    readonly input: {
-      readonly requestId: string;
-      readonly contentDigest: string;
-    };
-    readonly record: CommandRequestRecord;
-    readonly workspaceId: string;
-  }
-) {
-  if (
-    expected.record.response.kind !== 'artifact' ||
-    expected.record.response.id !== expected.artifactId
-  ) {
-    throw recoveryRequired('The Artifact import receipt has invalid response lineage.');
-  }
-
-  let artifact: ReturnType<FsStore['getArtifact']>;
-  try {
-    artifact = store.getArtifact(expected.workspaceId, expected.artifactId);
-  } catch {
-    throw recoveryRequired('The Artifact import receipt has no matching owner.');
-  }
-  const origin = artifact.origin;
-  if (
-    artifact.workspaceId !== expected.workspaceId ||
-    artifact.threadId !== null ||
-    artifact.turnId !== null ||
-    artifactContentDigest(artifact.content.body) !== artifact.contentDigest ||
-    origin.kind !== 'imported' ||
-    origin.sourceKind !== 'direct-import' ||
-    origin.sourceId !== expected.input.requestId ||
-    origin.sourceDigest !== expected.input.contentDigest ||
-    origin.actor.kind !== 'user' ||
-    origin.actor.id !== expected.actorId ||
-    origin.requestId !== expected.input.requestId ||
-    origin.recordedAt !== artifact.createdAt
-  ) {
-    throw recoveryRequired('The Artifact import receipt disagrees with its durable owner.');
-  }
-
-  return ImportWorkspaceArtifactResponseSchema.parse({
-    artifactId: artifact.id,
-    artifactVersion: 1,
-  });
 }
 
 /**
@@ -922,12 +772,12 @@ function replayArtifactIntroduction(
   } catch {
     throw recoveryRequired('The Artifact introduction receipt has no matching owner tuple.');
   }
+  store.assertArtifactContent(artifact);
   const origin = artifact.origin;
   const item = turn.items[0];
   if (
     artifact.threadId !== null ||
     artifact.turnId !== null ||
-    artifactContentDigest(artifact.content.body) !== artifact.contentDigest ||
     origin.kind !== 'imported' ||
     origin.sourceKind !== 'direct-import' ||
     origin.sourceId !== origin.requestId ||
@@ -968,39 +818,13 @@ function replayArtifactIntroduction(
 }
 
 /**
- * Verifies exact Artifact bytes before receipt lookup.
- *
- * @param content Submitted canonical content.
- * @param expectedDigest Submitted lowercase SHA-256 digest.
- * @throws ArtifactAuthorityError when the bytes do not match.
- */
-function assertArtifactContentDigest(content: string, expectedDigest: string): void {
-  if (artifactContentDigest(content) !== expectedDigest) {
-    throw new ArtifactAuthorityError(
-      'source_digest_mismatch',
-      'Artifact content does not match its digest.'
-    );
-  }
-}
-
-/**
- * Computes the canonical Artifact digest over exact UTF-8 content.
- *
- * @param content Exact Artifact body.
- * @returns Lowercase SHA-256 digest with its protocol prefix.
- */
-function artifactContentDigest(content: string): string {
-  return `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`;
-}
-
-/**
  * Derives one deterministic command-owned resource identity.
  *
  * @param prefix Resource namespace.
  * @param scope Immutable actor and command scope.
  * @returns Stable non-secret resource id.
  */
-function deterministicArtifactCommandId(
+export function deterministicArtifactCommandId(
   prefix: 'ar_import' | 'tu_artifact',
   scope: readonly string[]
 ): string {

@@ -124,6 +124,7 @@ import {
   consumeNanoHostStagedExport,
   inspectNanoHostStagedExport,
   MAX_RUNTIME_PROVENANCE_MANIFEST_BYTES,
+  openNanoHostStagedExport,
   openShellFilesystemGrantsFromPackagePolicy,
   openShellNetworkEndpointsFromPackagePolicy,
   prepareNanoHostContextPackageImports,
@@ -3786,9 +3787,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         'Submit one regular file with no other hard links.',
         400
       );
-    const bytes = await consumeNanoHostStagedExport(result);
-    requireLive();
-    return { bytes, credentialCheckValues };
+    const captured = await openNanoHostStagedExport(result, input.signal);
+    try {
+      requireLive();
+      return { ...captured, credentialCheckValues };
+    } catch (error) {
+      await captured.remove();
+      throw error;
+    }
   };
 
   /** Exports transcript and evidence files only after the accepted terminal barrier. */

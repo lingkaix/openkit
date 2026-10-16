@@ -26,3 +26,36 @@ it('admits canonical submission effort and optional advertised control levels', 
     ConversationModelChoiceSchema.parse({ id: 'model', label: 'Model', capabilities: [] })
   ).not.toHaveProperty('reasoningEffortLevels');
 });
+
+it('admits an ordered exact file inventory without text and bounds combined declared bytes', () => {
+  const file = {
+    name: 'original.bin',
+    mediaType: 'application/octet-stream',
+    sizeBytes: 500_000_000,
+    contentDigest: `sha256:${'a'.repeat(64)}`,
+  };
+  const input = {
+    input: '',
+    targetRef: 'internal-role:assistant',
+    artifactRefs: [],
+    requestId: 'file-input-command',
+    fileInputs: [file, { ...file, name: 'second.bin' }],
+  };
+  expect(SubmitConversationRequestSchema.safeParse(input).success).toBe(true);
+  expect(
+    SubmitConversationRequestSchema.safeParse({
+      ...input,
+      fileInputs: [file, { ...file, sizeBytes: 500_000_001 }],
+    }).success
+  ).toBe(false);
+  expect(
+    SubmitConversationRequestSchema.safeParse({ ...input, fileInputs: [{ ...file, sizeBytes: 0 }] })
+      .success
+  ).toBe(true);
+  expect(
+    SubmitConversationRequestSchema.safeParse({
+      ...input,
+      fileInputs: [{ ...file, contentDigest: 'not-a-digest' }],
+    }).success
+  ).toBe(false);
+});

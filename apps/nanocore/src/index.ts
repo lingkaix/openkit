@@ -96,6 +96,7 @@ import type { WorkerControlFinalStatusAcceptedInput } from './runtime/worker-con
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from './scheduler-records.js';
+import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import {
   type CoreDb,
   listExistingWorkspaceDatabaseScopes,
@@ -147,7 +148,12 @@ let sharedStore: FsStore | undefined;
 const restartCloseoutPackageSnapshots = new Set<string>();
 const nanohostTransportSessionAuthority = createNanoHostTransportSessionAuthority();
 const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+// Recovery can stage files before the live configuration manager is assembled.
+let readFileReserveBytes = () =>
+  runtimeConfigSnapshot?.openKitConfig.server?.fileReserveBytes ?? 1_000_000_000;
+const fileAdmission = new FileStorageAdmission(dataRoot, () => BigInt(readFileReserveBytes()));
 const nanoHostSessionDispatch = createNanoHostSessionDispatch({
+  fileAdmission,
   get coreDb() {
     return coreDb;
   },
@@ -551,7 +557,10 @@ const auth =
       })
     : undefined;
 
+readFileReserveBytes = () =>
+  runtimeConfigManager.current().openKitConfig.server?.fileReserveBytes ?? 1_000_000_000;
 const app = createApp({
+  fileAdmission,
   ...(auth ? { auth } : {}),
   bootReadiness,
   coreDb,

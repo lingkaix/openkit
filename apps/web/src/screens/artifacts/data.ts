@@ -1,9 +1,10 @@
 import { ApiCallError, type CoreClient, createRequestId } from '@openkit/core-client';
+import { ArtifactMediaTypeSchema, MAX_ARTIFACT_FILE_BYTES } from '@openkit/protocol';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useCoreClient } from '../../app/core-client';
 import { useCurrentWorkspaceId, useThreads, useWorkspaces } from '../chat/data';
 import { useArtifact } from '../goal/data';
-import { sha256Content } from '../material/data';
+import { sha256ArtifactFile } from './file-digest';
 
 /** Product-safe Artifact list fields; list payloads never carry preview bytes. */
 export type ArtifactListItem = Pick<
@@ -11,9 +12,9 @@ export type ArtifactListItem = Pick<
   'id' | 'kind' | 'status' | 'summary' | 'title' | 'version'
 >;
 
-/** Media types admitted by `client.operations['artifact.import']`. */
+/** Media types admitted by the exact original streaming import. */
 export type ArtifactImportMediaType = Parameters<
-  CoreClient['operations']['artifact.import']
+  CoreClient['artifactFiles']['import']
 >[0]['mediaType'];
 
 /** Frozen import command bound to one Workspace and request identity. */
@@ -21,7 +22,7 @@ export interface ArtifactImportInput {
   workspaceId: string;
   title: string;
   mediaType: ArtifactImportMediaType;
-  content: string;
+  content: string | Blob;
   requestId: string;
 }
 
@@ -46,12 +47,6 @@ export const artifactKeys = {
   list: (workspaceId: string) => ['artifacts', workspaceId] as const,
 };
 
-const IMPORT_MEDIA_TYPES: readonly ArtifactImportMediaType[] = [
-  'text/markdown',
-  'text/plain',
-  'application/json',
-];
-
 /** Re-export selected-Workspace discovery, Thread list, and the existing exact Artifact read. */
 export { createRequestId, useArtifact, useCurrentWorkspaceId, useThreads, useWorkspaces };
 
@@ -72,7 +67,7 @@ function apiCode(error: unknown): string | null {
  * @returns True when the value may be submitted.
  */
 export function isArtifactImportMediaType(value: string): value is ArtifactImportMediaType {
-  return (IMPORT_MEDIA_TYPES as readonly string[]).includes(value);
+  return ArtifactMediaTypeSchema.safeParse(value).success;
 }
 
 /**
@@ -286,17 +281,27 @@ export function useArtifacts(workspaceId: string | null) {
 export function useImportWorkspaceArtifact() {
   const client = useCoreClient();
   return useMutation({
-    mutationFn: async (input: ArtifactImportInput) =>
-      client.operations['artifact.import']({
-        workspaceId: input.workspaceId,
-        ...{
-          title: input.title,
-          mediaType: input.mediaType,
-          content: input.content,
-          contentDigest: await sha256Content(input.content),
-          requestId: input.requestId,
+    mutationFn: async (input: ArtifactImportInput) => {
+      const file = typeof input.content === 'string' ? new Blob([input.content]) : input.content;
+      if (file.size > MAX_ARTIFACT_FILE_BYTES) {
+        throw new ApiCallError(413, 'The file admission byte limit was exceeded.', {
+          code: 'file_too_large',
+        });
+      }
+      return client.artifactFiles.import(
+        {
+          workspaceId: input.workspaceId,
+          ...{
+            title: input.title,
+            mediaType: input.mediaType,
+            byteLength: file.size,
+            contentDigest: await sha256ArtifactFile(file),
+            requestId: input.requestId,
+          },
         },
-      }),
+        file
+      );
+    },
     retry: false,
   });
 }

@@ -1,5 +1,6 @@
 import type { AppApiClient } from './app.js';
 import { createAppApiClient } from './app.js';
+import { type ArtifactFileClient, createArtifactFileClient } from './artifact-files.js';
 import type { EmailAuthClient } from './auth.js';
 import { createEmailAuthClient } from './auth.js';
 import type { CapabilitiesClient } from './capabilities.js';
@@ -23,6 +24,8 @@ export interface CreateCoreClientOptions extends ClientTransportOptions {
 export interface CoreClient {
   /** Canonical operation methods generated from migrated definitions. */
   readonly operations: OperationClient;
+  /** Exact original file upload and download streams. */
+  readonly artifactFiles: ArtifactFileClient;
   /** Stable Core protocol projection routes and turn event streams. */
   readonly core: CoreProjectionClient;
   /** NanoCore App API read models and app-local commands. */
@@ -46,6 +49,7 @@ export function createCoreClient(options: CreateCoreClientOptions): CoreClient {
 
   return {
     operations: createOperationClient(transport),
+    artifactFiles: createArtifactFileClient(transport),
     app,
     auth: { email },
     capabilities,

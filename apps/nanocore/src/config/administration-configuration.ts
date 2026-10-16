@@ -257,6 +257,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
       requireHome(threadId, turnId);
       if (
         artifact.version !== 1 ||
+        artifact.content.format === 'file' ||
         artifact.contentDigest !== request.candidate.contentDigest ||
         digest(artifact.content.body) !== artifact.contentDigest
       )
@@ -277,6 +278,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
           if (
             record.response.id !== outcomeId ||
             outcome.version !== 1 ||
+            outcome.content.format !== 'json' ||
             digest(outcome.content.body) !== outcome.contentDigest
           )
             fail('configuration_recovery_required');

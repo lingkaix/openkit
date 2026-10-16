@@ -56,6 +56,7 @@ export const OpenKitCorsSchema = z
  */
 export const OpenKitServerRuntimeSchema = z
   .object({
+    fileReserveBytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
     bind: OpenKitServerBindSchema.optional(),
     cors: OpenKitCorsSchema.optional(),
     publicBaseUrl: HttpOriginSchema.optional(),

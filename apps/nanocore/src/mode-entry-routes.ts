@@ -1886,10 +1886,12 @@ function conversationCommandInput(chatInput: {
   readonly logicalModelId?: string | undefined;
   readonly reasoningEffort?: z.infer<typeof TurnSchema>['reasoningEffort'];
   readonly artifactRefs: unknown;
+  readonly fileInputs?: readonly unknown[] | undefined;
   readonly workerStorageChoice?: WorkerEnvironmentStorageChoice | undefined;
 }) {
   return {
     artifactRefs: chatInput.artifactRefs,
+    ...(chatInput.fileInputs?.length ? {fileInputs:chatInput.fileInputs} : {}),
     input: chatInput.input,
     logicalModelId: chatInput.logicalModelId ?? null,
     ...(chatInput.reasoningEffort !== undefined
@@ -2852,6 +2854,8 @@ export function createConversationService({
     actor: Actor
   ): Promise<{ body: z.infer<typeof SubmitConversationResponseSchema>; status: 200 | 202 }> {
     const { workspaceId, threadId } = chatInput;
+    if(chatInput.fileInputs?.length) throw new TurnStartValidationError(
+      'file_input_bytes_required','File submission requires verified original bytes.',400);
     try {
       const thread = store.getThread(workspaceId, threadId);
       if (thread.entryPath !== 'conversation') {
@@ -2981,9 +2985,10 @@ export function createConversationService({
       }
       const conversationPrompt = [
         chatInput.input,
-        ...artifacts.map(
-          (artifact) =>
-            `Artifact ${artifact.title} (${artifact.id} v${artifact.version}):\n${artifact.content.body}`
+        ...artifacts.map((artifact) =>
+          artifact.content.format === 'file'
+            ? `Artifact ${artifact.title} (${artifact.id} v${artifact.version}, ${artifact.contentDigest}): ${artifact.content.mediaType}, ${artifact.content.byteLength} bytes.`
+            : `Artifact ${artifact.title} (${artifact.id} v${artifact.version}, ${artifact.contentDigest}):\n${new TextDecoder().decode(Buffer.from(artifact.content.body, 'utf8').subarray(0, 2048), { stream: true }).split('\n').slice(0, 50).join('\n')}`
         ),
       ]
         .filter(Boolean)

@@ -2607,16 +2607,30 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(withBoth.capabilities.interrupts).toBe(true);
   });
 
-  it('preserves the first exact terminal report after cancellation and closes the Turn as interrupted', async () => {
+  it.each([
+    { reason: undefined, cause: 'turn-cancelled', status: 'interrupted', stopReason: 'aborted' },
+    {
+      reason: 'budget_exhausted',
+      cause: 'raw-output-exhausted',
+      status: 'completed',
+      stopReason: 'budget_exhausted',
+    },
+    { reason: 'error', cause: 'raw-output-unavailable', status: 'failed', stopReason: 'error' },
+  ] as const)('preserves exact native stop evidence for $cause and closes as $stopReason', async ({
+    reason,
+    cause,
+    status,
+    stopReason,
+  }) => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime('2026-07-15T00:00:10.000Z');
     const f = await launchFinalReviewWorker('cancel');
     try {
       expect(f.executor.isTurnExecutionActive(f.turn.id)).toBe(true);
-      await f.executor.interruptTurn(f.store, f.turn.id);
+      await f.executor.interruptTurn(f.store, f.turn.id, reason ? { stopReason: reason } : {});
       expect(attempts.requireSchedulerExecutionAttempt(f.coreDb, f.attemptId)).toMatchObject({
         phase: 'closing',
-        terminalCause: 'turn-cancelled',
+        terminalCause: cause,
       });
       // The cancellation-only first final preserves exact evidence without overriding the interrupted Turn.
       f.backend.eventsJsonlFactory = () =>
@@ -2660,12 +2674,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
       });
       expect(await Promise.race([f.execution, delay(2000, 'completion-timeout')])).toBeNull();
       const terminal = f.store.getTurnById(f.turn.id);
-      expect(terminal.status).toBe('interrupted');
+      expect(terminal.status).toBe(status);
       expect(f.store.getTurnEvents(f.turn.id)).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             event: 'turn.completed',
-            data: expect.objectContaining({ type: 'turn-completed', stopReason: 'aborted' }),
+            data: expect.objectContaining({ type: 'turn-completed', stopReason }),
           }),
         ])
       );

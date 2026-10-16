@@ -1,4 +1,8 @@
-import { TimestampSchema } from '@openkit/protocol';
+import {
+  ArtifactMediaTypeSchema,
+  MAX_ARTIFACT_FILE_BYTES,
+  TimestampSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import { ArtifactReviewDecisionSchema } from './action-center.js';
 
@@ -208,26 +212,12 @@ export const ListArtifactReviewsResponseSchema = z
 export const ImportWorkspaceArtifactRequestSchema = z
   .object({
     requestId: requestIdSchema,
-    title: z.string().min(1),
-    mediaType: z.enum(['text/markdown', 'text/plain', 'application/json']),
+    title: z.string().min(1).max(1024),
+    mediaType: ArtifactMediaTypeSchema,
     contentDigest: contentDigestSchema,
-    content: z.string().min(1),
+    byteLength: z.number().int().min(0).max(MAX_ARTIFACT_FILE_BYTES),
   })
-  .strict()
-  .superRefine((value, context) => {
-    if (value.mediaType !== 'application/json') {
-      return;
-    }
-    try {
-      JSON.parse(value.content);
-    } catch {
-      context.addIssue({
-        code: 'custom',
-        message: 'application/json content must be syntactically valid JSON',
-        path: ['content'],
-      });
-    }
-  });
+  .strict();
 
 /** Response payload after importing one immutable Workspace Artifact version. */
 export const ImportWorkspaceArtifactResponseSchema = z

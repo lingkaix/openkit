@@ -30,6 +30,7 @@ import {
   type AppUpdateHostTransport,
   createSshAppUpdateHostTransport,
 } from './app-update/host-transport.js';
+import { registerArtifactFileRoutes } from './artifact-file-routes.js';
 import { recordWorkspaceAuditEvent } from './audit-events.js';
 import {
   resolveSessionDeploymentAdminTokenId,
@@ -167,6 +168,11 @@ import {
   createDefaultWorkerMcpGateway,
   type WorkerMcpGateway,
 } from './runtime/worker-mcp-gateway.js';
+import {
+  assertWorkerRawOutputFinalStatus,
+  WorkerRawOutputAuthorityError,
+  WorkerRawOutputPendingError,
+} from './runtime/worker-raw-output.js';
 import { getWorkerStorageBinding } from './runtime/worker-storage-bindings.js';
 import { updateBackendWorkspaceHandleCleanupStatus } from './runtime/workspace-sync-records.js';
 import {
@@ -174,7 +180,13 @@ import {
   type SchedulerWorkerStorageChoice,
 } from './scheduler-records.js';
 import { registerServiceRoutes } from './service-routes.js';
-import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
+import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
+import {
+  type CoreDb,
+  openBootVerifiedWorkspaceDb,
+  openWorkspaceDb,
+  type WorkspaceDb,
+} from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { registerWorkspaceTransferRoutes } from './storage/workspace-transfer-routes.js';
@@ -432,6 +444,8 @@ export interface CreateAppOptions {
   appUpdateHostTransport?: AppUpdateHostTransport | null;
   /** Optional dispatcher bound to the same process-local NanoHost session authority. */
   nanoHostSessionDispatch?: NanoHostSessionDispatch;
+  /** Shared Data Root capacity owner, also used by the boot-created file dispatcher. */
+  fileAdmission?: FileStorageAdmission;
   /** Shared worker lifecycle runtime that owns Harness continuations and Turn credentials. */
   workerLifecycleRuntime?: ConfiguredWorkerLifecycleRuntime;
   /**
@@ -483,6 +497,27 @@ export function createDefaultWorkerControlGateway(
       }
     },
     onFinalStatusAccepted: (input) => {
+      const rawDb = openBootVerifiedWorkspaceDb(coreDb.dataRoot, input.lineage.workspaceId);
+      try {
+        assertWorkerRawOutputFinalStatus(
+          rawDb,
+          input.lineage,
+          input.eventType === 'turn.completed'
+        );
+      } catch (error) {
+        if (
+          error instanceof WorkerRawOutputPendingError ||
+          error instanceof WorkerRawOutputAuthorityError
+        )
+          throw new WorkerControlGatewayError(
+            'worker_raw_output_pending',
+            'Worker raw output proof is not ready.',
+            503
+          );
+        throw error;
+      } finally {
+        rawDb.sqlite.close();
+      }
       const resolution = resolveNanoHostAttemptTokenBinding(coreDb, input);
 
       if (resolution.status !== 'accepted') {
@@ -823,9 +858,15 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       return closed;
     };
   }
+  const fileAdmission =
+    options.fileAdmission ??
+    new FileStorageAdmission(dataRoot ?? '.', () =>
+      BigInt(runtimeConfig().openKitConfig.server?.fileReserveBytes ?? 1_000_000_000)
+    );
   const nanoHostSessionDispatch =
     options.nanoHostSessionDispatch ??
     createNanoHostSessionDispatch({
+      fileAdmission,
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
       sessionAuthority: nanohostTransportSessionAuthority,
     });
@@ -1336,6 +1377,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   app.use('/api/worker-inference/*', browserCors);
   registerWorkerInferenceRoutes({
+    onRawOutputStop: (scope, reason) =>
+      turnExecutor.interruptTurn(sharedStore, scope.turnId, {
+        requestId: null,
+        stopReason: reason,
+      }),
     app,
     providerCredentialConfigured,
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
@@ -1348,6 +1394,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   app.use('/api/worker-capabilities/*', browserCors);
   registerWorkerMcpRoutes({
+    fileAdmission,
     ...(configuredWorkerRuntime?.captureArtifact
       ? { captureArtifact: configuredWorkerRuntime.captureArtifact }
       : {}),
@@ -1785,6 +1832,17 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     inflightCommands,
     repositoryWorkspaceDb,
   };
+
+  registerArtifactFileRoutes({
+    app,
+    coreDb: options.coreDb,
+    requestStore,
+    repositoryWorkspaceDb,
+    inflightCommands,
+    workspaceMutationAdmission,
+    dataRoot,
+    fileAdmission,
+  });
 
   registerOperationJsonRoutes({
     diagnosticsServices,

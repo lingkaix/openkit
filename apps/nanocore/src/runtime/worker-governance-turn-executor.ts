@@ -2215,12 +2215,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     if (!accepted) {
       throw new Error('Restart closeout requires the exact durable final status.');
     }
-    const reportedStopReason = canonicalStopReasonForAcceptedWorkerFinalStatus(accepted);
-    const stopReason =
-      requireSchedulerExecutionAttempt(this.coreDb, session.attemptId).terminalCause ===
-      'turn-cancelled'
-        ? 'aborted'
-        : reportedStopReason;
+    const stopReason = canonicalStopReasonForAcceptedWorkerFinalStatus(
+      accepted,
+      requireSchedulerExecutionAttempt(this.coreDb, session.attemptId).terminalCause
+    );
     const recoveredStatus = turnStatusForCanonicalWorkerStopReason(stopReason);
     const workspaceDb = this.openWorkspaceDb(environmentPackage.scope.workspaceId);
     if (!workspaceDb) {
@@ -2401,7 +2399,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   public async interruptTurn(
     store: FsStore,
     turnId: string,
-    _context: TurnCommandRuntimeContext = { requestId: null }
+    context: TurnCommandRuntimeContext = { requestId: null }
   ): Promise<void> {
     const gateway = this.workerControlGateway;
     if (!gateway || !this.backend.interruptTurn) {
@@ -2437,11 +2435,24 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       turnId,
     });
     const attempt = attempts.find((candidate) => candidate.phase !== 'closed');
+    if (
+      context.stopReason &&
+      attempt?.phase === 'closing' &&
+      ['turn-cancelled', 'raw-output-exhausted', 'raw-output-unavailable'].includes(
+        attempt.terminalCause ?? ''
+      )
+    )
+      return;
     if (!attempt || attempt.phase !== 'open')
       throw new Error('Turn cancellation is already owned or has no live attempt.');
     const closing = markSchedulerExecutionAttemptClosing(this.coreDb!, {
       attemptId: attempt.attemptId,
-      cause: 'turn-cancelled',
+      cause:
+        context.stopReason === 'budget_exhausted'
+          ? 'raw-output-exhausted'
+          : context.stopReason === 'error'
+            ? 'raw-output-unavailable'
+            : 'turn-cancelled',
       now: this.now,
     });
     acceptSchedulerExecutionObservation(
@@ -3244,22 +3255,19 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     accepted: AcceptedWorkerFinalStatus,
     packageSnapshotId: string | null
   ): void {
-    const reportedStopReason = canonicalStopReasonForAcceptedWorkerFinalStatus(accepted);
-    const cancellationWon =
-      this.coreDb &&
-      listSchedulerExecutionAttemptsForTurn(this.coreDb, {
-        workspaceId: turnScope.workspaceId,
-        threadId: turnScope.threadId,
-        turnId: turnScope.id,
-      }).some(
-        (attempt) =>
-          attempt.agentSessionId === agentSessionId &&
-          attempt.inputRef === packageSnapshotId &&
-          attempt.terminalCause === 'turn-cancelled'
-      );
-    // Cancellation's durable compare-and-set decides interruption; the late report stays intact
-    // as transport evidence and still drives collection, drain and ordinary terminal handoff.
-    const stopReason = cancellationWon ? 'aborted' : reportedStopReason;
+    const terminalCause = this.coreDb
+      ? listSchedulerExecutionAttemptsForTurn(this.coreDb, {
+          workspaceId: turnScope.workspaceId,
+          threadId: turnScope.threadId,
+          turnId: turnScope.id,
+        }).find(
+          (attempt) =>
+            attempt.agentSessionId === agentSessionId && attempt.inputRef === packageSnapshotId
+        )?.terminalCause
+      : null;
+    const cancellationWon = terminalCause === 'turn-cancelled';
+    // Native final evidence proves stop; the exact attempt's durable cause owns product meaning.
+    const stopReason = canonicalStopReasonForAcceptedWorkerFinalStatus(accepted, terminalCause);
     // Closeout already closed a binding it could not prove reusable; one that survives keeps its
     // AgentSession current, because an unsuccessful Turn does not by itself end the conversation.
     const agentSessionRetained =

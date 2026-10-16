@@ -1,9 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  constants,
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 import { createZstdCompress } from 'node:zlib';
-
 import {
   WorkspaceExportResponseSchema,
   WorkspaceImportDryRunResponseSchema,
@@ -12,7 +19,6 @@ import {
 import { parseWorkspaceDataSourceCatalog } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
-
 import {
   importResolvedAgentSetups,
   listExportableResolvedAgentSetups,
@@ -119,6 +125,7 @@ import { readWorkspaceDeletionRequest } from '../workspace-deletion-request.js';
 import { listExportableWorkspaceMaterialRows } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { getWorkspaceRegistryLifecycleFact } from '../workspace-sharing.js';
+import { verifyArtifactFilePayload } from './artifacts/file-records.js';
 import {
   type CoreDb,
   openBootVerifiedWorkspaceDb,
@@ -890,6 +897,22 @@ export function importVerifiedWorkspace({
       mkdirSync(dirname(target), { recursive: true });
       writeFileAtomic(target, bytes);
     }
+    for (const [path, source] of snapshot.artifactPayloadFiles) {
+      assertWorkspaceArchiveFilePath(path);
+      const target = join(workspaceRoot, path);
+      mkdirSync(dirname(target), { recursive: true });
+      copyFileSync(source, target, constants.COPYFILE_EXCL);
+    }
+    for (const artifact of snapshot.artifacts) {
+      if (artifact.content.format !== 'file') continue;
+      verifyArtifactFilePayload({
+        workspaceRoot,
+        artifactId: artifact.id,
+        version: artifact.version,
+        byteLength: artifact.content.byteLength,
+        contentDigest: artifact.contentDigest,
+      });
+    }
     verifyImportedWorkerContextPackageSnapshot(snapshot, workspaceRoot);
     for (const [bundleId, text] of snapshot.runtimeProvenanceIndexes) {
       assertSafeWorkspacePathSegment(bundleId, 'Evidence bundle id');
@@ -1214,6 +1237,7 @@ export function createVerifiedWorkspaceExport({
   }
   const lightApps = listExportableLightAppFamilies(dataRoot, workspaceId);
   const exported = writeWorkspaceExportTree({
+    sourceWorkspaceRoot: join(dataRoot, 'workspaces', workspaceId),
     administratorEligible,
     exportRoot,
     exportId,

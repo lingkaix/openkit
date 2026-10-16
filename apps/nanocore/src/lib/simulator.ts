@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { Readable } from 'node:stream';
 import { isDeepStrictEqual } from 'node:util';
 import type {
   AgentEnvironmentPackage,
@@ -85,8 +86,10 @@ import {
 } from '../runtime/workspace-materializer.js';
 import { recordWorkspaceBackendHandoff } from '../runtime/workspace-sync-records.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { stageArtifactPayload } from '../storage/artifacts/file-payload.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
-import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
+import { readDataRootLayoutMarker, resolveDataRootPath } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
@@ -883,7 +886,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
             store,
             workspaceDb,
           });
-          this.publishMaterialProposals(
+          await this.publishMaterialProposals(
             store,
             environmentPackage,
             acceptedTrace,
@@ -1346,13 +1349,13 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
    * @param workspaceDb Workspace authority containing Material and Review owners.
    * @param recordedAt Stable simulator timestamp.
    */
-  private publishMaterialProposals(
+  private async publishMaterialProposals(
     store: FsStore,
     environmentPackage: AgentEnvironmentPackage,
     trace: WorkerContextPackageTrace,
     workspaceDb: WorkspaceDb,
     recordedAt: string
-  ): void {
+  ): Promise<void> {
     const selection = trace.materialSelections[0];
     if (!selection) {
       return;
@@ -1387,7 +1390,10 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         artifactId,
         requestId,
         recordedAt,
-        bytes,
+        payload: {
+          byteLength: bytes.length,
+          contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+        },
         checkValues,
         contextPackageTrace: trace,
         metadata: {
@@ -1401,12 +1407,35 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       if (preflightArtifactTuple(store, workspaceDb, prepared.artifact, prepared.reviewInput)) {
         continue;
       }
+      const reservation = new FileStorageAdmission(
+        workspaceDb.dataRoot,
+        () => 1_000_000_000n
+      ).reserve({
+        stagingBytes: BigInt(bytes.length),
+        extractionBytes: 0n,
+        derivativeBytes: 0n,
+        publicationBytes: 65_536n,
+      });
+      const staged = await stageArtifactPayload({
+        workspaceRoot: resolveDataRootPath(
+          workspaceDb.dataRoot,
+          'workspaces',
+          environmentPackage.scope.workspaceId
+        ),
+        source: Readable.from([bytes]),
+        expectedByteLength: bytes.length,
+        expectedDigest: prepared.artifact.contentDigest,
+        reservation,
+      });
       try {
-        store.createArtifact(prepared.artifact);
+        store.createArtifact(prepared.artifact, staged);
         createArtifactReview(workspaceDb, prepared.reviewInput);
       } catch (error) {
         store.rollbackArtifactCreation(artifactId);
         throw error;
+      } finally {
+        await staged.remove();
+        reservation.release();
       }
     }
   }

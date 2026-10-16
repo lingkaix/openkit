@@ -60,6 +60,8 @@ import { ensureTurnFeedback } from '../runtime/feedback.js';
 import { loadApprovalProjections } from '../runtime/pending-requests.js';
 import type { RuntimeAgent } from '../runtime/types.js';
 import type { AppDb } from '../storage/app-db.js';
+import type { StagedArtifactPayload } from '../storage/artifacts/file-payload.js';
+import { verifyArtifactFilePayload } from '../storage/artifacts/file-records.js';
 import {
   getCommandRequestRecord,
   getCommandRequestRecordFromDb,
@@ -88,12 +90,14 @@ import {
   type CaptureCoverageBinding,
   CaptureCoverageBindingSchema,
   deleteWorkspaceKnowledgeRecord,
+  discardAbandonedWorkspaceStaging,
   isCurrentAgentSessionStatus,
   KnowledgeProposalRecordSchema,
   KnowledgeProposalReviewFileSchema,
   loadWorkspaceFileRecords,
   parseCanonicalWorkspaceHistory,
   parseOwnedKnowledgeEntry,
+  publishArtifactFileRecord,
   publishCanonicalPath,
   readCanonicalTextFile,
   readWorkspaceKnowledgePage,
@@ -1199,6 +1203,7 @@ export class FsStore {
       this.liveCaptureCoverage = captureCoverageBindingFromOpenKitConfig(
         loadOpenKitConfig(this.dataRoot)
       );
+      discardAbandonedWorkspaceStaging(this.dataRoot);
       const workspaceRecords = loadWorkspaceFileRecords(this.dataRoot);
 
       if (workspaceRecords.length > 0) {
@@ -3335,10 +3340,11 @@ export class FsStore {
    * Creates one immutable Artifact and its producing-Turn reference when applicable.
    *
    * @param input Complete Artifact authority.
+   * @param filePayload Exact privately staged original for file-backed content.
    * @returns Created Artifact.
    * @throws ArtifactAuthorityError when content proof or create-only ownership is invalid.
    */
-  public createArtifact(input: Artifact): Artifact {
+  public createArtifact(input: Artifact, filePayload?: StagedArtifactPayload): Artifact {
     const parsed = ArtifactSchema.safeParse(input);
     if (!parsed.success) {
       throw new ArtifactAuthorityError('invalid_request', 'Artifact input is invalid.');
@@ -3355,13 +3361,23 @@ export class FsStore {
       );
     }
     this.getWorkspace(artifact.workspaceId);
-    const contentDigest = `sha256:${createHash('sha256')
-      .update(artifact.content.body, 'utf8')
-      .digest('hex')}`;
+    const contentDigest =
+      artifact.content.format === 'file'
+        ? filePayload?.contentDigest
+        : `sha256:${createHash('sha256').update(artifact.content.body, 'utf8').digest('hex')}`;
     if (contentDigest !== artifact.contentDigest) {
       throw new ArtifactAuthorityError(
         'source_digest_mismatch',
         'Artifact content does not match its digest.'
+      );
+    }
+    if (
+      artifact.content.format === 'file' &&
+      (!this.dataRoot || !filePayload || filePayload.byteLength !== artifact.content.byteLength)
+    ) {
+      throw new ArtifactAuthorityError(
+        'invalid_request',
+        'Artifact file creation requires exact privately staged bytes and durable storage.'
       );
     }
     if (
@@ -3411,6 +3427,13 @@ export class FsStore {
     this.artifacts.set(artifact.id, artifact);
     this.refreshWorkspaceCounts(artifact.workspaceId);
     try {
+      if (artifact.content.format === 'file' && filePayload) {
+        publishArtifactFileRecord({
+          workspaceRoot: this.workspaceRootPath(artifact.workspaceId),
+          artifact,
+          payloadPath: filePayload.path,
+        });
+      }
       this.persist(artifact.workspaceId);
     } catch (error) {
       this.artifacts.delete(artifact.id);
@@ -3508,9 +3531,8 @@ export class FsStore {
         'The requested Artifact is not workspace-only imported content.'
       );
     }
-    const contentDigest = `sha256:${createHash('sha256')
-      .update(artifact.content.body, 'utf8')
-      .digest('hex')}`;
+    this.assertArtifactContent(artifact);
+    const contentDigest = artifact.contentDigest;
     if (
       contentDigest !== artifact.contentDigest ||
       contentDigest !== artifact.origin.sourceDigest
@@ -3631,6 +3653,37 @@ export class FsStore {
     }
 
     return artifact;
+  }
+
+  /** Verifies the exact original without materializing a file body or substituting another version. */
+  public assertArtifactContent(artifact: Artifact): void {
+    if (artifact.content.format === 'file') {
+      if (!this.dataRoot) {
+        throw new ArtifactAuthorityError(
+          'recovery_required',
+          'Artifact file storage is unavailable.'
+        );
+      }
+      try {
+        verifyArtifactFilePayload({
+          workspaceRoot: this.workspaceRootPath(artifact.workspaceId),
+          artifactId: artifact.id,
+          version: artifact.version,
+          byteLength: artifact.content.byteLength,
+          contentDigest: artifact.contentDigest,
+        });
+      } catch {
+        throw new ArtifactAuthorityError('recovery_required', 'The Artifact file is unavailable.');
+      }
+      return;
+    }
+    const digest = `sha256:${createHash('sha256').update(artifact.content.body, 'utf8').digest('hex')}`;
+    if (digest !== artifact.contentDigest) {
+      throw new ArtifactAuthorityError(
+        'recovery_required',
+        'Artifact content integrity is invalid.'
+      );
+    }
   }
 
   /**

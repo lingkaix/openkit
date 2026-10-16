@@ -1,4 +1,9 @@
-import { ItemSchema, ProductTurnSchema, ReasoningEffortSchema } from '@openkit/protocol';
+import {
+  ItemSchema,
+  ProductTurnSchema,
+  ReasoningEffortSchema,
+  TurnFileInputsSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import { WorkerEnvironmentStorageChoiceSchema } from './worker-environment.js';
 
@@ -63,13 +68,15 @@ export const SubmitConversationRequestSchema = z
     /** Explicit immutable Turn preference and command identity input. */
     reasoningEffort: ReasoningEffortSchema.optional(),
     artifactRefs: z.array(ConversationArtifactReferenceSchema).default([]),
+    /** Ordered exact input identity; the file-body binding supplies matching verified originals. */
+    fileInputs: TurnFileInputsSchema.optional(),
     requestId: z.string().min(1),
     /** Explicit retained-storage choice forwarded only to new Task Worker starts. */
     workerStorageChoice: WorkerEnvironmentStorageChoiceSchema.optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
-    if (!value.input.trim() && value.artifactRefs.length === 0) {
+    if (!value.input.trim() && value.artifactRefs.length === 0 && !value.fileInputs?.length) {
       ctx.addIssue({ code: 'custom', message: 'Conversation input or an Artifact is required.' });
     }
     const refs = new Set<string>();
