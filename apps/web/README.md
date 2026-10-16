@@ -432,3 +432,5 @@ Gateway account rows clear cached quota while pending or logged out, including l
 App update administration displays separate operational readiness observations and the prepared approval summary before maintenance consent. Missing retained summary evidence requires new preparation; a status read cannot fabricate approval evidence. Execution-host readiness displays observation age and its stored-observation limitation.
 
 Vitest uses the shared [per-run temporary-directory setup](../../tests/support/vitest-global-setup.mjs), which contains worker temporary files and removes them at normal success or failure teardown.
+
+The live Channels settings surface uses the shared channel operation family for one-use account pairing, revocation, and current-authority delivery observations. It disables mutations while disconnected, keeps the challenge only in transient component state, and offers retry only for an exact definite no-send attempt. Unknown delivery directs the user to the source request. The retired multi-adapter fixture is removed.

@@ -411,13 +411,13 @@ export const SURFACES: Surface[] = [
     wp: 'WP-7',
   },
 
-  // Settings (Tier B, unpublished)
+  // Current-user channel settings.
   {
     id: 'channels',
     title: 'Channels',
     path: '/settings/channels',
-    tier: 'B',
-    nav: 'settings-demos',
+    tier: 'A',
+    nav: 'settings-user',
     icon: 'chat',
     board: '16',
     wp: 'WP-8',

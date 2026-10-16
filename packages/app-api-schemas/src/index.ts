@@ -14,6 +14,7 @@ export { AUTOMATION_OPERATION_DEFINITIONS } from './automation-operations.js';
 export * from './caller.js';
 export * from './capability-usage.js';
 export { CATALOG_OPERATION_DEFINITIONS } from './catalog-operations.js';
+export * from './channels.js';
 export * from './chat-mode.js';
 export * from './dashboard.js';
 export * from './data-root-admin-operations.js';

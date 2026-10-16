@@ -86,6 +86,18 @@ A bounded Task may begin with an explicit implementation instruction and include
 
 For selected-Worker `conversation.submit`, that limit applies to the assembled prompt, including attached Artifact text. Oversized input returns HTTP 400 `invalid_request` with the schema issue text before a receiving Thread, Turn, Worker admission, or executor start is created. NanoCore does not truncate the objective; shorten it without losing required constraints before submitting a corrected request under a new request identity.
 
+## Use Discord Attention
+
+Open **Settings → Channels**. If the deployment has Discord configured, select **Pair Discord account**. Send the displayed one-use command in a private direct message to the configured bot. The challenge expires shortly. Select **Refresh** to confirm the account binding. Pairing permits attention links to your own direct messages; it grants no Workspace access.
+
+Only attention links leave OpenKit automatically. Open the authenticated link to inspect the exact request in its Thread. The notification does not prove that anyone read or decided the request. Email carries digest or attention links only; a Discord connection does not mean Email, Slack, or Signal is implemented.
+
+Use `/openkit inspect` with the exact Workspace, Thread, and request identifiers to inspect a supported request privately. Copy its disclosure value into `/openkit deny` or `/openkit answer`. Supply the exact answer map for a non-secret question. The channel checks current responsibility, source access, audience, and request identity again. Approval grants and secret questions return to the App. If the exact disclosure is too large, use the App.
+
+Use **Revoke Discord binding** to prevent later channel responses and sends. Rebinding requires a new challenge. Pairing never retains an administrator credential. A revoked account cannot reuse an earlier disclosure.
+
+The delivery list distinguishes **Queued**, **Sending**, **Sent**, **Not sent**, and **Delivery unknown**. Retry is available only after a definite no-send result and uses that exact attempt. An unknown result can mean the message arrived. Inspect the request before another action; the system does not automatically resend or infer a Core outcome. A channel response that stays unknown also requires Core inspection before a new attempt.
+
 ## Knowledge Guidance
 
 Load this reference for knowledge sources, observations, claims, conflicts, retrieval, bounded context preparation, proposals, repair, or knowledge health.

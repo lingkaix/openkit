@@ -8,10 +8,9 @@ import { CoreClientProvider } from '../../app/core-client';
 import { isSurfaceLive } from '../../app/flags';
 import { SURFACES, surfaceById, surfacesInGroup } from '../../app/surfaces';
 import { AutomationsScreen } from './AutomationsScreen';
-import { ChannelsScreen } from './ChannelsScreen';
 import { TIER_B_SURFACE_IDS } from './data';
 
-const EXPECTED_TIER_B_SURFACE_IDS = ['automations', 'channels'] as const;
+const EXPECTED_TIER_B_SURFACE_IDS = ['automations'] as const;
 
 /** Minimal client — Tier-B demos use sample fixtures, not live reads. */
 function makeClient(): CoreClient {
@@ -91,18 +90,5 @@ describe('WP-8 Tier-B screens — frame headings', () => {
     expect(screen.getByText('Monday interview digest')).toBeInTheDocument();
     expect(screen.getByText('New automation')).toBeInTheDocument();
     expect(screen.getByText('Ask me before sharing results')).toBeInTheDocument();
-  });
-
-  it('Channels renders connected channels and interrupt preview', async () => {
-    render(
-      <Providers path="/settings/channels">
-        <ChannelsScreen />
-      </Providers>
-    );
-    expect(await screen.findByRole('heading', { name: 'Channels' })).toBeInTheDocument();
-    expect(screen.getByText('Connected channels')).toBeInTheDocument();
-    expect(screen.getByText('What travels out')).toBeInTheDocument();
-    expect(screen.getByText('How an interrupt looks in a channel')).toBeInTheDocument();
-    expect(screen.getByText('Slack')).toBeInTheDocument();
   });
 });

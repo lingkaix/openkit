@@ -284,6 +284,7 @@ const RESTART_REQUIRED_CONFIG_PATHS = [
   'server',
   'vault',
   'appUpdate',
+  'channels',
   'policy.workspaceApprovalModes',
 ] as const;
 

@@ -195,7 +195,11 @@ describe('database setup', () => {
 
       expect(
         readdirSync(join(process.cwd(), 'drizzle', 'core')).filter((name) => name.endsWith('.sql'))
-      ).toEqual(['0000_setup.sql', '0001_concurrent_turn_capacity.sql']);
+      ).toEqual([
+        '0000_setup.sql',
+        '0001_concurrent_turn_capacity.sql',
+        '0002_channel_notifications.sql',
+      ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
           existsSync(join(process.cwd(), 'drizzle', scope, 'meta', '_journal.json'))
@@ -204,8 +208,19 @@ describe('database setup', () => {
       expect(listAppliedMigrationIds(coreDb)).toEqual([
         'core_0000_setup',
         'core_0001_concurrent_turn_capacity',
+        'core_0002_channel_notifications',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
+      expect(listTableNames(coreDb)).toEqual(
+        expect.arrayContaining([
+          'notification_attention',
+          'notification_delivery_attempts',
+          'discord_account_bindings',
+          'discord_pairing_challenges',
+          'discord_disclosures',
+          'discord_inbound_receipts',
+        ])
+      );
       expect(listTableNames(coreDb)).toEqual(expect.arrayContaining(CORE_TABLES));
       for (const retired of [
         'scheduler_capacity_records',

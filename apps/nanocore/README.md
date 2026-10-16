@@ -551,3 +551,7 @@ The App-update family includes an administrator-only content-free deployment pre
 Vault injection plans and receipts preserve immutable intent and completion lineage under repeated creation. Changed input for an existing identity fails without mutation. Exact replay preserves current revocation state and original timestamps. See the [Vault guide](src/vault/README.md) for the focused checks.
 
 All NanoCore Vitest unit and e2e configurations use the shared [temporary-directory setup](../../tests/support/vitest-global-setup.mjs), including the default-off real Codex gate. Workers inherit one private invocation directory; normal teardown reclaims it after success or failure. Tests close database handles and remove owned fixtures before the run-level backstop.
+
+## Discord And Notification Delivery
+
+`src/channel-services.ts` composes the Discord adapter and shared notification lifecycle with the existing Pending Request owners. The private signed entry is `/api/channels/discord/interactions`; account settings and delivery observations use the definition-driven channel family. Startup reads optional `channels.discord` configuration. Pairing retains no credential privilege, sends carry App links only, and grants return to the App. Core migration `0002_channel_notifications` adds deployment-local transport records without changing existing records. Focused checks cover `src/channels`, `src/notifications`, and the channel-to-Pending Request seam. No real vendor operation is part of deterministic tests.
