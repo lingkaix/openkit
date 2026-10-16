@@ -664,6 +664,7 @@ describe('FsStore canonical reload', () => {
     const turn = store.createTurn(workspace.id, thread.id, 'Reject unsafe artifact id', localActor);
     const artifactBody = 'Must not escape.';
     const escapedPath = join(dataRoot, 'workspaces', workspace.id, 'escaped_artifact');
+    const beforeItems = structuredClone(store.listThreadItems(workspace.id, thread.id));
 
     expect(() =>
       store.createArtifact({
@@ -686,8 +687,16 @@ describe('FsStore canonical reload', () => {
         createdAt: turn.startedAt ?? timestamp,
         updatedAt: turn.startedAt ?? timestamp,
       })
-    ).toThrow(/safe path segment/);
+    ).toThrowError(
+      expect.objectContaining({
+        name: 'ArtifactAuthorityError',
+        code: 'invalid_request',
+        status: 400,
+      })
+    );
     expect(existsSync(escapedPath)).toBe(false);
+    expect(store.listArtifacts(workspace.id)).toEqual([]);
+    expect(store.listThreadItems(workspace.id, thread.id)).toEqual(beforeItems);
   });
 
   it('rejects symbolic links for canonical artifact bodies and source materials', () => {
