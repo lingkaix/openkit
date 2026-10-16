@@ -25,7 +25,6 @@ _replacement = _load("nanohost-replacement")
 _UNIT = _systemd._UNIT
 _FRAGMENT = _systemd._FRAGMENT
 _GROUP = _systemd._GROUP
-_DIRECTORY = _systemd._DIRECTORY
 _refuse = _systemd._refuse
 MaintenanceRefusal = _systemd.MaintenanceRefusal
 bounded_default = _systemd.bounded_default
