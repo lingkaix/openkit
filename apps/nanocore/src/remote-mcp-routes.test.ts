@@ -989,7 +989,7 @@ describe('remote MCP App endpoint', () => {
       'Action Center',
       'exact proposal',
       'requestId',
-      'Web Portability',
+      'Web file controls',
       'openkit-ops',
       'bootstrap',
       'knowledge',

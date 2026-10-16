@@ -1,5 +1,6 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { fstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -19,6 +20,11 @@ import { createDemoStore } from './test-support/demo-store.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
+vi.mock('node:fs/promises', async (load) => {
+  const actual = await load<typeof import('node:fs/promises')>();
+  return { ...actual, open: vi.fn(actual.open) };
+});
+
 /** Frozen exact-byte expectations prepared independently before production implementation. */
 const corpus = JSON.parse(
   readFileSync(new URL('../../../tests/fixtures/large-context/cases.json', import.meta.url), 'utf8')
@@ -34,6 +40,7 @@ const corpus = JSON.parse(
 const cleanups: Array<() => void> = [];
 afterEach(() => {
   for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+  vi.mocked(open).mockClear();
 });
 
 /** Uses real canonical files, Workspace receipts, local authority, and the composed App routes. */
@@ -89,6 +96,112 @@ function download(state: ReturnType<typeof fixture>, artifactId: string, artifac
 }
 
 describe('exact Artifact file import and download', () => {
+  it('closes the original file when the public archive response is cancelled', async () => {
+    const state = fixture();
+    // Incompressible bytes keep the actual source reader under backpressure at cancellation.
+    const bytes = randomBytes(2 * 1024 * 1024);
+    const uploaded = await upload(
+      state,
+      {
+        id: 'cancelled-archive-original',
+        patternHex: '',
+        repeats: 0,
+        size: bytes.length,
+        sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+      },
+      { body: bytes }
+    );
+    expect(uploaded.status).toBe(201);
+    const { artifactId } = await uploaded.json();
+    const exported = await state.app.request(
+      ...operationRequest('workspace.export', { workspaceId: state.workspace.id })
+    );
+    expect(exported.status).toBe(200);
+    const { exportId } = await exported.json();
+    const originalPath = artifactFilePayloadPath(
+      join(state.dataRoot, 'server', 'exports', 'workspaces', state.workspace.id, exportId),
+      artifactId,
+      1
+    );
+    const response = await state.app.request(
+      `/api/app/workspaces/${state.workspace.id}/exports/${exportId}/archive`
+    );
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    await reader.read();
+    const opened = vi.mocked(open);
+    await expect
+      .poll(() => opened.mock.calls.findIndex(([path]) => path === originalPath))
+      .toBeGreaterThanOrEqual(0);
+    const index = opened.mock.calls.findIndex(([path]) => path === originalPath);
+    // Hold the real handle so garbage collection cannot conceal a leaked source lifetime.
+    const file = await opened.mock.results[index]!.value;
+    const descriptor = file.fd;
+    const original = fstatSync(descriptor);
+    try {
+      await reader.cancel();
+      await expect
+        .poll(() => {
+          try {
+            const current = fstatSync(descriptor);
+            return current.ino === original.ino && current.dev === original.dev;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'EBADF') return false;
+            throw error;
+          }
+        })
+        .toBe(false);
+    } finally {
+      await reader.cancel().catch(() => undefined);
+      // The producer normally closes it; preserve cleanup on an assertion failure.
+      void file.close().catch(() => undefined);
+    }
+  });
+
+  it('preserves exact originals through public Workspace archive transfer', async () => {
+    const source = fixture();
+    const originals = corpus.originals.filter(
+      ({ id }) => id === 'empty' || id === 'binary-invalid-utf8'
+    );
+    expect(originals).toHaveLength(2);
+    for (const original of originals) expect((await upload(source, original)).status).toBe(201);
+    const exported = await source.app.request(
+      ...operationRequest('workspace.export', { workspaceId: source.workspace.id })
+    );
+    expect(exported.status).toBe(200);
+    const { exportId } = await exported.json();
+    const archive = await source.app.request(
+      `/api/app/workspaces/${source.workspace.id}/exports/${exportId}/archive`
+    );
+    expect(archive.status).toBe(200);
+    const imported = await source.app.request('/api/app/workspace-archives/import', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/vnd.openkit.workspace-export+tar.zstd',
+        'x-openkit-request-id': randomUUID(),
+      },
+      body: await archive.arrayBuffer(),
+    });
+    expect(imported.status).toBe(200);
+    const { importedWorkspaceId } = await imported.json();
+    const retained = source.store.listArtifacts(importedWorkspaceId);
+    for (const original of originals) {
+      const artifact = retained.find(({ contentDigest }) => contentDigest === original.sha256);
+      expect(artifact).toBeDefined();
+      const response = await source.app.request(
+        `/api/app/operations/artifact.download?${new URLSearchParams({
+          workspaceId: importedWorkspaceId,
+          artifactId: artifact!.id,
+          artifactVersion: String(artifact!.version),
+        })}`
+      );
+      expect(response.status).toBe(200);
+      const bytes = Buffer.from(await response.arrayBuffer());
+      expect(bytes).toEqual(Buffer.from(original.patternHex.repeat(original.repeats), 'hex'));
+      expect(`sha256:${createHash('sha256').update(bytes).digest('hex')}`).toBe(original.sha256);
+    }
+  });
+
   it.each([
     'binary-file',
     'text-file',
