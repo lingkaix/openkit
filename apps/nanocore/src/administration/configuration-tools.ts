@@ -1,22 +1,27 @@
-import { ProposeAdministrationConfigurationRequestSchema } from '@openkit/app-api-schemas';
 import {
-  type AuthoredAgentConfig,
-  AuthoredAgentConfigSchema,
-  getConfigSchemaCatalog,
-} from '@openkit/config-schema';
+  ApplyDelegatedAdministrationConfigurationRequestSchema,
+  ProposeAdministrationConfigurationRequestSchema,
+  WorkerGitReadConfigurationProposalSchema,
+} from '@openkit/app-api-schemas';
+import { type AuthoredAgentConfig, getConfigSchemaCatalog } from '@openkit/config-schema';
 import { z } from 'zod';
 
 import type { createAdministrationConfiguration } from '../config/administration-configuration.js';
-import { parseJsoncObject } from '../config/jsonc.js';
 import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import {
   type RuntimeConfigFileService,
   RuntimeConfigFileServiceError,
 } from '../config/runtime-config-files.js';
+import { findRegisteredAgentConfiguration } from '../config/worker-git-read-correction.js';
 import type { AgentTool, AgentToolResult } from '../internal-agents/internal-agent-loop.js';
 
 /** Configuration Tools fixed by the private administration contract. */
-export type AdministrationConfigurationTools = readonly [AgentTool, AgentTool, AgentTool];
+export type AdministrationConfigurationTools = readonly [
+  AgentTool,
+  AgentTool,
+  AgentTool,
+  AgentTool,
+];
 
 /**
  * Creates bounded administration configuration Tools for one admitted snapshot.
@@ -29,6 +34,7 @@ export function createAdministrationConfigurationTools(
   files: Pick<RuntimeConfigFileService, 'listFiles' | 'readFile'>,
   catalog: Pick<ReturnType<typeof createAdministrationConfiguration>, 'read' | 'schema'> & {
     propose: (value: unknown) => unknown;
+    applyDelegated: (value: unknown, context: Parameters<AgentTool['execute']>[1]) => unknown;
   }
 ): AdministrationConfigurationTools {
   return [
@@ -59,7 +65,7 @@ export function createAdministrationConfigurationTools(
     {
       name: 'administration.schema.read',
       description:
-        'Read the registered Agent schema or allowed Provider/Gateway catalog change fields. Credential and endpoint changes are excluded.',
+        'Read the registered Agent schema for image preparation and its finite Git-read proposal shape, or allowed Provider/Gateway catalog change fields. Configuration application excludes credential and endpoint changes.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -79,15 +85,24 @@ export function createAdministrationConfigurationTools(
           targetFamily: 'agent',
           title: entry.title,
           schema: entry.schema,
+          gitReadCorrection: z.toJSONSchema(WorkerGitReadConfigurationProposalSchema),
         });
       },
     },
     {
       name: 'administration.configuration.propose',
       description:
-        'Validate an update to an existing Provider catalog or Gateway logical-model bindings and publish an immutable candidate preview. A human confirms its digest through administration.configuration.apply; this Tool never writes configuration.',
+        'Publish an immutable registered Provider, Gateway or finite Worker Git-read candidate. Include the exact failed Turn for a Worker correction. This Tool never writes configuration.',
       inputSchema: z.toJSONSchema(ProposeAdministrationConfigurationRequestSchema),
       execute: async (value) => catalogResult(() => catalog.propose(value)),
+    },
+    {
+      name: 'administration.configuration.apply',
+      description:
+        'Apply an exact Worker Git-read candidate only under the current finite Server Policy assignment. Provider and Gateway candidates require human confirmation through their public command. Inspect the receipt and source after an unknown outcome; do not regenerate a request to retry.',
+      inputSchema: z.toJSONSchema(ApplyDelegatedAdministrationConfigurationRequestSchema),
+      execute: async (value, context) =>
+        catalogResult(() => catalog.applyDelegated(value, context)),
     },
   ];
 }
@@ -168,23 +183,12 @@ function findAgentSource(
   agentId: string
 ): AgentConfigurationSource | null {
   try {
-    let match: AgentConfigurationSource | null = null;
-    for (const file of files.listFiles().files) {
-      if (file.kind !== 'agent') continue;
-      const source = files.readFile(file.id);
-      const parsed = AuthoredAgentConfigSchema.safeParse(parseJsoncObject(source.content, file.id));
-      if (
-        parsed.success &&
-        parsed.data.id === agentId &&
-        source.file.id === file.id &&
-        source.file.kind === 'agent' &&
-        typeof source.file.revision === 'string'
-      ) {
-        if (match) return null;
-        match = { fileId: source.file.id, revision: source.file.revision, manifest: parsed.data };
-      }
-    }
-    return match;
+    const source = findRegisteredAgentConfiguration(files, agentId);
+    return {
+      fileId: source.read.file.id,
+      revision: source.read.file.revision!,
+      manifest: source.value,
+    };
   } catch {
     return null;
   }
