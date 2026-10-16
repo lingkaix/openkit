@@ -544,7 +544,7 @@ describe('conversation navigation sidebar', () => {
               workspace: {
                 id: 'ws_00000000-0000-706d-b903-72e27d4276af',
                 name: 'My quick chat',
-                kind: 'quick-chat',
+                kind: 'personal',
               },
               effectiveRole: 'owner',
               membershipRevision: 2,
@@ -557,7 +557,7 @@ describe('conversation navigation sidebar', () => {
               workspace: {
                 id: 'ws_00000000-0000-7934-b833-fdbc51d3c0a2',
                 name: 'Someone else',
-                kind: 'quick-chat',
+                kind: 'personal',
               },
               effectiveRole: null,
               membershipRevision: null,

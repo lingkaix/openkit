@@ -103,7 +103,7 @@ export function createGovernanceOperationImplementations(
         try {
           return {
             workspaceId,
-            auditEvents: listWorkspaceAuditEvents(workspaceDb, workspaceId).filter(
+            auditEvents: listWorkspaceAuditEvents(workspaceDb, workspaceId, coreDb).filter(
               (event) =>
                 !event.threadId ||
                 isThreadIdVisible(

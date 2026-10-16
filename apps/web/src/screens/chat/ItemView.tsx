@@ -312,6 +312,23 @@ export function ItemView({
         </AssistantMessage>
       );
 
+    case 'context-summary':
+      return (
+        <ItemCard
+          kind="informative"
+          title="Continuation summary"
+          meta={`Covers ${item.sourceRange.itemCount} earlier Items. Exact history remains available.`}
+        >
+          <p className="whitespace-pre-wrap">{item.text}</p>
+          <details className="mt-2">
+            <summary>Covered history range</summary>
+            <p className="break-all">
+              {item.sourceRange.firstItemId} through {item.sourceRange.lastItemId}
+            </p>
+          </details>
+        </ItemCard>
+      );
+
     case 'reasoning':
       return (
         <ItemCard

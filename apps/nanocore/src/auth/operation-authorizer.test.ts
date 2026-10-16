@@ -17,7 +17,6 @@ import {
 } from '../config/runtime-config.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { quickChatWorkspaceIdForUser } from '../lib/store.js';
-import type { createConversationService } from '../mode-entry-routes.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { registerRemoteMcpRoutes } from '../remote-mcp-routes.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
@@ -83,7 +82,7 @@ function createFixture() {
   const store = createDemoStore({ dataRoot });
   const quickChatWorkspace = store
     .listWorkspaces()
-    .find((workspace) => workspace.kind === 'quick-chat');
+    .find((workspace) => workspace.kind === 'personal');
   const workspace = store.listWorkspaces().find((item) => item.kind === 'code');
   if (!quickChatWorkspace || !workspace) {
     throw new Error('Expected Quick Chat and Demo Workspace fixtures.');
@@ -133,11 +132,11 @@ function createFixture() {
     id: 'usr_00000000-0000-7000-8000-000000000001',
   });
   const foreignThread = store.createThread(foreignWorkspace.id, 'Foreign thread');
-  const automationStore = new AutomationStore();
   const actorState: { current: Actor } = {
     current: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
   };
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
   const app = new Hono<{ Variables: AuthVariables }>();
   let administrationHandlerReads = 0;
   let deleteWorkspaceHandlerReads = 0;
@@ -224,16 +223,6 @@ function createFixture() {
     runtimeConfigManager: createRuntimeConfigManager({
       initialSnapshot: createInMemoryRuntimeConfigSnapshot({ dataRoot }),
     }),
-    // This fixture tests native admission; the direct provider effect is covered by quick-chat.test.ts.
-    conversationService: {
-      quick: async (_input, _actor, workspaceId) => ({
-        id: 'reply',
-        status: 'completed',
-        workspaceId,
-        modelId: 'model',
-        content: 'Hello',
-      }),
-    } as ReturnType<typeof createConversationService>,
   });
   registerRemoteMcpRoutes({
     app,
@@ -266,9 +255,10 @@ function createFixture() {
 
 let fixture: ReturnType<typeof createFixture>;
 
+// Real database and Workspace initialization can exceed the default hook bound on shared CI hosts.
 beforeEach(() => {
   fixture = createFixture();
-});
+}, 30_000);
 
 afterEach(() => {
   fixture.coreDb.sqlite.close();
@@ -625,25 +615,6 @@ describe('central Workspace operation authorizer', () => {
     ).toBeNull();
   });
 
-  it('derives the Quick Chat Workspace from the authenticated actor', async () => {
-    const response = await fixture.app.request(
-      ...operationRequest(
-        'chat.quick',
-        {},
-        {
-          body: JSON.stringify({ input: 'Hello' }),
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
-      )
-    );
-
-    expect(response.status, await response.clone().text()).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      workspaceId: fixture.quickChatWorkspace.id,
-    });
-  });
-
   it('derives collection candidates from active Core memberships before loading content', async () => {
     const response = await fixture.app.request(...operationRequest('workspace.list', {}));
     const access = (await response.json()) as { items: { workspace: { id: string } }[] };
@@ -657,7 +628,8 @@ describe('central Workspace operation authorizer', () => {
 
   it('admits the complete automation body Workspace through native invocation', async () => {
     const body = {
-      cron: '0 9 * * *',
+      intervalSeconds: 60,
+      threadId: fixture.turn.threadId,
       name: 'Morning status',
       prompt: 'Summarize current work.',
       workspaceId: fixture.workspace.id,
@@ -893,7 +865,8 @@ describe('central Workspace operation authorizer', () => {
         {},
         {
           body: JSON.stringify({
-            cron: '0 9 * * *',
+            intervalSeconds: 60,
+            threadId: fixture.turn.threadId,
             name: 'Denied mutation',
             prompt: 'Do not create this.',
             workspaceId: fixture.workspace.id,
@@ -926,7 +899,8 @@ describe('central Workspace operation authorizer', () => {
         {},
         {
           body: JSON.stringify({
-            cron: '0 9 * * *',
+            intervalSeconds: 60,
+            threadId: fixture.turn.threadId,
             name: 'Fenced mutation',
             prompt: 'Do not create this.',
             workspaceId: fixture.workspace.id,
@@ -1228,7 +1202,7 @@ describe('central Workspace operation authorizer', () => {
     expect(fixture.store.listThreads(actorQuickChatId)).toHaveLength(1);
     expect(fixture.store.getWorkspace(actorQuickChatId)).toMatchObject({
       id: actorQuickChatId,
-      kind: 'quick-chat',
+      kind: 'personal',
     });
     expect(registeredWorkspaceOwner(actorQuickChatId)).toBe(
       'usr_00000000-0000-7241-80d8-0d46cb74b40d'

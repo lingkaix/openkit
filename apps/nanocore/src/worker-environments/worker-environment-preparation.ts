@@ -78,7 +78,7 @@ export interface CreateWorkerEnvironmentPreparationInput {
   ) => readonly { readonly expectedRevision: number; readonly storageRef: string }[];
   /** Supplies the existing current-user configuration service. */
   readonly configFilesForActor: (actor: Actor) => ConfigFiles;
-  /** Derives the built-in private Quick Chat Workspace from the authenticated user. */
+  /** Derives the built-in private personal Workspace from the authenticated user. */
   readonly privateWorkspaceIdForUser: (userId: string) => string;
   /** Existing image preparation and result-only recovery effects. */
   readonly runtimeEffects: WorkerEnvironmentRuntimeEffects;
@@ -181,7 +181,7 @@ export function createWorkerEnvironmentPreparation(
       const thread = dependencies.store.getThread(workspaceId, threadId);
       if (requireExistingTurn) dependencies.store.getTurn(workspaceId, threadId, turnId);
       if (
-        workspace.kind !== 'quick-chat' ||
+        workspace.kind !== 'personal' ||
         thread.entryPath !== 'administration' ||
         !dependencies.authorizePrivateHome({
           actor,
@@ -695,7 +695,7 @@ function requireAdministrationThread(store: FsStore, workspaceId: string, thread
   try {
     const workspace = store.getWorkspace(workspaceId);
     const thread = store.getThread(workspaceId, threadId);
-    if (workspace.kind !== 'quick-chat' || thread.entryPath !== 'administration') throw new Error();
+    if (workspace.kind !== 'personal' || thread.entryPath !== 'administration') throw new Error();
   } catch {
     throw new WorkerEnvironmentOperationError('not_found', 'Administration Thread was not found.');
   }

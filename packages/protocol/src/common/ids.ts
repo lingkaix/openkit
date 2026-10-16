@@ -164,3 +164,9 @@ export const WorkspaceExportIdSchema = z.string().regex(entityIdPattern('wsexp')
 
 /** Canonical drb entity identity at a boundary that names its kind. */
 export const DataRootBackupIdSchema = z.string().regex(entityIdPattern('drb'));
+
+/** Canonical recurring occurrence identity; allocation stays with the recurring owner. */
+export const RecurringOccurrenceIdSchema = z.string().regex(entityIdPattern('occ'));
+
+/** Canonical retained expired-range identity; allocation stays with the recurring owner. */
+export const RecurringExpiredRangeIdSchema = z.string().regex(entityIdPattern('range'));

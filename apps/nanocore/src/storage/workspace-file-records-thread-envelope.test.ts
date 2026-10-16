@@ -125,6 +125,8 @@ function predecessorRecord(value: Record<string, unknown>) {
   const predecessor = { ...value };
   delete predecessor.visibility;
   delete predecessor.privateOwnerUserId;
+  delete predecessor.threadSource;
+  delete predecessor.parentThreadId;
   predecessor.requiredFeatures = ['openkit.thread-entry.v1'];
   const { id, workspaceId, name, preview, status, entryPath, createdAt, updatedAt } = predecessor;
   predecessor.contentDigest = `sha256:${createHash('sha256').update(JSON.stringify({ id, workspaceId, name, preview, status, entryPath, createdAt, updatedAt })).digest('hex')}`;

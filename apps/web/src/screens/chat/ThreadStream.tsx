@@ -1,6 +1,7 @@
 import { createRequestId } from '@openkit/core-client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useConnection } from '../../app/core-client';
+import { useGenerativeSourceGroups } from '../../generative/source-groups';
 import { EmptyState, ErrorBanner, Skeleton, TurnSeparator } from '../../primitives';
 import {
   groupItemsByTurn,
@@ -11,6 +12,7 @@ import {
   useThreadItems,
   useWithdrawPendingRequest,
 } from './data';
+import { GenerativePresentationView } from './GenerativePresentationView';
 import { ItemView } from './ItemView';
 import { ThreadReadReceipts } from './ThreadReadReceipts';
 
@@ -21,7 +23,8 @@ function streamGroupsByTurn(
   items: ThreadItem[],
   turns: readonly { id: string; status: string }[] | undefined,
   latestTurnId: string | undefined,
-  activityTurnIds: ReadonlySet<string>
+  activityTurnIds: ReadonlySet<string>,
+  focusTurnId?: string | null
 ): { turnId: string; items: ThreadItem[] }[] {
   const groups = groupItemsByTurn(items);
   const orderedTurns = turns ?? [];
@@ -30,7 +33,7 @@ function streamGroupsByTurn(
     // Historical errors insert failed Turns only; supplied activity also needs a group without Items.
     const historicalFailure = turn.status === 'failed' && turn.id !== latestTurnId;
     if (
-      (!historicalFailure && !activityTurnIds.has(turn.id)) ||
+      (!historicalFailure && !activityTurnIds.has(turn.id) && turn.id !== focusTurnId) ||
       groups.some((group) => group.turnId === turn.id)
     )
       continue;
@@ -48,6 +51,8 @@ export interface ThreadStreamProps {
   readOnly?: boolean;
   /** Empty-state title when the thread has no items yet. */
   emptyTitle?: string;
+  /** Exact retained Turn selected by a link; lookup never starts or repairs work. */
+  focusTurnId?: string | null;
 }
 
 /**
@@ -61,7 +66,13 @@ export interface ThreadStreamProps {
  * actionable inline unless read-only. Baseline readiness stays sticky only for the current
  * Workspace and Thread so later command refetches cannot tear down its live subscription.
  */
-export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: ThreadStreamProps) {
+export function ThreadStream({
+  workspaceId,
+  threadId,
+  readOnly,
+  emptyTitle,
+  focusTurnId,
+}: ThreadStreamProps) {
   const connection = useConnection();
   const items = useThreadItems(workspaceId, threadId);
   const baselineCandidate =
@@ -84,12 +95,35 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
 
   const baselineReady =
     baseline.workspaceId === workspaceId && baseline.threadId === threadId && baseline.ready;
+  const sourceGroups = useGenerativeSourceGroups(items.data);
+  const groupedSourceIds = new Set([...sourceGroups.values()].map((item) => item.id));
   const live = useLiveThreadItems(workspaceId, threadId, items.isSuccess, baselineReady);
   const dashboard = live.data;
   const respond = useRespondApproval(workspaceId ?? '', threadId);
   const submitAnswers = useSubmitTurnAnswers(workspaceId ?? '', threadId);
   const withdraw = useWithdrawPendingRequest(workspaceId ?? '', threadId);
   const controlsReadOnly = Boolean(readOnly || !workspaceId || !connection.connected);
+  const focusedElement = useRef<HTMLDivElement>(null);
+  const located = useRef<string | null>(null);
+  const focusedDashboard =
+    focusTurnId &&
+    !live.isError &&
+    dashboard?.thread.id === threadId &&
+    dashboard.thread.workspaceId === workspaceId
+      ? dashboard
+      : undefined;
+  const selectedTurn = focusedDashboard?.turns.find((turn) => turn.id === focusTurnId);
+  const focusKey = JSON.stringify([workspaceId, threadId, focusTurnId]);
+  useEffect(() => {
+    if (!selectedTurn || items.isLoading || items.isError || !focusedElement.current) {
+      if (located.current !== focusKey) located.current = null;
+      return;
+    }
+    if (located.current === focusKey) return;
+    focusedElement.current.scrollIntoView({ block: 'center' });
+    located.current = focusKey;
+  }, [focusKey, selectedTurn, items.isLoading, items.isError]);
+  const unavailableTurn = Boolean(focusTurnId && focusedDashboard && !selectedTurn);
 
   if (items.isLoading) {
     return (
@@ -114,7 +148,8 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
     items.data ?? [],
     dashboard?.turns,
     latestTurnId,
-    new Set(activityByTurn.keys())
+    new Set(activityByTurn.keys()),
+    selectedTurn ? focusTurnId : null
   );
   const participantNames = new Map(
     dashboard?.participants?.map((participant) => [
@@ -130,6 +165,8 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
   );
 
   if (groups.length === 0 && !live.isError) {
+    if (unavailableTurn)
+      return <p className="text-sm text-fg-muted">Recorded Turn is unavailable in this Thread.</p>;
     return (
       <EmptyState
         icon="chat"
@@ -168,6 +205,9 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
       disabled={controlsReadOnly || live.isError}
     >
       <div className="flex flex-col gap-5">
+        {unavailableTurn ? (
+          <p className="text-sm text-fg-muted">Recorded Turn is unavailable in this Thread.</p>
+        ) : null}
         {live.isError ? (
           <ErrorBanner
             message="Runtime activity is unavailable. Retry to refresh."
@@ -185,15 +225,36 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
               : null;
 
           return (
-            <div key={group.items[0]?.id ?? group.turnId} className="flex flex-col gap-4">
+            <div
+              key={group.items[0]?.id ?? group.turnId}
+              className="flex flex-col gap-4"
+              ref={
+                selectedTurn?.id === group.turnId &&
+                groups.findIndex((candidate) => candidate.turnId === group.turnId) === index
+                  ? focusedElement
+                  : undefined
+              }
+            >
+              {selectedTurn?.id === group.turnId &&
+              groups.findIndex((candidate) => candidate.turnId === group.turnId) === index ? (
+                <p className="text-sm text-fg-muted">
+                  Recorded Turn {selectedTurn.id} · {selectedTurn.status}
+                </p>
+              ) : null}
               {index > 0 ? <TurnSeparator label={`Turn ${index + 1}`} /> : null}
               {group.items.map((item) =>
-                item.type === 'user-input-request' &&
-                (items.data ?? []).some(
-                  (candidate) =>
-                    candidate.type === 'user-input-response' &&
-                    candidate.userInputRequestId === item.userInputRequestId
-                ) ? null : (
+                groupedSourceIds.has(item.id) ? null : item.type === 'generative-ui-reference' ? (
+                  <GenerativePresentationView
+                    key={item.id}
+                    item={item}
+                    source={sourceGroups.get(item.id)}
+                  />
+                ) : item.type === 'user-input-request' &&
+                  (items.data ?? []).some(
+                    (candidate) =>
+                      candidate.type === 'user-input-response' &&
+                      candidate.userInputRequestId === item.userInputRequestId
+                  ) ? null : (
                   <ItemView
                     key={item.id}
                     item={item}
@@ -205,8 +266,7 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
                     }
                     requestObjective={
                       item.type === 'user-message'
-                        ? dashboard?.taskInputs?.find((entry) => entry.itemId === item.id)
-                            ?.objective
+                        ? dashboard?.taskInputs?.find((entry) => entry.itemId === item.id)?.objective
                         : undefined
                     }
                     readOnly={
@@ -268,8 +328,7 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
                           withdraw.variables?.pendingRequestId === item.approvalRequestId))
                     }
                     onRetryApproval={() => {
-                      if (withdraw.isError && withdraw.variables)
-                        withdraw.mutate(withdraw.variables);
+                      if (withdraw.isError && withdraw.variables) withdraw.mutate(withdraw.variables);
                       else if (respond.variables) respond.mutate(respond.variables);
                     }}
                     onApprovalDecision={(approvalRequestId, turnId, decision) =>

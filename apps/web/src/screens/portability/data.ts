@@ -69,10 +69,10 @@ export function portabilityVaultStatusLabel(status: string): string {
  * Returns whether selected-Workspace export and rebind apply to this Workspace kind.
  *
  * @param kind Workspace kind from discovery.
- * @returns False for Quick Chat; true for project workspaces.
+ * @returns True when an ordinary Workspace kind is available.
  */
 export function isPortabilityProjectKind(kind: string | undefined): boolean {
-  return Boolean(kind) && kind !== 'quick-chat';
+  return Boolean(kind);
 }
 
 /**
