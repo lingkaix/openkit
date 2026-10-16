@@ -2444,12 +2444,28 @@ describe('worker MCP routes', () => {
       expect(readback.status).toBe(200);
       expect(await readback.json()).toMatchObject({
         id: artifactId,
-        content: { body: readFileSync(liveFilePath, 'utf8') },
+        content: {
+          format: 'file',
+          mediaType: 'text/markdown',
+          byteLength: originalBytes.byteLength,
+        },
       });
-
-      expect(store.getArtifact('ws_demo', artifactId).content.body).toBe(
-        readFileSync(liveFilePath, 'utf8')
-      );
+      // The public descriptor is not a byte oracle; read the exact immutable original.
+      const downloadOriginal = async () => {
+        const downloaded = await app.request(
+          `/api/app/operations/artifact.download?${new URLSearchParams({
+            workspaceId: 'ws_demo',
+            artifactId,
+            artifactVersion: '1',
+          })}`
+        );
+        expect(downloaded.status).toBe(200);
+        expect(downloaded.headers.get('x-openkit-content-digest')).toBe(
+          `sha256:${createHash('sha256').update(originalBytes).digest('hex')}`
+        );
+        return Buffer.from(await downloaded.arrayBuffer());
+      };
+      expect(await downloadOriginal()).toEqual(originalBytes);
       const publishedBytes = readFileSync(liveFilePath);
       writeFileSync(liveFilePath, 'A later edit cannot mutate the committed output.');
       expect(
@@ -2457,9 +2473,7 @@ describe('worker MCP routes', () => {
           .structuredContent!.artifactId
       ).toBe(artifactId);
       expect(liveCaptureCount).toBe(capturesBefore + 1);
-      expect(store.getArtifact('ws_demo', artifactId).content.body).toBe(
-        publishedBytes.toString('utf8')
-      );
+      expect(await downloadOriginal()).toEqual(publishedBytes);
       await work.close();
       const client = new Client({ name: 'public-task-lifecycle-test', version: '1.0.0' });
       await client.connect(

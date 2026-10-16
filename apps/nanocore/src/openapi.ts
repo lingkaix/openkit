@@ -389,7 +389,12 @@ export function createAppOpenApiDocument() {
           summary: OPERATION_DEFINITIONS['artifact.import'].description,
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [
-            REQUEST_ID_HEADER,
+            {
+              ...REQUEST_ID_HEADER,
+              schema: toJsonSchema(
+                OPERATION_DEFINITIONS['artifact.import'].inputSchema.shape.requestId
+              ),
+            },
             ...Object.entries(OPERATION_DEFINITIONS['artifact.import'].inputSchema.shape)
               .filter(([key]) => key !== 'requestId')
               .map(([name, schema]) => ({

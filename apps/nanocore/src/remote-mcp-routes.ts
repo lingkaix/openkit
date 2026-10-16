@@ -243,7 +243,7 @@ function definitionFor(id: string) {
         : 'mcp_streaming_operation',
       definition.returnsOneTimeSecret
         ? 'One-time secret operations are unavailable over MCP.'
-        : 'Streaming operations are unavailable over MCP. Use the retained archive transfer interface.',
+        : 'Streaming operations are unavailable over MCP. Use Web or the administrator CLI file-transfer interface.',
       400
     );
   return definition;

@@ -518,7 +518,12 @@ export const operationCatalog = [
       ...secretDeliveryProjection(id, definition),
       ...(definition.binding === 'streaming'
         ? {
-            ...LOCAL_WORKSPACE_ARCHIVE_ACCESS,
+            ...(id.startsWith('workspace.')
+              ? LOCAL_WORKSPACE_ARCHIVE_ACCESS
+              : {
+                  requiredAccess:
+                    'authenticated user; current Workspace and Artifact audience; explicit local file path',
+                }),
             inputSensitivity: 'host-local path',
             ...archiveBindings[id],
           }
