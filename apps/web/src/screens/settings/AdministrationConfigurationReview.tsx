@@ -40,11 +40,13 @@ const applyKey = (candidate: ConfigurationCandidate['candidate']) =>
 export function AdministrationConfigurationReview({
   candidate,
   confirmationBlocked,
+  hidden,
   threadId,
   workspaceId,
 }: {
   candidate: ConfigurationCandidate;
   confirmationBlocked: boolean;
+  hidden: boolean;
   threadId: string;
   workspaceId: string;
 }) {
@@ -74,13 +76,16 @@ export function AdministrationConfigurationReview({
   });
   const recorded = candidate.outcome ?? apply.data ?? null;
   const attempted = priorAttempts.length > 0 || recorded !== null;
-  const blocked = confirmationBlocked || attempted;
+  const blocked = hidden || confirmationBlocked || attempted;
   const status = configurationStatus(recorded, attempted);
 
   function submitApply() {
     if (blocked) return;
     apply.mutate();
   }
+
+  // Preserve the command observer and outcome while removing private facts and portal content.
+  if (hidden) return null;
 
   return (
     <Card className="flex flex-col gap-3">
