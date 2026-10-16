@@ -879,7 +879,7 @@ describe('Workspace Material Plane 1 S12', () => {
       },
     });
     let panel = await screen.findByRole('region', { name: /thread material/i });
-    expect(panel).toHaveTextContent(/current revision.*revision_2/i);
+    expect(panel).toHaveTextContent(new RegExp(`current revision.*${REVISION_2.revisionId}`, 'i'));
     expect(panel).toHaveTextContent(
       new RegExp(`queued revision.*${THREAD_QUEUED_REVISION_ID}`, 'i')
     );

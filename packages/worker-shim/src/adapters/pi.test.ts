@@ -1158,7 +1158,12 @@ describe('Pi controlled channel faults', () => {
     expect(files).toHaveLength(1);
     const retained = await readFile(files[0]!);
     await expect(
-      session.startTurn(turnInput(dirs, { turnId: 'turn-2', prompt: 'do not retry' }))
+      session.startTurn(
+        turnInput(dirs, {
+          turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+          prompt: 'do not retry',
+        })
+      )
     ).rejects.toThrow('Pi conversation is not reusable until a completed first Turn.');
     expect(
       writes.mock.calls.filter(([bytes]) => JSON.parse(String(bytes)).op === 'turn')

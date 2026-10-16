@@ -1053,10 +1053,7 @@ describe('Sandbox Integration', () => {
       });
       expect(upstream).toEqual([]);
 
-      integration.bindTurnRouteTokens(
-        'as_00000000-0000-75c4-8f9b-15087ed5df6e',
-        tokens('tu_00000000-0000-7a0b-b16a-f047dba7c4d8')
-      );
+      integration.bindTurnRouteTokens('as_00000000-0000-75c4-8f9b-15087ed5df6e', tokens('turn-a'));
       expect(await native(a.inferenceCredential, '/inference/v1/responses')).toEqual({
         body: 'Bearer turn-a-inference-token',
         status: 200,
@@ -1069,10 +1066,7 @@ describe('Sandbox Integration', () => {
       expect(await native(b.inferenceCredential, '/inference/v1/responses')).toMatchObject({
         status: 403,
       });
-      integration.bindTurnRouteTokens(
-        'as_00000000-0000-7740-893b-01cca0bea5fd',
-        tokens('tu_00000000-0000-737f-a4b2-0143fc66e258')
-      );
+      integration.bindTurnRouteTokens('as_00000000-0000-7740-893b-01cca0bea5fd', tokens('turn-b'));
       expect(await native(b.inferenceCredential, '/inference/v1/responses')).toEqual({
         body: 'Bearer turn-b-inference-token',
         status: 200,
@@ -1107,7 +1101,7 @@ describe('Sandbox Integration', () => {
         (integration as unknown as { nativeRequests: Set<unknown> }).nativeRequests.size;
       integration.bindTurnRouteTokens(
         'as_00000000-0000-75c4-8f9b-15087ed5df6e',
-        tokens('tu_00000000-0000-7bd9-8df9-4357cf0bd89e')
+        tokens('turn-a-upload')
       );
       const upstreamBefore = upstream.length;
       const uploadingAtBarrier = uploading(a.inferenceCredential, '/inference/v1/responses');
@@ -1120,7 +1114,7 @@ describe('Sandbox Integration', () => {
       // The production barrier bound is ten seconds.
       integration.bindTurnRouteTokens(
         'as_00000000-0000-75c4-8f9b-15087ed5df6e',
-        tokens('tu_00000000-0000-7494-9eb6-1144af0174ca')
+        tokens('turn-a-bound')
       );
       const uploadingAtDefault = uploading(a.inferenceCredential, '/inference/v1/responses');
       await vi.waitFor(() => expect(openRequests()).toBe(1));
@@ -1146,7 +1140,7 @@ describe('Sandbox Integration', () => {
       // Destroying the credentials cuts a request still uploading its body.
       integration.bindTurnRouteTokens(
         'as_00000000-0000-75c4-8f9b-15087ed5df6e',
-        tokens('tu_00000000-0000-79fb-bb93-a9d73297701f')
+        tokens('turn-a-destroy')
       );
       const uploadingAtClose = uploading(a.capabilityCredential, '/capabilities/mcp/echo');
       await vi.waitFor(() => expect(openRequests()).toBe(1));
@@ -1157,10 +1151,7 @@ describe('Sandbox Integration', () => {
       integration.registerSessionLoopback('as_00000000-0000-75c4-8f9b-15087ed5df6e', a);
 
       // Close destroys the credentials and cuts what is still in flight.
-      integration.bindTurnRouteTokens(
-        'as_00000000-0000-75c4-8f9b-15087ed5df6e',
-        tokens('tu_00000000-0000-7e56-bb5c-9a41c46fa4b6')
-      );
+      integration.bindTurnRouteTokens('as_00000000-0000-75c4-8f9b-15087ed5df6e', tokens('turn-a2'));
       const beforeClose = native(a.capabilityCredential, '/capabilities/mcp/hold');
       await vi.waitFor(() => expect(held.size).toBe(1));
       integration.destroySessionLoopback('as_00000000-0000-75c4-8f9b-15087ed5df6e');
@@ -1171,7 +1162,7 @@ describe('Sandbox Integration', () => {
       expect(() =>
         integration.bindTurnRouteTokens(
           'as_00000000-0000-75c4-8f9b-15087ed5df6e',
-          tokens('tu_00000000-0000-7fbf-afcb-9ac1b2378f3e')
+          tokens('turn-a3')
         )
       ).toThrow();
       expect(upstream.map(({ authorization }) => authorization)).not.toContain(

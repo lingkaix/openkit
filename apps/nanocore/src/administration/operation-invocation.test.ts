@@ -11,6 +11,7 @@ import * as invocation from '../operation-composition.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from '../runtime/nanohost-runtime-target.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
   ADMINISTRATION_TOOL_NAMES,
@@ -33,7 +34,10 @@ describe('real administration assembly through invocation', () => {
         workspaceIds: [],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
-      const target = { identityId: 'integration_primary', deploymentId: 'deploy_primary' };
+      const target = {
+        identityId: 'integration_primary',
+        deploymentId: testEntityId('dep', 'deploy_primary'),
+      };
       allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
         ...target,
         targetId: target.identityId,

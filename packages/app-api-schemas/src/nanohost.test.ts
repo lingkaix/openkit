@@ -138,7 +138,7 @@ describe('NanoHost safe-sink App API schemas', () => {
   it('requires an explicit nullable physical Epoch with exact lowercase SHA-256 syntax', () => {
     const observation = {
       identityId: 'integration_nanohost_primary',
-      deploymentId: 'deploy_primary',
+      deploymentId: 'dep_00000000-0000-7bdd-bdc3-910a52eaec87',
       connectionGeneration: 3,
       predecessorFenced: true,
       ready: true,

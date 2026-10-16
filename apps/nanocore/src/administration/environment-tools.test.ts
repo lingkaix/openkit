@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-
 import type { AgentTool } from '../internal-agents/internal-agent-loop.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   createAdministrationEnvironmentCandidateTools,
   createAdministrationEnvironmentTools,
@@ -71,7 +71,7 @@ describe('administration Worker environment Tools', () => {
     });
     const [prepareToolView, tool] = createAdministrationEnvironmentCandidateTools({
       actor,
-      administrationThreadId: 'thread_admin',
+      administrationThreadId: testEntityId('th', 'thread_admin'),
       administrationTurnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c',
       prepare,
     });
@@ -82,7 +82,7 @@ describe('administration Worker environment Tools', () => {
     expect(tool.inputSchema).toMatchObject({ type: 'object', required: ['recoverFrom'] });
     const args = {
       recoverFrom: {
-        artifactId: 'artifact_a',
+        artifactId: testEntityId('ar', 'artifact_a'),
         artifactVersion: 1,
         contentDigest: `sha256:${'a'.repeat(64)}`,
       },
@@ -94,7 +94,11 @@ describe('administration Worker environment Tools', () => {
     expect(prepare.mock.calls[0]).toEqual(prepare.mock.calls[1]);
     expect(prepare).toHaveBeenCalledWith(
       { actor, administrationTurnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c' },
-      expect.objectContaining({ ...args, mode: 'recover', administrationThreadId: 'thread_admin' })
+      expect.objectContaining({
+        ...args,
+        mode: 'recover',
+        administrationThreadId: testEntityId('th', 'thread_admin'),
+      })
     );
     expect(JSON.stringify(result)).toContain('recovery_required');
     expect(JSON.stringify(result)).not.toContain('private detail');
@@ -120,7 +124,7 @@ describe('administration Worker environment Tools', () => {
       mode: 'recover',
       args: {
         recoverFrom: {
-          artifactId: 'artifact_a',
+          artifactId: testEntityId('ar', 'artifact_a'),
           artifactVersion: 1,
           contentDigest: `sha256:${'a'.repeat(64)}`,
         },
@@ -136,7 +140,7 @@ describe('administration Worker environment Tools', () => {
       });
       const tools = createAdministrationEnvironmentCandidateTools({
         actor,
-        administrationThreadId: 'thread_admin',
+        administrationThreadId: testEntityId('th', 'thread_admin'),
         administrationTurnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c',
         prepare,
       });
@@ -147,7 +151,11 @@ describe('administration Worker environment Tools', () => {
       expect(prepare).toHaveBeenCalledTimes(1);
       expect(prepare).toHaveBeenCalledWith(
         { actor, administrationTurnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c' },
-        expect.objectContaining({ ...args, mode, administrationThreadId: 'thread_admin' })
+        expect.objectContaining({
+          ...args,
+          mode,
+          administrationThreadId: testEntityId('th', 'thread_admin'),
+        })
       );
 
       // A valid UUID ensures only model selection of the bound identity causes refusal.
@@ -174,7 +182,7 @@ describe('administration Worker environment Tools', () => {
       });
       const tools = createAdministrationEnvironmentCandidateTools({
         actor,
-        administrationThreadId: 'thread_admin',
+        administrationThreadId: testEntityId('th', 'thread_admin'),
         administrationTurnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c',
         prepare,
       });

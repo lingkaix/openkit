@@ -23,6 +23,7 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
 import { type createApp, createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
@@ -259,7 +260,7 @@ function createWorkspaceReviewBackingArtifact(
           : 'usr_00000000-0000-7000-8000-000000000001',
     },
     null,
-    { turnId: `turn_${input.origin}_origin` }
+    { turnId: testEntityId('tu', `turn_${input.origin}_origin`) }
   );
   store.createArtifact({
     id: input.artifactId,
@@ -926,7 +927,7 @@ describe('action center app API', () => {
     const content = '# Current output';
     const contentDigest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
     const artifact = store.createArtifact({
-      id: 'artifact_versioned_review',
+      id: testEntityId('ar', 'artifact_versioned_review'),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,

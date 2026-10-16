@@ -557,7 +557,7 @@ function createLineageExportInput(
         requestInputHash: 'sha256:request-source',
         stage: 'running_worker',
         iteration: 1,
-        workerSessionId: missing ? null : 'worker_source',
+        workerSessionId: missing ? null : source.sessionId,
         contextDigest: 'sha256:context',
         stopReason: null,
         diagnosticsSummary: null,
@@ -688,6 +688,7 @@ function createLineageExportInput(
     vaultGrants: [
       {
         grantId: source.grantId,
+        issuance: 'target',
         vaultReferenceId: 'vault_00000000-0000-7845-abcc-649025182be0',
         ownerScope: 'workspace',
         workspaceId: source.workspaceId,
@@ -723,7 +724,7 @@ function importLineage(input: WriteWorkspaceExportTreeInput) {
   return readWorkspaceImportSnapshot({
     verified,
     targetWorkspaceId,
-    targetServerId: 'server_target',
+    targetServerId: 'dep_00000000-0000-7000-8000-000000000002',
   });
 }
 
@@ -1464,7 +1465,7 @@ describe('workspace auxiliary lineage reminting', () => {
     input.threads = input.threads.map((thread) => ({
       ...(thread as Record<string, unknown>),
       visibility: 'private',
-      privateOwnerUserId: 'another-user',
+      privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000002',
     }));
     expect(() => writeWorkspaceExportTree(input)).toThrow(
       'Private Thread history requires a separately authorized export.'
@@ -2054,7 +2055,7 @@ describe('workspace auxiliary lineage reminting', () => {
             readWorkspaceImportSnapshot({
               verified: unsafeVerified,
               targetWorkspaceId,
-              targetServerId: 'server_target',
+              targetServerId: 'dep_00000000-0000-7000-8000-000000000002',
             })
           )
           .toThrow('Agent environment package snapshot is not redacted');
@@ -2073,7 +2074,7 @@ describe('workspace auxiliary lineage reminting', () => {
     const imported = readWorkspaceImportSnapshot({
       verified,
       targetWorkspaceId,
-      targetServerId: 'server_target',
+      targetServerId: 'dep_00000000-0000-7000-8000-000000000002',
     });
     expect(JSON.stringify(imported)).not.toContain('annotation');
     expect(imported.artifactReviews[0]?.materialProposal).not.toHaveProperty('annotation');
@@ -2185,7 +2186,7 @@ describe('workspace auxiliary lineage reminting', () => {
       traceId: sourceRetrievalTrace.traceId,
       requestDigest: sourceRetrievalTrace.requestDigest,
       queryContext: {
-        serverId: 'server_target',
+        serverId: 'dep_00000000-0000-7000-8000-000000000002',
         workspaceId: targetWorkspaceId,
         threadId: imported.threads[0]?.id,
         turnId: imported.turns[0]?.id,
@@ -2295,7 +2296,7 @@ describe('workspace auxiliary lineage reminting', () => {
       itemRevisions: imported.itemRevisions,
       knowledge: imported.knowledge,
       portableFileState: imported.portableFileState,
-      sourceDeploymentId: 'server_target',
+      sourceDeploymentId: 'dep_00000000-0000-7000-8000-000000000002',
       threadMaterialBindings: imported.threadMaterialBindings,
       threads: imported.threads,
       turnEvents: imported.turnEvents,
@@ -2306,6 +2307,13 @@ describe('workspace auxiliary lineage reminting', () => {
       workspaceMaterializationRecords: imported.workspaceMaterializationRecords,
       workspaceMaterials: imported.workspaceMaterials,
     });
+    for (const [path, bytes] of reExported.fileContents) {
+      if (path.includes('/retrieval-traces/') && path.endsWith('.json')) {
+        expect(JSON.parse(bytes).queryContext.serverId).toBe(
+          reExported.manifest.sourceDeploymentId
+        );
+      }
+    }
     const reimported = readWorkspaceImportSnapshot({
       verified: reExported,
       targetWorkspaceId: 'ws_00000000-0000-75c2-b6dd-fdd26f61df2a',
@@ -2316,9 +2324,26 @@ describe('workspace auxiliary lineage reminting', () => {
     expect(() =>
       verifyImportedWorkerContextPackageSnapshot(reimported, reimportedRoot)
     ).not.toThrow();
-    expect(reimported.workspaceMaterialRevisions.map((revision) => revision.content)).toEqual(
-      imported.workspaceMaterialRevisions.map((revision) => revision.content)
+    expect(reimported.workspaceMaterialRevisions).toHaveLength(
+      imported.workspaceMaterialRevisions.length
     );
+    const importedBase = imported.workspaceMaterialRevisions.find(
+      (revision) => revision.parentRevisionId === null
+    );
+    const reimportedBase = reimported.workspaceMaterialRevisions.find(
+      (revision) => revision.parentRevisionId === null
+    );
+    expect(importedBase).toBeDefined();
+    expect(reimportedBase).toBeDefined();
+    expect(reimportedBase?.content).toBe(importedBase!.content);
+    const importedChild = imported.workspaceMaterialRevisions.find(
+      (revision) => revision.parentRevisionId === importedBase!.revisionId
+    );
+    const reimportedChild = reimported.workspaceMaterialRevisions.find(
+      (revision) => revision.parentRevisionId === reimportedBase!.revisionId
+    );
+    expect(importedChild).toBeDefined();
+    expect(reimportedChild?.content).toBe(importedChild!.content);
     expect(
       [...reimported.portableFileState.workerContextPackageFiles.entries()].find(([path]) =>
         path.endsWith('/context-package.json')

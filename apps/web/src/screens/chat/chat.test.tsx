@@ -345,12 +345,12 @@ const STARTER_CHAT_MODE_RESPONSE = {
   receivingThreadId: 'th_00000000-0000-75c2-bada-0a01c17d153e',
   turn: TurnSchema.parse({
     ...COMPLETED_TURN,
-    id: 't-new',
+    id: 'tu_00000000-0000-7c3d-9396-86f77325ff24',
     threadId: 'th_00000000-0000-75c2-bada-0a01c17d153e',
   }),
   item: ItemSchema.parse({
     ...ITEMS[1],
-    id: 'i-new',
+    id: 'it_00000000-0000-7618-b870-ed916b3802da',
     threadId: 'th_00000000-0000-75c2-bada-0a01c17d153e',
     turnId: 'tu_00000000-0000-7c3d-9396-86f77325ff24',
   }),
@@ -576,7 +576,9 @@ describe.each([
   ])('preserves the draft and existing attachment after a failed %s', async (stage) => {
     const user = userEvent.setup();
     const listArtifacts = vi.fn().mockResolvedValue({
-      items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
+      items: [
+        { id: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e', version: 2, title: 'Existing brief' },
+      ],
     });
     const importWorkspaceArtifact = vi.fn().mockRejectedValue(new Error('Import unavailable'));
     const submitConversation = vi.fn().mockReturnValue(new Promise(() => {}));
@@ -683,7 +685,13 @@ describe.each([
       makeClient(
         {
           'artifact.list': vi.fn().mockResolvedValue({
-            items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
+            items: [
+              {
+                id: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e',
+                version: 2,
+                title: 'Existing brief',
+              },
+            ],
           }),
         },
         { 'artifact.import': importWorkspaceArtifact, 'conversation.submit': submitConversation }
@@ -732,7 +740,7 @@ describe.each([
           requestId: draftRequestId,
           input: 'Keep this draft',
           artifactRefs: [
-            { artifactId: 'existing-brief', artifactVersion: 2 },
+            { artifactId: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e', artifactVersion: 2 },
             { artifactId: 'uploaded-notes', artifactVersion: 3 },
           ],
         })
@@ -783,7 +791,13 @@ describe.each([
         {
           'thread.read': vi.fn().mockResolvedValue({ ...THREAD, id: threadId }),
           'artifact.list': vi.fn().mockResolvedValue({
-            items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
+            items: [
+              {
+                id: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e',
+                version: 2,
+                title: 'Existing brief',
+              },
+            ],
           }),
         },
         {
@@ -1098,10 +1112,19 @@ describe('chat starter (board 01)', () => {
     const client = makeClient(
       {
         'workspace.list': vi.fn().mockResolvedValue({
-          items: ['usr_00000000-0000-73d4-904a-d4c4b905df7c', 'usr_00000000-0000-7000-8000-000000000001'].map((ownerUserId, index) => ({
+          items: [
+            'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+            'usr_00000000-0000-7000-8000-000000000001',
+          ].map((ownerUserId, index) => ({
             membershipStatus: index === 0 ? null : 'active',
             accessCause: 'administrator',
-            workspace: { ...QUICK_CHAT_WORKSPACE, id: index === 0 ? 'ws_00000000-0000-71f5-922f-6fd42f52f580' : 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28' },
+            workspace: {
+              ...QUICK_CHAT_WORKSPACE,
+              id:
+                index === 0
+                  ? 'ws_00000000-0000-71f5-922f-6fd42f52f580'
+                  : 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+            },
             effectiveRole: index === 0 ? null : 'owner',
             ownerUserId,
             membershipRevision: index === 0 ? null : 1,
@@ -1118,8 +1141,12 @@ describe('chat starter (board 01)', () => {
     const recent = within(screen.getByText('Recent').closest('section')!);
     expect(await recent.findByText('Start a chat')).toBeInTheDocument();
     expect(getSession).not.toHaveBeenCalled();
-    expect(listNavigation).toHaveBeenCalledWith({ workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28' });
-    expect(listNavigation).not.toHaveBeenCalledWith({ workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580' });
+    expect(listNavigation).toHaveBeenCalledWith({
+      workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+    });
+    expect(listNavigation).not.toHaveBeenCalledWith({
+      workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
+    });
   });
 
   it('does not present an unavailable Workspace as Recent empty', async () => {
@@ -1243,7 +1270,12 @@ describe('chat starter (board 01)', () => {
   ] as const)('opens a Recent %s on its registered route with encoded owner identifiers', async (activity) => {
     const user = userEvent.setup();
     const workspaceId = 'ws/space ?#%';
-    const thread = { ...THREAD, workspaceId, id: 'th/space ?#%', name: 'Encoded conversation' };
+    const thread = {
+      ...THREAD,
+      workspaceId,
+      id: 'th_00000000-0000-77d5-84f0-993908e56e3f',
+      name: 'Encoded conversation',
+    };
     const getThread = vi.fn().mockResolvedValue(thread);
     const readGoal = vi.fn().mockResolvedValue({ goal: null, cards: [], versions: [], tasks: [] });
     renderApp(
@@ -1507,7 +1539,13 @@ describe('chat starter (board 01)', () => {
     const getThread = vi.fn().mockResolvedValue(createdThread);
     const submitConversation = vi.fn().mockReturnValue(started.promise);
     const getThreadDashboard = vi.fn().mockResolvedValue({
-      turns: [TurnSchema.parse({ ...ACTIVE_TURN, id: 't-new', threadId: createdThread.id })],
+      turns: [
+        TurnSchema.parse({
+          ...ACTIVE_TURN,
+          id: 'tu_00000000-0000-7c3d-9396-86f77325ff24',
+          threadId: createdThread.id,
+        }),
+      ],
     });
     renderApp(
       '/chat',
@@ -2396,7 +2434,7 @@ describe('chat thread (boards 02/03)', () => {
 
     expect(await screen.findByText('Answered')).toBeInTheDocument();
     expect(screen.queryByText('You answered')).not.toBeInTheDocument();
-    expect(screen.getByText(/user_responder/)).toBeInTheDocument();
+    expect(screen.getByText(/usr_00000000-0000-7580-8c3b-db9da7a361ae/)).toBeInTheDocument();
     expect(screen.queryByRole('textbox', { name: 'Audience' })).not.toBeInTheDocument();
     expect(screen.queryByRole('radio', { name: 'Concise' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Submit answers' })).not.toBeInTheDocument();
@@ -2509,7 +2547,7 @@ describe('chat thread (boards 02/03)', () => {
       },
       {
         'thread.dashboard': vi.fn().mockResolvedValue({
-          turns: [APPROVAL_TURN, { ...ACTIVE_TURN, id: 't-unrelated' }],
+          turns: [APPROVAL_TURN, { ...ACTIVE_TURN, id: 'tu_00000000-0000-7e19-a9ee-94030e5f5d04' }],
           pendingRequests: [
             {
               requestId: 'ap1',
@@ -2607,19 +2645,19 @@ describe('thread lifecycle and attribution (S7)', () => {
       ITEMS[0],
       {
         ...ITEMS[0],
-        id: 'other',
+        id: 'it_00000000-0000-7670-93ab-28e0c439d4f7',
         actor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
         text: 'Other person.',
       },
       {
         ...ITEMS[0],
-        id: 'unknown',
+        id: 'it_00000000-0000-7a85-8cdd-896abe379ad8',
         actor: { kind: 'user', id: 'usr_00000000-0000-7838-b1bf-3222f1a8d6a7' },
         text: 'Unknown person.',
       },
       {
         ...ITEMS[0],
-        id: 'automation',
+        id: 'it_00000000-0000-78cd-bf21-01c4693d8efa',
         actor: {
           kind: 'automation',
           id: 'auto_00000000-0000-7db2-8081-9e80c1ee615a',
@@ -2630,7 +2668,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       ITEMS[1],
       {
         ...ITEMS[1],
-        id: 'internal',
+        id: 'it_00000000-0000-72dd-9e78-ec589912dbf1',
         turnId: 'tu_00000000-0000-7229-8099-120c4bdc703e',
         text: 'Internal reply.',
       },
@@ -2678,9 +2716,11 @@ describe('thread lifecycle and attribution (S7)', () => {
       )
     ).toBeInTheDocument();
     expect(
-      within(screen.getByRole('article', { name: 'Message from automation_daily' })).getByText(
-        'Scheduled input.'
-      )
+      within(
+        screen.getByRole('article', {
+          name: 'Message from auto_00000000-0000-7db2-8081-9e80c1ee615a',
+        })
+      ).getByText('Scheduled input.')
     ).toBeInTheDocument();
   });
 
@@ -3213,7 +3253,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       .mockReturnValueOnce(secondInterrupt.promise);
     const secondActiveTurn = TurnSchema.parse({
       ...ACTIVE_TURN,
-      id: 't2',
+      id: 'tu_00000000-0000-7229-8099-120c4bdc703e',
       startedAt: '2026-07-21T00:00:04.000Z',
     });
     const subscribeTurnEvents = vi.fn().mockReturnValue({
@@ -3491,7 +3531,7 @@ describe('thread lifecycle and attribution (S7)', () => {
     expect(
       await screen.findByText('by usr_00000000-0000-7a12-a95f-975ecdd21953')
     ).toBeInTheDocument();
-    expect(screen.getByText(/user_responder/)).toBeInTheDocument();
+    expect(screen.getByText(/usr_00000000-0000-7580-8c3b-db9da7a361ae/)).toBeInTheDocument();
   });
 
   it('renders the exact active-turn trigger actor from the typed dashboard projection', async () => {
@@ -3528,7 +3568,9 @@ describe('thread lifecycle and attribution (S7)', () => {
       client
     );
 
-    expect(await screen.findByText(/automation_release/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/auto_00000000-0000-77df-8c37-4f4fdb2227b8/)
+    ).toBeInTheDocument();
     expect(setupDiagnosticsOperation).not.toHaveBeenCalled();
   });
 
@@ -3540,13 +3582,13 @@ describe('thread lifecycle and attribution (S7)', () => {
       unexpected: ['usr_00000000-0000-768a-8658-44c33d82c1f5'],
     },
     {
-      label: 'automation sharing a user id',
+      label: 'automation sharing a User UUID body',
       triggerActor: {
         kind: 'automation' as const,
-        id: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
+        id: 'auto_00000000-0000-768a-8658-44c33d82c1f5',
         responsibleUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       },
-      expected: 'Triggered by usr_00000000-0000-768a-8658-44c33d82c1f5',
+      expected: 'Triggered by auto_00000000-0000-768a-8658-44c33d82c1f5',
       unexpected: ['Administrator', '(You)'],
     },
   ])('resolves the running Task trigger for a $label without borrowing another kind', async ({
@@ -3650,7 +3692,7 @@ describe('live turn subscription (S6)', () => {
         type: 'item-created',
         item: {
           ...ITEMS[0],
-          id: 'live-human',
+          id: 'it_00000000-0000-71e7-aa1f-57ab2b827ff6',
           actor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
           text: 'New participant.',
         },
@@ -4336,7 +4378,7 @@ describe('live turn subscription (S6)', () => {
   it('settles the first authoritative remount baseline before starting the stream', async () => {
     const serverOnlyItem = {
       ...STREAMING_ITEM,
-      id: 'i-server-only',
+      id: 'it_00000000-0000-7e64-9e62-31f9c01e3e1b',
       status: 'completed',
       text: 'Authoritative server-only item',
       completedAt: '2026-07-21T00:00:01.500Z',
@@ -4705,7 +4747,7 @@ describe('open thread external activity', () => {
         idleTurn,
         TurnSchema.parse({
           ...idleTurn,
-          id: 't48',
+          id: 'tu_00000000-0000-7e0f-94c8-e1078c4837c1',
           startedAt: '2026-07-21T00:01:00.000Z',
           completedAt: '2026-07-21T00:01:00.000Z',
         }),
@@ -5218,7 +5260,7 @@ describe('open thread external activity', () => {
             ? [
                 ItemSchema.parse({
                   ...ITEMS[0],
-                  id: 'i-th2',
+                  id: 'it_00000000-0000-7b75-87ae-cd4800676a62',
                   workspaceId,
                   threadId: 'th_00000000-0000-7c00-b9fc-382312fdf476',
                   text: 'Other thread baseline.',
@@ -5637,7 +5679,7 @@ describe('mode entry and feedback (S8)', () => {
     };
     const workspaceBItem = ItemSchema.parse({
       ...ITEMS[0],
-      id: 'i-ws2',
+      id: 'it_00000000-0000-7dc6-b838-1e3fce692665',
       workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
       turnId: 'tu_00000000-0000-7135-a7d9-4aa63b405497',
       text: 'Workspace B stays authoritative.',
@@ -5798,13 +5840,13 @@ describe('mode entry and feedback (S8)', () => {
     };
     const workspaceBTurn = TurnSchema.parse({
       ...COMPLETED_TURN,
-      id: 't-ws2',
+      id: 'tu_00000000-0000-7135-a7d9-4aa63b405497',
       workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e1a-82fc-aa295bc43d6c' },
     });
     const workspaceBAssistant = ItemSchema.parse({
       ...ITEMS[1],
-      id: 'i-ws2-assistant',
+      id: 'it_00000000-0000-7a72-a3c3-089dca8798b5',
       workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
       turnId: workspaceBTurn.id,
       text: 'Workspace B answer.',
@@ -5860,7 +5902,7 @@ describe('mode entry and feedback (S8)', () => {
           chatKeys.feedback(
             'ws_00000000-0000-7b10-9af8-12fd37a880e0',
             'th_00000000-0000-70a0-9cde-4561f64881c6',
-            't1'
+            'tu_00000000-0000-7da3-a7fc-80982f9b215e'
           ),
           priorFeedback
         );
@@ -5891,7 +5933,7 @@ describe('mode entry and feedback (S8)', () => {
         chatKeys.feedback(
           'ws_00000000-0000-7b10-9af8-12fd37a880e0',
           'th_00000000-0000-70a0-9cde-4561f64881c6',
-          't1'
+          'tu_00000000-0000-7da3-a7fc-80982f9b215e'
         )
       )
     ).toEqual(settlement === 'success' ? settledFeedback : priorFeedback);
@@ -6129,7 +6171,7 @@ describe('mode entry and feedback (S8)', () => {
           chatKeys.feedback(
             'ws_00000000-0000-7b10-9af8-12fd37a880e0',
             'th_00000000-0000-70a0-9cde-4561f64881c6',
-            't1'
+            'tu_00000000-0000-7da3-a7fc-80982f9b215e'
           ),
           priorFeedback
         );
@@ -6146,7 +6188,7 @@ describe('mode entry and feedback (S8)', () => {
         chatKeys.feedback(
           'ws_00000000-0000-7b10-9af8-12fd37a880e0',
           'th_00000000-0000-70a0-9cde-4561f64881c6',
-          't1'
+          'tu_00000000-0000-7da3-a7fc-80982f9b215e'
         )
       )
     ).toEqual(priorFeedback);
@@ -6155,7 +6197,7 @@ describe('mode entry and feedback (S8)', () => {
         chatKeys.feedback(
           'ws_00000000-0000-7b10-9af8-12fd37a880e0',
           'th_00000000-0000-70a0-9cde-4561f64881c6',
-          't-other'
+          'tu_00000000-0000-7229-bfed-21858f0c8836'
         )
       )
     ).toBeUndefined();
@@ -6176,7 +6218,7 @@ describe('mode entry and feedback (S8)', () => {
         chatKeys.feedback(
           'ws_00000000-0000-7b10-9af8-12fd37a880e0',
           'th_00000000-0000-70a0-9cde-4561f64881c6',
-          't-other'
+          'tu_00000000-0000-7229-bfed-21858f0c8836'
         )
       )
     ).toBeUndefined();
@@ -6221,19 +6263,19 @@ describe('conversation artifact inspection', () => {
     const path = `src/${'long_file_name_'.repeat(12)}.ts`;
     const file = ItemSchema.parse({
       ...ITEMS[0],
-      id: 'file-change',
+      id: 'it_00000000-0000-7f8f-9ccf-39fc6fcf8be8',
       type: 'file-change',
       path,
       changeKind: 'modified',
     });
     const duplicate = ArtifactReferenceItemSchema.parse({
       ...reference,
-      id: 'ar_00000000-0000-7e90-b174-aa94e1aff9b1',
+      id: 'it_00000000-0000-7ebc-9433-5c60d4670618',
       lastMutationRequestId: 'req-artifact-again',
     });
     const laterVersion = ArtifactReferenceItemSchema.parse({
       ...reference,
-      id: 'ar_00000000-0000-7522-8b8c-38e810ed701a',
+      id: 'it_00000000-0000-7696-a90c-ad8b3e75d0d1',
       artifactVersion: 2,
       title: 'Workspace changes after revision',
       lastMutationRequestId: 'req-artifact-v2',
@@ -6756,7 +6798,9 @@ describe('Worker environment Advanced choice', () => {
       {
         'thread.create': createThread,
         'artifact.list': vi.fn().mockResolvedValue({
-          items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
+          items: [
+            { id: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e', version: 2, title: 'Existing brief' },
+          ],
         }),
         'thread.read': vi
           .fn()
@@ -6852,7 +6896,13 @@ describe('Worker environment Advanced choice', () => {
           'thread.read': vi.fn().mockResolvedValue({ ...THREAD, id: threadId }),
           'thread.list': vi.fn().mockResolvedValue({ items: [THREAD] }),
           'artifact.list': vi.fn().mockResolvedValue({
-            items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
+            items: [
+              {
+                id: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e',
+                version: 2,
+                title: 'Existing brief',
+              },
+            ],
           }),
         },
         {

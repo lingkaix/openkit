@@ -54,7 +54,8 @@ it('binds the actual Administration prompt and ordered tools before model access
       workspaceId,
       'Administration',
       'th_00000000-0000-7eb0-81a4-c2a65cc0dcba',
-      'administration'
+      'administration',
+      { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
     );
     const profile = {
       id: 'provider',

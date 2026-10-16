@@ -1712,7 +1712,7 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/workspace.read': {
         body: {
           ...workspace(),
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           membershipStatus: 'active',
           accessCause: 'membership',
         },
@@ -1982,17 +1982,16 @@ describe('createCoreClient', () => {
     });
 
     await expect(client.core.meta()).resolves.toMatchObject({ protocolVersion: '0.6.0' });
-    await expect(client.operations['workspace.read']({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })).resolves.toEqual({
+    await expect(
+      client.operations['workspace.read']({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
+    ).resolves.toEqual({
       ...workspace(),
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       membershipStatus: 'active',
       accessCause: 'membership',
     });
-    await expect(
-      client.operations['workspace.read']({
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      })
-    ).resolves.toEqual(workspace());
     await expect(
       client.operations['workspace.update']({
         ...{ status: 'archived' },

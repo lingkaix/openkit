@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { deriveEntityId } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -19,6 +20,7 @@ import { createProviderCredentialConfigured } from '../providers/vault-credentia
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -94,8 +96,9 @@ describe('administration conversation route', () => {
     const thread = store.createThread(
       workspaceId,
       'Administration',
-      'thread_administration_private_context',
-      'administration'
+      testEntityId('th', 'thread_administration_private_context'),
+      'administration',
+      { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
     );
     const providerProfile = {
       baseUrl: 'https://provider.invalid/v1',
@@ -665,7 +668,9 @@ describe('administration conversation route', () => {
       const turn = readTurn(turnId);
       return {
         ...turn,
-        items: turn.items.filter((item) => item.id !== `it_administration_user_${turn.id}`),
+        items: turn.items.filter(
+          (item) => item.id !== deriveEntityId('it', ['administration_user', turn.id])
+        ),
       };
     });
     const missingUserReplay = await app.request(
@@ -970,8 +975,9 @@ async function postAdministrationAdmissionTurn(options: {
   const thread = store.createThread(
     workspaceId,
     'Administration',
-    `thread_administration_${options.label}`,
-    'administration'
+    testEntityId('th', `thread_administration_${options.label}`),
+    'administration',
+    { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
   );
   const providerProfile = {
     baseUrl: 'https://provider.invalid/v1',

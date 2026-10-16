@@ -1,7 +1,6 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { describe, expect, it } from 'vitest';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
@@ -9,11 +8,12 @@ import {
 } from '../runtime/nanohost-runtime-target.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createAdministrationNanoHostRuntimeTargetTool } from './nanohost-runtime-target-tool.js';
 
 const identityId = 'integration_nanohost_primary';
-const deploymentId = 'deploy_primary';
+const deploymentId = testEntityId('dep', 'deploy_primary');
 const physicalEpoch = 'a'.repeat(64);
 
 function toolFor(coreDb: ReturnType<typeof openCoreDb> | undefined) {

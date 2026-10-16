@@ -1,5 +1,6 @@
 import { KnowledgeDerivedIndexesResponseSchema, operationHttpPath } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
+import { allocateEntityId } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -1516,7 +1517,7 @@ describe('Overview / Action Center (board 07)', () => {
       }),
       ...[1, 2, 3, 4].map((index) =>
         overviewConversation({
-          id: `th_task_${index}`,
+          id: allocateEntityId('th'),
           name: `Task ${index}`,
           preview: `Current task context ${index}`,
           activity: 'task',
@@ -1525,7 +1526,7 @@ describe('Overview / Action Center (board 07)', () => {
       ),
       ...[1, 2, 3].map((index) =>
         overviewConversation({
-          id: `th_goal_${index}`,
+          id: allocateEntityId('th'),
           name: `Goal ${index}`,
           preview: `Current goal context ${index}`,
           activity: 'goal',
@@ -1560,7 +1561,7 @@ describe('Overview / Action Center (board 07)', () => {
     );
     expect(screen.getAllByRole('link', { name: 'Open task' })[0]).toHaveAttribute(
       'href',
-      '/tasks/ws_00000000-0000-73c3-900f-8d310e4ba201/th_00000000-0000-7964-88f3-2b94edd3102e'
+      `/tasks/ws_00000000-0000-73c3-900f-8d310e4ba201/${items[1]!.thread.id}`
     );
     expect(screen.getAllByText('Working').length).toBeGreaterThanOrEqual(7);
     expect(screen.getByRole('heading', { name: 'Task 4' })).toBeInTheDocument();

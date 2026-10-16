@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorkerHarness } from '../harness.js';
 import {
@@ -83,7 +84,7 @@ function harnessFor(
   integration: SandboxIntegrationClient,
   options: PiResidentAdapterOptions = {}
 ) {
-  const workspaceId = `workspace-${sha256(root)}`;
+  const workspaceId = allocateEntityId('ws');
   const sandboxRoot = join(root, 'openkit');
   const nativeRoot = join(root, 'sandbox', 'native');
   const bindings: PiResidentBinding[] = [];
@@ -390,20 +391,16 @@ describe('Pi real Integration lifecycle', () => {
     async () => {
       const f = await fixture((n) => ({ text: `answer-${n}` }));
       cleanup.push(f.close);
-      expect((await f.open('as_00000000-0000-7f03-8682-76a52604a84a')).disposition).toBe(
-        'succeeded'
-      );
+      const opened = await f.open('as_00000000-0000-7f03-8682-76a52604a84a');
+      expect(opened).toMatchObject({ disposition: 'succeeded' });
       expect(f.capability.log).toHaveLength(0);
-      expect(
-        (
-          await f.run(
-            'tu_00000000-0000-7e49-8268-e35715b55d0c',
-            0,
-            'as_00000000-0000-7f03-8682-76a52604a84a',
-            ['openkit-work']
-          )
-        ).disposition
-      ).toBe('succeeded');
+      const firstTurn = await f.run(
+        'tu_00000000-0000-7e49-8268-e35715b55d0c',
+        0,
+        'as_00000000-0000-7f03-8682-76a52604a84a',
+        ['openkit-work']
+      );
+      expect(firstTurn).toMatchObject({ disposition: 'succeeded' });
       await vi.waitFor(() => expect(f.finalStatuses).toHaveLength(1), { timeout: 20000 });
       await waitIdle(f);
       const first = await f.send(
@@ -477,8 +474,8 @@ describe('Pi real Integration lifecycle', () => {
       expect(
         f.upstream.filter((r) => r.path.startsWith('/inference/')).map((r) => r.authorization)
       ).toEqual([
-        `Bearer ${credential('inference-token-turn-1')}`,
-        `Bearer ${credential('inference-token-turn-2')}`,
+        `Bearer ${credential(`inference-token-${'tu_00000000-0000-7e49-8268-e35715b55d0c'}`)}`,
+        `Bearer ${credential(`inference-token-${'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'}`)}`,
       ]);
       const idle = await fetch('http://127.0.0.1:17892/inference/v1/chat/completions', {
         method: 'POST',
@@ -692,7 +689,7 @@ describe('Pi real Integration lifecycle', () => {
       const result = await f.send('turn.interrupt', {
         ...f.selector('as_00000000-0000-7f03-8682-76a52604a84a'),
         turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
-        leaseId: 'lease-turn-2',
+        leaseId: `lease-${'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'}`,
         purpose: 'interrupt',
       });
       if (blocked) {
@@ -833,7 +830,7 @@ describe('Pi real Integration lifecycle', () => {
         ).equals(reference)
       ).toBe(true);
       expect(f.upstream.filter((r) => r.path.startsWith('/inference/')).at(-1)?.authorization).toBe(
-        `Bearer ${credential('inference-token-turn-2')}`
+        `Bearer ${credential(`inference-token-${'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'}`)}`
       );
       expect(
         (await f.send('session.close', f.selector('as_00000000-0000-7ccb-a600-607d092dffc8')))

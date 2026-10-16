@@ -2916,12 +2916,14 @@ describe('scheduler dispatch loop', () => {
 
       try {
         applyScopedMigrations(workspaceDb);
-        expect(result.startedTurns[0]?.handle.agentSetupRecordId).toBe('ras_turn_setup_ledger');
+        expect(result.startedTurns[0]?.handle.agentSetupRecordId).toBe(
+          `ras_${testEntityId('tu', 'turn_setup_ledger')}`
+        );
         expect(
           requireResolvedAgentSetup(
             workspaceDb,
             'ws_00000000-0000-7000-8000-000000000001',
-            'ras_turn_setup_ledger'
+            `ras_${testEntityId('tu', 'turn_setup_ledger')}`
           )
         ).toMatchObject({
           turnId: testEntityId('tu', 'turn_setup_ledger'),
@@ -3059,12 +3061,18 @@ describe('scheduler dispatch loop', () => {
         })
       ).rejects.toThrow('worker launch failed');
 
+      const closedAttempt = attemptRecords.requireSchedulerExecutionAttempt(
+        coreDb,
+        'attempt_00000000-0000-7183-99eb-6319956c61b9'
+      );
+      expect(closedAttempt.bindingRef).not.toBeNull();
+      expect(closedAttempt.inputRef).not.toBeNull();
       expect(
         resolveNanoHostAttemptTokenBinding(coreDb, {
-          sandboxBindingRef: 'attempt-binding:lease_loop_failed',
+          sandboxBindingRef: closedAttempt.bindingRef!,
           lineage: {
             agentSessionId: testEntityId('as', 'as_loop_failed'),
-            packageSnapshotId: 'aepsnap_turn_loop_failed_as_loop_failed',
+            packageSnapshotId: closedAttempt.inputRef!,
             threadId: 'th_00000000-0000-7000-8000-000000000001',
             turnId: testEntityId('tu', 'turn_loop_failed'),
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',

@@ -245,12 +245,12 @@ describe('OpenCode resident adapter', () => {
     });
     const publication = vi.spyOn(WorkerTranscriptWriter.prototype, 'writeObservation');
     const lineage = {
-      agentSessionId: 'as-opencode',
+      agentSessionId: 'as_00000000-0000-76f1-a900-7cc7b6acc18c',
       packageSnapshotId: 'pkg-composed',
       requestId: 'req-composed',
-      threadId: 'th-composed',
-      turnId: 'tu-composed',
-      workspaceId: 'ws-composed',
+      threadId: 'th_00000000-0000-79de-8040-f554386267ad',
+      turnId: 'tu_00000000-0000-7f8a-b8c9-d153483d39f0',
+      workspaceId: 'ws_00000000-0000-735c-bd4b-c71fce1d4dd7',
     };
     const packagePath = join(f.layout.root, 'composed-package.json');
     const sessionDir = join(f.layout.root, 'composed-capture');

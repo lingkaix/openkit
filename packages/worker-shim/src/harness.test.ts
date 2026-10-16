@@ -2240,7 +2240,12 @@ describe('Worker Harness resident AgentSessions', () => {
       }
       if (url.endsWith('/final-status')) {
         finalRequests.push(body);
-        sealedAtFinal.push(readFileSync(join(f.capturePath('turn-1'), 'events.jsonl'), 'utf8'));
+        sealedAtFinal.push(
+          readFileSync(
+            join(f.capturePath('tu_00000000-0000-7e49-8268-e35715b55d0c'), 'events.jsonl'),
+            'utf8'
+          )
+        );
       }
       if (url.endsWith('/heartbeat')) {
         expect(Date.now() - lastAcceptedAt).toBeLessThan(2500);
@@ -2362,7 +2367,10 @@ describe('Worker Harness resident AgentSessions', () => {
     ]);
     expect(integration.finalStatuses).toEqual(finalRequests);
     expect(sealedAtFinal).toEqual([
-      readFileSync(join(f.capturePath('turn-1'), 'events.jsonl'), 'utf8'),
+      readFileSync(
+        join(f.capturePath('tu_00000000-0000-7e49-8268-e35715b55d0c'), 'events.jsonl'),
+        'utf8'
+      ),
     ]);
   });
 
