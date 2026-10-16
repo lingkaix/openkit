@@ -159,6 +159,8 @@ MCP process sandboxing, automatic dependency provisioning, OAuth onboarding, leg
 - `docs/specs/20260703-vault_secret_injection.md`
 - [Agent Plugins MCP declaration format](https://agent-plugins.org/specification).
 
+HTTP endpoint declarations and their effective transports share one credential-free HTTP/HTTPS URL criterion, including before new configuration publication. Userinfo credentials and fragments are invalid. Browser configuration writes validate this criterion before mutation-cache or transport admission; fixed errors exclude the rejected value. Valid retained endpoint bytes/digests remain unchanged. A retained invalid credential-bearing declaration fails closed and requires explicit administrator repair with protected Vault grant bindings; readers never extract, relocate, rewrite or print its material.
+
 ## Explicit Bounded Discovery Preview
 
 A current deployment administrator MAY explicitly preview tools from an exact retained Server or Workspace MCP configuration before an allowlist or persistent enablement. This is one temporary `tools/list` observation through the existing SDK Gateway, with protocol initialization only; it grants no `tools/call`, activation, binding publication, selection, OAuth lifecycle or future execution authority. Inactive configuration creation accepts an explicit empty allowlist and creates no binding; activation and ordinary binding updates retain their nonempty allowlist requirement. Retained data and ordinary Worker admission stay unchanged.

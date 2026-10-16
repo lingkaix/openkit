@@ -5,6 +5,22 @@ const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const HTTP_HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const SDK_MANAGED_HTTP_HEADERS = new Set(['accept', 'content-type']);
 
+/** Canonical non-secret HTTP endpoint shared by declaration, transport and browser request validation. */
+export const McpHttpEndpointSchema = z.url().refine((value) => {
+  let endpoint: URL;
+  try {
+    endpoint = new URL(value);
+  } catch {
+    return false;
+  }
+  return (
+    (endpoint.protocol === 'http:' || endpoint.protocol === 'https:') &&
+    endpoint.username === '' &&
+    endpoint.password === '' &&
+    endpoint.hash === ''
+  );
+}, 'MCP endpoints must be credential-free HTTP URLs without hash.');
+
 /** Vault credential sink owned by an MCP transport. */
 export const WorkspaceMcpCredentialSinkSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('env'), name: z.string().regex(ENVIRONMENT_NAME) }).strict(),

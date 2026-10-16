@@ -1,11 +1,11 @@
 import { z } from 'zod';
-
 import {
   digestMcpConfig,
   mcpCatalogContainsRawSecret,
   WorkspaceMcpCredentialBindingSchema,
   WorkspaceMcpToolNameSchema,
 } from './mcp-catalog.js';
+import { McpHttpEndpointSchema } from './mcp-credentials.js';
 import { OPENKIT_TREE_DIGEST_FORMAT } from './tree-digest.js';
 
 const CATALOG_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
@@ -136,7 +136,7 @@ export const McpStdioDeclarationSchema = z
 /** Non-secret Streamable HTTP declaration stored on an MCP configuration version. */
 export const McpHttpDeclarationSchema = z
   .object({
-    endpoint: z.string().url(),
+    endpoint: McpHttpEndpointSchema,
     headers: z.record(z.string().regex(HTTP_HEADER_NAME), z.string()).default({}),
     kind: z.literal('http'),
   })
