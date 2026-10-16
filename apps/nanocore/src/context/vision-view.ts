@@ -327,9 +327,7 @@ export async function createVisionView(input: CreateVisionViewInput): Promise<Vi
               complete: false,
               provesCompleteBodyAbsence: false,
               omissions:
-                width === deliveredWidth && height === deliveredHeight
-                  ? ['metadata']
-                  : ['metadata', 'original-resolution'],
+                pixels === deliveredPixels ? ['metadata'] : ['metadata', 'original-resolution'],
             },
           },
         };
@@ -459,7 +457,8 @@ function resourceFlags(limits: VisionViewLimits): string[] {
     `${limits.maxSourceDimension}`,
     '-limit',
     'list-length',
-    '2',
+    // ImageMagick uses an exclusive list ceiling; one extra header must be observable.
+    '3',
   ];
 }
 /** The only native image executable is fixed by this release-authored producer. */

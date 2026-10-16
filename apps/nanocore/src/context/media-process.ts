@@ -227,7 +227,7 @@ export function runMediaProcess(
     let outputBytes = 0;
     let errorBytes = 0;
     let failure: MediaProcessFailure | undefined;
-    const stop = (reason: FailureReason) => {
+    const stop = (reason: MediaProcessFailure['reason']) => {
       failure ??= new MediaProcessFailure(reason);
       if (command.pid) {
         try {

@@ -130,7 +130,7 @@ function apng(): Buffer {
   ]);
 }
 const JPEG = Buffer.from(
-  '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAAQACADAREAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFgEBAQEAAAAAAAAAAAAAAAAAAAcJ/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8AnRDGqYAAAAAAD//Z',
+  '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAAQACADAREAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFgEBAQEAAAAAAAAAAAAAAAAAAAcJ/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8AnRDGqYAAAAAAD//Z',
   'base64'
 );
 const GIF = Buffer.from(
@@ -289,6 +289,29 @@ describe('explicit isolated bounded vision views', () => {
     expect(one.view.cacheKey).not.toBe(two.view.cacheKey);
     expect(one.view.representationId).not.toBe(two.view.representationId);
     expect(one.view.representationDigest).toBe(two.view.representationDigest);
+    await clean(f);
+  });
+  it('reports original and delivered dimensions without calling a pure EXIF rotation resolution loss', async () => {
+    const exif = Buffer.from(
+      '45786966000049492a0008000000010012010300010000000600000000000000',
+      'hex'
+    );
+    const size = Buffer.alloc(2);
+    size.writeUInt16BE(exif.length + 2);
+    const bytes = Buffer.concat([
+      JPEG.subarray(0, 2),
+      Buffer.from([255, 225]),
+      size,
+      exif,
+      JPEG.subarray(2),
+    ]);
+    const f = await fixture(bytes);
+    const result = await createVisionView(f.input);
+    expect(result.status).toBe('available');
+    if (result.status !== 'available') throw new Error(result.reason);
+    expect(result.view.sourceImage).toMatchObject({ width: 32, height: 16 });
+    expect(result.view.deliveredImage).toMatchObject({ width: 16, height: 32, pixels: 512 });
+    expect(result.view.coverage.omissions).toEqual(['metadata']);
     await clean(f);
   });
   it('requires explicit intent before opening or launching anything', async () => {
