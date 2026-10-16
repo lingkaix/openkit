@@ -306,7 +306,7 @@ class PrivateManager:
                            "nsswitch.conf": "passwd: files\ngroup: files\n", "machine-id": uuid.uuid4().hex + "\n",
                            "os-release": "NAME=OpenKit-Fixture\nID=openkit-fixture\n"}.items():
             write(root / "etc" / name, data.encode())
-        write(root / "etc/dbus-1/system.conf", b'<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">\n<busconfig><type>system</type><user>root</user><listen>unix:path=/run/dbus/system_bus_socket</listen><policy context="default"><allow user="root"/><allow own="*"/><allow send_destination="*"/><allow receive_sender="*"/></policy></busconfig>\n')
+        write(root / "etc/dbus-1/system.conf", b'<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">\n<busconfig><type>system</type><listen>unix:path=/run/dbus/system_bus_socket</listen><policy context="default"><allow user="root"/><allow own="*"/><allow send_destination="*"/><allow receive_sender="*"/></policy></busconfig>\n')
         units = {"openkit-fixture.target": "[Unit]\nDefaultDependencies=no\nWants=dbus.service openkit-nanohost.service\n",
                  "dbus.service": "[Unit]\nDefaultDependencies=no\n[Service]\nType=simple\nRuntimeDirectory=dbus\nStandardError=append:/fixture/dbus.log\nExecStart=/usr/bin/dbus-daemon --nofork --nopidfile --nosyslog --config-file=/etc/dbus-1/system.conf\n",
                  "openkit-fixture-oracle.service": "[Unit]\nDefaultDependencies=no\n[Service]\nExecStart=/usr/bin/sleep infinity\n",
@@ -395,7 +395,10 @@ class PrivateManager:
                 dbus_log = self.root / "fixture/dbus.log"
                 if dbus_log.exists():
                     raw = dbus_log.read_bytes()[:16384]
+                    self.failure_facts["dbusDiagnosticBytes"] = len(raw)
                     for name, marker in (("MissingFile", b"No such file"), ("PermissionDenied", b"Permission denied"),
+                                         ("OperationNotPermitted", b"Operation not permitted"), ("Groups", b"group"),
+                                         ("Capabilities", b"capabil"), ("AppArmor", b"AppArmor"),
                                          ("UnknownUser", b"UID"), ("ConfigurationError", b"configuration"),
                                          ("InvalidElement", b"element"), ("Unsupported", b"not supported"),
                                          ("MissingDirectory", b"directory"), ("SecurityLabel", b"SELinux"),
@@ -460,6 +463,12 @@ def outer():
                      "reexec_bus_unavailable")
             facts.update(fixture.phase("after-reexec", case))
             fixture.stop()
+            # A fresh owned leaf avoids reusing a domain with enabled child controllers.
+            fixture.group.rmdir()
+            fixture.group = fixture.group.with_name("openkit-p29-live-" + uuid.uuid4().hex)
+            fixture.identity = None
+            fixture.group.mkdir()
+            fixture.identity = fixture.group.stat()
             fixture.start()
             facts.update(fixture.phase("finish", case))
             need((fixture.unrelated.stat().st_ino, fixture.unrelated.read_bytes()) == fixture.unrelated_before,
@@ -482,7 +491,10 @@ def outer():
             elif fixture is not None:
                 group_removed = not fixture.group.exists()
             if group_removed:
-                shutil.rmtree(root)
+                try:
+                    shutil.rmtree(root)
+                except OSError:
+                    failure = "private_root_cleanup_failed"
             facts["privateRootsRemoved"] = not root.exists()
         print(json.dumps({"case": case, "outcome": "failed" if failure else "passed", "cause": failure, "facts": facts}), flush=True)
         if failure:

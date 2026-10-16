@@ -4,10 +4,8 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-// Explicit host opt-in; once selected, missing tools or delegation fail the gate.
-test('nanohost-systemd.live.test.mjs private systemd preserves maintenance inhibition', {
-  skip: process.env.OPENKIT_TEST_NANOHOST_SYSTEMD_LIVE !== '1',
-}, () => {
+// Run explicitly with node --test; missing tools or delegation fail this gate.
+test('private systemd preserves maintenance inhibition', () => {
   assert.equal(process.platform, 'linux', 'The selected live fixture requires Linux.');
   const result = spawnSync('/usr/bin/python3', [
     '-I', '-B', fileURLToPath(new URL('./nanohost-systemd.live.test.py', import.meta.url)),
