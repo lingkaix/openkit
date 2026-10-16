@@ -1950,8 +1950,7 @@ export function registerWorkerInferenceRoutes({
                     responseTurnState = value;
                   },
                   onProviderHttpRejection: (status: number) => {
-                    // Stock can erase status at terminal wrapping. Keep this diagnostic
-                    // separate from routing evidence and reject a prior attempt's callback.
+                    // Keep stock HTTP evidence diagnostic-only and reject prior-attempt callbacks.
                     if (
                       activeExecution === execution &&
                       Number.isInteger(status) &&
