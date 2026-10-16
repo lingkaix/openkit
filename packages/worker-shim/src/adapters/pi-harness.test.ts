@@ -495,7 +495,7 @@ describe('Pi Harness integration', () => {
           ).toBe(true);
         }
       } finally {
-        console.info(
+        process.stdout.write(
           JSON.stringify({
             issue: 130,
             scope: 'two synthetic loopback Turns in one real Pi SDK host and Harness',
@@ -515,7 +515,7 @@ describe('Pi Harness integration', () => {
             incident: native.some((event) => event.stopReason === 'aborted')
               ? 'INCONCLUSIVE: native abort observed; inspect the correlated terminal sequence'
               : 'INCONCLUSIVE: self-stop not reproduced in the observed sequence',
-          })
+          }) + '\n'
         );
         proxy.closeAllConnections();
         await new Promise<void>((resolve) => proxy.close(() => resolve()));
