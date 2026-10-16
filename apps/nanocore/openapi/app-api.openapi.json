@@ -38343,6 +38343,27 @@
                     "max"
                   ]
                 },
+                "skillSelections": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "skillId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "digest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "skillId",
+                      "digest"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
                 "triggerSource": {
                   "anyOf": [
                     {
@@ -38916,6 +38937,27 @@
               "xhigh",
               "max"
             ]
+          },
+          "skillSelections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "skillId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "digest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "skillId",
+                "digest"
+              ],
+              "additionalProperties": false
+            }
           }
         },
         "required": [
@@ -41235,6 +41277,27 @@
               "xhigh",
               "max"
             ]
+          },
+          "skillSelections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "skillId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "digest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "skillId",
+                "digest"
+              ],
+              "additionalProperties": false
+            }
           },
           "triggerSource": {
             "anyOf": [
@@ -43683,6 +43746,27 @@
               "xhigh",
               "max"
             ]
+          },
+          "skillSelections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "skillId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "digest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "skillId",
+                "digest"
+              ],
+              "additionalProperties": false
+            }
           },
           "triggerSource": {
             "anyOf": [
@@ -46220,6 +46304,27 @@
               "xhigh",
               "max"
             ]
+          },
+          "skillSelections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "skillId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "digest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "skillId",
+                "digest"
+              ],
+              "additionalProperties": false
+            }
           },
           "triggerSource": {
             "anyOf": [
@@ -65089,6 +65194,27 @@
                   "max"
                 ]
               },
+              "skillSelections": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "skillId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "digest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "skillId",
+                    "digest"
+                  ],
+                  "additionalProperties": false
+                }
+              },
               "triggerSource": {
                 "anyOf": [
                   {
@@ -69756,6 +69882,27 @@
                   "xhigh",
                   "max"
                 ]
+              },
+              "skillSelections": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "skillId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "digest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "skillId",
+                    "digest"
+                  ],
+                  "additionalProperties": false
+                }
               },
               "triggerSource": {
                 "anyOf": [
@@ -83437,6 +83584,27 @@
                   "xhigh",
                   "max"
                 ]
+              },
+              "skillSelections": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "skillId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "digest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "skillId",
+                    "digest"
+                  ],
+                  "additionalProperties": false
+                }
               },
               "triggerSource": {
                 "anyOf": [
@@ -98482,5 +98650,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:efaaad56a2d1d7e2b10793d887e00604ea7b71c302c35ff2fb08b2016972e647"
+  "x-openkit-source-digest": "sha256:693c28efb63f12584a81ce1b0db36419c7a044d8bc1f6c764a5bd8f1653cb0e7"
 }
