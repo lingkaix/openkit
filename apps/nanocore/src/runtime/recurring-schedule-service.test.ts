@@ -262,6 +262,36 @@ describe('serialized recurring scanner', () => {
     });
   });
 
+  it('keeps unknown preparation fenced after current user authority is lost', async () => {
+    const { db, schedules, schedule, start } = fixture();
+    let rejectPreparation!: (error: Error) => void;
+    const prepare = vi.fn(
+      () =>
+        new Promise<RecurringPreparation>((_resolve, reject) => {
+          rejectPreparation = reject;
+        })
+    );
+    const { service, onError } = start(prepare);
+    const scan = service.runOnce();
+    db.sqlite
+      .prepare("UPDATE users SET status = 'disabled' WHERE id = ?")
+      .run(schedule.actor.responsibleUserId);
+    rejectPreparation(new Error('unknown preparation outcome'));
+    await scan;
+    const history = schedules.listHistory(schedule.id).items[0]!.record;
+    expect(history).toMatchObject({ state: 'recovery_required', attempts: [] });
+    db.sqlite
+      .prepare("UPDATE users SET status = 'active' WHERE id = ?")
+      .run(schedule.actor.responsibleUserId);
+    await service.runOnce();
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(schedules.listHistory(schedule.id).items[0]!.record).toEqual(history);
+    expect(
+      db.sqlite.prepare('SELECT count(*) AS n FROM scheduler_admission_entries').get()
+    ).toEqual({ n: 0 });
+  });
+
   it('honors the existing Workspace mutation fence before materialization', async () => {
     const { db, gate, workspace, start } = fixture();
     await gate.close(workspace.id);
