@@ -41,6 +41,7 @@ import {
   verifyWorkerContextPackageTrace,
   type WorkerContextPackageAuthorityReader,
   type WorkerContextPackageFiles,
+  WorkerContextPackageManifestSchema,
   type WorkerContextPackageTrace,
   writeWorkerContextPackageFiles,
   writeWorkerContextPackageTrace,
@@ -162,7 +163,7 @@ function createPackage(
         materialId: 'mat_00000000-0000-71c3-b271-61d90d2cd29c',
         mediaType: 'text/plain',
         parentRevisionId: null,
-        revisionId: 'rev_b1',
+        revisionId: 'mrev_00000000-0000-7000-8000-000000000003',
         sensitivity: 'internal',
       },
       {
@@ -172,8 +173,8 @@ function createPackage(
         inclusionReason: 'thread_binding',
         materialId: 'mat_00000000-0000-7dff-bea7-c084ff4fb19f',
         mediaType: 'text/markdown',
-        parentRevisionId: 'rev_a0',
-        revisionId: 'rev_a1',
+        parentRevisionId: 'mrev_00000000-0000-7000-8000-000000000001',
+        revisionId: 'mrev_00000000-0000-7000-8000-000000000002',
         sensitivity: 'public',
       },
     ],
@@ -345,7 +346,7 @@ function createAcceptedFixture(
       {
         materialId: 'mat_00000000-0000-7d3d-a336-0dbae085eb7e',
         reason: 'sensitive_content',
-        revisionId: 'rev_excluded_1',
+        revisionId: 'mrev_00000000-0000-7000-8000-000000000004',
         sensitivity: 'restricted',
       },
     ],
@@ -411,14 +412,14 @@ function createAcceptedFixture(
         ] as const
     ),
     [
-      'mat_00000000-0000-7d3d-a336-0dbae085eb7e:rev_excluded_1',
+      'mat_00000000-0000-7d3d-a336-0dbae085eb7e:mrev_00000000-0000-7000-8000-000000000004',
       {
         content: 'Restricted material.\n',
         contentDigest: sha256('Restricted material.\n'),
         materialId: 'mat_00000000-0000-7d3d-a336-0dbae085eb7e',
         mediaType: 'text/plain',
         parentRevisionId: null,
-        revisionId: 'rev_excluded_1',
+        revisionId: 'mrev_00000000-0000-7000-8000-000000000004',
         sensitivity: 'restricted' as const,
         workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
       },
@@ -808,8 +809,8 @@ describe('worker Context Package owner', () => {
     expect(first.fileInventory.map((entry) => entry.path)).toEqual([
       'instructions.md',
       'package.json',
-      'workspace/materials/mat_00000000-0000-71c3-b271-61d90d2cd29c/rev_b1.txt',
-      'workspace/materials/mat_00000000-0000-7dff-bea7-c084ff4fb19f/rev_a1.md',
+      'workspace/materials/mat_00000000-0000-71c3-b271-61d90d2cd29c/mrev_00000000-0000-7000-8000-000000000003.txt',
+      'workspace/materials/mat_00000000-0000-7dff-bea7-c084ff4fb19f/mrev_00000000-0000-7000-8000-000000000002.md',
     ]);
     expect(
       first.fileInventory.every((entry) => /^sha256:[a-f0-9]{64}$/.test(entry.contentDigest))
@@ -1567,4 +1568,29 @@ describe('worker Context Package owner', () => {
       expect(run, label).toThrow(expected);
     }
   });
+});
+
+it.each([
+  ['ws', WorkerContextPackageManifestSchema.shape.workspaceId],
+  ['th', WorkerContextPackageManifestSchema.shape.threadId],
+  ['tu', WorkerContextPackageManifestSchema.shape.turnId],
+  ['it', WorkerContextPackageManifestSchema.shape.workerRequestItemId],
+  ['it', WorkerContextPackageManifestSchema.shape.includedItemIds.element],
+  ['mat', WorkerContextPackageManifestSchema.shape.materialSelections.element.shape.materialId],
+  ['mrev', WorkerContextPackageManifestSchema.shape.materialSelections.element.shape.revisionId],
+  [
+    'mrev',
+    WorkerContextPackageManifestSchema.shape.materialSelections.element.shape.parentRevisionId,
+  ],
+] as const)('uses canonical %s admission in retained Context Package fields', (kind, schema) => {
+  for (const version of ['5', '7'])
+    expect(schema.safeParse(`${kind}_00000000-0000-${version}000-8000-000000000001`).success).toBe(
+      true
+    );
+  for (const value of [
+    'legacy',
+    'wrong_00000000-0000-7000-8000-000000000001',
+    `${kind}_00000000-0000-4000-8000-000000000001`,
+  ])
+    expect(schema.safeParse(value).success).toBe(false);
 });

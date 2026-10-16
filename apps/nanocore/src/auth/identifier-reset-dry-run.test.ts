@@ -130,7 +130,34 @@ it('re-registers the protected synthetic account set on a clean candidate and re
     oldIds.push(account.id);
     sourceWork.push(await publish(source, account.cookie, `source-${subject}`));
   }
+  const oldArtifactBytes = sourceWork.map((work) =>
+    JSON.stringify(source.store.getArtifact(work.workspaceId, work.artifactId))
+  );
   const candidate = deployment();
+  expect(candidate.root).not.toBe(source.root);
+  // This variable models selected ingress only; it changes no host or service.
+  let selectedIngress = source;
+  const verifiedSubjects = new Set<string>();
+  let administratorVerified = false;
+  let verifiedCandidate: ReturnType<typeof deployment> | null = null;
+  const switchCandidate = () => {
+    if (
+      verifiedSubjects.size !== subjects.length ||
+      !administratorVerified ||
+      verifiedCandidate === null
+    )
+      throw new Error('Candidate verification is incomplete.');
+    selectedIngress = verifiedCandidate;
+  };
+  const failedVerification = await candidate.app.request(...operationRequest('token.list', {}, {}));
+  expect(failedVerification.status).toBe(401);
+  expect(() => switchCandidate()).toThrow('Candidate verification is incomplete.');
+  expect(selectedIngress).toBe(source);
+  expect(
+    sourceWork.map((work) =>
+      JSON.stringify(source.store.getArtifact(work.workspaceId, work.artifactId))
+    )
+  ).toEqual(oldArtifactBytes);
   const newIds: string[] = [];
   const candidateWork = [];
   for (const subject of subjects) {
@@ -158,9 +185,6 @@ it('re-registers the protected synthetic account set on a clean candidate and re
     expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
   });
   expect(isEntityId('tok', admin.tokenId)).toBe(true);
-  const oldArtifactBytes = sourceWork.map((work) =>
-    JSON.stringify(source.store.getArtifact(work.workspaceId, work.artifactId))
-  );
   // Exercise the existing local Workspace fence; this is not proof of a deployment-wide writer fence.
   for (const work of sourceWork) await source.admission.close(work.workspaceId);
   const oldSession = await authenticate(source, subjects[0], false);
@@ -205,13 +229,20 @@ it('re-registers the protected synthetic account set on a clean candidate and re
     expect(read.status).toBe(200);
     const artifact = (await read.json()) as { content: { body: string } };
     expect(artifact.content.body).toBe(work.content);
+    verifiedSubjects.add(subject);
     if (index === 2) {
       const adminRead = await reopened.app.request(
         ...operationRequest('token.list', {}, { headers: { cookie: account.cookie } })
       );
       expect(adminRead.status).toBe(200);
+      administratorVerified = true;
     }
   }
+  expect(() => switchCandidate()).toThrow('Candidate verification is incomplete.');
+  expect(selectedIngress).toBe(source);
+  verifiedCandidate = reopened;
+  switchCandidate();
+  expect(selectedIngress).toBe(reopened);
   expect(
     sourceWork.map((work) =>
       JSON.stringify(source.store.getArtifact(work.workspaceId, work.artifactId))

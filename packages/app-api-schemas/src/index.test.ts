@@ -378,7 +378,7 @@ describe('S16 Material and Artifact Review schemas', () => {
   const revisionSummary = {
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
-    revisionId: 'revision_1',
+    revisionId: 'mrev_00000000-0000-7000-8000-000000000001',
     parentRevisionId: null,
     mediaType: 'text/markdown',
     contentDigest,
@@ -387,7 +387,7 @@ describe('S16 Material and Artifact Review schemas', () => {
   } as const;
   const unresolvedReview = {
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    reviewId: 'ar_00000000-0000-7fec-bd54-6ef3c5727e32',
+    reviewId: 'arev_00000000-0000-5fec-bd54-6ef3c5727e32',
     artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
     artifactVersion: 1,
     contentDigest,
@@ -423,7 +423,7 @@ describe('S16 Material and Artifact Review schemas', () => {
       [
         SubmitArtifactReviewDecisionResponseSchema,
         {
-          reviewId: 'ar_00000000-0000-7fec-bd54-6ef3c5727e32',
+          reviewId: 'arev_00000000-0000-5fec-bd54-6ef3c5727e32',
           artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
           artifactVersion: 1,
           decision: 'accepted',
@@ -439,7 +439,10 @@ describe('S16 Material and Artifact Review schemas', () => {
       [ListWorkspaceMaterialRevisionsResponseSchema, { revisions: [revisionSummary] }],
       [
         SaveWorkspaceMaterialRevisionResponseSchema,
-        { materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3', revisionId: 'revision_1' },
+        {
+          materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+          revisionId: 'mrev_00000000-0000-7000-8000-000000000001',
+        },
       ],
       [
         GetWorkspaceMaterialRevisionResponseSchema,
@@ -454,7 +457,7 @@ describe('S16 Material and Artifact Review schemas', () => {
             resource: material,
             currentRevision: revisionSummary,
             inclusionState: 'included',
-            latestQueuedRevisionId: 'revision_1',
+            latestQueuedRevisionId: 'mrev_00000000-0000-7000-8000-000000000001',
             lastWorkerSeenRevisionId: null,
             currentTurnRevisionId: null,
             activeDelivery: {
@@ -465,7 +468,7 @@ describe('S16 Material and Artifact Review schemas', () => {
               goalId: 'goal_demo',
               activeTurnId: 'tu_00000000-0000-7f6c-8538-e35e2d71b14f',
               materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
-              revisionId: 'revision_1',
+              revisionId: 'mrev_00000000-0000-7000-8000-000000000001',
               contentDigest,
             },
           },
@@ -521,7 +524,7 @@ describe('S16 Material and Artifact Review schemas', () => {
           resource: material,
           currentRevision: revisionSummary,
           inclusionState: 'included',
-          latestQueuedRevisionId: 'revision_1',
+          latestQueuedRevisionId: 'mrev_00000000-0000-7000-8000-000000000001',
           lastWorkerSeenRevisionId: null,
           currentTurnRevisionId: null,
           activeDelivery: {
@@ -532,7 +535,7 @@ describe('S16 Material and Artifact Review schemas', () => {
             goalId: 'goal_demo',
             activeTurnId: 'tu_00000000-0000-7f6c-8538-e35e2d71b14f',
             materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
-            revisionId: 'revision_1',
+            revisionId: 'mrev_00000000-0000-7000-8000-000000000001',
             contentDigest,
           },
         },
@@ -602,7 +605,7 @@ describe('S16 Material and Artifact Review schemas', () => {
           requestId: 'request_exclude',
           expectedBindingState: 'bound',
           expectedInclusionState: 'included',
-          expectedQueuedRevisionId: 'revision_1',
+          expectedQueuedRevisionId: 'mrev_00000000-0000-7000-8000-000000000001',
         },
         'workspaceId',
       ],
@@ -649,7 +652,7 @@ describe('S16 Material and Artifact Review schemas', () => {
     expect(
       SaveWorkspaceMaterialRevisionRequestSchema.safeParse({
         ...request,
-        expectedRevisionId: 'revision_1',
+        expectedRevisionId: 'mrev_00000000-0000-7000-8000-000000000001',
       }).success
     ).toBe(true);
     expect(
@@ -760,7 +763,7 @@ describe('S16 Material and Artifact Review schemas', () => {
       decision: 'accepted',
       decisionActorId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
       decidedAt: timestamp,
-      appliedMaterialRevisionId: 'revision_2',
+      appliedMaterialRevisionId: 'mrev_00000000-0000-7000-8000-000000000002',
     } as const;
     expect(
       ListArtifactReviewsResponseSchema.safeParse({ reviews: [acceptedProposalReview] }).success
@@ -768,7 +771,7 @@ describe('S16 Material and Artifact Review schemas', () => {
     for (const review of [
       { ...decidedReview, feedback: null },
       { ...decidedReview, followUpTurnId: null },
-      { ...decidedReview, appliedMaterialRevisionId: 'revision_2' },
+      { ...decidedReview, appliedMaterialRevisionId: 'mrev_00000000-0000-7000-8000-000000000002' },
       { ...acceptedProposalReview, appliedMaterialRevisionId: null },
       { ...unresolvedReview, decidedAt: timestamp },
     ]) {
@@ -778,7 +781,7 @@ describe('S16 Material and Artifact Review schemas', () => {
     }
     expect(
       SubmitArtifactReviewDecisionResponseSchema.safeParse({
-        reviewId: 'ar_00000000-0000-7fec-bd54-6ef3c5727e32',
+        reviewId: 'arev_00000000-0000-5fec-bd54-6ef3c5727e32',
         artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
         artifactVersion: 1,
         decision: 'accepted',

@@ -82,7 +82,11 @@ test('App update preflight maps one strict empty-input administrator read', asyn
   const preflight = operationCatalog.find((entry) => entry.id === 'app-update.preflight');
   assert.equal(preflight.mutating, false);
   assert.deepEqual(preflight.inputSchema.parse({}), {});
-  assert.equal(preflight.inputSchema.safeParse({ workspaceId: 'ws_00000000-0000-762a-9808-5bd4bc2f5b3f' }).success, false);
+  assert.equal(
+    preflight.inputSchema.safeParse({ workspaceId: 'ws_00000000-0000-762a-9808-5bd4bc2f5b3f' })
+      .success,
+    false
+  );
   assert.equal(preflight.inputSchema.safeParse({ requestId: 'not-an-input' }).success, false);
   let captured;
   const observation = {
@@ -231,7 +235,10 @@ test('native environment administration maps exact public reads and revision-bou
     ['update', updateInput],
   ]);
   assert.equal(
-    read.inputSchema.safeParse({ ...readInput, workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580' }).success,
+    read.inputSchema.safeParse({
+      ...readInput,
+      workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
+    }).success,
     false
   );
   assert.equal(
@@ -247,7 +254,10 @@ test('Worker environment discovery preserves admin scope and exact target routin
   assert.ok(status);
   assert.match(status.requiredAccess, /deployment admin.*Workspace.*source-audience/);
   const storageRef = 'wst_00000000-0000-7000-8000-000000000001';
-  const input = status.inputSchema.parse({ workspaceId: 'ws_00000000-0000-7a39-a8d3-cf329f50118b', storageRef });
+  const input = status.inputSchema.parse({
+    workspaceId: 'ws_00000000-0000-7a39-a8d3-cf329f50118b',
+    storageRef,
+  });
   let observed;
   const result = await status.handler(
     {
@@ -262,7 +272,9 @@ test('Worker environment discovery preserves admin scope and exact target routin
     },
     input
   );
-  assert.deepEqual(observed, [{ workspaceId: 'ws_00000000-0000-7a39-a8d3-cf329f50118b', storageRef }]);
+  assert.deepEqual(observed, [
+    { workspaceId: 'ws_00000000-0000-7a39-a8d3-cf329f50118b', storageRef },
+  ]);
   assert.deepEqual(result, { inspected: true });
   assert.equal(
     status.inputSchema.safeParse({ ...input, hostPath: '/private/other' }).success,
@@ -433,7 +445,10 @@ test('Worker environment preparation and activation use the global Agent contrac
   );
   assert.deepEqual(observedPrepare, [prepareInput]);
   assert.equal(
-    prepare.inputSchema.safeParse({ ...prepareInput, workspaceId: 'ws_00000000-0000-7f29-bd5e-f9ef21ea57f9' }).success,
+    prepare.inputSchema.safeParse({
+      ...prepareInput,
+      workspaceId: 'ws_00000000-0000-7f29-bd5e-f9ef21ea57f9',
+    }).success,
     false
   );
   assert.equal(
@@ -475,7 +490,9 @@ test('Worker environment preparation and activation use the global Agent contrac
   );
 
   const activation = {
-    affectedStorage: [{ expectedRevision: 4, storageRef: 'wst_00000000-0000-7000-8000-000000000001' }],
+    affectedStorage: [
+      { expectedRevision: 4, storageRef: 'wst_00000000-0000-7000-8000-000000000001' },
+    ],
     configuration,
     replaceNow: prepareInput.replaceNow,
     resolvedCandidate: {
@@ -853,7 +870,7 @@ test('one catalog covers the checked App API and public Core projection', async 
     workspaceId: 'ws_00000000-0000-7588-a4ef-fda698630734',
     proposalId: 'proposal_1',
     requestId: '00000000-0000-4000-8000-000000000002',
-    reviewId: 'review_1',
+    reviewId: 'kr_00000000-0000-5000-8000-000000000001',
     knowledgePageId: 'lessons/release-review',
     expectedContentDigest: `sha256:${'a'.repeat(64)}`,
   };
@@ -1060,7 +1077,11 @@ test('my admin-token operations use strict canonical-user schemas and client met
       assert.equal(operation.inputSchema.safeParse({ ...input, ...extra }).success, false);
     }
     if (action === 'list') {
-      assert.equal(operation.inputSchema.safeParse({ tokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629' }).success, false);
+      assert.equal(
+        operation.inputSchema.safeParse({ tokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629' })
+          .success,
+        false
+      );
     } else {
       assert.deepEqual(
         Object.keys(operation.inputSchema.shape),
@@ -1173,7 +1194,11 @@ test('workspace leave uses the canonical-user schema and client method', async (
     'canonical user: implicit local actor or server-admin bearer token'
   );
   const requestId = '11111111-1111-4111-8111-111111111111';
-  const input = { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', expectedRevision: 1, requestId };
+  const input = {
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    expectedRevision: 1,
+    requestId,
+  };
   for (const extra of [
     { userId: 'other' },
     { cookie: 'session' },
@@ -1183,7 +1208,10 @@ test('workspace leave uses the canonical-user schema and client method', async (
     assert.equal(operation.inputSchema.safeParse({ ...input, ...extra }).success, false);
   }
   assert.equal(
-    operation.inputSchema.safeParse({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001', requestId }).success,
+    operation.inputSchema.safeParse({
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      requestId,
+    }).success,
     false
   );
   assert.equal(operation.inputSchema.safeParse({ expectedRevision: 1, requestId }).success, false);
@@ -1263,7 +1291,11 @@ test('bundled workspace leave preserves typed transport, request IDs, and auth d
     const denied = await runCli(
       args,
       { ...env, OPENKIT_NANOCORE_TOKEN: token },
-      JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001', expectedRevision: 1, requestId }),
+      JSON.stringify({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        expectedRevision: 1,
+        requestId,
+      }),
       [
         dataModule(`
         globalThis.fetch = async (url, options) => {
@@ -1302,13 +1334,26 @@ test('own invitation operations use canonical-user schemas and client methods', 
     );
     assert.equal(operation.mutating, action !== 'list');
     const input =
-      action === 'list' ? {} : { invitationId: 'inv_00000000-0000-75d6-adfc-c104d2055220', requestId, expectedRevision: 1 };
-    for (const extra of [{ workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580' }, { userId: 'other' }, { cookie: 'session' }]) {
+      action === 'list'
+        ? {}
+        : {
+            invitationId: 'inv_00000000-0000-75d6-adfc-c104d2055220',
+            requestId,
+            expectedRevision: 1,
+          };
+    for (const extra of [
+      { workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580' },
+      { userId: 'other' },
+      { cookie: 'session' },
+    ]) {
       assert.equal(operation.inputSchema.safeParse({ ...input, ...extra }).success, false);
     }
     if (action !== 'list') {
       assert.equal(
-        operation.inputSchema.safeParse({ invitationId: 'inv_00000000-0000-75d6-adfc-c104d2055220', requestId }).success,
+        operation.inputSchema.safeParse({
+          invitationId: 'inv_00000000-0000-75d6-adfc-c104d2055220',
+          requestId,
+        }).success,
         false
       );
       assert.equal(
@@ -1356,7 +1401,10 @@ test('bundled own invitation calls preserve typed transport and canonical auth d
       revokedAt: null,
     };
     const response = action === 'list' ? { items: [] } : { invitation };
-    const input = action === 'list' ? {} : { invitationId: 'inv_00000000-0000-75d6-adfc-c104d2055220', expectedRevision: 1 };
+    const input =
+      action === 'list'
+        ? {}
+        : { invitationId: 'inv_00000000-0000-75d6-adfc-c104d2055220', expectedRevision: 1 };
     const args = ['ops', 'call', `workspace.my-invitation-${action}`, '--input', '-'];
     const env = { OPENKIT_NANOCORE_URL: 'http://127.0.0.1:3456', OPENKIT_NANOCORE_TOKEN: '' };
     const result = await runCli(args, env, JSON.stringify(input), [
@@ -1496,7 +1544,11 @@ test('restricted Material content operations fail before content-bearing transpo
     ],
     [
       'material.revision-read',
-      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3', revisionId: 'mrev_00000000-0000-7444-8d8f-e35a7aaa68ab' },
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+        revisionId: 'mrev_00000000-0000-7444-8d8f-e35a7aaa68ab',
+      },
     ],
     [
       'material.revision-save',
@@ -1521,7 +1573,10 @@ test('restricted Material content operations fail before content-bearing transpo
   assert.deepEqual(contentCalls, []);
   assert.deepEqual(
     metadataCalls,
-    Array(2).fill({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001', materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3' })
+    Array(2).fill({
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+    })
   );
 });
 
@@ -1945,14 +2000,22 @@ test('portable archive operations stream bytes and refuse local path replacement
 
   await download.handler(
     { client },
-    { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4', destinationPath }
+    {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+      destinationPath,
+    }
   );
   assert.deepEqual(readFileSync(destinationPath), bytes);
   assert.equal(statSync(destinationPath).mode & 0o777, 0o600);
   await assert.rejects(
     download.handler(
       { client },
-      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4', destinationPath }
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+        destinationPath,
+      }
     ),
     (error) => error.code === 'archive_destination_exists'
   );
@@ -1992,7 +2055,11 @@ test('portable archive operations stream bytes and refuse local path replacement
     await assert.rejects(
       download.handler(
         { client: raceClient },
-        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4', destinationPath: raceDestination }
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+          destinationPath: raceDestination,
+        }
       ),
       (error) => error.code === 'archive_download_failed'
     );
@@ -2021,7 +2088,11 @@ test('portable archive operations stream bytes and refuse local path replacement
   await assert.rejects(
     download.handler(
       { client: partialClient },
-      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4', destinationPath: partialDestination }
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+        destinationPath: partialDestination,
+      }
     ),
     (error) => error.code === 'archive_download_failed'
   );
@@ -2663,7 +2734,11 @@ for (const platform of ['darwin', 'linux']) {
     for (const action of ['create', 'rotate']) {
       const body =
         action === 'create'
-          ? { scope: 'workspace', workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'], expiresAt: record.expiresAt }
+          ? {
+              scope: 'workspace',
+              workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
+              expiresAt: record.expiresAt,
+            }
           : { graceSeconds: 60, tokenId: 'tok_00000000-0000-7dac-b3c3-75dfb2fb4c18' };
       const input = {
         ...body,
@@ -2674,7 +2749,13 @@ for (const platform of ['darwin', 'linux']) {
         token: `okt_fake_${action}`,
         record,
         ...(action === 'rotate'
-          ? { rotatedRecord: { ...record, tokenId: 'tok_00000000-0000-7dac-b3c3-75dfb2fb4c18', status: 'rotated' } }
+          ? {
+              rotatedRecord: {
+                ...record,
+                tokenId: 'tok_00000000-0000-7dac-b3c3-75dfb2fb4c18',
+                status: 'rotated',
+              },
+            }
           : {}),
       };
       const url = `${endpoint}/api/app/operations/token.${action}`;
@@ -2977,8 +3058,17 @@ test('the bundled CLI rejects obsolete os-keychain Vault responses', async () =>
 });
 
 for (const [operation, required] of [
-  ['vault.secret-create', { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', secretKind: 'github-token' }],
-  ['vault.secret-rotate', { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', referenceId: 'vault_00000000-0000-7be8-b8c8-3d3005ec3f3c' }],
+  [
+    'vault.secret-create',
+    { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', secretKind: 'github-token' },
+  ],
+  [
+    'vault.secret-rotate',
+    {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      referenceId: 'vault_00000000-0000-7be8-b8c8-3d3005ec3f3c',
+    },
+  ],
 ]) {
   test(`bundled ${operation} rejects malformed secret input without disclosure or transport`, async () => {
     const material = 'review-fake-canary';
@@ -3011,12 +3101,20 @@ test('bundled Vault secret writes keep material in stdin bodies and redact upstr
   for (const [operation, input] of [
     [
       'vault.secret-create',
-      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', secretKind: 'github-token', material },
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        secretKind: 'github-token',
+        material,
+      },
       '/secrets',
     ],
     [
       'vault.secret-rotate',
-      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', referenceId: 'vault_00000000-0000-7be8-b8c8-3d3005ec3f3c', material },
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        referenceId: 'vault_00000000-0000-7be8-b8c8-3d3005ec3f3c',
+        material,
+      },
       '/secrets/vault_00000000-0000-7be8-b8c8-3d3005ec3f3c/rotate',
     ],
   ]) {
@@ -3240,7 +3338,11 @@ test('the bundled CLI downloads a portable archive only to a new exact destinati
     OPENKIT_NANOCORE_URL: 'http://nanocore.example',
     OPENKIT_NANOCORE_TOKEN: '',
   };
-  const input = JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001', exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4', destinationPath });
+  const input = JSON.stringify({
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+    destinationPath,
+  });
 
   const downloaded = await runCli(args, env, input, [fetchStub]);
   assert.equal(downloaded.code, 0);
@@ -3515,8 +3617,16 @@ test('dashboard and search catalog mappings replace exactly their exclusions', a
       'thread.dashboard',
       'thread.dashboard',
       'thread.dashboard',
-      { workspaceId: 'ws_00000000-0000-7ff3-a4b6-e4b2e1ee8f3c', threadId: 'th_00000000-0000-74b3-a7b1-84ca4d6ac0b0' },
-      [{ workspaceId: 'ws_00000000-0000-7ff3-a4b6-e4b2e1ee8f3c', threadId: 'th_00000000-0000-74b3-a7b1-84ca4d6ac0b0' }],
+      {
+        workspaceId: 'ws_00000000-0000-7ff3-a4b6-e4b2e1ee8f3c',
+        threadId: 'th_00000000-0000-74b3-a7b1-84ca4d6ac0b0',
+      },
+      [
+        {
+          workspaceId: 'ws_00000000-0000-7ff3-a4b6-e4b2e1ee8f3c',
+          threadId: 'th_00000000-0000-74b3-a7b1-84ca4d6ac0b0',
+        },
+      ],
     ],
     ['app.search', 'app.search', 'app.search', { query: 'needle' }, [{ query: 'needle' }]],
     [
@@ -3565,7 +3675,10 @@ test('dashboard and search catalog mappings replace exactly their exclusions', a
     assert.deepEqual(observed, args);
     assert.deepEqual(result, { items: [] });
     assert.equal(
-      entry.inputSchema.safeParse({ ...input, privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' }).success,
+      entry.inputSchema.safeParse({
+        ...input,
+        privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+      }).success,
       false
     );
   }
@@ -3573,14 +3686,25 @@ test('dashboard and search catalog mappings replace exactly their exclusions', a
 
 test('bundled dashboard and search reads retain authorization errors without leaking credentials', async () => {
   for (const [operation, input, path] of [
-    ['workspace.dashboard', { workspaceId: 'ws_00000000-0000-7ff3-a4b6-e4b2e1ee8f3c' }, '/api/app/operations/workspace.dashboard'],
+    [
+      'workspace.dashboard',
+      { workspaceId: 'ws_00000000-0000-7ff3-a4b6-e4b2e1ee8f3c' },
+      '/api/app/operations/workspace.dashboard',
+    ],
     [
       'thread.dashboard',
-      { workspaceId: 'ws_00000000-0000-7ff3-a4b6-e4b2e1ee8f3c', threadId: 'th_00000000-0000-7915-b626-0b698e2552dc' },
+      {
+        workspaceId: 'ws_00000000-0000-7ff3-a4b6-e4b2e1ee8f3c',
+        threadId: 'th_00000000-0000-7915-b626-0b698e2552dc',
+      },
       '/api/app/operations/thread.dashboard',
     ],
     ['app.search', { query: 'private needle' }, '/api/app/operations/app.search'],
-    ['worker.list', { workspaceId: 'ws_00000000-0000-7ff3-a4b6-e4b2e1ee8f3c' }, '/api/app/operations/worker.list'],
+    [
+      'worker.list',
+      { workspaceId: 'ws_00000000-0000-7ff3-a4b6-e4b2e1ee8f3c' },
+      '/api/app/operations/worker.list',
+    ],
   ]) {
     for (const status of [401, 403, 404]) {
       const result = await runCli(
@@ -3629,7 +3753,10 @@ test('Goal publishes precisely its ten derived semantic operations and retires s
     ].sort()
   );
   const read = operationCatalog.find((operation) => operation.id === 'goal.read');
-  const input = { workspaceId: 'ws_00000000-0000-796a-8af7-97608a790532', threadId: 'th_00000000-0000-7264-9729-c1391de4f71e' };
+  const input = {
+    workspaceId: 'ws_00000000-0000-796a-8af7-97608a790532',
+    threadId: 'th_00000000-0000-7264-9729-c1391de4f71e',
+  };
   let observed;
   const result = await read.handler(
     {

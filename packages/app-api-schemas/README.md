@@ -52,7 +52,7 @@ Capability usage read models extend the canonical protocol `CapabilityCall` whil
 
 Runtime configuration file metadata includes the deployment-admin-only Workspace MCP catalog kind; the App API carries its source text and JSON Schema but does not project server topology into worker or ordinary product read models.
 
-Artifact and Material interaction schemas remain App API projections: the version-owned Artifact Review view excludes private decision request proof, Material views expose immutable revision identity without mutation lineage, and every decision body targets its exact owning route rather than a generic review verdict.
+Artifact and Material interaction schemas remain App API projections: the version-owned Artifact Review view excludes private decision request proof, Material views admit canonical `mrev` revisions and `arev` Review identities, including nested revision links and operation inputs, without mutation lineage, and every decision body targets its exact owning route rather than a generic review verdict.
 
 Knowledge Proposal page ids and page-source references reserve the final `index` and `log` segments at every hierarchy level, matching OKF reserved filenames.
 

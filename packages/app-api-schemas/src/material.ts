@@ -1,7 +1,9 @@
 import {
   ArtifactIdSchema,
+  ArtifactReviewIdSchema,
   ItemIdSchema,
   MaterialIdSchema,
+  MaterialRevisionIdSchema,
   ThreadIdSchema,
   TimestampSchema,
   TurnIdSchema,
@@ -37,7 +39,7 @@ export const WorkspaceMaterialViewSchema = z
     materialId: MaterialIdSchema,
     title: z.string().min(1),
     kind: materialKindSchema,
-    currentRevisionId: opaqueIdSchema.nullable(),
+    currentRevisionId: MaterialRevisionIdSchema.nullable(),
     sensitivity: materialSensitivitySchema,
     createdAt: TimestampSchema,
     updatedAt: TimestampSchema,
@@ -49,8 +51,8 @@ export const WorkspaceMaterialRevisionSummarySchema = z
   .object({
     workspaceId: WorkspaceIdSchema,
     materialId: MaterialIdSchema,
-    revisionId: opaqueIdSchema,
-    parentRevisionId: opaqueIdSchema.nullable(),
+    revisionId: MaterialRevisionIdSchema,
+    parentRevisionId: MaterialRevisionIdSchema.nullable(),
     mediaType: materialMediaTypeSchema,
     contentDigest: contentDigestSchema,
     authorId: opaqueIdSchema,
@@ -67,7 +69,7 @@ export const WorkspaceMaterialRevisionViewSchema = WorkspaceMaterialRevisionSumm
 export const ArtifactMaterialProposalSchema = z
   .object({
     materialId: MaterialIdSchema,
-    baseRevisionId: opaqueIdSchema,
+    baseRevisionId: MaterialRevisionIdSchema,
     baseContentDigest: contentDigestSchema,
   })
   .strict();
@@ -76,7 +78,7 @@ export const ArtifactMaterialProposalSchema = z
 export const ArtifactReviewViewSchema = z
   .object({
     workspaceId: WorkspaceIdSchema,
-    reviewId: opaqueIdSchema,
+    reviewId: ArtifactReviewIdSchema,
     artifactId: ArtifactIdSchema,
     artifactVersion: z.number().int().positive(),
     contentDigest: contentDigestSchema,
@@ -89,7 +91,7 @@ export const ArtifactReviewViewSchema = z
     feedback: z.string().min(1).nullable(),
     decidedAt: TimestampSchema.nullable(),
     followUpTurnId: TurnIdSchema.nullable(),
-    appliedMaterialRevisionId: opaqueIdSchema.nullable(),
+    appliedMaterialRevisionId: MaterialRevisionIdSchema.nullable(),
     createdAt: TimestampSchema,
   })
   .strict()
@@ -156,13 +158,13 @@ export const ArtifactReviewViewSchema = z
 export const ThreadMaterialActiveDeliverySchema = z
   .object({
     state: z.enum(['queued', 'applied']),
-    pendingTurnId: opaqueIdSchema,
+    pendingTurnId: TurnIdSchema,
     requestId: requestIdSchema,
-    contentItemId: opaqueIdSchema,
+    contentItemId: ItemIdSchema,
     goalId: opaqueIdSchema,
-    activeTurnId: opaqueIdSchema,
+    activeTurnId: TurnIdSchema,
     materialId: MaterialIdSchema,
-    revisionId: opaqueIdSchema,
+    revisionId: MaterialRevisionIdSchema,
     contentDigest: contentDigestSchema,
   })
   .strict();
@@ -175,9 +177,9 @@ export const ThreadMaterialViewSchema = z
     resource: WorkspaceMaterialViewSchema,
     currentRevision: WorkspaceMaterialRevisionSummarySchema.nullable(),
     inclusionState: z.enum(['included', 'excluded']),
-    latestQueuedRevisionId: opaqueIdSchema.nullable(),
-    lastWorkerSeenRevisionId: opaqueIdSchema.nullable(),
-    currentTurnRevisionId: opaqueIdSchema.nullable(),
+    latestQueuedRevisionId: MaterialRevisionIdSchema.nullable(),
+    lastWorkerSeenRevisionId: MaterialRevisionIdSchema.nullable(),
+    currentTurnRevisionId: MaterialRevisionIdSchema.nullable(),
     activeDelivery: ThreadMaterialActiveDeliverySchema.nullable(),
   })
   .strict();
@@ -287,7 +289,7 @@ export const SubmitArtifactReviewDecisionRequestSchema = z
 /** Response payload after deciding one version-keyed Artifact Review. */
 export const SubmitArtifactReviewDecisionResponseSchema = z
   .object({
-    reviewId: opaqueIdSchema,
+    reviewId: ArtifactReviewIdSchema,
     artifactId: ArtifactIdSchema,
     artifactVersion: z.number().int().positive(),
     decision: ArtifactReviewDecisionSchema,
@@ -324,7 +326,7 @@ export const CreateWorkspaceMaterialResponseSchema = z
 export const SaveWorkspaceMaterialRevisionRequestSchema = z
   .object({
     requestId: requestIdSchema,
-    expectedRevisionId: opaqueIdSchema.nullable(),
+    expectedRevisionId: MaterialRevisionIdSchema.nullable(),
     contentDigest: contentDigestSchema,
     content: z.string(),
   })
@@ -334,7 +336,7 @@ export const SaveWorkspaceMaterialRevisionRequestSchema = z
 export const SaveWorkspaceMaterialRevisionResponseSchema = z
   .object({
     materialId: MaterialIdSchema,
-    revisionId: opaqueIdSchema,
+    revisionId: MaterialRevisionIdSchema,
   })
   .strict();
 
@@ -378,7 +380,7 @@ export const ExcludeThreadMaterialRequestSchema = z
     requestId: requestIdSchema,
     expectedBindingState: z.literal('bound'),
     expectedInclusionState: z.literal('included'),
-    expectedQueuedRevisionId: opaqueIdSchema,
+    expectedQueuedRevisionId: MaterialRevisionIdSchema,
   })
   .strict();
 

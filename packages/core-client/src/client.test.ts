@@ -2561,7 +2561,7 @@ describe('createCoreClient', () => {
     const contentDigest = `sha256:${'a'.repeat(64)}`;
     const review = {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      reviewId: 'review_demo',
+      reviewId: 'arev_00000000-0000-5000-8000-000000000001',
       artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
       artifactVersion: 1,
       contentDigest,

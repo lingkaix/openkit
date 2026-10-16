@@ -177,7 +177,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     successStatus: 200,
     inputSchema: NarrowWorkspaceVaultGrantRequestSchema.safeExtend({
       workspaceId: WorkspaceIdSchema,
-      grantId: z.string().min(1),
+      grantId: VaultGrantIdSchema,
     }).strict(),
     outputSchema: NarrowWorkspaceVaultGrantResponseSchema,
     credentials: ['local-user', 'user-session', 'user-bearer', 'deployment-administrator'],

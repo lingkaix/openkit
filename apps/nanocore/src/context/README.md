@@ -27,3 +27,5 @@ See [Work Model](../../../../docs/core/work-model.md).
 Revalidating a parsed Context Package trace with its retained original requires equality of their normalized known core; a changed supplied core fails closed before serialization.
 
 A conversation-to-Task receiving Thread retains the entry owner's existing frozen Knowledge selection choice. Direct Task entry still requires its single selection; a Chat handoff with no selection still needs its exact persisted handoff lineage to admit null. The identifier cutover changes neither query triggers nor accepted selection bytes.
+
+Context Package manifests and traces reuse the Protocol kind validators for Workspace, Thread, Turn, Item, logical AgentSession, Material and Material revision references. Package digests, authored Goal/Task selectors, native snapshots and request correlation keep their existing codecs.

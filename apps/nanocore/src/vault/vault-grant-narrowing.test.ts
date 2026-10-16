@@ -10,11 +10,16 @@ import { assertCurrentMcpVaultAuthority } from '../worker-mcp-routes.js';
 import {
   createVaultGrant,
   getVaultGrant,
+  importWorkspaceVaultGrants,
   listVaultGrants,
   type NarrowVaultGrantConstraints,
   narrowVaultGrant,
 } from './vault-grants.js';
-import { createVaultReference } from './vault-references.js';
+import {
+  createVaultReference,
+  importUnboundWorkspaceVaultReference,
+  rebindWorkspaceVaultReference,
+} from './vault-references.js';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -61,6 +66,39 @@ describe('Vault grant narrowing', () => {
         })
       ).toThrow('Grant authority is not current.');
       expect(listVaultGrants(db)).toEqual([grant]);
+    } finally {
+      db.sqlite.close();
+    }
+  });
+  it('refuses imported history after local reference rebind, including a null Approval', () => {
+    const { db, grant, reference, workspaceId } = fixture();
+    try {
+      db.sqlite.prepare('DELETE FROM vault_grants WHERE grant_id = ?').run(grant.grantId);
+      db.sqlite
+        .prepare('DELETE FROM vault_references WHERE reference_id = ?')
+        .run(reference.referenceId);
+      importUnboundWorkspaceVaultReference(db, { ...reference, workspaceId });
+      importWorkspaceVaultGrants(db, [grant]);
+      const rebound = rebindWorkspaceVaultReference(db, {
+        workspaceId,
+        referenceId: reference.referenceId,
+        backendKind: 'encrypted-file',
+        backendLocator: 'synthetic-rebound',
+        currentVersion: 1,
+      });
+      expect(rebound.status).toBe('active');
+      const imported = getVaultGrant(db, grant.grantId);
+      expect(imported).toMatchObject({ issuance: 'imported-history', approvalId: null });
+      const replacementGrantId = allocateEntityId('grant');
+      expect(() =>
+        narrowVaultGrant(db, {
+          grantId: grant.grantId,
+          replacementGrantId,
+          constraints: { targetAgentId: randomUUID() },
+        })
+      ).toThrow('Grant authority is not current.');
+      expect(getVaultGrant(db, replacementGrantId)).toBeNull();
+      expect(listVaultGrants(db)).toEqual([imported]);
     } finally {
       db.sqlite.close();
     }

@@ -163,7 +163,7 @@ export function narrowVaultGrant(
     const reference = original ? getVaultReference(coreDb, original.vaultReferenceId) : null;
     if (
       !original ||
-      !isTargetIssuedEffectAuthority(original.grantId) ||
+      original.issuance !== 'target' ||
       (original.approvalId !== null &&
         (!isTargetIssuedEffectAuthority(original.approvalId) ||
           original.policyDecisionId === null)) ||

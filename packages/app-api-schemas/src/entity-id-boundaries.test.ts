@@ -21,6 +21,7 @@ import {
   RegisterKnowledgeSourceRequestSchema,
 } from './knowledge-manager.js';
 import { KNOWLEDGE_OPERATION_DEFINITIONS } from './knowledge-operation-definitions.js';
+import * as material from './material.js';
 import {
   NanoHostRuntimeTargetStatusResponseSchema,
   NanoHostTransportTokenRecordSchema,
@@ -36,6 +37,7 @@ import {
 } from './storage.js';
 import { TaskModeContextRefSchema } from './task-mode.js';
 import { WorkspaceVaultInjectionReceiptSchema } from './vault-injection.js';
+import { VAULT_OPERATION_DEFINITIONS } from './vault-operations.js';
 import { ServerVaultUseRecordSchema, WorkspaceVaultUseRecordSchema } from './vault-use.js';
 import {
   PrepareWorkerEnvironmentRequestSchema,
@@ -49,6 +51,45 @@ import { TransferWorkspaceOwnershipRequestSchema } from './workspace-sharing.js'
 const uuid7 = '01890f3e-0000-7000-8000-000000000001';
 const uuid5 = '01890f3e-0000-5000-8000-000000000001';
 const fields = [
+  {
+    kind: 'tu',
+    schema: material.ThreadMaterialActiveDeliverySchema.shape.pendingTurnId,
+    derived: true,
+  },
+  {
+    kind: 'tu',
+    schema: material.ThreadMaterialActiveDeliverySchema.shape.activeTurnId,
+    derived: true,
+  },
+  {
+    kind: 'it',
+    schema: material.ThreadMaterialActiveDeliverySchema.shape.contentItemId,
+    derived: true,
+  },
+  {
+    kind: 'grant',
+    schema: VAULT_OPERATION_DEFINITIONS['vault.grant-narrow'].inputSchema.shape.grantId,
+    derived: false,
+  },
+  ...[
+    material.WorkspaceMaterialViewSchema.shape.currentRevisionId,
+    material.WorkspaceMaterialRevisionSummarySchema.shape.revisionId,
+    material.WorkspaceMaterialRevisionSummarySchema.shape.parentRevisionId,
+    material.ArtifactMaterialProposalSchema.shape.baseRevisionId,
+    material.ArtifactReviewViewSchema.shape.appliedMaterialRevisionId,
+    material.ThreadMaterialActiveDeliverySchema.shape.revisionId,
+    material.ThreadMaterialViewSchema.shape.latestQueuedRevisionId,
+    material.ThreadMaterialViewSchema.shape.lastWorkerSeenRevisionId,
+    material.ThreadMaterialViewSchema.shape.currentTurnRevisionId,
+    material.SaveWorkspaceMaterialRevisionRequestSchema.shape.expectedRevisionId,
+    material.SaveWorkspaceMaterialRevisionResponseSchema.shape.revisionId,
+    material.ExcludeThreadMaterialRequestSchema.shape.expectedQueuedRevisionId,
+  ].map((schema) => ({ kind: 'mrev', schema, derived: true })),
+  ...[
+    material.ArtifactReviewViewSchema.shape.reviewId,
+    material.SubmitArtifactReviewDecisionResponseSchema.shape.reviewId,
+  ].map((schema) => ({ kind: 'arev', schema, derived: true })),
+
   {
     kind: 'attempt',
     schema: ExecutionAttemptHumanAttentionSourceSchema.shape.attemptId,

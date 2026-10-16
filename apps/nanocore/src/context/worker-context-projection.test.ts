@@ -71,14 +71,14 @@ describe('worker Context Package read projection', () => {
     {
       name: 'orders last-seen traces by startedAt and then Turn id descending',
       traces: [
-        verifiedTrace('tu_00000000-0000-7fdc-a657-3a5dfbeedd4d', [
+        verifiedTrace('tu_00000000-0000-7000-8000-000000000001', [
           ['mat_00000000-0000-780b-aa01-5f7fb6dd4093', 'mrev_00000000-0000-73b7-bfe3-9b5c8390209e'],
         ]),
-        verifiedTrace('tu_00000000-0000-7001-85b0-63cd0da79de9', [
+        verifiedTrace('tu_00000000-0000-7000-8000-000000000002', [
           ['mat_00000000-0000-780b-aa01-5f7fb6dd4093', 'mrev_00000000-0000-7ae0-81e6-eaf3820b674e'],
         ]),
       ],
-      currentTurnId: 'tu_00000000-0000-7fdc-a657-3a5dfbeedd4d',
+      currentTurnId: 'tu_00000000-0000-7000-8000-000000000001',
       expected: {
         lastWorkerSeenRevisionId: 'mrev_00000000-0000-7ae0-81e6-eaf3820b674e',
         currentTurnRevisionId: 'mrev_00000000-0000-73b7-bfe3-9b5c8390209e',
@@ -87,21 +87,21 @@ describe('worker Context Package read projection', () => {
     {
       name: 'returns null when no verified trace selected the Material',
       traces: [
-        verifiedTrace('tu_00000000-0000-7fdc-a657-3a5dfbeedd4d', [
+        verifiedTrace('tu_00000000-0000-7000-8000-000000000001', [
           ['mat_00000000-0000-7ab0-b20c-4dc5a61a957a', 'mrev_00000000-0000-7ae0-81e6-eaf3820b674e'],
         ]),
       ],
-      currentTurnId: 'tu_00000000-0000-7fdc-a657-3a5dfbeedd4d',
+      currentTurnId: 'tu_00000000-0000-7000-8000-000000000001',
       expected: { lastWorkerSeenRevisionId: null, currentTurnRevisionId: null },
     },
     {
       name: 'does not substitute a historical trace for the current Turn',
       traces: [
-        verifiedTrace('tu_00000000-0000-7fdc-a657-3a5dfbeedd4d', [
+        verifiedTrace('tu_00000000-0000-7000-8000-000000000001', [
           ['mat_00000000-0000-780b-aa01-5f7fb6dd4093', 'mrev_00000000-0000-73b7-bfe3-9b5c8390209e'],
         ]),
       ],
-      currentTurnId: 'tu_00000000-0000-7001-85b0-63cd0da79de9',
+      currentTurnId: 'tu_00000000-0000-7000-8000-000000000002',
       expected: {
         lastWorkerSeenRevisionId: 'mrev_00000000-0000-73b7-bfe3-9b5c8390209e',
         currentTurnRevisionId: null,

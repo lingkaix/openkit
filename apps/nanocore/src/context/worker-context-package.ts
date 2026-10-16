@@ -17,8 +17,15 @@ import {
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
   type ActorRef,
+  AgentSessionIdSchema,
+  ItemIdSchema,
+  MaterialIdSchema,
+  MaterialRevisionIdSchema,
   type RetrievalTraceReference,
   RetrievalTraceReferenceSchema,
+  ThreadIdSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { z } from 'zod';
@@ -64,8 +71,8 @@ const PendingOutcomeInputSchema = z.object({
     .array(
       z.object({
         requestId: IdSchema,
-        requestItemId: IdSchema,
-        publicationTurnId: IdSchema,
+        requestItemId: ItemIdSchema,
+        publicationTurnId: TurnIdSchema,
         kind: z.enum(['approval', 'user-input']),
         resolution: z.enum(['granted', 'denied', 'answered']).nullable(),
         ending: z.enum(['withdrawn', 'invalidated']).nullable(),
@@ -88,23 +95,23 @@ const MaterialSelectionSchema = z.object({
   bindingMutationRequestId: IdSchema.nullable(),
   contentDigest: Sha256Schema,
   inclusionReason: z.enum(['thread_binding', 'goal_steering']),
-  materialId: IdSchema,
+  materialId: MaterialIdSchema,
   mediaType: z.enum(['text/markdown', 'text/plain']),
   packagePath: IdSchema,
-  parentRevisionId: IdSchema.nullable(),
-  revisionId: IdSchema,
+  parentRevisionId: MaterialRevisionIdSchema.nullable(),
+  revisionId: MaterialRevisionIdSchema,
   sensitivity: z.enum(['public', 'internal']),
   sensitivityDecision: z.literal('included'),
 });
 const MaterialExclusionSchema = z.object({
-  materialId: IdSchema,
+  materialId: MaterialIdSchema,
   reason: z.enum([
     'explicit_scope_excluded',
     'policy_excluded',
     'sensitive_content',
     'budget_exceeded',
   ]),
-  revisionId: IdSchema,
+  revisionId: MaterialRevisionIdSchema,
   sensitivity: z.enum(['public', 'internal', 'restricted']),
 });
 const KnowledgeSelectionInputSchema = z.object({
@@ -126,23 +133,23 @@ export const WorkerContextPackageManifestSchema = z.object({
   contextBudgetTokens: z.number().int().positive().safe(),
   contextPackageId: IdSchema,
   fileInventory: z.array(FileInventoryEntrySchema),
-  includedItemIds: z.array(IdSchema).min(1),
+  includedItemIds: z.array(ItemIdSchema).min(1),
   knowledgeSelections: z.array(KnowledgeSelectionSchema),
   materialSelections: z.array(MaterialSelectionSchema),
   policyVersion: z.literal(WORKER_CONTEXT_PACKAGE_POLICY_VERSION),
   schemaVersion: z.literal(1),
-  threadId: IdSchema,
-  turnId: IdSchema,
+  threadId: ThreadIdSchema,
+  turnId: TurnIdSchema,
   workerRequestDigest: Sha256Schema,
-  workerRequestItemId: IdSchema,
-  workspaceId: IdSchema,
+  workerRequestItemId: ItemIdSchema,
+  workspaceId: WorkspaceIdSchema,
 });
 const WorkerContextPackageTraceSchema = WorkerContextPackageManifestSchema.omit({
   contextBudgetTokens: true,
 }).extend({
-  agentSessionId: IdSchema,
+  agentSessionId: AgentSessionIdSchema,
   contextPackageDigest: ContextPackageDigestSchema,
-  excludedItems: z.array(z.object({ itemId: IdSchema, reason: ExclusionReasonSchema })),
+  excludedItems: z.array(z.object({ itemId: ItemIdSchema, reason: ExclusionReasonSchema })),
   goalId: IdSchema.nullable(),
   knowledgeExclusions: z.array(KnowledgeExclusionSchema),
   knowledgeSelectionInput: KnowledgeSelectionInputSchema.nullable(),

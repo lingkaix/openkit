@@ -109,7 +109,12 @@ import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
 import { admitTestNativeEnvironment } from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
-import { createVaultGrant, importWorkspaceVaultGrants, narrowVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
+import {
+  createVaultGrant,
+  importWorkspaceVaultGrants,
+  narrowVaultGrant,
+  revokeVaultGrant,
+} from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { reconcileWorkerMcpItems, registerWorkerMcpRoutes } from './worker-mcp-routes.js';
@@ -2671,7 +2676,11 @@ describe('worker MCP routes', () => {
           }
         )
       );
-      const [firstResponse, firstRun] = await Promise.all([firstRequest, driveTask(true)]);
+      const admittedFirstRequest = firstRequest.then(async (response) => {
+        expect(response.status, await response.clone().text()).toBe(202);
+        return response;
+      });
+      const [firstResponse, firstRun] = await Promise.all([admittedFirstRequest, driveTask(true)]);
       expect(firstResponse.status, await firstResponse.clone().text()).toBe(202);
       const firstTask =
         ownerCommand === 'conversation.submit'
@@ -4406,7 +4415,7 @@ describe('worker MCP routes', () => {
       };
       store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
       const closing = markSchedulerExecutionAttemptClosing(coreDb, {
-        attemptId: `lease_${turn.id}`,
+        attemptId: testEntityId('attempt', `lease_${turn.id}`),
         cause: 'worker-final-status',
         outcomeRef: `turn:${turn.id}:completed`,
       });
