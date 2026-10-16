@@ -69,3 +69,7 @@ The engineer removes pre-stable home-to-personal conversion and predecessor qual
 ## Current Lane Scope
 
 The coordinator moved P26, D02 and D03 to L-WEB on2026-10-16. L-AK retains P19 Timeline internals and the Web parts of its own features. After P19, the next landing is D-AK-1 citation links and D-AK-2 explicit saved Source links on current Knowledge behavior. Notebook Git publication, versioned Skills and the synthetic BWM loop remain separate increments. The real Notebook commit binding stays with P20; P19 must not fabricate a binding for its current file-backed S61 reader. L-AW's Knowledge excerpt increment waits for the real Notebook cutover.
+
+## Combined Landing Scope Of 2026-10-16T20:15Z
+
+The coordinator now requires complete affected owner-module suites and changed-package suites, with Web e2e, and prohibits repeating the whole application suite. The clean real main merge includes P14 and Goal landing67153ca4. Combine ready candidates that share modules: this landing also includes D-AK-1 citation links and D-AK-2 explicit saved Source references on current Knowledge behavior. The separate Source-links change record retains its intent and evidence. Notebook, versioned Skills and BWM remain separate incomplete increments; none is activated by this combination. The final independent review covers the combined actual head and all out-of-area paths before express landing.
