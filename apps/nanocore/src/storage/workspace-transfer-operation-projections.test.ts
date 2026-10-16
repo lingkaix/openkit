@@ -92,12 +92,17 @@ describe('Workspace JSON transfer cutover', () => {
   it('refuses an unpublished cached Turn change instead of serializing it after a failed write', async () => {
     const { root, store, app } = fixture();
     const thread = store.listThreads('ws_demo')[0]!;
-    const turn = store.createTurn('ws_demo', thread.id, 'Inspect retained bytes', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const turn = store.createTurn(
+      'ws_demo',
+      thread.id,
+      'Inspect retained bytes',
+      { kind: 'user', id: 'user_local' },
+      null,
+      { status: 'pending' }
+    );
     const published = readPublishedTurnRecord(root, 'ws_demo', thread.id, turn.id);
     expect(published).not.toBeNull();
+    expect(published?.status).toBe('pending');
     // Fail before the persistence owner publishes files; the actual Store has already advanced its cache.
     const fault = vi
       .spyOn(store as unknown as { persist(workspaceId: string): void }, 'persist')
@@ -105,13 +110,13 @@ describe('Workspace JSON transfer cutover', () => {
         throw new Error('Publication interrupted');
       });
     try {
-      expect(() =>
-        store.updateTurn('ws_demo', thread.id, turn.id, { reasoningEffort: 'high' })
-      ).toThrow('Publication interrupted');
+      expect(() => store.updateTurn(turn.id, { status: 'running' })).toThrow(
+        'Publication interrupted'
+      );
     } finally {
       fault.mockRestore();
     }
-    expect(store.getTurn('ws_demo', thread.id, turn.id).reasoningEffort).toBe('high');
+    expect(store.getTurn('ws_demo', thread.id, turn.id).status).toBe('running');
     expect(readPublishedTurnRecord(root, 'ws_demo', thread.id, turn.id)).toEqual(published);
     const exported = await app.request(
       ...request('/api/app/operations/workspace.export', { workspaceId: 'ws_demo' })
