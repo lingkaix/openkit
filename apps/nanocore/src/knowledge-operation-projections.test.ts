@@ -663,7 +663,7 @@ describe('Knowledge operation definition cutover', () => {
           } catch (error) {
             expect(error).toMatchObject({
               code: 'workspace_access_denied',
-              message: 'Workspace access denied.',
+              message: 'Knowledge source is unavailable.',
             });
             const view = {
               code: (error as { code: string }).code,
