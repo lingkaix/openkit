@@ -18,6 +18,10 @@ Source: coordinator direction on 2026-10-16 after accepting the certificate root
 
 Source: coordinator authorization after the first published attempt hit its retained rebuild-bound hold. Retain complete old epoch state outside its live names, then start from fresh state. Never delete a marker in isolation. Up to three published attempts in total are authorized, each after whole-state retention and only when it can teach a new fact. Dev data is disposable under engineer direction. Inspect recovery guidance and document the operator procedure if missing.
 
+## Intent Revision 4 — Installer Scope And P29 Work Order
+
+Source: coordinator direction on 2026-10-16. Stop polling train3 in a loop. Include D-RT-3 in chunk1: the installer must judge systemd verification diagnostics for OpenKit units and the exit status, ignore unrelated-unit diagnostics, and retain fatal OpenKit errors with regressions. Confirm D-RT-4 whole-state rebuild-bound recovery is documented. Then create lane/rt-2 from lane/rt and implement P29 as one feature; P25 waits for the P14 cutover on main. Check train3 only between work items with one fetch, window status and its landed merge-queue line. When train3 lands, pause P29 and land chunk1 independently under the recorded protocol. Keep command temporary files under the disk-backed cache and remove owned temporary directories when finished.
+
 ## Owners And Boundaries
 
 [NanoHost Runtime And Transport](../../specs/20260802-nanohost_runtime_and_transport.md) owns verified TLS, the physical session, admission, readiness and startup limits. [Runtime Model](../../core/runtime-model.md) owns substrate lifecycle and [Communication](../../core/communication.md) owns transport principles. [Test Strategy](../../specs/20260529-test_strategy.md) and [Verification Instruments](../../verification-instruments.md) own regression scope and deciding evidence. This repair restores accepted behavior and adds no transport fallback or authentication authority.
@@ -54,6 +58,12 @@ The new CLI's read-only RuntimeTarget query refused the retained App with `incom
 
 The external build and runtime receipts bind source `14996ba1`, the executable SHA, observer SHA and build-input blobs. Compare those build inputs with the final main-based head before using this live result for final branch acceptance. A changed runtime input requires new local verification. Exact-head review, full CI and landing receipts remain external and pending.
 
+## Installer Diagnostic Scope And Recovery Guidance
+
+D-RT-3 reproduces at the real systemd observer boundary: verification returns zero with a dnsmasq drop-in warning, but the old parser reports `unitParses=false`. The checker now ignores diagnostics attributed to other units and keeps diagnostics that refer to the OpenKit service, slice or required parent, including exact-name, dash-prefix and type-wide drop-ins and references from another unit. Unattributed errors, inspector failures and nonzero status remain blocking, with the existing exact missing-executable exception for an uninstalled archive. Both stdout and stderr use the same attribution rule. [Deployment Host Requirements](../../specs/20260909-deployment_host_requirements.md) owns this criterion. All 131 focused installer, packaging and host-manifest cases pass, with zero failures or skips. After the inherited-drop-in corrections, the eight-case host-profile suite, focused Biome, shell syntax and documentation checks pass as well. Independent review found the dash-prefix and parent-slice cases; real-observer regressions reproduced their false passes before correction. No profile requirement or service effect changes. These local regressions do not qualify a1, and L-RT makes no a1/a2 contact.
+
+D-RT-4 is covered by the committed [rebuild-bound recovery manual](../../../skills/openkit-ops/references/nanocore-operations.en.md#recover-a-nanohost-at-the-rebuild-bound): stop and prove the complete slice empty, retain both complete epoch roots with the marker inside, preserve epoch-external stores and identity, create fresh state through normal startup and verify a new exact-pair ready target. It explicitly forbids deleting the marker alone and disables automatic restart before a controlled start. The earlier independent recovery review inspected that procedure.
+
 ## Complexity Snapshot
 
-The provisional repair changes 18 files and three owning specifications across three owners. It adds no production registry, lifecycle or closed set. The test peer adds a two-role certificate choice and one observation query. Final main-based counts and closure evidence remain to be reconciled at landing.
+The current repair changes 22 files and four owning specifications across four owners. It adds no production registry, lifecycle or closed set. The test peer adds a two-role certificate choice and one observation query. Final main-based counts and closure evidence remain to be reconciled at landing.
