@@ -148,6 +148,7 @@ export function CatalogScreen() {
                           if (!workspaceId || !skill.currentDigest) return;
                           void setPin.mutateAsync({
                             digest: skill.pinDigest ? null : skill.currentDigest,
+                            expectedPinDigest: skill.pinDigest,
                             expectedRevision: revision,
                             skillId: skill.id,
                             workspaceId,
@@ -193,6 +194,7 @@ export function CatalogScreen() {
                         if (!workspaceId) return;
                         void selectSkill.mutateAsync({
                           digest: version.digest,
+                          expectedCurrentDigest: skill.currentDigest,
                           expectedRevision: revision,
                           skillId: skill.id,
                           workspaceId,
@@ -233,6 +235,9 @@ export function CatalogScreen() {
                           void decideCandidate.mutateAsync({
                             candidateId: candidate.id,
                             decision: 'promoted',
+                            expectedCurrentDigest:
+                              summary?.skills.find((skill) => skill.id === candidate.entryId)
+                                ?.currentDigest ?? null,
                             expectedRevision: revision,
                             workspaceId,
                           });
@@ -248,6 +253,9 @@ export function CatalogScreen() {
                           void decideCandidate.mutateAsync({
                             candidateId: candidate.id,
                             decision: 'rejected',
+                            expectedCurrentDigest:
+                              summary?.skills.find((skill) => skill.id === candidate.entryId)
+                                ?.currentDigest ?? null,
                             expectedRevision: revision,
                             workspaceId,
                           });

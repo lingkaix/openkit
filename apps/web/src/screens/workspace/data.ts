@@ -807,6 +807,7 @@ export function useImportSkill() {
 /** Exact Skill pin change bound to one Workspace revision. */
 export type SetSkillPinCommand = {
   digest: string | null;
+  expectedPinDigest: string | null;
   expectedRevision: number;
   skillId: string;
   workspaceId: string;
@@ -822,6 +823,7 @@ export function useSetSkillPin() {
         workspaceId: command.workspaceId,
         skillId: command.skillId,
         digest: command.digest,
+        expectedPinDigest: command.expectedPinDigest,
         expectedRevision: command.expectedRevision,
         requestId: createRequestId(),
       }),
@@ -870,6 +872,7 @@ export function useSubmitSkillCandidate() {
 export type DecideSkillCandidateCommand = {
   candidateId: string;
   decision: 'promoted' | 'rejected' | 'withdrawn';
+  expectedCurrentDigest: string | null;
   expectedRevision: number;
   workspaceId: string;
 };
@@ -884,6 +887,7 @@ export function useDecideSkillCandidate() {
         workspaceId: command.workspaceId,
         candidateId: command.candidateId,
         decision: command.decision,
+        expectedCurrentDigest: command.expectedCurrentDigest,
         expectedRevision: command.expectedRevision,
         requestId: createRequestId(),
       }),
@@ -900,6 +904,7 @@ export function useDecideSkillCandidate() {
 /** Exact Skill default selection bound to one Workspace revision. */
 export type SelectSkillDefaultCommand = {
   digest: string;
+  expectedCurrentDigest: string | null;
   expectedRevision: number;
   skillId: string;
   workspaceId: string;
@@ -915,6 +920,7 @@ export function useSelectSkillDefault() {
         workspaceId: command.workspaceId,
         skillId: command.skillId,
         digest: command.digest,
+        expectedCurrentDigest: command.expectedCurrentDigest,
         expectedRevision: command.expectedRevision,
         requestId: createRequestId(),
       }),
