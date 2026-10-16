@@ -15,6 +15,7 @@ import {
 import type { WorkspaceDb } from '../storage/db.js';
 import { type KnowledgeNotebook, NotebookError } from './notebook.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
+import { parseOkfDocument, updateOkfFrontmatter, validateOpenKitKnowledgeProfile } from './okf.js';
 
 const OPERATION = 'knowledge.notebook.update';
 
@@ -56,6 +57,21 @@ interface PublicationDependencies {
   readonly producer: Extract<ActorRef, { kind: 'user' }>;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly revalidate: () => NotebookPublicationAdmission;
+}
+
+/** A direct human edit cannot inherit or invent a content-bound human Review label. */
+function humanPageBytes(path: string, content: string, workspaceId: string): string {
+  const parsed = parseOkfDocument({ path, content });
+  if (!parsed.ok) throw new NotebookError('invalid_request');
+  if (parsed.document.reserved) return content;
+  const profile = validateOpenKitKnowledgeProfile(parsed.document, {
+    kind: 'workspace',
+    workspaceId,
+  });
+  if (profile.conformance !== 'OpenKit-profile-valid') throw new NotebookError('invalid_request');
+  return parsed.document.frontmatter.review_state === 'user-authored'
+    ? content
+    : updateOkfFrontmatter({ path, content, updates: { review_state: 'user-authored' } });
 }
 
 /** Reads only this command's existing Audit evidence; page content is never stored in Audit. */
@@ -113,7 +129,11 @@ export async function publishWorkspaceNotebook(
     const expected = { ...base.files };
     for (const { path, content } of request.changes) {
       if (content === null) delete expected[path];
-      else expected[path] = content;
+      else
+        expected[path] =
+          base.files[path] === content
+            ? content
+            : humanPageBytes(path, content, request.workspaceId);
     }
     if (
       Object.keys(expected).length !== Object.keys(candidate.files).length ||
@@ -186,7 +206,11 @@ export async function publishWorkspaceNotebook(
       const files = { ...base.files };
       for (const { path, content } of request.changes) {
         if (content === null) delete files[path];
-        else files[path] = content;
+        else
+          files[path] =
+            base.files[path] === content
+              ? content
+              : humanPageBytes(path, content, request.workspaceId);
       }
       const check = (facts: NotebookPublicationAdmission) =>
         validateNotebookCandidate({ ownerScope, base, candidate: { files }, ...facts });
@@ -200,7 +224,9 @@ export async function publishWorkspaceNotebook(
       } as const;
       const candidateRevision = dependencies.notebook.prepare({
         baseRevision: request.baseRevision,
-        changes: Object.fromEntries(request.changes.map(({ path, content }) => [path, content])),
+        changes: Object.fromEntries(
+          request.changes.map(({ path, content }) => [path, content === null ? null : files[path]!])
+        ),
         metadata: {
           summary: request.summary,
           changeRequest: { requestId: request.requestId, inputDigest },

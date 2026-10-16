@@ -9,7 +9,7 @@ import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { publishWorkspaceNotebook } from './notebook-publication.js';
-import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from './okf.js';
+import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT, parseOkfDocument } from './okf.js';
 
 const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
 const producer = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
@@ -66,6 +66,36 @@ function fixture() {
 }
 
 describe('Notebook publication through existing Audit and command receipts', () => {
+  it('marks an explicit human edit user-authored instead of accepting a supplied human-review label', async () => {
+    const f = fixture();
+    const content = `---
+type: KnowledgePage
+title: Human note
+schema_version: openkit-scope-knowledge-schema-v4
+requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
+openkit_status: active
+status: stable
+scope: {kind: workspace, workspaceId: ${workspaceId}}
+source_refs: []
+review_state: accepted
+sensitivity: normal
+freshness: current
+created_at: "2026-10-16T00:00:00.000Z"
+updated_at: "2026-10-16T00:00:00.000Z"
+custom: {keep: [one, two]}
+---
+Exact human body.\r\n\t  `;
+    const request = { ...f.request, changes: [{ path: 'entry.md', content }] };
+    const published = await f.publish(request);
+    const exact = f.notebook.readRevision(published.notebookRevision).files['entry.md']!;
+    expect(exact).toContain('review_state: user-authored');
+    expect(
+      parseOkfDocument({ path: 'entry.md', content: exact }).document?.frontmatter.custom
+    ).toEqual({ keep: ['one', 'two'] });
+    expect(exact.split('\n---\n')[1]).toBe(content.split('\n---\n')[1]);
+    expect(await f.publish(request)).toEqual(published);
+  });
+
   it('publishes once, retains exact facts, and replays the old commit after a later publication', async () => {
     const f = fixture();
     const [first, duplicate] = await Promise.all([f.publish(), f.publish()]);
