@@ -357,7 +357,7 @@ it.each([
         agentId: 'test-worker',
         request,
       },
-      { callId: 'task', signal: new AbortController().signal }
+      { callId: 'task', toolOccurrence: 1, signal: new AbortController().signal }
     );
     expect(authorization).toHaveBeenCalledWith(
       coreDb,

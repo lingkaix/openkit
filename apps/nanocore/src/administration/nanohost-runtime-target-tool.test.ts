@@ -31,7 +31,7 @@ describe('administration nanohost.runtime-target Tool', () => {
   it('returns ready, unready, and missing observations with stored physicalEpoch and no host selection', async () => {
     const missing = await toolFor(undefined).execute(
       {},
-      { callId: 'call_storage', signal: new AbortController().signal }
+      { callId: 'call_storage', toolOccurrence: 1, signal: new AbortController().signal }
     );
     expect(missing).toMatchObject({
       isError: true,
@@ -47,7 +47,11 @@ describe('administration nanohost.runtime-target Tool', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const tool = toolFor(coreDb);
-    const context = { callId: 'call_target', signal: new AbortController().signal };
+    const context = {
+      callId: 'call_target',
+      toolOccurrence: 1,
+      signal: new AbortController().signal,
+    };
 
     const absent = await tool.execute({}, context);
     expect(JSON.parse((absent.content[0] as { text: string }).text)).toMatchObject({

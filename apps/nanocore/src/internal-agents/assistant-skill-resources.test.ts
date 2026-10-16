@@ -153,7 +153,7 @@ async function read(assembled: Assembly, path?: string, selection = assembled.in
       contentDigest: selection.contentDigest,
       ...(path === undefined ? {} : { path }),
     },
-    { callId: 'read-once', signal: new AbortController().signal }
+    { callId: 'read-once', toolOccurrence: 1, signal: new AbortController().signal }
   );
 }
 
@@ -265,7 +265,7 @@ describe('Assistant selected Skill assembly', () => {
           versionId: `sha256:${'a'.repeat(64)}`,
           contentDigest: `sha256:${'a'.repeat(64)}`,
         },
-        { callId: 'unselected', signal: new AbortController().signal }
+        { callId: 'unselected', toolOccurrence: 1, signal: new AbortController().signal }
       ),
       f
     );
@@ -697,7 +697,11 @@ describe('Assistant progressive Skill reads', () => {
       versionId: selected.versionId,
       contentDigest: selected.contentDigest,
     };
-    const context = { callId: 'invalid-read', signal: new AbortController().signal };
+    const context = {
+      callId: 'invalid-read',
+      toolOccurrence: 1,
+      signal: new AbortController().signal,
+    };
     const unsafePaths = [
       '../outside.txt',
       '/absolute.txt',

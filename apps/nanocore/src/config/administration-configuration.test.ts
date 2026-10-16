@@ -201,6 +201,7 @@ describe('administration catalog configuration', () => {
     });
     const result = await tools[2].execute(f.request, {
       callId: 'provider',
+      toolOccurrence: 1,
       signal: new AbortController().signal,
     });
     expect(result.isError).not.toBe(true);
