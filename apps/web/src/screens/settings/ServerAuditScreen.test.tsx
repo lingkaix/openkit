@@ -32,9 +32,9 @@ function makeClient(app: Partial<CoreClient['operations']> = {}): CoreClient {
             action: 'server.inspect',
             outcome: 'succeeded',
             summary: `Inspection ${SECRET}`,
-            actor: { kind: 'user', id: 'user_recorded', name: PRIVATE },
-            workspaceId: 'ws_recorded',
-            threadId: 'th_recorded',
+            actor: { kind: 'user', id: 'usr_019a0000-0000-7000-8000-000000000015', name: PRIVATE },
+            workspaceId: 'ws_019a0000-0000-7000-8000-000000000011',
+            threadId: 'th_019a0000-0000-7000-8000-000000000012',
             payload: PRIVATE,
           },
         ],
@@ -78,22 +78,22 @@ describe('Server audit administration', () => {
     renderScreen(makeClient({
       'audit.server-list': vi.fn().mockResolvedValue({
         auditEvents: [
-          { id: 'recorded', category: 'command', action: 'turn.interrupt', outcome: 'succeeded',
+          { id: 'aud_019a0000-0000-7000-8000-000000000017', category: 'command', action: 'turn.interrupt', outcome: 'succeeded',
             summary: 'Stop accepted', actor: { kind: 'agent', id: 'agent_recorded', responsibleUserId: PRIVATE },
-            workspaceId: 'ws_recorded', threadId: 'th_recorded', turnId: 'turn_recorded', requestId: '019a0000-0000-7000-8000-000000000014' },
-          { id: 'historical', category: 'command', action: 'legacy.action', outcome: 'succeeded',
-            summary: 'Historical event', actor: null, workspaceId: null, threadId: 'unresolved_thread' },
+            workspaceId: 'ws_019a0000-0000-7000-8000-000000000011', threadId: 'th_019a0000-0000-7000-8000-000000000012', turnId: 'tu_019a0000-0000-7000-8000-000000000013', requestId: '019a0000-0000-7000-8000-000000000014' },
+          { id: 'aud_019a0000-0000-7000-8000-000000000018', category: 'command', action: 'legacy.action', outcome: 'succeeded',
+            summary: 'Historical event', actor: null, workspaceId: null, threadId: 'th_019a0000-0000-7000-8000-000000000019' },
         ],
       }),
     }));
     expect(await screen.findByText('Actor: agent · agent_recorded')).toBeVisible();
     expect(screen.getByText('Actor not recorded')).toBeVisible();
-    expect(screen.getByRole('link', { name: 'Open Thread th_recorded in Workspace ws_recorded' }))
-      .toHaveAttribute('href', '/chat/ws_recorded/th_recorded');
+    expect(screen.getByRole('link', { name: 'Open Thread th_019a0000-0000-7000-8000-000000000012 in Workspace ws_019a0000-0000-7000-8000-000000000011' }))
+      .toHaveAttribute('href', '/chat/ws_019a0000-0000-7000-8000-000000000011/th_019a0000-0000-7000-8000-000000000012');
     expect(screen.getAllByRole('link', { name: /^Open Thread / })).toHaveLength(1);
-    expect(screen.getByText('Turn: turn_recorded')).toBeVisible();
+    expect(screen.getByText('Turn: tu_019a0000-0000-7000-8000-000000000013')).toBeVisible();
     expect(screen.getByText('Request: 019a0000-0000-7000-8000-000000000014')).toBeVisible();
-    expect(document.body.textContent).not.toContain('unresolved_thread');
+    expect(document.body.textContent).not.toContain('th_019a0000-0000-7000-8000-000000000019');
     expect(document.body.textContent).not.toContain(PRIVATE);
   });
 
@@ -274,8 +274,8 @@ describe('Server audit administration', () => {
     const client = makeClient();
     const { container, queryClient } = renderScreen(client);
     expect(await screen.findByText('server.inspect')).toBeInTheDocument();
-    expect(screen.getByText('Actor: user · user_recorded')).toBeVisible();
-    expect(screen.getByRole('link', { name: 'Open Thread th_recorded in Workspace ws_recorded' })).toBeVisible();
+    expect(screen.getByText('Actor: user · usr_019a0000-0000-7000-8000-000000000015')).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Open Thread th_019a0000-0000-7000-8000-000000000012 in Workspace ws_019a0000-0000-7000-8000-000000000011' })).toBeVisible();
     vi.mocked(client.operations['audit.server-list']).mockRejectedValueOnce(
       new ApiCallError(status, PRIVATE, {
         code: PRIVATE,
@@ -292,8 +292,8 @@ describe('Server audit administration', () => {
       expect(await screen.findByText('Access denied')).toBeInTheDocument();
     }
     expect(screen.queryByText('server.inspect')).not.toBeInTheDocument();
-    expect(screen.queryByText('Actor: user · user_recorded')).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: 'Open Thread th_recorded in Workspace ws_recorded' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Actor: user · usr_019a0000-0000-7000-8000-000000000015')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Open Thread th_019a0000-0000-7000-8000-000000000012 in Workspace ws_019a0000-0000-7000-8000-000000000011' })).not.toBeInTheDocument();
     expect(screen.queryByText('server.read [redacted]')).not.toBeInTheDocument();
     expect(container.innerHTML).not.toContain(PRIVATE);
     expect(container.querySelector('input')).toBeNull();
