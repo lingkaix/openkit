@@ -1,6 +1,6 @@
 // openkit-test-platform: posix
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -22,11 +22,19 @@ import {
 import { openCoreDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
+import {
+  rebuildWorkspaceDerivedIndexes,
+  resolveWorkspaceKnowledgeRetrievalPages,
+  retrieveWorkspaceKnowledge,
+} from './storage/index-rebuild.js';
+import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
+import { closeRetrievalServices } from './retrieval-service.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const roots: string[] = [];
 const databases: ReturnType<typeof openCoreDb>[] = [];
 afterEach(() => {
+  closeRetrievalServices();
   vi.restoreAllMocks();
   for (const db of databases.splice(0)) db.sqlite.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -87,6 +95,39 @@ function page(title: string, refs: readonly string[] = [], body = 'Exact retaine
 }
 
 describe('published Workspace notebook reads', () => {
+  it('rebuilds indexes from one Git revision and resolves an admitted selection after later publication', async () => {
+    const f = fixture();
+    const content = serializeUserAuthoredKnowledgePage({
+      id: 'stable/pinned', kind: 'project-context', title: 'Pinned source knowledge',
+      content: 'Original notebook retrieval bytes.', createdAt: '2026-10-16T00:00:00Z',
+      updatedAt: '2026-10-16T00:00:00Z', sourceReferences: [],
+    }, { kind: 'workspace', workspaceId: f.workspaceId });
+    const revision = publish(f, { 'stable/pinned.md': content });
+    const physical = join(f.dataRoot, 'workspaces', f.workspaceId, 'knowledge', 'pages', 'stable');
+    mkdirSync(physical, { recursive: true });
+    writeFileSync(join(physical, 'pinned.md'), page('PHYSICAL-SUBSTITUTION'));
+    const rebuilt = rebuildWorkspaceDerivedIndexes(f);
+    expect(rebuilt.itemCount).toBe(1);
+    const index = JSON.parse(readFileSync(join(f.dataRoot, rebuilt.indexPath), 'utf8'));
+    expect(index.notebookRevision).toBe(revision);
+    expect(index.records).toEqual([expect.objectContaining({
+      conceptId: 'stable/pinned', contentDigest: digest(content), indexed: true,
+    })]);
+    const selection = await retrieveWorkspaceKnowledge({
+      ...f, caller: 'app-api', query: 'Original notebook retrieval bytes', limit: 5,
+      pinnedReferences: [{ scopeId: `page/workspace/${f.workspaceId}`, objectId: 'stable/pinned' }],
+    });
+    expect(selection.notebookRevision).toBe(revision);
+    expect(selection.selected[0]).toMatchObject({ revision, contentDigest: digest(content) });
+    publish(f, { 'stable/pinned.md': content.replace('Original notebook retrieval bytes.', 'Later publication bytes.') });
+    const resolved = resolveWorkspaceKnowledgeRetrievalPages({
+      ...f, caller: 'app-api', selection,
+    });
+    expect(resolved).toEqual([expect.objectContaining({
+      notebookRevision: revision, knowledgePageId: 'stable/pinned', contentDigest: digest(content), content,
+    })]);
+  });
+
   it('fails closed on unknown source sensitivity rather than widening disclosure through a nested page', () => {
     const f = fixture();
     const origin = page('Unknown source restriction').replace(
