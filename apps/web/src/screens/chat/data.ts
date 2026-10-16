@@ -649,6 +649,8 @@ export function useLiveThreadItems(
                 >['turns'][number];
               }
             ).turn;
+            const refreshDashboard =
+              queryClient.getQueryState(dashboardKey)?.fetchStatus === 'fetching';
             await queryClient.cancelQueries({ queryKey: dashboardKey, exact: true });
             if (cancelled) break;
             queryClient.setQueryData<
@@ -663,6 +665,9 @@ export function useLiveThreadItems(
                   }
                 : dashboard
             );
+            // Preserve a canonical refresh requested before this live cache patch.
+            if (refreshDashboard)
+              void queryClient.invalidateQueries({ queryKey: dashboardKey, exact: true });
             continue;
           }
           if (event.data.type === 'item-created') {
@@ -692,6 +697,7 @@ export function useLiveThreadItems(
                 .catch(() => undefined);
             }
           }
+          const refreshItems = queryClient.getQueryState(itemsKey)?.fetchStatus === 'fetching';
           await queryClient.cancelQueries({
             queryKey: itemsKey,
             exact: true,
@@ -700,6 +706,7 @@ export function useLiveThreadItems(
           queryClient.setQueryData<ThreadItem[]>(itemsKey, (items) =>
             foldTurnEvent(items ?? [], next.value)
           );
+          if (refreshItems) void queryClient.invalidateQueries({ queryKey: itemsKey, exact: true });
         }
       } catch {
         if (!cancelled) report(owner, () => setAttempt(attempt + 1));

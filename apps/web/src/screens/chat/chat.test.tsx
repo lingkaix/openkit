@@ -3657,6 +3657,69 @@ describe('thread lifecycle and attribution (S7)', () => {
 });
 
 describe('live turn subscription (S6)', () => {
+  it('retains a requested canonical refresh when a live Item interrupts its older read', async () => {
+    const olderRead = createDeferred<{ items: typeof USER_INPUT_ITEMS; nextCursor: null }>();
+    const release = createDeferred<void>();
+    const processed = createDeferred<void>();
+    const answer = ItemSchema.parse({
+      ...USER_INPUT_ITEMS[0],
+      id: 'it_00000000-0000-72f2-914f-1f9755fa60c1',
+      type: 'user-input-response',
+      status: 'completed',
+      actor: { kind: 'user', id: 'usr_00000000-0000-7609-aed5-db4b5c95e76c' },
+      userInputRequestId: 'uir1',
+      answers: { audience: ['Operators'], tone: ['Concise'] },
+      answeredAt: '2026-07-21T00:00:03.000Z',
+    });
+    const completed = {
+      ...STREAMING_ITEM,
+      status: 'completed',
+      text: 'Current live result',
+      completedAt: '2026-07-21T00:00:03.000Z',
+    };
+    async function* stream() {
+      await release.promise;
+      yield turnStreamEvent(1, 'item.completed', {
+        type: 'item-completed',
+        itemId: completed.id,
+        item: completed,
+      });
+      processed.resolve();
+    }
+    const listThreadItems = vi
+      .fn()
+      .mockResolvedValueOnce({ items: USER_INPUT_ITEMS, nextCursor: null })
+      .mockReturnValueOnce(olderRead.promise)
+      .mockResolvedValue({ items: [...USER_INPUT_ITEMS, completed, answer], nextCursor: null });
+    const subscribeTurnEvents = vi.fn().mockReturnValue(stream());
+    const queryClient = renderApp(
+      `/chat/${THREAD.workspaceId}/${THREAD.id}`,
+      makeClient(
+        { 'thread.items': listThreadItems, subscribeTurnEvents },
+        {
+          'thread.dashboard': vi.fn().mockResolvedValue({
+            viewerUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
+            turns: [ACTIVE_TURN],
+            pendingRequests: [{ requestId: 'uir1', state: 'pending' }],
+          }),
+        }
+      )
+    );
+    expect(await screen.findByRole('textbox', { name: 'Audience' })).toBeVisible();
+    await waitFor(() => expect(subscribeTurnEvents).toHaveBeenCalledOnce());
+    void queryClient.invalidateQueries({ queryKey: chatKeys.items(THREAD.workspaceId, THREAD.id) });
+    await waitFor(() => expect(listThreadItems).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      release.resolve();
+      await processed.promise;
+    });
+    expect(await screen.findByText('You answered')).toBeVisible();
+    expect(screen.queryByRole('textbox', { name: 'Audience' })).not.toBeInTheDocument();
+    await act(async () => olderRead.resolve({ items: USER_INPUT_ITEMS, nextCursor: null }));
+    expect(screen.getByText('You answered')).toBeVisible();
+    expect(screen.getByText('Current live result')).toBeVisible();
+  });
+
   it('refreshes a newly arriving author even with a cached dashboard', async () => {
     const dashboard = {
       viewerUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',

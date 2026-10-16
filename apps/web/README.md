@@ -205,7 +205,7 @@ Status chips retain their full single-line label under flex pressure; surroundin
 
 Conversation messages and the active Turn header resolve authorized participant names from the Thread dashboard by exact actor kind and id; the header marks the current human as You and retains recorded ids when a name is unavailable.
 
-An open Chat or Task Thread refreshes its existing dashboard observer every 5s in the foreground, including during execution so newly verified request summaries become visible. Its item observer polls only while idle, so another client's completed Chat turns appear without reload even when dashboard and items arrive in different orders; a running Turn keeps SSE as the sole live Item writer. Administration does not opt into this poll, and other Threads or Workspaces are not refreshed.
+An open Chat or Task Thread refreshes its existing dashboard observer every 5s in the foreground, including during execution so newly verified request summaries become visible. Its item observer polls only while idle, so another client's completed Chat turns appear without reload even when dashboard and items arrive in different orders; a running Turn keeps SSE as the sole live Item writer. An intervening live cache patch preserves a canonical refresh that a command already requested. Administration does not opt into this poll, and other Threads or Workspaces are not refreshed.
 
 ### Gateway
 
