@@ -52,6 +52,7 @@ describe('nanocore e2e migration idempotency', () => {
     expect(journal.entries.map((entry) => `core_${entry.tag}`)).toEqual([
       'core_0000_setup',
       'core_0001_concurrent_turn_capacity',
+      'core_0002_durable_recurring_schedules',
     ]);
     expect(ledgerRows).toEqual(
       journal.entries.map((entry) => ({ createdAt: entry.when, count: 1 }))
