@@ -6,7 +6,7 @@ import type {
 } from '@openkit/app-api-schemas';
 import { ApiCallError } from '@openkit/core-client';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useCoreClient } from '../../app/core-client';
 import {
   Button,
@@ -33,28 +33,76 @@ export function AppUpdateScreen() {
   const [maintenanceConsent, setMaintenanceConsent] = useState(false);
   const [review, setReview] = useState<PrepareAppUpdateResponse | null>(null);
   const [status, setStatus] = useState<AppUpdateStatusResponse | null>(null);
+  const [diagnosticsDenied, setDiagnosticsDenied] = useState(false);
 
   const adminAccess = useQuery({
     queryKey: ['settings', 'app-update', 'admin-access'],
-    queryFn: () => client.operations['token.list']({}),
+    queryFn: async ({ signal }) => {
+      try {
+        await client.operations['token.list']({});
+        // Cached metadata and abandoned transports cannot admit a different mount.
+        signal.throwIfAborted();
+        return true;
+      } catch (error) {
+        signal.throwIfAborted();
+        throw safeUpdateError(error);
+      }
+    },
     retry: false,
+    refetchOnMount: 'always',
   });
+  const admitted =
+    adminAccess.isFetchedAfterMount && adminAccess.isSuccess && adminAccess.fetchStatus === 'idle';
   const diagnostics = useQuery({
     queryKey: ['settings', 'app-update', 'diagnostics'],
-    queryFn: () => client.operations['diagnostics.app']({}),
-    enabled: adminAccess.isSuccess,
+    queryFn: async ({ signal }) => {
+      try {
+        const response = await client.operations['diagnostics.app']({});
+        signal.throwIfAborted();
+        return response;
+      } catch (error) {
+        signal.throwIfAborted();
+        throw safeUpdateError(error);
+      }
+    },
+    enabled: admitted,
     retry: false,
+    // This query first enables after admission, which must also refresh a fresh cache.
+    staleTime: 0,
+    refetchOnMount: 'always',
   });
+  useEffect(() => {
+    // A transient error clear or a later 500 cannot revoke prior denial evidence.
+    if (isAccessDenied(diagnostics.error)) {
+      setDiagnosticsDenied(true);
+    } else if (
+      diagnostics.isFetchedAfterMount &&
+      diagnostics.isSuccess &&
+      diagnostics.fetchStatus === 'idle'
+    ) {
+      setDiagnosticsDenied(false);
+    }
+  }, [
+    diagnostics.error,
+    diagnostics.isFetchedAfterMount,
+    diagnostics.isSuccess,
+    diagnostics.fetchStatus,
+  ]);
   const prepare = useMutation({
-    mutationFn: () =>
-      client.operations['app-update.prepare']({
-        expectedCurrentImageId: expectedCurrentImageId.trim(),
-        source: {
-          appDigest: appDigest.trim(),
-          sourceCommit: sourceCommit.trim(),
-          tag: tag.trim(),
-        },
-      }),
+    mutationFn: async () => {
+      try {
+        return await client.operations['app-update.prepare']({
+          expectedCurrentImageId: expectedCurrentImageId.trim(),
+          source: {
+            appDigest: appDigest.trim(),
+            sourceCommit: sourceCommit.trim(),
+            tag: tag.trim(),
+          },
+        });
+      } catch (error) {
+        throw safeUpdateError(error);
+      }
+    },
     onSuccess: (prepared) => {
       setReview(prepared);
       setStatus(null);
@@ -63,16 +111,26 @@ export function AppUpdateScreen() {
     },
   });
   const start = useMutation({
-    mutationFn: (requestId: string) =>
-      client.operations['app-update.start']({ maintenanceConsent: true, requestId }),
+    mutationFn: async (requestId: string) => {
+      try {
+        return await client.operations['app-update.start']({ maintenanceConsent: true, requestId });
+      } catch (error) {
+        throw safeUpdateError(error);
+      }
+    },
     onSuccess: (started) => {
       setStatus(started);
       setKnownRequestId(started.requestId);
     },
   });
   const refresh = useMutation({
-    mutationFn: (requestId: string) =>
-      client.operations['app-update.status']({ requestId: requestId }),
+    mutationFn: async (requestId: string) => {
+      try {
+        return await client.operations['app-update.status']({ requestId });
+      } catch (error) {
+        throw safeUpdateError(error);
+      }
+    },
     onSuccess: (current) => {
       setStatus(current);
       setKnownRequestId(current.requestId);
@@ -85,7 +143,11 @@ export function AppUpdateScreen() {
   const requestId = knownRequestId.trim();
   const binding = reviewBinding(review, status, requestId);
   const error = prepare.error ?? start.error ?? refresh.error;
-  const denied = isAccessDenied(adminAccess.error) || isAccessDenied(error);
+  const denied =
+    diagnosticsDenied ||
+    [adminAccess.error, diagnostics.error, prepare.error, start.error, refresh.error].some(
+      isAccessDenied
+    );
   const unconfigured = isUnconfigured(error);
   const blocked = denied || unconfigured;
 
@@ -96,7 +158,7 @@ export function AppUpdateScreen() {
         title="App update"
         subtitle="Prepare one App update, then start replacement after explicit maintenance consent. The host applies the update and reports whether restoration was possible."
       />
-      {adminAccess.isLoading ? (
+      {!adminAccess.isFetchedAfterMount || adminAccess.isPending || adminAccess.fetchStatus !== 'idle' ? (
         <Skeleton lines={6} />
       ) : blocked ? (
         <EmptyState
@@ -114,7 +176,12 @@ export function AppUpdateScreen() {
                 prepare.reset();
                 start.reset();
                 refresh.reset();
-                void adminAccess.refetch();
+                setMaintenanceConsent(false);
+                void adminAccess.refetch().then((current) => {
+                  if (current.isSuccess) {
+                    void diagnostics.refetch({ cancelRefetch: false });
+                  }
+                });
               }}
             >
               Retry
@@ -131,7 +198,7 @@ export function AppUpdateScreen() {
           {error ? <ErrorBanner message={errorMessage(error)} /> : null}
           <Card className="flex flex-col gap-2">
             <h2 className="text-sm font-bold text-fg-strong">Operational diagnostics</h2>
-            {diagnostics.isLoading ? (
+            {!diagnostics.isFetchedAfterMount || diagnostics.fetchStatus !== 'idle' ? (
               <Skeleton lines={4} />
             ) : diagnostics.isError ? (
               <ErrorBanner
@@ -385,4 +452,19 @@ function isUnconfigured(error: unknown): boolean {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'App update request failed.';
+}
+
+/** Admit only safe copy and the denial or configuration discriminator to error caches. */
+function safeUpdateError(error: unknown): Error {
+  if (isAccessDenied(error) && error instanceof ApiCallError) {
+    return new ApiCallError(error.status, 'Administrator access required.');
+  }
+  if (isUnconfigured(error) && error instanceof ApiCallError) {
+    return new ApiCallError(error.status, 'App update configuration is absent.', {
+      code: 'app_update_unconfigured',
+    });
+  }
+  return new Error(
+    'App update request failed. If start was interrupted, its outcome may be unknown. Refresh the known request ID before another start.'
+  );
 }
