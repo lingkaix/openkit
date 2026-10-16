@@ -4,15 +4,15 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from './test-support/local-user.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from './test-support/local-user.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
-import { createDemoStore } from './test-support/demo-store.js';
+import { createDemoStore, DEMO_WORKSPACE_ID, DEMO_THREAD_ID } from './test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
-const OWNER_SCOPE = { kind: 'workspace', workspaceId: 'ws_demo' } as const;
+const OWNER_SCOPE = { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID } as const;
 const OPERATION = 'knowledge.notebook.update';
 
 /** Exact public result facts; the receipt points to this immutable commit rather than current pages. */
@@ -43,8 +43,8 @@ function fixture() {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId: DEMO_WORKSPACE_ID, ownerUserId: LOCAL_USER_ID });
+    const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
     applyScopedMigrations(workspaceDb);
     const f = {
       dataRoot,
@@ -52,7 +52,7 @@ function fixture() {
       store,
       workspaceDb,
       app: createApp({ coreDb, dataRoot, store }),
-      repositoryPath: join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'notebook.git'),
+      repositoryPath: join(dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
     };
     fixtures.push(f);
     return f;
@@ -69,7 +69,7 @@ function reopen(f: ReturnType<typeof fixture>) {
   f.coreDb.sqlite.close();
   f.coreDb = openCoreDb(f.dataRoot);
   applyMigrations(f.coreDb);
-  f.workspaceDb = openWorkspaceDb(f.dataRoot, 'ws_demo');
+  f.workspaceDb = openWorkspaceDb(f.dataRoot, DEMO_WORKSPACE_ID);
   applyScopedMigrations(f.workspaceDb);
   f.store = new FsStore({ dataRoot: f.dataRoot });
   f.app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
@@ -98,7 +98,7 @@ function page(id: string, body: string): string {
     'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
     'openkit_status: active',
     'status: stable',
-    'scope: {kind: workspace, workspaceId: ws_demo}',
+    `scope: {kind: workspace, workspaceId: ${DEMO_WORKSPACE_ID}}`,
     'source_refs: []',
     'review_state: user-authored',
     'sensitivity: normal',
@@ -119,7 +119,7 @@ async function listing(f: ReturnType<typeof fixture>) {
   const response = await f.app.request('/api/app/operations/knowledge.list', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ workspaceId: 'ws_demo' }),
+    body: JSON.stringify({ workspaceId: DEMO_WORKSPACE_ID }),
   });
   expect(response.status).toBe(200);
   const body = (await response.json()) as {
@@ -139,7 +139,7 @@ async function submit(f: ReturnType<typeof fixture>, edit: Edit) {
   const response = await f.app.request(`/api/app/operations/${OPERATION}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
-    body: JSON.stringify({ workspaceId: 'ws_demo', ...body }),
+    body: JSON.stringify({ workspaceId: DEMO_WORKSPACE_ID, ...body }),
   });
   return { status: response.status, body: await response.json() };
 }
@@ -193,7 +193,7 @@ async function entryCommand(
   const response = await f.app.request(`/api/app/operations/${operation}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
-    body: JSON.stringify({ workspaceId: 'ws_demo', ...input }),
+    body: JSON.stringify({ workspaceId: DEMO_WORKSPACE_ID, ...input }),
   });
   return { status: response.status, body: await response.json() };
 }
@@ -289,7 +289,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     expect(git(f, ['show', `${revision}:pages/index.md`])).toContain('# Notebook');
     const metadata = JSON.parse(git(f, ['show', '-s', '--format=%B', revision]));
     expect(metadata).toMatchObject({
-      producer: { kind: 'user', id: 'user_local' },
+      producer: { kind: 'user', id: LOCAL_USER_ID },
       authority: { kind: 'direct' },
       sourceReferences: [],
     });
@@ -330,7 +330,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
         requestId: firstEdit.requestId,
         inputDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       },
-      producer: { kind: 'user', id: 'user_local' },
+      producer: { kind: 'user', id: LOCAL_USER_ID },
       authority: { kind: 'direct', instructionReference: expect.any(String) },
       sourceReferences: [],
     });
@@ -429,12 +429,12 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     const exactBytes = git(f, ['show', `${published.notebookRevision}:pages/alpha.md`]);
     const count = publishedCount(f);
     // An unstamped optional materialization is inert; broad persistence must not publish or delete it.
-    const pagesRoot = join(f.dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'pages');
+    const pagesRoot = join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'pages');
     mkdirSync(pagesRoot, { recursive: true });
     const sentinelPath = join(pagesRoot, 'materialization-sentinel.md');
     const sentinel = page('materialization-sentinel', 'Inert materialization bytes.');
     writeFileSync(sentinelPath, sentinel);
-    staleStore.updateThread('ws_demo', 'th_demo', { name: 'Unrelated persisted Thread title' });
+    staleStore.updateThread(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, { name: 'Unrelated persisted Thread title' });
     expect(readFileSync(sentinelPath, 'utf8')).toBe(sentinel);
     reopen(f);
     const retained = await listing(f);

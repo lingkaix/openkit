@@ -4,12 +4,12 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ensureLocalUser } from './test-support/local-user.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from './test-support/local-user.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
-import { createDemoStore } from './test-support/demo-store.js';
+import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const fixtures: Array<ReturnType<typeof fixture>> = [];
@@ -22,8 +22,8 @@ function fixture() {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId: DEMO_WORKSPACE_ID, ownerUserId: LOCAL_USER_ID });
+    const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
     applyScopedMigrations(workspaceDb);
     const f = {
       dataRoot,
@@ -31,7 +31,7 @@ function fixture() {
       store,
       workspaceDb,
       app: createApp({ coreDb, dataRoot, store }),
-      repositoryPath: join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'notebook.git'),
+      repositoryPath: join(dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
     };
     fixtures.push(f);
     return f;
@@ -52,7 +52,7 @@ function page(id: string, body: string, source: string): string {
     'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
     'openkit_status: active',
     'status: stable',
-    'scope: {kind: workspace, workspaceId: ws_demo}',
+    `scope: {kind: workspace, workspaceId: ${DEMO_WORKSPACE_ID}}`,
     `source_refs: [${JSON.stringify(source)}]`,
     'review_state: accepted',
     'sensitivity: normal',
@@ -87,7 +87,7 @@ async function call(
       'content-type': 'application/json',
       ...(requestId ? { 'x-openkit-request-id': String(requestId) } : {}),
     },
-    body: JSON.stringify({ workspaceId: 'ws_demo', ...body }),
+    body: JSON.stringify({ workspaceId: DEMO_WORKSPACE_ID, ...body }),
   });
   return { status: response.status, body: await response.json() };
 }
@@ -124,8 +124,8 @@ async function draft(f: ReturnType<typeof fixture>, id = 'alpha', agent = false)
         body: {
           proposal: f.store.createKnowledgeProposal({
             ...input,
-            workspaceId: 'ws_demo',
-            producer: { kind: 'agent', id: 'agent_synthetic', responsibleUserId: 'user_local' },
+            workspaceId: DEMO_WORKSPACE_ID,
+            producer: { kind: 'agent', id: 'agent_synthetic', responsibleUserId: LOCAL_USER_ID },
             createdAt: new Date().toISOString(),
             verifiedExternalReferences: [],
           }),
@@ -136,7 +136,7 @@ async function draft(f: ReturnType<typeof fixture>, id = 'alpha', agent = false)
   const proposal = response.body.proposal;
   const proposalDigest = digest(
     readFileSync(
-      join(f.dataRoot, 'workspaces/ws_demo/knowledge/proposals', `${proposal.id}.md`),
+      join(f.dataRoot, `workspaces/${DEMO_WORKSPACE_ID}/knowledge/proposals`, `${proposal.id}.md`),
       'utf8'
     )
   );
@@ -178,12 +178,12 @@ describe('native fixed-base Knowledge Review and removal', () => {
         { encoding: 'utf8' }
       )
     ).toBe(d.bytes);
-    expect(accepted.body.review.actor).toEqual({ kind: 'user', id: 'user_local' });
+    expect(accepted.body.review.actor).toEqual({ kind: 'user', id: LOCAL_USER_ID });
     // Reopen real owners: saved proposal bytes must resolve through their retained Git ref.
     f.store = new FsStore({ dataRoot: f.dataRoot });
     f.app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
     expect(
-      f.store.projectKnowledgeProposalDecision('ws_demo', accepted.body.review.reviewId)
+      f.store.projectKnowledgeProposalDecision(DEMO_WORKSPACE_ID, accepted.body.review.reviewId)
     ).toEqual(accepted.body);
     const stale = await draft(f, 'beta');
     const winnerBytes = page('winner', 'Unrelated winning text.\n', d.reference).replace(
@@ -222,11 +222,11 @@ describe('native fixed-base Knowledge Review and removal', () => {
     expect(message.producer).toEqual({
       kind: 'agent',
       id: 'agent_synthetic',
-      responsibleUserId: 'user_local',
+      responsibleUserId: LOCAL_USER_ID,
     });
     expect(message.authority).toEqual({ kind: 'proposal', proposalId: d.proposal.id });
     expect(message.changeRequest.requestId).not.toBe(accepted.body.review.requestId);
-    expect(accepted.body.review.actor).toEqual({ kind: 'user', id: 'user_local' });
+    expect(accepted.body.review.actor).toEqual({ kind: 'user', id: LOCAL_USER_ID });
     const reverseInput = {
       requestId: randomUUID(),
       proposalId: d.proposal.id,
@@ -320,7 +320,7 @@ describe('native fixed-base Knowledge Review and removal', () => {
       f.store.getCommandRequest(
         'knowledge.proposal.reverse',
         reverseInput.requestId,
-        { workspaceId: 'ws_demo', actorId: 'user_local' },
+        { workspaceId: DEMO_WORKSPACE_ID, actorId: LOCAL_USER_ID },
         f.workspaceDb
       )?.response
     ).toEqual({ kind: 'knowledge_notebook_revision', id: removedRevision });

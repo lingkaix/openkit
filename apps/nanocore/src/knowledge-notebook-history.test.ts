@@ -8,11 +8,11 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
-import { ensureLocalUser } from './test-support/local-user.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from './test-support/local-user.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
-import { createDemoStore } from './test-support/demo-store.js';
+import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const fixtures: Array<ReturnType<typeof fixture>> = [];
@@ -25,8 +25,8 @@ function fixture() {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId: DEMO_WORKSPACE_ID, ownerUserId: LOCAL_USER_ID });
+    const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
     applyScopedMigrations(workspaceDb);
     const f = {
       dataRoot,
@@ -34,7 +34,7 @@ function fixture() {
       store,
       workspaceDb,
       app: createApp({ coreDb, dataRoot, store }),
-      repositoryPath: join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'notebook.git'),
+      repositoryPath: join(dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
     };
     fixtures.push(f);
     return f;
@@ -55,7 +55,7 @@ function page(id: string, body: string, source: string): string {
     'requiredFeatures: [ openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1 ]',
     'openkit_status: active',
     'status: stable',
-    'scope: { kind: workspace, workspaceId: ws_demo }',
+    `scope: { kind: workspace, workspaceId: ${DEMO_WORKSPACE_ID} }`,
     `source_refs: [ ${JSON.stringify(source)} ]`,
     'review_state: accepted',
     'sensitivity: normal',
@@ -90,7 +90,7 @@ async function call(
       'content-type': 'application/json',
       ...(requestId ? { 'x-openkit-request-id': String(requestId) } : {}),
     },
-    body: JSON.stringify({ workspaceId: 'ws_demo', ...body }),
+    body: JSON.stringify({ workspaceId: DEMO_WORKSPACE_ID, ...body }),
   });
   const text = await response.text();
   return {
@@ -134,7 +134,7 @@ async function seed(f: ReturnType<typeof fixture>) {
   const saved = proposal.body.proposal;
   const proposalDigest = `sha256:${createHash('sha256')
     .update(
-      readFileSync(join(f.dataRoot, 'workspaces/ws_demo/knowledge/proposals', `${saved.id}.md`))
+      readFileSync(join(f.dataRoot, `workspaces/${DEMO_WORKSPACE_ID}/knowledge/proposals`, `${saved.id}.md`))
     )
     .digest('hex')}`;
   const first = await call(f, 'knowledge.proposal.decide', {
@@ -171,7 +171,7 @@ describe('native Workspace Notebook history and restore', () => {
         parentRevision: s.revision,
         availability: 'available',
         summary: 'Later human text',
-        producer: { kind: 'user', id: 'user_local' },
+        producer: { kind: 'user', id: LOCAL_USER_ID },
         changedPaths: ['alpha.md'],
       },
       {
@@ -179,7 +179,7 @@ describe('native Workspace Notebook history and restore', () => {
         parentRevision: s.initial,
         availability: 'available',
         summary: 'Original human text',
-        producer: { kind: 'user', id: 'user_local' },
+        producer: { kind: 'user', id: LOCAL_USER_ID },
         changedPaths: ['alpha.md'],
       },
     ]);
@@ -368,7 +368,7 @@ describe('native Workspace Notebook history and restore', () => {
   });
   it('withholds source-denied historical metadata and bytes and rechecks a revoked credential', async () => {
     const f = fixture();
-    const origin = f.store.createThread('ws_demo', 'Source audience');
+    const origin = f.store.createThread(DEMO_WORKSPACE_ID, 'Source audience');
     const source = await call(f, 'knowledge.source.register', {
       requestId: randomUUID(),
       kind: 'document',
@@ -392,9 +392,9 @@ describe('native Workspace Notebook history and restore', () => {
     expect(published.status, JSON.stringify(published.body)).toBe(200);
     const baseRevision = published.body.notebookRevision;
     const issued = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: LOCAL_USER_ID,
       scope: 'workspace',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: [DEMO_WORKSPACE_ID],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
     const server = createApp({
@@ -412,7 +412,7 @@ describe('native Workspace Notebook history and restore', () => {
           authorization: `Bearer ${issued.secret}`,
           ...(requestId ? { 'x-openkit-request-id': String(requestId) } : {}),
         },
-        body: JSON.stringify({ workspaceId: 'ws_demo', ...body }),
+        body: JSON.stringify({ workspaceId: DEMO_WORKSPACE_ID, ...body }),
       });
       return { status: response.status, body: await response.json() };
     };
