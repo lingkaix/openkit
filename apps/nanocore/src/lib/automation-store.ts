@@ -373,7 +373,11 @@ export class AutomationStore {
             };
             return this.finish(occurrence, 'admission-accepted', timestamp);
           }
-          const current = revalidate?.() ?? preparation;
+          // A later authority refusal cannot prove an unknown preparation had no effects.
+          const current =
+            preparation.kind === 'recovery_required'
+              ? preparation
+              : (revalidate?.() ?? preparation);
           if (current.kind === 'recovery_required')
             return this.finish(occurrence, 'recovery_required', timestamp);
           let code = current.kind === 'failure' ? current.code : ('accepted' as const);
