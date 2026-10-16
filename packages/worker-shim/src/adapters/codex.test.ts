@@ -2122,19 +2122,23 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     }
   }, 30_000);
 
-  it('preserves retained config and unknown files through open and close', async () => {
-    const roots = await tempRoots();
-    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
-    const config = '# retained config marker\n';
-    await writeFile(join(roots.state, 'config.toml'), config);
-    await writeFile(join(roots.state, 'unknown.data'), 'retained');
-    const session = await testAdapter.openSession(openInput(roots));
-    sessions.push(session);
-    expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(config);
-    await session.close();
-    expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(config);
-    expect(await readFile(join(roots.state, 'unknown.data'), 'utf8')).toBe('retained');
-  });
+  it(
+    'preserves retained config and unknown files through open and close',
+    async () => {
+      const roots = await tempRoots();
+      closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+      const config = '# retained config marker\n';
+      await writeFile(join(roots.state, 'config.toml'), config);
+      await writeFile(join(roots.state, 'unknown.data'), 'retained');
+      const session = await testAdapter.openSession(openInput(roots));
+      sessions.push(session);
+      expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(config);
+      await session.close();
+      expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(config);
+      expect(await readFile(join(roots.state, 'unknown.data'), 'utf8')).toBe('retained');
+    },
+    LIFECYCLE_DEFAULTS.nativeOpenMs + LIFECYCLE_DEFAULTS.nativeStopMs
+  );
 
   it('refuses unimplemented App Server provenance before native Turn work', async () => {
     const roots = await tempRoots();
