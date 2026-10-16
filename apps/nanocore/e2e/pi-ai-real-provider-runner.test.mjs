@@ -33,6 +33,50 @@ const UNICODE_PUBLIC_FIELD_MARKER = 'operator-marker-机密-🔒';
 const UNICODE_ESCAPED_NESTED_PUBLIC_MARKER =
   '{"notice":"operator-marker-\\u673a\\u5bc6-\\ud83d\\udd12"}';
 
+/**
+ * Returns the current diagnostics.app projection for the five identical Google consumers.
+ *
+ * Each caller adds only its own public notice to the shared Google route projection.
+ *
+ * @returns {object} Google gemini-2.5-pro diagnostics.app body.
+ */
+function diagnosticsAppFixture() {
+  return {
+    gateway: {
+      status: 'ok',
+      endpoints: ['/health', '/v1/models', '/v1/chat/completions', '/v1/responses'],
+      defaultModelId: 'gemini-2.5-pro',
+      models: [
+        {
+          id: 'gemini-2.5-pro',
+          displayName: 'gemini-2.5-pro',
+          capabilities: ['chat-completions'],
+          routes: [
+            {
+              id: 'primary',
+              providerProfileId: 'google',
+              providerModel: 'gemini-2.5-pro',
+              available: true,
+              unavailableReason: null,
+            },
+          ],
+        },
+      ],
+    },
+    providers: {
+      diagnostics: [],
+      registry: [
+        {
+          id: 'google',
+          displayName: 'Google',
+          kind: 'direct',
+          models: ['gemini-2.5-pro'],
+        },
+      ],
+    },
+  };
+}
+
 describe('pi-ai real-provider L3 test policy', () => {
   for (const publicSurface of [
     {
@@ -139,23 +183,7 @@ describe('pi-ai real-provider L3 test policy', () => {
               if (url.endsWith('/api/app/operations/diagnostics.app')) {
                 return new Response(
                   JSON.stringify({
-                    defaultProviders: {
-                      gateway: {
-                        configured: true,
-                        model: 'gemini-2.5-pro',
-                        providerId: 'google',
-                      },
-                    },
-                    providers: {
-                      registry: [
-                        {
-                          gatewayCapabilities: { chatCompletions: 'native' },
-                          id: 'google',
-                          kind: 'native',
-                          models: ['gemini-2.5-pro'],
-                        },
-                      ],
-                    },
+                    ...diagnosticsAppFixture(),
                     ...(markerScenario.surface === 'diagnostics'
                       ? { publicNotice: markerScenario.value }
                       : {}),
@@ -220,23 +248,7 @@ describe('pi-ai real-provider L3 test policy', () => {
             if (url.endsWith('/api/app/operations/diagnostics.app')) {
               return new Response(
                 JSON.stringify({
-                  defaultProviders: {
-                    gateway: {
-                      configured: true,
-                      model: 'gemini-2.5-pro',
-                      providerId: 'google',
-                    },
-                  },
-                  providers: {
-                    registry: [
-                      {
-                        gatewayCapabilities: { chatCompletions: 'native' },
-                        id: 'google',
-                        kind: 'native',
-                        models: ['gemini-2.5-pro'],
-                      },
-                    ],
-                  },
+                  ...diagnosticsAppFixture(),
                   ...(publicSurface === 'diagnostics' ? { publicNotice: nestedJson } : {}),
                 }),
                 { status: 200 }
@@ -276,6 +288,144 @@ describe('pi-ai real-provider L3 test policy', () => {
       }
     });
   }
+
+  it('accepts current logical-model diagnostics and attributes both calls to its selected profile', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-pi-ai-logical-model-'));
+    const evidenceDir = join(tempRoot, 'evidence');
+    const requests = [];
+    const profileId = 'xai-selected';
+    const physicalModel = 'grok-4';
+    try {
+      const result = await runPiAiRealProviderTest({
+        env: {
+          OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
+          OPENKIT_L6_EVIDENCE_DIR: evidenceDir,
+          OPENKIT_L6_GATEWAY_BASE_URL: 'http://127.0.0.1:54001',
+          OPENKIT_L6_GATEWAY_MODEL: 'Smart',
+          OPENKIT_L6_GATEWAY_PROVIDER_ID: profileId,
+          OPENKIT_L6_GATEWAY_WORKSPACE_ID: 'ws_0190f4c8-0000-7000-8000-000000000701',
+          OPENKIT_L6_REAL_PROVIDER: '1',
+        },
+        fetchImpl: async (url, init) => {
+          if (url.endsWith('/health')) {
+            return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+          }
+          if (url.endsWith('/api/app/operations/diagnostics.app')) {
+            return new Response(
+              JSON.stringify({
+                gateway: {
+                  status: 'ok',
+                  endpoints: ['/health', '/v1/chat/completions'],
+                  defaultModelId: 'Smart',
+                  models: [
+                    {
+                      id: 'Smart',
+                      displayName: 'Smart',
+                      capabilities: ['chat-completions'],
+                      routes: [
+                        {
+                          id: 'selected',
+                          providerProfileId: profileId,
+                          providerModel: physicalModel,
+                          available: true,
+                          unavailableReason: null,
+                        },
+                      ],
+                    },
+                  ],
+                },
+                providers: {
+                  diagnostics: [],
+                  registry: [{ id: profileId, kind: 'oauth', models: [physicalModel] }],
+                },
+              }),
+              { status: 200 }
+            );
+          }
+          if (url.endsWith('/v1/chat/completions')) {
+            const body = JSON.parse(init.body);
+            requests.push(body);
+            return body.stream
+              ? new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', {
+                  status: 200,
+                })
+              : new Response(
+                  JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok' } }] }),
+                  { status: 200 }
+                );
+          }
+          assert.ok(url.endsWith('/api/app/operations/usage.read'));
+          return new Response(
+            JSON.stringify({
+              capabilityCalls: requests.map((request) => ({
+                capabilityId: 'llm.chat_completions',
+                providerRef: profileId,
+                requestId: request.metadata.openkit.requestId,
+                status: 'succeeded',
+              })),
+              usageRecords: [],
+            }),
+            { status: 200 }
+          );
+        },
+        stdout: () => {},
+      });
+      assert.equal(result.status, 'passed');
+      assert.deepEqual(
+        requests.map((request) => request.model),
+        ['Smart', 'Smart']
+      );
+      assert.equal(result.assertions.successfulCapabilityCallCount, 2);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('refuses an unavailable primary when automatic failover is disabled', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-pi-ai-primary-unavailable-'));
+    const diagnostics = diagnosticsAppFixture();
+    const model = diagnostics.gateway.models[0];
+    model.autoFailover = false;
+    model.routes.unshift({
+      ...model.routes[0],
+      id: 'unavailable-primary',
+      available: false,
+      unavailableReason: 'provider_not_dispatchable',
+    });
+    const requestedPaths = [];
+
+    try {
+      await assert.rejects(
+        runPiAiRealProviderTest({
+          env: {
+            OPENKIT_L6_ALLOW_PROVIDER_QUOTA: '1',
+            OPENKIT_L6_EVIDENCE_DIR: join(tempRoot, 'evidence'),
+            OPENKIT_L6_GATEWAY_BASE_URL: 'http://127.0.0.1:54001',
+            OPENKIT_L6_GATEWAY_MODEL: 'gemini-2.5-pro',
+            OPENKIT_L6_GATEWAY_PROVIDER_ID: 'google',
+            OPENKIT_L6_GATEWAY_WORKSPACE_ID: 'ws_0190f4c8-0000-7000-8000-000000000001',
+            OPENKIT_L6_REAL_PROVIDER: '1',
+          },
+          fetchImpl: async (url) => {
+            const path = new URL(url).pathname;
+            requestedPaths.push(path);
+            assert.ok(path === '/health' || path === '/api/app/operations/diagnostics.app');
+            return new Response(
+              JSON.stringify(path === '/health' ? { status: 'ok' } : diagnostics),
+              {
+                status: 200,
+              }
+            );
+          },
+          stdout: () => {},
+        }),
+        /gateway diagnostics preflight failed: google provider_not_dispatchable/
+      );
+      assert.deepEqual(requestedPaths, ['/health', '/api/app/operations/diagnostics.app']);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
 
   it('stays default-off without touching the gateway', async () => {
     const result = await runPiAiRealProviderTest({
@@ -337,28 +487,7 @@ describe('pi-ai real-provider L3 test policy', () => {
               return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
             }
             if (url.endsWith('/api/app/operations/diagnostics.app')) {
-              return new Response(
-                JSON.stringify({
-                  defaultProviders: {
-                    gateway: {
-                      configured: true,
-                      model: 'gemini-2.5-pro',
-                      providerId: 'google',
-                    },
-                  },
-                  providers: {
-                    registry: [
-                      {
-                        gatewayCapabilities: { chatCompletions: 'native' },
-                        id: 'google',
-                        kind: 'native',
-                        models: ['gemini-2.5-pro'],
-                      },
-                    ],
-                  },
-                }),
-                { status: 200 }
-              );
+              return new Response(JSON.stringify(diagnosticsAppFixture()), { status: 200 });
             }
             if (url.endsWith('/v1/chat/completions')) {
               const body = JSON.parse(init.body);
@@ -417,28 +546,7 @@ describe('pi-ai real-provider L3 test policy', () => {
               return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
             }
             if (url.endsWith('/api/app/operations/diagnostics.app')) {
-              return new Response(
-                JSON.stringify({
-                  defaultProviders: {
-                    gateway: {
-                      configured: true,
-                      model: 'gemini-2.5-pro',
-                      providerId: 'google',
-                    },
-                  },
-                  providers: {
-                    registry: [
-                      {
-                        gatewayCapabilities: { chatCompletions: 'native' },
-                        id: 'google',
-                        kind: 'native',
-                        models: ['gemini-2.5-pro'],
-                      },
-                    ],
-                  },
-                }),
-                { status: 200 }
-              );
+              return new Response(JSON.stringify(diagnosticsAppFixture()), { status: 200 });
             }
             return new Response(
               JSON.stringify({
@@ -521,28 +629,7 @@ describe('pi-ai real-provider L3 test policy', () => {
               return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
             }
             if (url.endsWith('/api/app/operations/diagnostics.app')) {
-              return new Response(
-                JSON.stringify({
-                  defaultProviders: {
-                    gateway: {
-                      configured: true,
-                      model: 'gemini-2.5-pro',
-                      providerId: 'google',
-                    },
-                  },
-                  providers: {
-                    registry: [
-                      {
-                        gatewayCapabilities: { chatCompletions: 'native' },
-                        id: 'google',
-                        kind: 'native',
-                        models: ['gemini-2.5-pro'],
-                      },
-                    ],
-                  },
-                }),
-                { status: 200 }
-              );
+              return new Response(JSON.stringify(diagnosticsAppFixture()), { status: 200 });
             }
             if (url.endsWith('/v1/chat/completions')) {
               const body = JSON.parse(init.body);
