@@ -1,5 +1,5 @@
 import type { CoreClient, WorkspaceRecord } from '@openkit/core-client';
-import { createRequestId } from '@openkit/core-client';
+import { ApiCallError, createRequestId } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCoreClient } from '../../app/core-client';
 import { useCurrentWorkspaceId, useWorkspaces } from '../chat/data';
@@ -937,18 +937,29 @@ export function useUpdateWorkspaceName(workspaceId: string | null) {
   });
 }
 
-/** Loads deployment-admin audit and decisions through the current session, independent of Workspace selection. */
+/** Rechecks deployment-admin audit and decisions for each mount, with safe cached data and errors. */
 export function useServerAudit() {
   const client = useCoreClient();
   return useQuery({
     queryKey: ['settings', 'server-audit'],
-    queryFn: async () => {
-      const [audit, decisions] = await Promise.all([
-        client.operations['audit.server-list']({}),
-        client.operations['permission.server-list']({}),
-      ]);
-      return projectAuditAndDecisions(audit, decisions);
+    queryFn: async ({ signal }) => {
+      try {
+        const [audit, decisions] = await Promise.all([
+          client.operations['audit.server-list']({}),
+          client.operations['permission.server-list']({}),
+        ]);
+        // A departed observer must not authorize a later mount with its pending response.
+        signal.throwIfAborted();
+        return projectAuditAndDecisions(audit, decisions);
+      } catch (error) {
+        // Only fixed copy and the denial status may enter this query's error cache.
+        if (error instanceof ApiCallError && (error.status === 401 || error.status === 403)) {
+          throw new ApiCallError(error.status, 'Server audit access denied.');
+        }
+        throw new Error("Couldn't load server audit records.");
+      }
     },
     retry: false,
+    refetchOnMount: 'always',
   });
 }
