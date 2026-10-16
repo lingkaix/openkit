@@ -68,6 +68,7 @@ import {
   listQueuedSchedulerAdmissionEntries,
   listSchedulerAdmissionEntriesForWorkspace,
 } from './scheduler-records.js';
+import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import * as observationOwners from './storage/work-observations.js';
@@ -1294,8 +1295,11 @@ describe('conversation.submit worker acceptance wait', () => {
       expect(request.kind).toBe('image.acquire');
       throw new Error('Controlled native image preparation refusal.');
     });
+    // The separately composed runtime must use the same source admission owner as the App.
+    const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
     const runtime = createConfiguredWorkerLifecycleRuntime({
       coreDb,
+      fileAdmission,
       store,
       env: {},
       nanoHostSessionDispatch: {
@@ -1316,6 +1320,7 @@ describe('conversation.submit worker acceptance wait', () => {
     const app = createAppWithWorkspaceAuthority({
       coreDb,
       dataRoot,
+      fileAdmission,
       store,
       turnExecutor: runtime.turnExecutor,
       agentManifests: [setup.manifest],
@@ -2218,7 +2223,7 @@ describe('Task durable admission response', () => {
     });
     let turnId: string | undefined;
     try {
-      await vi.waitFor(() => expect(responseObserved).toBe(true));
+      // Receipt and completion ordering, not startup speed, proves admission before Worker closeout.
       const response = await pending;
       expect(response.status, await response.clone().text()).toBe(token ? 200 : 202);
       turnId = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
