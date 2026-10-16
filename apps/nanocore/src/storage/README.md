@@ -7,7 +7,7 @@ This directory owns NanoCore's physical data-root layout, ownership-scoped SQLit
 | Scope or record family | Durable owner |
 | --- | --- |
 | Server control state, authentication, scheduler records | `server/db/core.sqlite` |
-| User-scoped command idempotency | `users/<userId>/db/user.sqlite` |
+| User-scoped command idempotency and AuditEvent records | `users/<userId>/db/user.sqlite` |
 | Workspace-scoped ledgers and transactional recovery | `workspaces/<workspaceId>/db/workspace.sqlite` |
 | Workspace, thread, turn, item, artifact, knowledge, source, session, and runtime transcript history | Canonical files under the owning workspace tree |
 | Search, readiness, and dashboard indexes | Rebuildable files under `indexes/` or derived SQLite tables |
@@ -18,6 +18,7 @@ One record family must have one durable authority. Do not add aggregate workspac
 
 - `fs-layout.ts` owns safe paths and accepted directory placement. `ensureLayout` verifies the ownership tree, database placement, canonical envelopes, and layout marker at boot and during stopped-process migration. Request paths use directory preparation without tree verification; `ensureWorkspaceLayout` creates only the root and Workspace directories needed by its caller.
 - `db.ts` and `migrate.ts` own database opening, integrity validation, and native per-scope Drizzle journals under `drizzle/{core,user,workspace,app}`.
+- Notebook publication retains typed content-free admission in the existing owning User, Workspace or Server AuditEvent table before the Git ref changes. User Audit shares `user.sqlite` and its native journal; it creates no notebook database or journal. An app-local Audit table cannot own a notebook admission.
 - Authoritative SQLite integrity failure stops boot and leaves the original database file unchanged; only derived indexes may rebuild automatically.
 - `workspace-file-records.ts` owns canonical workspace record serialization and boot loading. Store Review verification, observation Turn bindings and retained Audit attribution reuse its descriptive readers.
 - `workspace-file-records.ts` also ensures the OKF v0.2 bundle-root `knowledge/pages/index.md` once, preserves valid authored index bytes, and writes the same final Knowledge Page candidate bytes that direct-edit validation accepted.

@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { type AuditEvent, AuditEventSchema, RequestIdSchema } from '@openkit/protocol';
+import { isDeepStrictEqual } from 'node:util';
+import {
+  type AuditEvent,
+  AuditEventSchema,
+  type KnowledgeOwnerScope,
+  RequestIdSchema,
+} from '@openkit/protocol';
 
-import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import type { CoreDb, UserDb, WorkspaceDb } from './storage/db.js';
 import { ActorRefReaderSchema } from './storage/workspace-file-records.js';
 
 /** Input for recording one server-owned audit event. */
@@ -44,6 +50,8 @@ export interface RecordServerAuditEventInput {
   resource?: string | null;
   /** Positive authority revision after the mutation when applicable. */
   resourceRevision?: number | null;
+  /** Exact notebook admission facts, never page bodies or a reusable permission. */
+  notebookAdmission?: AuditEvent['notebookAdmission'];
   /** Event outcome. */
   outcome: AuditEvent['outcome'];
   /** Event severity. */
@@ -98,6 +106,8 @@ export interface RecordWorkspaceAuditEventInput {
   resource?: string | null;
   /** Positive authority revision after the mutation when applicable. */
   resourceRevision?: number | null;
+  /** Exact notebook admission facts, never page bodies or a reusable permission. */
+  notebookAdmission?: AuditEvent['notebookAdmission'];
   /** Event outcome. */
   outcome: AuditEvent['outcome'];
   /** Event severity. */
@@ -121,11 +131,27 @@ export interface RecordWorkspaceAuditEventInput {
 export function recordWorkspaceAuditEvent(input: RecordWorkspaceAuditEventInput): AuditEvent {
   const { workspaceDb: _workspaceDb, now: _now, occurredAt: _occurredAt, ...safeInput } = input;
   assertNoUnsafeAuditValue(safeInput);
+  assertNotebookAuditScope(input.notebookAdmission, {
+    kind: 'workspace',
+    workspaceId: input.workspaceDb.workspaceId,
+  });
+  if (input.notebookAdmission && input.workspaceId !== input.workspaceDb.workspaceId)
+    throw new Error('Notebook Audit owner does not match its Workspace database.');
 
   return recordAuditEvent(input.workspaceDb.sqlite, {
     ...input,
     workspaceId: input.workspaceId,
   });
+}
+
+/** Records existing-Audit facts in the original User database without changing Memory ownership. */
+export function recordUserAuditEvent(
+  input: Omit<RecordServerAuditEventInput, 'coreDb' | 'workspaceId'> & { readonly userDb: UserDb }
+): AuditEvent {
+  const { userDb, now: _now, occurredAt: _occurredAt, ...safeInput } = input;
+  assertNoUnsafeAuditValue(safeInput);
+  assertNotebookAuditScope(input.notebookAdmission, { kind: 'user', userId: userDb.userId });
+  return recordAuditEvent(userDb.sqlite, { ...input, workspaceId: null });
 }
 
 /**
@@ -139,6 +165,7 @@ export function recordAppAuditEvent(
 ): AuditEvent {
   const { sqlite: _sqlite, now: _now, occurredAt: _occurredAt, ...safeInput } = input;
   assertNoUnsafeAuditValue(safeInput);
+  assertNotebookAuditScope(input.notebookAdmission, null);
 
   return recordAuditEvent(input.sqlite, {
     ...input,
@@ -155,11 +182,21 @@ export function recordAppAuditEvent(
 export function recordServerAuditEvent(input: RecordServerAuditEventInput): AuditEvent {
   const { coreDb: _coreDb, now: _now, occurredAt: _occurredAt, ...safeInput } = input;
   assertNoUnsafeAuditValue(safeInput);
+  assertNotebookAuditScope(input.notebookAdmission, { kind: 'server' });
 
   return recordAuditEvent(input.coreDb.sqlite, {
     ...input,
     workspaceId: input.workspaceId ?? null,
   });
+}
+
+/** Keeps new notebook admission evidence in its existing exact database owner; facts confer no permission. */
+function assertNotebookAuditScope(
+  admission: AuditEvent['notebookAdmission'],
+  ownerScope: KnowledgeOwnerScope | null
+): void {
+  if (admission && !isDeepStrictEqual(admission.ownerScope, ownerScope))
+    throw new Error('Notebook Audit owner does not match its database.');
 }
 
 /**
@@ -194,6 +231,7 @@ export function listWorkspaceAuditEvents(
         action,
         resource,
         resource_revision,
+        notebook_admission_json,
         outcome,
         severity,
         summary,
@@ -211,7 +249,7 @@ export function listWorkspaceAuditEvents(
 /**
  * Lists every audit event stored in one SQLite handle.
  *
- * @param sqlite Core, Workspace, or app database handle.
+ * @param sqlite Core, User, Workspace, or App database handle.
  * @returns Protocol audit events in stable storage order.
  */
 export function listSqliteAuditEvents(sqlite: CoreDb['sqlite']): AuditEvent[] {
@@ -236,6 +274,7 @@ export function listSqliteAuditEvents(sqlite: CoreDb['sqlite']): AuditEvent[] {
         action,
         resource,
         resource_revision,
+        notebook_admission_json,
         outcome,
         severity,
         summary,
@@ -277,6 +316,7 @@ export function listServerAuditEvents(coreDb: CoreDb): AuditEvent[] {
         action,
         resource,
         resource_revision,
+        notebook_admission_json,
         outcome,
         severity,
         summary,
@@ -350,6 +390,7 @@ function recordAuditEvent(
     action: input.action,
     resource: input.resource ?? null,
     resourceRevision: input.resourceRevision ?? null,
+    ...(input.notebookAdmission ? { notebookAdmission: input.notebookAdmission } : {}),
     outcome: input.outcome,
     severity: input.severity ?? 'info',
     summary: input.summary,
@@ -391,13 +432,14 @@ function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
         action,
         resource,
         resource_revision,
+        notebook_admission_json,
         outcome,
         severity,
         summary,
         error_code,
         created_at,
         occurred_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       event.id,
@@ -418,6 +460,7 @@ function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
       event.action,
       event.resource,
       event.resourceRevision,
+      event.notebookAdmission === undefined ? null : JSON.stringify(event.notebookAdmission),
       event.outcome,
       event.severity,
       event.summary,
@@ -454,6 +497,9 @@ function auditEventFromRow(row: unknown): AuditEvent {
     action: event.action,
     resource: event.resource,
     resourceRevision: event.resource_revision ?? null,
+    ...(event.notebook_admission_json
+      ? { notebookAdmission: JSON.parse(String(event.notebook_admission_json)) }
+      : {}),
     outcome: event.outcome,
     severity: event.severity,
     summary: event.summary,

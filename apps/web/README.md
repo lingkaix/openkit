@@ -430,3 +430,5 @@ Gateway account rows clear cached quota while pending or logged out, including l
 App update administration displays separate operational readiness observations and the prepared approval summary before maintenance consent. Missing retained summary evidence requires new preparation; a status read cannot fabricate approval evidence. Execution-host readiness displays observation age and its stored-observation limitation.
 
 The conversation Item projection renders source-bound continuation summaries with their text, covered Item count and inspectable exact source endpoints. The history remains available through its existing Thread. A summary is a view of model continuity and does not remove original Items.
+
+Knowledge Manager answers show returned citations with owner-checked links to current full page content. Add knowledge can retain an explicitly selected registered Source and its captured digest. Source selection stays in its Workspace draft; matching text does not create a relationship.

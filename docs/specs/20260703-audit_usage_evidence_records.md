@@ -16,6 +16,8 @@ After terminal persistence, the Turn error and terminal event retain the accepte
 
 Private dialogue and private Memory are not payloads for shared effect audit. Management mutations retain actor, target scope, exact base/candidate identity, gate/command lineage and outcome through existing AuditEvent records; effect visibility does not expose the originating private Thread. Scope-qualified Memory/Knowledge operations and assessment/consolidation calls retain the owning User/Workspace/Server and current responsible actor in existing evidence. Assessment results use existing Knowledge Observations and never impersonate a human Review. Do not duplicate private source text, secrets or a personal summary in Server/Workspace audit or usage records.
 
+Notebook publication admission uses the specific optional `notebookAdmission` field on AuditEvent: exact `ownerScope`, request ID, input digest, nullable base commit, prepared candidate commit, producer, direct/delegated instruction or Proposal authority, and source references. The notebook owner defines those historical facts and their validation. Retain them in the existing database of that exact User, Workspace or Server before advancing the published Git ref; another scope or an app-local database cannot accept them. Ordinary Audit records omit this field. It contains no page body, summary text, generic metadata bag or reusable permission. Existing Audit write failure prevents publication; a later completed Audit or command receipt is a separate effect and never inferred from the admission record.
+
 ## Summary
 
 This spec defines the target record model for audit, usage, and evidence.
