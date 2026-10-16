@@ -12,7 +12,7 @@ import {
   resolveProviderSubscriptionFamily,
   type SubscriptionProviderId,
 } from '@openkit/config-schema';
-import type { ActorRef, TurnSchema, WorkspaceRecordSchema } from '@openkit/protocol';
+import type { ActorRef, TurnSchema } from '@openkit/protocol';
 import { isEntityId, isSealedTurnTerminal } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
@@ -210,8 +210,6 @@ import { ensureUserQuickChatWorkspace } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { getWorkspaceRegistryLifecycleFact } from './workspace-sharing.js';
 
-type WorkspaceRecord = z.infer<typeof WorkspaceRecordSchema>;
-
 /**
  * Process-local NanoHost transport session authority owned by one Hono app.
  *
@@ -322,24 +320,6 @@ function isProductWorkAdmissionRequest(method: string, path: string): boolean {
   return (
     ['DELETE', 'PATCH', 'POST', 'PUT'].includes(method) &&
     (path.startsWith('/api/workspaces/') || path.startsWith('/api/app/workspaces/'))
-  );
-}
-
-/**
- * Rejects project-only operations for lightweight Quick Chat workspaces.
- *
- * @param workspace Workspace record selected by the request.
- * @param action Project-only action summary for the user-facing error.
- * @throws TurnStartValidationError when the workspace is Quick Chat.
- */
-function assertProjectWorkspace(workspace: WorkspaceRecord, action: string): void {
-  if (workspace.kind !== 'quick-chat') {
-    return;
-  }
-
-  throw new TurnStartValidationError(
-    'workspace_kind_not_supported',
-    `Quick Chat workspace cannot ${action}. Create or select a project workspace.`
   );
 }
 
@@ -1717,7 +1697,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   const chatService = createConversationService({
     providerCredentialConfigured,
-    assertProjectWorkspace,
     coreDb: options.coreDb,
     inflightCommands,
     workspaceMutationAdmission,
@@ -1734,7 +1713,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const pendingAssistantDelivery = { startTurn: chatService.acceptPendingInput };
 
   const taskStart = createTaskStartOperation({
-    assertProjectWorkspace,
     coreDb: options.coreDb,
     inflightCommands,
     workspaceMutationAdmission,

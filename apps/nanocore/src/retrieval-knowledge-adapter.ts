@@ -94,19 +94,18 @@ export function resolveKnowledgeQueryContext(input: Target) {
 export function admitKnowledgeRetrieval(input: Pick<Target, 'workspaceId' | 'access'>): void {
   const { access, workspaceId } = input;
   const allowed = access.coreDb
-    ? currentWorkspaceAuthority(
-        access.coreDb,
-        workspaceId,
-        access.actor,
-        'knowledge.read',
-        true,
-        access.requestActor
-      ) !== null &&
-      (!access.requestActor ||
-        isWorkspaceOperationAuthorized(access.coreDb, access.requestActor, workspaceId, {
+    ? access.requestActor
+      ? isWorkspaceOperationAuthorized(access.coreDb, access.requestActor, workspaceId, {
           mutating: false,
           policyOperation: 'knowledge.read',
-        }))
+        })
+      : currentWorkspaceAuthority(
+          access.coreDb,
+          workspaceId,
+          access.actor,
+          'knowledge.read',
+          true
+        ) !== null
     : access.actor.kind === 'user' &&
       isEntityId('usr', access.actor.id) &&
       access.requestActor?.kind === 'local' &&
@@ -114,8 +113,11 @@ export function admitKnowledgeRetrieval(input: Pick<Target, 'workspaceId' | 'acc
   if (!allowed || (access.outputThreadId && !threadReadable(input, access.outputThreadId)))
     throw new OperationError('workspace_access_denied', 'Knowledge retrieval access denied.', 403);
 }
-/** Source audiences cannot expand into a shared or differently owned private destination. */
-function threadReadable(input: Pick<Target, 'workspaceId' | 'access'>, threadId: string): boolean {
+/** Checks Thread source/destination audience after current Workspace and credential admission. */
+export function threadReadable(
+  input: Pick<Target, 'workspaceId' | 'access'>,
+  threadId: string
+): boolean {
   const { access, workspaceId } = input;
   try {
     const administrator = access.requestActor
@@ -142,6 +144,15 @@ function threadReadable(input: Pick<Target, 'workspaceId' | 'access'>, threadId:
   } catch {
     return false;
   }
+}
+/** Checks current Source identity disclosure through its originating Thread's existing audience owner. */
+export function knowledgeSourceAudienceReadable(
+  input: Pick<Target, 'workspaceId' | 'access'>,
+  sourceId: string
+): boolean {
+  admitKnowledgeRetrieval(input);
+  const source = input.access.store.getKnowledgeSource(input.workspaceId, sourceId);
+  return !source.originatingThreadId || threadReadable(input, source.originatingThreadId);
 }
 /** Current Proposal/Review and external work owners establish evidence; callers supply no proof map. */
 export function currentKnowledgeReferenceProofs(
@@ -198,10 +209,10 @@ export function knowledgeSourceReferencesReadable(
         const resolution = resolveRegisteredKnowledgeSourceReference(reference, sources);
         if (!resolution.resolved || !resolution.targetId) return false;
         const source = store.getKnowledgeSource(input.workspaceId, resolution.targetId);
-        if (source.originatingThreadId && !threadReadable(input, source.originatingThreadId))
-          return false;
+        if (!knowledgeSourceAudienceReadable(input, source.id)) return false;
         const material = store.readKnowledgeSourceMaterial(input.workspaceId, source.id);
         if (material === null || digest(material) !== source.contentDigest) return false;
+        if (!knowledgeSourceAudienceReadable(input, source.id)) return false;
       } else if (reference.startsWith('knowledge:')) {
         const match = /^knowledge:([^@]+)(?:@(sha256:[a-f0-9]{64}))?$/.exec(reference);
         if (!match) return false;

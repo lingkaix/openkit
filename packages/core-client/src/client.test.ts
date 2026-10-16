@@ -1610,11 +1610,6 @@ describe('createCoreClient', () => {
 
   it.each([
     [
-      'Quick Chat',
-      (client: CoreClient) =>
-        client.operations['chat.quick']({ input: 'Hello', providerId: 'caller-provider' } as never),
-    ],
-    [
       'Chat Mode',
       (client: CoreClient) =>
         client.operations['conversation.submit']({
@@ -3032,15 +3027,6 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/vault.use-list': {
         body: workspaceVaultUseRecordsResponse(),
       },
-      'POST /api/app/operations/chat.quick': {
-        body: {
-          id: 'quick_demo',
-          status: 'completed',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          modelId: 'default',
-          content: 'Answer',
-        },
-      },
       'POST /api/app/operations/task.start': {
         body: {
           state: 'running',
@@ -3757,10 +3743,6 @@ describe('createCoreClient', () => {
     await expect(client.operations['permission.server-list']({})).resolves.toEqual(
       serverPermissionDecisionsResponse()
     );
-    await expect(client.operations['chat.quick']({ input: 'Hi' })).resolves.toMatchObject({
-      content: 'Answer',
-      status: 'completed',
-    });
     await expect(
       client.operations['task.start']({
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -4171,7 +4153,6 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/audit.server-list',
       'POST /api/app/operations/permission.workspace-list',
       'POST /api/app/operations/permission.server-list',
-      'POST /api/app/operations/chat.quick',
       'POST /api/app/operations/task.start',
       'POST /api/app/operations/conversation.submit',
       'POST /api/app/operations/knowledge.answer',

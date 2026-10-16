@@ -90,9 +90,7 @@ import {
   FsStore,
   type FsStoreOptions,
 } from './lib/store.js';
-import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
 import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
-import { attachPiAiFailure } from './llm/pi-ai-failure.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
@@ -115,6 +113,7 @@ import {
   createFilesystemSnapshotManifest,
   stageFilesystemWorkspaceChanges,
 } from './runtime/filesystem-workspace-sync.js';
+import { listGoalsForThread } from './runtime/goal-owner.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
 import { mcpToolSchemaContentDigest } from './runtime/mcp-tool-schema-snapshots.js';
 import { getNanoHostRuntimeTarget } from './runtime/nanohost-runtime-target.js';
@@ -907,7 +906,7 @@ class FakeTurnExecutor implements TurnExecutor {
   public async waitForFinished(store: FsStore, count = 1): Promise<void> {
     const coreDb = this.fixtureOptions.coreDb!;
     const config = this.runtimeSnapshot!;
-    const result = await runSchedulerDispatchLoop({
+    await runSchedulerDispatchLoop({
       coreDb,
       store,
       turnExecutor: this,
@@ -1554,17 +1553,6 @@ describe('nanocore server', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ input: 'Hello', model: 'gpt-test' }),
     });
-    const quickChat = await app.request(
-      ...operationRequest(
-        'chat.quick',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ input: 'Hello' }),
-        }
-      )
-    );
     const turn = await app.request(
       ...operationRequest(
         'turn.start',
@@ -1621,10 +1609,7 @@ describe('nanocore server', () => {
     await expect(responses.json()).resolves.toMatchObject({
       code: 'product_work_unavailable',
     });
-    expect(quickChat.status).toBe(503);
-    await expect(quickChat.json()).resolves.toMatchObject({
-      code: 'product_work_unavailable',
-    });
+
     expect(turn.status).toBe(503);
     await expect(turn.json()).resolves.toMatchObject({
       code: 'product_work_unavailable',
@@ -5627,20 +5612,10 @@ describe('nanocore server', () => {
   it.each([
     {
       entry: 'direct Task',
-      path: '/api/app/operations/task.start',
       requestId: '0190f4c8-0000-7000-8000-000000000321',
-      responseKind: 'task' as const,
-    },
-    {
-      entry: 'Chat-to-Task',
-      path: '/api/app/operations/conversation.submit',
-      requestId: '0190f4c8-0000-7000-8000-000000000322',
-      responseKind: 'chat' as const,
     },
   ])('starts $entry from one remote Git source without a WorkspaceRepository', async ({
-    path,
     requestId,
-    responseKind,
   }) => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
@@ -5731,17 +5706,14 @@ describe('nanocore server', () => {
 
       const response = await app.request(
         ...operationRequest(
-          path.endsWith('task.start') ? 'task.start' : 'conversation.submit',
+          'task.start',
           {
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             threadId: 'th_00000000-0000-7000-8000-000000000001',
           },
           {
             method: 'POST',
-            body:
-              responseKind === 'chat'
-                ? conversationRequest({ input, requestId })
-                : JSON.stringify({ input, requestId }),
+            body: JSON.stringify({ input, requestId }),
             headers: { 'content-type': 'application/json' },
           }
         )
@@ -5750,25 +5722,18 @@ describe('nanocore server', () => {
 
       expect(response.status, JSON.stringify(responseBody)).toBe(202);
       await executor.waitForFinished(store);
-      if (responseKind === 'task') {
-        expect(StartTaskModeResponseSchema.parse(responseBody).turn.id).toBe(
-          store.listThreadTurns(
-            'ws_00000000-0000-7000-8000-000000000001',
-            'th_00000000-0000-7000-8000-000000000001'
-          )[0]!.id
-        );
-        expect(
-          store.listThreadTurns(
-            'ws_00000000-0000-7000-8000-000000000001',
-            'th_00000000-0000-7000-8000-000000000001'
-          )[0]!.status
-        ).toBe('completed');
-      } else {
-        expect(SubmitConversationResponseSchema.parse(responseBody)).toMatchObject({
-          outcome: 'task-handoff',
-          handoff: { targetMode: 'task' },
-        });
-      }
+      expect(StartTaskModeResponseSchema.parse(responseBody).turn.id).toBe(
+        store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )[0]!.id
+      );
+      expect(
+        store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )[0]!.status
+      ).toBe('completed');
       await executor.waitForFinished(store, 1);
       expect(executor.startContexts).toHaveLength(1);
       expect(executor.startContexts[0]).toMatchObject({
@@ -5807,19 +5772,9 @@ describe('nanocore server', () => {
   it.each([
     {
       entry: 'direct Task',
-      path: '/api/app/operations/task.start',
       requestId: '0190f4c8-0000-7000-8000-000000000323',
     },
-    {
-      entry: 'Chat-to-Task',
-      path: '/api/app/operations/conversation.submit',
-      requestId: '0190f4c8-0000-7000-8000-000000000324',
-    },
-  ])('records the product-safe $entry failure in RuntimeEvidence', async ({
-    entry,
-    path,
-    requestId,
-  }) => {
+  ])('records the product-safe $entry failure in RuntimeEvidence', async ({ requestId }) => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
@@ -5877,30 +5832,21 @@ describe('nanocore server', () => {
     try {
       const response = await app.request(
         ...operationRequest(
-          path.endsWith('task.start') ? 'task.start' : 'conversation.submit',
+          'task.start',
           {
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             threadId: 'th_00000000-0000-7000-8000-000000000001',
           },
           {
             method: 'POST',
-            body:
-              entry === 'Chat-to-Task'
-                ? conversationRequest({
-                    input: 'Implement the focused Task Mode fix.',
-                    requestId,
-                  })
-                : JSON.stringify({
-                    input: 'Implement the focused Task Mode fix.',
-                    requestId,
-                  }),
+            body: JSON.stringify({ input: 'Implement the focused Task Mode fix.', requestId }),
             headers: { 'content-type': 'application/json' },
           }
         )
       );
       expect(response.status, await response.clone().text()).toBe(202);
       await executor.waitForFinished(store);
-      if (entry === 'direct Task') {
+      {
         const result = StartTaskModeResponseSchema.parse(await response.clone().json());
         expect(store.getTurnById(result.turn.id).status).toBe('failed');
         const checkpointDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
@@ -7020,17 +6966,11 @@ describe('nanocore server', () => {
     }
   });
 
-  it('rejects Task Mode in the Quick Chat workspace', async () => {
+  it('admits Task Mode in the ordinary personal Workspace', async () => {
     const coreDb = createCoreDb();
     const executor = new FakeTurnExecutor();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const thread = store.createThread(
-      'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
-      'Reject Task Mode',
-      undefined,
-      'conversation',
-      { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
-    );
+    const thread = store.createThread('ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28', 'Personal Task');
     const app = createApp({ coreDb, store, turnExecutor: executor });
 
     try {
@@ -7049,11 +6989,14 @@ describe('nanocore server', () => {
         )
       );
 
-      expect(res.status).toBe(400);
-      await expect(res.json()).resolves.toMatchObject({
-        code: 'workspace_kind_not_supported',
+      expect(res.status, await res.clone().text()).toBe(202);
+      const accepted = StartTaskModeResponseSchema.parse(await res.json());
+      await executor.waitForFinished(store);
+      expect(store.getTurnById(accepted.turn.id)).toMatchObject({
+        workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+        status: 'completed',
       });
-      expect(executor.startContexts).toHaveLength(0);
+      expect(executor.startContexts).toHaveLength(1);
     } finally {
       coreDb.sqlite.close();
     }
@@ -7214,716 +7157,147 @@ describe('nanocore server', () => {
     }
   });
 
-  it('starts Task Mode when Chat Mode accepts a task handoff', async () => {
+  it('proposes a Goal through the model Tool and waits for exact human selection before shared admission', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, store, turnExecutor: executor });
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-chat-task-handoff-repository-'));
+    const timeline = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Goal proposal Timeline',
+      undefined,
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId: LOCAL_USER_ID,
+      }
+    );
+    const originalThreadIds = new Set(
+      store.listThreads('ws_00000000-0000-7000-8000-000000000001').map((thread) => thread.id)
+    );
+    const gatewayConfig = createTestGatewayConfig();
+    const intent = 'Prepare a reviewed release plan. Do not deploy anything.';
+    let assistantCalls = 0;
+    const app = createApp({
+      coreDb,
+      store,
+      turnExecutor: executor,
+      gatewayConfig,
+      internalRoleProfiles: {
+        schemaVersion: 1,
+        defaultLogicalModelId: gatewayConfig.defaultLogicalModelId,
+        profiles: [],
+      },
+      llmPiAiClient: {
+        createResponses: async (_provider, request) => {
+          const ordinaryAssistant = request.tools?.some((tool) => tool.name === 'goal_create');
+          if (ordinaryAssistant) assistantCalls += 1;
+          return {
+            id: `goal-proposal-${assistantCalls}`,
+            object: 'response',
+            status: 'completed',
+            output:
+              ordinaryAssistant && assistantCalls === 1
+                ? [
+                    {
+                      type: 'function_call',
+                      name: 'goal_create',
+                      call_id: 'goal-proposal',
+                      arguments: JSON.stringify({ intent }),
+                    },
+                  ]
+                : [
+                    {
+                      type: 'message',
+                      role: 'assistant',
+                      status: 'completed',
+                      content: [
+                        { type: 'output_text', text: 'Please select the exact proposed work.' },
+                      ],
+                    },
+                  ],
+          };
+        },
+      } as unknown as PiAiGatewayClient,
+    });
     const requestId = '0190f4c8-0000-7000-8000-000000000305';
-    const input = 'Implement the focused Task Mode fix.';
-
-    seedWritableGitRepository(repositoryPath);
-
+    const submit = () =>
+      app.request(
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: timeline.id },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: conversationRequest({ requestId, input: 'Help me decide the next step.' }),
+          }
+        )
+      );
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      const res = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            body: conversationRequest({ requestId, input }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-
-      expect(res.status).toBe(202);
-      const parsed = SubmitConversationResponseSchema.parse(await res.json());
-      await executor.waitForFinished(store);
-      const acceptedTurnIds = store
-        .listThreadTurns(
-          'ws_00000000-0000-7000-8000-000000000001',
-          'th_00000000-0000-7000-8000-000000000001'
-        )
-        .map((turn) => turn.id)
-        .sort();
-
-      const replayRes = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            body: conversationRequest({ requestId, input }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-      const conflictRes = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            body: conversationRequest({
-              requestId,
-              input: 'Implement a different focused Task Mode fix.',
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-      const directTaskRes = await app.request(
-        ...operationRequest(
-          'task.start',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            body: JSON.stringify({ requestId, input }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-
-      expect(parsed).toMatchObject({
-        outcome: 'task-handoff',
-        handoff: { targetMode: 'task' },
-        item: { type: 'status', title: 'Task Mode handoff' },
+      const submitted = await submit();
+      expect(submitted.status, await submitted.clone().text()).toBe(202);
+      const original = SubmitConversationResponseSchema.parse(await submitted.json());
+      const pending = store
+        .listThreadItems('ws_00000000-0000-7000-8000-000000000001', timeline.id)
+        .find((item) => item.type === 'user-input-request');
+      if (pending?.type !== 'user-input-request')
+        throw new Error('Missing canonical Goal selection.');
+      expect(pending.assistantHandoff).toEqual({
+        kind: 'goal',
+        targetWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        intent,
       });
-      expect(replayRes.status).toBe(202);
-      const replay = SubmitConversationResponseSchema.parse(await replayRes.json());
-      expect(replay.turn.id).toBe(parsed.turn.id);
-      expect(replay.item.id).toBe(parsed.item.id);
-      expect(replay.handoff).toEqual(parsed.handoff);
-      expect(conflictRes.status).toBe(409);
-      await expect(conflictRes.json()).resolves.toMatchObject({
-        code: 'idempotency_key_conflict',
-      });
-      expect(directTaskRes.status, await directTaskRes.clone().text()).toBe(202);
-      const directTask = StartTaskModeResponseSchema.parse(await directTaskRes.json());
-      expect(acceptedTurnIds).not.toContain(directTask.turn.id);
-      await executor.waitForFinished(store, 2);
-      expect(executor.startContexts).toHaveLength(2);
-      expect(executor.startContexts[0]).toMatchObject({
-        requestId,
-      });
-      expect(
-        store
-          .listThreadTurns(
-            'ws_00000000-0000-7000-8000-000000000001',
-            'th_00000000-0000-7000-8000-000000000001'
-          )
-          .map((turn) => turn.id)
-          .sort()
-      ).toEqual([...acceptedTurnIds, directTask.turn.id].sort());
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('fails closed without rerouting a Chat-to-Task owner whose outer receipt was not published', async () => {
-    const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const executor = new FakeTurnExecutor();
-    const coordinator = vi.spyOn(workerCoordinator, 'createWorkerCoordinatorDecision');
-    const app = createApp({ coreDb, store, turnExecutor: executor });
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-chat-task-receipt-gap-'));
-    const requestId = '0190f4c8-0000-7000-8000-000000000307';
-    const input = 'Implement the focused Task Mode fix.';
-
-    seedWritableGitRepository(repositoryPath);
-
-    try {
-      const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
-        throw new Error('simulated Chat receipt write failure');
-      });
-      const first = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            body: conversationRequest({ requestId, input }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
+      expect(store.listThreads('ws_00000000-0000-7000-8000-000000000001')).toHaveLength(
+        originalThreadIds.size
       );
-      receiptWrite.mockRestore();
-      const firstBody = await first.json();
-      const turnIdsAfterFirst = store
-        .listThreads('ws_00000000-0000-7000-8000-000000000001')
-        .flatMap((thread) => store.listThreadTurns(thread.workspaceId, thread.id))
-        .map((turn) => turn.id)
-        .sort();
-      const workerAdmission = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        statuses: ['queued', 'admitted', 'denied', 'cancelled'],
-      }).find((entry) => entry.requestId === requestId);
-      const workerTurn = workerAdmission
-        ? store.getTurn(
-            workerAdmission.workspaceId,
-            workerAdmission.threadId,
-            workerAdmission.turnId
-          )
-        : undefined;
-
-      expect(workerTurn).toBeDefined();
-      if (!workerTurn) {
-        throw new Error('The Chat-subordinate worker Turn was not created.');
-      }
-      expect(workerTurn.threadId).not.toBe('th_00000000-0000-7000-8000-000000000001');
-      expect(store.getThread(workerTurn.workspaceId, workerTurn.threadId).parentThreadId).toBe(
-        'th_00000000-0000-7000-8000-000000000001'
-      );
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
-      try {
-        expect(
-          getWorkerCheckpoint(
-            workspaceDb,
-            'ws_00000000-0000-7000-8000-000000000001',
-            workerTurn.threadId,
-            workerTurn.id
-          )
-        ).not.toBeNull();
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-      expect.soft(first.status, JSON.stringify(firstBody)).toBe(409);
-      expect.soft(firstBody).toMatchObject({ code: 'recovery_required' });
-      expect
-        .soft(
-          store.getCommandRequest('conversation.submit', requestId, {
-            actorId: LOCAL_USER_ID,
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          })
-        )
-        .toBeNull();
-      expect(coordinator).toHaveBeenCalledTimes(1);
+      expect(listGoalsForThread(workspaceDb, timeline.id)).toEqual([]);
       expect(executor.startContexts).toHaveLength(0);
-      expect(observeExecutionAttempts(coreDb)).toEqual([]);
-      expect(workerTurn.status).toBe('pending');
-
-      const retry = await app.request(
+      expect(assistantCalls).toBe(2);
+      const selection = await app.request(
         ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
+          'question.answer',
+          { userInputRequestId: pending.userInputRequestId },
           {
             method: 'POST',
-            body: conversationRequest({ requestId, input }),
             headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-      const retryBody = await retry.json();
-
-      expect.soft(retry.status, JSON.stringify(retryBody)).toBe(409);
-      expect.soft(retryBody).toMatchObject({ code: 'recovery_required' });
-      expect(coordinator).toHaveBeenCalledTimes(1);
-      expect(executor.startContexts).toHaveLength(0);
-      expect(observeExecutionAttempts(coreDb)).toEqual([]);
-      expect(workerTurn.status).toBe('pending');
-      expect(
-        store
-          .listThreads('ws_00000000-0000-7000-8000-000000000001')
-          .flatMap((thread) => store.listThreadTurns(thread.workspaceId, thread.id))
-          .map((turn) => turn.id)
-          .sort()
-      ).toEqual(turnIdsAfterFirst);
-    } finally {
-      coordinator.mockRestore();
-      coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    {
-      changedInput: 'help',
-      name: 'clarification',
-      requestId: '0190f4c8-0000-7000-8000-000000000310',
-    },
-    {
-      changedInput: 'search the web',
-      name: 'external-search refusal',
-      requestId: '0190f4c8-0000-7000-8000-000000000311',
-    },
-  ])('rejects $name rerouting after the same Chat-to-Task request lost its outer receipt', async ({
-    changedInput,
-    requestId,
-  }) => {
-    const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const executor = new FakeTurnExecutor();
-    const coordinator = vi.spyOn(workerCoordinator, 'createWorkerCoordinatorDecision');
-    const app = createApp({ coreDb, store, turnExecutor: executor });
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-chat-task-reroute-gap-'));
-    const taskInput = 'Implement the focused Task Mode fix.';
-
-    seedWritableGitRepository(repositoryPath);
-
-    try {
-      const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
-        throw new Error('simulated Chat receipt write failure');
-      });
-      await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            body: conversationRequest({ requestId, input: taskInput }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-      receiptWrite.mockRestore();
-      const workerAdmission = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        statuses: ['queued', 'admitted', 'denied', 'cancelled'],
-      }).find((entry) => entry.requestId === requestId);
-      const workerTurn = workerAdmission
-        ? store.getTurn(
-            workerAdmission.workspaceId,
-            workerAdmission.threadId,
-            workerAdmission.turnId
-          )
-        : undefined;
-      expect(workerTurn).toBeDefined();
-      if (!workerTurn) {
-        throw new Error('The Chat-subordinate worker Turn was not created.');
-      }
-      expect(workerTurn.threadId).not.toBe('th_00000000-0000-7000-8000-000000000001');
-      expect(store.getThread(workerTurn.workspaceId, workerTurn.threadId).parentThreadId).toBe(
-        'th_00000000-0000-7000-8000-000000000001'
-      );
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
-      try {
-        expect(
-          getWorkerCheckpoint(
-            workspaceDb,
-            'ws_00000000-0000-7000-8000-000000000001',
-            workerTurn.threadId,
-            workerTurn.id
-          )
-        ).not.toBeNull();
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-      const turnsBeforeReroute = store
-        .listThreads('ws_00000000-0000-7000-8000-000000000001')
-        .flatMap((thread) => store.listThreadTurns(thread.workspaceId, thread.id))
-        .map((turn) => turn.id)
-        .sort();
-      expect(coordinator).toHaveBeenCalledTimes(1);
-      expect(executor.startContexts).toHaveLength(0);
-      expect(observeExecutionAttempts(coreDb)).toEqual([]);
-      expect(workerTurn.status).toBe('pending');
-
-      const reroute = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            body: conversationRequest({ requestId, input: changedInput }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-      const rerouteBody = await reroute.json();
-
-      expect.soft(reroute.status, JSON.stringify(rerouteBody)).toBe(409);
-      expect.soft(rerouteBody).toMatchObject({ code: 'recovery_required' });
-      expect
-        .soft(
-          store.getCommandRequest('conversation.submit', requestId, {
-            actorId: LOCAL_USER_ID,
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          })
-        )
-        .toBeNull();
-      expect(coordinator).toHaveBeenCalledTimes(1);
-      expect(executor.startContexts).toHaveLength(0);
-      expect(observeExecutionAttempts(coreDb)).toEqual([]);
-      expect(workerTurn.status).toBe('pending');
-      expect(
-        store
-          .listThreads('ws_00000000-0000-7000-8000-000000000001')
-          .flatMap((thread) => store.listThreadTurns(thread.workspaceId, thread.id))
-          .map((turn) => turn.id)
-          .sort()
-      ).toEqual(turnsBeforeReroute);
-    } finally {
-      coordinator.mockRestore();
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('rejects a forged Chat replay that points at a same-request Task on another Thread', async () => {
-    const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, store, turnExecutor: executor });
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-chat-task-forged-replay-'));
-    const forgedRequestId = '0190f4c8-0000-7000-8000-000000000309';
-    const input = 'Implement the focused Task Mode fix.';
-
-    seedWritableGitRepository(repositoryPath);
-
-    try {
-      const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
-        throw new Error('simulated Chat receipt write failure');
-      });
-      const gapResponse = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            body: conversationRequest({ requestId: forgedRequestId, input }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-      receiptWrite.mockRestore();
-      const gapBody = await gapResponse.json();
-      expect.soft(gapResponse.status, JSON.stringify(gapBody)).toBe(409);
-      expect.soft(gapBody).toMatchObject({ code: 'recovery_required' });
-      const outerChatTurn = store
-        .listThreadTurns(
-          'ws_00000000-0000-7000-8000-000000000001',
-          'th_00000000-0000-7000-8000-000000000001'
-        )
-        .find((turn) =>
-          turn.items.some((item) => item.id === deriveEntityId('it', ['chat-task', turn.id]))
-        );
-      expect(outerChatTurn).toBeDefined();
-      if (!outerChatTurn) {
-        throw new Error('The exact-request outer Chat Turn was not created.');
-      }
-
-      const directTaskThread = store.createThread(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'Independent same-request Task'
-      );
-      const directTaskResponse = await app.request(
-        ...operationRequest(
-          'task.start',
-          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: directTaskThread.id },
-          {
-            method: 'POST',
-            body: JSON.stringify({ requestId: forgedRequestId, input }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-      expect(directTaskResponse.status, await directTaskResponse.clone().text()).toBe(202);
-      const directTask = StartTaskModeResponseSchema.parse(await directTaskResponse.json());
-      expect(directTask.turn.id).toBe(
-        deriveEntityId('tu', {
-          command: 'task.start',
-          actorId: LOCAL_USER_ID,
-          workspaceId: directTaskThread.workspaceId,
-          threadId: directTaskThread.id,
-          requestId: forgedRequestId,
-        })
-      );
-
-      await executor.waitForFinished(store);
-
-      store.recordCommandRequest({
-        command: 'conversation.submit',
-        requestId: forgedRequestId,
-        scope: {
-          actorId: LOCAL_USER_ID,
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        },
-        inputHash: commandInputHash({
-          input,
-          targetRef: 'internal-role:assistant',
-          logicalModelId: null,
-          artifactRefs: [],
-        }),
-        response: {
-          kind: 'turn',
-          id: outerChatTurn.id,
-          conversationMetadata: {
-            downstream: { kind: 'task', turnId: directTask.turn.id },
-            targetRef: 'internal-role:assistant',
-            logicalModelId: null,
-            receivingWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            receivingThreadId: directTaskThread.id,
-            resultKind: 'task-handoff',
-            status: 202,
-          },
-        },
-      });
-      const startsBeforeReplay = executor.startContexts.length;
-      const turnsBeforeReplay = store
-        .listThreadTurns(
-          'ws_00000000-0000-7000-8000-000000000001',
-          'th_00000000-0000-7000-8000-000000000001'
-        )
-        .map((turn) => turn.id);
-
-      const replay = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            body: conversationRequest({ requestId: forgedRequestId, input }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-      const replayBody = await replay.json();
-
-      expect(replay.status, JSON.stringify(replayBody)).toBe(409);
-      expect(replayBody).toMatchObject({ code: 'recovery_required' });
-      expect(executor.startContexts).toHaveLength(startsBeforeReplay);
-      expect(
-        store
-          .listThreadTurns(
-            'ws_00000000-0000-7000-8000-000000000001',
-            'th_00000000-0000-7000-8000-000000000001'
-          )
-          .map((turn) => turn.id)
-      ).toEqual(turnsBeforeReplay);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('starts Goal Mode when Chat Mode accepts a goal handoff', async () => {
-    const coreDb = createCoreDb();
-    const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, turnExecutor: executor });
-
-    try {
-      const res = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            body: conversationRequest({
-              requestId: '0190f4c8-0000-7000-8000-000000000306',
-              input: 'Plan a multi-step release goal for NanoCore.',
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-
-      expect(res.status).toBe(202);
-      await expect(res.json()).resolves.toMatchObject({
-        outcome: 'goal-handoff',
-        handoff: { targetMode: 'goal' },
-      });
-      expect(executor.startContexts).toHaveLength(0);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('asks for clarification for vague Chat Mode help prompts', async () => {
-    const coreDb = createCoreDb();
-    const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, turnExecutor: executor });
-
-    try {
-      for (const [index, input] of ['Can you help with this?', 'What should I do?'].entries()) {
-        const res = await app.request(
-          ...operationRequest(
-            'conversation.submit',
-            {
+            body: JSON.stringify({
               workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              threadId: 'th_00000000-0000-7000-8000-000000000001',
-            },
-            {
-              method: 'POST',
-              body: conversationRequest({
-                requestId: `0190f4c8-0000-7000-8000-00000000031${index}`,
-                input,
-              }),
-              headers: { 'content-type': 'application/json' },
-            }
-          )
-        );
-
-        expect(res.status).toBe(202);
-        const parsed = SubmitConversationResponseSchema.parse(await res.json());
-
-        expect(parsed).toMatchObject({
-          outcome: 'clarification-needed',
-          item: { type: 'user-input-request' },
-          turn: { status: 'completed' },
-        });
-      }
-      expect(executor.startContexts).toHaveLength(0);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('allows lightweight Chat Mode in the Quick Chat workspace without starting workers', async () => {
-    const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, store, turnExecutor: executor });
-    const thread = store.createThread(
-      'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
-      'Quick Chat thread',
-      undefined,
-      'conversation',
-      { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
-    );
-
-    try {
-      const res = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          { workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28', threadId: thread.id },
-          {
-            method: 'POST',
-            body: conversationRequest({
-              requestId: '0190f4c8-0000-7000-8000-000000000321',
-              input: 'Can you help with this?',
+              threadId: timeline.id,
+              requestId: '0190f4c8-0000-7000-8000-000000000306',
+              answers: { [pending.questions[0]!.id]: ['Confirm exact handoff'] },
             }),
-            headers: { 'content-type': 'application/json' },
           }
         )
       );
-
-      expect(res.status).toBe(202);
-      const parsed = SubmitConversationResponseSchema.parse(await res.json());
-
-      expect(parsed).toMatchObject({
-        outcome: 'clarification-needed',
-        handoff: null,
-        turn: {
-          workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
-          threadId: thread.id,
-          status: 'completed',
-        },
-      });
-      expect(executor.startContexts).toHaveLength(0);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('rejects project work prompts in Quick Chat Chat Mode without coordinator handoff', async () => {
-    const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, store, turnExecutor: executor });
-    const thread = store.createThread(
-      'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
-      'Quick Chat project request',
-      undefined,
-      'conversation',
-      { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
-    );
-
-    try {
-      const res = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          { workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28', threadId: thread.id },
-          {
-            method: 'POST',
-            body: conversationRequest({
-              requestId: '0190f4c8-0000-7000-8000-000000000322',
-              input: 'Implement the focused worker fix.',
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
+      expect(selection.status, await selection.clone().text()).toBe(200);
+      await vi.waitFor(() =>
+        expect(store.listThreads('ws_00000000-0000-7000-8000-000000000001')).toHaveLength(
+          originalThreadIds.size + 1
         )
       );
-
-      expect(res.status).toBe(400);
-      await expect(res.json()).resolves.toMatchObject({
-        code: 'workspace_kind_not_supported',
-        message: expect.stringContaining('Quick Chat workspace'),
+      const shared = store
+        .listThreads('ws_00000000-0000-7000-8000-000000000001')
+        .find((thread) => !originalThreadIds.has(thread.id))!;
+      await vi.waitFor(() => expect(listGoalsForThread(workspaceDb, shared.id)).toHaveLength(1));
+      expect(shared).toMatchObject({ visibility: 'workspace', parentThreadId: timeline.id });
+      expect(listGoalsForThread(workspaceDb, shared.id)[0]).toMatchObject({
+        intent,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      expect(executor.startContexts).toHaveLength(0);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('refuses Chat Mode external search requests until a search capability exists', async () => {
-    const coreDb = createCoreDb();
-    const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, turnExecutor: executor });
-
-    try {
-      const res = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            body: conversationRequest({
-              requestId: '0190f4c8-0000-7000-8000-000000000320',
-              input: 'Search the web for NanoCore release notes.',
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
+      expect(
+        store.getThread('ws_00000000-0000-7000-8000-000000000001', timeline.id).visibility
+      ).toBe('private');
+      expect(assistantCalls).toBe(2);
+      const replay = await submit();
+      expect(replay.status).toBe(submitted.status);
+      expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(original);
+      expect(store.listThreads('ws_00000000-0000-7000-8000-000000000001')).toHaveLength(
+        originalThreadIds.size + 1
       );
-
-      expect(res.status).toBe(200);
-      const parsed = SubmitConversationResponseSchema.parse(await res.json());
-
-      expect(parsed).toMatchObject({
-        outcome: 'refused',
-        explanation: 'External search is not enabled for Chat Mode.',
-        handoff: null,
-      });
-      expect(executor.startContexts).toHaveLength(0);
+      expect(listGoalsForThread(workspaceDb, shared.id)).toHaveLength(1);
+      expect(assistantCalls).toBe(2);
     } finally {
+      workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
   });
@@ -7938,7 +7312,10 @@ describe('nanocore server', () => {
       'Live Goal Web report',
       undefined,
       'conversation',
-      { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
+      {
+        visibility: 'private',
+        privateOwnerUserId: LOCAL_USER_ID,
+      }
     );
 
     const reportBody = `# Maintenance report\n\n${LIVE_GOAL_WEB_REPORT_MARKER}\n`;
@@ -8009,7 +7386,10 @@ describe('nanocore server', () => {
       'Topic mention',
       undefined,
       'conversation',
-      { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
+      {
+        visibility: 'private',
+        privateOwnerUserId: LOCAL_USER_ID,
+      }
     );
     const app = createApp({
       coreDb,
@@ -8048,197 +7428,6 @@ describe('nanocore server', () => {
     }
   });
 
-  it.each([
-    'Search the web for NanoCore release notes.',
-    'Browse an external URL for NanoCore docs.',
-    'Google for NanoCore release notes.',
-    'Google NanoCore release notes.',
-    'Please Google NanoCore release notes.',
-    'Can you Google NanoCore release notes.',
-    'Look up NanoCore online.',
-  ])('refuses explicit external search even with an attached Artifact: %s', async (input) => {
-    const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const executor = new FakeTurnExecutor();
-    const artifact = createImportedMarkdownArtifact(store, {
-      id: testEntityId('ar', `ar_explicit_search_${input.length}`),
-      title: 'Attached notes',
-      body: '# Notes\n',
-      requestId: `artifact-import-explicit-search-${input.length}`,
-    });
-    const app = createApp({ coreDb, store, turnExecutor: executor });
-
-    try {
-      const res = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            body: conversationRequest({
-              requestId: `0190f4c8-0000-7000-8000-0000000005${String(input.length).padStart(2, '0')}`,
-              input,
-              artifactRefs: [{ artifactId: artifact.id, artifactVersion: artifact.version }],
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-
-      expect(res.status).toBe(200);
-      const parsed = SubmitConversationResponseSchema.parse(await res.json());
-      expect(parsed).toMatchObject({
-        outcome: 'refused',
-        explanation: 'External search is not enabled for Chat Mode.',
-        handoff: null,
-      });
-      expect(executor.startContexts).toHaveLength(0);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('refuses Chat Mode worker handoff when no worker candidate is ready', async () => {
-    const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const executor = new FakeTurnExecutor();
-    const app = createApp({
-      agentManifests: [
-        {
-          ...createTestAgentSetup({ provider: null }).manifest,
-          readiness: { message: 'Blocked for this test.', status: 'blocked' },
-        },
-      ],
-      coreDb,
-      store,
-      turnExecutor: executor,
-    });
-
-    try {
-      const res = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            body: conversationRequest({
-              requestId: '0190f4c8-0000-7000-8000-000000000316',
-              input: 'Implement the focused worker fix.',
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-
-      expect(res.status).toBe(200);
-      const parsed = SubmitConversationResponseSchema.parse(await res.json());
-
-      expect(parsed).toMatchObject({
-        outcome: 'refused',
-        explanation: 'No ready worker candidate is available.',
-        handoff: null,
-      });
-      expect(executor.startContexts).toHaveLength(0);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('refuses Chat Mode retry requests instead of falling back to quick chat', async () => {
-    const coreDb = createCoreDb();
-    const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, turnExecutor: executor });
-
-    try {
-      const res = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            body: conversationRequest({
-              requestId: '0190f4c8-0000-7000-8000-000000000317',
-              input: 'Retry the previous worker turn.',
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-
-      expect(res.status).toBe(200);
-      const parsed = SubmitConversationResponseSchema.parse(await res.json());
-
-      expect(parsed).toMatchObject({
-        outcome: 'refused',
-        explanation: 'The request asks to retry prior worker execution.',
-        handoff: null,
-      });
-      expect(executor.startContexts).toHaveLength(0);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    {
-      input: 'Review the previous worker output.',
-      explanation: 'The request is asking to evaluate recent work rather than start new execution.',
-    },
-    {
-      input: 'Refine the previous result.',
-      explanation: 'The request appears to refine prior output in the current thread.',
-    },
-    {
-      input: 'Hand off this work to another worker.',
-      explanation: 'The request asks to hand work to another worker or phase.',
-    },
-  ])('refuses Chat Mode coordinator-only requests for "$input"', async ({ explanation, input }) => {
-    const coreDb = createCoreDb();
-    const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, turnExecutor: executor });
-
-    try {
-      const res = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            body: conversationRequest({
-              requestId: '0190f4c8-0000-7000-8000-000000000319',
-              input,
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-
-      expect(res.status).toBe(200);
-      const parsed = SubmitConversationResponseSchema.parse(await res.json());
-
-      expect(parsed).toMatchObject({
-        outcome: 'refused',
-        explanation,
-        handoff: null,
-      });
-      expect(executor.startContexts).toHaveLength(0);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
   it('retains no old Goal entry route', async () => {
     const coreDb = createCoreDb();
     const app = createApp({ coreDb, turnExecutor: new FakeTurnExecutor() });
@@ -8261,9 +7450,20 @@ describe('nanocore server', () => {
     { input: 'Read the supplied paragraph and reply with its title.', clarifies: false },
     { input: 'Summarize the supplied paragraph.', clarifies: false },
     { input: 'What is OpenKit?', clarifies: false },
-    { input: 'Help.', clarifies: true },
-    { input: 'Do it.', clarifies: true },
+    { input: 'Help.', clarifies: false },
+    { input: 'Do it.', clarifies: false },
     { input: 'Read it.', clarifies: false },
+    { input: 'Can you help with this?', clarifies: false },
+    { input: 'What should I do?', clarifies: false },
+    { input: 'Implement the focused worker fix.', clarifies: false },
+    { input: 'Plan a multi-step release goal for NanoCore.', clarifies: false },
+    { input: 'Search the web for NanoCore release notes.', clarifies: false },
+    { input: 'Browse an external URL for NanoCore docs.', clarifies: false },
+    { input: 'Google NanoCore release notes.', clarifies: false },
+    { input: 'Retry the previous worker task.', clarifies: false },
+    { input: 'Review the previous worker output.', clarifies: false },
+    { input: 'Refine the previous result.', clarifies: false },
+    { input: 'Hand off this work to another worker.', clarifies: false },
     { input: 'Do not read issue 110 of lingkaix/openkit.', clarifies: false },
     { input: 'I read issue 110 yesterday.', clarifies: false },
     { input: 'The word read appears in the supplied paragraph.', clarifies: false },
@@ -8275,7 +7475,7 @@ describe('nanocore server', () => {
         'The example instruction is "Read issue 110 of lingkaix/openkit and reply with its title."',
       clarifies: false,
     },
-  ])('preserves ordinary project Chat without worker effects: $input', async ({
+  ])('keeps model interpretation on the private Timeline without keyword worker effects: $input', async ({
     input,
     clarifies,
   }) => {
@@ -8529,16 +7729,13 @@ describe('nanocore server', () => {
     }
   });
 
-  it('rejects direct worker turns in the Quick Chat workspace', async () => {
+  it('admits explicit worker turns in the ordinary personal Workspace', async () => {
     const coreDb = createCoreDb();
     const executor = new FakeTurnExecutor();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const thread = store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
-      'Reject worker turn',
-      undefined,
-      'conversation',
-      { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
+      'Personal worker turn'
     );
     const app = createApp({ coreDb, store, turnExecutor: executor });
 
@@ -8560,12 +7757,12 @@ describe('nanocore server', () => {
         )
       );
 
-      expect(res.status).toBe(400);
-      await expect(res.json()).resolves.toMatchObject({
-        code: 'workspace_kind_not_supported',
-        message: expect.stringContaining('Quick Chat workspace'),
-      });
-      expect(executor.startContexts).toHaveLength(0);
+      expect(res.status, await res.clone().text()).toBe(202);
+      await executor.waitForFinished(store);
+      expect(executor.startContexts).toHaveLength(1);
+      expect(store.listThreadTurns('ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28', thread.id)).toEqual([
+        expect.objectContaining({ status: 'completed' }),
+      ]);
     } finally {
       coreDb.sqlite.close();
     }
@@ -10380,7 +9577,7 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const authorizedWorkspace = store
       .listWorkspaces()
-      .find((workspace) => workspace.kind === 'quick-chat');
+      .find((workspace) => workspace.kind === 'personal');
     const foreignWorkspace = store.createWorkspace('Foreign workspace review owner');
     const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const baseReview = workspaceSyncReviewRouteItem();
@@ -10494,7 +9691,7 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const authorizedWorkspace = store
       .listWorkspaces()
-      .find((workspace) => workspace.kind === 'quick-chat');
+      .find((workspace) => workspace.kind === 'personal');
     const foreignWorkspace = store.createWorkspace('Foreign workspace recovery owner');
     const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const reconciliationRecordId = 'wrr_foreign_child_lineage';
@@ -10581,7 +9778,7 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const authorizedWorkspace = store
       .listWorkspaces()
-      .find((workspace) => workspace.kind === 'quick-chat');
+      .find((workspace) => workspace.kind === 'personal');
     const foreignWorkspace = store.createWorkspace('Foreign workspace apply-result owner');
     const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const applyResultId = 'war_foreign_child_lineage';
@@ -10644,7 +9841,7 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const authorizedWorkspace = store
       .listWorkspaces()
-      .find((workspace) => workspace.kind === 'quick-chat');
+      .find((workspace) => workspace.kind === 'personal');
     const foreignWorkspace = store.createWorkspace('Foreign AEP snapshot owner');
     const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
@@ -12078,64 +11275,14 @@ describe('nanocore server', () => {
     });
   });
 
-  it('returns the logical-model fallback error after quick chat routes are exhausted', async () => {
-    const app = createApp(
-      {
-        gatewayConfig: createTestGatewayConfig({
-          privateRoute: {
-            providerProfileId: 'openrouter',
-            providerModel: 'openai/gpt-5.2',
-          },
-        }),
-        providerCredentialResolver: () => 'test-key',
-        providerRegistry: new ProviderRegistry([
-          {
-            baseUrl: 'https://openrouter.ai/api/v1',
-            defaultModel: 'openai/gpt-5.2',
-            displayName: 'OpenRouter',
-            id: 'openrouter',
-            kind: 'gateway',
-            models: ['openai/gpt-5.2'],
-            secretRef: 'env:OPENROUTER_API_KEY',
-          },
-        ]),
-        turnExecutor: new FakeTurnExecutor(),
-        llmPiAiClient: {
-          createChatCompletion: async () => {
-            throw attachPiAiFailure(
-              new OpenAICompatibleProviderError({
-                status: 429,
-                code: 'rate_limit_exceeded',
-                message: 'Rate limit exceeded token=tok_00000000-0000-77d0-8881-71a37eab36fc.',
-              })
-            );
-          },
-        } as unknown as PiAiGatewayClient,
-      },
-      true
-    );
-    const res = await app.request(
-      ...operationRequest(
-        'chat.quick',
-        {},
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            input: 'hello',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
-      )
-    );
-
-    const body = await res.json();
-
-    expect(res.status, JSON.stringify(body)).toBe(503);
-    expect(body).toMatchObject({
-      code: 'gateway_logical_model_unavailable',
-      message: 'Logical model is temporarily unavailable.',
+  it('has no stateless Assistant operation after the Timeline cutover', async () => {
+    const app = createApp({ turnExecutor: new FakeTurnExecutor() });
+    const response = await app.request('/api/app/operations/chat.quick', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: 'Hello' }),
     });
-    expect(body).not.toHaveProperty('details');
+    expect(response.status).toBe(404);
   });
 
   it('emits SSE events that conform to the shared protocol schema', async () => {

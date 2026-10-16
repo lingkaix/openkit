@@ -7,7 +7,6 @@ import {
 } from './chat-mode.js';
 import { ConversationNavigationResponseSchema } from './dashboard.js';
 import type { OperationDefinition } from './operation-contract.js';
-import { QuickChatRequestSchema, QuickChatResponseSchema } from './quick-chat.js';
 import { StartTaskModeRequestSchema, StartTaskModeResponseSchema } from './task-mode.js';
 
 /** Credentials already used by the public Workspace, Thread and Turn families. */
@@ -22,21 +21,8 @@ const workspaceSelector = { workspaceId: WorkspaceIdSchema };
 
 const threadSelector = { ...workspaceSelector, threadId: ThreadIdSchema };
 
-/** Conversation discovery, submission and Quick Chat preserve their existing bounded domain owners. */
+/** Conversation discovery and submission preserve their existing bounded domain owners. */
 export const CONVERSATION_OPERATION_DEFINITIONS = {
-  'chat.quick': {
-    binding: 'json',
-    returnsOneTimeSecret: false,
-    successStatus: 200,
-    description: 'Run one completed non-streaming Quick Chat in the actor’s own Workspace.',
-    inputSchema: QuickChatRequestSchema,
-    outputSchema: QuickChatResponseSchema,
-    credentials: publicCredentials,
-    scope: { kind: 'actor-quick-chat-workspace' },
-    target: { kind: 'workspace' },
-    policyOperation: 'turn.run',
-    mutating: true,
-  },
   'conversation.targets': {
     binding: 'json',
     returnsOneTimeSecret: false,

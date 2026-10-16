@@ -19,6 +19,8 @@ export const ThreadSchema = z
     preview: z.string().min(1),
     status: z.enum(['active', 'archived']),
     entryPath: ThreadEntryPathSchema,
+    /** Missing on retained records whose inception owner did not record classification. */
+    threadSource: z.enum(['conversation', 'worker']).optional(),
     visibility: z.enum(['private', 'workspace']),
     privateOwnerUserId: UserIdSchema.optional(),
     createdAt: TimestampSchema,

@@ -426,7 +426,7 @@ export function useWorkspaceOwnerManagement() {
     transferCurrent?.workspace.id === selectedWorkspaceId ? transferCurrent : selectedWorkspace;
   const canManage =
     effectiveWorkspace?.effectiveRole === 'owner' &&
-    effectiveWorkspace.workspace.kind !== 'quick-chat';
+    effectiveWorkspace.workspace.kind !== 'personal';
   const members = useQuery({
     queryKey: ownerManagementKeys.members(selectedWorkspaceId ?? ''),
     queryFn: () =>

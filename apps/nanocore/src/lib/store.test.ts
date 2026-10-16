@@ -267,7 +267,7 @@ describe('FsStore persistence', () => {
     );
   });
 
-  it('seeds only Quick Chat for a new user', () => {
+  it('seeds only the personal Workspace for a new user', () => {
     const store = new FsStore();
     store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
     const workspaces = store.listWorkspaces();
@@ -275,8 +275,8 @@ describe('FsStore persistence', () => {
     expect(workspaces).toHaveLength(1);
     expect(workspaces[0]).toMatchObject({
       id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
-      name: 'Quick Chat',
-      kind: 'quick-chat',
+      name: 'Personal',
+      kind: 'personal',
     });
   });
 
