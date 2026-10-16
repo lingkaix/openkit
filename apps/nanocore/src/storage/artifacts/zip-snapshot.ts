@@ -197,7 +197,10 @@ export async function stageZipSnapshot(input: {
           if (byteLength !== entry.uncompressedSize || checksum !== entry.crc32) {
             throw new Error('The ZIP entry size or checksum is inconsistent.');
           }
-          await sink.sync();
+          // This tree is disposable cache data. Closing completes its process-visible writes;
+          // the exact inventory verifier rejects and rebuilds bytes lost after a crash.
+          // Per-member fsync serializes even empty entries on storage commit latency.
+          // Canonical originals and retained Turn copies keep their own durable writers.
         } finally {
           input.budget.signal.removeEventListener('abort', abort);
           source.destroy();
