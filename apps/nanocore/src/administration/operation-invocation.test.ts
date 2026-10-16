@@ -77,7 +77,7 @@ describe('real administration assembly through invocation', () => {
       const tool = tools[8]!;
       const result = await tool.execute(
         {},
-        { callId: 'call_real_admin', signal: new AbortController().signal }
+        { callId: 'call_real_admin', toolOccurrence: 1, signal: new AbortController().signal }
       );
       expect(result.isError).toBeUndefined();
       expect(JSON.parse((result.content[0] as { text: string }).text)).toMatchObject({
@@ -94,7 +94,7 @@ describe('real administration assembly through invocation', () => {
       revokeOpenKitAccessTokenRecord(coreDb, issued.record.tokenId);
       const denied = await tool.execute(
         {},
-        { callId: 'call_revoked', signal: new AbortController().signal }
+        { callId: 'call_revoked', toolOccurrence: 1, signal: new AbortController().signal }
       );
       expect(denied.isError).toBe(true);
       expect(JSON.parse((denied.content[0] as { text: string }).text)).toMatchObject({

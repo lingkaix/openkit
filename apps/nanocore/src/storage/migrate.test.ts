@@ -12,6 +12,8 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { BootConfigError } from '../config/mode';
 import { readNanoHostThreadAgentSessionBinding } from '../runtime/nanohost-harness-records.js';
+import { readPendingRequest } from '../runtime/pending-requests.js';
+
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership';
 import { openCoreDb, openUserDb, openWorkspaceDb } from './db';
@@ -41,6 +43,9 @@ const CORE_TABLES = [
   'permission_decisions',
   'sandbox_runtime_records',
   'scheduler_admission_entries',
+  'recurring_schedules',
+  'recurring_occurrences',
+  'recurring_expired_ranges',
   'server_settings',
   'session',
   'users',
@@ -196,7 +201,11 @@ describe('database setup', () => {
 
       expect(
         readdirSync(join(process.cwd(), 'drizzle', 'core')).filter((name) => name.endsWith('.sql'))
-      ).toEqual(['0000_setup.sql', '0001_concurrent_turn_capacity.sql']);
+      ).toEqual([
+        '0000_setup.sql',
+        '0001_concurrent_turn_capacity.sql',
+        '0002_durable_recurring_schedules.sql',
+      ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
           existsSync(join(process.cwd(), 'drizzle', scope, 'meta', '_journal.json'))
@@ -205,6 +214,7 @@ describe('database setup', () => {
       expect(listAppliedMigrationIds(coreDb)).toEqual([
         'core_0000_setup',
         'core_0001_concurrent_turn_capacity',
+        'core_0002_durable_recurring_schedules',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       expect(listTableNames(coreDb)).toEqual(expect.arrayContaining(CORE_TABLES));
@@ -574,7 +584,10 @@ describe('database setup', () => {
 
       expect(listMigrationIds(userDb, 'user')).toEqual(['user_0000_setup']);
       expect(listTableNames(userDb)).toEqual(['__drizzle_migrations', 'idempotency_requests']);
-      expect(listMigrationIds(workspaceDb, 'workspace')).toEqual(['workspace_0000_setup']);
+      expect(listMigrationIds(workspaceDb, 'workspace')).toEqual([
+        'workspace_0000_setup',
+        'workspace_0001_assistant_handoff',
+      ]);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
       const idempotencyRequestColumns = [
         'request_key',
@@ -1261,3 +1274,58 @@ function countNativeLedgerRows(sqlite: Database.Database): number {
   }
   return Number(sqlite.prepare('SELECT COUNT(*) FROM __drizzle_migrations').pluck().get());
 }
+
+/** Proves the additive Pending descriptor against retained native rows, independently of new request creation. */
+describe('Assistant handoff descriptor migration', () => {
+  it('carries ordinary pending rows forward with no handoff and keeps repeat apply inert', () => {
+    const db = new Database(':memory:');
+    try {
+      const setup = readFileSync(
+        new URL('../../drizzle/workspace/0000_setup.sql', import.meta.url),
+        'utf8'
+      );
+      db.exec(setup);
+      // The retained native journal owns the unchanged setup; startup applies only the additive migration.
+      const journal = JSON.parse(
+        readFileSync(new URL('../../drizzle/workspace/meta/_journal.json', import.meta.url), 'utf8')
+      ) as { entries: { when: number }[] };
+      db.exec(
+        'CREATE TABLE __drizzle_migrations (id INTEGER PRIMARY KEY AUTOINCREMENT, hash text NOT NULL, created_at numeric);'
+      );
+      db.prepare('INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)').run(
+        'retained-setup',
+        journal.entries[0]!.when
+      );
+      const at = '2026-10-16T00:00:00.000Z';
+      db.prepare(
+        `INSERT INTO pending_requests (request_id, workspace_id, thread_id, raising_turn_id, request_item_id, kind, requester_kind, responsible_user_id, state, claim, delivery, questions_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'user-input', 'assistant', ?, 'pending', 'unclaimed', 'undelivered', ?, ?, ?)`
+      ).run(
+        'retained-question',
+        'workspace',
+        'thread',
+        'raising-turn',
+        'request-item',
+        'owner',
+        JSON.stringify([{ id: 'question', question: 'Retained question', isSecret: false }]),
+        at,
+        at
+      );
+      const retained = db.prepare('SELECT * FROM pending_requests').get() as Record<
+        string,
+        unknown
+      >;
+      applyNativeScopeMigrations(db, 'workspace');
+      const current = db.prepare('SELECT * FROM pending_requests').get() as Record<string, unknown>;
+      expect(current).toEqual({ ...retained, assistant_handoff_json: null });
+      expect(readPendingRequest(db, 'retained-question')).toMatchObject({
+        requestId: 'retained-question',
+        state: 'pending',
+        assistantHandoff: null,
+      });
+      applyNativeScopeMigrations(db, 'workspace');
+      expect(db.prepare('SELECT * FROM pending_requests').get()).toEqual(current);
+    } finally {
+      db.close();
+    }
+  });
+});

@@ -1,17 +1,20 @@
 // openkit-test-platform: posix
 
+import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  closeSync,
   existsSync,
   promises as fsPromises,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
-import { hostname, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { StartTaskModeResponseSchema } from '@openkit/app-api-schemas';
@@ -794,21 +797,17 @@ test('cleans the temporary data root when NanoCore exits before readiness', asyn
   const harnessRoot = mkdtempSync(join(tmpdir(), 'openkit-web-core-readiness-cleanup-'));
   const dataRoot = join(harnessRoot, 'data-root');
   const lockDirectory = join(dataRoot, 'server', 'runtime');
-  const timestamp = new Date().toISOString();
   mkdirSync(lockDirectory, { recursive: true });
-  writeFileSync(
-    join(lockDirectory, 'nanocore.lock'),
-    `${JSON.stringify({
-      bootId: 'existing-test-holder',
-      createdAt: timestamp,
-      hostname: hostname(),
-      pid: process.pid,
-      schemaVersion: 1,
-      updatedAt: timestamp,
-    })}\n`
-  );
+  const holder = openSync(lockDirectory, 'r');
 
   try {
+    // A live kernel lock forces Core to exit; diagnostic JSON alone is not ownership.
+    const acquired = spawnSync('flock', ['--exclusive', '--nonblock', '3'], {
+      stdio: ['ignore', 'ignore', 'pipe', holder],
+    });
+    expect(acquired.error).toBeUndefined();
+    expect(acquired.status).toBe(0);
+
     const failure = await startIsolatedWebStack({
       dataRoot,
       mode: 'local',
@@ -822,6 +821,7 @@ test('cleans the temporary data root when NanoCore exits before readiness', asyn
     expect((failure as Error).message).toContain('Process exited before');
     expect(existsSync(dataRoot)).toBe(false);
   } finally {
+    closeSync(holder);
     rmSync(harnessRoot, { force: true, recursive: true });
   }
 });
@@ -883,7 +883,8 @@ test('cleans every stack-owned root when fixture initialization rejects before s
 });
 
 test('kills a SIGTERM-ignoring Web child and NanoCore before removing the data root', async () => {
-  test.setTimeout(45_000);
+  // Allow Core startup, the intentional 30s Web readiness failure, and TERM/KILL cleanup.
+  test.setTimeout(90_000);
   const harnessRoot = mkdtempSync(join(tmpdir(), 'openkit-web-sigterm-cleanup-'));
   const fakeBin = join(harnessRoot, 'bin');
   const dataRoot = join(harnessRoot, 'data-root');
@@ -982,7 +983,8 @@ setInterval(() => {}, 1000);
 });
 
 test('kills a SIGTERM-ignoring Web descendant after its leader exits during failed startup cleanup', async () => {
-  test.setTimeout(15_000);
+  // Allow Core startup before advancing the Web readiness clock and checking cleanup.
+  test.setTimeout(45_000);
   const harnessRoot = mkdtempSync(join(tmpdir(), 'openkit-web-descendant-cleanup-'));
   const fakeBin = join(harnessRoot, 'bin');
   const dataRoot = join(harnessRoot, 'data-root');
@@ -1035,7 +1037,7 @@ setInterval(() => {}, 1000);
   );
 
   try {
-    const markerDeadline = Date.now() + 10_000;
+    const markerDeadline = Date.now() + 30_000;
     while (
       Date.now() < markerDeadline &&
       (descendantPid === undefined || leaderPid === undefined || nanoCorePid === undefined)

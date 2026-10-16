@@ -355,7 +355,7 @@ export function callerQuickChatWorkspace(summaries: readonly WorkspaceAdmission[
   return (
     summaries?.find(
       (item) =>
-        item.workspace.kind === 'quick-chat' &&
+        item.workspace.kind === 'personal' &&
         item.effectiveRole === 'owner' &&
         workspaceBelongsToCaller(item)
     )?.workspace ?? null

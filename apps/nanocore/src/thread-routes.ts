@@ -9,6 +9,7 @@ import type { z } from 'zod';
 import { asApiError } from './api-errors.js';
 import type { Actor } from './auth/identity.js';
 import { isThreadVisible } from './auth/thread-visibility.js';
+import { openAssistantTimeline } from './internal-agents/assistant-timeline.js';
 import type { FsStore } from './lib/store.js';
 import {
   type InflightIdempotentCommand,
@@ -112,15 +113,11 @@ export async function createThread(
     responseKind: 'thread',
     execute: () =>
       ThreadSchema.parse(
-        store.createThread(
-          input.workspaceId,
-          input.name,
-          undefined,
-          'conversation',
-          input.visibility === 'workspace'
-            ? { visibility: 'workspace' }
-            : { visibility: 'private', privateOwnerUserId: actorId }
-        )
+        input.visibility === 'workspace'
+          ? store.createThread(input.workspaceId, input.name, undefined, 'conversation', {
+              visibility: 'workspace',
+            })
+          : openAssistantTimeline(store, input.workspaceId, actorId, input.name)
       ),
     replay: (record) => ThreadSchema.parse(store.getThread(input.workspaceId, record.response.id)),
     responseId: (result) => result.id,

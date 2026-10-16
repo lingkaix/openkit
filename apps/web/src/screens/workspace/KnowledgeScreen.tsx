@@ -274,9 +274,10 @@ type AddDraft = {
   adding: boolean;
   title: string;
   content: string;
+  sourceReference: string | null;
 };
 
-const EMPTY_ADD_DRAFT: AddDraft = { adding: false, title: '', content: '' };
+const EMPTY_ADD_DRAFT: AddDraft = { adding: false, title: '', content: '', sourceReference: null };
 
 type EditDraft = {
   entry: KnowledgeItem | null;
@@ -328,6 +329,17 @@ export function KnowledgeScreen() {
     conflictsCatalog.isPending ||
     indexesCatalog.isPending;
 
+  const sourceOptions = (sourcesCatalog.isSuccess ? sourcesCatalog.data : []).flatMap((source) =>
+    source.workspaceId === workspaceId && source.contentDigest
+      ? [{ id: `source:${source.id}@${source.contentDigest}`, label: source.title }]
+      : []
+  );
+  const selectedSourceAvailable =
+    !addDraft.sourceReference ||
+    sourceOptions.some((source) => source.id === addDraft.sourceReference);
+  const selectedSourceReady =
+    selectedSourceAvailable && (!addDraft.sourceReference || !sourcesCatalog.isFetching);
+
   function resetForm(targetId: string) {
     clearAddDraft(targetId);
     if (create.variables?.workspaceId === targetId) create.reset();
@@ -340,6 +352,7 @@ export function KnowledgeScreen() {
 
   /** Create one entry, or replay the exact Workspace-bound command after unknown failure. */
   function save(command?: CreateKnowledgeCommand) {
+    if (!command && !selectedSourceReady) return;
     const next =
       command ??
       (workspaceId && addDraft.title.trim() && addDraft.content.trim()
@@ -350,6 +363,7 @@ export function KnowledgeScreen() {
               kind: 'preference' as const,
               title: addDraft.title.trim(),
               content: addDraft.content.trim(),
+              ...(addDraft.sourceReference ? { sourceReferences: [addDraft.sourceReference] } : {}),
             },
           }
         : undefined);
@@ -517,6 +531,26 @@ export function KnowledgeScreen() {
               isDisabled={entryWriteBlocked}
               placeholder="What should agents remember?"
             />
+            <Select
+              label="Registered source"
+              items={[{ id: 'none', label: 'No registered source' }, ...sourceOptions]}
+              selectedKey={addDraft.sourceReference ?? 'none'}
+              isDisabled={entryWriteBlocked || sourcesCatalog.isFetching || sourcesCatalog.isError}
+              onSelectionChange={(key) =>
+                setAddDraft((current) => ({
+                  ...current,
+                  sourceReference: key === null || key === 'none' ? null : String(key),
+                }))
+              }
+            />
+            <p className="text-xs text-fg-muted">
+              Register a source below, then select it here to keep its reference with this entry.
+            </p>
+            {!selectedSourceAvailable ? (
+              <p className="text-xs text-fg-muted">
+                The selected source is unavailable. Select a current source before saving.
+              </p>
+            ) : null}
             {failedCreate ? (
               <fieldset disabled={entryWriteBlocked} className="contents">
                 <ErrorBanner
@@ -528,7 +562,12 @@ export function KnowledgeScreen() {
             <div className="flex gap-2">
               <Button
                 size="sm"
-                isDisabled={entryWriteBlocked || !addDraft.title.trim() || !addDraft.content.trim()}
+                isDisabled={
+                  entryWriteBlocked ||
+                  !selectedSourceReady ||
+                  !addDraft.title.trim() ||
+                  !addDraft.content.trim()
+                }
                 onPress={() => save()}
               >
                 Save
@@ -697,7 +736,11 @@ export function KnowledgeScreen() {
           workspaceId={workspaceId}
           currentEntries={knowledge.isSuccess ? entries : []}
         />
-        <KnowledgeManagerPanel connectionBlocked={connectionBlocked} workspaceId={workspaceId} />
+        <KnowledgeManagerPanel
+          connectionBlocked={connectionBlocked}
+          workspaceId={workspaceId}
+          currentEntries={knowledge.isSuccess ? entries : []}
+        />
 
         {attention.isLoading ? (
           <Skeleton lines={2} />
@@ -1685,9 +1728,11 @@ function KnowledgeRetrievalPanel({
 function KnowledgeManagerPanel({
   workspaceId,
   connectionBlocked,
+  currentEntries,
 }: {
   workspaceId: string | null;
   connectionBlocked: boolean;
+  currentEntries: KnowledgeItem[];
 }) {
   const answer = useAnswerKnowledgeManager();
   const suggest = useSuggestKnowledgeRepairs();
@@ -1807,7 +1852,40 @@ function KnowledgeManagerPanel({
           </Button>
         </div>
       </Card>
-      {answerResult ? <p className="text-sm text-fg">{answerResult.answer}</p> : null}
+      {answerResult ? (
+        <Card className="flex flex-col gap-2">
+          <p className="text-sm text-fg">{answerResult.answer}</p>
+          {answerResult.citations.length ? (
+            <ol aria-label="Citations" className="flex flex-col gap-2">
+              {answerResult.citations.map((citation) => {
+                const entry =
+                  citation.reference.scopeId === `page/workspace/${workspaceId}`
+                    ? currentEntries.find(
+                        (candidate) => candidate.id === citation.reference.objectId
+                      )
+                    : undefined;
+                return (
+                  <li key={`${citation.reference.scopeId}:${citation.reference.objectId}`}>
+                    <p className="text-sm font-bold text-fg-strong">{citation.title}</p>
+                    <p className="text-sm text-fg">{citation.excerpt}</p>
+                    {entry ? (
+                      <Link
+                        aria-label={`View current content: ${citation.title}`}
+                        href={`#${encodeURIComponent(knowledgeContentId(workspaceId, entry.id))}`}
+                        className="text-sm text-accent underline outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                      >
+                        View current content
+                      </Link>
+                    ) : (
+                      <p className="text-xs text-fg-muted">Current content unavailable.</p>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          ) : null}
+        </Card>
+      ) : null}
       {suggestResult
         ? suggestResult.suggestions.map((row) => (
             <p key={row.id} className="text-sm text-fg">

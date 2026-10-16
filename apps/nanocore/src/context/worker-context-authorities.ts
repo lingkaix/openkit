@@ -1,3 +1,4 @@
+import { readAssistantTaskHandoffSource } from '../internal-agents/assistant-handoff-source.js';
 import type { FsStore } from '../lib/store.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import {
@@ -65,6 +66,16 @@ export function createWorkerContextPackageAuthorityReader(
       });
 
   return {
+    readAssistantTaskHandoffSource: (receiving) =>
+      receiving.workspaceId === workspaceDb.workspaceId
+        ? readAssistantTaskHandoffSource(store, workspaceDb, {
+            workspaceId: receiving.workspaceId,
+            threadId: receiving.threadId,
+            turnId: receiving.turnId,
+            requestId: receiving.requestId,
+            turnInput: receiving.workerRequest,
+          })
+        : null,
     readAdmission: (workspaceId, threadId, turnId) => {
       const matches = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
         workspaceId,

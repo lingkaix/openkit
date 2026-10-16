@@ -28,13 +28,13 @@ const OTHER_WORKSPACE: WorkspaceRecord = {
 const USER_A_QUICK_CHAT: WorkspaceRecord = {
   ...PROJECT_WORKSPACE,
   id: 'ws_00000000-0000-737c-9c81-84e684e8ce40',
-  kind: 'quick-chat',
+  kind: 'personal',
   name: 'Quick Chat',
 };
 const USER_B_QUICK_CHAT: WorkspaceRecord = {
   ...PROJECT_WORKSPACE,
   id: 'ws_00000000-0000-7e52-8632-71d920cde3ce',
-  kind: 'quick-chat',
+  kind: 'personal',
   name: 'Quick Chat',
 };
 
@@ -224,7 +224,7 @@ describe('account selected Workspace', () => {
                 membershipStatus: 'active' as const,
                 accessCause: 'membership' as const,
                 membershipRevision: 1,
-                ownerUserId: 'user_local',
+                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
                 registryRevision: 1,
               })),
             });

@@ -72,7 +72,7 @@ function readFixture(
     read: () =>
       tools[0].execute(
         { targetFamily: 'agent', agentId: loaded.id },
-        { callId: 'network-read', signal: new AbortController().signal }
+        { callId: 'network-read', toolOccurrence: 1, signal: new AbortController().signal }
       ),
   };
 }

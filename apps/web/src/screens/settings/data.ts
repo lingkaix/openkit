@@ -759,24 +759,52 @@ export function useSettingsWorkspace(workspaceId: string | null) {
 }
 
 /**
- * Loads the bounded live Vault metadata projection for the active Workspace.
+ * Loads current bounded Vault metadata and discards all three protected lists after a denied read.
  *
  * @param workspaceId Active Workspace identity, or null before selection resolves.
  * @returns TanStack query for the three-read Workspace Vault projection.
  */
 export function useVault(workspaceId: string | null) {
   const client = useCoreClient();
+  const queryClient = useQueryClient();
+  const queryKey = settingsKeys.vault(workspaceId ?? '');
   return useQuery({
-    queryKey: settingsKeys.vault(workspaceId ?? ''),
-    queryFn: async () => {
-      const [references, grants, uses] = await Promise.all([
-        client.operations['vault.reference-list']({ workspaceId: workspaceId as string }),
-        client.operations['vault.grant-list']({ workspaceId: workspaceId as string }),
-        client.operations['vault.use-list']({ workspaceId: workspaceId as string }),
-      ]);
-      return projectVault(references, grants, uses);
+    queryKey,
+    queryFn: async ({ signal }) => {
+      const query = queryClient.getQueryCache().find({ queryKey, exact: true });
+      try {
+        const [references, grants, uses] = await Promise.all([
+          client.operations['vault.reference-list']({ workspaceId: workspaceId as string }),
+          client.operations['vault.grant-list']({ workspaceId: workspaceId as string }),
+          client.operations['vault.use-list']({ workspaceId: workspaceId as string }),
+        ]);
+        signal.throwIfAborted();
+        return projectVault(references, grants, uses);
+      } catch (error) {
+        signal.throwIfAborted();
+        if (
+          error instanceof ApiCallError &&
+          (error.status === 401 || error.status === 403) &&
+          query &&
+          queryClient.getQueryCache().find({ queryKey, exact: true }) === query
+        ) {
+          // The three protected lists share this projection and lose admission together.
+          queryClient.setQueryData<VaultProjection>(queryKey, {
+            references: [],
+            grants: [],
+            uses: [],
+          });
+        }
+        if (error instanceof ApiCallError) {
+          throw new ApiCallError(error.status, "Couldn't load vault references.", {
+            code: error.code ?? undefined,
+          });
+        }
+        throw new Error("Couldn't load vault references.");
+      }
     },
     enabled: Boolean(workspaceId),
+    staleTime: 0,
   });
 }
 
