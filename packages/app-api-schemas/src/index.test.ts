@@ -660,10 +660,7 @@ describe('S16 Material and Artifact Review schemas', () => {
         content: request.content,
       }).success
     ).toBe(false);
-    for (const invalidDigest of [
-      `sha256:${'A'.repeat(64)}`,
-      `sha256:${'a'.repeat(63)}`,
-    ]) {
+    for (const invalidDigest of [`sha256:${'A'.repeat(64)}`, `sha256:${'a'.repeat(63)}`]) {
       expect(
         SaveWorkspaceMaterialRevisionRequestSchema.safeParse({
           ...request,
@@ -1458,9 +1455,7 @@ describe('app api schemas', () => {
       expect(
         KnowledgeManagerDraftProposalRequestSchema.safeParse({
           ...request,
-          sourceReferences: [
-            `knowledge:${reservedId}@sha256:${'a'.repeat(64)}`,
-          ],
+          sourceReferences: [`knowledge:${reservedId}@sha256:${'a'.repeat(64)}`],
         }).success
       ).toBe(false);
     }
