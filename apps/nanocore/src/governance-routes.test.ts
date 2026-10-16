@@ -2,12 +2,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
 import { recordWorkspaceEvidenceBundle } from './evidence-bundles.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { createVaultGrant } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
@@ -20,19 +20,23 @@ it.each([
 ] as const)('bounds %s retained evidence errors without changing source bytes', async (variant) => {
   const marker = 'ROW_SECRET_X9';
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-error-'));
-  const db = openWorkspaceDb(dataRoot, 'ws_demo');
+  const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(db);
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
   const app = createApp({ coreDb, dataRoot, store: createDemoStore() });
   try {
     recordWorkspaceEvidenceBundle(db, {
       id: 'evb_probe',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'tu_probe',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-7413-b755-be192286c951',
       goalId: null,
       agentSessionId: null,
       backendType: null,
@@ -48,17 +52,31 @@ it.each([
       createdAt: '2026-07-18T01:00:07.000Z',
     });
     const healthy = await app.request(
-      ...operationRequest('evidence.bundle-list', { workspaceId: 'ws_demo' }, {})
+      ...operationRequest(
+        'evidence.bundle-list',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {}
+      )
     );
     expect(healthy.status).toBe(200);
     expect(await healthy.json()).toMatchObject({ evidenceBundles: [{ id: 'evb_probe' }] });
     const bytes =
       variant === 'syntax'
         ? marker
-        : JSON.stringify([{ kind: 'artifact', ref: 'artifact:ar_demo', [marker]: 'private' }]);
+        : JSON.stringify([
+            {
+              kind: 'artifact',
+              ref: 'artifact:ar_00000000-0000-7f52-a2ff-8f9bfabc26a1',
+              [marker]: 'private',
+            },
+          ]);
     db.sqlite.prepare('UPDATE evidence_bundles SET raw_evidence_refs_json = ?').run(bytes);
     const response = await app.request(
-      ...operationRequest('evidence.bundle-list', { workspaceId: 'ws_demo' }, {})
+      ...operationRequest(
+        'evidence.bundle-list',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {}
+      )
     );
     expect(response.status).toBe(404);
     const body = await response.json();
@@ -84,27 +102,31 @@ it('lists a Workspace grant runtime-env injection plan through the public route'
   try {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const app = createApp({ coreDb, dataRoot, store: createDemoStore() });
     createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       displayName: 'Worker GitHub token',
       ownerScope: 'server',
-      referenceId: 'vault_github',
+      referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
       secretKind: 'repository-token',
     });
     createVaultGrant(coreDb, {
       allowedInjectionPaths: ['runtime-env'],
-      grantId: 'grant_github_turn',
+      grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
       lifetime: 'turn',
       ownerScope: 'workspace',
-      vaultReferenceId: 'vault_github',
-      workspaceId: 'ws_demo',
+      vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const plan = createVaultInjectionPlan(coreDb, {
       backendCapabilityRequirement: 'encrypted-file:resolve',
       expirationBehavior: 'unset-env-on-turn-end',
-      grantId: 'grant_github_turn',
+      grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
       injectionVisibility: 'runtime-env',
       planId: 'plan_github_env',
       redactionRule: 'name-only',
@@ -113,11 +135,16 @@ it('lists a Workspace grant runtime-env injection plan through the public route'
     });
 
     const response = await app.request(
-      ...operationRequest('vault.injection-plan-list', { workspaceId: 'ws_demo' })
+      ...operationRequest('vault.injection-plan-list', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     );
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ workspaceId: 'ws_demo', items: [plan] });
+    expect(await response.json()).toEqual({
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      items: [plan],
+    });
   } finally {
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });

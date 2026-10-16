@@ -3,12 +3,11 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-
-import { ensureLocalUser } from './auth/identity.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -61,8 +60,8 @@ describe('Kernel App API', () => {
     ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const store = createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
@@ -71,7 +70,7 @@ describe('Kernel App API', () => {
       const createResponse = await app.request(
         ...operationRequest(
           'kernel.apps.create',
-          { workspaceId: 'ws_demo' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
             headers: {
@@ -94,7 +93,7 @@ describe('Kernel App API', () => {
           'x-openkit-request-id': randomUUID(),
         },
         body: JSON.stringify({
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           appId: created.appId,
           collection: 'mappings',
           schemaRevision: created.schemaRevision,
@@ -109,7 +108,7 @@ describe('Kernel App API', () => {
       expect(recordResponse.status).toBe(200);
       const listed = await app.request(
         ...operationRequest('kernel.records.list', {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           appId: created.appId,
           collection: 'mappings',
           schemaRevision: created.schemaRevision,
@@ -132,15 +131,17 @@ describe('Kernel App API', () => {
     ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const store = createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
 
     try {
       const response = await app.request(
-        ...operationRequest('kernel.apps.list', { workspaceId: 'ws_other' })
+        ...operationRequest('kernel.apps.list', {
+          workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
+        })
       );
       expect(response.status).toBeGreaterThanOrEqual(400);
     } finally {

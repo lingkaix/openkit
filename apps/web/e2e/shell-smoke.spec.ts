@@ -1,3 +1,4 @@
+import { allocateEntityId } from '@openkit/protocol';
 import { expect, type Page, test } from '@playwright/test';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
 
@@ -6,6 +7,7 @@ let stack: IsolatedWebStack | null = null;
 /** Oversized conversation hints must fit the viewport without intercepting adjacent rows. */
 test('contains long conversation previews and keeps the next row clickable', async ({ page }) => {
   stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
+  const threadIds = [allocateEntityId('th'), allocateEntityId('th')];
   const title = `Improve the observed retained_baseline_conflict ${'VeryLongUnbrokenTaskIdentifier'.repeat(80)}`;
   await page.route('**/api/app/operations/conversation.navigation', async (route) => {
     const workspaceId = route.request().postDataJSON().workspaceId;
@@ -13,7 +15,7 @@ test('contains long conversation previews and keeps the next row clickable', asy
       json: {
         items: [title, 'Next conversation'].map((name, index) => ({
           thread: {
-            id: `th_preview_${index}`,
+            id: threadIds[index],
             workspaceId,
             name,
             preview: 'Conversation preview',
@@ -74,7 +76,7 @@ test('contains long conversation previews and keeps the next row clickable', asy
     });
     expect(hit).toBe(true);
     await next.click({ timeout: 2000 });
-    await expect(page).toHaveURL(/\/chat\/[^/]+\/th_preview_1$/);
+    await expect(page).toHaveURL(new RegExp(`/chat/[^/]+/${threadIds[1]}$`));
   }
 });
 

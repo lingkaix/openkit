@@ -145,11 +145,34 @@ seed_server_config() {
 JSON
 }
 
+# Reads the one recorded local User through a read-only SQLite connection.
+read_local_user_id() {
+  node --disable-warning=ExperimentalWarning --input-type=module - "$1/server/db/core.sqlite" <<'JS'
+import { DatabaseSync } from 'node:sqlite';
+const db = new DatabaseSync(process.argv[2], { readOnly: true });
+try {
+  const rows = db.prepare("SELECT id FROM users WHERE kind = 'local'").all();
+  if (rows.length !== 1) throw new Error('Smoke requires one recorded local User.');
+  process.stdout.write(rows[0].id);
+} finally {
+  db.close();
+}
+JS
+}
+
 # Verifies the mounted target data-root layout and persistence markers.
 assert_data_root_layout() {
   local data_root="$1"
   local workspace_id="$2"
   local workspace_root="${data_root}/workspaces/${workspace_id}"
+  local local_user_id
+  if ! local_user_id="$(read_local_user_id "${data_root}")"; then
+    record_failure "data-root local User" "the unique recorded local User is unavailable"
+    return
+  fi
+  if [[ -n "${3:-}" && "${local_user_id}" != "$3" ]]; then
+    record_failure "data-root local User" "the recorded identity changed across restart"
+  fi
 
   assert_file_exists "${data_root}/server/db/core.sqlite" "data-root server/db/core.sqlite"
   assert_file_exists "${data_root}/config/server.jsonc" "data-root config/server.jsonc"
@@ -167,12 +190,12 @@ assert_data_root_layout() {
   assert_directory_exists "${data_root}/server/migrations" "data-root server/migrations"
   assert_directory_exists "${data_root}/server/vendor" "data-root server/vendor"
   assert_directory_exists "${data_root}/server/vendor/models.dev" "data-root server/vendor/models.dev"
-  assert_directory_exists "${data_root}/users/user_local" "data-root users/user_local"
-  assert_directory_exists "${data_root}/users/user_local/files" "data-root users/user_local/files"
-  assert_directory_exists "${data_root}/users/user_local/data" "data-root users/user_local/data"
-  assert_directory_exists "${data_root}/users/user_local/db" "data-root users/user_local/db"
-  assert_directory_exists "${data_root}/users/user_local/logs" "data-root users/user_local/logs"
-  assert_directory_exists "${data_root}/users/user_local/config" "data-root users/user_local/config"
+  assert_directory_exists "${data_root}/users/${local_user_id}" "data-root users/${local_user_id}"
+  assert_directory_exists "${data_root}/users/${local_user_id}/files" "data-root users/${local_user_id}/files"
+  assert_directory_exists "${data_root}/users/${local_user_id}/data" "data-root users/${local_user_id}/data"
+  assert_directory_exists "${data_root}/users/${local_user_id}/db" "data-root users/${local_user_id}/db"
+  assert_directory_exists "${data_root}/users/${local_user_id}/logs" "data-root users/${local_user_id}/logs"
+  assert_directory_exists "${data_root}/users/${local_user_id}/config" "data-root users/${local_user_id}/config"
   assert_directory_exists "${data_root}/workspaces" "data-root workspaces"
   assert_directory_exists "${workspace_root}" "data-root workspaces/${workspace_id}"
   assert_file_exists "${workspace_root}/workspace-record.json" "data-root workspaces/${workspace_id}/workspace-record.json"
@@ -285,8 +308,9 @@ workspace_response="$(create_workspace)"
 workspace_id="$(read_workspace_id "${workspace_response}")"
 record_pass "api workspace created"
 
+smoke_local_user_id="$(read_local_user_id "${DATA_ROOT}")"
 write_persistence_markers "${DATA_ROOT}" "${workspace_id}"
-assert_data_root_layout "${DATA_ROOT}" "${workspace_id}"
+assert_data_root_layout "${DATA_ROOT}" "${workspace_id}" "${smoke_local_user_id}"
 
 docker rm -f "${CONTAINER_NAME}" >/dev/null
 
@@ -300,6 +324,6 @@ else
   record_failure "api workspace persisted" "workspace ${workspace_id} was not returned after restart"
 fi
 
-assert_data_root_layout "${DATA_ROOT}" "${workspace_id}"
+assert_data_root_layout "${DATA_ROOT}" "${workspace_id}" "${smoke_local_user_id}"
 
 finish_checks

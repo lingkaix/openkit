@@ -15,8 +15,8 @@ it('exports the exact ordered Core reasoning-effort vocabulary', () => {
 
 it('admits effort on turn.start and retained Turn projections without inventing omission', () => {
   const input = {
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
     requestId: '00000000-0000-4000-8000-000000000999',
     input: 'Run',
     reasoningEffort: 'none',
@@ -27,10 +27,10 @@ it('admits effort on turn.start and retained Turn projections without inventing 
       .success
   ).toBe(false);
   const retained = {
-    id: 'turn_demo',
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
-    triggerActor: { kind: 'user', id: 'user_local' },
+    id: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     items: [],
     status: 'completed',
     error: null,

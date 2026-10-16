@@ -1,6 +1,13 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { TimestampSchema } from '@openkit/protocol';
+import {
+  AgentSessionIdSchema,
+  ThreadIdSchema,
+  TimestampSchema,
+  TurnIdSchema,
+  WorkerStorageTargetIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import { OperationError } from '../operation-error.js';
 import type { WorkspaceDb } from '../storage/db.js';
@@ -13,16 +20,16 @@ import {
 
 /** Exact admitted volume and collection lineage; no private credentials enter these records. */
 const WorkspaceCollectionIdentitySchema = z.object({
-  workspaceId: z.string().min(1),
-  storageRef: z.string().min(1),
+  workspaceId: WorkspaceIdSchema,
+  storageRef: WorkerStorageTargetIdSchema,
   scopeDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
   workSlot: z.string().min(1),
   attachmentGeneration: z.number().int().positive(),
   sandboxId: z.string().min(1),
   collectionId: z.string().min(1),
-  agentSessionId: z.string().min(1),
-  threadId: z.string().min(1),
-  turnId: z.string().min(1),
+  agentSessionId: AgentSessionIdSchema,
+  threadId: ThreadIdSchema,
+  turnId: TurnIdSchema,
   packageSnapshotId: z.string().min(1),
 });
 /** Known identity core; the reader ignores additive stored evidence. */

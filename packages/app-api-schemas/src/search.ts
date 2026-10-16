@@ -1,3 +1,4 @@
+import { ThreadIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
 /** App-local search result returned by NanoCore. */
@@ -5,8 +6,8 @@ export const AppSearchResultSchema = z.object({
   kind: z.enum(['workspace', 'thread', 'knowledge', 'artifact', 'item']),
   id: z.string().min(1),
   title: z.string().min(1),
-  workspaceId: z.string().min(1).optional(),
-  threadId: z.string().min(1).optional(),
+  workspaceId: WorkspaceIdSchema.optional(),
+  threadId: ThreadIdSchema.optional(),
 });
 
 /** App-local search response. */

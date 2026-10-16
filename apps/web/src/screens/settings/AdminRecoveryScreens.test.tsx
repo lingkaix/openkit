@@ -10,8 +10,8 @@ import { surfaceById, surfacesInGroup } from '../../app/surfaces';
 const POISON = 'okt_private_payload_must_not_escape';
 const RECOVERY = {
   recovery: {
-    workspaceId: 'ws_fixture',
-    ownerUserId: 'user_owner',
+    workspaceId: 'ws_00000000-0000-7981-ab18-24cc470147b4',
+    ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
     administratorRole: null,
     registryRevision: 7,
     secret: POISON,
@@ -20,7 +20,7 @@ const RECOVERY = {
 };
 const DISABLED = {
   user: {
-    userId: 'user_fixture',
+    userId: 'usr_00000000-0000-7696-8ea8-dab52c9a8217',
     status: 'disabled',
     disabledAt: '2026-09-14T10:00:00.000Z',
     secret: POISON,
@@ -57,15 +57,24 @@ function renderScreen(client: CoreClient, id = 'workspace-access-recovery') {
 
 /** Load a deliberately named fixture through the visible form. */
 async function loadRecovery() {
-  await userEvent.type(await screen.findByLabelText('Workspace ID'), '  ws_fixture  ');
+  await userEvent.type(
+    await screen.findByLabelText('Workspace ID'),
+    '  ws_00000000-0000-7981-ab18-24cc470147b4  '
+  );
   await userEvent.click(screen.getByRole('button', { name: 'Load recovery state' }));
-  await screen.findByText('user_owner');
+  await screen.findByText('usr_00000000-0000-7011-88df-c2b1e8466b6f');
 }
 
 /** Confirm one fixture user explicitly; production identities never enter these tests. */
 async function confirmDisable() {
-  await userEvent.type(await screen.findByLabelText('User ID'), 'user_fixture');
-  await userEvent.type(screen.getByLabelText('Confirm user ID'), 'user_fixture');
+  await userEvent.type(
+    await screen.findByLabelText('User ID'),
+    'usr_00000000-0000-7696-8ea8-dab52c9a8217'
+  );
+  await userEvent.type(
+    screen.getByLabelText('Confirm user ID'),
+    'usr_00000000-0000-7696-8ea8-dab52c9a8217'
+  );
   await userEvent.click(screen.getByRole('button', { name: 'Disable user' }));
 }
 
@@ -91,14 +100,19 @@ describe('Web admin recovery and user disable', () => {
     expect(client.operations['workspace.access-recovery-read']).not.toHaveBeenCalled();
     await loadRecovery();
     expect(client.operations['workspace.access-recovery-read']).toHaveBeenCalledExactlyOnceWith({
-      workspaceId: 'ws_fixture',
+      workspaceId: 'ws_00000000-0000-7981-ab18-24cc470147b4',
     });
-    for (const value of ['ws_fixture', 'user_owner', 'No active membership', '7'])
+    for (const value of [
+      'ws_00000000-0000-7981-ab18-24cc470147b4',
+      'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+      'No active membership',
+      '7',
+    ])
       expect(screen.getByText(value)).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Add myself as editor' }));
     await screen.findByText('editor');
     expect(client.operations['workspace.access-recover']).toHaveBeenCalledExactlyOnceWith({
-      workspaceId: 'ws_fixture',
+      workspaceId: 'ws_00000000-0000-7981-ab18-24cc470147b4',
       ...{
         action: 'add-self-as-editor',
         expectedRegistryRevision: 7,
@@ -126,11 +140,14 @@ describe('Web admin recovery and user disable', () => {
     await userEvent.type(screen.getByLabelText('Confirm workspace ID'), 'wrong');
     expect(transfer).toBeDisabled();
     await userEvent.clear(screen.getByLabelText('Confirm workspace ID'));
-    await userEvent.type(screen.getByLabelText('Confirm workspace ID'), 'ws_fixture');
+    await userEvent.type(
+      screen.getByLabelText('Confirm workspace ID'),
+      'ws_00000000-0000-7981-ab18-24cc470147b4'
+    );
     await userEvent.click(transfer);
     await screen.findByText('editor');
     expect(client.operations['workspace.access-recover']).toHaveBeenCalledExactlyOnceWith({
-      workspaceId: 'ws_fixture',
+      workspaceId: 'ws_00000000-0000-7981-ab18-24cc470147b4',
       ...{
         action: 'transfer-ownership-to-self',
         expectedRegistryRevision: 7,
@@ -139,7 +156,7 @@ describe('Web admin recovery and user disable', () => {
     });
     expect(screen.getByLabelText('Confirm workspace ID')).toHaveValue('');
     await userEvent.type(screen.getByLabelText('Workspace ID'), '2');
-    expect(screen.queryByText('user_owner')).not.toBeInTheDocument();
+    expect(screen.queryByText('usr_00000000-0000-7011-88df-c2b1e8466b6f')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add myself as editor' })).toBeDisabled();
   });
 
@@ -149,22 +166,25 @@ describe('Web admin recovery and user disable', () => {
     const input = await screen.findByLabelText('User ID');
     expect(input).toHaveValue('');
     expect(screen.getByRole('button', { name: 'Disable user' })).toBeDisabled();
-    await userEvent.type(input, 'user_fixture');
+    await userEvent.type(input, 'usr_00000000-0000-7696-8ea8-dab52c9a8217');
     expect(screen.getByRole('button', { name: 'Disable user' })).toBeDisabled();
     await userEvent.type(screen.getByLabelText('Confirm user ID'), 'wrong');
     expect(screen.getByRole('button', { name: 'Disable user' })).toBeDisabled();
     await userEvent.clear(screen.getByLabelText('Confirm user ID'));
-    await userEvent.type(screen.getByLabelText('Confirm user ID'), 'user_fixture');
+    await userEvent.type(
+      screen.getByLabelText('Confirm user ID'),
+      'usr_00000000-0000-7696-8ea8-dab52c9a8217'
+    );
     expect(client.operations['user.disable']).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole('button', { name: 'Disable user' }));
     await screen.findByText('disabled');
     expect(client.operations['user.disable']).toHaveBeenCalledExactlyOnceWith({
-      targetUserId: 'user_fixture',
+      targetUserId: 'usr_00000000-0000-7696-8ea8-dab52c9a8217',
       ...{
         requestId: expect.any(String),
       },
     });
-    for (const value of ['user_fixture', DISABLED.user.disabledAt])
+    for (const value of ['usr_00000000-0000-7696-8ea8-dab52c9a8217', DISABLED.user.disabledAt])
       expect(screen.getByText(value)).toBeInTheDocument();
     expect(screen.getByLabelText('Confirm user ID')).toHaveValue('');
     expect(container.innerHTML).not.toContain(POISON);
@@ -212,14 +232,18 @@ describe('Web admin recovery and user disable', () => {
       );
       await screen.findByText('Access denied');
       expect(container.innerHTML).not.toContain(
-        id === 'disable-user' ? 'user_fixture' : 'user_owner'
+        id === 'disable-user'
+          ? 'usr_00000000-0000-7696-8ea8-dab52c9a8217'
+          : 'usr_00000000-0000-7011-88df-c2b1e8466b6f'
       );
       await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
       expect(
         await screen.findByLabelText(id === 'disable-user' ? 'User ID' : 'Workspace ID')
       ).toHaveValue('');
       expect(screen.queryByText('disabled')).not.toBeInTheDocument();
-      expect(screen.queryByText('user_owner')).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('usr_00000000-0000-7011-88df-c2b1e8466b6f')
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -239,12 +263,15 @@ describe('Web admin recovery and user disable', () => {
       await loadRecovery();
       await userEvent.click(screen.getByRole('button', { name: 'Add myself as editor' }));
     } else {
-      await userEvent.type(await screen.findByLabelText('Workspace ID'), 'ws_fixture');
+      await userEvent.type(
+        await screen.findByLabelText('Workspace ID'),
+        'ws_00000000-0000-7981-ab18-24cc470147b4'
+      );
       await userEvent.click(screen.getByRole('button', { name: 'Load recovery state' }));
     }
     await screen.findByText('Access denied');
     expect(container.innerHTML).not.toContain(POISON);
-    expect(screen.queryByText('user_owner')).not.toBeInTheDocument();
+    expect(screen.queryByText('usr_00000000-0000-7011-88df-c2b1e8466b6f')).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await screen.findByLabelText(method === 'user.disable' ? 'User ID' : 'Workspace ID');
     expect(client.operations[method]).toHaveBeenCalledTimes(1);
@@ -334,14 +361,19 @@ describe('Web admin recovery and user disable', () => {
       await loadRecovery();
       await userEvent.click(screen.getByRole('button', { name: 'Add myself as editor' }));
     } else {
-      await userEvent.type(await screen.findByLabelText('Workspace ID'), 'ws_fixture');
+      await userEvent.type(
+        await screen.findByLabelText('Workspace ID'),
+        'ws_00000000-0000-7981-ab18-24cc470147b4'
+      );
       await userEvent.click(screen.getByRole('button', { name: 'Load recovery state' }));
     }
     await screen.findByRole('status');
     for (const input of screen.getAllByRole('textbox')) expect(input).toBeDisabled();
     for (const button of screen.getAllByRole('button')) expect(button).toBeDisabled();
     await act(async () => finish());
-    await screen.findByText(method === 'user.disable' ? 'disabled' : 'user_owner');
+    await screen.findByText(
+      method === 'user.disable' ? 'disabled' : 'usr_00000000-0000-7011-88df-c2b1e8466b6f'
+    );
     expect(client.operations[method]).toHaveBeenCalledTimes(1);
   });
 });

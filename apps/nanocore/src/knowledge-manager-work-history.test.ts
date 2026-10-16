@@ -3,10 +3,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
 
 const CONTEXT_PACKAGE_DIGEST = `ctxpkg_sha256_${'a'.repeat(64)}`;
-const THREAD_ID = 'th_imported_history';
-const TURN_ID = 'tu_imported_history';
-const ITEM_ID = 'it_imported_history';
-const WORKSPACE_ID = 'ws_imported_history';
+const THREAD_ID = 'th_00000000-0000-7de4-9b61-0f4109767bf6';
+const TURN_ID = 'tu_00000000-0000-7b3f-b156-d49ad435e6c0';
+const ITEM_ID = 'it_00000000-0000-756a-b5d5-8b83b61ec14d';
+const WORKSPACE_ID = 'ws_00000000-0000-7ec3-acba-f55eebcacc35';
 
 vi.mock('./context/worker-context-package.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('./context/worker-context-package.js')>();

@@ -1,3 +1,10 @@
+import {
+  ArtifactIdSchema,
+  ItemIdSchema,
+  ThreadIdSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 
 import {
@@ -14,12 +21,13 @@ export const WORKER_DELEGATION_DRAFT_SCHEMA_VERSION = 1;
 export const STRUCTURED_WORKER_DELEGATION_REQUEST_SCHEMA_VERSION = 1;
 export const STRUCTURED_WORKER_DELEGATION_MAX_CONTEXT_TOKENS = 240_000;
 
-const ContextRefSchema = z
-  .object({
-    kind: z.enum(['workspace', 'thread', 'artifact', 'knowledge', 'item']),
-    id: z.string().min(1),
-  })
-  .strict();
+const ContextRefSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('workspace'), id: WorkspaceIdSchema }).strict(),
+  z.object({ kind: z.literal('thread'), id: ThreadIdSchema }).strict(),
+  z.object({ kind: z.literal('artifact'), id: ArtifactIdSchema }).strict(),
+  z.object({ kind: z.literal('knowledge'), id: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal('item'), id: ItemIdSchema }).strict(),
+]);
 const WorkerDelegationTargetSchema = z
   .object({
     agentId: z.string().min(1),
@@ -43,8 +51,8 @@ const StructuredWorkerDelegationConstraintsSchema = z
   .strict();
 const StructuredWorkerDelegationReviewEvidenceSchema = z
   .object({
-    itemIds: z.array(z.string().min(1)).max(100),
-    artifactIds: z.array(z.string().min(1)).max(100),
+    itemIds: z.array(ItemIdSchema).max(100),
+    artifactIds: z.array(ArtifactIdSchema).max(100),
   })
   .strict();
 const StructuredWorkerDelegationReviewContextSchema = z.discriminatedUnion('verdict', [
@@ -54,7 +62,7 @@ const StructuredWorkerDelegationReviewContextSchema = z.discriminatedUnion('verd
       verdict: z.literal('refine'),
       reason: z.string().min(1).nullable(),
       revisionInstruction: z.string().min(1),
-      priorTurnId: z.string().min(1),
+      priorTurnId: TurnIdSchema,
       evidence: StructuredWorkerDelegationReviewEvidenceSchema,
     })
     .strict(),
@@ -64,7 +72,7 @@ const StructuredWorkerDelegationReviewContextSchema = z.discriminatedUnion('verd
       verdict: z.literal('retry'),
       reason: z.string().min(1),
       revisionInstruction: z.null(),
-      priorTurnId: z.string().min(1),
+      priorTurnId: TurnIdSchema,
       evidence: StructuredWorkerDelegationReviewEvidenceSchema,
     })
     .strict(),
@@ -136,8 +144,8 @@ export const WorkerDelegationDraftSchema = z
     source: z.literal(WORKER_COORDINATOR_AGENT_ID),
     mode: z.literal('automation'),
     prompt: z.string().min(1),
-    workspaceId: z.string().min(1),
-    threadId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
     target: WorkerDelegationTargetSchema,
     constraints: WorkerDelegationConstraintsSchema,
     contextRefs: z.array(ContextRefSchema).min(2),

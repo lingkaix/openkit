@@ -5,13 +5,13 @@ import { join } from 'node:path';
 import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import type { FsStore } from './lib/store.js';
 import { feedbackFilePath } from './runtime/feedback.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
@@ -55,19 +55,30 @@ it.each(
     for (const workspace of store.listWorkspaces()) {
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: workspace.id,
       });
     }
-    const thread = store.createThread('ws_demo', 'Admission sentinel', undefined, 'conversation', {
-      visibility: 'workspace',
-    });
-    const turn = store.createTurn('ws_demo', thread.id, 'Retained Turn', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Admission sentinel',
+      undefined,
+      'conversation',
+      {
+        visibility: 'workspace',
+      }
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Retained Turn',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const token = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace',
       workspaceIds: store.listWorkspaces().map((workspace) => workspace.id),
       expiresAt: '2099-01-01T00:00:00.000Z',
@@ -93,7 +104,7 @@ it.each(
     const workspaceId =
       id === 'chat.quick'
         ? store.listWorkspaces().find((workspace) => workspace.kind === 'quick-chat')!.id
-        : 'ws_demo';
+        : 'ws_00000000-0000-7000-8000-000000000001';
     const inputs = {
       'workspace.read': { workspaceId },
       'workspace.update': { workspaceId, name: 'Must not rename', requestId: randomUUID() },

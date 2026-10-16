@@ -71,42 +71,68 @@ describe('worker Context Package read projection', () => {
     {
       name: 'orders last-seen traces by startedAt and then Turn id descending',
       traces: [
-        verifiedTrace('tu_a', [['mat_1', 'mrev_1']]),
-        verifiedTrace('tu_b', [['mat_1', 'mrev_2']]),
+        verifiedTrace('tu_00000000-0000-7000-8000-000000000001', [
+          ['mat_00000000-0000-780b-aa01-5f7fb6dd4093', 'mrev_00000000-0000-73b7-bfe3-9b5c8390209e'],
+        ]),
+        verifiedTrace('tu_00000000-0000-7000-8000-000000000002', [
+          ['mat_00000000-0000-780b-aa01-5f7fb6dd4093', 'mrev_00000000-0000-7ae0-81e6-eaf3820b674e'],
+        ]),
       ],
-      currentTurnId: 'tu_a',
-      expected: { lastWorkerSeenRevisionId: 'mrev_2', currentTurnRevisionId: 'mrev_1' },
+      currentTurnId: 'tu_00000000-0000-7000-8000-000000000001',
+      expected: {
+        lastWorkerSeenRevisionId: 'mrev_00000000-0000-7ae0-81e6-eaf3820b674e',
+        currentTurnRevisionId: 'mrev_00000000-0000-73b7-bfe3-9b5c8390209e',
+      },
     },
     {
       name: 'returns null when no verified trace selected the Material',
-      traces: [verifiedTrace('tu_a', [['mat_2', 'mrev_2']])],
-      currentTurnId: 'tu_a',
+      traces: [
+        verifiedTrace('tu_00000000-0000-7000-8000-000000000001', [
+          ['mat_00000000-0000-7ab0-b20c-4dc5a61a957a', 'mrev_00000000-0000-7ae0-81e6-eaf3820b674e'],
+        ]),
+      ],
+      currentTurnId: 'tu_00000000-0000-7000-8000-000000000001',
       expected: { lastWorkerSeenRevisionId: null, currentTurnRevisionId: null },
     },
     {
       name: 'does not substitute a historical trace for the current Turn',
-      traces: [verifiedTrace('tu_a', [['mat_1', 'mrev_1']])],
-      currentTurnId: 'tu_b',
-      expected: { lastWorkerSeenRevisionId: 'mrev_1', currentTurnRevisionId: null },
+      traces: [
+        verifiedTrace('tu_00000000-0000-7000-8000-000000000001', [
+          ['mat_00000000-0000-780b-aa01-5f7fb6dd4093', 'mrev_00000000-0000-73b7-bfe3-9b5c8390209e'],
+        ]),
+      ],
+      currentTurnId: 'tu_00000000-0000-7000-8000-000000000002',
+      expected: {
+        lastWorkerSeenRevisionId: 'mrev_00000000-0000-73b7-bfe3-9b5c8390209e',
+        currentTurnRevisionId: null,
+      },
     },
     {
       name: 'uses imported history only for last-seen revision',
       traces: [
         verifiedTrace(
-          'tu_history',
-          [['mat_1', 'mrev_history']],
+          'tu_00000000-0000-75d9-956c-5ec2769cb134',
+          [
+            [
+              'mat_00000000-0000-780b-aa01-5f7fb6dd4093',
+              'mrev_00000000-0000-7282-92b9-561b941e9a5a',
+            ],
+          ],
           'imported-history',
           '2026-07-18T01:00:00.000Z'
         ),
       ],
-      currentTurnId: 'tu_history',
-      expected: { lastWorkerSeenRevisionId: 'mrev_history', currentTurnRevisionId: null },
+      currentTurnId: 'tu_00000000-0000-75d9-956c-5ec2769cb134',
+      expected: {
+        lastWorkerSeenRevisionId: 'mrev_00000000-0000-7282-92b9-561b941e9a5a',
+        currentTurnRevisionId: null,
+      },
     },
   ])('$name', ({ traces, currentTurnId, expected }) => {
     expect(
       projectVerifiedThreadMaterialTraces({
         currentTurnId,
-        materialId: 'mat_1',
+        materialId: 'mat_00000000-0000-780b-aa01-5f7fb6dd4093',
         traces,
       })
     ).toEqual(expected);
@@ -120,24 +146,32 @@ describe('worker Context Package read projection', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
-    const thread = store.createThread('ws_demo', 'Missing accepted context trace');
-    const turn = store.createTurn('ws_demo', thread.id, 'Run accepted worker turn.', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Missing accepted context trace'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Run accepted worker turn.',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
 
     try {
       if (authority === 'accepted-turn') {
-        store.updateTurn(turn.id, { agentSessionId: 'as_missing_context_trace' });
+        store.updateTurn(turn.id, { agentSessionId: 'as_00000000-0000-7b9a-ba85-578bca58899d' });
       } else {
         createSchedulerAdmissionEntry(coreDb, {
           backendId: 'nanohost',
           queueEntryId: 'queue_missing_context_trace',
           requestId: 'request_missing_context_trace',
-          triggerActor: { kind: 'user', id: 'user_local' },
-          workspaceId: 'ws_demo',
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: thread.id,
           turnId: turn.id,
           turnInput: 'Run accepted worker turn.',
@@ -157,7 +191,7 @@ describe('worker Context Package read projection', () => {
           store,
           workspaceDb,
           threadId: thread.id,
-          materialId: 'mat_1',
+          materialId: 'mat_00000000-0000-780b-aa01-5f7fb6dd4093',
         })
       ).toThrow(
         'An accepted worker Turn or admitted scheduler entry lacks its Context Package trace.'
@@ -176,8 +210,8 @@ function structuredRequestText(objective: string): string {
       acceptanceCriteria: ['The projection returns only a proven objective.'],
       constraints: { maxContextTokens: 4_096, maxWorkerIterations: 1 },
       contextRefs: [
-        { kind: 'workspace', id: 'ws_demo' },
-        { kind: 'thread', id: 'th_demo' },
+        { kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' },
+        { kind: 'thread', id: 'th_00000000-0000-7000-8000-000000000001' },
       ],
       escalationConditions: [],
       expectedArtifacts: [],
@@ -205,35 +239,43 @@ describe('thread taskInputs projection', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
-    const thread = store.createThread('ws_demo', 'Proven initiating request');
-    const turn = store.createTurn('ws_demo', thread.id, 'Run proven worker request.', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Proven initiating request'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Run proven worker request.',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const requestText = structuredRequestText('Implement the bounded dashboard projection.');
     const otherText = structuredRequestText('Ignore this unproven matching JSON.');
     const item = store.createItem({
-      id: 'it_proven_request',
-      workspaceId: 'ws_demo',
+      id: 'it_00000000-0000-7b9d-9e1a-2632c3b76ed5',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: turn.id,
       type: 'user-message',
       status: 'completed',
-      actor: { kind: 'user', id: 'user_local' },
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       text: requestText,
       createdAt: turn.startedAt!,
       completedAt: turn.startedAt,
     });
     store.createItem({
-      id: 'it_unproven_json',
-      workspaceId: 'ws_demo',
+      id: 'it_00000000-0000-7275-b9e3-6a2e51407254',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: turn.id,
       type: 'user-message',
       status: 'completed',
-      actor: { kind: 'user', id: 'user_local' },
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       text: otherText,
       createdAt: turn.startedAt!,
       completedAt: turn.startedAt,
@@ -261,8 +303,12 @@ describe('thread taskInputs projection', () => {
         authorities,
         threadId: thread.id,
         turnId: turn.id,
-        workspaceId: 'ws_demo',
-        workspaceRoot: resolveDataRootPath(dataRoot, 'workspaces', 'ws_demo'),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        workspaceRoot: resolveDataRootPath(
+          dataRoot,
+          'workspaces',
+          'ws_00000000-0000-7000-8000-000000000001'
+        ),
       });
       vi.mocked(readWorkerContextPackageTrace).mockReturnValue({
         workerRequestItemId: item.id,
@@ -280,21 +326,29 @@ describe('thread taskInputs projection', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
-    const thread = store.createThread('ws_demo', 'Corrupt initiating request');
-    const turn = store.createTurn('ws_demo', thread.id, 'Run unproven worker request.', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Corrupt initiating request'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Run unproven worker request.',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     store.createItem({
-      id: 'it_matching_json',
-      workspaceId: 'ws_demo',
+      id: 'it_00000000-0000-75e6-8332-7e496922d8d5',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: turn.id,
       type: 'user-message',
       status: 'completed',
-      actor: { kind: 'user', id: 'user_local' },
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       text: structuredRequestText('Do not treat matching JSON as proof.'),
       createdAt: turn.startedAt!,
       completedAt: turn.startedAt,
@@ -319,12 +373,16 @@ describe('thread taskInputs projection', () => {
         authorities,
         threadId: thread.id,
         turnId: turn.id,
-        workspaceId: 'ws_demo',
-        workspaceRoot: resolveDataRootPath(dataRoot, 'workspaces', 'ws_demo'),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        workspaceRoot: resolveDataRootPath(
+          dataRoot,
+          'workspaces',
+          'ws_00000000-0000-7000-8000-000000000001'
+        ),
       });
-      expect(store.listThreadItems('ws_demo', thread.id)).toEqual([
+      expect(store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', thread.id)).toEqual([
         expect.objectContaining({
-          id: 'it_matching_json',
+          id: 'it_00000000-0000-75e6-8332-7e496922d8d5',
           text: expect.stringContaining('Do not treat matching JSON as proof.'),
         }),
       ]);

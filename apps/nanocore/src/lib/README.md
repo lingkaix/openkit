@@ -34,3 +34,5 @@ The canonical Turn record preserves optional `reasoningEffort` at creation and r
 The simulator Material fixtures invoke the canonical definition-derived JSON operations and retain their queue, projection and worker-delivery assertions.
 
 The simulator publishes its two deterministic Material candidates through the shared exact-byte Artifact validator and existing Artifact/Review owners, with the process-private no-injection evidence constructor. It emits no Artifact declaration payload and cannot provide that proof to Worker MCP capture. Ordinary Worker submission requires the original Worker evidence set.
+
+Independent Workspace, Thread and Turn creation calls the shared Protocol UUIDv7 allocator once at the existing creation seam. Quick Chat derives its Workspace from the recorded User id through the accepted UUIDv5 name. Private Thread creation requires the explicit canonical audience; no local-user constant or owner namespace is inferred. Receiving-Thread creation records its immutable parent. Demo history belongs to the explicit test-support fixture.
