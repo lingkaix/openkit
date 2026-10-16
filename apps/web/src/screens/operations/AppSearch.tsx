@@ -24,7 +24,8 @@ export function AppSearch({ onClose }: { onClose?: () => void }) {
   const [submitted, setSubmitted] = useState('');
   const search = useAppSearch(submitted);
   // Discovery alone cannot authorize retained private search metadata after a failed read.
-  const currentRead = search.isFetchedAfterMount && search.isSuccess && !search.isFetching;
+  const currentRead =
+    search.isFetchedAfterMount && search.isSuccess && search.fetchStatus === 'idle';
   const hits = currentRead ? (search.data ?? []) : [];
 
   function submit(value: string) {
@@ -70,7 +71,7 @@ export function AppSearch({ onClose }: { onClose?: () => void }) {
           {search.isError ? (
             <ErrorBanner message="Couldn't search." onRetry={() => void search.refetch()} />
           ) : null}
-          {search.isFetching ? <Skeleton lines={2} /> : null}
+          {search.fetchStatus !== 'idle' ? <Skeleton lines={2} /> : null}
           {currentRead && hits.length === 0 ? (
             <p className="text-sm text-fg-muted">No search results</p>
           ) : null}
