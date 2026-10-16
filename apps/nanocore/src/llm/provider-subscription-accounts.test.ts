@@ -27,7 +27,6 @@ import {
   type StreamOptions,
 } from '@earendil-works/pi-ai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { createRuntimeConfigManager, loadRuntimeConfig } from '../config/runtime-config.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
@@ -40,7 +39,9 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { type VaultBackend, VaultBackendError } from '../vault/vault-backend.js';
@@ -771,7 +772,7 @@ function createReferenceCascade(
   referenceId: string,
   suffix: string
 ): void {
-  const grantId = `grant_${suffix}`;
+  const grantId = testEntityId('grant', `grant_${suffix}`);
   const planId = `plan_${suffix}`;
 
   createVaultGrant(fixture.coreDb, {
@@ -780,7 +781,7 @@ function createReferenceCascade(
     lifetime: 'turn',
     ownerScope: 'workspace',
     vaultReferenceId: referenceId,
-    workspaceId: 'ws_1',
+    workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
   });
   createVaultInjectionPlan(fixture.coreDb, {
     backendCapabilityRequirement: 'encrypted-file:resolve',
@@ -793,7 +794,7 @@ function createReferenceCascade(
     targetPath: `/openkit/secrets/${suffix}`,
   });
   createVaultInjectionReceipt(fixture.coreDb, {
-    agentSessionId: `session_${suffix}`,
+    agentSessionId: testEntityId('as', `session_${suffix}`),
     backendSummary: `encrypted-file:${referenceId}:v1`,
     grantId,
     injectedAt: DEFAULT_TIME,
@@ -814,7 +815,7 @@ function readCascadeStatuses(
   fixture: ProviderSubscriptionFixture,
   suffix: string
 ): { readonly grant: string; readonly plan: string; readonly receipt: string } {
-  const grantId = `grant_${suffix}`;
+  const grantId = testEntityId('grant', `grant_${suffix}`);
   const planId = `plan_${suffix}`;
   const receiptId = `receipt_${suffix}`;
   const grant = fixture.coreDb.sqlite
@@ -1012,7 +1013,7 @@ describe('ProviderSubscriptionAccountManager', () => {
   it('deletes a bound slot without rewriting its profile or logical routes', async () => {
     const fixture = createFixture();
     const pair = accountPair('availability');
-    await createStoredPair(fixture, pair, 'bound_delete_live');
+    await createStoredPair(fixture, pair, 'vault_00000000-0000-7932-8b35-9939dfc7ad68');
     writeAvailabilitySupply(fixture);
     const paths = ['providers/bound.provider.jsonc', 'gateway.jsonc'].map((path) =>
       join(fixture.dataRoot, 'config', path)
@@ -1032,13 +1033,19 @@ describe('ProviderSubscriptionAccountManager', () => {
         )
       )
     ).toBe(false);
-    expect(getVaultReference(fixture.coreDb, 'bound_delete_live')?.status).toBe('revoked');
+    expect(
+      getVaultReference(fixture.coreDb, 'vault_00000000-0000-7932-8b35-9939dfc7ad68')?.status
+    ).toBe('revoked');
   });
 
   it('reads live Gateway availability without resolving secrets or writing Vault-use records', async () => {
     const fixture = createFixture();
     try {
-      await createStoredPair(fixture, accountPair('availability'), 'availability_live');
+      await createStoredPair(
+        fixture,
+        accountPair('availability'),
+        'vault_00000000-0000-703a-aeb4-741e70ca0b46'
+      );
       writeAvailabilitySupply(fixture);
       const before = listVaultUseRecords(fixture.coreDb);
       const resolves = vi.spyOn(fixture.backend(), 'resolve');
@@ -1078,7 +1085,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     const fixture = createFixture();
     try {
       const pair = accountPair('availability');
-      await createStoredPair(fixture, pair, 'corrupt_availability');
+      await createStoredPair(fixture, pair, 'vault_00000000-0000-737c-8912-8e1270803e33');
       writeAvailabilitySupply(fixture);
       writeFileSync(accountPath(fixture.dataRoot, pair), '{ corrupt account');
       const dispatched = vi.fn(async () => ({
@@ -1219,7 +1226,7 @@ describe('ProviderSubscriptionAccountManager', () => {
         'subscription_account_logged_out'
       );
       checkSnapshot('subscription_account_logged_out');
-      fixture.queueReferenceIds('gateway_live');
+      fixture.queueReferenceIds('vault_00000000-0000-7856-bb50-e3f9342f4e6a');
       const handle = await fixture.manager.getPairHandle(pair);
       await handle.credentials.modify(pair.subscriptionProviderId, async () =>
         oauthCredential('gateway-live')
@@ -1633,8 +1640,8 @@ describe('ProviderSubscriptionAccountManager', () => {
         name: 'completed histories',
         pair: accountPair('completed_histories'),
         prepare: (fixture, pair) => {
-          createCompletedHistory(fixture, pair, 'history_r1');
-          createCompletedHistory(fixture, pair, 'history_r2');
+          createCompletedHistory(fixture, pair, 'vault_00000000-0000-758f-8b5e-f60cf57cb185');
+          createCompletedHistory(fixture, pair, 'vault_00000000-0000-7307-8f04-cb493e5503eb');
         },
       },
       {
@@ -1650,7 +1657,7 @@ describe('ProviderSubscriptionAccountManager', () => {
         name: 'live account',
         pair: accountPair('live'),
         prepare: (fixture, pair) => {
-          createLivePair(fixture, pair, 'live_r1');
+          createLivePair(fixture, pair, 'vault_00000000-0000-7d72-9297-fbfffc9a831d');
         },
       },
     ];
@@ -1687,37 +1694,43 @@ describe('ProviderSubscriptionAccountManager', () => {
           writeAccountJson(
             fixture.dataRoot,
             pair,
-            validAccountRecord(pair, { vaultReferenceId: 'ambiguous_r1' })
+            validAccountRecord(pair, {
+              vaultReferenceId: 'vault_00000000-0000-78c0-9ebb-5ccf1170e4c4',
+            })
           );
-          createExactCoreReference(fixture, 'ambiguous_r1');
+          createExactCoreReference(fixture, 'vault_00000000-0000-78c0-9ebb-5ccf1170e4c4');
         },
       },
       {
         name: 'current tombstone',
         pair: accountPair('current_tombstone'),
         prepare: (fixture, pair) => {
-          createLivePair(fixture, pair, 'current_tombstone_r1');
-          fixture.backend().revoke({ referenceId: 'current_tombstone_r1' });
+          createLivePair(fixture, pair, 'vault_00000000-0000-7884-8d99-170b285a4d4a');
+          fixture.backend().revoke({ referenceId: 'vault_00000000-0000-7884-8d99-170b285a4d4a' });
         },
       },
       {
         name: 'invalid completed history',
         pair: accountPair('invalid_history'),
         prepare: (fixture, pair) => {
-          createCompletedHistory(fixture, pair, 'invalid_history_r1');
-          mutateCoreReference(fixture, 'invalid_history_r1', "status = 'active'");
+          createCompletedHistory(fixture, pair, 'vault_00000000-0000-7732-8819-318a6ca800a3');
+          mutateCoreReference(
+            fixture,
+            'vault_00000000-0000-7732-8819-318a6ca800a3',
+            "status = 'active'"
+          );
         },
       },
       {
         name: 'extra live reference',
         pair: accountPair('extra_live'),
         prepare: (fixture, pair) => {
-          createLivePair(fixture, pair, 'extra_live_r1');
-          createExactCoreReference(fixture, 'extra_live_r2');
+          createLivePair(fixture, pair, 'vault_00000000-0000-7148-94cf-173991b1ac7e');
+          createExactCoreReference(fixture, 'vault_00000000-0000-7671-80a7-055a099db178');
           fixture.backend().store({
             material: JSON.stringify(oauthCredential('extra-live-r2')),
             metadata: { ownerScope: 'server', providerSubscriptionAccount: pair },
-            referenceId: 'extra_live_r2',
+            referenceId: 'vault_00000000-0000-7671-80a7-055a099db178',
           });
         },
       },
@@ -1725,7 +1738,7 @@ describe('ProviderSubscriptionAccountManager', () => {
         name: 'live orphan',
         pair: accountPair('orphan'),
         prepare: (fixture, pair) => {
-          createLivePair(fixture, pair, 'orphan_r1');
+          createLivePair(fixture, pair, 'vault_00000000-0000-7437-9883-74fba0368dbd');
           rmSync(accountDirectory(fixture.dataRoot, pair), { force: true, recursive: true });
         },
       },
@@ -1781,12 +1794,20 @@ describe('ProviderSubscriptionAccountManager', () => {
       {
         name: 'wrong workspace scope identity',
         mutate: (fixture, referenceId) =>
-          mutateCoreReference(fixture, referenceId, "workspace_id = 'ws_wrong'"),
+          mutateCoreReference(
+            fixture,
+            referenceId,
+            "workspace_id = 'ws_00000000-0000-769e-b6a6-c9fdf1f7d7d9'"
+          ),
       },
       {
         name: 'wrong user scope identity',
         mutate: (fixture, referenceId) =>
-          mutateCoreReference(fixture, referenceId, "user_id = 'user_wrong'"),
+          mutateCoreReference(
+            fixture,
+            referenceId,
+            "user_id = 'usr_00000000-0000-7a95-af2d-863b23e018b3'"
+          ),
       },
       {
         name: 'wrong display label',
@@ -1819,7 +1840,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     )('rejects $authority Core authority: $name', async (violation) => {
       const fixture = createFixture();
       const pair = accountPair(`${violation.authority}_core_${violation.index}`);
-      const referenceId = `${violation.authority}_core_r${violation.index}`;
+      const referenceId = testEntityId('vault', `${violation.authority}_core_r${violation.index}`);
       if (violation.authority === 'live') {
         createLivePair(fixture, pair, referenceId);
       } else {
@@ -1850,9 +1871,11 @@ describe('ProviderSubscriptionAccountManager', () => {
       writeAccountJson(
         allOrNothing.dataRoot,
         badPair,
-        validAccountRecord(badPair, { vaultReferenceId: 'bad_r1' })
+        validAccountRecord(badPair, {
+          vaultReferenceId: 'vault_00000000-0000-7186-9211-c4d61fd1701b',
+        })
       );
-      createExactCoreReference(allOrNothing, 'bad_r1');
+      createExactCoreReference(allOrNothing, 'vault_00000000-0000-7186-9211-c4d61fd1701b');
       const allOrNothingBefore = authoritySnapshot(allOrNothing);
 
       await expectAccountError(
@@ -1866,38 +1889,36 @@ describe('ProviderSubscriptionAccountManager', () => {
   it('commits an initial OAuth credential in binding-Core-Vault order and rejects reused Core rows', async () => {
     const fixture = createFixture();
     const pair = accountPair('initial_store');
-    fixture.queueReferenceIds('initial_r1');
+    fixture.queueReferenceIds('vault_00000000-0000-74ca-9472-d99dcaf4497c');
     await fixture.manager.createAccount({ ...pair, displayName: 'Initial Store' });
     const backend = fixture.backend();
     const realStore = backend.store.bind(backend);
     const observedOrder: string[] = [];
 
-    expect(getVaultReference(fixture.coreDb, 'initial_r1')).toBeNull();
+    expect(
+      getVaultReference(fixture.coreDb, 'vault_00000000-0000-74ca-9472-d99dcaf4497c')
+    ).toBeNull();
     fixture.coreDb.sqlite.function('observe_initial_binding', () => {
       expect(readAccountJson(fixture.dataRoot, pair)).toMatchObject({
-        vaultReferenceId: 'initial_r1',
+        vaultReferenceId: 'vault_00000000-0000-74ca-9472-d99dcaf4497c',
       });
       observedOrder.push('binding-before-core');
       return 1;
     });
-    fixture.coreDb.sqlite.exec(`CREATE TEMP TRIGGER observe_initial_core_insert
-      BEFORE INSERT ON vault_references
-      FOR EACH ROW
-      WHEN NEW.reference_id = 'initial_r1'
-      BEGIN
-        SELECT observe_initial_binding();
-      END`);
+    fixture.coreDb.sqlite.exec(
+      "CREATE TEMP TRIGGER observe_initial_core_insert\n      BEFORE INSERT ON vault_references\n      FOR EACH ROW\n      WHEN NEW.reference_id = 'vault_00000000-0000-74ca-9472-d99dcaf4497c'\n      BEGIN\n        SELECT observe_initial_binding();\n      END"
+    );
 
     vi.spyOn(backend, 'store').mockImplementation((input) => {
       const coreAtStore = getVaultReference(fixture.coreDb, input.referenceId);
 
       expect(coreAtStore).toMatchObject({
         backendKind: 'encrypted-file',
-        backendLocator: 'encrypted-file://server/vault/initial_r1',
+        backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-74ca-9472-d99dcaf4497c',
         currentVersion: 1,
         displayName: 'Provider subscription credential',
         ownerScope: 'server',
-        referenceId: 'initial_r1',
+        referenceId: 'vault_00000000-0000-74ca-9472-d99dcaf4497c',
         secretKind: 'provider-subscription-oauth',
         status: 'active',
         userId: null,
@@ -1918,15 +1939,17 @@ describe('ProviderSubscriptionAccountManager', () => {
     expect(observedOrder).toEqual(['binding-before-core', 'vault-after-core']);
     expect(readAccountJson(fixture.dataRoot, pair)).toMatchObject({
       status: 'logged_in',
-      vaultReferenceId: 'initial_r1',
+      vaultReferenceId: 'vault_00000000-0000-74ca-9472-d99dcaf4497c',
     });
-    expect(getVaultReference(fixture.coreDb, 'initial_r1')).toMatchObject({
+    expect(
+      getVaultReference(fixture.coreDb, 'vault_00000000-0000-74ca-9472-d99dcaf4497c')
+    ).toMatchObject({
       backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://server/vault/initial_r1',
+      backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-74ca-9472-d99dcaf4497c',
       currentVersion: 1,
       displayName: 'Provider subscription credential',
       ownerScope: 'server',
-      referenceId: 'initial_r1',
+      referenceId: 'vault_00000000-0000-74ca-9472-d99dcaf4497c',
       secretKind: 'provider-subscription-oauth',
       status: 'active',
       userId: null,
@@ -1938,21 +1961,24 @@ describe('ProviderSubscriptionAccountManager', () => {
         currentVersion: 1,
         ownerScope: 'server',
         providerSubscriptionAccount: pair,
-        referenceId: 'initial_r1',
+        referenceId: 'vault_00000000-0000-74ca-9472-d99dcaf4497c',
         revoked: false,
         versionCount: 1,
       }),
     ]);
     expect(JSON.stringify(await fixture.manager.listAccounts('openai-codex'))).not.toContain(
-      'initial_r1'
+      'vault_00000000-0000-74ca-9472-d99dcaf4497c'
     );
 
     const reusedFixture = createFixture();
     const reusedPair = accountPair('reused_core');
-    reusedFixture.queueReferenceIds('reused_r1');
+    reusedFixture.queueReferenceIds('vault_00000000-0000-7bc1-9737-fc66c69d2cfc');
     await reusedFixture.manager.createAccount(reusedPair);
-    createExactCoreReference(reusedFixture, 'reused_r1');
-    const reusedCoreBefore = getVaultReference(reusedFixture.coreDb, 'reused_r1');
+    createExactCoreReference(reusedFixture, 'vault_00000000-0000-7bc1-9737-fc66c69d2cfc');
+    const reusedCoreBefore = getVaultReference(
+      reusedFixture.coreDb,
+      'vault_00000000-0000-7bc1-9737-fc66c69d2cfc'
+    );
     const reusedBackend = reusedFixture.backend();
     const reusedStore = vi.spyOn(reusedBackend, 'store');
     const reusedHandle = await reusedFixture.manager.getPairHandle(reusedPair);
@@ -1966,15 +1992,17 @@ describe('ProviderSubscriptionAccountManager', () => {
       PERSISTENCE_ERROR
     );
     expect(readAccountJson(reusedFixture.dataRoot, reusedPair)).toMatchObject({
-      vaultReferenceId: 'reused_r1',
+      vaultReferenceId: 'vault_00000000-0000-7bc1-9737-fc66c69d2cfc',
     });
-    expect(getVaultReference(reusedFixture.coreDb, 'reused_r1')).toEqual(reusedCoreBefore);
+    expect(
+      getVaultReference(reusedFixture.coreDb, 'vault_00000000-0000-7bc1-9737-fc66c69d2cfc')
+    ).toEqual(reusedCoreBefore);
     expect(reusedStore).not.toHaveBeenCalled();
     expect(reusedBackend.listReferences()).toEqual([]);
 
     const failedStoreFixture = createFixture();
     const failedStorePair = accountPair('failed_initial_store');
-    failedStoreFixture.queueReferenceIds('failed_initial_r1');
+    failedStoreFixture.queueReferenceIds('vault_00000000-0000-796c-aace-24efd1eba4ae');
     await failedStoreFixture.manager.createAccount(failedStorePair);
     const failedStoreHandle = await failedStoreFixture.manager.getPairHandle(failedStorePair);
     const failedStoreBackend = failedStoreFixture.backend();
@@ -2001,9 +2029,11 @@ describe('ProviderSubscriptionAccountManager', () => {
     );
     expect(readAccountJson(failedStoreFixture.dataRoot, failedStorePair)).toMatchObject({
       status: 'logged_out',
-      vaultReferenceId: 'failed_initial_r1',
+      vaultReferenceId: 'vault_00000000-0000-796c-aace-24efd1eba4ae',
     });
-    expect(getVaultReference(failedStoreFixture.coreDb, 'failed_initial_r1')).toMatchObject({
+    expect(
+      getVaultReference(failedStoreFixture.coreDb, 'vault_00000000-0000-796c-aace-24efd1eba4ae')
+    ).toMatchObject({
       currentVersion: 1,
       status: 'active',
     });
@@ -2012,7 +2042,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     const failedStoreManager = failedStoreFixture.createManager();
     const failedStoreFreshHandle = await failedStoreManager.getPairHandle(failedStorePair);
     const ambiguousBefore = authoritySnapshot(failedStoreFixture);
-    failedStoreFixture.queueReferenceIds('failed_initial_r1');
+    failedStoreFixture.queueReferenceIds('vault_00000000-0000-796c-aace-24efd1eba4ae');
 
     for (const operation of [
       () =>
@@ -2030,7 +2060,7 @@ describe('ProviderSubscriptionAccountManager', () => {
 
     const committedStoreFixture = createFixture();
     const committedStorePair = accountPair('committed_initial_store');
-    committedStoreFixture.queueReferenceIds('committed_initial_r1');
+    committedStoreFixture.queueReferenceIds('vault_00000000-0000-7d5b-9359-5d1ad65e5b8a');
     await committedStoreFixture.manager.createAccount(committedStorePair);
     const committedStoreHandle =
       await committedStoreFixture.manager.getPairHandle(committedStorePair);
@@ -2051,12 +2081,12 @@ describe('ProviderSubscriptionAccountManager', () => {
     );
     expect(readAccountJson(committedStoreFixture.dataRoot, committedStorePair)).toMatchObject({
       status: 'logged_out',
-      vaultReferenceId: 'committed_initial_r1',
+      vaultReferenceId: 'vault_00000000-0000-7d5b-9359-5d1ad65e5b8a',
     });
     expect(committedStoreBackend.listReferences()).toEqual([
       expect.objectContaining({
         currentVersion: 1,
-        referenceId: 'committed_initial_r1',
+        referenceId: 'vault_00000000-0000-7d5b-9359-5d1ad65e5b8a',
         revoked: false,
       }),
     ]);
@@ -2066,7 +2096,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     const reconciled = await committedStoreManager.reconcileAccount(committedStorePair);
 
     expect(reconciled).toMatchObject({ status: 'logged_in' });
-    expect(JSON.stringify(reconciled)).not.toContain('committed_initial_r1');
+    expect(JSON.stringify(reconciled)).not.toContain('vault_00000000-0000-7d5b-9359-5d1ad65e5b8a');
     expect(committedStoreSpy).toHaveBeenCalledTimes(1);
     await expect(committedFreshHandle.credentials.read('openai-codex')).resolves.toEqual(
       committedCredential
@@ -2074,7 +2104,7 @@ describe('ProviderSubscriptionAccountManager', () => {
 
     const projectionFixture = createFixture();
     const projectionPair = accountPair('post_store_projection');
-    projectionFixture.queueReferenceIds('post_store_projection_r1');
+    projectionFixture.queueReferenceIds('vault_00000000-0000-70e6-9cea-826b52206198');
     await projectionFixture.manager.createAccount(projectionPair);
     const projectionHandle = await projectionFixture.manager.getPairHandle(projectionPair);
     const projectionBackend = projectionFixture.backend();
@@ -2106,10 +2136,10 @@ describe('ProviderSubscriptionAccountManager', () => {
   it('repairs lower positive Core versions stepwise and fails closed on ahead or mismatched reconciliation', async () => {
     const repairFixture = createFixture();
     const repairPair = accountPair('repair_one');
-    await createStoredPair(repairFixture, repairPair, 'repair_r1');
+    await createStoredPair(repairFixture, repairPair, 'vault_00000000-0000-7e18-868c-b624f7ce0203');
     repairFixture.backend().rotate({
       material: JSON.stringify(oauthCredential('repair-v2')),
-      referenceId: 'repair_r1',
+      referenceId: 'vault_00000000-0000-7e18-868c-b624f7ce0203',
     });
     writeAccountJson(
       repairFixture.dataRoot,
@@ -2117,7 +2147,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       validAccountRecord(repairPair, {
         message: 'Safe stale projection.',
         status: 'unavailable',
-        vaultReferenceId: 'repair_r1',
+        vaultReferenceId: 'vault_00000000-0000-7e18-868c-b624f7ce0203',
       })
     );
 
@@ -2130,7 +2160,9 @@ describe('ProviderSubscriptionAccountManager', () => {
       subscriptionProviderId: 'openai-codex',
       updatedAt: DEFAULT_TIME,
     });
-    expect(getVaultReference(repairFixture.coreDb, 'repair_r1')).toMatchObject({
+    expect(
+      getVaultReference(repairFixture.coreDb, 'vault_00000000-0000-7e18-868c-b624f7ce0203')
+    ).toMatchObject({
       currentVersion: 2,
       status: 'active',
     });
@@ -2141,9 +2173,9 @@ describe('ProviderSubscriptionAccountManager', () => {
       status: 'logged_in',
       subscriptionProviderId: 'openai-codex',
       updatedAt: DEFAULT_TIME,
-      vaultReferenceId: 'repair_r1',
+      vaultReferenceId: 'vault_00000000-0000-7e18-868c-b624f7ce0203',
     });
-    expect(JSON.stringify(repaired)).not.toContain('repair_r1');
+    expect(JSON.stringify(repaired)).not.toContain('vault_00000000-0000-7e18-868c-b624f7ce0203');
 
     const equalBefore = authoritySnapshot(repairFixture);
     const equal = await repairFixture.manager.reconcileAll();
@@ -2153,14 +2185,18 @@ describe('ProviderSubscriptionAccountManager', () => {
 
     const catchupFixture = createFixture();
     const catchupPair = accountPair('repair_two_steps');
-    await createStoredPair(catchupFixture, catchupPair, 'repair_two_steps_r1');
+    await createStoredPair(
+      catchupFixture,
+      catchupPair,
+      'vault_00000000-0000-7625-902f-23c3e8ad21a0'
+    );
     catchupFixture.backend().rotate({
       material: JSON.stringify(oauthCredential('repair-two-steps-v2')),
-      referenceId: 'repair_two_steps_r1',
+      referenceId: 'vault_00000000-0000-7625-902f-23c3e8ad21a0',
     });
     catchupFixture.backend().rotate({
       material: JSON.stringify(oauthCredential('repair-two-steps-v3')),
-      referenceId: 'repair_two_steps_r1',
+      referenceId: 'vault_00000000-0000-7625-902f-23c3e8ad21a0',
     });
     writeAccountJson(
       catchupFixture.dataRoot,
@@ -2168,30 +2204,26 @@ describe('ProviderSubscriptionAccountManager', () => {
       validAccountRecord(catchupPair, {
         message: 'Safe stale projection.',
         status: 'unavailable',
-        vaultReferenceId: 'repair_two_steps_r1',
+        vaultReferenceId: 'vault_00000000-0000-7625-902f-23c3e8ad21a0',
       })
     );
-    catchupFixture.coreDb.sqlite.exec(`CREATE TEMP TRIGGER reject_direct_version_jump
-      BEFORE UPDATE OF current_version ON vault_references
-      FOR EACH ROW
-      WHEN OLD.reference_id = 'repair_two_steps_r1'
-        AND OLD.current_version = 1
-        AND NEW.current_version = 3
-      BEGIN
-        SELECT RAISE(FAIL, 'direct version jump rejected');
-      END`);
+    catchupFixture.coreDb.sqlite.exec(
+      "CREATE TEMP TRIGGER reject_direct_version_jump\n      BEFORE UPDATE OF current_version ON vault_references\n      FOR EACH ROW\n      WHEN OLD.reference_id = 'vault_00000000-0000-7625-902f-23c3e8ad21a0'\n        AND OLD.current_version = 1\n        AND NEW.current_version = 3\n      BEGIN\n        SELECT RAISE(FAIL, 'direct version jump rejected');\n      END"
+    );
 
     const caughtUp = await catchupFixture.manager.reconcileAccount(catchupPair);
 
     expect(caughtUp).toMatchObject({ status: 'logged_in' });
-    expect(getVaultReference(catchupFixture.coreDb, 'repair_two_steps_r1')).toMatchObject({
+    expect(
+      getVaultReference(catchupFixture.coreDb, 'vault_00000000-0000-7625-902f-23c3e8ad21a0')
+    ).toMatchObject({
       currentVersion: 3,
       status: 'active',
     });
     expect(catchupFixture.backend().listReferences()).toEqual([
       expect.objectContaining({
         currentVersion: 3,
-        referenceId: 'repair_two_steps_r1',
+        referenceId: 'vault_00000000-0000-7625-902f-23c3e8ad21a0',
         versionCount: 3,
       }),
     ]);
@@ -2201,18 +2233,12 @@ describe('ProviderSubscriptionAccountManager', () => {
     const projectionHandle = await createStoredPair(
       projectionFixture,
       projectionPair,
-      'post_rotate_projection_r1'
+      'vault_00000000-0000-7b9d-a719-036501daa980'
     );
     const rotatedProjectionCredential = oauthCredential('post-rotate-projection-v2');
-    projectionFixture.coreDb.sqlite.exec(`CREATE TEMP TRIGGER fail_post_rotate_core_projection
-      BEFORE UPDATE OF current_version ON vault_references
-      FOR EACH ROW
-      WHEN OLD.reference_id = 'post_rotate_projection_r1'
-        AND OLD.current_version = 1
-        AND NEW.current_version = 2
-      BEGIN
-        SELECT RAISE(FAIL, 'injected post-rotate Core projection failure');
-      END`);
+    projectionFixture.coreDb.sqlite.exec(
+      "CREATE TEMP TRIGGER fail_post_rotate_core_projection\n      BEFORE UPDATE OF current_version ON vault_references\n      FOR EACH ROW\n      WHEN OLD.reference_id = 'vault_00000000-0000-7b9d-a719-036501daa980'\n        AND OLD.current_version = 1\n        AND NEW.current_version = 2\n      BEGIN\n        SELECT RAISE(FAIL, 'injected post-rotate Core projection failure');\n      END"
+    );
 
     await expectAccountError(
       () =>
@@ -2222,14 +2248,16 @@ describe('ProviderSubscriptionAccountManager', () => {
         ),
       PROJECTION_ERROR
     );
-    expect(getVaultReference(projectionFixture.coreDb, 'post_rotate_projection_r1')).toMatchObject({
+    expect(
+      getVaultReference(projectionFixture.coreDb, 'vault_00000000-0000-7b9d-a719-036501daa980')
+    ).toMatchObject({
       currentVersion: 1,
       status: 'active',
     });
     expect(projectionFixture.backend().listReferences()).toEqual([
       expect.objectContaining({
         currentVersion: 2,
-        referenceId: 'post_rotate_projection_r1',
+        referenceId: 'vault_00000000-0000-7b9d-a719-036501daa980',
         revoked: false,
       }),
     ]);
@@ -2237,7 +2265,9 @@ describe('ProviderSubscriptionAccountManager', () => {
     expect(await projectionFixture.manager.reconcileAccount(projectionPair)).toMatchObject({
       status: 'logged_in',
     });
-    expect(getVaultReference(projectionFixture.coreDb, 'post_rotate_projection_r1')).toMatchObject({
+    expect(
+      getVaultReference(projectionFixture.coreDb, 'vault_00000000-0000-7b9d-a719-036501daa980')
+    ).toMatchObject({
       currentVersion: 2,
       status: 'active',
     });
@@ -2270,7 +2300,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     for (const [index, invalidCase] of invalidCases.entries()) {
       const fixture = createFixture();
       const pair = accountPair(`reconcile_invalid_${index}`);
-      const referenceId = `reconcile_invalid_r${index}`;
+      const referenceId = testEntityId('vault', `reconcile_invalid_r${index}`);
       await createStoredPair(fixture, pair, referenceId);
       invalidCase.prepare(fixture, pair, referenceId);
       const before = authoritySnapshot(fixture);
@@ -2286,10 +2316,14 @@ describe('ProviderSubscriptionAccountManager', () => {
     const originalHandle = await createStoredPair(
       credentialFixture,
       pair,
-      'delete_r1',
+      'vault_00000000-0000-714b-90e0-ad74e40d0547',
       oauthCredential('delete-r1')
     );
-    createReferenceCascade(credentialFixture, 'delete_r1', 'credential_delete');
+    createReferenceCascade(
+      credentialFixture,
+      'vault_00000000-0000-714b-90e0-ad74e40d0547',
+      'credential_delete'
+    );
     const backend = credentialFixture.backend();
     const realRevoke = backend.revoke.bind(backend);
     const revokeCalls: string[] = [];
@@ -2307,7 +2341,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     credentialFixture.coreDb.sqlite.exec(`CREATE TEMP TRIGGER fail_credential_delete_cascade
       BEFORE UPDATE OF status ON vault_grants
       FOR EACH ROW
-      WHEN OLD.grant_id = 'grant_credential_delete'
+      WHEN OLD.grant_id = '${testEntityId('grant', 'grant_credential_delete')}'
         AND OLD.status = 'active'
         AND NEW.status = 'revoked'
       BEGIN
@@ -2318,11 +2352,16 @@ describe('ProviderSubscriptionAccountManager', () => {
       () => originalHandle.credentials.delete('openai-codex'),
       PERSISTENCE_ERROR
     );
-    expect(revokeCalls).toEqual(['delete_r1']);
+    expect(revokeCalls).toEqual(['vault_00000000-0000-714b-90e0-ad74e40d0547']);
     expect(backend.listReferences()).toEqual([
-      expect.objectContaining({ referenceId: 'delete_r1', revoked: true }),
+      expect.objectContaining({
+        referenceId: 'vault_00000000-0000-714b-90e0-ad74e40d0547',
+        revoked: true,
+      }),
     ]);
-    expect(getVaultReference(credentialFixture.coreDb, 'delete_r1')).toMatchObject({
+    expect(
+      getVaultReference(credentialFixture.coreDb, 'vault_00000000-0000-714b-90e0-ad74e40d0547')
+    ).toMatchObject({
       currentVersion: 1,
       status: 'active',
     });
@@ -2332,14 +2371,16 @@ describe('ProviderSubscriptionAccountManager', () => {
       receipt: 'active',
     });
     expect(readAccountJson(credentialFixture.dataRoot, pair)).toMatchObject({
-      vaultReferenceId: 'delete_r1',
+      vaultReferenceId: 'vault_00000000-0000-714b-90e0-ad74e40d0547',
     });
 
     credentialFixture.coreDb.sqlite.exec('DROP TRIGGER fail_credential_delete_cascade');
     await originalHandle.credentials.delete('openai-codex');
 
-    expect(revokeCalls).toEqual(['delete_r1']);
-    expect(getVaultReference(credentialFixture.coreDb, 'delete_r1')).toMatchObject({
+    expect(revokeCalls).toEqual(['vault_00000000-0000-714b-90e0-ad74e40d0547']);
+    expect(
+      getVaultReference(credentialFixture.coreDb, 'vault_00000000-0000-714b-90e0-ad74e40d0547')
+    ).toMatchObject({
       currentVersion: 1,
       status: 'revoked',
     });
@@ -2359,32 +2400,47 @@ describe('ProviderSubscriptionAccountManager', () => {
 
     await credentialFixture.manager.deleteAccount(pair);
     expect(existsSync(accountDirectory(credentialFixture.dataRoot, pair))).toBe(false);
-    const historicalCore = getVaultReference(credentialFixture.coreDb, 'delete_r1');
+    const historicalCore = getVaultReference(
+      credentialFixture.coreDb,
+      'vault_00000000-0000-714b-90e0-ad74e40d0547'
+    );
     const historicalVault = backend
       .listReferences()
-      .find((entry) => entry.referenceId === 'delete_r1');
+      .find((entry) => entry.referenceId === 'vault_00000000-0000-714b-90e0-ad74e40d0547');
 
-    credentialFixture.queueReferenceIds('delete_r2');
+    credentialFixture.queueReferenceIds('vault_00000000-0000-71d6-9dc8-b788d619dcc5');
     await credentialFixture.manager.createAccount(pair);
     const freshHandle = await credentialFixture.manager.getPairHandle(pair);
     await freshHandle.credentials.modify('openai-codex', async () => oauthCredential('delete-r2'));
 
     expect(readAccountJson(credentialFixture.dataRoot, pair)).toMatchObject({
       status: 'logged_in',
-      vaultReferenceId: 'delete_r2',
+      vaultReferenceId: 'vault_00000000-0000-71d6-9dc8-b788d619dcc5',
     });
-    expect(getVaultReference(credentialFixture.coreDb, 'delete_r1')).toEqual(historicalCore);
-    expect(backend.listReferences().find((entry) => entry.referenceId === 'delete_r1')).toEqual(
-      historicalVault
-    );
-    expect(getVaultReference(credentialFixture.coreDb, 'delete_r2')).toMatchObject({
+    expect(
+      getVaultReference(credentialFixture.coreDb, 'vault_00000000-0000-714b-90e0-ad74e40d0547')
+    ).toEqual(historicalCore);
+    expect(
+      backend
+        .listReferences()
+        .find((entry) => entry.referenceId === 'vault_00000000-0000-714b-90e0-ad74e40d0547')
+    ).toEqual(historicalVault);
+    expect(
+      getVaultReference(credentialFixture.coreDb, 'vault_00000000-0000-71d6-9dc8-b788d619dcc5')
+    ).toMatchObject({
       currentVersion: 1,
       status: 'active',
     });
     expect(backend.listReferences()).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ referenceId: 'delete_r1', revoked: true }),
-        expect.objectContaining({ referenceId: 'delete_r2', revoked: false }),
+        expect.objectContaining({
+          referenceId: 'vault_00000000-0000-714b-90e0-ad74e40d0547',
+          revoked: true,
+        }),
+        expect.objectContaining({
+          referenceId: 'vault_00000000-0000-71d6-9dc8-b788d619dcc5',
+          revoked: false,
+        }),
       ])
     );
 
@@ -2393,12 +2449,18 @@ describe('ProviderSubscriptionAccountManager', () => {
     const revokedCredentialHandle = await createStoredPair(
       revokedCredentialFixture,
       revokedCredentialPair,
-      'credential_revoked_r1'
+      'vault_00000000-0000-77e9-8488-0253ad6dc8ef'
     );
-    createReferenceCascade(revokedCredentialFixture, 'credential_revoked_r1', 'credential_revoked');
-    revokedCredentialFixture.backend().revoke({ referenceId: 'credential_revoked_r1' });
+    createReferenceCascade(
+      revokedCredentialFixture,
+      'vault_00000000-0000-77e9-8488-0253ad6dc8ef',
+      'credential_revoked'
+    );
+    revokedCredentialFixture
+      .backend()
+      .revoke({ referenceId: 'vault_00000000-0000-77e9-8488-0253ad6dc8ef' });
     revokeVaultReference(revokedCredentialFixture.coreDb, {
-      referenceId: 'credential_revoked_r1',
+      referenceId: 'vault_00000000-0000-77e9-8488-0253ad6dc8ef',
     });
     const credentialRetryWrites = [
       vi.spyOn(revokedCredentialFixture.backend(), 'store'),
@@ -2427,10 +2489,22 @@ describe('ProviderSubscriptionAccountManager', () => {
 
     const accountDeleteFixture = createFixture();
     const accountDeletePair = accountPair('account_delete_tombstone');
-    await createStoredPair(accountDeleteFixture, accountDeletePair, 'account_delete_r1');
-    createReferenceCascade(accountDeleteFixture, 'account_delete_r1', 'account_delete');
-    accountDeleteFixture.backend().revoke({ referenceId: 'account_delete_r1' });
-    revokeVaultReference(accountDeleteFixture.coreDb, { referenceId: 'account_delete_r1' });
+    await createStoredPair(
+      accountDeleteFixture,
+      accountDeletePair,
+      'vault_00000000-0000-7896-a380-266fe3139fc2'
+    );
+    createReferenceCascade(
+      accountDeleteFixture,
+      'vault_00000000-0000-7896-a380-266fe3139fc2',
+      'account_delete'
+    );
+    accountDeleteFixture
+      .backend()
+      .revoke({ referenceId: 'vault_00000000-0000-7896-a380-266fe3139fc2' });
+    revokeVaultReference(accountDeleteFixture.coreDb, {
+      referenceId: 'vault_00000000-0000-7896-a380-266fe3139fc2',
+    });
     const accountRetryWrites = [
       vi.spyOn(accountDeleteFixture.backend(), 'store'),
       vi.spyOn(accountDeleteFixture.backend(), 'rotate'),
@@ -2445,7 +2519,9 @@ describe('ProviderSubscriptionAccountManager', () => {
     expect(existsSync(accountDirectory(accountDeleteFixture.dataRoot, accountDeletePair))).toBe(
       false
     );
-    expect(getVaultReference(accountDeleteFixture.coreDb, 'account_delete_r1')).toMatchObject({
+    expect(
+      getVaultReference(accountDeleteFixture.coreDb, 'vault_00000000-0000-7896-a380-266fe3139fc2')
+    ).toMatchObject({
       currentVersion: 1,
       status: 'revoked',
     });
@@ -2455,7 +2531,10 @@ describe('ProviderSubscriptionAccountManager', () => {
       receipt: 'stale-session',
     });
     expect(accountDeleteFixture.backend().listReferences()).toEqual([
-      expect.objectContaining({ referenceId: 'account_delete_r1', revoked: true }),
+      expect.objectContaining({
+        referenceId: 'vault_00000000-0000-7896-a380-266fe3139fc2',
+        revoked: true,
+      }),
     ]);
 
     const laggedCredentialFixture = createFixture();
@@ -2463,26 +2542,20 @@ describe('ProviderSubscriptionAccountManager', () => {
     const laggedCredentialHandle = await createStoredPair(
       laggedCredentialFixture,
       laggedCredentialPair,
-      'lagged_credential_r1'
+      'vault_00000000-0000-725b-9c05-795eea4c7e9f'
     );
     const laggedCredentialBackend = laggedCredentialFixture.backend();
     laggedCredentialBackend.rotate({
       material: JSON.stringify(oauthCredential('lagged-credential-v2')),
-      referenceId: 'lagged_credential_r1',
+      referenceId: 'vault_00000000-0000-725b-9c05-795eea4c7e9f',
     });
     laggedCredentialBackend.rotate({
       material: JSON.stringify(oauthCredential('lagged-credential-v3')),
-      referenceId: 'lagged_credential_r1',
+      referenceId: 'vault_00000000-0000-725b-9c05-795eea4c7e9f',
     });
-    laggedCredentialFixture.coreDb.sqlite.exec(`CREATE TEMP TRIGGER reject_lagged_direct_jump
-      BEFORE UPDATE OF current_version ON vault_references
-      FOR EACH ROW
-      WHEN OLD.reference_id = 'lagged_credential_r1'
-        AND OLD.current_version = 1
-        AND NEW.current_version = 3
-      BEGIN
-        SELECT RAISE(FAIL, 'direct lagged credential version jump rejected');
-      END`);
+    laggedCredentialFixture.coreDb.sqlite.exec(
+      "CREATE TEMP TRIGGER reject_lagged_direct_jump\n      BEFORE UPDATE OF current_version ON vault_references\n      FOR EACH ROW\n      WHEN OLD.reference_id = 'vault_00000000-0000-725b-9c05-795eea4c7e9f'\n        AND OLD.current_version = 1\n        AND NEW.current_version = 3\n      BEGIN\n        SELECT RAISE(FAIL, 'direct lagged credential version jump rejected');\n      END"
+    );
     const realLaggedCredentialRevoke = laggedCredentialBackend.revoke.bind(laggedCredentialBackend);
     const laggedCredentialRevoke = vi
       .spyOn(laggedCredentialBackend, 'revoke')
@@ -2500,16 +2573,19 @@ describe('ProviderSubscriptionAccountManager', () => {
       laggedCredentialFixture.coreDb.sqlite.exec('DROP TRIGGER reject_lagged_direct_jump');
     }
     expect(laggedCredentialRevoke).toHaveBeenCalledTimes(1);
-    expect(getVaultReference(laggedCredentialFixture.coreDb, 'lagged_credential_r1')).toMatchObject(
-      {
-        currentVersion: 3,
-        status: 'revoked',
-      }
-    );
+    expect(
+      getVaultReference(
+        laggedCredentialFixture.coreDb,
+        'vault_00000000-0000-725b-9c05-795eea4c7e9f'
+      )
+    ).toMatchObject({
+      currentVersion: 3,
+      status: 'revoked',
+    });
     expect(laggedCredentialBackend.listReferences()).toEqual([
       expect.objectContaining({
         currentVersion: 3,
-        referenceId: 'lagged_credential_r1',
+        referenceId: 'vault_00000000-0000-725b-9c05-795eea4c7e9f',
         revoked: true,
       }),
     ]);
@@ -2519,11 +2595,15 @@ describe('ProviderSubscriptionAccountManager', () => {
 
     const laggedAccountFixture = createFixture();
     const laggedAccountPair = accountPair('lagged_account_delete');
-    await createStoredPair(laggedAccountFixture, laggedAccountPair, 'lagged_account_r1');
+    await createStoredPair(
+      laggedAccountFixture,
+      laggedAccountPair,
+      'vault_00000000-0000-7913-a948-75d42085943e'
+    );
     const laggedAccountBackend = laggedAccountFixture.backend();
     laggedAccountBackend.rotate({
       material: JSON.stringify(oauthCredential('lagged-account-v2')),
-      referenceId: 'lagged_account_r1',
+      referenceId: 'vault_00000000-0000-7913-a948-75d42085943e',
     });
     const realLaggedAccountRevoke = laggedAccountBackend.revoke.bind(laggedAccountBackend);
     const laggedAccountRevoke = vi
@@ -2541,14 +2621,16 @@ describe('ProviderSubscriptionAccountManager', () => {
     expect(existsSync(accountDirectory(laggedAccountFixture.dataRoot, laggedAccountPair))).toBe(
       false
     );
-    expect(getVaultReference(laggedAccountFixture.coreDb, 'lagged_account_r1')).toMatchObject({
+    expect(
+      getVaultReference(laggedAccountFixture.coreDb, 'vault_00000000-0000-7913-a948-75d42085943e')
+    ).toMatchObject({
       currentVersion: 2,
       status: 'revoked',
     });
     expect(laggedAccountBackend.listReferences()).toEqual([
       expect.objectContaining({
         currentVersion: 2,
-        referenceId: 'lagged_account_r1',
+        referenceId: 'vault_00000000-0000-7913-a948-75d42085943e',
         revoked: true,
       }),
     ]);
@@ -2558,19 +2640,15 @@ describe('ProviderSubscriptionAccountManager', () => {
     const failedCatchupHandle = await createStoredPair(
       failedCatchupFixture,
       failedCatchupPair,
-      'failed_delete_catchup_r1'
+      'vault_00000000-0000-7a1d-9d63-ff006a833ab7'
     );
     failedCatchupFixture.backend().rotate({
       material: JSON.stringify(oauthCredential('failed-delete-catchup-v2')),
-      referenceId: 'failed_delete_catchup_r1',
+      referenceId: 'vault_00000000-0000-7a1d-9d63-ff006a833ab7',
     });
-    failedCatchupFixture.coreDb.sqlite.exec(`CREATE TEMP TRIGGER fail_delete_core_catchup
-      BEFORE UPDATE OF current_version ON vault_references
-      FOR EACH ROW
-      WHEN OLD.reference_id = 'failed_delete_catchup_r1'
-      BEGIN
-        SELECT RAISE(FAIL, 'injected delete catch-up failure');
-      END`);
+    failedCatchupFixture.coreDb.sqlite.exec(
+      "CREATE TEMP TRIGGER fail_delete_core_catchup\n      BEFORE UPDATE OF current_version ON vault_references\n      FOR EACH ROW\n      WHEN OLD.reference_id = 'vault_00000000-0000-7a1d-9d63-ff006a833ab7'\n      BEGIN\n        SELECT RAISE(FAIL, 'injected delete catch-up failure');\n      END"
+    );
     const failedCatchupRevoke = vi.spyOn(failedCatchupFixture.backend(), 'revoke');
     const failedCatchupBefore = authoritySnapshot(failedCatchupFixture);
 
@@ -2650,7 +2728,7 @@ describe('ProviderSubscriptionAccountManager', () => {
 
     const fixture = createFixture();
     const pair = accountPair('credential_contract');
-    fixture.queueReferenceIds('credential_contract_r1');
+    fixture.queueReferenceIds('vault_00000000-0000-7e4b-a9df-97cdf108637a');
     await fixture.manager.createAccount(pair);
     const handle = await fixture.manager.getPairHandle(pair);
     const backend = fixture.backend();
@@ -2701,14 +2779,16 @@ describe('ProviderSubscriptionAccountManager', () => {
         return replacementCredential;
       })
     ).resolves.toEqual(replacementCredential);
-    expect(getVaultReference(fixture.coreDb, 'credential_contract_r1')).toMatchObject({
+    expect(
+      getVaultReference(fixture.coreDb, 'vault_00000000-0000-7e4b-a9df-97cdf108637a')
+    ).toMatchObject({
       currentVersion: 2,
       status: 'active',
     });
     expect(backend.listReferences()).toEqual([
       expect.objectContaining({
         currentVersion: 2,
-        referenceId: 'credential_contract_r1',
+        referenceId: 'vault_00000000-0000-7e4b-a9df-97cdf108637a',
         revoked: false,
       }),
     ]);
@@ -2740,7 +2820,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     const siblingTargetHandle = await createStoredPair(
       siblingFixture,
       siblingTargetPair,
-      'sibling_target_r1'
+      'vault_00000000-0000-7fe9-881b-5d9cd6b1e92c'
     );
     const corruptSiblingPair = accountPair('corrupt_sibling');
     await siblingFixture.manager.createAccount(corruptSiblingPair);
@@ -2762,14 +2842,14 @@ describe('ProviderSubscriptionAccountManager', () => {
     const inventoryHandle = await createStoredPair(
       inventoryFixture,
       inventoryPair,
-      'inventory_owner_r1'
+      'vault_00000000-0000-78d9-8a93-45e55f0d69c2'
     );
     const orphanPair = accountPair('inventory_orphan');
-    createExactCoreReference(inventoryFixture, 'inventory_orphan_r1');
+    createExactCoreReference(inventoryFixture, 'vault_00000000-0000-7d62-bbbc-80393536f030');
     inventoryFixture.backend().store({
       material: JSON.stringify(oauthCredential('inventory-orphan')),
       metadata: { ownerScope: 'server', providerSubscriptionAccount: orphanPair },
-      referenceId: 'inventory_orphan_r1',
+      referenceId: 'vault_00000000-0000-7d62-bbbc-80393536f030',
     });
     const inventoryResolve = vi.spyOn(inventoryFixture.backend(), 'resolve');
     const inventoryBefore = authoritySnapshot(inventoryFixture);
@@ -2795,7 +2875,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       createLiveMaterialPair(
         malformedFixture,
         malformedPair,
-        `malformed_material_r${index}`,
+        testEntityId('vault', `malformed_material_r${index}`),
         malformedCase.material
       );
       const malformedHandle = await malformedFixture.manager.getPairHandle(malformedPair);
@@ -2820,7 +2900,9 @@ describe('ProviderSubscriptionAccountManager', () => {
         return deepEqualReplacement;
       })
     ).resolves.toEqual(deepEqualReplacement);
-    expect(getVaultReference(fixture.coreDb, 'credential_contract_r1')).toMatchObject({
+    expect(
+      getVaultReference(fixture.coreDb, 'vault_00000000-0000-7e4b-a9df-97cdf108637a')
+    ).toMatchObject({
       currentVersion: 3,
       status: 'active',
     });
@@ -2833,13 +2915,13 @@ describe('ProviderSubscriptionAccountManager', () => {
     const firstHandle = await createStoredPair(
       fixture,
       firstPair,
-      'shared_openai_r1',
+      'vault_00000000-0000-7127-8fee-0fd1850e0940',
       oauthCredential('serialized-a-v1')
     );
     const secondHandle = await createStoredPair(
       fixture,
       secondPair,
-      'shared_xai_r1',
+      'vault_00000000-0000-7c73-9db2-b7d9ce679998',
       oauthCredential('concurrent-b-v1')
     );
     const refreshEntered = deferredGate();
@@ -2853,12 +2935,14 @@ describe('ProviderSubscriptionAccountManager', () => {
       expect(firstBackend.listReferences()).toContainEqual(
         expect.objectContaining({
           currentVersion: 3,
-          referenceId: 'shared_openai_r1',
+          referenceId: 'vault_00000000-0000-7127-8fee-0fd1850e0940',
           revoked: false,
           versionCount: 3,
         })
       );
-      expect(getVaultReference(fixture.coreDb, 'shared_openai_r1')).toMatchObject({
+      expect(
+        getVaultReference(fixture.coreDb, 'vault_00000000-0000-7127-8fee-0fd1850e0940')
+      ).toMatchObject({
         currentVersion: 3,
         status: 'active',
       });
@@ -2915,31 +2999,33 @@ describe('ProviderSubscriptionAccountManager', () => {
       'cross-pair',
       'refresh:end',
       'second-modify',
-      'revoke:shared_openai_r1',
+      'revoke:vault_00000000-0000-7127-8fee-0fd1850e0940',
     ]);
     expect(firstBackend.listReferences()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           currentVersion: 3,
-          referenceId: 'shared_openai_r1',
+          referenceId: 'vault_00000000-0000-7127-8fee-0fd1850e0940',
           revoked: true,
           versionCount: 3,
         }),
         expect.objectContaining({
           currentVersion: 2,
-          referenceId: 'shared_xai_r1',
+          referenceId: 'vault_00000000-0000-7c73-9db2-b7d9ce679998',
           revoked: false,
           versionCount: 2,
         }),
       ])
     );
-    expect(getVaultReference(fixture.coreDb, 'shared_openai_r1')).toMatchObject({
+    expect(
+      getVaultReference(fixture.coreDb, 'vault_00000000-0000-7127-8fee-0fd1850e0940')
+    ).toMatchObject({
       currentVersion: 3,
       status: 'revoked',
     });
 
     await fixture.manager.deleteAccount(firstPair);
-    fixture.queueReferenceIds('shared_openai_r2');
+    fixture.queueReferenceIds('vault_00000000-0000-7788-bd5b-b7b57dea1648');
     await fixture.manager.createAccount(firstPair);
     const freshHandle = await fixture.manager.getPairHandle(firstPair);
 
@@ -2972,7 +3058,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     expect(authoritySnapshot(fixture)).toEqual(staleBefore);
     expect(readAccountJson(fixture.dataRoot, firstPair)).toMatchObject({
       status: 'logged_in',
-      vaultReferenceId: 'shared_openai_r2',
+      vaultReferenceId: 'vault_00000000-0000-7788-bd5b-b7b57dea1648',
     });
 
     const boundFixture = createFixture();
@@ -2980,7 +3066,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     const boundHandle = await createStoredPair(
       boundFixture,
       boundPair,
-      'queued_bound_delete_r1',
+      'vault_00000000-0000-7f08-b0f9-22238b3dbff1',
       oauthCredential('queued-bound-v1')
     );
     const boundRefreshEntered = deferredGate();
@@ -3002,7 +3088,9 @@ describe('ProviderSubscriptionAccountManager', () => {
     await boundRefresh;
     await expect(boundDeletion).resolves.toBeUndefined();
     expect(boundRevoke).toHaveBeenCalledOnce();
-    expect(getVaultReference(boundFixture.coreDb, 'queued_bound_delete_r1')).toMatchObject({
+    expect(
+      getVaultReference(boundFixture.coreDb, 'vault_00000000-0000-7f08-b0f9-22238b3dbff1')
+    ).toMatchObject({
       currentVersion: 2,
       status: 'revoked',
     });
@@ -3060,7 +3148,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     await expect(xaiHandle.models.checkAuth('xai')).resolves.toBeUndefined();
     await expect(codexHandle.models.checkAuth('openai-codex')).resolves.toBeUndefined();
 
-    fixture.queueReferenceIds('dynamic_backend_codex_r1');
+    fixture.queueReferenceIds('vault_00000000-0000-70d2-9b5d-c428a8891741');
     const codexCredential = oauthCredential('dynamic-backend-codex');
     await codexHandle.credentials.modify('openai-codex', async (current) => {
       expect(current).toBeUndefined();
@@ -3096,7 +3184,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     const afterList = fixture.backendGetterCalls();
     expect(afterList).toBeGreaterThan(0);
 
-    fixture.queueReferenceIds('dynamic_backend_r1');
+    fixture.queueReferenceIds('vault_00000000-0000-7f14-80e1-b9ad27e4a521');
     const credential = oauthCredential('dynamic-backend');
     const initialStoreInputs: unknown[] = [];
     const storeReplacementBackend: VaultBackend = {
@@ -3115,7 +3203,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     fixture.replaceBackend(storeReplacementBackend);
     await xaiHandle.credentials.modify('xai', async () => credential);
     expect(initialStoreInputs).toEqual([
-      expect.objectContaining({ referenceId: 'dynamic_backend_r1' }),
+      expect.objectContaining({ referenceId: 'vault_00000000-0000-7f14-80e1-b9ad27e4a521' }),
     ]);
     const afterInitialStore = fixture.backendGetterCalls();
     expect(afterInitialStore).toBeGreaterThan(afterList);
@@ -3156,7 +3244,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       return rotatedCredential;
     });
     expect(rotationInputs).toEqual([
-      expect.objectContaining({ referenceId: 'dynamic_backend_r1' }),
+      expect.objectContaining({ referenceId: 'vault_00000000-0000-7f14-80e1-b9ad27e4a521' }),
     ]);
     const afterRotation = fixture.backendGetterCalls();
     expect(afterRotation).toBeGreaterThan(afterGetAuth);
@@ -3204,7 +3292,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     const pair = accountPair('audit_lifecycle');
     const accessCanary = 'access-canary-never-plaintext';
     const refreshCanary = 'refresh-canary-never-plaintext';
-    const accountCanary = 'acct_raw_canary_never_plaintext';
+    const accountCanary = 'acct_00000000-0000-7fd8-9675-4a16f2592128';
     const emailCanary = 'raw-email-canary@example.invalid';
     const upstreamCanary = 'upstream-body-canary-never-plaintext';
     const logCanary = 'log-canary-never-plaintext';
@@ -3225,7 +3313,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     vi.spyOn(console, 'info').mockImplementation(consoleCapture);
     vi.spyOn(console, 'log').mockImplementation(consoleCapture);
     vi.spyOn(console, 'warn').mockImplementation(consoleCapture);
-    fixture.queueReferenceIds('audit_r1');
+    fixture.queueReferenceIds('vault_00000000-0000-76b6-bb44-69ed58d73f3b');
 
     const created = await fixture.manager.createAccount({ ...pair, displayName: 'Audit Slot' });
     const updated = await fixture.manager.updateAccount(pair, {
@@ -3244,7 +3332,14 @@ describe('ProviderSubscriptionAccountManager', () => {
       upstreamBody: upstreamCanary,
     };
     await handle.credentials.modify('openai-codex', async () => firstCredential);
-    const firstEntry = join(fixture.dataRoot, 'server', 'vault', 'entries', 'audit_r1', '1.enc');
+    const firstEntry = join(
+      fixture.dataRoot,
+      'server',
+      'vault',
+      'entries',
+      'vault_00000000-0000-76b6-bb44-69ed58d73f3b',
+      '1.enc'
+    );
 
     expect(existsSync(firstEntry)).toBe(true);
     expect(findLiteralCanaryBytes(fixture.dataRoot, canaries)).toEqual([]);
@@ -3262,7 +3357,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     expect(fixture.backend().listReferences()).toEqual([
       expect.objectContaining({
         currentVersion: 2,
-        referenceId: 'audit_r1',
+        referenceId: 'vault_00000000-0000-76b6-bb44-69ed58d73f3b',
         revoked: false,
         versionCount: 2,
       }),
@@ -3421,7 +3516,11 @@ describe('ProviderSubscriptionAccountManager', () => {
         summary: expectedSummaries['provider_subscription.account.delete'],
       },
     ]);
-    const forbiddenLifecycleValues = [...canaries, 'audit_r1', 'encrypted-file://'];
+    const forbiddenLifecycleValues = [
+      ...canaries,
+      'vault_00000000-0000-76b6-bb44-69ed58d73f3b',
+      'encrypted-file://',
+    ];
     for (const forbidden of forbiddenLifecycleValues) {
       expect(JSON.stringify(providerAuditRows)).not.toContain(forbidden);
     }
@@ -3454,7 +3553,7 @@ describe('ProviderSubscriptionAccountManager', () => {
         resolvingPath: 'provider',
         usedAt: DEFAULT_TIME,
         useId: expect.any(String),
-        vaultReferenceId: 'audit_r1',
+        vaultReferenceId: 'vault_00000000-0000-76b6-bb44-69ed58d73f3b',
         workspaceId: null,
       });
       expect(vaultResolveRows.find((row) => row.audit_event_id === use.auditEventId)).toMatchObject(
@@ -3464,7 +3563,7 @@ describe('ProviderSubscriptionAccountManager', () => {
           category: 'system',
           error_code: null,
           outcome: 'succeeded',
-          resource: 'vault:audit_r1',
+          resource: 'vault:vault_00000000-0000-76b6-bb44-69ed58d73f3b',
           severity: 'info',
           summary: 'Vault reference resolved.',
         }
@@ -3473,7 +3572,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     expect(fixture.backend().listReferences()).toEqual([
       expect.objectContaining({
         currentVersion: 2,
-        referenceId: 'audit_r1',
+        referenceId: 'vault_00000000-0000-76b6-bb44-69ed58d73f3b',
         revoked: true,
         versionCount: 2,
       }),
@@ -3495,7 +3594,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       vaultUseRows,
     });
 
-    for (const canary of [...canaries, 'audit_r1']) {
+    for (const canary of [...canaries, 'vault_00000000-0000-76b6-bb44-69ed58d73f3b']) {
       expect(safeProjection).not.toContain(canary);
     }
     for (const canary of canaries) {
@@ -3509,7 +3608,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     const revokeFailureHandle = await createStoredPair(
       revokeFailureFixture,
       revokeFailurePair,
-      'revoke_resolve_failure_r1'
+      'vault_00000000-0000-7015-8bb3-3f408ad37ef5'
     );
     const revokeFailureBackend = revokeFailureFixture.backend();
     const revokeFailureCanary = 'raw-revoke-resolve-failure-canary';
@@ -3621,7 +3720,7 @@ describe('ProviderSubscriptionAccountManager', () => {
   it('admits one simultaneous start and projects accepted success or failure through manager state', async () => {
     const fixture = createFixture();
     const pair = accountPair('simultaneous_start');
-    fixture.queueReferenceIds('simultaneous_start_r1');
+    fixture.queueReferenceIds('vault_00000000-0000-7adf-a277-d0b2ab14f0a1');
     await fixture.manager.createAccount(pair);
     const handle = await fixture.manager.getPairHandle(pair);
     const oauth = requireProviderOAuth(handle, pair);
@@ -3810,9 +3909,9 @@ describe('ProviderSubscriptionAccountManager', () => {
     writeAccountJson(
       fixture.dataRoot,
       pair,
-      validAccountRecord(pair, { vaultReferenceId: 'login_invalid_delete_r1' })
+      validAccountRecord(pair, { vaultReferenceId: 'vault_00000000-0000-779b-80eb-ff407b303de3' })
     );
-    createExactCoreReference(fixture, 'login_invalid_delete_r1');
+    createExactCoreReference(fixture, 'vault_00000000-0000-779b-80eb-ff407b303de3');
     await expectAccountError(() => fixture.manager.deleteAccount(pair), PERSISTENCE_ERROR);
     expect(aborted).not.toHaveBeenCalled();
   });
@@ -3839,9 +3938,9 @@ describe('ProviderSubscriptionAccountManager', () => {
     writeAccountJson(
       fixture.dataRoot,
       pair,
-      validAccountRecord(pair, { vaultReferenceId: 'login_invalid_cancel_r1' })
+      validAccountRecord(pair, { vaultReferenceId: 'vault_00000000-0000-752d-9b1d-28eb30b15d0f' })
     );
-    createExactCoreReference(fixture, 'login_invalid_cancel_r1');
+    createExactCoreReference(fixture, 'vault_00000000-0000-752d-9b1d-28eb30b15d0f');
 
     await expectAccountError(
       () => lifecycle.cancelLogin(pair, pending.interaction?.interactionId ?? ''),
@@ -3856,7 +3955,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     const refreshHandle = await createStoredPair(
       refreshFixture,
       refreshPair,
-      'refresh_then_logout_r1',
+      'vault_00000000-0000-75fe-a5d1-ee3d06f1606a',
       oauthCredential('refresh-v1')
     );
     const refreshEntered = deferredGate();
@@ -3870,7 +3969,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       expect(backend.listReferences()).toContainEqual(
         expect.objectContaining({
           currentVersion: 2,
-          referenceId: 'refresh_then_logout_r1',
+          referenceId: 'vault_00000000-0000-75fe-a5d1-ee3d06f1606a',
           revoked: false,
         })
       );
@@ -3971,10 +4070,10 @@ describe('ProviderSubscriptionAccountManager', () => {
       invalidLogoutFixture.dataRoot,
       invalidLogoutPair,
       validAccountRecord(invalidLogoutPair, {
-        vaultReferenceId: 'login_invalid_logout_r1',
+        vaultReferenceId: 'vault_00000000-0000-708a-80e9-c7af21ac9e04',
       })
     );
-    createExactCoreReference(invalidLogoutFixture, 'login_invalid_logout_r1');
+    createExactCoreReference(invalidLogoutFixture, 'vault_00000000-0000-708a-80e9-c7af21ac9e04');
 
     await expectAccountError(
       () => lifecycleOperations(invalidLogoutFixture.manager).logout(invalidLogoutPair),
@@ -3998,7 +4097,7 @@ describe('ProviderSubscriptionAccountManager', () => {
   ] as const)('maps stock Models logout $backendCode failures without changing authority', async (failure) => {
     const fixture = createFixture();
     const pair = accountPair(failure.slot);
-    await createStoredPair(fixture, pair, `${failure.slot}_r1`);
+    await createStoredPair(fixture, pair, testEntityId('vault', `${failure.slot}_r1`));
     const revoke = vi.spyOn(fixture.backend(), 'revoke').mockImplementation(() => {
       throw new VaultBackendError(failure.backendCode, 'Private backend failure.');
     });
@@ -4018,9 +4117,11 @@ describe('ProviderSubscriptionAccountManager', () => {
     const tombstoneHandle = await createStoredPair(
       tombstoneFixture,
       tombstonePair,
-      'logout_current_tombstone_r1'
+      'vault_00000000-0000-7c8b-811e-ddce0e3ef567'
     );
-    tombstoneFixture.backend().revoke({ referenceId: 'logout_current_tombstone_r1' });
+    tombstoneFixture
+      .backend()
+      .revoke({ referenceId: 'vault_00000000-0000-7c8b-811e-ddce0e3ef567' });
     const tombstoneRetryWrites = [
       vi.spyOn(tombstoneFixture.backend(), 'store'),
       vi.spyOn(tombstoneFixture.backend(), 'rotate'),
@@ -4041,12 +4142,12 @@ describe('ProviderSubscriptionAccountManager', () => {
       subscriptionProviderId: 'openai-codex',
       updatedAt: DEFAULT_TIME,
     });
-    expect(getVaultReference(tombstoneFixture.coreDb, 'logout_current_tombstone_r1')).toMatchObject(
-      {
-        currentVersion: 1,
-        status: 'revoked',
-      }
-    );
+    expect(
+      getVaultReference(tombstoneFixture.coreDb, 'vault_00000000-0000-7c8b-811e-ddce0e3ef567')
+    ).toMatchObject({
+      currentVersion: 1,
+      status: 'revoked',
+    });
     await expect(
       tombstoneHandle.credentials.read(tombstonePair.subscriptionProviderId)
     ).resolves.toBeUndefined();
@@ -4060,7 +4161,11 @@ describe('same-credential inference observations', () => {
   ] as const)('records and clears only the exact %s account and version', async (subscriptionProviderId) => {
     const fixture = createFixture();
     const pair = { subscriptionProviderId, accountSlotId: 'observed' };
-    const handle = await createStoredPair(fixture, pair, 'observed_r1');
+    const handle = await createStoredPair(
+      fixture,
+      pair,
+      'vault_00000000-0000-71b0-bf66-b1dd14f78f14'
+    );
     const presented = (await handle.resolveInferenceAuth())?.presented;
     expect(presented).toBeDefined();
     const before = authoritySnapshot(fixture);
@@ -4133,7 +4238,11 @@ describe('same-credential inference observations', () => {
   ] as const)('suppresses late, cancelled, dependency and entitlement failures for %s', async (subscriptionProviderId) => {
     const fixture = createFixture();
     const pair = { subscriptionProviderId, accountSlotId: 'bounded' };
-    const handle = await createStoredPair(fixture, pair, 'bounded_r1');
+    const handle = await createStoredPair(
+      fixture,
+      pair,
+      'vault_00000000-0000-71df-b932-d8881f195c73'
+    );
     const presented = (await handle.resolveInferenceAuth())?.presented;
     for (const failure of [
       { kind: 'auth_rejected', settled: true, status: 403 },
@@ -4173,7 +4282,7 @@ describe('same-credential inference observations', () => {
     const other = await createStoredPair(
       fixture,
       { subscriptionProviderId, accountSlotId: 'other' },
-      'other_r1'
+      'vault_00000000-0000-758e-b93d-9fe38f0ea41e'
     );
     expect(await other.getObservation()).toBeUndefined();
     await fixture.manager.deleteAccount(pair);
@@ -4190,7 +4299,7 @@ describe('inference rejection deadline', () => {
     const handle = await createStoredPair(
       fixture,
       { subscriptionProviderId, accountSlotId: 'deadline' },
-      'deadline_r1'
+      'vault_00000000-0000-76c6-8ece-b9022b70274b'
     );
     const presented = (await handle.resolveInferenceAuth())?.presented;
     vi.useFakeTimers();
@@ -4223,7 +4332,11 @@ describe('subscription-backed synthetic inference observations', () => {
   ] as const)('records real %s quota failure and clears only on accepted access', async (subscriptionProviderId) => {
     const fixture = createFixture();
     const pair = { subscriptionProviderId, accountSlotId: 'inference' };
-    const handle = await createStoredPair(fixture, pair, 'inference_r1');
+    const handle = await createStoredPair(
+      fixture,
+      pair,
+      'vault_00000000-0000-70aa-931b-65de83f63bd8'
+    );
     const models = handle.models as MutableModels;
     const stock = models.getProvider(subscriptionProviderId)!;
     const faux = fauxProvider({
@@ -4308,7 +4421,11 @@ describe('captured inference rejection and routing', () => {
   ] as const)('checks the actual %s rejected inference snapshot with an explicit deadline', async (subscriptionProviderId) => {
     const fixture = createFixture();
     const pair = { subscriptionProviderId, accountSlotId: 'actual' };
-    const handle = await createStoredPair(fixture, pair, 'actual_r1');
+    const handle = await createStoredPair(
+      fixture,
+      pair,
+      'vault_00000000-0000-788b-b7fb-294f007fb845'
+    );
     const models = handle.models as MutableModels;
     const stock = models.getProvider(subscriptionProviderId)!;
     const faux = fauxProvider({
@@ -4349,7 +4466,9 @@ describe('captured inference rejection and routing', () => {
         {},
         models
       )
-    ).rejects.toMatchObject({ failure: { kind: 'auth_rejected', settled: true, status: 401 } });
+    ).rejects.toMatchObject({
+      failure: { kind: 'auth_rejected', settled: true, status: 401 },
+    });
     expect(observed).toHaveBeenCalledTimes(1);
     const [presented, failure] = observed.mock.calls[0]!;
     expect(presented.auth.apiKey).toBe(bearer);
@@ -4376,7 +4495,11 @@ describe('captured inference rejection and routing', () => {
   it('preserves authored order and primary eligibility with rejection and exhausted quota', async () => {
     const fixture = createFixture();
     const pair = accountPair('availability');
-    const handle = await createStoredPair(fixture, pair, 'route_observation_r1');
+    const handle = await createStoredPair(
+      fixture,
+      pair,
+      'vault_00000000-0000-75c8-89e4-e659a8f043ef'
+    );
     writeAvailabilitySupply(fixture);
     const gatewayPath = join(fixture.dataRoot, 'config/gateway.jsonc');
     const config = JSON.parse(readFileSync(gatewayPath, 'utf8'));
@@ -4440,7 +4563,11 @@ describe('captured inference rejection and routing', () => {
 describe('pair proof dependency exclusions', () => {
   it('retains Codex OAuth, bearer and account equality and suppresses missing or invalid rechecks', async () => {
     const fixture = createFixture();
-    const handle = await createStoredPair(fixture, accountPair('proof'), 'proof_r1');
+    const handle = await createStoredPair(
+      fixture,
+      accountPair('proof'),
+      'vault_00000000-0000-79ad-822b-45a1c4d88ec0'
+    );
     const presented = (await handle.resolveInferenceAuth())?.presented;
     const original = await handle.credentials.read('openai-codex');
     for (const current of [
@@ -4464,7 +4591,7 @@ describe('pair proof dependency exclusions', () => {
     const handle = await createStoredPair(
       fixture,
       { subscriptionProviderId: 'xai', accountSlotId: 'proof' },
-      'xai_proof_r1'
+      'vault_00000000-0000-7a8c-bf98-bea97503c2dd'
     );
     const presented = (await handle.resolveInferenceAuth())?.presented;
     for (const auth of [undefined, { auth: { apiKey: 'different-bearer' } }]) {
@@ -4487,7 +4614,11 @@ describe('public inference observation read model', () => {
   ] as const)('projects independent %s timestamps without quota reads', async (subscriptionProviderId) => {
     const fixture = createFixture();
     const pair = accountPair('public', subscriptionProviderId);
-    const handle = await createStoredPair(fixture, pair, 'public_r1');
+    const handle = await createStoredPair(
+      fixture,
+      pair,
+      'vault_00000000-0000-7b65-922a-a84acfa604c4'
+    );
     const presented = (await handle.resolveInferenceAuth())!.presented!;
     const app = createApp({
       coreDb: fixture.coreDb,
@@ -4550,7 +4681,11 @@ describe('public inference observation read model', () => {
   ] as const)('clears %s observations only on accepted same-version uncancelled quota', async (subscriptionProviderId) => {
     const fixture = createFixture();
     const pair = accountPair('quota_clear', subscriptionProviderId);
-    const handle = await createStoredPair(fixture, pair, 'quota_clear_r1');
+    const handle = await createStoredPair(
+      fixture,
+      pair,
+      'vault_00000000-0000-7817-beca-2e6ab68aadec'
+    );
     const presented = (await handle.resolveInferenceAuth())!.presented!;
     await handle.observeInference(
       presented,
@@ -4581,7 +4716,11 @@ describe('live quota and inference observations', () => {
   ] as const)('keeps live %s quota independent and clears through the real owner', async (subscriptionProviderId) => {
     const fixture = createFixture();
     const pair = accountPair('live_quota', subscriptionProviderId);
-    const handle = await createStoredPair(fixture, pair, 'live_quota_r1');
+    const handle = await createStoredPair(
+      fixture,
+      pair,
+      'vault_00000000-0000-7698-afb3-d211797cfe6f'
+    );
     const presented = (await handle.resolveInferenceAuth())!.presented!;
     await handle.observeInference(
       presented,
@@ -4666,7 +4805,11 @@ async function createObservedInferenceRouteFixture(
 ) {
   const fixture = createFixture();
   const pair = accountPair('route_rejection', subscriptionProviderId);
-  const handle = await createStoredPair(fixture, pair, 'route_rejection_r1');
+  const handle = await createStoredPair(
+    fixture,
+    pair,
+    'vault_00000000-0000-799d-848e-914aef612c73'
+  );
   const providerModel =
     subscriptionProviderId === 'openai-codex' ? 'openai-codex/gpt-5.6-sol' : 'grok-4.3';
   const models = handle.models as MutableModels;
@@ -4679,15 +4822,20 @@ async function createObservedInferenceRouteFixture(
   });
   models.setProvider({ ...faux.provider, auth: stock.auth });
   const store = createDemoStore({ dataRoot: fixture.dataRoot });
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Inference observation regression', {
-    kind: 'user',
-    id: 'user_local',
-  });
+  const turn = store.createTurn(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
+    'Inference observation regression',
+    {
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    }
+  );
   ensureLocalUser(fixture.coreDb);
   recordWorkspaceOwnerMembership({
     coreDb: fixture.coreDb,
     workspaceId: turn.workspaceId,
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
   });
   let workerControlGateway: WorkerControlGateway | undefined;
   const token = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
@@ -4699,14 +4847,14 @@ async function createObservedInferenceRouteFixture(
         privateRoute: { providerProfileId: 'observed-provider', providerModel },
         requiredCapabilities: ['trusted-worker-inference-relay'],
       }),
-      agentSessionId: 'as_observed_worker',
+      agentSessionId: 'as_00000000-0000-73a6-ad6e-94db2c0fc59a',
       backend: { kind: 'openshell' },
       createdAt: DEFAULT_TIME,
       requestId: 'req_observed_worker',
       triggerActor: {
         kind: 'automation',
-        id: 'automation_observed',
-        responsibleUserId: 'user_local',
+        id: 'auto_00000000-0000-7632-841a-e500ef6a5297',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
       },
       turn,
       workspaceCwd: '/workspace/openkit',
@@ -4726,7 +4874,7 @@ async function createObservedInferenceRouteFixture(
     });
     recordTestExecutionAttempt(fixture.coreDb, {
       entry,
-      attemptId: 'lease_observed',
+      attemptId: 'attempt_00000000-0000-78e7-a1a8-e35549517347',
       agentSessionId: environmentPackage.scope.agentSessionId,
       inputRef: environmentPackage.snapshotId,
       bindingRef: 'lease-binding:observed',
@@ -4887,7 +5035,11 @@ describe('inference route same-credential rejection', () => {
         expect(observed).toHaveBeenCalledTimes(2);
         const [presented, failure, deadline] = observed.mock.calls[1]!;
         expect(presented.auth.apiKey).toBe(bearer);
-        expect(failure).toMatchObject({ kind: 'auth_rejected', settled: true, status: 401 });
+        expect(failure).toMatchObject({
+          kind: 'auth_rejected',
+          settled: true,
+          status: 401,
+        });
         expect(deadline).toBe(epoch + 120000);
         if (scenario === 'predecessor')
           expect(await f.handle.getCredentialVersion()).not.toBe(presented.version);
@@ -4999,7 +5151,9 @@ describe('subscription refresh inference ownership', () => {
     });
     expect(refresh).toHaveBeenCalledTimes(1);
     expect(inference).not.toHaveBeenCalled();
-    expect(await f.handle.getCredentialVersion()).toBe('route_rejection_r1:2');
+    expect(await f.handle.getCredentialVersion()).toBe(
+      'vault_00000000-0000-799d-848e-914aef612c73:2'
+    );
     expect(await f.fixture.manager.getStatus(f.pair)).not.toHaveProperty('inferenceObservation');
     const db = openWorkspaceDb(f.fixture.dataRoot, f.turn.workspaceId);
     try {
@@ -5031,10 +5185,15 @@ describe('subscription refresh inference ownership', () => {
       vi.setSystemTime(DEFAULT_TIME);
       const fixture = createFixture();
       const pair = accountPair('refresh', subscriptionProviderId);
-      const handle = await createStoredPair(fixture, pair, 'refresh_r1', {
-        ...oauthCredential('expired'),
-        expires: Date.now() - 1,
-      });
+      const handle = await createStoredPair(
+        fixture,
+        pair,
+        'vault_00000000-0000-79d6-aa15-2f46423f0a70',
+        {
+          ...oauthCredential('expired'),
+          expires: Date.now() - 1,
+        }
+      );
       const models = handle.models as MutableModels;
       const stock = models.getProvider(subscriptionProviderId)!;
       const fresh = oauthCredential('fresh');
@@ -5081,14 +5240,20 @@ describe('subscription refresh inference ownership', () => {
           models
         )
       ).rejects.toMatchObject({
-        failure: { kind, settled: true, status: kind === 'auth_rejected' ? 401 : 429 },
+        failure: {
+          kind,
+          settled: true,
+          status: kind === 'auth_rejected' ? 401 : 429,
+        },
       });
       expect(refresh).toHaveBeenCalledTimes(1);
       expect(bearer).toBe(fresh.access);
-      expect(await handle.getCredentialVersion()).toBe('refresh_r1:2');
+      expect(await handle.getCredentialVersion()).toBe(
+        'vault_00000000-0000-79d6-aa15-2f46423f0a70:2'
+      );
       expect(observed).toHaveBeenCalledTimes(1);
       expect(observed.mock.calls[0]![0]).toMatchObject({
-        version: 'refresh_r1:2',
+        version: 'vault_00000000-0000-79d6-aa15-2f46423f0a70:2',
         auth: { apiKey: fresh.access },
       });
       const app = createApp({
@@ -5131,7 +5296,11 @@ describe('subscription auth attribution isolation', () => {
     it(`keeps resolved ${subscriptionProviderId} auth when optional attribution is unreadable`, async () => {
       const fixture = createFixture();
       const pair = accountPair('advisory', subscriptionProviderId);
-      const handle = await createStoredPair(fixture, pair, 'advisory_r1');
+      const handle = await createStoredPair(
+        fixture,
+        pair,
+        'vault_00000000-0000-7abd-84b1-ca3ac953559e'
+      );
       const models = handle.models as MutableModels;
       const stock = models.getProvider(subscriptionProviderId)!;
       const faux = fauxProvider({
@@ -5154,7 +5323,9 @@ describe('subscription auth attribution isolation', () => {
       faux.setResponses([
         (_context, options) => {
           fixture.replaceBackend();
-          expect(options.apiKey).toBe(oauthCredential('advisory_r1').access);
+          expect(options.apiKey).toBe(
+            oauthCredential('vault_00000000-0000-7abd-84b1-ca3ac953559e').access
+          );
           return fauxAssistantMessage([fauxText('accepted')]);
         },
       ]);
@@ -5189,7 +5360,11 @@ describe('subscription auth attribution isolation', () => {
     ] as const)(`suppresses ${subscriptionProviderId} %s after identical material is replaced during auth derivation`, async (kind) => {
       const fixture = createFixture();
       const pair = accountPair('derivation', subscriptionProviderId);
-      const handle = await createStoredPair(fixture, pair, 'derivation_r1');
+      const handle = await createStoredPair(
+        fixture,
+        pair,
+        'vault_00000000-0000-740a-b6b4-6b4c397f0315'
+      );
       const models = handle.models as MutableModels;
       const stock = models.getProvider(subscriptionProviderId)!;
       const original = stock.auth.oauth!.toAuth.bind(stock.auth.oauth!);
@@ -5237,7 +5412,9 @@ describe('subscription auth attribution isolation', () => {
         )
       ).rejects.toMatchObject({ failure: { kind } });
       expect(getAuth).toHaveBeenCalledTimes(1);
-      expect(await handle.getCredentialVersion()).toBe('derivation_r1:2');
+      expect(await handle.getCredentialVersion()).toBe(
+        'vault_00000000-0000-740a-b6b4-6b4c397f0315:2'
+      );
       expect(await fixture.manager.getStatus(pair)).not.toHaveProperty('inferenceObservation');
     });
   }

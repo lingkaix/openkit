@@ -1,3 +1,4 @@
+import { TurnIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
 /** Turn feedback rating. */
@@ -13,7 +14,7 @@ export const SubmitTurnFeedbackRequestSchema = z
 
 /** Turn feedback response payload. */
 export const TurnFeedbackResponseSchema = z.object({
-  turnId: z.string().min(1),
+  turnId: TurnIdSchema,
   agentId: z.string().min(1).nullable(),
   rating: TurnFeedbackRatingSchema,
   note: z.string().nullable(),

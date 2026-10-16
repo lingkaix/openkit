@@ -13,7 +13,10 @@ import type {
   WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
 import {
+  allocateEntityId,
+  deriveEntityId,
   GitFailureExplanationSchema,
+  isEntityId,
   isSealedTurnTerminal,
   responsibleUserIdForActor,
   type StopReason,
@@ -97,7 +100,6 @@ import {
   proveFrozenDelivery,
 } from './pending-requests.js';
 import type { PublicNetworkConfiguration } from './public-network-grants.js';
-import { generateUuidV7 } from './session-id.js';
 import type {
   AgentSessionReadModel,
   CommitPreparedAgentSessionForTurnInput,
@@ -306,16 +308,17 @@ export function prepareWorkerTurnContextPackage(
   const knowledgeSelectionInput = contextAssembly?.knowledgeSelectionInput ?? null;
   const turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
   const isChatSubordinateTask = isChatSubordinateTaskTurn({
+    originatingThreadId: store.getThread(input.workspaceId, input.threadId).parentThreadId ?? null,
     requestId: input.requestId,
     turn,
   });
-  const requiresTaskKnowledgeSelection =
-    workerRequest.requestKind === 'structured-delegation' &&
-    checkpoint?.goalId === null &&
-    !isChatSubordinateTask;
+  const isTask =
+    workerRequest.requestKind === 'structured-delegation' && checkpoint?.goalId === null;
+  // Direct Task entry requires selection. A Chat handoff retains its entry's existing
+  // selection choice; changing its identity must not add or remove a query.
   if (
-    (requiresTaskKnowledgeSelection && knowledgeSelectionInput === null) ||
-    (!requiresTaskKnowledgeSelection && knowledgeSelectionInput !== null)
+    (isTask && !isChatSubordinateTask && knowledgeSelectionInput === null) ||
+    (!isTask && knowledgeSelectionInput !== null)
   ) {
     throw new TurnStartValidationError(
       'recovery_required',
@@ -323,7 +326,7 @@ export function prepareWorkerTurnContextPackage(
       409
     );
   }
-  const workerRequestItemId = `it_user_${input.turnId}`;
+  const workerRequestItemId = deriveEntityId('it', ['task-user', input.turnId]);
   const requestedItemIds = new Set(workerRequest.requestedItemIds);
   requestedItemIds.delete(workerRequestItemId);
   const includedPriorItems = store
@@ -634,7 +637,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       workspaceKnowledgeEditing: false,
     };
     this.coreDb = options.coreDb ?? null;
-    this.createAgentSessionId = options.createAgentSessionId ?? (() => generateUuidV7());
+    this.createAgentSessionId = options.createAgentSessionId ?? (() => allocateEntityId('as'));
     this.now = options.now ?? (() => new Date().toISOString());
     this.resolveResidentWorkerStorageWorkSlotRef =
       options.resolveResidentWorkerStorageWorkSlotRef ?? null;
@@ -650,6 +653,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     store: FsStore,
     input: PrepareAgentSessionForTurnInput
   ): Promise<PreparedAgentSessionForTurn> {
+    if (!isEntityId('as', input.freshAgentSessionId)) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The reserved AgentSession identity is invalid.',
+        409
+      );
+    }
     let workerStorageChoice = this.selectContinuationStorage(
       store,
       input,
@@ -1639,7 +1649,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             ...resolvedEnvironmentPackage,
             scope: {
               ...resolvedEnvironmentPackage.scope,
-              itemId: `it_user_${turnId}`,
+              itemId: deriveEntityId('it', ['task-user', turnId]),
             },
           }
         : resolvedEnvironmentPackage;
@@ -1811,7 +1821,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             : launchContext.triggerActor,
           completedAt: timestamp,
           createdAt: timestamp,
-          id: `it_user_${turnId}`,
+          id: deriveEntityId('it', ['task-user', turnId]),
           status: 'completed',
           text: contextRequest,
           threadId: turn.threadId,
@@ -2944,7 +2954,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
 
       const timestamp = recordedAt;
-      const artifactId = `ar_workspace_changes_${environmentPackage.scope.turnId}_${record.review.id}`;
+      const artifactId = deriveEntityId('ar', [
+        'workspace_changes',
+        environmentPackage.scope.turnId,
+        record.review.id,
+      ]);
       // Git sources publish through selected vendor MCP; retained output is evidence, never an apply prerequisite.
       const gitSource =
         environmentPackage.workspace?.inputs.some(

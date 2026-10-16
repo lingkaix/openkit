@@ -1,4 +1,4 @@
-import { TimestampSchema } from '@openkit/protocol';
+import { ArtifactIdSchema, TimestampSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
 const unsafeRelativePathPattern = /(^|\/)\.\.(\/|$)/;
@@ -67,7 +67,7 @@ export const WorkspaceInputGeneratedFileSchema = z
 export const WorkspaceInputSnapshotSchema = z
   .object({
     id: z.string().min(1),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     resourceId: z.string().min(1),
     sourceId: z.string().min(1).optional(),
     resourceKind: WorkspaceSynchronizationResourceKindSchema,
@@ -95,7 +95,7 @@ export const WorkspaceMaterializationRecordSchema = z
   .object({
     id: z.string().min(1),
     inputSnapshotId: z.string().min(1),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     sourceId: z.string().min(1).optional(),
     backendKind: WorkspaceSynchronizationBackendKindSchema,
     packageSnapshotId: z.string().min(1),
@@ -121,7 +121,7 @@ export const BackendWorkspaceTransportRefSchema = z
 export const BackendWorkspaceHandleSchema = z
   .object({
     id: z.string().min(1),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     materializationRecordId: z.string().min(1),
     backendKind: WorkspaceSynchronizationBackendKindSchema,
     packageSnapshotId: z.string().min(1),
@@ -199,14 +199,14 @@ export const WorkspaceChangedPathSchema = z
 export const WorkerOutputManifestSchema = z
   .object({
     id: z.string().min(1),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     materializationRecordId: z.string().min(1),
     inputSnapshotId: z.string().min(1),
     workerSessionId: z.string().min(1),
     backendKind: WorkspaceSynchronizationBackendKindSchema,
     strategy: WorkspaceSynchronizationStrategySchema,
     changedPaths: z.array(WorkspaceChangedPathSchema),
-    artifactIds: z.array(z.string().min(1)),
+    artifactIds: z.array(ArtifactIdSchema),
     logRefs: z.array(WorkerOutputRefSchema),
     testOutputRefs: z.array(WorkerOutputRefSchema),
     ignoredOutputs: z.array(WorkerIgnoredOutputSchema),
@@ -238,7 +238,7 @@ export const WorkspaceChangeSetSchema = z
     id: z.string().min(1),
     materializationRecordId: z.string().min(1),
     inputSnapshotId: z.string().min(1),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     resourceId: z.string().min(1),
     sourceId: z.string().min(1).optional(),
     strategy: WorkspaceSynchronizationStrategySchema,
@@ -247,7 +247,7 @@ export const WorkspaceChangeSetSchema = z
     changedPaths: z.array(WorkspaceChangedPathSchema),
     patch: WorkspacePayloadRefSchema.nullable(),
     bundle: WorkspacePayloadRefSchema.nullable(),
-    artifactIds: z.array(z.string().min(1)),
+    artifactIds: z.array(ArtifactIdSchema),
     evidenceRefs: z.array(WorkspaceEvidenceRefSchema),
     redaction: WorkspaceChangeSetRedactionSchema,
     createdAt: TimestampSchema,
@@ -306,7 +306,7 @@ export const StagedWorkspaceReviewSchema = z
   .object({
     id: z.string().min(1),
     changeSetId: z.string().min(1),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     status: StagedWorkspaceReviewStatusSchema,
     staging: StagedWorkspaceReviewStagingRefSchema,
     diffSummary: StagedWorkspaceReviewDiffSummarySchema,
@@ -356,7 +356,7 @@ export function workspaceSyncReviewPatchBytes(payload: {
 export const WorkspaceApplyPlanSchema = z
   .object({
     id: z.string().min(1),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     reviewId: z.string().min(1),
     changeSetId: z.string().min(1),
     strategy: WorkspaceSynchronizationStrategySchema,
@@ -375,7 +375,7 @@ export const WorkspaceApplyPlanSchema = z
 export const WorkspaceApplyResultSchema = z
   .object({
     id: z.string().min(1),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     reviewId: z.string().min(1),
     changeSetId: z.string().min(1),
     status: z.enum(['applied', 'conflicted', 'blocked']),
@@ -392,7 +392,7 @@ export const WorkspaceApplyResultSchema = z
 export const WorkspaceReconciliationRecordSchema = z
   .object({
     id: z.string().min(1),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     triggerReason: z.enum(['restart', 'backend_takeover', 'manual']),
     affectedRecordIds: z.array(z.string().min(1)),
     backendHandleSummary: z.record(z.string(), z.unknown()),
@@ -427,7 +427,7 @@ export const WorkspaceRecoveryDecisionSchema = z.enum([
 export const WorkspaceQuarantineRecordSchema = z
   .object({
     id: z.string().min(1),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     lifecycleRecordIds: z.array(z.string().min(1)),
     failureKind: z.enum([
       'digest_mismatch',
@@ -448,7 +448,7 @@ export const WorkspaceQuarantineRecordSchema = z
 /** Public App API item joining one workspace review with its change set and backing artifact. */
 export const WorkspaceSyncReviewItemSchema = z
   .object({
-    artifactId: z.string().min(1),
+    artifactId: ArtifactIdSchema,
     changeSet: WorkspaceChangeSetSchema,
     patchPayload: WorkspaceSyncReviewPatchPayloadSchema.nullable(),
     review: StagedWorkspaceReviewSchema,

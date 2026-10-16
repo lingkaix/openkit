@@ -1,11 +1,12 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   ListServerPermissionDecisionsResponseSchema,
   ListWorkspacePermissionDecisionsResponseSchema,
 } from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
+import { isEntityId } from '@openkit/protocol';
+import { describe, expect, it, vi } from 'vitest';
 
 import { loadBootPolicyKernel } from '../bootstrap/policy.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -25,7 +26,7 @@ describe('permission decision recorder', () => {
   ] as const)('preserves ordinary fixture context in %s canonical writes, retained reads and public lists', (ownerScope) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-public-fixture-'));
     let coreDb = openCoreDb(dataRoot);
-    let workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    let workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const contextSummary = { fixture: 'ghp_publicFixture sk-Latn', nested: ['hf_publicFixture'] };
     try {
       applyMigrations(coreDb);
@@ -34,11 +35,13 @@ describe('permission decision recorder', () => {
         coreDb,
         workspaceDb,
         ownerScope,
-        ...(ownerScope === 'workspace' ? { workspaceId: 'ws_demo' } : {}),
-        decisionId: 'pd_public_fixture',
+        ...(ownerScope === 'workspace'
+          ? { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
+          : {}),
+        decisionId: 'pd_00000000-0000-7765-a6ea-e9fc6f79d306',
         policyEngineVersion: 'test:v1',
         policySnapshotId: 'test_snapshot',
-        subjectSummary: { kind: 'user', id: 'user_local' },
+        subjectSummary: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         action: 'read',
         resourceSummary: { fixture: 'okt_publicFixture' },
         contextSummary,
@@ -49,15 +52,18 @@ describe('permission decision recorder', () => {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
       coreDb = openCoreDb(dataRoot);
-      workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       const rows =
         ownerScope === 'workspace'
-          ? listExportableWorkspacePermissionDecisions(workspaceDb, 'ws_demo')
+          ? listExportableWorkspacePermissionDecisions(
+              workspaceDb,
+              'ws_00000000-0000-7000-8000-000000000001'
+            )
           : listServerPermissionDecisions(coreDb);
       const response =
         ownerScope === 'workspace'
           ? ListWorkspacePermissionDecisionsResponseSchema.parse({
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               permissionDecisions: rows,
             })
           : ListServerPermissionDecisionsResponseSchema.parse({ permissionDecisions: rows });
@@ -87,7 +93,7 @@ describe('permission decision recorder', () => {
 
       recordPermissionDecision({
         coreDb,
-        decisionId: 'pd_test_vault_deny',
+        decisionId: 'pd_00000000-0000-7e76-af55-371b5a65dcf3',
         ownerScope: 'server',
         policyDecision,
         policyEngineVersion: 'policy-kernel:v1',
@@ -102,7 +108,7 @@ describe('permission decision recorder', () => {
 
       const row = coreDb.sqlite
         .prepare('SELECT * FROM permission_decisions WHERE decision_id = ?')
-        .get('pd_test_vault_deny') as {
+        .get('pd_00000000-0000-7e76-af55-371b5a65dcf3') as {
         action: string;
         context_summary_json: string;
         created_at: string;
@@ -138,47 +144,170 @@ describe('permission decision recorder', () => {
     }
   });
 
-  it('records boot policy self-check allow and deny decisions', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-decision-'));
-    const coreDb = openCoreDb(dataRoot);
-
+  it('retains canonical boot decisions across exact retry and reopen with separate boot correlation', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-boot-'));
+    let coreDb = openCoreDb(dataRoot);
+    const now = new Date('2026-07-05T00:00:00.000Z');
+    const kernel = loadBootPolicyKernel();
     try {
       applyMigrations(coreDb);
-
+      recordBootPolicySelfCheckDecisions({ bootId: 'boot_policy_test', coreDb, kernel, now });
+      const original = listServerPermissionDecisions(coreDb).sort((a, b) =>
+        a.action.localeCompare(b.action)
+      );
+      expect(
+        original.map((row) => ({
+          action: row.action,
+          result: row.result,
+          reasonCode: row.reasonCode,
+        }))
+      ).toEqual([
+        { action: 'api.call', result: 'allow', reasonCode: 'association-grant' },
+        { action: 'vault.use', result: 'deny', reasonCode: 'restriction' },
+      ]);
+      expect(
+        original.every(
+          (row) => isEntityId('pd', row.decisionId) && row.decisionId.split('_')[1]![14] === '7'
+        )
+      ).toBe(true);
+      expect(original.map((row) => row.contextSummary)).toEqual([
+        { boot: true, bootId: 'boot_policy_test' },
+        { boot: true, bootId: 'boot_policy_test' },
+      ]);
+      const auditCount = () =>
+        coreDb.sqlite.prepare('SELECT count(*) AS count FROM audit_events').get();
+      const originalAuditCount = auditCount();
+      coreDb.sqlite.close();
+      coreDb = openCoreDb(dataRoot);
       recordBootPolicySelfCheckDecisions({
         bootId: 'boot_policy_test',
         coreDb,
-        kernel: loadBootPolicyKernel(),
-        now: new Date('2026-07-05T00:00:00.000Z'),
+        kernel,
+        now: new Date('2026-07-05T00:01:00.000Z'),
       });
+      expect(
+        listServerPermissionDecisions(coreDb).sort((a, b) => a.action.localeCompare(b.action))
+      ).toEqual(original);
+      expect(auditCount()).toEqual(originalAuditCount);
+      recordBootPolicySelfCheckDecisions({ bootId: 'boot_policy_next', coreDb, kernel, now });
+      const next = listServerPermissionDecisions(coreDb);
+      expect(next).toHaveLength(4);
+      expect(new Set(next.map((row) => row.decisionId)).size).toBe(4);
+      expect(next.every((row) => isEntityId('pd', row.decisionId))).toBe(true);
+      const retained = coreDb.sqlite
+        .prepare('SELECT * FROM permission_decisions ORDER BY decision_id')
+        .all();
+      coreDb.sqlite
+        .prepare('DELETE FROM audit_events WHERE audit_event_id = ?')
+        .run(original[0]!.auditEventId);
+      expect(() =>
+        recordBootPolicySelfCheckDecisions({ bootId: 'boot_policy_test', coreDb, kernel, now })
+      ).toThrow('Boot policy self-check record is contradictory.');
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM permission_decisions ORDER BY decision_id').all()
+      ).toEqual(retained);
+      coreDb.sqlite
+        .prepare('DELETE FROM permission_decisions WHERE decision_id = ?')
+        .run(original[0]!.decisionId);
+      const partialRows = coreDb.sqlite
+        .prepare('SELECT * FROM permission_decisions ORDER BY decision_id')
+        .all();
+      const partialAudits = coreDb.sqlite
+        .prepare('SELECT * FROM audit_events ORDER BY audit_event_id')
+        .all();
+      expect(() =>
+        recordBootPolicySelfCheckDecisions({ bootId: 'boot_policy_test', coreDb, kernel, now })
+      ).toThrow('Boot policy self-check record is contradictory.');
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM permission_decisions ORDER BY decision_id').all()
+      ).toEqual(partialRows);
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY audit_event_id').all()
+      ).toEqual(partialAudits);
+    } finally {
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
 
-      const rows = coreDb.sqlite
-        .prepare(
-          'SELECT decision_id, action, result, reason_code FROM permission_decisions ORDER BY decision_id'
-        )
-        .all() as Array<{
-        action: string;
-        decision_id: string;
-        reason_code: string;
-        result: string;
-      }>;
-
-      expect(rows).toEqual([
-        {
-          action: 'api.call',
-          decision_id: 'boot_policy_test_policy_core_api_call',
-          reason_code: 'association-grant',
-          result: 'allow',
-        },
-        {
-          action: 'vault.use',
-          decision_id: 'boot_policy_test_policy_vault_use',
-          reason_code: 'restriction',
-          result: 'deny',
-        },
-      ]);
+  it.each([
+    ['outcome', 'denied'],
+    ['resource', 'permission:vault.use'],
+    ['actor_json', '{"kind":"user","userId":"usr_00000000-0000-7000-8000-000000000001"}'],
+    ['workspace_id', 'ws_00000000-0000-7000-8000-000000000001'],
+    ['thread_id', 'th_00000000-0000-7000-8000-000000000001'],
+    ['severity', 'warning'],
+    ['error_code', 'contradictory'],
+    ['occurred_at', '2026-07-05T00:01:00.000Z'],
+  ])('refuses boot retry with contradictory linked Audit %s without changing retained rows', (field, value) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-boot-audit-'));
+    const coreDb = openCoreDb(dataRoot);
+    const input = {
+      bootId: 'boot_audit_contradiction',
+      coreDb,
+      kernel: loadBootPolicyKernel(),
+      now: new Date('2026-07-05T00:00:00.000Z'),
+    };
+    try {
+      applyMigrations(coreDb);
+      recordBootPolicySelfCheckDecisions(input);
+      const decision = listServerPermissionDecisions(coreDb).find(
+        (row) => row.action === 'api.call'
+      )!;
+      // The column comes only from the closed fixture table above.
+      coreDb.sqlite
+        .prepare(`UPDATE audit_events SET ${field} = ? WHERE audit_event_id = ?`)
+        .run(value, decision.auditEventId);
+      const decisions = coreDb.sqlite
+        .prepare('SELECT * FROM permission_decisions ORDER BY decision_id')
+        .all();
+      const audits = coreDb.sqlite
+        .prepare('SELECT * FROM audit_events ORDER BY audit_event_id')
+        .all();
+      expect(() => recordBootPolicySelfCheckDecisions(input)).toThrow(
+        'Boot policy self-check record is contradictory.'
+      );
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM permission_decisions ORDER BY decision_id').all()
+      ).toEqual(decisions);
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY audit_event_id').all()
+      ).toEqual(audits);
     } finally {
       coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('publishes neither boot decision nor Audit when the second decision lacks entropy', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-boot-entropy-'));
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      applyMigrations(coreDb);
+      const nativeEntropy = globalThis.crypto.getRandomValues.bind(globalThis.crypto);
+      const entropy = vi
+        .spyOn(globalThis.crypto, 'getRandomValues')
+        .mockImplementationOnce((value) => nativeEntropy(value))
+        .mockImplementationOnce((value) => nativeEntropy(value))
+        .mockImplementation(() => {
+          throw new Error('Synthetic boot entropy failure.');
+        });
+      try {
+        expect(() =>
+          recordBootPolicySelfCheckDecisions({
+            bootId: 'boot_entropy',
+            coreDb,
+            kernel: loadBootPolicyKernel(),
+          })
+        ).toThrow('Synthetic boot entropy failure.');
+      } finally {
+        entropy.mockRestore();
+      }
+      expect(coreDb.sqlite.prepare('SELECT * FROM permission_decisions').all()).toEqual([]);
+      expect(coreDb.sqlite.prepare('SELECT * FROM audit_events').all()).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
@@ -192,14 +321,17 @@ describe('permission decision recorder', () => {
       expect(() =>
         recordProductPermissionDecision({
           coreDb,
-          decisionId: 'pd_missing_approval_kind',
+          decisionId: 'pd_00000000-0000-75a1-9ff1-d6ec6ed0f953',
           ownerScope: 'server',
           policyEngineVersion: 'nanocore-approval-policy:v1',
           policySnapshotId: 'policy_snapshot_test',
-          subjectSummary: { kind: 'user', id: 'user_demo' },
+          subjectSummary: { kind: 'user', id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
           action: 'vault.use',
-          resourceSummary: { kind: 'vault-reference', id: 'vault_demo' },
-          contextSummary: { workspaceId: 'ws_demo' },
+          resourceSummary: {
+            kind: 'vault-reference',
+            id: 'vault_00000000-0000-78b6-b4ac-a24bcc5d78a3',
+          },
+          contextSummary: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           result: 'require_approval',
           reasonCode: 'approval_required',
           enforcementPoint: 'policy.test',
@@ -219,14 +351,17 @@ describe('permission decision recorder', () => {
 
       recordProductPermissionDecision({
         coreDb,
-        decisionId: 'pd_requires_approval',
+        decisionId: 'pd_00000000-0000-7d59-952b-a37801be80df',
         ownerScope: 'server',
         policyEngineVersion: 'nanocore-approval-policy:v1',
         policySnapshotId: 'policy_snapshot_test',
         subjectSummary: { kind: 'agent', id: 'agent_demo' },
         action: 'vault.use',
-        resourceSummary: { kind: 'vault-reference', id: 'vault_demo' },
-        contextSummary: { workspaceId: 'ws_demo' },
+        resourceSummary: {
+          kind: 'vault-reference',
+          id: 'vault_00000000-0000-78b6-b4ac-a24bcc5d78a3',
+        },
+        contextSummary: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         result: 'require_approval',
         reasonCode: 'approval_required',
         enforcementPoint: 'policy.test',
@@ -235,14 +370,14 @@ describe('permission decision recorder', () => {
       });
       recordProductPermissionDecision({
         coreDb,
-        decisionId: 'pd_requires_escalation',
+        decisionId: 'pd_00000000-0000-7d04-af43-41da70aefdc8',
         ownerScope: 'server',
         policyEngineVersion: 'nanocore-approval-policy:v1',
         policySnapshotId: 'policy_snapshot_test',
         subjectSummary: { kind: 'agent', id: 'agent_demo' },
         action: 'policy.change',
-        resourceSummary: { kind: 'workspace', id: 'ws_demo' },
-        contextSummary: { workspaceId: 'ws_demo' },
+        resourceSummary: { kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' },
+        contextSummary: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         result: 'require_escalation',
         reasonCode: 'higher_authority_required',
         enforcementPoint: 'policy.test',
@@ -262,22 +397,24 @@ describe('permission decision recorder', () => {
         result: string;
       }>;
 
-      expect(rows).toEqual([
-        {
-          approval_id: 'ap_policy_1',
-          decision_id: 'pd_requires_approval',
-          reason_code: 'approval_required',
-          required_approval_kind: 'permission',
-          result: 'require_approval',
-        },
-        {
-          approval_id: null,
-          decision_id: 'pd_requires_escalation',
-          reason_code: 'higher_authority_required',
-          required_approval_kind: null,
-          result: 'require_escalation',
-        },
-      ]);
+      expect(rows).toEqual(
+        [
+          {
+            approval_id: 'ap_policy_1',
+            decision_id: 'pd_00000000-0000-7d59-952b-a37801be80df',
+            reason_code: 'approval_required',
+            required_approval_kind: 'permission',
+            result: 'require_approval',
+          },
+          {
+            approval_id: null,
+            decision_id: 'pd_00000000-0000-7d04-af43-41da70aefdc8',
+            reason_code: 'higher_authority_required',
+            required_approval_kind: null,
+            result: 'require_escalation',
+          },
+        ].sort((left, right) => left.decision_id.localeCompare(right.decision_id))
+      );
     } finally {
       coreDb.sqlite.close();
     }
@@ -285,26 +422,30 @@ describe('permission decision recorder', () => {
 
   it('records linked audit events for workspace-scoped permission decisions', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-decision-audit-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
 
       recordProductPermissionDecision({
         action: 'runtime.launch',
-        auditActor: { kind: 'user', id: 'user_operator' },
-        contextSummary: { threadId: 'th_demo', turnId: 'turn_demo', workspaceId: 'ws_demo' },
-        decisionId: 'pd_workspace_audit',
+        auditActor: { kind: 'user', id: 'usr_00000000-0000-7968-a053-ad9e71464afe' },
+        contextSummary: {
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        },
+        decisionId: 'pd_00000000-0000-7197-aa8e-3647a1d39856',
         enforcementPoint: 'runtime.worker_turn_loop.start',
         ownerScope: 'workspace',
         policyEngineVersion: 'nanocore-worker-policy:v1',
         policySnapshotId: 'worker_turn_launch_policy',
         reasonCode: 'worker_turn_start_allowed',
-        resourceSummary: { kind: 'worker-turn', turnId: 'turn_demo' },
+        resourceSummary: { kind: 'worker-turn', turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64' },
         result: 'allow',
         subjectSummary: { id: 'worker-coordinator', kind: 'nanocore' },
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         now: new Date('2026-07-05T00:00:00.000Z'),
       });
 
@@ -312,7 +453,7 @@ describe('permission decision recorder', () => {
         .prepare(
           'SELECT decision_id, audit_event_id FROM permission_decisions WHERE decision_id = ?'
         )
-        .get('pd_workspace_audit') as {
+        .get('pd_00000000-0000-7197-aa8e-3647a1d39856') as {
         audit_event_id: string | null;
         decision_id: string;
       };
@@ -323,18 +464,21 @@ describe('permission decision recorder', () => {
       expect(decision.audit_event_id).toMatch(/^aud_/);
       expect(audit).toMatchObject({
         action: 'permission.decision',
-        actor_json: JSON.stringify({ kind: 'user', id: 'user_operator' }),
+        actor_json: JSON.stringify({
+          kind: 'user',
+          id: 'usr_00000000-0000-7968-a053-ad9e71464afe',
+        }),
         category: 'approval',
         created_at: '2026-07-05T00:00:00.000Z',
         error_code: null,
         outcome: 'succeeded',
-        permission_decision_id: 'pd_workspace_audit',
+        permission_decision_id: 'pd_00000000-0000-7197-aa8e-3647a1d39856',
         resource: 'permission:runtime.launch',
         severity: 'info',
         summary: 'Permission decision allow: runtime.launch',
-        thread_id: 'th_demo',
-        turn_id: 'turn_demo',
-        workspace_id: 'ws_demo',
+        thread_id: 'th_00000000-0000-7000-8000-000000000001',
+        turn_id: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+        workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
       });
     } finally {
       workspaceDb.sqlite.close();
@@ -352,7 +496,7 @@ describe('permission decision recorder', () => {
         action: 'llm.gateway.responses',
         contextSummary: { requestId: 'req_gateway_policy' },
         coreDb,
-        decisionId: 'pd_server_audit',
+        decisionId: 'pd_00000000-0000-729c-8c31-7d153b685f61',
         enforcementPoint: 'llm.gateway.policy',
         ownerScope: 'server',
         policyEngineVersion: 'nanocore-gateway-policy:v1',
@@ -368,7 +512,7 @@ describe('permission decision recorder', () => {
         .prepare(
           'SELECT decision_id, audit_event_id FROM permission_decisions WHERE decision_id = ?'
         )
-        .get('pd_server_audit') as {
+        .get('pd_00000000-0000-729c-8c31-7d153b685f61') as {
         audit_event_id: string | null;
         decision_id: string;
       };
@@ -383,7 +527,7 @@ describe('permission decision recorder', () => {
         created_at: '2026-07-05T00:00:00.000Z',
         error_code: null,
         outcome: 'succeeded',
-        permission_decision_id: 'pd_server_audit',
+        permission_decision_id: 'pd_00000000-0000-729c-8c31-7d153b685f61',
         resource: 'permission:llm.gateway.responses',
         severity: 'info',
         summary: 'Permission decision allow: llm.gateway.responses',
@@ -396,7 +540,7 @@ describe('permission decision recorder', () => {
 
   it('rolls back a permission decision when its linked audit event cannot persist', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-decision-atomic-audit-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -413,7 +557,7 @@ describe('permission decision recorder', () => {
         recordProductPermissionDecision({
           action: 'repo.push',
           contextSummary: { requestId: 'request_atomic_audit' },
-          decisionId: 'pd_atomic_audit',
+          decisionId: 'pd_00000000-0000-7ffa-93d2-ae49f80adb52',
           enforcementPoint: 'repo.push.approval_response',
           ownerScope: 'workspace',
           policyEngineVersion: 'nanocore-approval-policy:v1',
@@ -423,13 +567,13 @@ describe('permission decision recorder', () => {
           result: 'allow',
           subjectSummary: { kind: 'user' },
           workspaceDb,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).toThrow('injected permission audit failure');
       expect(
         workspaceDb.sqlite
           .prepare('SELECT COUNT(*) AS count FROM permission_decisions WHERE decision_id = ?')
-          .get('pd_atomic_audit')
+          .get('pd_00000000-0000-7ffa-93d2-ae49f80adb52')
       ).toEqual({ count: 0 });
     } finally {
       workspaceDb.sqlite.close();
@@ -438,14 +582,14 @@ describe('permission decision recorder', () => {
 
   it('permits only one terminal permission decision for an approval', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-decision-terminal-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
       const base = {
         action: 'repo.push',
         approvalId: 'approval_terminal_1',
-        auditActor: { kind: 'user' as const, id: 'user_operator' },
+        auditActor: { kind: 'user' as const, id: 'usr_00000000-0000-7968-a053-ad9e71464afe' },
         contextSummary: { requestId: '00000000-0000-4000-8000-000000000015' },
         enforcementPoint: 'repo.push.approval_response',
         ownerScope: 'workspace' as const,
@@ -455,38 +599,41 @@ describe('permission decision recorder', () => {
         resourceSummary: { repositoryId: 'repo_default' },
         subjectSummary: { kind: 'agent', id: 'agent_demo' },
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       };
 
       recordProductPermissionDecision({
         ...base,
-        decisionId: 'pd_requires_approval',
+        decisionId: 'pd_00000000-0000-7d59-952b-a37801be80df',
         reasonCode: 'repo_push_requires_approval',
         result: 'require_approval',
       });
       recordProductPermissionDecision({
         ...base,
-        decisionId: 'pd_terminal_allow',
+        decisionId: 'pd_00000000-0000-7cda-9251-4f38c967a8d3',
         reasonCode: 'repo_push_approved',
         result: 'allow',
       });
       expect(() =>
         recordProductPermissionDecision({
           ...base,
-          decisionId: 'pd_terminal_deny',
+          decisionId: 'pd_00000000-0000-7f80-b7a7-2ab5b94b69ef',
           reasonCode: 'repo_push_denied',
           result: 'deny',
         })
       ).toThrow();
 
       expect(
-        listExportableWorkspacePermissionDecisions(workspaceDb, 'ws_demo').map((decision) => ({
+        listExportableWorkspacePermissionDecisions(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001'
+        ).map((decision) => ({
           decisionId: decision.decisionId,
           result: decision.result,
         }))
       ).toEqual([
-        { decisionId: 'pd_requires_approval', result: 'require_approval' },
-        { decisionId: 'pd_terminal_allow', result: 'allow' },
+        { decisionId: 'pd_00000000-0000-7d59-952b-a37801be80df', result: 'require_approval' },
+        { decisionId: 'pd_00000000-0000-7cda-9251-4f38c967a8d3', result: 'allow' },
       ]);
       expect(
         workspaceDb.sqlite

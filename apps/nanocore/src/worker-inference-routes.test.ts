@@ -21,7 +21,6 @@ import { WORKER_ADAPTERS } from '../../../packages/worker-shim/src/adapter-regis
 import { openSandboxIntegration } from '../../../packages/worker-shim/src/integration-client.js';
 import { createDefaultWorkerControlGateway } from './app.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import {
   listWorkspaceCapabilityCalls,
@@ -57,7 +56,9 @@ import { readWorkObservations } from './storage/work-observations.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -373,18 +374,18 @@ function createWorkerInferenceRouteFixture(
     ensureLocalUser(appCoreDb);
     recordWorkspaceOwnerMembership({
       coreDb: appCoreDb,
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
   }
   const store = createDemoStore();
   const turn = store.createTurn(
-    'ws_demo',
-    'th_demo',
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
     'Call worker inference',
     {
       kind: 'user',
-      id: 'user_local',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
     },
     null,
     options.reasoningEffort === undefined ? {} : { reasoningEffort: options.reasoningEffort }
@@ -423,18 +424,20 @@ function createWorkerInferenceRouteFixture(
     resolveAgentEnvironmentPackage({
       captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
       agentSetup,
-      agentSessionId: trustedRelay ? 'as_worker_inference_1' : 'as_direct_worker_1',
+      agentSessionId: trustedRelay
+        ? 'as_00000000-0000-72a4-a75d-bbe733e57f67'
+        : 'as_00000000-0000-7560-ba81-ac4d1a3c3153',
       backend: {
         kind: 'openshell',
       },
       createdAt: '2026-07-13T00:00:00.000Z',
       requestId: 'req_worker_inference_outer_1',
       triggerActor: options.adminBearer
-        ? { kind: 'user', id: 'user_inference_admin' }
+        ? { kind: 'user', id: 'usr_00000000-0000-7e31-ad22-0a4ca76f76f3' }
         : {
             kind: 'automation',
-            id: 'automation_worker_inference',
-            responsibleUserId: 'user_local',
+            id: 'auto_00000000-0000-755a-81b4-0445480bb7a3',
+            responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
           },
       turn,
       workspaceCwd: '/workspace/openkit',
@@ -458,12 +461,12 @@ function createWorkerInferenceRouteFixture(
       const now = Date.now();
       appCoreDb.sqlite
         .prepare(
-          "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status) VALUES ('user_inference_admin', 'Inference Admin', 'inference-admin@example.com', false, ?, ?, 'human', 'active')"
+          "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status) VALUES ('usr_00000000-0000-7e31-ad22-0a4ca76f76f3', 'Inference Admin', 'inference-admin@example.com', false, ?, ?, 'human', 'active')"
         )
         .run(now, now);
       createOpenKitAccessTokenRecord(appCoreDb, {
         expiresAt: '2099-01-01T00:00:00.000Z',
-        ownerUserId: 'user_inference_admin',
+        ownerUserId: 'usr_00000000-0000-7e31-ad22-0a4ca76f76f3',
         scope: 'server-admin',
         tokenId: 'token_worker_inference_admin',
         workspaceIds: [],
@@ -483,13 +486,13 @@ function createWorkerInferenceRouteFixture(
     });
     const submittedAttempt = recordTestExecutionAttempt(appCoreDb, {
       entry,
-      attemptId: `lease_${turn.id}`,
+      attemptId: testEntityId('attempt', `lease_${turn.id}`),
       agentSessionId: environmentPackage.scope.agentSessionId,
       inputRef: environmentPackage.snapshotId,
       bindingRef: sandboxBindingRef,
       sessionCompatibilityKey: 'fixture-compatibility',
       now: () => new Date().toISOString(),
-      operationId: `fixture-submit:${`lease_${turn.id}`}`,
+      operationId: `fixture-submit:${testEntityId('attempt', `lease_${turn.id}`)}`,
     });
     expect(
       acceptSchedulerExecutionObservation(appCoreDb, {
@@ -503,7 +506,7 @@ function createWorkerInferenceRouteFixture(
   }
   if (options.durableAuthority && appCoreDb) {
     bindNanoHostAttemptRouteTokenHashes(appCoreDb, {
-      attemptId: `lease_${turn.id}`,
+      attemptId: testEntityId('attempt', `lease_${turn.id}`),
       sandboxBindingRef,
       workerCapabilityTokenHash: hashWorkerRouteToken(workerCapabilityToken),
       workerControlTokenHash: hashWorkerRouteToken(workerControlToken),
@@ -1672,7 +1675,7 @@ describe('worker inference routes', () => {
         model: WORKER_LOGICAL_MODEL_ID,
       });
 
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         applyScopedMigrations(workspaceDb);
         const calls = workspaceDb.sqlite
@@ -1716,7 +1719,7 @@ describe('worker inference routes', () => {
   it('denies worker inference when the exact AEP actor loses current Workspace authority', async () => {
     const fixture = createWorkerInferenceRouteFixture();
     fixture.coreDb!.sqlite.transaction(() => {
-      disableCanonicalUser(fixture.coreDb!, 'user_local');
+      disableCanonicalUser(fixture.coreDb!, 'usr_00000000-0000-7000-8000-000000000001');
     })();
 
     const response = await postWorkerResponses(fixture, {
@@ -1773,7 +1776,7 @@ describe('worker inference routes', () => {
         .prepare(`INSERT INTO workspace_members (
         workspace_id, user_id, status, access_level, invitation_id, joined_at,
         removed_at, revision, created_at, updated_at
-      ) VALUES ('ws_demo', 'user_inference_admin', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`)
+      ) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7e31-ad22-0a4ca76f76f3', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`)
         .run(joinedAt, joinedAt, joinedAt);
       reloaded.sqlite
         .prepare(
@@ -1874,7 +1877,7 @@ describe('worker inference routes', () => {
       { model_id: 'other-model' },
       { providerId: 'public-default' },
       { provider_ref: 'public-default' },
-      { workspaceId: 'ws_other' },
+      { workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580' },
       { metadata: { openkit: { requestId: 'req_other' } } },
       { policy: { mode: 'allow' } },
     ];
@@ -1895,7 +1898,7 @@ describe('worker inference routes', () => {
     const headerConflict = await postWorkerResponses(
       fixture,
       { input: 'Hello', model: WORKER_LOGICAL_MODEL_ID },
-      { 'x-openkit-workspace-id': 'ws_demo' }
+      { 'x-openkit-workspace-id': 'ws_00000000-0000-7000-8000-000000000001' }
     );
 
     expect(headerConflict.status).toBe(403);
@@ -2178,7 +2181,7 @@ describe('worker inference routes', () => {
     await supported.text();
 
     fixture.dispatcher.responseError = new GatewayUnsupportedFeatureError(
-      'pi-ai Responses function tools token=tok_secret'
+      'pi-ai Responses function tools token=tok_00000000-0000-7608-9cb9-96beaf03534f'
     );
     const rejected = await postWorkerResponses(fixture, request);
     const body = await rejected.json();
@@ -2197,9 +2200,12 @@ describe('worker inference routes', () => {
     });
     expect(JSON.stringify({ body, calls })).not.toMatch(/pi-ai|tok_secret/);
 
-    fixture.dispatcher.responseError = Object.assign(new Error('private token=tok_secret'), {
-      code: 'unsupported_gateway_feature',
-    });
+    fixture.dispatcher.responseError = Object.assign(
+      new Error('private token=tok_00000000-0000-7608-9cb9-96beaf03534f'),
+      {
+        code: 'unsupported_gateway_feature',
+      }
+    );
     const untyped = await postWorkerResponses(fixture, request);
     expect(await untyped.json()).toMatchObject({
       error: { code: 'worker_inference_request_failed' },
@@ -2215,7 +2221,7 @@ describe('worker inference routes', () => {
     fixture.dispatcher.responseError = attachPiAiFailure(
       new OpenAICompatibleProviderError({
         code: 'model_not_supported',
-        message: 'Unsupported model token=tok_secret',
+        message: 'Unsupported model token=tok_00000000-0000-7608-9cb9-96beaf03534f',
         status: 400,
         type: 'provider_error',
       })
@@ -2239,7 +2245,9 @@ describe('worker inference routes', () => {
     expect(calls).toEqual([
       expect.objectContaining({ errorCode: 'worker_inference_failed', status: 'failed' }),
     ]);
-    expect(JSON.stringify({ body, calls })).not.toContain('tok_secret');
+    expect(JSON.stringify({ body, calls })).not.toContain(
+      'tok_00000000-0000-7608-9cb9-96beaf03534f'
+    );
   });
 
   it('marks post-start stream read failures before emitting terminal SSE', async () => {
@@ -2292,7 +2300,7 @@ describe('worker inference routes', () => {
       const fixture = createWorkerInferenceRouteFixture();
       fixture.dispatcher.shouldFailResponsesStream = true;
       fixture.dispatcher.responsesStreamFailure = Object.assign(
-        new Error('Provider stream failed. token=tok_secret'),
+        new Error('Provider stream failed. token=tok_00000000-0000-7608-9cb9-96beaf03534f'),
         { code: testCase.code }
       );
       const response = await postWorkerResponses(fixture, {
@@ -2305,7 +2313,7 @@ describe('worker inference routes', () => {
       const body = await response.text();
       expect(body).toContain('gateway_stream_failed');
       expect(body).not.toContain(testCase.code);
-      expect(body).not.toContain('tok_secret');
+      expect(body).not.toContain('tok_00000000-0000-7608-9cb9-96beaf03534f');
       const terminal = body
         .split('\n')
         .filter((line) => line.startsWith('data: {'))
@@ -2330,7 +2338,7 @@ describe('worker inference routes', () => {
     const fixture = createWorkerInferenceRouteFixture();
     fixture.dispatcher.shouldFailResponsesStream = true;
     fixture.dispatcher.responsesStreamFailure = attachPiAiFailure(
-      new Error('rate limit exceeded token=tok_secret')
+      new Error('rate limit exceeded token=tok_00000000-0000-7608-9cb9-96beaf03534f')
     ) as Error;
     const response = await postWorkerResponses(fixture, {
       input: 'Hello',
@@ -2341,7 +2349,7 @@ describe('worker inference routes', () => {
     expect(response.status).toBe(200);
     const body = await response.text();
     expect(body).toContain('gateway_provider_rate_limited');
-    expect(body).not.toContain('tok_secret');
+    expect(body).not.toContain('tok_00000000-0000-7608-9cb9-96beaf03534f');
     expect(body).not.toContain('rate limit exceeded');
     expect(readWorkerInferenceCapabilityCalls(fixture)).toEqual([
       expect.objectContaining({
@@ -2598,7 +2606,12 @@ describe('worker inference pre-commit privacy', () => {
 const workerCauseCases = [
   { name: 'retryable rate final', kind: 'rate_limited', status: 429, attempts: 4 },
   { name: 'retryable unavailable final', kind: 'provider_unavailable', status: 503, attempts: 4 },
-  { name: 'auth final', kind: 'auth_rejected', status: 401, attempts: 1 },
+  {
+    name: 'auth final',
+    kind: 'auth_rejected',
+    status: 401,
+    attempts: 1,
+  },
   { name: 'quota final', kind: 'quota_exhausted', status: 429, attempts: 1 },
   { name: 'no available member', kind: undefined, status: 503, attempts: 0 },
   {
@@ -2927,12 +2940,11 @@ describe('slice 3c Worker native effort and immutable package', () => {
     // Stock Completions maps an omitted Core effort through this model's disabled-thinking value.
     expect(received).toEqual([expected ?? 'none']);
     expect(f.environmentPackage).toEqual(admittedPackage);
-    const db = openWorkspaceDb(f.coreDb!.dataRoot, 'ws_demo');
+    const db = openWorkspaceDb(f.coreDb!.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
-      const entries = listWorkspaceCapabilityCalls(db, 'ws_demo')[0]?.extensions?.[
-        'openkit.gateway/routeLineage'
-      ]?.entries;
+      const entries = listWorkspaceCapabilityCalls(db, 'ws_00000000-0000-7000-8000-000000000001')[0]
+        ?.extensions?.['openkit.gateway/routeLineage']?.entries;
       expect(entries).toHaveLength(1);
       if (requested === undefined) expect(entries?.[0]).not.toHaveProperty('requestedEffort');
       else expect(entries?.[0]).toHaveProperty('requestedEffort', requested);

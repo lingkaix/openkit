@@ -201,7 +201,7 @@ function customTransport(baseUrl = 'https://example.invalid/v1') {
     kind: 'custom',
     baseUrl,
     models: ['custom-model'],
-    secretRef: 'vault://provider_openai_compatible_custom',
+    secretRef: 'vault://vault_00000000-0000-7b1d-88cb-f75d3058afdf',
     modelMetadata: {
       'custom-model': {
         reasoning: true,

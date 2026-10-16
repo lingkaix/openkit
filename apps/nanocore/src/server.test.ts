@@ -54,6 +54,8 @@ import {
   parseWorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
 import {
+  deriveEntityId,
+  entityIdPattern,
   MetaResponseSchema,
   PROTOCOL_VERSION,
   SseEventEnvelopeSchema,
@@ -64,7 +66,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type CreateAppOptions, createApp as createNanoCoreApp } from './app.js';
 import { createArtifactReview } from './artifact-reviews.js';
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from './audit-events.js';
-import { ensureLocalUser } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { createNanoHostTransportSessionAuthority } from './auth/nanohost-transport-session.js';
 import { createNanoHostTransportTokenRecord } from './auth/nanohost-transport-token-store.js';
@@ -86,7 +87,6 @@ import * as workerCoordinator from './internal-agents/worker-coordinator.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
-  createDemoWorkspaceForUser,
   FsStore,
   type FsStoreOptions,
 } from './lib/store.js';
@@ -172,11 +172,7 @@ import {
 } from './scheduler-records.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
-import {
-  LOCAL_USER_ID,
-  readDataRootLayoutMarker,
-  recordDataRootDeploymentMove,
-} from './storage/fs-layout.js';
+import { readDataRootLayoutMarker, recordDataRootDeploymentMove } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
 import { readWorkspaceImportSnapshot } from './storage/workspace-import.js';
@@ -185,9 +181,15 @@ import {
   createAppWithWorkspaceAuthority,
   createApp as createDeterministicTestApp,
 } from './test-support/app.js';
+import { createDemoWorkspaceForUser } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
+import {
+  ensureLocalUser,
+  FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
+} from './test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
@@ -239,7 +241,11 @@ function createCoreDb(): CoreDb {
 
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId: 'ws_demo' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: LOCAL_USER_ID,
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
   return coreDb;
 }
 
@@ -275,7 +281,11 @@ async function recordWorkerRetryLease(
   }
 ): Promise<void> {
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId: 'ws_demo' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: LOCAL_USER_ID,
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
     triggerActor: { kind: 'user', id: LOCAL_USER_ID },
@@ -286,9 +296,9 @@ async function recordWorkerRetryLease(
     threadId: input.threadId,
     turnId: input.turnId,
     turnInput: 'Run interrupted-worker retry fixture.',
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const attemptId = `lease_${input.turnId}`;
+  const attemptId = testEntityId('attempt', `lease_${input.turnId}`);
   if (
     input.status === 'failed' &&
     input.releaseReason === 'turn-start-failed' &&
@@ -495,7 +505,7 @@ function createImportedMarkdownArtifact(
   const contentDigest = artifactDigest(input.body);
   return store.createArtifact({
     id: input.id,
-    workspaceId: input.workspaceId ?? 'ws_demo',
+    workspaceId: input.workspaceId ?? 'ws_00000000-0000-7000-8000-000000000001',
     threadId: null,
     turnId: null,
     kind: 'file',
@@ -624,7 +634,7 @@ async function draftKnowledgeProposalFixture(
   const sourceResponse = await app.request(
     ...knowledgeOperationRequest(
       'knowledge.source.register',
-      { workspaceId: 'ws_demo' },
+      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -669,7 +679,7 @@ async function draftKnowledgeProposalFixture(
   const response = await app.request(
     ...knowledgeOperationRequest(
       'knowledge.proposal.draft',
-      { workspaceId: 'ws_demo' },
+      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -715,7 +725,14 @@ function knowledgeProposalRequestId(label: string): string {
  * @returns Absolute authoritative page path.
  */
 function knowledgeProposalPagePath(dataRoot: string, knowledgePageId: string): string {
-  return join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'pages', `${knowledgePageId}.md`);
+  return join(
+    dataRoot,
+    'workspaces',
+    'ws_00000000-0000-7000-8000-000000000001',
+    'knowledge',
+    'pages',
+    `${knowledgePageId}.md`
+  );
 }
 
 /**
@@ -736,7 +753,7 @@ function submitKnowledgeProposalDecision(
   return app.request(
     ...knowledgeOperationRequest(
       'knowledge.proposal.decide',
-      { workspaceId: 'ws_demo', proposalId: proposalId },
+      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', proposalId: proposalId },
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -767,7 +784,7 @@ function submitKnowledgeProposalReversal(
   return app.request(
     ...knowledgeOperationRequest(
       'knowledge.proposal.reverse',
-      { workspaceId: 'ws_demo', proposalId: proposalId },
+      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', proposalId: proposalId },
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -828,8 +845,8 @@ function createOpenShellWorkerControlPackage(
   return AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
       agentSetup: createTestAgentSetup(),
-      agentSessionId: 'as_dashboard_control_1',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      agentSessionId: 'as_00000000-0000-73c1-85c9-e24cc662686d',
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       backend: {
         kind: 'openshell',
       },
@@ -901,23 +918,6 @@ class FakeTurnExecutor implements TurnExecutor {
       workspaceDataSourceCatalogs: config.workspaceDataSourceCatalogs,
       workspaceMcpServerCatalogs: config.workspaceMcpServerCatalogs,
     });
-    if (
-      result.terminalResult.status === 'queued' &&
-      result.terminalResult.reason === 'entry-publication-pending'
-    ) {
-      console.log(
-        'server-publication-probe',
-        JSON.stringify({
-          result: result.terminalResult,
-          admissions: coreDb.sqlite
-            .prepare(
-              'SELECT queue_entry_id, request_id, thread_id, turn_id, status FROM scheduler_admission_entries'
-            )
-            .all(),
-          receipts: store.listCommandRequests(),
-        })
-      );
-    }
     await vi.waitFor(() => expect(this.completedExecutions).toBe(count), { timeout: 1_000 });
     await setImmediate();
   }
@@ -1169,7 +1169,7 @@ class FakeTurnExecutor implements TurnExecutor {
         });
     store.updateTurn(turnId, { agentSessionId: agentSession.id });
     const userItem = store.createItem({
-      id: `it_user_${turnId}`,
+      id: deriveEntityId('it', ['task-user', turnId]),
       workspaceId: turn.workspaceId,
       threadId: turn.threadId,
       turnId,
@@ -1181,7 +1181,7 @@ class FakeTurnExecutor implements TurnExecutor {
       completedAt: turn.startedAt ?? new Date().toISOString(),
     });
     const assistantItem = store.createItem({
-      id: `it_assistant_${turnId}`,
+      id: deriveEntityId('it', ['worker-result', turnId]),
       workspaceId: turn.workspaceId,
       threadId: turn.threadId,
       turnId,
@@ -1379,14 +1379,14 @@ function workspaceSyncReviewRouteItem(): Parameters<typeof recordWorkspaceSyncRe
   const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
 
   return {
-    artifactId: 'ar_workspace_review_route',
+    artifactId: 'ar_00000000-0000-7e94-81d0-07c899686379',
     changeSet: {
-      artifactIds: ['ar_workspace_review_route'],
+      artifactIds: ['ar_00000000-0000-7e94-81d0-07c899686379'],
       base: { commit: 'abc123', contentDigest: null },
       bundle: null,
       changedPaths: [{ binary: false, path: 'docs/sync.md', status: 'modified' }],
       createdAt: '2026-07-06T00:00:00.000Z',
-      evidenceRefs: [{ kind: 'worker', ref: 'turn_route_1' }],
+      evidenceRefs: [{ kind: 'worker', ref: 'tu_00000000-0000-7134-8501-76dbee7ab54a' }],
       head: { commit: 'def456', contentDigest: null },
       id: 'wcs_route_1',
       inputSnapshotId: 'wis_route_1',
@@ -1399,7 +1399,7 @@ function workspaceSyncReviewRouteItem(): Parameters<typeof recordWorkspaceSyncRe
       redaction: { notes: [], status: 'redacted' },
       resourceId: 'repo_default',
       strategy: 'git',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     },
     patchPayload: {
       bytes: Buffer.byteLength(patchText, 'utf8'),
@@ -1422,7 +1422,7 @@ function workspaceSyncReviewRouteItem(): Parameters<typeof recordWorkspaceSyncRe
       status: 'pending',
       updatedAt: '2026-07-06T00:00:00.000Z',
       validation: [],
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     },
   };
 }
@@ -1574,27 +1574,35 @@ describe('nanocore server', () => {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             input: 'Hello',
-            threadId: 'th_blocked',
-            workspaceId: 'ws_blocked',
+            threadId: 'th_00000000-0000-7b57-9450-529f9b9cd0a5',
+            workspaceId: 'ws_00000000-0000-78b7-97e1-b6c5b0981867',
           }),
         }
       )
     );
 
-    const threadCount = canonicalStore.listThreads('ws_demo').length;
+    const threadCount = canonicalStore.listThreads(
+      'ws_00000000-0000-7000-8000-000000000001'
+    ).length;
     const requestId = 'd366ec14-5110-43ab-b086-94a768a3d1d6';
     const createThread = await canonicalApp.request('/api/app/operations/thread.create', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
-      body: JSON.stringify({ workspaceId: 'ws_demo', name: 'Blocked Thread', requestId }),
+      body: JSON.stringify({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        name: 'Blocked Thread',
+        requestId,
+      }),
     });
     expect(createThread.status).toBe(503);
     await expect(createThread.json()).resolves.toMatchObject({ code: 'product_work_unavailable' });
-    expect(canonicalStore.listThreads('ws_demo')).toHaveLength(threadCount);
+    expect(canonicalStore.listThreads('ws_00000000-0000-7000-8000-000000000001')).toHaveLength(
+      threadCount
+    );
     const createRecord = await canonicalApp.request('/api/app/operations/kernel.records.create', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
-      body: JSON.stringify({ workspaceId: 'ws_demo', requestId }),
+      body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001', requestId }),
     });
     expect(createRecord.status).toBe(503);
     await expect(createRecord.json()).resolves.toMatchObject({ code: 'product_work_unavailable' });
@@ -1657,20 +1665,28 @@ describe('nanocore server', () => {
       )
     );
 
-    const threadCount = canonicalStore.listThreads('ws_demo').length;
+    const threadCount = canonicalStore.listThreads(
+      'ws_00000000-0000-7000-8000-000000000001'
+    ).length;
     const requestId = 'd366ec14-5110-43ab-b086-94a768a3d1d6';
     const createThread = await app.request('/api/app/operations/thread.create', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
-      body: JSON.stringify({ workspaceId: 'ws_demo', name: 'Blocked Thread', requestId }),
+      body: JSON.stringify({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        name: 'Blocked Thread',
+        requestId,
+      }),
     });
     expect(createThread.status).toBe(503);
     await expect(createThread.json()).resolves.toMatchObject({ code: 'product_work_unavailable' });
-    expect(canonicalStore.listThreads('ws_demo')).toHaveLength(threadCount);
+    expect(canonicalStore.listThreads('ws_00000000-0000-7000-8000-000000000001')).toHaveLength(
+      threadCount
+    );
     const createRecord = await app.request('/api/app/operations/kernel.records.create', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
-      body: JSON.stringify({ workspaceId: 'ws_demo', requestId }),
+      body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001', requestId }),
     });
     expect(createRecord.status).toBe(503);
     await expect(createRecord.json()).resolves.toMatchObject({ code: 'product_work_unavailable' });
@@ -1762,8 +1778,8 @@ describe('nanocore server', () => {
   it('exports one workspace through the App API', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-export-route-'));
     const store = createDemoStore({ dataRoot });
-    store.createThread('ws_demo', 'Export route thread');
-    store.createKnowledgeEntry('ws_demo', {
+    store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Export route thread');
+    store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Export route knowledge',
       content: 'Export this note.',
@@ -1773,13 +1789,17 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, dataRoot, store });
 
     const res = await app.request(
-      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        { method: 'POST' }
+      )
     );
 
     expect(res.status).toBe(200);
     const body = WorkspaceExportResponseSchema.parse(await res.json());
     expect(body).toMatchObject({
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       fileCount: 23,
       checkedFiles: [
         'records/agent-resource-catalog.json',
@@ -1808,11 +1828,15 @@ describe('nanocore server', () => {
       ],
       manifest: {
         recordType: 'workspace-export',
-        workspaceId: 'ws_demo',
-        exportFormatVersion: 2,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        exportFormatVersion: 3,
       },
     });
-    const exportRoot = workspaceExportRoot(dataRoot, 'ws_demo', body.exportId);
+    const exportRoot = workspaceExportRoot(
+      dataRoot,
+      'ws_00000000-0000-7000-8000-000000000001',
+      body.exportId
+    );
     expect([
       readFileSync(join(exportRoot, 'records/vault-injection-plans.jsonl'), 'utf8'),
       readFileSync(join(exportRoot, 'records/vault-injection-receipts.jsonl'), 'utf8'),
@@ -1829,7 +1853,11 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, dataRoot, store });
     const beforeCount = store.listWorkspaces().length;
     const exportRes = await app.request(
-      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        { method: 'POST' }
+      )
     );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
@@ -1840,7 +1868,10 @@ describe('nanocore server', () => {
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ sourceWorkspaceId: 'ws_demo', exportId: exported.exportId }),
+          body: JSON.stringify({
+            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            exportId: exported.exportId,
+          }),
         }
       )
     );
@@ -1850,9 +1881,9 @@ describe('nanocore server', () => {
     expect(body).toMatchObject({
       mode: 'dry-run',
       exportId: exported.exportId,
-      sourceWorkspaceId: 'ws_demo',
-      exportedWorkspaceId: 'ws_demo',
-      collision: { status: 'collides', workspaceId: 'ws_demo' },
+      sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      exportedWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      collision: { status: 'collides', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       verification: { fileCount: 22 },
     });
     expect(store.listWorkspaces()).toHaveLength(beforeCount);
@@ -1865,8 +1896,8 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    store.createThread('ws_demo', 'Import source thread');
-    store.createKnowledgeEntry('ws_demo', {
+    store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Import source thread');
+    store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Import source knowledge',
       content: 'Import this knowledge.',
@@ -1874,7 +1905,11 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, dataRoot, store });
     const sourceDeploymentId = readDataRootLayoutMarker(dataRoot).deploymentId;
     const exportRes = await app.request(
-      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        { method: 'POST' }
+      )
     );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
@@ -1886,7 +1921,7 @@ describe('nanocore server', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            sourceWorkspaceId: 'ws_demo',
+            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             exportId: exported.exportId,
             requestId: '00000000-0000-4000-8000-00000000d701',
           }),
@@ -1899,29 +1934,31 @@ describe('nanocore server', () => {
     expect(body).toMatchObject({
       mode: 'imported',
       requestId: '00000000-0000-4000-8000-00000000d701',
-      sourceWorkspaceId: 'ws_demo',
-      exportedWorkspaceId: 'ws_demo',
-      importedWorkspaceId: 'ws_imported_ws_demo',
-      collision: { status: 'collides', workspaceId: 'ws_demo' },
+      sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      exportedWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      importedWorkspaceId: 'ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6',
+      collision: { status: 'collides', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       workspace: {
-        id: 'ws_imported_ws_demo',
+        id: 'ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6',
         counts: { threadCount: 2, knowledgeEntryCount: 2 },
         importedFrom: {
           sourceDeploymentId,
-          sourceWorkspaceId: 'ws_demo',
+          sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           exportCreatedAt: exported.manifest.exportCreatedAt,
         },
       },
     });
     expect(body.workspace.importedFrom?.manifestDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
-    expect(store.getWorkspace('ws_imported_ws_demo').name).toBe('Demo Workspace');
-    expect(store.getWorkspace('ws_imported_ws_demo').importedFrom?.sourceWorkspaceId).toBe(
-      'ws_demo'
+    expect(store.getWorkspace('ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6').name).toBe(
+      'Demo Workspace'
     );
-    expect(store.listThreads('ws_imported_ws_demo')).toHaveLength(2);
-    expect(store.listKnowledge('ws_imported_ws_demo').map((entry) => entry.title)).toContain(
-      'Import source knowledge'
-    );
+    expect(
+      store.getWorkspace('ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6').importedFrom?.sourceWorkspaceId
+    ).toBe('ws_00000000-0000-7000-8000-000000000001');
+    expect(store.listThreads('ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6')).toHaveLength(2);
+    expect(
+      store.listKnowledge('ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6').map((entry) => entry.title)
+    ).toContain('Import source knowledge');
     expect(
       coreDb.sqlite
         .prepare(
@@ -1930,17 +1967,17 @@ describe('nanocore server', () => {
            WHERE workspace_id = ?`
         )
         .get(body.importedWorkspaceId)
-    ).toEqual({ status: 'active', user_id: 'user_local' });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_imported_ws_demo');
+    ).toEqual({ status: 'active', user_id: 'usr_00000000-0000-7000-8000-000000000001' });
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6');
     try {
       const audit = workspaceDb.sqlite
         .prepare('SELECT * FROM audit_events WHERE action = ?')
         .get('workspace.import') as Record<string, unknown> | undefined;
       expect(audit).toMatchObject({
-        workspace_id: 'ws_imported_ws_demo',
+        workspace_id: 'ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6',
         request_id: '00000000-0000-4000-8000-00000000d701',
         category: 'system',
-        resource: 'workspace:ws_imported_ws_demo',
+        resource: 'workspace:ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6',
         outcome: 'succeeded',
         severity: 'info',
       });
@@ -1956,16 +1993,16 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       recordWorkspaceAuditEvent({
         workspaceDb: sourceDb,
-        auditEventId: 'aud_workspace_source_event',
-        workspaceId: 'ws_demo',
+        auditEventId: 'aud_00000000-0000-70d3-9ee0-ff6d0e353d12',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         requestId: '00000000-0000-4000-8000-00000000d721',
         category: 'system',
         action: 'workspace.source_event',
-        resource: 'workspace:ws_demo',
+        resource: 'workspace:ws_00000000-0000-7000-8000-000000000001',
         outcome: 'succeeded',
         severity: 'info',
         summary: 'Source workspace event.',
@@ -1976,7 +2013,11 @@ describe('nanocore server', () => {
     }
     const app = createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
-      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        { method: 'POST' }
+      )
     );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
@@ -1990,7 +2031,7 @@ describe('nanocore server', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            sourceWorkspaceId: 'ws_demo',
+            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             exportId: exported.exportId,
             requestId: '00000000-0000-4000-8000-00000000d722',
           }),
@@ -2012,7 +2053,7 @@ describe('nanocore server', () => {
       expect(auditRows).toEqual(
         expect.arrayContaining([
           {
-            audit_event_id: 'aud_workspace_source_event',
+            audit_event_id: 'aud_00000000-0000-70d3-9ee0-ff6d0e353d12',
             workspace_id: body.importedWorkspaceId,
             request_id: '00000000-0000-4000-8000-00000000d721',
             action: 'workspace.source_event',
@@ -2042,18 +2083,22 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-export-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    recordDataRootDeploymentMove(dataRoot, 'dep_moved');
+    recordDataRootDeploymentMove(dataRoot, 'dep_00000000-0000-7198-9759-a2c549718546');
     const store = createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
 
     try {
       const exportRes = await app.request(
-        ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+        ...operationRequest(
+          'workspace.export',
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+          { method: 'POST' }
+        )
       );
 
       expect(exportRes.status).toBe(200);
       const body = WorkspaceExportResponseSchema.parse(await exportRes.json());
-      expect(body.manifest.sourceDeploymentId).toBe('dep_moved');
+      expect(body.manifest.sourceDeploymentId).toBe('dep_00000000-0000-7198-9759-a2c549718546');
     } finally {
       coreDb.sqlite.close();
     }
@@ -2068,11 +2113,19 @@ describe('nanocore server', () => {
 
     try {
       const exportRes = await app.request(
-        ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+        ...operationRequest(
+          'workspace.export',
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+          { method: 'POST' }
+        )
       );
       const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
       const usageRes = await app.request(
-        ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+        ...operationRequest(
+          'usage.read',
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+          {}
+        )
       );
 
       expect(usageRes.status, await usageRes.clone().text()).toBe(200);
@@ -2085,7 +2138,7 @@ describe('nanocore server', () => {
           providerRef: 'nanocore-storage',
           serviceRef: 'workspace-export',
           status: 'succeeded',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         }),
       ]);
       expect(usage.usageRecords).toHaveLength(2);
@@ -2097,7 +2150,7 @@ describe('nanocore server', () => {
             quantity: exported.fileCount,
             source: 'workspace-export-inventory',
             unit: 'files',
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           }),
           expect.objectContaining({
             category: 'storage',
@@ -2105,7 +2158,7 @@ describe('nanocore server', () => {
             quantity: exported.totalBytes,
             source: 'workspace-export-inventory',
             unit: 'bytes',
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           }),
         ])
       );
@@ -2123,7 +2176,11 @@ describe('nanocore server', () => {
 
     try {
       const exportRes = await app.request(
-        ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+        ...operationRequest(
+          'workspace.export',
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+          { method: 'POST' }
+        )
       );
       const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
       const importRes = await app.request(
@@ -2134,7 +2191,7 @@ describe('nanocore server', () => {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
-              sourceWorkspaceId: 'ws_demo',
+              sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               exportId: exported.exportId,
               requestId: '00000000-0000-4000-8000-00000000d733',
             }),
@@ -2192,14 +2249,14 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     let callId = '';
     try {
       const call = startCapabilityCall({
         authorityActor: { kind: 'user', id: LOCAL_USER_ID },
         workspaceDb: sourceDb,
-        callId: 'cap_workspace_source_call',
-        workspaceId: 'ws_demo',
+        callId: 'cap_00000000-0000-7314-89d4-4cbdd63256ba',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         requestId: '00000000-0000-4000-8000-00000000d731',
         family: 'llm',
         operation: 'quick_chat',
@@ -2215,7 +2272,7 @@ describe('nanocore server', () => {
         call,
         records: [
           {
-            usageId: 'use_workspace_source_usage',
+            usageId: 'use_00000000-0000-7b13-9f7f-fef1eecae052',
             category: 'llm',
             unit: 'tokens',
             quantity: 42,
@@ -2237,7 +2294,11 @@ describe('nanocore server', () => {
     }
     const app = createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
-      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        { method: 'POST' }
+      )
     );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
@@ -2252,7 +2313,7 @@ describe('nanocore server', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            sourceWorkspaceId: 'ws_demo',
+            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             exportId: exported.exportId,
             requestId: '00000000-0000-4000-8000-00000000d732',
           }),
@@ -2273,7 +2334,7 @@ describe('nanocore server', () => {
         .prepare(
           'SELECT usage_id, workspace_id, capability_call_id, category, unit, quantity FROM usage_records WHERE usage_id = ?'
         )
-        .get('use_workspace_source_usage') as Record<string, unknown> | undefined;
+        .get('use_00000000-0000-7b13-9f7f-fef1eecae052') as Record<string, unknown> | undefined;
 
       expect(callRow).toEqual({
         call_id: callId,
@@ -2283,7 +2344,7 @@ describe('nanocore server', () => {
         provider_ref: 'provider:test',
       });
       expect(usageRow).toEqual({
-        usage_id: 'use_workspace_source_usage',
+        usage_id: 'use_00000000-0000-7b13-9f7f-fef1eecae052',
         workspace_id: body.importedWorkspaceId,
         capability_call_id: callId,
         category: 'llm',
@@ -2303,11 +2364,11 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot });
     store.createKnowledgeSource(
       {
-        id: 'ks_source_1',
-        workspaceId: 'ws_demo',
+        id: 'ks_00000000-0000-7088-ae57-04f7708ec242',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         kind: 'document',
         title: 'Deployment note',
-        uri: 'workspace://ws_demo/docs/deployment.md',
+        uri: 'workspace://ws_00000000-0000-7000-8000-000000000001/docs/deployment.md',
         contentDigest: 'sha256:deployment-note',
         originatingThreadId: null,
         originatingTurnId: null,
@@ -2320,13 +2381,21 @@ describe('nanocore server', () => {
     );
     const app = createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
-      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        { method: 'POST' }
+      )
     );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/knowledge-sources.jsonl');
-    expect(exported.checkedFiles).toContain('sources/materials/ks_source_1/content.txt');
-    expect(exported.checkedFiles).toContain('sources/derived/ks_source_1/text.json');
+    expect(exported.checkedFiles).toContain(
+      'sources/materials/ks_00000000-0000-7088-ae57-04f7708ec242/content.txt'
+    );
+    expect(exported.checkedFiles).toContain(
+      'sources/derived/ks_00000000-0000-7088-ae57-04f7708ec242/text.json'
+    );
 
     const importRes = await app.request(
       ...operationRequest(
@@ -2336,7 +2405,7 @@ describe('nanocore server', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            sourceWorkspaceId: 'ws_demo',
+            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             exportId: exported.exportId,
             requestId: '00000000-0000-4000-8000-00000000d736',
           }),
@@ -2346,33 +2415,35 @@ describe('nanocore server', () => {
 
     expect(importRes.status).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
+    const importedSourceId = store.listKnowledgeSources(body.importedWorkspaceId)[0]!.id;
+    expect(importedSourceId).toMatch(entityIdPattern('ks'));
+    expect(importedSourceId).not.toBe('ks_00000000-0000-7088-ae57-04f7708ec242');
     expect(store.listKnowledgeSources(body.importedWorkspaceId)).toEqual([
       expect.objectContaining({
-        id: 'ks_imported_ws_imported_ws_demo_1',
+        id: importedSourceId,
         workspaceId: body.importedWorkspaceId,
         kind: 'document',
         contentDigest: 'sha256:deployment-note',
       }),
     ]);
+    expect(store.readKnowledgeSourceMaterial(body.importedWorkspaceId, importedSourceId)).toBe(
+      'Deployment note source material.'
+    );
     expect(
-      store.readKnowledgeSourceMaterial(
-        body.importedWorkspaceId,
-        'ks_imported_ws_imported_ws_demo_1'
-      )
-    ).toBe('Deployment note source material.');
-    expect(
-      store.listKnowledgeSourceDerivedRepresentations(
-        body.importedWorkspaceId,
-        'ks_imported_ws_imported_ws_demo_1'
-      )
+      store.listKnowledgeSourceDerivedRepresentations(body.importedWorkspaceId, importedSourceId)
     ).toEqual([
       expect.objectContaining({
-        sourceId: 'ks_imported_ws_imported_ws_demo_1',
+        sourceId: importedSourceId,
         kind: 'text',
-        materialPath: 'sources/materials/ks_imported_ws_imported_ws_demo_1/content.txt',
+        materialPath: `sources/materials/${importedSourceId}/content.txt`,
       }),
     ]);
-    expect(store.getKnowledgeSource('ws_demo', 'ks_source_1').workspaceId).toBe('ws_demo');
+    expect(
+      store.getKnowledgeSource(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'ks_00000000-0000-7088-ae57-04f7708ec242'
+      ).workspaceId
+    ).toBe('ws_00000000-0000-7000-8000-000000000001');
     expect(JSON.stringify(exported)).not.toContain(dataRoot);
     coreDb.sqlite.close();
   });
@@ -2382,18 +2453,18 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    store.createThread('ws_demo', 'Round trip thread');
-    store.createKnowledgeEntry('ws_demo', {
+    store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Round trip thread');
+    store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
       kind: 'project-context',
       title: 'Round trip knowledge',
       content: 'Keep this entry through import.',
     });
     store.createKnowledgeSource({
-      id: 'ks_round_trip_1',
-      workspaceId: 'ws_demo',
+      id: 'ks_00000000-0000-763c-8bd1-03db28758e4d',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       kind: 'document',
       title: 'Round trip source',
-      uri: 'workspace://ws_demo/docs/round-trip.md',
+      uri: 'workspace://ws_00000000-0000-7000-8000-000000000001/docs/round-trip.md',
       contentDigest: 'sha256:round-trip-source',
       originatingThreadId: null,
       originatingTurnId: null,
@@ -2407,21 +2478,21 @@ describe('nanocore server', () => {
       backendLocator: 'encrypted-file:round-trip-source',
       displayName: 'Round trip provider key',
       ownerScope: 'workspace',
-      referenceId: 'vault_round_trip_provider',
+      referenceId: 'vault_00000000-0000-7dc0-83c0-1a11904fc300',
       secretKind: 'provider-api-key',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       now: () => '2026-07-06T00:00:03.000Z',
     });
-    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       recordWorkspaceAuditEvent({
         workspaceDb: sourceDb,
-        auditEventId: 'aud_round_trip_source',
-        workspaceId: 'ws_demo',
+        auditEventId: 'aud_00000000-0000-741a-88fe-6383c4684791',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         requestId: '00000000-0000-4000-8000-00000000d746',
         category: 'system',
         action: 'workspace.round_trip_source',
-        resource: 'workspace:ws_demo',
+        resource: 'workspace:ws_00000000-0000-7000-8000-000000000001',
         outcome: 'succeeded',
         severity: 'info',
         summary: 'Round-trip source event.',
@@ -2433,10 +2504,18 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, dataRoot, store });
 
     const exportRes = await app.request(
-      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        { method: 'POST' }
+      )
     );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
-    const sourceRoot = workspaceExportRoot(dataRoot, 'ws_demo', exported.exportId);
+    const sourceRoot = workspaceExportRoot(
+      dataRoot,
+      'ws_00000000-0000-7000-8000-000000000001',
+      exported.exportId
+    );
     const importRes = await app.request(
       ...operationRequest(
         'workspace.import',
@@ -2445,7 +2524,7 @@ describe('nanocore server', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            sourceWorkspaceId: 'ws_demo',
+            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             exportId: exported.exportId,
             requestId: '00000000-0000-4000-8000-00000000d747',
           }),
@@ -2477,8 +2556,14 @@ describe('nanocore server', () => {
       'counts'
     );
     expect(
-      readExportJsonl(reExportRoot, 'records/threads.jsonl').map((thread) => thread.name)
-    ).toEqual(readExportJsonl(sourceRoot, 'records/threads.jsonl').map((thread) => thread.name));
+      readExportJsonl(reExportRoot, 'records/threads.jsonl')
+        .map((thread) => thread.name)
+        .sort()
+    ).toEqual(
+      readExportJsonl(sourceRoot, 'records/threads.jsonl')
+        .map((thread) => thread.name)
+        .sort()
+    );
     expect(
       readExportJsonl(reExportRoot, 'records/knowledge.jsonl').map((entry) => entry.title)
     ).toEqual(readExportJsonl(sourceRoot, 'records/knowledge.jsonl').map((entry) => entry.title));
@@ -2522,14 +2607,18 @@ describe('nanocore server', () => {
       backendLocator: 'os-keychain:redacted-source',
       displayName: 'Workspace provider key',
       ownerScope: 'workspace',
-      referenceId: 'vault_ws_demo_provider',
+      referenceId: 'vault_00000000-0000-7c6f-bd57-1bcdd97ac656',
       secretKind: 'provider-api-key',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       now: () => '2026-07-06T00:00:00.000Z',
     });
     const app = createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
-      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        { method: 'POST' }
+      )
     );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
@@ -2543,7 +2632,7 @@ describe('nanocore server', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            sourceWorkspaceId: 'ws_demo',
+            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             exportId: exported.exportId,
             requestId: '00000000-0000-4000-8000-00000000d711',
           }),
@@ -2554,7 +2643,7 @@ describe('nanocore server', () => {
     expect(importRes.status, await importRes.clone().text()).toBe(400);
     expect(
       listVaultReferences(coreDb).filter(
-        (reference) => reference.workspaceId === 'ws_imported_ws_demo'
+        (reference) => reference.workspaceId === 'ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6'
       )
     ).toEqual([]);
     expect(getVaultReference(coreDb, sourceReference.referenceId)).toEqual(sourceReference);
@@ -2572,22 +2661,19 @@ describe('nanocore server', () => {
         backendLocator: `encrypted-file://source-${suffix}`,
         displayName: `Workspace provider key ${suffix}`,
         ownerScope: 'workspace',
-        referenceId: `vault_ws_demo_${suffix}`,
+        referenceId: testEntityId('vault', `vault_ws_demo_${suffix}`),
         secretKind: 'provider-api-key',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         now: () => `2026-07-06T00:00:0${suffix}.000Z`,
       });
     }
-    const targetWorkspaceId = 'ws_imported_ws_demo';
-    createVaultReference(coreDb, {
-      backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://conflict',
-      displayName: 'Conflicting server reference',
-      ownerScope: 'server',
-      referenceId: `vault_imported_${targetWorkspaceId}_2`,
-      secretKind: 'provider-api-key',
-      now: () => '2026-07-06T00:00:03.000Z',
-    });
+    const targetWorkspaceId = 'ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6';
+    // Independent import IDs cannot be preclaimed; fail the second real Core insert instead.
+    coreDb.sqlite.exec(`CREATE TRIGGER reject_second_imported_reference
+      BEFORE INSERT ON vault_references
+      WHEN NEW.workspace_id = '${targetWorkspaceId}'
+        AND (SELECT COUNT(*) FROM vault_references WHERE workspace_id = '${targetWorkspaceId}') >= 1
+      BEGIN SELECT RAISE(ABORT, 'fixture_core_import_failure'); END`);
     const coreRowCounts = coreDb.sqlite.prepare(`SELECT
       (SELECT COUNT(*) FROM vault_references) AS vaultReferences,
       (SELECT COUNT(*) FROM vault_grants) AS vaultGrants,
@@ -2596,7 +2682,11 @@ describe('nanocore server', () => {
     const beforeCoreRows = coreRowCounts.get();
     const app = createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
-      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        { method: 'POST' }
+      )
     );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
@@ -2608,7 +2698,7 @@ describe('nanocore server', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            sourceWorkspaceId: 'ws_demo',
+            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             exportId: exported.exportId,
             requestId: '00000000-0000-4000-8000-00000000d712',
           }),
@@ -2641,24 +2731,24 @@ describe('nanocore server', () => {
       backendLocator: 'encrypted-file://redacted-source',
       displayName: 'Workspace GitHub token',
       ownerScope: 'workspace',
-      referenceId: 'vault_ws_demo_github',
+      referenceId: 'vault_00000000-0000-73d3-b1a3-1e62326fe390',
       secretKind: 'github-token',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       now: () => '2026-07-06T00:00:00.000Z',
     });
-    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       createVaultUseRecord(sourceDb, {
-        useId: 'vuse_ws_demo_1',
+        useId: 'vu_00000000-0000-71ee-950d-3889f5c6eae6',
         ownerScope: 'workspace',
-        workspaceId: 'ws_demo',
-        vaultReferenceId: 'vault_ws_demo_github',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        vaultReferenceId: 'vault_00000000-0000-73d3-b1a3-1e62326fe390',
         materialVersion: 3,
         backendKind: 'encrypted-file',
         resolvingPath: 'provider',
-        capabilityCallId: 'cap_vault_1',
+        capabilityCallId: 'cap_00000000-0000-7d74-a30d-b4ef318b293e',
         outcome: 'succeeded',
-        auditEventId: 'audit_vault_1',
+        auditEventId: 'aud_00000000-0000-754b-b414-a4452aa3ecc1',
         usedAt: '2026-07-06T00:10:00.000Z',
       });
     } finally {
@@ -2666,7 +2756,11 @@ describe('nanocore server', () => {
     }
     const app = createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
-      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        { method: 'POST' }
+      )
     );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
@@ -2680,7 +2774,7 @@ describe('nanocore server', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            sourceWorkspaceId: 'ws_demo',
+            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             exportId: exported.exportId,
             requestId: '00000000-0000-4000-8000-00000000d842',
           }),
@@ -2697,7 +2791,7 @@ describe('nanocore server', () => {
     try {
       expect(listVaultUseRecords(importedDb)).toEqual([
         expect.objectContaining({
-          useId: 'vuse_ws_demo_1',
+          useId: 'vu_00000000-0000-71ee-950d-3889f5c6eae6',
           ownerScope: 'workspace',
           workspaceId: body.importedWorkspaceId,
           vaultReferenceId: importedReferences[0]?.referenceId,
@@ -2707,7 +2801,7 @@ describe('nanocore server', () => {
           grantId: null,
           receiptId: null,
           outcome: 'succeeded',
-          auditEventId: 'audit_vault_1',
+          auditEventId: 'aud_00000000-0000-754b-b414-a4452aa3ecc1',
         }),
       ]);
       expect(JSON.stringify(listVaultUseRecords(importedDb))).not.toContain('redacted-source');
@@ -2727,28 +2821,32 @@ describe('nanocore server', () => {
       backendLocator: 'encrypted-file://redacted-source',
       displayName: 'Workspace GitHub token',
       ownerScope: 'workspace',
-      referenceId: 'vault_ws_demo_github',
+      referenceId: 'vault_00000000-0000-73d3-b1a3-1e62326fe390',
       secretKind: 'github-token',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       now: () => '2026-07-06T00:00:00.000Z',
     });
     createVaultGrant(coreDb, {
-      grantId: 'grant_ws_demo_github',
+      grantId: 'grant_00000000-0000-7d2a-8f88-5d41a9feb840',
       vaultReferenceId: sourceReference.referenceId,
       ownerScope: 'workspace',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       subjectSummary: 'GitHub MCP read access',
       targetAgentId: 'assistant',
       targetCapabilityId: 'mcp.github.call_tool',
       allowedInjectionPaths: ['backend-provider'],
       lifetime: 'workspace',
-      policyDecisionId: 'pd_grant_1',
+      policyDecisionId: 'pd_00000000-0000-7c23-a787-0184e39daa30',
       expiresAt: '2026-07-07T00:00:00.000Z',
       now: () => '2026-07-06T00:11:00.000Z',
     });
     const app = createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
-      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        { method: 'POST' }
+      )
     );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
@@ -2762,7 +2860,7 @@ describe('nanocore server', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            sourceWorkspaceId: 'ws_demo',
+            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             exportId: exported.exportId,
             requestId: '00000000-0000-4000-8000-00000000d852',
           }),
@@ -2781,7 +2879,8 @@ describe('nanocore server', () => {
 
     expect(importedGrants).toEqual([
       expect.objectContaining({
-        grantId: `grant_imported_${body.importedWorkspaceId}_1`,
+        grantId: expect.stringMatching(entityIdPattern('grant')),
+        issuance: 'imported-history',
         vaultReferenceId: importedReference?.referenceId,
         ownerScope: 'workspace',
         workspaceId: body.importedWorkspaceId,
@@ -2789,12 +2888,12 @@ describe('nanocore server', () => {
         allowedInjectionPaths: ['backend-provider'],
         lifetime: 'workspace',
         status: 'active',
-        policyDecisionId: 'pd_grant_1',
+        policyDecisionId: 'pd_00000000-0000-7c23-a787-0184e39daa30',
         approvalId: null,
         expiresAt: '2026-07-07T00:00:00.000Z',
       }),
     ]);
-    expect(importedGrants[0]?.grantId).not.toBe('grant_ws_demo_github');
+    expect(importedGrants[0]?.grantId).not.toBe('grant_00000000-0000-7d2a-8f88-5d41a9feb840');
     expect(importedGrants[0]?.vaultReferenceId).not.toBe(sourceReference.referenceId);
     expect(JSON.stringify(importedGrants)).not.toContain('redacted-source');
 
@@ -2824,7 +2923,7 @@ describe('nanocore server', () => {
     expect(listVaultGrants(coreDb)).toContainEqual(
       expect.objectContaining({
         grantId: importedGrants[0].grantId,
-        policyDecisionId: 'pd_grant_1',
+        policyDecisionId: 'pd_00000000-0000-7c23-a787-0184e39daa30',
         status: 'active',
       })
     );
@@ -2841,25 +2940,25 @@ describe('nanocore server', () => {
       backendLocator: 'encrypted-file://redacted-source',
       displayName: 'Workspace Codex auth',
       ownerScope: 'workspace',
-      referenceId: 'vault_ws_demo_codex_auth',
+      referenceId: 'vault_00000000-0000-7f95-be74-a37d48fc6020',
       secretKind: 'codex-auth-json',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       now: () => '2026-07-06T00:00:00.000Z',
     });
     createVaultGrant(coreDb, {
-      grantId: 'grant_ws_demo_codex_auth',
+      grantId: 'grant_00000000-0000-7d8f-874f-223ba3091d31',
       vaultReferenceId: sourceReference.referenceId,
       ownerScope: 'workspace',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       subjectSummary: 'Codex auth runtime file',
       allowedInjectionPaths: ['runtime-file'],
       lifetime: 'agent-session',
-      policyDecisionId: 'pd_plan_1',
+      policyDecisionId: 'pd_00000000-0000-7544-9828-94bbb3851453',
       now: () => '2026-07-06T00:12:00.000Z',
     });
     createVaultInjectionPlan(coreDb, {
       planId: 'plan_ws_demo_codex_auth',
-      grantId: 'grant_ws_demo_codex_auth',
+      grantId: 'grant_00000000-0000-7d8f-874f-223ba3091d31',
       capabilityId: 'runtime.codex_auth',
       injectionVisibility: 'runtime-file',
       targetPath: '/sandbox/.codex/auth.json',
@@ -2871,17 +2970,25 @@ describe('nanocore server', () => {
     });
     const app = createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
-      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        { method: 'POST' }
+      )
     );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/vault-injection-plans.jsonl');
     const verified = verifyWorkspaceExportTree({
-      exportRoot: workspaceExportRoot(dataRoot, 'ws_demo', exported.exportId),
+      exportRoot: workspaceExportRoot(
+        dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001',
+        exported.exportId
+      ),
     });
     expect(() =>
       readWorkspaceImportSnapshot({
-        targetWorkspaceId: 'ws_legacy_injection_plan',
+        targetWorkspaceId: 'ws_00000000-0000-7868-a83c-e2f0148a685a',
         verified: {
           ...verified,
           fileContents: new Map(verified.fileContents).set('records/injection-plans.jsonl', ''),
@@ -2897,7 +3004,7 @@ describe('nanocore server', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            sourceWorkspaceId: 'ws_demo',
+            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             exportId: exported.exportId,
             requestId: '00000000-0000-4000-8000-00000000d862',
           }),
@@ -2931,7 +3038,7 @@ describe('nanocore server', () => {
       }),
     ]);
     expect(importedPlans[0]?.planId).not.toBe('plan_ws_demo_codex_auth');
-    expect(importedPlans[0]?.grantId).not.toBe('grant_ws_demo_codex_auth');
+    expect(importedPlans[0]?.grantId).not.toBe('grant_00000000-0000-7d8f-874f-223ba3091d31');
     expect(JSON.stringify(importedPlans)).not.toContain('redacted-source');
     coreDb.sqlite.close();
   });
@@ -2948,26 +3055,26 @@ describe('nanocore server', () => {
       backendLocator: 'encrypted-file://redacted-source',
       displayName: 'Workspace GitHub token',
       ownerScope: 'workspace',
-      referenceId: 'vault_ws_demo_github_receipt',
+      referenceId: 'vault_00000000-0000-777f-a114-c2a027d51420',
       secretKind: 'github-token',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       now: () => '2026-07-06T00:00:00.000Z',
     });
     createVaultGrant(coreDb, {
-      grantId: 'grant_ws_demo_github_receipt',
+      grantId: 'grant_00000000-0000-76c8-a30c-dafaa6d843fb',
       vaultReferenceId: sourceReference.referenceId,
       ownerScope: 'workspace',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       subjectSummary: 'GitHub push token',
       targetCapabilityId: 'mcp.github.call_tool',
       allowedInjectionPaths: ['backend-provider'],
       lifetime: 'capability-call',
-      policyDecisionId: 'pd_receipt_1',
+      policyDecisionId: 'pd_00000000-0000-7b9e-bcd3-81ca634d1ba7',
       now: () => '2026-07-06T00:13:00.000Z',
     });
     createVaultInjectionPlan(coreDb, {
       planId: 'plan_ws_demo_github_receipt',
-      grantId: 'grant_ws_demo_github_receipt',
+      grantId: 'grant_00000000-0000-76c8-a30c-dafaa6d843fb',
       capabilityId: 'mcp.github.call_tool',
       injectionVisibility: 'backend-provider',
       expirationBehavior: 'expire-after-capability-call',
@@ -2979,29 +3086,29 @@ describe('nanocore server', () => {
     createVaultInjectionReceipt(coreDb, {
       receiptId: 'receipt_ws_demo_github',
       planId: 'plan_ws_demo_github_receipt',
-      grantId: 'grant_ws_demo_github_receipt',
-      capabilityCallId: 'cap_receipt_1',
+      grantId: 'grant_00000000-0000-76c8-a30c-dafaa6d843fb',
+      capabilityCallId: 'cap_00000000-0000-7688-9d5d-2e36e0d9825a',
       backendSummary: 'encrypted-file material v7 injected as backend handle',
       injectedAt: '2026-07-06T00:13:02.000Z',
       expiresAt: '2026-07-06T00:18:02.000Z',
       revocationStatus: 'active',
-      auditEventId: 'audit_receipt_1',
+      auditEventId: 'aud_00000000-0000-76e0-9243-800f96a0f153',
     });
-    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       createVaultUseRecord(sourceDb, {
-        useId: 'vuse_ws_demo_receipt',
+        useId: 'vu_00000000-0000-7f50-b749-23194ce8d0c8',
         ownerScope: 'workspace',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         vaultReferenceId: sourceReference.referenceId,
         materialVersion: 7,
         backendKind: 'encrypted-file',
         resolvingPath: 'plan',
         planId: 'plan_ws_demo_github_receipt',
         receiptId: 'receipt_ws_demo_github',
-        capabilityCallId: 'cap_receipt_1',
+        capabilityCallId: 'cap_00000000-0000-7688-9d5d-2e36e0d9825a',
         outcome: 'succeeded',
-        auditEventId: 'audit_vault_use_receipt_1',
+        auditEventId: 'aud_00000000-0000-746c-8e40-3ecbbe3f0ea9',
         usedAt: '2026-07-06T00:13:03.000Z',
       });
     } finally {
@@ -3009,17 +3116,25 @@ describe('nanocore server', () => {
     }
     const app = createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
-      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        { method: 'POST' }
+      )
     );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/vault-injection-receipts.jsonl');
     const verified = verifyWorkspaceExportTree({
-      exportRoot: workspaceExportRoot(dataRoot, 'ws_demo', exported.exportId),
+      exportRoot: workspaceExportRoot(
+        dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001',
+        exported.exportId
+      ),
     });
     expect(() =>
       readWorkspaceImportSnapshot({
-        targetWorkspaceId: 'ws_legacy_injection_receipt',
+        targetWorkspaceId: 'ws_00000000-0000-7a86-bd40-afa19368e338',
         verified: {
           ...verified,
           fileContents: new Map(verified.fileContents).set('records/injection-receipts.jsonl', ''),
@@ -3035,7 +3150,7 @@ describe('nanocore server', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            sourceWorkspaceId: 'ws_demo',
+            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             exportId: exported.exportId,
             requestId: '00000000-0000-4000-8000-00000000d872',
           }),
@@ -3063,17 +3178,17 @@ describe('nanocore server', () => {
           planId: importedPlan?.planId,
           grantId: importedGrant?.grantId,
           agentSessionId: null,
-          capabilityCallId: 'cap_receipt_1',
+          capabilityCallId: 'cap_00000000-0000-7688-9d5d-2e36e0d9825a',
           backendSummary: 'encrypted-file material v7 injected as backend handle',
           injectedAt: '2026-07-06T00:13:02.000Z',
           expiresAt: '2026-07-06T00:18:02.000Z',
           revocationStatus: 'active',
-          auditEventId: 'audit_receipt_1',
+          auditEventId: 'aud_00000000-0000-76e0-9243-800f96a0f153',
         }),
       ]);
       expect(listVaultUseRecords(importedDb)).toEqual([
         expect.objectContaining({
-          useId: 'vuse_ws_demo_receipt',
+          useId: 'vu_00000000-0000-7f50-b749-23194ce8d0c8',
           workspaceId: body.importedWorkspaceId,
           vaultReferenceId: importedGrant?.vaultReferenceId,
           planId: importedPlan?.planId,
@@ -3082,7 +3197,7 @@ describe('nanocore server', () => {
       ]);
       expect(importedReceipts[0]?.receiptId).not.toBe('receipt_ws_demo_github');
       expect(importedReceipts[0]?.planId).not.toBe('plan_ws_demo_github_receipt');
-      expect(importedReceipts[0]?.grantId).not.toBe('grant_ws_demo_github_receipt');
+      expect(importedReceipts[0]?.grantId).not.toBe('grant_00000000-0000-76c8-a30c-dafaa6d843fb');
       expect(JSON.stringify(importedReceipts)).not.toContain('redacted-source');
     } finally {
       importedDb.sqlite.close();
@@ -3095,7 +3210,12 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const catalogRoot = join(dataRoot, 'workspaces', 'ws_demo', 'config');
+    const catalogRoot = join(
+      dataRoot,
+      'workspaces',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'config'
+    );
     mkdirSync(catalogRoot, { recursive: true });
     writeFileSync(
       join(catalogRoot, 'data-sources.jsonc'),
@@ -3121,7 +3241,11 @@ describe('nanocore server', () => {
     );
     const app = createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
-      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        { method: 'POST' }
+      )
     );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
@@ -3135,7 +3259,7 @@ describe('nanocore server', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            sourceWorkspaceId: 'ws_demo',
+            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             exportId: exported.exportId,
             requestId: '00000000-0000-4000-8000-00000000d741',
           }),
@@ -3170,22 +3294,22 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     const sourceReview = workspaceSyncReviewRouteItem();
     const sourceTurn = store.createTurn(
-      'ws_demo',
-      'th_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
       'Produce workspace sync review',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       {
-        turnId: 'turn_route_1',
+        turnId: 'tu_00000000-0000-7134-8501-76dbee7ab54a',
       }
     );
     store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: sourceReview.changeSet.createdAt,
-      id: 'as_dashboard_control_1',
+      id: 'as_00000000-0000-73c1-85c9-e24cc662686d',
       message: null,
       status: 'busy',
       threadId: sourceTurn.threadId,
@@ -3198,8 +3322,8 @@ describe('nanocore server', () => {
     });
     store.createArtifact({
       id: sourceReview.artifactId,
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: sourceTurn.id,
       kind: 'diff',
       title: 'Workspace sync review',
@@ -3230,7 +3354,11 @@ describe('nanocore server', () => {
     }
     const app = createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
-      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        { method: 'POST' }
+      )
     );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
@@ -3248,7 +3376,7 @@ describe('nanocore server', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            sourceWorkspaceId: 'ws_demo',
+            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             exportId: exported.exportId,
             requestId: '00000000-0000-4000-8000-00000000d762',
           }),
@@ -3326,22 +3454,22 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     const sourceReview = workspaceSyncReviewRouteItem();
     const sourceTurn = store.createTurn(
-      'ws_demo',
-      'th_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
       'Produce workspace apply result',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       {
-        turnId: 'turn_route_1',
+        turnId: 'tu_00000000-0000-7134-8501-76dbee7ab54a',
       }
     );
     store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: sourceReview.changeSet.createdAt,
-      id: 'as_dashboard_control_1',
+      id: 'as_00000000-0000-73c1-85c9-e24cc662686d',
       message: null,
       status: 'busy',
       threadId: sourceTurn.threadId,
@@ -3354,8 +3482,8 @@ describe('nanocore server', () => {
     });
     store.createArtifact({
       id: sourceReview.artifactId,
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: sourceTurn.id,
       kind: 'diff',
       title: 'Workspace apply result',
@@ -3394,7 +3522,7 @@ describe('nanocore server', () => {
           skippedPaths: [],
           status: 'applied',
           verification: [],
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
       });
     } finally {
@@ -3402,7 +3530,11 @@ describe('nanocore server', () => {
     }
     const app = createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
-      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        { method: 'POST' }
+      )
     );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
@@ -3416,7 +3548,7 @@ describe('nanocore server', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            sourceWorkspaceId: 'ws_demo',
+            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             exportId: exported.exportId,
             requestId: '00000000-0000-4000-8000-00000000d772',
           }),
@@ -3455,13 +3587,13 @@ describe('nanocore server', () => {
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     store.createTurn(
-      'ws_demo',
-      'th_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
       'Record permission decision',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       {
-        turnId: 'turn_demo',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       }
     );
     store.createItem({
@@ -3469,62 +3601,62 @@ describe('nanocore server', () => {
       completedAt: '2026-07-06T00:01:00.000Z',
       createdAt: '2026-07-06T00:01:00.000Z',
       description: 'Portable historical approval.',
-      id: 'it_source_repo_push_request',
+      id: 'it_00000000-0000-779a-af5a-fd424564ba23',
       kind: 'permission',
       status: 'completed',
-      threadId: 'th_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       title: 'Approve source Git push',
-      turnId: 'turn_demo',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       type: 'approval-request',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     store.createItem({
       approvalRequestId: 'ap_source_repo_push',
       completedAt: '2026-07-06T00:01:01.000Z',
       createdAt: '2026-07-06T00:01:01.000Z',
       decision: 'granted',
-      id: 'it_source_repo_push_decision',
+      id: 'it_00000000-0000-77bf-a038-0c424a4660e7',
       decidedAt: '2026-07-06T00:01:01.000Z',
       status: 'completed',
-      actor: { kind: 'user', id: 'user_local' },
-      causationId: 'it_source_repo_push_request',
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+      causationId: 'it_00000000-0000-779a-af5a-fd424564ba23',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       type: 'approval-decision',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    store.updateTurn('turn_demo', {
+    store.updateTurn('tu_00000000-0000-77e3-bfde-66477d556f64', {
       completedAt: '2026-07-06T00:01:01.000Z',
       status: 'completed',
     });
-    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       recordProductPermissionDecision({
         action: 'runtime.launch',
         contextSummary: {
           requestId: '00000000-0000-4000-8000-00000000d781',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
-          workspaceId: 'ws_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
-        decisionId: 'pd_workspace_import_1',
+        decisionId: 'pd_00000000-0000-79a4-ab33-cdc8e2bb484e',
         enforcementPoint: 'runtime.worker_turn_loop.start',
         ownerScope: 'workspace',
         policyEngineVersion: 'nanocore-worker-policy:v1',
         policySnapshotId: 'worker_turn_launch_policy',
         reasonCode: 'worker_turn_start_allowed',
-        resourceSummary: { kind: 'worker-turn', turnId: 'turn_demo' },
+        resourceSummary: { kind: 'worker-turn', turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64' },
         result: 'allow',
         subjectSummary: { id: 'worker-coordinator', kind: 'nanocore' },
         workspaceDb: sourceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         now: new Date('2026-07-06T00:02:00.000Z'),
       });
       recordProductPermissionDecision({
         action: 'repo.push',
         approvalId: 'ap_source_repo_push',
-        contextSummary: { workspaceId: 'ws_demo' },
-        decisionId: 'pd_workspace_import_repo_push',
+        contextSummary: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        decisionId: 'pd_00000000-0000-76c9-96e8-a09110d16732',
         enforcementPoint: 'repo.push.approval_response',
         ownerScope: 'workspace',
         policyEngineVersion: 'nanocore-approval-policy:v1',
@@ -3534,12 +3666,12 @@ describe('nanocore server', () => {
           kind: 'git-push-target',
           repositoryResourceId: 'repo_default',
           targetBranch: 'main',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
         result: 'allow',
-        subjectSummary: { kind: 'user', userId: 'user_local' },
+        subjectSummary: { kind: 'user', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         workspaceDb: sourceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         now: new Date('2026-07-06T00:02:01.000Z'),
       });
     } finally {
@@ -3547,7 +3679,11 @@ describe('nanocore server', () => {
     }
     const app = createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
-      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        { method: 'POST' }
+      )
     );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
@@ -3561,7 +3697,7 @@ describe('nanocore server', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            sourceWorkspaceId: 'ws_demo',
+            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             exportId: exported.exportId,
             requestId: '00000000-0000-4000-8000-00000000d782',
           }),
@@ -3586,12 +3722,12 @@ describe('nanocore server', () => {
           FROM permission_decisions
           WHERE decision_id = ?`
         )
-        .get('pd_workspace_import_1') as Record<string, unknown> | undefined;
+        .get('pd_00000000-0000-79a4-ab33-cdc8e2bb484e') as Record<string, unknown> | undefined;
 
       expect(decision).toEqual({
         action: 'runtime.launch',
         audit_event_id: expect.stringMatching(/^aud_/),
-        decision_id: 'pd_workspace_import_1',
+        decision_id: 'pd_00000000-0000-79a4-ab33-cdc8e2bb484e',
         owner_scope: 'workspace',
         reason_code: 'worker_turn_start_allowed',
         result: 'allow',
@@ -3608,7 +3744,7 @@ describe('nanocore server', () => {
              FROM permission_decisions
              WHERE decision_id = ?`
           )
-          .get('pd_workspace_import_repo_push')
+          .get('pd_00000000-0000-76c9-96e8-a09110d16732')
       ).toEqual({ approvalId: importedApprovalId, result: 'allow' });
       const permissionAuditRows = importedDb.sqlite
         .prepare('SELECT action FROM audit_events WHERE action = ?')
@@ -3625,18 +3761,29 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId: 'ws_demo' });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId: 'ws_other' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
+    });
     const store = createDemoStore({ dataRoot });
-    const thread = store.createThread('ws_demo', 'Scheduler admission read route');
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Scheduler admission read route'
+    );
     createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       queueEntryId: 'queue_read_route_1',
       requestId: 'request_queue_read_route_1',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
-      turnId: 'turn_scheduler_read_1',
+      turnId: 'tu_00000000-0000-777f-9b05-89fc6d6891c8',
       turnInput: 'First queued turn with /Users/private local path hidden from response.',
       requestedAgentId: 'agent_codex_host',
       profileRef: 'agent_codex_host',
@@ -3644,12 +3791,12 @@ describe('nanocore server', () => {
     });
     createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       queueEntryId: 'queue_read_route_2',
       requestId: 'request_queue_read_route_2',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
-      turnId: 'turn_scheduler_read_2',
+      turnId: 'tu_00000000-0000-78d5-b6f6-5e03599a2ed1',
       turnInput: 'Second queued turn.',
       requestedAgentId: 'agent_codex_host',
       profileRef: 'agent_codex_host',
@@ -3657,12 +3804,12 @@ describe('nanocore server', () => {
     });
     createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       queueEntryId: 'queue_read_route_denied',
       requestId: 'request_queue_read_route_denied',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
-      turnId: 'turn_scheduler_read_denied',
+      turnId: 'tu_00000000-0000-7be3-96be-e753c24d94e4',
       turnInput: 'Denied turn.',
       requestedAgentId: 'agent_codex_host',
       profileRef: 'agent_codex_host',
@@ -3674,12 +3821,12 @@ describe('nanocore server', () => {
     });
     createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       queueEntryId: 'queue_other_workspace',
       requestId: 'request_queue_other_workspace',
-      workspaceId: 'ws_other',
-      threadId: 'th_other',
-      turnId: 'turn_other',
+      workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
+      threadId: 'th_00000000-0000-78ce-b458-8347d12d1da2',
+      turnId: 'tu_00000000-0000-7e18-a597-336d92a699e9',
       turnInput: 'Other workspace turn.',
       requestedAgentId: 'agent_codex_host',
       profileRef: 'agent_codex_host',
@@ -3687,7 +3834,9 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, dataRoot, store });
 
     const res = await app.request(
-      ...operationRequest('scheduler.list', { workspaceId: 'ws_demo' })
+      ...operationRequest('scheduler.list', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     );
 
     expect(res.status, await res.clone().text()).toBe(200);
@@ -3695,21 +3844,21 @@ describe('nanocore server', () => {
     expect(payload.items).toMatchObject([
       {
         queueEntryId: 'queue_read_route_1',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         status: 'queued',
         denialReason: null,
         queuePosition: 1,
       },
       {
         queueEntryId: 'queue_read_route_2',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         status: 'queued',
         denialReason: null,
         queuePosition: 2,
       },
       {
         queueEntryId: 'queue_read_route_denied',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         status: 'denied',
         denialReason: 'authority-denied',
         queuePosition: null,
@@ -3725,14 +3874,14 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       recordWorkspaceAuditEvent({
-        auditEventId: 'aud_route_1',
+        auditEventId: 'aud_00000000-0000-7e8d-b758-7296df892762',
         workspaceDb,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         category: 'system',
         action: 'goal.create',
         resource: 'goal:goal_route_1',
@@ -3747,23 +3896,27 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, dataRoot, store });
 
     const res = await app.request(
-      ...operationRequest('audit.workspace-list', { workspaceId: 'ws_demo' }, {})
+      ...operationRequest(
+        'audit.workspace-list',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {}
+      )
     );
 
     expect(res.status, await res.clone().text()).toBe(200);
     const payload = ListWorkspaceAuditEventsResponseSchema.parse(await res.json());
     expect(payload).toMatchObject({
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       auditEvents: [
         {
           action: 'goal.create',
-          id: 'aud_route_1',
+          id: 'aud_00000000-0000-7e8d-b758-7296df892762',
           resource: 'goal:goal_route_1',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
       ],
     });
-    expect(JSON.stringify(payload)).not.toContain('user_secret');
+    expect(JSON.stringify(payload)).not.toContain('usr_00000000-0000-74f0-b0cf-c47434bd7f49');
     coreDb.sqlite.close();
   });
 
@@ -3773,7 +3926,7 @@ describe('nanocore server', () => {
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     recordServerAuditEvent({
-      auditEventId: 'aud_server_route_1',
+      auditEventId: 'aud_00000000-0000-7199-ad5c-cef2e415ed6c',
       coreDb,
       category: 'system',
       action: 'server.config.update',
@@ -3793,13 +3946,13 @@ describe('nanocore server', () => {
       auditEvents: [
         {
           action: 'server.config.update',
-          id: 'aud_server_route_1',
+          id: 'aud_00000000-0000-7199-ad5c-cef2e415ed6c',
           resource: 'server:runtime-config',
           workspaceId: null,
         },
       ],
     });
-    expect(JSON.stringify(payload)).not.toContain('user_secret');
+    expect(JSON.stringify(payload)).not.toContain('usr_00000000-0000-74f0-b0cf-c47434bd7f49');
     coreDb.sqlite.close();
   });
 
@@ -3809,7 +3962,7 @@ describe('nanocore server', () => {
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     const item = workspaceSyncReviewRouteItem();
 
     try {
@@ -3819,19 +3972,26 @@ describe('nanocore server', () => {
       workspaceDb.sqlite.close();
     }
 
-    const createRes = await app.request('/api/app/workspaces/ws_demo/evidence-bundles', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({}),
-    });
+    const createRes = await app.request(
+      '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/evidence-bundles',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      }
+    );
     const listRes = await app.request(
-      ...operationRequest('evidence.bundle-list', { workspaceId: 'ws_demo' }, {})
+      ...operationRequest(
+        'evidence.bundle-list',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {}
+      )
     );
 
     expect(createRes.status).toBe(404);
     expect(listRes.status, await listRes.clone().text()).toBe(200);
     expect(ListWorkspaceEvidenceBundlesResponseSchema.parse(await listRes.json())).toMatchObject({
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       evidenceBundles: [
         {
           id: 'evb_workspace_materialization_wmr_route_1',
@@ -3853,24 +4013,24 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       upsertWorkerCheckpoint(workspaceDb, {
-        workspaceId: 'ws_demo',
-        threadId: 'th_runtime',
-        turnId: 'turn_runtime',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7378-ad6d-2afc4837357e',
+        turnId: 'tu_00000000-0000-774a-912b-efa5c1c24c5a',
         requestId: 'req_turn_runtime',
-        requestInputHash: 'sha256:turn_runtime',
+        requestInputHash: 'sha256:tu_00000000-0000-774a-912b-efa5c1c24c5a',
         stage: 'running_worker',
         iteration: 1,
-        workerSessionId: 'session_runtime',
+        workerSessionId: testEntityId('as', 'session_runtime'),
         now: () => '2026-07-07T00:04:00.000Z',
       });
       updateWorkerCheckpoint(workspaceDb, {
-        authorityActor: { kind: 'user', id: 'user_1' },
-        workspaceId: 'ws_demo',
-        threadId: 'th_runtime',
-        turnId: 'turn_runtime',
+        authorityActor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7378-ad6d-2afc4837357e',
+        turnId: 'tu_00000000-0000-774a-912b-efa5c1c24c5a',
         stage: 'completed',
         stopReason: 'completed',
         now: () => '2026-07-07T00:05:00.000Z',
@@ -3878,19 +4038,23 @@ describe('nanocore server', () => {
       const app = createApp({ coreDb, dataRoot, store });
 
       const res = await app.request(
-        ...operationRequest('evidence.runtime-list', { workspaceId: 'ws_demo' }, {})
+        ...operationRequest(
+          'evidence.runtime-list',
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+          {}
+        )
       );
 
       expect(res.status, await res.clone().text()).toBe(200);
       const body = ListWorkspaceRuntimeEvidenceResponseSchema.parse(await res.json());
       expect(body).toMatchObject({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         runtimeEvidence: [
           {
-            workspaceId: 'ws_demo',
-            threadId: 'th_runtime',
-            turnId: 'turn_runtime',
-            agentSessionId: 'session_runtime',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7378-ad6d-2afc4837357e',
+            turnId: 'tu_00000000-0000-774a-912b-efa5c1c24c5a',
+            agentSessionId: testEntityId('as', 'session_runtime'),
             phase: 'checkpoint',
             outcome: 'succeeded',
             stopReason: 'completed',
@@ -3909,27 +4073,27 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       recordProductPermissionDecision({
         action: 'runtime.launch',
         contextSummary: {
           requestId: '00000000-0000-4000-8000-00000000d791',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
-          workspaceId: 'ws_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
-        decisionId: 'pd_route_1',
+        decisionId: 'pd_00000000-0000-7ca5-9f32-93f76f8eaa67',
         enforcementPoint: 'runtime.worker_turn_loop.start',
         ownerScope: 'workspace',
         policyEngineVersion: 'nanocore-worker-policy:v1',
         policySnapshotId: 'worker_turn_launch_policy',
         reasonCode: 'higher_authority_required',
-        resourceSummary: { kind: 'worker-turn', turnId: 'turn_demo' },
+        resourceSummary: { kind: 'worker-turn', turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64' },
         result: 'require_escalation',
         subjectSummary: { id: 'worker-coordinator', kind: 'nanocore' },
         workspaceDb,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         now: new Date('2026-07-07T00:01:00.000Z'),
       });
     } finally {
@@ -3938,23 +4102,27 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, dataRoot, store });
 
     const res = await app.request(
-      ...operationRequest('permission.workspace-list', { workspaceId: 'ws_demo' }, {})
+      ...operationRequest(
+        'permission.workspace-list',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {}
+      )
     );
 
     expect(res.status, await res.clone().text()).toBe(200);
     const payload = ListWorkspacePermissionDecisionsResponseSchema.parse(await res.json());
     expect(payload).toMatchObject({
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       permissionDecisions: [
         {
           action: 'runtime.launch',
-          decisionId: 'pd_route_1',
+          decisionId: 'pd_00000000-0000-7ca5-9f32-93f76f8eaa67',
           result: 'require_escalation',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
       ],
     });
-    expect(JSON.stringify(payload)).not.toContain('user_secret');
+    expect(JSON.stringify(payload)).not.toContain('usr_00000000-0000-74f0-b0cf-c47434bd7f49');
     coreDb.sqlite.close();
   });
 
@@ -3967,7 +4135,7 @@ describe('nanocore server', () => {
       action: 'llm.gateway.chat_completions',
       contextSummary: { route: '/v1/chat/completions' },
       coreDb,
-      decisionId: 'pd_server_route_1',
+      decisionId: 'pd_00000000-0000-7761-a0c7-dc8b78934042',
       enforcementPoint: 'llm.gateway.policy',
       ownerScope: 'server',
       policyEngineVersion: 'nanocore-gateway-policy:v1',
@@ -3988,13 +4156,13 @@ describe('nanocore server', () => {
       permissionDecisions: [
         {
           action: 'llm.gateway.chat_completions',
-          decisionId: 'pd_server_route_1',
+          decisionId: 'pd_00000000-0000-7761-a0c7-dc8b78934042',
           result: 'defer',
           workspaceId: null,
         },
       ],
     });
-    expect(JSON.stringify(payload)).not.toContain('user_secret');
+    expect(JSON.stringify(payload)).not.toContain('usr_00000000-0000-74f0-b0cf-c47434bd7f49');
     coreDb.sqlite.close();
   });
 
@@ -4003,20 +4171,20 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       createVaultUseRecord(workspaceDb, {
-        useId: 'use_route_1',
+        useId: 'vu_00000000-0000-7088-8c72-a637720314d6',
         ownerScope: 'workspace',
-        workspaceId: 'ws_demo',
-        vaultReferenceId: 'vault_github',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
         materialVersion: 1,
         backendKind: 'encrypted-file',
         resolvingPath: 'grant',
-        grantId: 'grant_github',
-        agentSessionId: 'as_1',
+        grantId: 'grant_00000000-0000-7fe9-9377-b84721e910b4',
+        agentSessionId: 'as_00000000-0000-7b98-8803-ea4242ad797b',
         outcome: 'succeeded',
-        auditEventId: 'aud_vault_use_route_1',
+        auditEventId: 'aud_00000000-0000-7226-975d-0d4b5f1fd7ab',
         usedAt: '2026-07-07T00:00:00.000Z',
       });
     } finally {
@@ -4025,20 +4193,24 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, dataRoot, store });
 
     const res = await app.request(
-      ...operationRequest('vault.use-list', { workspaceId: 'ws_demo' }, {})
+      ...operationRequest(
+        'vault.use-list',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {}
+      )
     );
 
     expect(res.status, await res.clone().text()).toBe(200);
     const payload = ListWorkspaceVaultUseRecordsResponseSchema.parse(await res.json());
     expect(payload).toMatchObject({
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       vaultUseRecords: [
         {
-          useId: 'use_route_1',
-          vaultReferenceId: 'vault_github',
-          grantId: 'grant_github',
+          useId: 'vu_00000000-0000-7088-8c72-a637720314d6',
+          vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
+          grantId: 'grant_00000000-0000-7fe9-9377-b84721e910b4',
           outcome: 'succeeded',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
       ],
     });
@@ -4052,16 +4224,16 @@ describe('nanocore server', () => {
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     createVaultUseRecord(coreDb, {
-      useId: 'use_server_route_1',
+      useId: 'vu_00000000-0000-7c95-9a54-b6ca32998c2c',
       ownerScope: 'server',
       workspaceId: null,
-      vaultReferenceId: 'vault_openrouter',
+      vaultReferenceId: 'vault_00000000-0000-7c76-ac2c-1aa2ef4a94c5',
       materialVersion: 1,
       backendKind: 'encrypted-file',
       resolvingPath: 'provider',
       outcome: 'failed',
       failureCode: 'backend-locked',
-      auditEventId: 'aud_server_vault_use_route_1',
+      auditEventId: 'aud_00000000-0000-7631-a365-22a9115f9f7c',
       usedAt: '2026-07-07T00:00:00.000Z',
     });
     const app = createApp({ coreDb, dataRoot, store });
@@ -4073,10 +4245,10 @@ describe('nanocore server', () => {
     expect(payload).toMatchObject({
       vaultUseRecords: [
         {
-          useId: 'use_server_route_1',
+          useId: 'vu_00000000-0000-7c95-9a54-b6ca32998c2c',
           ownerScope: 'server',
           workspaceId: null,
-          vaultReferenceId: 'vault_openrouter',
+          vaultReferenceId: 'vault_00000000-0000-7c76-ac2c-1aa2ef4a94c5',
           outcome: 'failed',
           failureCode: 'backend-locked',
         },
@@ -4091,14 +4263,17 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const thread = store.createThread('ws_demo', 'Scheduler admission retry route');
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Scheduler admission retry route'
+    );
     createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       queueEntryId: 'queue_retry_route',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
-      turnId: 'turn_scheduler_retry',
+      turnId: 'tu_00000000-0000-7461-9396-1a85f85f1b50',
       turnInput: 'Retry scheduler admission.',
       requestedAgentId: 'agent_codex_host',
       profileRef: 'agent_codex_host',
@@ -4112,7 +4287,10 @@ describe('nanocore server', () => {
     const retryRes = await app.request(
       ...operationRequest(
         'scheduler.retry',
-        { workspaceId: 'ws_demo', queueEntryId: 'queue_retry_route' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          queueEntryId: 'queue_retry_route',
+        },
         { method: 'POST' }
       )
     );
@@ -4124,7 +4302,7 @@ describe('nanocore server', () => {
     expect(listQueuedSchedulerAdmissionEntries(coreDb).map((entry) => entry.queueEntryId)).toEqual([
       'queue_retry_route',
     ]);
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       expect(
         workspaceDb.sqlite
@@ -4141,7 +4319,7 @@ describe('nanocore server', () => {
           resource: 'scheduler-admission:queue_retry_route',
           request_id: null,
           thread_id: thread.id,
-          turn_id: 'turn_scheduler_retry',
+          turn_id: 'tu_00000000-0000-7461-9396-1a85f85f1b50',
           summary: 'Scheduler admission retried.',
         },
       ]);
@@ -4156,14 +4334,17 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const thread = store.createThread('ws_demo', 'Scheduler admission cancel route');
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Scheduler admission cancel route'
+    );
     createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       queueEntryId: 'queue_cancel_route',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
-      turnId: 'turn_scheduler_cancel',
+      turnId: 'tu_00000000-0000-730e-bde0-71d82b6498fc',
       turnInput: 'Cancel scheduler admission.',
       requestedAgentId: 'agent_codex_host',
       profileRef: 'agent_codex_host',
@@ -4173,7 +4354,10 @@ describe('nanocore server', () => {
     const cancelRes = await app.request(
       ...operationRequest(
         'scheduler.cancel',
-        { workspaceId: 'ws_demo', queueEntryId: 'queue_cancel_route' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          queueEntryId: 'queue_cancel_route',
+        },
         { method: 'POST' }
       )
     );
@@ -4183,7 +4367,7 @@ describe('nanocore server', () => {
       cancelled: true,
     });
     expect(listQueuedSchedulerAdmissionEntries(coreDb)).toEqual([]);
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       expect(
         workspaceDb.sqlite
@@ -4200,7 +4384,7 @@ describe('nanocore server', () => {
           resource: 'scheduler-admission:queue_cancel_route',
           request_id: null,
           thread_id: thread.id,
-          turn_id: 'turn_scheduler_cancel',
+          turn_id: 'tu_00000000-0000-730e-bde0-71d82b6498fc',
           summary: 'Scheduler admission cancelled.',
         },
       ]);
@@ -4218,27 +4402,33 @@ describe('nanocore server', () => {
 
     try {
       const routes = [
-        ['POST', '/api/app/workspaces/ws_demo/threads/th_demo/recovery/interrupted-worker'],
-        ['GET', '/api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns'],
         [
           'POST',
-          '/api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns/req_demo/edit',
+          '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/recovery/interrupted-worker',
+        ],
+        [
+          'GET',
+          '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/recovery/pending-user-turns',
         ],
         [
           'POST',
-          '/api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns/req_demo/interrupt',
+          '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/recovery/pending-user-turns/req_demo/edit',
         ],
         [
           'POST',
-          '/api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns/req_demo/cancel',
+          '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/recovery/pending-user-turns/req_demo/interrupt',
         ],
         [
           'POST',
-          '/api/app/workspaces/ws_demo/threads/th_demo/recovery/pending-user-turns/req_demo/follow-up',
+          '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/recovery/pending-user-turns/req_demo/cancel',
         ],
         [
           'POST',
-          '/api/app/workspaces/ws_demo/threads/th_demo/recovery/interrupted-worker/turn_demo/terminal',
+          '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/recovery/pending-user-turns/req_demo/follow-up',
+        ],
+        [
+          'POST',
+          '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/recovery/interrupted-worker/tu_00000000-0000-77e3-bfde-66477d556f64/terminal',
         ],
       ];
 
@@ -4253,17 +4443,20 @@ describe('nanocore server', () => {
 
   it('does not expose runtime config AgentSession restart through App API', async () => {
     const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Retire stale session');
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Retire stale session'
+    );
     const session = store.createAgentSession({
       agentId: 'agent_codex_host',
       configVersion: 1,
       createdAt: '2026-07-07T00:00:00.000Z',
-      id: 'as_stale_route',
+      id: 'as_00000000-0000-7974-a4d7-2ca94ed84dda',
       message: null,
       status: 'busy',
       threadId: thread.id,
       updatedAt: '2026-07-07T00:00:00.000Z',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       workspaceRoots: [],
     });
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-runtime-config-stale-session-'));
@@ -4277,7 +4470,7 @@ describe('nanocore server', () => {
 
     try {
       const res = await app.request(
-        `/api/app/workspaces/ws_demo/runtime-config/stale-sessions/${session.id}/restart`,
+        `/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/runtime-config/stale-sessions/${session.id}/restart`,
         { method: 'POST' }
       );
 
@@ -4292,7 +4485,7 @@ describe('nanocore server', () => {
     const turnExecutor = Object.assign(new FakeTurnExecutor(), {
       refreshAgentSessions: () => [
         {
-          id: 'as_health_private',
+          id: 'as_00000000-0000-7962-9dd6-b72d28337653',
           status: 'busy' as const,
           message: null,
           configVersion: 1,
@@ -4320,7 +4513,7 @@ describe('nanocore server', () => {
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ workspaceId: 'ws_demo' }),
+          body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
         }
       )
     );
@@ -4328,7 +4521,7 @@ describe('nanocore server', () => {
 
     expect(response.status).toBe(200);
     expect(body).not.toHaveProperty('sessions');
-    expect(JSON.stringify(body)).not.toContain('as_health_private');
+    expect(JSON.stringify(body)).not.toContain('as_00000000-0000-7962-9dd6-b72d28337653');
   });
 
   it('rejects interrupted-worker retry while exact reconnect remains pending', async () => {
@@ -4336,12 +4529,20 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const thread = store.createThread('ws_demo', 'Reconnect pending retry route');
-    const turn = store.createTurn('ws_demo', thread.id, 'Reconnect original worker', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const agentSessionId = 'as_reconnect_pending';
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Reconnect pending retry route'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Reconnect original worker',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
+    const agentSessionId = 'as_00000000-0000-7386-8d92-386b36b7b789';
     store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: turn.startedAt ?? '2026-07-17T05:00:00.000Z',
@@ -4350,10 +4551,10 @@ describe('nanocore server', () => {
       status: 'busy',
       threadId: thread.id,
       updatedAt: '2026-07-17T05:00:00.000Z',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     store.updateTurn(turn.id, { agentSessionId });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       upsertWorkerCheckpoint(workspaceDb, {
         contextDigest: 'sha256:reconnect-pending',
@@ -4365,7 +4566,7 @@ describe('nanocore server', () => {
         requestId: `req_${turn.id}`,
         requestInputHash: `sha256:${turn.id}`,
         workerSessionId: agentSessionId,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
     } finally {
       workspaceDb.sqlite.close();
@@ -4380,9 +4581,17 @@ describe('nanocore server', () => {
     });
     const turnBefore = store.getTurnById(turn.id);
     const sessionBefore = store.getAgentSession(agentSessionId);
-    const leaseBefore = requireSchedulerExecutionAttempt(coreDb, `lease_${turn.id}`);
-    const checkpointDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-    const checkpointBefore = getWorkerCheckpoint(checkpointDb, 'ws_demo', thread.id, turn.id);
+    const leaseBefore = requireSchedulerExecutionAttempt(
+      coreDb,
+      testEntityId('attempt', `lease_${turn.id}`)
+    );
+    const checkpointDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
+    const checkpointBefore = getWorkerCheckpoint(
+      checkpointDb,
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      turn.id
+    );
     checkpointDb.sqlite.close();
     const app = createApp({
       coreDb,
@@ -4396,7 +4605,11 @@ describe('nanocore server', () => {
     const retry = await app.request(
       ...operationRequest(
         'recovery.checkpoint-retry',
-        { workspaceId: 'ws_demo', threadId: thread.id, turnId: turn.id },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: thread.id,
+          turnId: turn.id,
+        },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -4409,31 +4622,48 @@ describe('nanocore server', () => {
     await expect(retry.json()).resolves.toMatchObject({ code: 'worker_reconnect_pending' });
     expect(store.getTurnById(turn.id)).toEqual(turnBefore);
     expect(store.getAgentSession(agentSessionId)).toEqual(sessionBefore);
-    expect(requireSchedulerExecutionAttempt(coreDb, `lease_${turn.id}`)).toEqual(leaseBefore);
-    const reopenedDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-    expect(getWorkerCheckpoint(reopenedDb, 'ws_demo', thread.id, turn.id)).toEqual(
-      checkpointBefore
-    );
+    expect(
+      requireSchedulerExecutionAttempt(coreDb, testEntityId('attempt', `lease_${turn.id}`))
+    ).toEqual(leaseBefore);
+    const reopenedDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
+    expect(
+      getWorkerCheckpoint(reopenedDb, 'ws_00000000-0000-7000-8000-000000000001', thread.id, turn.id)
+    ).toEqual(checkpointBefore);
     reopenedDb.sqlite.close();
     coreDb.sqlite.close();
   });
 
-  it('exports and imports worker checkpoints as line-oriented records', async () => {
+  it.each([
+    true,
+    false,
+  ])('exports and imports worker checkpoints as line-oriented records (source session=%s)', async (hasSourceSession) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-checkpoint-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     store.createTurn(
-      'ws_demo',
-      'th_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
       'Checkpoint worker turn',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       {
-        turnId: 'tu_checkpoint',
+        turnId: 'tu_00000000-0000-7851-a62b-6cb43a950fd2',
       }
     );
-    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    if (hasSourceSession)
+      store.createAgentSession({
+        id: 'as_00000000-0000-7652-8f43-7ca66c6bda3b',
+        agentId: 'agent_codex_host',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        status: 'closed',
+        stale: true,
+        message: null,
+        createdAt: '2026-07-06T00:00:00.000Z',
+        updatedAt: '2026-07-06T00:00:00.000Z',
+      });
+    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       upsertWorkerCheckpoint(sourceDb, {
         contextDigest: 'sha256:checkpoint-context',
@@ -4443,22 +4673,30 @@ describe('nanocore server', () => {
         requestId: 'req_checkpoint',
         requestInputHash: 'sha256:checkpoint-request',
         stage: 'running_worker',
-        threadId: 'th_demo',
-        turnId: 'tu_checkpoint',
-        workerSessionId: 'as_checkpoint',
-        workspaceId: 'ws_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-7851-a62b-6cb43a950fd2',
+        workerSessionId: 'as_00000000-0000-7652-8f43-7ca66c6bda3b',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
     } finally {
       sourceDb.sqlite.close();
     }
     const app = createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
-      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        { method: 'POST' }
+      )
     );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/worker-turn-checkpoints.jsonl');
 
+    const beforeImportWorkspaces = store
+      .listWorkspaces()
+      .map((workspace) => workspace.id)
+      .sort();
     const importRes = await app.request(
       ...operationRequest(
         'workspace.import',
@@ -4467,7 +4705,7 @@ describe('nanocore server', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            sourceWorkspaceId: 'ws_demo',
+            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             exportId: exported.exportId,
             requestId: '00000000-0000-4000-8000-00000000d802',
           }),
@@ -4475,12 +4713,34 @@ describe('nanocore server', () => {
       )
     );
 
+    if (!hasSourceSession) {
+      expect(importRes.status).toBe(400);
+      expect(
+        store
+          .listWorkspaces()
+          .map((workspace) => workspace.id)
+          .sort()
+      ).toEqual(beforeImportWorkspaces);
+      coreDb.sqlite.close();
+      return;
+    }
     expect(importRes.status, await importRes.clone().text()).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
-    const importedThreadId = `th_imported_${body.importedWorkspaceId}_1`;
-    const importedTurnId = `tu_imported_${body.importedWorkspaceId}_1`;
     const importedDb = openTestWorkspaceDb(coreDb, body.importedWorkspaceId);
     try {
+      const importedCheckpoint = importedDb.sqlite
+        .prepare(
+          'SELECT thread_id AS threadId, turn_id AS turnId, worker_session_id AS workerSessionId FROM worker_turn_checkpoints'
+        )
+        .get() as { threadId: string; turnId: string; workerSessionId: string };
+      const importedThreadId = importedCheckpoint.threadId;
+      const importedTurnId = importedCheckpoint.turnId;
+      expect(importedThreadId).toMatch(entityIdPattern('th'));
+      expect(importedTurnId).toMatch(entityIdPattern('tu'));
+      expect(importedCheckpoint.workerSessionId).toMatch(entityIdPattern('as'));
+      expect(importedCheckpoint.workerSessionId).not.toBe(
+        'as_00000000-0000-7652-8f43-7ca66c6bda3b'
+      );
       expect(
         getWorkerCheckpoint(importedDb, body.importedWorkspaceId, importedThreadId, importedTurnId)
       ).toEqual(
@@ -4495,7 +4755,7 @@ describe('nanocore server', () => {
           taskId: null,
           threadId: importedThreadId,
           turnId: importedTurnId,
-          workerSessionId: 'as_checkpoint',
+          workerSessionId: importedCheckpoint.workerSessionId,
           workspaceId: body.importedWorkspaceId,
         })
       );
@@ -4514,7 +4774,7 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     const schemaTools = [
       {
         name: 'repo_status',
@@ -4539,7 +4799,7 @@ describe('nanocore server', () => {
         )
         .run(
           'mcpsnap_import_1',
-          'ws_demo',
+          'ws_00000000-0000-7000-8000-000000000001',
           'github-mcp',
           'mcp/github',
           '1.0.0',
@@ -4553,7 +4813,11 @@ describe('nanocore server', () => {
     }
     const app = createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
-      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        { method: 'POST' }
+      )
     );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
@@ -4567,7 +4831,7 @@ describe('nanocore server', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            sourceWorkspaceId: 'ws_demo',
+            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             exportId: exported.exportId,
             requestId: '00000000-0000-4000-8000-00000000d832',
           }),
@@ -4686,12 +4950,14 @@ describe('nanocore server', () => {
     );
 
     const workspaceRes = await app.request(
-      ...operationRequest('workspace.read', { workspaceId: 'ws_demo' })
+      ...operationRequest('workspace.read', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     );
     const resourcesRes = await canonicalApp.request('/api/app/operations/workspace.resources', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ workspaceId: 'ws_demo' }),
+      body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
     });
 
     expect(workspaceRes.status).toBe(200);
@@ -4701,7 +4967,7 @@ describe('nanocore server', () => {
     const resources = (await resourcesRes.json()) as Record<string, unknown>;
 
     expect(workspace).toMatchObject({
-      id: 'ws_demo',
+      id: 'ws_00000000-0000-7000-8000-000000000001',
       kind: 'code',
     });
     expect(workspace.knowledge).toBeUndefined();
@@ -4722,7 +4988,7 @@ describe('nanocore server', () => {
     const createRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.create',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           body: JSON.stringify({
@@ -4740,7 +5006,7 @@ describe('nanocore server', () => {
     const updateRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.update',
-        { workspaceId: 'ws_demo', knowledgeEntryId: knowledge.id },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', knowledgeEntryId: knowledge.id },
         {
           method: 'PATCH',
           body: JSON.stringify({
@@ -4756,7 +5022,7 @@ describe('nanocore server', () => {
     const deleteRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.delete',
-        { workspaceId: 'ws_demo', knowledgeEntryId: knowledge.id },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', knowledgeEntryId: knowledge.id },
         {
           method: 'DELETE',
           body: JSON.stringify({
@@ -4770,14 +5036,20 @@ describe('nanocore server', () => {
     expect(deleteRes.status).toBe(200);
 
     const listRes = await app.request(
-      ...knowledgeOperationRequest('knowledge.list', { workspaceId: 'ws_demo' })
+      ...knowledgeOperationRequest('knowledge.list', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
     );
     const list = (await listRes.json()) as { items: Array<{ id: string }> };
 
     expect(list.items.some((entry) => entry.id === knowledge.id)).toBe(false);
 
     const usageRes = await app.request(
-      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+      ...operationRequest(
+        'usage.read',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {}
+      )
     );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
@@ -4826,15 +5098,22 @@ describe('nanocore server', () => {
     const coreDb = createCoreDb();
     try {
       ensureLocalUser(coreDb);
-      recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
       const store = createDemoStore({ dataRoot: coreDb.dataRoot });
       const before = {
-        turns: store.listThreadTurns('ws_demo', 'th_demo'),
+        turns: store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        ),
         receipts: store.listCommandRequests(),
       };
       const app = new Hono<{ Variables: AuthVariables }>();
       app.use('*', async (c, next) => {
-        c.set('actor', { kind: 'local', userId: 'user_local' });
+        c.set('actor', { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' });
         await next();
       });
       registerOperationJsonRoutes({
@@ -4861,7 +5140,10 @@ describe('nanocore server', () => {
       const response = await app.request(
         ...operationRequest(
           'turn.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             body: JSON.stringify({
               input: 'Ship the update',
@@ -4872,7 +5154,12 @@ describe('nanocore server', () => {
       );
       expect(response.status).toBe(503);
       expect(await response.json()).toMatchObject({ code: 'scheduler_unavailable' });
-      expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual(before.turns);
+      expect(
+        store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      ).toEqual(before.turns);
       expect(store.listCommandRequests()).toEqual(before.receipts);
     } finally {
       coreDb.sqlite.close();
@@ -4885,13 +5172,13 @@ describe('nanocore server', () => {
     await expect(
       startNativeTurn(
         {
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           requestId: '0190f4c8-0000-7000-8000-000000000202',
           input: 'Ship the update',
         },
         store,
-        { kind: 'local', userId: 'user_local' },
+        { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         {
           coreDb: undefined,
           inflightCommands: new WeakMap(),
@@ -4908,21 +5195,26 @@ describe('nanocore server', () => {
       )
     ).rejects.toMatchObject({ status: 503, code: 'scheduler_unavailable' });
     expect(store.listCommandRequests()).toEqual(before);
-    expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
+    expect(
+      store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toEqual([]);
   });
 
   it('starts scheduled turns without resolving Gateway credentials in Agent composition', async () => {
     const coreDb = createCoreDb();
     const executor = new FakeTurnExecutor();
     createVaultReference(coreDb, {
-      referenceId: 'provider_openrouter',
+      referenceId: 'vault_00000000-0000-773b-907f-1cbec0ca03c0',
       ownerScope: 'server',
       displayName: 'Configured Gateway fixture',
       secretKind: 'provider-api-key',
       backendKind: 'encrypted-file',
     });
     const providerCredentialResolver = vi.fn((secretRef: string) =>
-      secretRef === 'vault://provider_openrouter' ? 'test-key' : null
+      secretRef === 'vault://vault_00000000-0000-773b-907f-1cbec0ca03c0' ? 'test-key' : null
     );
     const app = createApp({
       agentManifests: [createTestAgentSetup().manifest],
@@ -4936,7 +5228,7 @@ describe('nanocore server', () => {
           id: 'agent-openrouter',
           kind: 'gateway',
           models: ['openai/gpt-5.2'],
-          secretRef: 'vault://provider_openrouter',
+          secretRef: 'vault://vault_00000000-0000-773b-907f-1cbec0ca03c0',
         },
       ]),
       turnExecutor: executor,
@@ -4953,8 +5245,8 @@ describe('nanocore server', () => {
           {
             method: 'POST',
             body: JSON.stringify({
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               requestId: '0190f4c8-0000-7000-8000-000000000216',
               input: 'Run through scheduler',
             }),
@@ -4973,7 +5265,7 @@ describe('nanocore server', () => {
       });
       expect(providerCredentialResolver).not.toHaveBeenCalled();
       expect(listVaultUseRecords(coreDb)).toEqual([]);
-      expect(turn.id).toMatch(/^turn_0190f4c8-0000-7000-8000-000000000216/);
+      expect(turn.id).toMatch(entityIdPattern('tu'));
     } finally {
       coreDb.sqlite.close();
     }
@@ -4982,7 +5274,7 @@ describe('nanocore server', () => {
   it('starts Task Mode through the worker coordinator and one bounded worker turn', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const knowledge = store.createKnowledgeEntry('ws_demo', {
+    const knowledge = store.createKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', {
       content: 'Implement the focused Task Mode fix with the existing worker path.',
       kind: 'project-context',
       title: 'Focused Task Mode fix',
@@ -4992,11 +5284,15 @@ describe('nanocore server', () => {
     const executionFinished = Promise.withResolvers<void>();
     const startTurn = executor.startTurn.bind(executor);
     vi.spyOn(executor, 'startTurn').mockImplementation(async (...args) => {
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         launchedContextAssembly = parseWorkerCheckpointContextAssembly(
-          getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', args[1])?.diagnosticsSummary ??
-            null
+          getWorkerCheckpoint(
+            workspaceDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001',
+            args[1]
+          )?.diagnosticsSummary ?? null
         );
       } finally {
         workspaceDb.sqlite.close();
@@ -5032,7 +5328,7 @@ describe('nanocore server', () => {
       kind: 'selected' as const,
       purpose: 'work' as const,
       reuseWorkSlotRef: 'wsl_22222222222222222222222222222222',
-      storageRef: 'wst_11111111111111111111111111111111',
+      storageRef: 'wst_00000000-0000-7ac8-9f6c-13552db6aa87',
     };
 
     seedWritableGitRepository(repositoryPath);
@@ -5041,7 +5337,10 @@ describe('nanocore server', () => {
       const forgedLineageRes = await app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: JSON.stringify({
@@ -5061,7 +5360,7 @@ describe('nanocore server', () => {
       await expect(forgedLineageRes.json()).resolves.toMatchObject({ code: 'invalid_request' });
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           statuses: ['admitted'],
         })
       ).toEqual([]);
@@ -5069,7 +5368,10 @@ describe('nanocore server', () => {
       const res = await app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: JSON.stringify({ requestId, input, workerStorageChoice }),
@@ -5082,11 +5384,11 @@ describe('nanocore server', () => {
       expect(res.status, JSON.stringify(responseBody)).toBe(202);
       const accepted = StartTaskModeResponseSchema.parse(responseBody);
       expect(accepted).not.toHaveProperty('decision');
-      expect(accepted.turn.id).toMatch(/^turn_0190f4c8-0000-7000-8000-000000000301/);
+      expect(accepted.turn.id).toMatch(entityIdPattern('tu'));
       expect(['pending', 'running', 'completed']).toContain(accepted.turn.status);
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           statuses: ['queued', 'admitted', 'denied', 'cancelled'],
         })
       ).toEqual([expect.objectContaining({ turnId: accepted.turn.id, requestId })]);
@@ -5115,7 +5417,10 @@ describe('nanocore server', () => {
       const terminalResponse = await app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: JSON.stringify({ requestId, input, workerStorageChoice }),
@@ -5130,7 +5435,7 @@ describe('nanocore server', () => {
       expect(parsed.state).toBe('completed');
       expect(parsed.turn.status).toBe('completed');
       expect(parsed.turn.agentId).toBe('agent_fourth_runtime');
-      expect(parsed.turn.id).toMatch(/^turn_0190f4c8-0000-7000-8000-000000000301/);
+      expect(parsed.turn.id).toMatch(entityIdPattern('tu'));
       expect(executor.startContexts[0]?.agentSetup?.manifest.id).toBe('agent_fourth_runtime');
       const admittedWorkerStorageChoice = {
         ...workerStorageChoice,
@@ -5140,22 +5445,28 @@ describe('nanocore server', () => {
       expect(executor.startContexts[0]?.workerStorageChoice).toEqual(admittedWorkerStorageChoice);
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           statuses: ['admitted'],
         })
       ).toEqual([expect.objectContaining({ workerStorageChoice: admittedWorkerStorageChoice })]);
       expect(parsed.completion).toEqual({
-        itemId: `it_assistant_${parsed.turn.id}`,
+        itemId: deriveEntityId('it', ['worker-result', parsed.turn.id]),
         text: 'Completed by fake executor.',
       });
       expect(parsed.evidence).toEqual({
-        itemIds: [`it_user_${parsed.turn.id}`, `it_assistant_${parsed.turn.id}`],
+        itemIds: [
+          deriveEntityId('it', ['task-user', parsed.turn.id]),
+          deriveEntityId('it', ['worker-result', parsed.turn.id]),
+        ],
         artifactIds: [],
         reviewIds: [],
       });
       const workerInput = store
-        .listThreadItems('ws_demo', 'th_demo')
-        .find((item) => item.id === `it_user_${parsed.turn.id}`);
+        .listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+        .find((item) => item.id === deriveEntityId('it', ['task-user', parsed.turn.id]));
       expect(workerInput?.type).toBe('user-message');
       const expectedWorkerRequest = workerCoordinator.createWorkerCoordinatorDecision({
         entryIntent: 'explicit_task',
@@ -5167,8 +5478,11 @@ describe('nanocore server', () => {
             readiness: 'ready',
           },
         ],
-        threadState: { status: 'idle', threadId: 'th_demo' },
-        workspaceSummary: { name: 'Demo Workspace', workspaceId: 'ws_demo' },
+        threadState: { status: 'idle', threadId: 'th_00000000-0000-7000-8000-000000000001' },
+        workspaceSummary: {
+          name: 'Demo Workspace',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        },
       }).workerRequest;
       expect(expectedWorkerRequest).not.toBeNull();
       expect(
@@ -5178,7 +5492,8 @@ describe('nanocore server', () => {
       ).toEqual(expectedWorkerRequest);
       const retrievalTraceRef = launchedContextAssembly?.knowledgeSelectionInput.retrievalTraceRef;
       expect(retrievalTraceRef).toEqual({
-        scopeId: 'retrieval-trace/thread/ws_demo/th_demo',
+        scopeId:
+          'retrieval-trace/thread/ws_00000000-0000-7000-8000-000000000001/th_00000000-0000-7000-8000-000000000001',
         objectId: expect.stringMatching(
           /^krt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
         ),
@@ -5187,9 +5502,9 @@ describe('nanocore server', () => {
       const retrievalTracePath = join(
         coreDb.dataRoot,
         'workspaces',
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         'threads',
-        'th_demo',
+        'th_00000000-0000-7000-8000-000000000001',
         'retrieval-traces',
         `${retrievalTraceRef.objectId}.json`
       );
@@ -5201,8 +5516,8 @@ describe('nanocore server', () => {
         expect.objectContaining({
           caller: 'task-mode',
           queryContext: expect.objectContaining({
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
           }),
           retrievalParameters: {
             limit: 5,
@@ -5213,7 +5528,10 @@ describe('nanocore server', () => {
           traceId: retrievalTraceRef.objectId,
           selected: expect.arrayContaining([
             expect.objectContaining({
-              reference: { scopeId: 'page/workspace/ws_demo', objectId: knowledge.id },
+              reference: {
+                scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+                objectId: knowledge.id,
+              },
             }),
           ]),
         })
@@ -5224,7 +5542,10 @@ describe('nanocore server', () => {
       const replayRes = await app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: JSON.stringify({ requestId, input, workerStorageChoice }),
@@ -5235,7 +5556,10 @@ describe('nanocore server', () => {
       const storageConflictRes = await app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: JSON.stringify({ requestId, input, workerStorageChoice: { kind: 'fresh' } }),
@@ -5246,7 +5570,10 @@ describe('nanocore server', () => {
       const conflictRes = await app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: JSON.stringify({
@@ -5351,8 +5678,14 @@ describe('nanocore server', () => {
         workspaceDataSourceCatalogs: [
           {
             catalog,
-            path: join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'config', 'data-sources.jsonc'),
-            workspaceId: 'ws_demo',
+            path: join(
+              coreDb.dataRoot,
+              'workspaces',
+              'ws_00000000-0000-7000-8000-000000000001',
+              'config',
+              'data-sources.jsonc'
+            ),
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
         ],
       }),
@@ -5360,11 +5693,15 @@ describe('nanocore server', () => {
     let checkpointDiagnostics: string | null = null;
     const startTurn = executor.startTurn.bind(executor);
     vi.spyOn(executor, 'startTurn').mockImplementation(async (...args) => {
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         checkpointDiagnostics =
-          getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', args[1])?.diagnosticsSummary ??
-          null;
+          getWorkerCheckpoint(
+            workspaceDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            store.getTurnById(args[1]).threadId,
+            args[1]
+          )?.diagnosticsSummary ?? null;
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -5379,7 +5716,7 @@ describe('nanocore server', () => {
     const input = 'Implement the focused Task Mode fix.';
 
     try {
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         expect(
           workspaceDb.sqlite
@@ -5395,7 +5732,10 @@ describe('nanocore server', () => {
       const response = await app.request(
         ...operationRequest(
           path.endsWith('task.start') ? 'task.start' : 'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body:
@@ -5412,9 +5752,17 @@ describe('nanocore server', () => {
       await executor.waitForFinished(store);
       if (responseKind === 'task') {
         expect(StartTaskModeResponseSchema.parse(responseBody).turn.id).toBe(
-          store.listThreadTurns('ws_demo', 'th_demo')[0]!.id
+          store.listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )[0]!.id
         );
-        expect(store.listThreadTurns('ws_demo', 'th_demo')[0]!.status).toBe('completed');
+        expect(
+          store.listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )[0]!.status
+        ).toBe('completed');
       } else {
         expect(SubmitConversationResponseSchema.parse(responseBody)).toMatchObject({
           outcome: 'task-handoff',
@@ -5442,7 +5790,9 @@ describe('nanocore server', () => {
       };
       expect(checkpointPayload.contextAssembly).toMatchObject({
         contextDigest: expect.any(String),
-        contextRefs: expect.arrayContaining([{ kind: 'workspace', id: 'ws_demo' }]),
+        contextRefs: expect.arrayContaining([
+          { kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' },
+        ]),
       });
       expect(checkpointPayload.contextAssembly).not.toHaveProperty('repositoryResourceId');
       expect(
@@ -5485,7 +5835,7 @@ describe('nanocore server', () => {
         const agentSessionId = context.agentSessionId ?? `session_${turn.threadId}`;
         const agentSession = runtimeStore.getAgentSession(agentSessionId);
         runtimeStore.createItem({
-          id: `it_user_${turnId}`,
+          id: deriveEntityId('it', ['task-user', turnId]),
           workspaceId: turn.workspaceId,
           threadId: turn.threadId,
           turnId,
@@ -5528,7 +5878,10 @@ describe('nanocore server', () => {
       const response = await app.request(
         ...operationRequest(
           path.endsWith('task.start') ? 'task.start' : 'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body:
@@ -5550,22 +5903,39 @@ describe('nanocore server', () => {
       if (entry === 'direct Task') {
         const result = StartTaskModeResponseSchema.parse(await response.clone().json());
         expect(store.getTurnById(result.turn.id).status).toBe('failed');
-        const checkpointDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+        const checkpointDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
         try {
           expect(
-            getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', result.turn.id)
+            getWorkerCheckpoint(
+              checkpointDb,
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001',
+              result.turn.id
+            )
           ).toBeNull();
         } finally {
           checkpointDb.sqlite.close();
         }
       }
-      const failedTurn = store
-        .listThreadTurns('ws_demo', 'th_demo')
-        .find((turn) => turn.status === 'failed');
+      const failedAdmission = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        statuses: ['queued', 'admitted', 'denied', 'cancelled'],
+      }).find((admission) => admission.requestId === requestId);
+      const failedTurn = failedAdmission
+        ? store.getTurn(
+            failedAdmission.workspaceId,
+            failedAdmission.threadId,
+            failedAdmission.turnId
+          )
+        : undefined;
       expect(failedTurn).toBeDefined();
 
       const evidenceResponse = await app.request(
-        ...operationRequest('evidence.runtime-list', { workspaceId: 'ws_demo' }, {})
+        ...operationRequest(
+          'evidence.runtime-list',
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+          {}
+        )
       );
       expect(evidenceResponse.status, await evidenceResponse.clone().text()).toBe(200);
       const evidence = ListWorkspaceRuntimeEvidenceResponseSchema.parse(
@@ -5628,7 +5998,7 @@ describe('nanocore server', () => {
         const agentSessionId = context.agentSessionId ?? `session_${turn.threadId}`;
         const agentSession = runtimeStore.getAgentSession(agentSessionId);
         runtimeStore.createItem({
-          id: `it_user_${turnId}`,
+          id: deriveEntityId('it', ['task-user', turnId]),
           workspaceId: turn.workspaceId,
           threadId: turn.threadId,
           turnId,
@@ -5677,7 +6047,10 @@ describe('nanocore server', () => {
       const response = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             body: requestBody,
             headers: { 'content-type': 'application/json' },
@@ -5692,7 +6065,10 @@ describe('nanocore server', () => {
       const resultResponse = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           { body: requestBody, headers: jsonHeaders(), method: 'POST' }
         )
       );
@@ -5713,7 +6089,7 @@ describe('nanocore server', () => {
       expect(result).toMatchObject({
         explanation,
         item: {
-          id: `it_worker_result_${result.turn.id}`,
+          id: deriveEntityId('it', ['worker-result', result.turn.id]),
           level: 'warning',
           summary: 'Worker turn ended without success.',
           title,
@@ -5728,7 +6104,10 @@ describe('nanocore server', () => {
       const replay = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             body: requestBody,
             headers: { 'content-type': 'application/json' },
@@ -5767,7 +6146,10 @@ describe('nanocore server', () => {
       const firstRes = await app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: JSON.stringify({ requestId, input }),
@@ -5778,7 +6160,7 @@ describe('nanocore server', () => {
       await executor.waitForFinished(store);
       collector.mockRestore();
       // Deliberately corrupt only the published receipt after the exact execution has closed; retained terminal owners drive recovery.
-      const receiptDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      const receiptDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
       receiptDb.sqlite
         .prepare('DELETE FROM idempotency_requests WHERE command_name = ? AND request_id = ?')
         .run('task.start', requestId);
@@ -5788,20 +6170,26 @@ describe('nanocore server', () => {
       expect(
         store.getCommandRequest('task.start', requestId, {
           actorId: LOCAL_USER_ID,
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
         })
       ).toBeNull();
-      const turns = store.listThreadTurns('ws_demo', 'th_demo');
+      const turns = store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      );
       expect(turns).toHaveLength(1);
       const turn = turns[0]!;
-      const checkpointDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      const checkpointDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
       try {
-        const checkpoints = listExportableWorkerCheckpoints(checkpointDb, 'ws_demo');
+        const checkpoints = listExportableWorkerCheckpoints(
+          checkpointDb,
+          'ws_00000000-0000-7000-8000-000000000001'
+        );
         expect(checkpoints).toEqual([
           expect.objectContaining({
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
             turnId: turn.id,
             goalId: null,
             taskId: null,
@@ -5831,7 +6219,14 @@ describe('nanocore server', () => {
         expect(
           requireSchedulerExecutionAttempt(coreDb, executor.startContexts[0]!.attemptId!).phase
         ).toBe('closed');
-        expect(getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', turn.id)).toBeNull();
+        expect(
+          getWorkerCheckpoint(
+            checkpointDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001',
+            turn.id
+          )
+        ).toBeNull();
       } finally {
         checkpointDb.sqlite.close();
       }
@@ -5839,7 +6234,10 @@ describe('nanocore server', () => {
       const conflictRes = await app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: JSON.stringify({ requestId, input: 'Implement a different Task result.' }),
@@ -5857,7 +6255,10 @@ describe('nanocore server', () => {
       const replayRes = await app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: JSON.stringify({ requestId, input }),
@@ -5876,13 +6277,20 @@ describe('nanocore server', () => {
       expect(
         store.getCommandRequest('task.start', requestId, {
           actorId: LOCAL_USER_ID,
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
         })
       ).not.toBeNull();
-      const recoveredDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      const recoveredDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
       try {
-        expect(getWorkerCheckpoint(recoveredDb, 'ws_demo', 'th_demo', turn.id)).toBeNull();
+        expect(
+          getWorkerCheckpoint(
+            recoveredDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001',
+            turn.id
+          )
+        ).toBeNull();
       } finally {
         recoveredDb.sqlite.close();
       }
@@ -5920,17 +6328,21 @@ describe('nanocore server', () => {
   }) => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const chatThreadId = 'th_demo';
-    const taskThreadId = 'th_task_conversation_boot';
-    const turnId = 'tu_conversation_23b052e60543c617577173cc';
+    const chatThreadId = 'th_00000000-0000-7000-8000-000000000001';
+    const taskThreadId = 'th_00000000-0000-7347-94e1-85120ad74455';
+    const turnId = 'tu_00000000-0000-79f9-80b1-8d99a98b413d';
     const requestId = '0190f4c8-0000-7000-8000-000000000410';
     const requestInputHash = 'sha256:conversation-worker-boot';
-    const agentSessionId = 'as_conversation_boot';
+    const agentSessionId = 'as_00000000-0000-7dd5-985e-c3d36d7f78a9';
     const failed = stopReason === 'error';
     const completedAt = '2026-09-10T09:11:15.000Z';
-    store.createThread('ws_demo', 'Conversation worker Task thread', taskThreadId);
+    store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Conversation worker Task thread',
+      taskThreadId
+    );
     const turn = store.createTurn(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       taskThreadId,
       'Conversation-owned worker Turn',
       { kind: 'user', id: LOCAL_USER_ID },
@@ -5945,7 +6357,7 @@ describe('nanocore server', () => {
       status: failed ? 'failed' : 'idle',
       threadId: taskThreadId,
       updatedAt: completedAt,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const closedTurn = store.updateTurn(turn.id, {
       agentId: 'agent_codex_host',
@@ -5959,7 +6371,7 @@ describe('nanocore server', () => {
       requestId,
       threadId: taskThreadId,
       turnId: turn.id,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const entry = createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
@@ -5971,17 +6383,20 @@ describe('nanocore server', () => {
       threadId: taskThreadId,
       turnId: turn.id,
       turnInput: 'Conversation-owned worker Turn',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     createSchedulerExecutionAttempt(coreDb, {
       entry,
-      attemptId: `lease_${turn.id}`,
+      attemptId: testEntityId('attempt', `lease_${turn.id}`),
       preparationInput: { admission: entry },
     });
-    bindSchedulerExecutionAttemptSession(coreDb, { attemptId: `lease_${turn.id}`, agentSessionId });
+    bindSchedulerExecutionAttemptSession(coreDb, {
+      attemptId: testEntityId('attempt', `lease_${turn.id}`),
+      agentSessionId,
+    });
     // This boot model owns no submitted operation or package, so its complete no-effect proof is explicit.
     closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
-      attemptId: `lease_${turn.id}`,
+      attemptId: testEntityId('attempt', `lease_${turn.id}`),
       cause: failed ? 'turn-failed' : 'turn-completed',
       noOutstandingEffects: true,
     });
@@ -5992,7 +6407,7 @@ describe('nanocore server', () => {
         scope: {
           actorId: LOCAL_USER_ID,
           threadId: chatThreadId,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
         inputHash: requestInputHash,
         response: {
@@ -6002,7 +6417,7 @@ describe('nanocore server', () => {
             downstream: { kind: 'task', turnId: turn.id },
             targetRef: 'internal-role:assistant',
             logicalModelId: 'orcarouter',
-            receivingWorkspaceId: 'ws_demo',
+            receivingWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             receivingThreadId: receipt === 'exact' ? taskThreadId : chatThreadId,
             resultKind: 'worker-turn',
             status: 202,
@@ -6010,7 +6425,7 @@ describe('nanocore server', () => {
         },
       });
     }
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
         iteration: 0,
@@ -6021,7 +6436,7 @@ describe('nanocore server', () => {
         threadId: taskThreadId,
         turnId: turn.id,
         workerSessionId: agentSessionId,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const classification = classifyDirectTaskCheckpointAfterSchedulerRecovery({
         checkpoint,
@@ -6031,7 +6446,14 @@ describe('nanocore server', () => {
       });
       if (expected === 'complete') {
         await expect(classification).resolves.toBe('complete');
-        expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', taskThreadId, turn.id)).toBeNull();
+        expect(
+          getWorkerCheckpoint(
+            workspaceDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            taskThreadId,
+            turn.id
+          )
+        ).toBeNull();
         expect(
           store.listCommandRequests().filter((record) => record.command === 'task.start')
         ).toEqual([]);
@@ -6041,9 +6463,14 @@ describe('nanocore server', () => {
         return;
       }
       await expect(classification).rejects.toMatchObject({ code: 'recovery_required' });
-      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', taskThreadId, turn.id)).toEqual(
-        checkpoint
-      );
+      expect(
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          taskThreadId,
+          turn.id
+        )
+      ).toEqual(checkpoint);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -6057,13 +6484,17 @@ describe('nanocore server', () => {
   ] as const)('clears a terminal Task checkpoint with no scheduler lease when the product Turn is %s', async (status) => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const threadId = `th_task_stale_boot_${status}`;
-    const turnId = `turn_stale_boot_no_lease_${status}`;
+    const threadId = testEntityId('th', `th_task_stale_boot_${status}`);
+    const turnId = testEntityId('tu', `turn_stale_boot_no_lease_${status}`);
     const requestId = `0190f4c8-0000-7000-8000-00000000048${status === 'failed' ? '9' : status === 'completed' ? 'a' : 'b'}`;
     const completedAt = '2026-09-15T13:38:10.000Z';
-    store.createThread('ws_demo', 'Stale boot Task thread', threadId);
+    store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Stale boot Task thread',
+      threadId
+    );
     const turn = store.createTurn(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       threadId,
       'Stale boot Task Turn',
       { kind: 'user', id: LOCAL_USER_ID },
@@ -6082,7 +6513,7 @@ describe('nanocore server', () => {
         : {}),
       status,
     });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
         iteration: 0,
@@ -6093,7 +6524,7 @@ describe('nanocore server', () => {
           status === 'cancelled' ? 'aborted' : status === 'completed' ? 'completed' : 'error',
         threadId,
         turnId: turn.id,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(checkpoint.workerSessionId).toBeNull();
       await expect(
@@ -6104,7 +6535,14 @@ describe('nanocore server', () => {
           workspaceDb,
         })
       ).resolves.toBe('complete');
-      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', threadId, turn.id)).toBeNull();
+      expect(
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          threadId,
+          turn.id
+        )
+      ).toBeNull();
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -6114,14 +6552,18 @@ describe('nanocore server', () => {
   it('clears a terminal Task checkpoint whose failed lease session does not match a null worker session', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const threadId = 'th_task_stale_failed_lease';
-    const turnId = 'turn_stale_boot_failed_lease';
+    const threadId = 'th_00000000-0000-7095-8f0a-79db5b085747';
+    const turnId = 'tu_00000000-0000-7471-bee9-f6246fce36d6';
     const requestId = '0190f4c8-0000-7000-8000-000000000490';
     const requestInputHash = 'sha256:stale-boot-failed-lease';
     const completedAt = '2026-09-15T11:29:35.000Z';
-    store.createThread('ws_demo', 'Stale failed-lease Task thread', threadId);
+    store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Stale failed-lease Task thread',
+      threadId
+    );
     const turn = store.createTurn(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       threadId,
       'Stale failed-lease Task Turn',
       { kind: 'user', id: LOCAL_USER_ID },
@@ -6134,14 +6576,14 @@ describe('nanocore server', () => {
       status: 'failed',
     });
     await recordWorkerRetryLease(coreDb, {
-      agentSessionId: 'as_stale_failed_lease',
+      agentSessionId: 'as_00000000-0000-700b-9145-b7b10318aad9',
       recoveryState: null,
       releaseReason: 'turn-start-failed',
       status: 'failed',
       threadId,
       turnId: turn.id,
     });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
         iteration: 0,
@@ -6151,7 +6593,7 @@ describe('nanocore server', () => {
         stopReason: 'error',
         threadId,
         turnId: turn.id,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await expect(
         classifyDirectTaskCheckpointAfterSchedulerRecovery({
@@ -6161,7 +6603,14 @@ describe('nanocore server', () => {
           workspaceDb,
         })
       ).resolves.toBe('complete');
-      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', threadId, turn.id)).toBeNull();
+      expect(
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          threadId,
+          turn.id
+        )
+      ).toBeNull();
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -6175,14 +6624,18 @@ describe('nanocore server', () => {
   ] as const)('clears a null-session turn-start-failed needs-evidence checkpoint without retained provenance when the Turn is %s', async (status) => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const threadId = `th_task_provenance_skip_${status}`;
-    const turnId = `turn_provenance_skip_${status}`;
+    const threadId = testEntityId('th', `th_task_provenance_skip_${status}`);
+    const turnId = testEntityId('tu', `turn_provenance_skip_${status}`);
     const requestId = `0190f4c8-0000-7000-8000-0000000004c${status === 'failed' ? '1' : status === 'completed' ? '2' : '3'}`;
-    const agentSessionId = `as_provenance_skip_${status}`;
+    const agentSessionId = testEntityId('as', `as_provenance_skip_${status}`);
     const completedAt = '2026-09-15T13:38:10.000Z';
-    store.createThread('ws_demo', 'Provenance skip Task thread', threadId);
+    store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Provenance skip Task thread',
+      threadId
+    );
     const turn = store.createTurn(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       threadId,
       'Provenance skip Task Turn',
       { kind: 'user', id: LOCAL_USER_ID },
@@ -6192,7 +6645,12 @@ describe('nanocore server', () => {
     store.updateTurn(turn.id, {
       completedAt,
       ...(status === 'failed'
-        ? { error: { code: 'turn_start_failed', message: 'Worker start failed.' } }
+        ? {
+            error: {
+              code: 'turn_start_failed',
+              message: 'Worker start failed.',
+            },
+          }
         : {}),
       status,
     });
@@ -6204,7 +6662,7 @@ describe('nanocore server', () => {
       threadId,
       turnId: turn.id,
     });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       recordProvenanceRequiredStaleBootPackage(store, workspaceDb, turn.id, agentSessionId);
       const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
@@ -6216,7 +6674,7 @@ describe('nanocore server', () => {
           status === 'cancelled' ? 'aborted' : status === 'completed' ? 'completed' : 'error',
         threadId,
         turnId: turn.id,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       expect(checkpoint.workerSessionId).toBeNull();
       await expect(
@@ -6227,7 +6685,14 @@ describe('nanocore server', () => {
           workspaceDb,
         })
       ).resolves.toBe('complete');
-      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', threadId, turn.id)).toBeNull();
+      expect(
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          threadId,
+          turn.id
+        )
+      ).toBeNull();
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -6254,14 +6719,18 @@ describe('nanocore server', () => {
   }) => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const threadId = `th_task_provenance_keep_${suffix}`;
-    const turnId = `turn_provenance_keep_${suffix}`;
+    const threadId = testEntityId('th', `th_task_provenance_keep_${suffix}`);
+    const turnId = testEntityId('tu', `turn_provenance_keep_${suffix}`);
     const requestId = `0190f4c8-0000-7000-8000-0000000004c${suffix === 'release' ? '4' : '5'}`;
-    const agentSessionId = `as_provenance_keep_${suffix}`;
+    const agentSessionId = testEntityId('as', `as_provenance_keep_${suffix}`);
     const completedAt = '2026-09-15T13:38:10.000Z';
-    store.createThread('ws_demo', 'Provenance keep Task thread', threadId);
+    store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Provenance keep Task thread',
+      threadId
+    );
     const turn = store.createTurn(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       threadId,
       'Provenance keep Task Turn',
       { kind: 'user', id: LOCAL_USER_ID },
@@ -6282,7 +6751,7 @@ describe('nanocore server', () => {
       threadId,
       turnId: turn.id,
     });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       recordProvenanceRequiredStaleBootPackage(store, workspaceDb, turn.id, agentSessionId);
       const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
@@ -6293,7 +6762,7 @@ describe('nanocore server', () => {
         stopReason: 'error',
         threadId,
         turnId: turn.id,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await expect(
         classifyDirectTaskCheckpointAfterSchedulerRecovery({
@@ -6303,7 +6772,14 @@ describe('nanocore server', () => {
           workspaceDb,
         })
       ).rejects.toThrow('Required retained runtime provenance is missing.');
-      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', threadId, turn.id)).toEqual(checkpoint);
+      expect(
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          threadId,
+          turn.id
+        )
+      ).toEqual(checkpoint);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -6313,19 +6789,23 @@ describe('nanocore server', () => {
   it('keeps a preparing Task checkpoint without a scheduler lease fail-closed', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const threadId = 'th_task_live_boot';
-    const turnId = 'turn_live_boot_no_lease';
+    const threadId = 'th_00000000-0000-7ac7-8afe-2264d0396929';
+    const turnId = 'tu_00000000-0000-7b20-b263-86274c775e46';
     const requestId = '0190f4c8-0000-7000-8000-000000000491';
-    store.createThread('ws_demo', 'Live boot Task thread', threadId);
+    store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Live boot Task thread',
+      threadId
+    );
     const turn = store.createTurn(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       threadId,
       'Live boot Task Turn',
       { kind: 'user', id: LOCAL_USER_ID },
       null,
       { turnId }
     );
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
         iteration: 0,
@@ -6334,7 +6814,7 @@ describe('nanocore server', () => {
         stage: 'preparing',
         threadId,
         turnId: turn.id,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await expect(
         classifyDirectTaskCheckpointAfterSchedulerRecovery({
@@ -6347,7 +6827,14 @@ describe('nanocore server', () => {
         code: 'recovery_required',
         message: 'The boot Task checkpoint has no exact execution attempt.',
       });
-      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', threadId, turn.id)).toEqual(checkpoint);
+      expect(
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          threadId,
+          turn.id
+        )
+      ).toEqual(checkpoint);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -6360,12 +6847,16 @@ describe('nanocore server', () => {
   ] as const)('keeps a failed Task checkpoint fail-closed with distinct %s product Turn diagnostics', async (status) => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const threadId = 'th_task_interrupted_boot';
-    const turnId = 'turn_interrupted_boot_no_lease';
+    const threadId = 'th_00000000-0000-7065-b733-8240c3f973b0';
+    const turnId = 'tu_00000000-0000-77b0-97df-a1e64305ddde';
     const requestId = '0190f4c8-0000-7000-8000-000000000492';
-    store.createThread('ws_demo', 'Interrupted boot Task thread', threadId);
+    store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Interrupted boot Task thread',
+      threadId
+    );
     const turn = store.createTurn(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       threadId,
       'Interrupted boot Task Turn',
       { kind: 'user', id: LOCAL_USER_ID },
@@ -6373,7 +6864,7 @@ describe('nanocore server', () => {
       { turnId }
     );
     store.updateTurn(turn.id, { status });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
         iteration: 0,
@@ -6383,7 +6874,7 @@ describe('nanocore server', () => {
         stopReason: 'error',
         threadId,
         turnId: turn.id,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await expect(
         classifyDirectTaskCheckpointAfterSchedulerRecovery({
@@ -6399,7 +6890,14 @@ describe('nanocore server', () => {
             ? 'The boot Task checkpoint has a terminal interrupted Turn with unresolved checkpoint recovery.'
             : 'The boot Task checkpoint still has a live product Turn.',
       });
-      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', threadId, turn.id)).toEqual(checkpoint);
+      expect(
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          threadId,
+          turn.id
+        )
+      ).toEqual(checkpoint);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -6409,12 +6907,16 @@ describe('nanocore server', () => {
   it('keeps a failed Task checkpoint fail-closed when a live scheduler lease remains', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const threadId = 'th_task_live_lease_boot';
-    const turnId = 'turn_live_lease_boot';
+    const threadId = 'th_00000000-0000-7635-be9d-80ef1f46fc5a';
+    const turnId = 'tu_00000000-0000-7e97-9051-38eca141e03f';
     const requestId = '0190f4c8-0000-7000-8000-000000000493';
-    store.createThread('ws_demo', 'Live-lease boot Task thread', threadId);
+    store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Live-lease boot Task thread',
+      threadId
+    );
     const turn = store.createTurn(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       threadId,
       'Live-lease boot Task Turn',
       { kind: 'user', id: LOCAL_USER_ID },
@@ -6427,14 +6929,14 @@ describe('nanocore server', () => {
       status: 'failed',
     });
     await recordWorkerRetryLease(coreDb, {
-      agentSessionId: 'as_live_lease_boot',
+      agentSessionId: 'as_00000000-0000-7406-8129-af4f3196f4c7',
       recoveryState: null,
       releaseReason: null,
       status: 'active',
       threadId,
       turnId: turn.id,
     });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
         iteration: 0,
@@ -6444,7 +6946,7 @@ describe('nanocore server', () => {
         stopReason: 'error',
         threadId,
         turnId: turn.id,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await expect(
         classifyDirectTaskCheckpointAfterSchedulerRecovery({
@@ -6457,7 +6959,14 @@ describe('nanocore server', () => {
         code: 'recovery_required',
         message: 'The boot Task checkpoint still has a live execution attempt.',
       });
-      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', threadId, turn.id)).toEqual(checkpoint);
+      expect(
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          threadId,
+          turn.id
+        )
+      ).toEqual(checkpoint);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -6467,10 +6976,14 @@ describe('nanocore server', () => {
   it('keeps a failed Task checkpoint fail-closed when its product Turn is missing', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const threadId = 'th_task_missing_turn_boot';
-    const turnId = 'turn_missing_turn_boot';
-    store.createThread('ws_demo', 'Missing-turn boot Task thread', threadId);
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const threadId = 'th_00000000-0000-72f9-9bf5-d8f3e1bcbbb3';
+    const turnId = 'tu_00000000-0000-7048-94de-ab52d2f9b039';
+    store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Missing-turn boot Task thread',
+      threadId
+    );
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
         iteration: 0,
@@ -6480,7 +6993,7 @@ describe('nanocore server', () => {
         stopReason: 'error',
         threadId,
         turnId,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await expect(
         classifyDirectTaskCheckpointAfterSchedulerRecovery({
@@ -6493,7 +7006,14 @@ describe('nanocore server', () => {
         code: 'recovery_required',
         message: 'The Task checkpoint is missing its worker Turn.',
       });
-      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', threadId, turnId)).toEqual(checkpoint);
+      expect(
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          threadId,
+          turnId
+        )
+      ).toEqual(checkpoint);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -6504,14 +7024,20 @@ describe('nanocore server', () => {
     const coreDb = createCoreDb();
     const executor = new FakeTurnExecutor();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const thread = store.createThread('ws_quick_chat', 'Reject Task Mode');
+    const thread = store.createThread(
+      'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+      'Reject Task Mode',
+      undefined,
+      'conversation',
+      { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
+    );
     const app = createApp({ coreDb, store, turnExecutor: executor });
 
     try {
       const res = await app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_quick_chat', threadId: thread.id },
+          { workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28', threadId: thread.id },
           {
             method: 'POST',
             body: JSON.stringify({
@@ -6547,7 +7073,7 @@ describe('nanocore server', () => {
         const patchText = 'diff --git a/docs/task.md b/docs/task.md\n';
         const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
         const artifact = store.createArtifact({
-          id: `ar_task_review_${turnId}`,
+          id: testEntityId('ar', `ar_task_review_${turnId}`),
           workspaceId: runningTurn.workspaceId,
           threadId: runningTurn.threadId,
           turnId,
@@ -6636,7 +7162,10 @@ describe('nanocore server', () => {
       const res = await app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: JSON.stringify({
@@ -6659,7 +7188,10 @@ describe('nanocore server', () => {
       const replay = await app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             headers: jsonHeaders(),
@@ -6673,7 +7205,9 @@ describe('nanocore server', () => {
       const parsed = StartTaskModeResponseSchema.parse(await replay.json());
       expect(parsed.turn.id).toBe(accepted.turn.id);
 
-      expect(parsed.evidence.artifactIds).toContain(`ar_task_review_${parsed.turn.id}`);
+      expect(parsed.evidence.artifactIds).toContain(
+        testEntityId('ar', `ar_task_review_${parsed.turn.id}`)
+      );
       expect(parsed.evidence.reviewIds).toEqual([`swr_task_${parsed.turn.id}`]);
     } finally {
       coreDb.sqlite.close();
@@ -6695,7 +7229,10 @@ describe('nanocore server', () => {
       const res = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: conversationRequest({ requestId, input }),
@@ -6708,14 +7245,20 @@ describe('nanocore server', () => {
       const parsed = SubmitConversationResponseSchema.parse(await res.json());
       await executor.waitForFinished(store);
       const acceptedTurnIds = store
-        .listThreadTurns('ws_demo', 'th_demo')
+        .listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
         .map((turn) => turn.id)
         .sort();
 
       const replayRes = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: conversationRequest({ requestId, input }),
@@ -6726,7 +7269,10 @@ describe('nanocore server', () => {
       const conflictRes = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: conversationRequest({
@@ -6740,7 +7286,10 @@ describe('nanocore server', () => {
       const directTaskRes = await app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: JSON.stringify({ requestId, input }),
@@ -6773,7 +7322,10 @@ describe('nanocore server', () => {
       });
       expect(
         store
-          .listThreadTurns('ws_demo', 'th_demo')
+          .listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
           .map((turn) => turn.id)
           .sort()
       ).toEqual([...acceptedTurnIds, directTask.turn.id].sort());
@@ -6801,7 +7353,10 @@ describe('nanocore server', () => {
       const first = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: conversationRequest({ requestId, input }),
@@ -6812,21 +7367,39 @@ describe('nanocore server', () => {
       receiptWrite.mockRestore();
       const firstBody = await first.json();
       const turnIdsAfterFirst = store
-        .listThreadTurns('ws_demo', 'th_demo')
+        .listThreads('ws_00000000-0000-7000-8000-000000000001')
+        .flatMap((thread) => store.listThreadTurns(thread.workspaceId, thread.id))
         .map((turn) => turn.id)
         .sort();
-      const workerTurn = store
-        .listThreadTurns('ws_demo', 'th_demo')
-        .find((turn) => turn.id.startsWith(`turn_${requestId}_`));
+      const workerAdmission = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        statuses: ['queued', 'admitted', 'denied', 'cancelled'],
+      }).find((entry) => entry.requestId === requestId);
+      const workerTurn = workerAdmission
+        ? store.getTurn(
+            workerAdmission.workspaceId,
+            workerAdmission.threadId,
+            workerAdmission.turnId
+          )
+        : undefined;
 
       expect(workerTurn).toBeDefined();
       if (!workerTurn) {
         throw new Error('The Chat-subordinate worker Turn was not created.');
       }
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      expect(workerTurn.threadId).not.toBe('th_00000000-0000-7000-8000-000000000001');
+      expect(store.getThread(workerTurn.workspaceId, workerTurn.threadId).parentThreadId).toBe(
+        'th_00000000-0000-7000-8000-000000000001'
+      );
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         expect(
-          getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', workerTurn.id)
+          getWorkerCheckpoint(
+            workspaceDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            workerTurn.threadId,
+            workerTurn.id
+          )
         ).not.toBeNull();
       } finally {
         workspaceDb.sqlite.close();
@@ -6837,8 +7410,8 @@ describe('nanocore server', () => {
         .soft(
           store.getCommandRequest('conversation.submit', requestId, {
             actorId: LOCAL_USER_ID,
-            threadId: 'th_demo',
-            workspaceId: 'ws_demo',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           })
         )
         .toBeNull();
@@ -6850,7 +7423,10 @@ describe('nanocore server', () => {
       const retry = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: conversationRequest({ requestId, input }),
@@ -6868,7 +7444,8 @@ describe('nanocore server', () => {
       expect(workerTurn.status).toBe('pending');
       expect(
         store
-          .listThreadTurns('ws_demo', 'th_demo')
+          .listThreads('ws_00000000-0000-7000-8000-000000000001')
+          .flatMap((thread) => store.listThreadTurns(thread.workspaceId, thread.id))
           .map((turn) => turn.id)
           .sort()
       ).toEqual(turnIdsAfterFirst);
@@ -6910,7 +7487,10 @@ describe('nanocore server', () => {
       await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: conversationRequest({ requestId, input: taskInput }),
@@ -6919,23 +7499,41 @@ describe('nanocore server', () => {
         )
       );
       receiptWrite.mockRestore();
-      const workerTurn = store
-        .listThreadTurns('ws_demo', 'th_demo')
-        .find((turn) => turn.id.startsWith(`turn_${requestId}_`));
+      const workerAdmission = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        statuses: ['queued', 'admitted', 'denied', 'cancelled'],
+      }).find((entry) => entry.requestId === requestId);
+      const workerTurn = workerAdmission
+        ? store.getTurn(
+            workerAdmission.workspaceId,
+            workerAdmission.threadId,
+            workerAdmission.turnId
+          )
+        : undefined;
       expect(workerTurn).toBeDefined();
       if (!workerTurn) {
         throw new Error('The Chat-subordinate worker Turn was not created.');
       }
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      expect(workerTurn.threadId).not.toBe('th_00000000-0000-7000-8000-000000000001');
+      expect(store.getThread(workerTurn.workspaceId, workerTurn.threadId).parentThreadId).toBe(
+        'th_00000000-0000-7000-8000-000000000001'
+      );
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         expect(
-          getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', workerTurn.id)
+          getWorkerCheckpoint(
+            workspaceDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            workerTurn.threadId,
+            workerTurn.id
+          )
         ).not.toBeNull();
       } finally {
         workspaceDb.sqlite.close();
       }
       const turnsBeforeReroute = store
-        .listThreadTurns('ws_demo', 'th_demo')
+        .listThreads('ws_00000000-0000-7000-8000-000000000001')
+        .flatMap((thread) => store.listThreadTurns(thread.workspaceId, thread.id))
         .map((turn) => turn.id)
         .sort();
       expect(coordinator).toHaveBeenCalledTimes(1);
@@ -6946,7 +7544,10 @@ describe('nanocore server', () => {
       const reroute = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: conversationRequest({ requestId, input: changedInput }),
@@ -6962,8 +7563,8 @@ describe('nanocore server', () => {
         .soft(
           store.getCommandRequest('conversation.submit', requestId, {
             actorId: LOCAL_USER_ID,
-            threadId: 'th_demo',
-            workspaceId: 'ws_demo',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           })
         )
         .toBeNull();
@@ -6973,7 +7574,8 @@ describe('nanocore server', () => {
       expect(workerTurn.status).toBe('pending');
       expect(
         store
-          .listThreadTurns('ws_demo', 'th_demo')
+          .listThreads('ws_00000000-0000-7000-8000-000000000001')
+          .flatMap((thread) => store.listThreadTurns(thread.workspaceId, thread.id))
           .map((turn) => turn.id)
           .sort()
       ).toEqual(turnsBeforeReroute);
@@ -7001,7 +7603,10 @@ describe('nanocore server', () => {
       const gapResponse = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: conversationRequest({ requestId: forgedRequestId, input }),
@@ -7014,18 +7619,26 @@ describe('nanocore server', () => {
       expect.soft(gapResponse.status, JSON.stringify(gapBody)).toBe(409);
       expect.soft(gapBody).toMatchObject({ code: 'recovery_required' });
       const outerChatTurn = store
-        .listThreadTurns('ws_demo', 'th_demo')
-        .find((turn) => turn.items.some((item) => item.id === `it_chat_task_${turn.id}`));
+        .listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+        .find((turn) =>
+          turn.items.some((item) => item.id === deriveEntityId('it', ['chat-task', turn.id]))
+        );
       expect(outerChatTurn).toBeDefined();
       if (!outerChatTurn) {
         throw new Error('The exact-request outer Chat Turn was not created.');
       }
 
-      const directTaskThread = store.createThread('ws_demo', 'Independent same-request Task');
+      const directTaskThread = store.createThread(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'Independent same-request Task'
+      );
       const directTaskResponse = await app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: directTaskThread.id },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: directTaskThread.id },
           {
             method: 'POST',
             body: JSON.stringify({ requestId: forgedRequestId, input }),
@@ -7035,7 +7648,15 @@ describe('nanocore server', () => {
       );
       expect(directTaskResponse.status, await directTaskResponse.clone().text()).toBe(202);
       const directTask = StartTaskModeResponseSchema.parse(await directTaskResponse.json());
-      expect(directTask.turn.id).toMatch(new RegExp(`^turn_${forgedRequestId}_`));
+      expect(directTask.turn.id).toBe(
+        deriveEntityId('tu', {
+          command: 'task.start',
+          actorId: LOCAL_USER_ID,
+          workspaceId: directTaskThread.workspaceId,
+          threadId: directTaskThread.id,
+          requestId: forgedRequestId,
+        })
+      );
 
       await executor.waitForFinished(store);
 
@@ -7044,8 +7665,8 @@ describe('nanocore server', () => {
         requestId: forgedRequestId,
         scope: {
           actorId: LOCAL_USER_ID,
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
         inputHash: commandInputHash({
           input,
@@ -7060,7 +7681,7 @@ describe('nanocore server', () => {
             downstream: { kind: 'task', turnId: directTask.turn.id },
             targetRef: 'internal-role:assistant',
             logicalModelId: null,
-            receivingWorkspaceId: 'ws_demo',
+            receivingWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             receivingThreadId: directTaskThread.id,
             resultKind: 'task-handoff',
             status: 202,
@@ -7068,12 +7689,20 @@ describe('nanocore server', () => {
         },
       });
       const startsBeforeReplay = executor.startContexts.length;
-      const turnsBeforeReplay = store.listThreadTurns('ws_demo', 'th_demo').map((turn) => turn.id);
+      const turnsBeforeReplay = store
+        .listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+        .map((turn) => turn.id);
 
       const replay = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: conversationRequest({ requestId: forgedRequestId, input }),
@@ -7086,9 +7715,14 @@ describe('nanocore server', () => {
       expect(replay.status, JSON.stringify(replayBody)).toBe(409);
       expect(replayBody).toMatchObject({ code: 'recovery_required' });
       expect(executor.startContexts).toHaveLength(startsBeforeReplay);
-      expect(store.listThreadTurns('ws_demo', 'th_demo').map((turn) => turn.id)).toEqual(
-        turnsBeforeReplay
-      );
+      expect(
+        store
+          .listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
+          .map((turn) => turn.id)
+      ).toEqual(turnsBeforeReplay);
     } finally {
       coreDb.sqlite.close();
     }
@@ -7103,7 +7737,10 @@ describe('nanocore server', () => {
       const res = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: conversationRequest({
@@ -7136,7 +7773,10 @@ describe('nanocore server', () => {
         const res = await app.request(
           ...operationRequest(
             'conversation.submit',
-            { workspaceId: 'ws_demo', threadId: 'th_demo' },
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+            },
             {
               method: 'POST',
               body: conversationRequest({
@@ -7168,13 +7808,19 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const app = createApp({ coreDb, store, turnExecutor: executor });
-    const thread = store.createThread('ws_quick_chat', 'Quick Chat thread');
+    const thread = store.createThread(
+      'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+      'Quick Chat thread',
+      undefined,
+      'conversation',
+      { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
+    );
 
     try {
       const res = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_quick_chat', threadId: thread.id },
+          { workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28', threadId: thread.id },
           {
             method: 'POST',
             body: conversationRequest({
@@ -7192,7 +7838,11 @@ describe('nanocore server', () => {
       expect(parsed).toMatchObject({
         outcome: 'clarification-needed',
         handoff: null,
-        turn: { workspaceId: 'ws_quick_chat', threadId: thread.id, status: 'completed' },
+        turn: {
+          workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+          threadId: thread.id,
+          status: 'completed',
+        },
       });
       expect(executor.startContexts).toHaveLength(0);
     } finally {
@@ -7205,13 +7855,19 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const app = createApp({ coreDb, store, turnExecutor: executor });
-    const thread = store.createThread('ws_quick_chat', 'Quick Chat project request');
+    const thread = store.createThread(
+      'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+      'Quick Chat project request',
+      undefined,
+      'conversation',
+      { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
+    );
 
     try {
       const res = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_quick_chat', threadId: thread.id },
+          { workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28', threadId: thread.id },
           {
             method: 'POST',
             body: conversationRequest({
@@ -7243,7 +7899,10 @@ describe('nanocore server', () => {
       const res = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: conversationRequest({
@@ -7274,12 +7933,19 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const prompts: string[] = [];
-    const thread = store.createThread('ws_quick_chat', 'Live Goal Web report');
+    const thread = store.createThread(
+      'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+      'Live Goal Web report',
+      undefined,
+      'conversation',
+      { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
+    );
+
     const reportBody = `# Maintenance report\n\n${LIVE_GOAL_WEB_REPORT_MARKER}\n`;
     const reportBytes = Buffer.byteLength(reportBody, 'utf8');
     const artifact = createImportedMarkdownArtifact(store, {
-      id: 'ar_live_goal_web_report',
-      workspaceId: 'ws_quick_chat',
+      id: 'ar_00000000-0000-7ffa-876e-68235f2366dd',
+      workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       title: '维护报告',
       body: reportBody,
       requestId: 'artifact-import-live-goal-web-1',
@@ -7295,7 +7961,7 @@ describe('nanocore server', () => {
       const res = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_quick_chat', threadId: thread.id },
+          { workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28', threadId: thread.id },
           {
             method: 'POST',
             body: conversationRequest({
@@ -7338,7 +8004,13 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const prompts: string[] = [];
-    const thread = store.createThread('ws_quick_chat', 'Topic mention');
+    const thread = store.createThread(
+      'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+      'Topic mention',
+      undefined,
+      'conversation',
+      { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
+    );
     const app = createApp({
       coreDb,
       store,
@@ -7350,7 +8022,7 @@ describe('nanocore server', () => {
       const res = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_quick_chat', threadId: thread.id },
+          { workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28', threadId: thread.id },
           {
             method: 'POST',
             body: conversationRequest({
@@ -7389,7 +8061,7 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const artifact = createImportedMarkdownArtifact(store, {
-      id: `ar_explicit_search_${input.length}`,
+      id: testEntityId('ar', `ar_explicit_search_${input.length}`),
       title: 'Attached notes',
       body: '# Notes\n',
       requestId: `artifact-import-explicit-search-${input.length}`,
@@ -7400,7 +8072,10 @@ describe('nanocore server', () => {
       const res = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: conversationRequest({
@@ -7446,7 +8121,10 @@ describe('nanocore server', () => {
       const res = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: conversationRequest({
@@ -7481,7 +8159,10 @@ describe('nanocore server', () => {
       const res = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: conversationRequest({
@@ -7529,7 +8210,10 @@ describe('nanocore server', () => {
       const res = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: conversationRequest({
@@ -7559,11 +8243,14 @@ describe('nanocore server', () => {
     const coreDb = createCoreDb();
     const app = createApp({ coreDb, turnExecutor: new FakeTurnExecutor() });
     try {
-      const response = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/goal', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ requestId: 'retired-entry', objective: 'Plan work' }),
-      });
+      const response = await app.request(
+        '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/goal',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: 'retired-entry', objective: 'Plan work' }),
+        }
+      );
       expect(response.status).toBe(404);
     } finally {
       coreDb.sqlite.close();
@@ -7606,7 +8293,10 @@ describe('nanocore server', () => {
       const response = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -7653,7 +8343,10 @@ describe('nanocore server', () => {
       const response = await app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -7671,7 +8364,12 @@ describe('nanocore server', () => {
         message: 'No ready worker candidate is available.',
       });
       expect(executor.startContexts).toHaveLength(0);
-      expect(store.listThreadTurns('ws_demo', 'th_demo')).toHaveLength(0);
+      expect(
+        store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      ).toHaveLength(0);
       expect(store.listCommandRequests()).toHaveLength(0);
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_admission_entries').get()
@@ -7681,42 +8379,47 @@ describe('nanocore server', () => {
     }
   });
 
-  it('replays an existing Task-to-Goal receipt without creating a Goal or worker', async () => {
+  it('refuses a Task receipt outside the current direct command lineage without new work', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const app = createApp({ coreDb, store, turnExecutor: executor });
     const requestId = '0190f4c8-0000-7000-8000-000000000604';
     const input = 'Plan a multi-step release goal for NanoCore.';
-    // Reconstruct the exact retained tuple produced by the removed keyword escalation branch.
-    const turn = store.createTurn('ws_demo', 'th_demo', input, { kind: 'user', id: 'user_local' });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      input,
+      { kind: 'user', id: LOCAL_USER_ID }
+    );
     const at = new Date().toISOString();
-    store.createItem({
-      id: `it_task_goal_goal_retained_${turn.id}`,
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: turn.id,
-      type: 'status',
-      status: 'completed',
-      level: 'info',
-      title: 'Goal created',
-      summary: 'The request needs explicit Goal Mode planning before worker execution.',
-      createdAt: at,
-      completedAt: at,
-    });
     store.updateTurn(turn.id, { status: 'completed', completedAt: at });
     store.recordCommandRequest({
       command: 'task.start',
       requestId,
-      scope: { actorId: 'user_local', workspaceId: 'ws_demo', threadId: 'th_demo' },
+      scope: {
+        actorId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+      },
       inputHash: commandInputHash({ input }),
       response: { kind: 'turn', id: turn.id },
     });
+    const retainedTurns = structuredClone(
+      store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    );
+    const retainedCommands = structuredClone(store.listCommandRequests());
     try {
       const response = await app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -7724,15 +8427,22 @@ describe('nanocore server', () => {
           }
         )
       );
-      expect(response.status, await response.clone().text()).toBe(202);
-      expect(StartTaskModeResponseSchema.parse(await response.json())).toMatchObject({
-        state: 'escalated-to-goal',
-        turn: { id: turn.id },
-        escalation: { targetMode: 'goal', goalId: 'goal_retained' },
-      });
+      expect(response.status, await response.clone().text()).toBe(409);
+      expect(await response.json()).toMatchObject({ code: 'recovery_required' });
       expect(executor.startContexts).toHaveLength(0);
-      expect(store.listThreadTurns('ws_demo', 'th_demo')).toHaveLength(1);
-      expect(store.listCommandRequests()).toHaveLength(1);
+      expect(
+        store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      ).toHaveLength(1);
+      expect(store.listCommandRequests()).toEqual(retainedCommands);
+      expect(
+        store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      ).toEqual(retainedTurns);
     } finally {
       coreDb.sqlite.close();
     }
@@ -7752,7 +8462,10 @@ describe('nanocore server', () => {
       app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -7795,8 +8508,8 @@ describe('nanocore server', () => {
           {
             method: 'POST',
             body: JSON.stringify({
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               requestId: '0190f4c8-0000-7000-8000-000000000203',
               input: 'Ship the update',
               modelId: 'model_missing',
@@ -7820,7 +8533,13 @@ describe('nanocore server', () => {
     const coreDb = createCoreDb();
     const executor = new FakeTurnExecutor();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const thread = store.createThread('ws_quick_chat', 'Reject worker turn');
+    const thread = store.createThread(
+      'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+      'Reject worker turn',
+      undefined,
+      'conversation',
+      { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
+    );
     const app = createApp({ coreDb, store, turnExecutor: executor });
 
     try {
@@ -7831,7 +8550,7 @@ describe('nanocore server', () => {
           {
             method: 'POST',
             body: JSON.stringify({
-              workspaceId: 'ws_quick_chat',
+              workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
               threadId: thread.id,
               requestId: '0190f4c8-0000-7000-8000-000000000320',
               input: 'Run a worker turn.',
@@ -7920,7 +8639,7 @@ describe('nanocore server', () => {
         requestId: '0190f4c8-0000-7000-8000-000000000204',
         name: 'Follow-up thread',
       },
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
     expect(res.status).toBe(200);
@@ -8015,7 +8734,7 @@ describe('nanocore server', () => {
     const knowledgeFirst = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.create',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           body: JSON.stringify(knowledgeBody),
@@ -8026,7 +8745,7 @@ describe('nanocore server', () => {
     const knowledgeSecond = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.create',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           body: JSON.stringify(knowledgeBody),
@@ -8039,7 +8758,9 @@ describe('nanocore server', () => {
 
     expect(duplicateKnowledge.id).toBe(knowledge.id);
     expect(
-      store.listKnowledge('ws_demo').filter((entry) => entry.title === 'Idempotent knowledge')
+      store
+        .listKnowledge('ws_00000000-0000-7000-8000-000000000001')
+        .filter((entry) => entry.title === 'Idempotent knowledge')
     ).toHaveLength(1);
 
     const knowledgeUpdateBody = {
@@ -8049,7 +8770,7 @@ describe('nanocore server', () => {
     const knowledgeUpdateFirst = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.update',
-        { workspaceId: 'ws_demo', knowledgeEntryId: knowledge.id },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', knowledgeEntryId: knowledge.id },
         {
           method: 'PATCH',
           body: JSON.stringify(knowledgeUpdateBody),
@@ -8060,7 +8781,7 @@ describe('nanocore server', () => {
     const knowledgeUpdateSecond = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.update',
-        { workspaceId: 'ws_demo', knowledgeEntryId: knowledge.id },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', knowledgeEntryId: knowledge.id },
         {
           method: 'PATCH',
           body: JSON.stringify(knowledgeUpdateBody),
@@ -8084,7 +8805,7 @@ describe('nanocore server', () => {
     const knowledgeDeleteFirst = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.delete',
-        { workspaceId: 'ws_demo', knowledgeEntryId: knowledge.id },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', knowledgeEntryId: knowledge.id },
         {
           method: 'DELETE',
           body: JSON.stringify(knowledgeDeleteBody),
@@ -8095,7 +8816,7 @@ describe('nanocore server', () => {
     const knowledgeDeleteSecond = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.delete',
-        { workspaceId: 'ws_demo', knowledgeEntryId: knowledge.id },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', knowledgeEntryId: knowledge.id },
         {
           method: 'DELETE',
           body: JSON.stringify(knowledgeDeleteBody),
@@ -8106,7 +8827,7 @@ describe('nanocore server', () => {
     const knowledgeDeleteNewRequest = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.delete',
-        { workspaceId: 'ws_demo', knowledgeEntryId: knowledge.id },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', knowledgeEntryId: knowledge.id },
         {
           method: 'DELETE',
           body: JSON.stringify({
@@ -8138,7 +8859,7 @@ describe('nanocore server', () => {
             : {}),
         },
         body: JSON.stringify(input),
-      }))({ ...threadBody, workspaceId: 'ws_demo' });
+      }))({ ...threadBody, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' });
     const threadSecond = await ((input: Record<string, unknown>) =>
       canonicalApp.request('/api/app/operations/thread.create', {
         method: 'POST',
@@ -8149,13 +8870,15 @@ describe('nanocore server', () => {
             : {}),
         },
         body: JSON.stringify(input),
-      }))({ ...threadBody, workspaceId: 'ws_demo' });
+      }))({ ...threadBody, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' });
     const thread = (await threadFirst.json()) as { id: string };
     const duplicateThread = (await threadSecond.json()) as { id: string };
 
     expect(duplicateThread.id).toBe(thread.id);
     expect(
-      store.listThreads('ws_demo').filter((item) => item.name === 'Idempotent thread')
+      store
+        .listThreads('ws_00000000-0000-7000-8000-000000000001')
+        .filter((item) => item.name === 'Idempotent thread')
     ).toHaveLength(1);
 
     const threadUpdateBody = {
@@ -8165,7 +8888,7 @@ describe('nanocore server', () => {
     const threadUpdateFirst = await app.request(
       ...operationRequest(
         'thread.update',
-        { workspaceId: 'ws_demo', threadId: thread.id },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: thread.id },
         {
           method: 'PATCH',
           body: JSON.stringify(threadUpdateBody),
@@ -8176,7 +8899,7 @@ describe('nanocore server', () => {
     const threadUpdateSecond = await app.request(
       ...operationRequest(
         'thread.update',
-        { workspaceId: 'ws_demo', threadId: thread.id },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: thread.id },
         {
           method: 'PATCH',
           body: JSON.stringify(threadUpdateBody),
@@ -8200,7 +8923,7 @@ describe('nanocore server', () => {
     await app.request(
       ...operationRequest(
         'thread.archive',
-        { workspaceId: 'ws_demo', threadId: thread.id },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: thread.id },
         {
           method: 'POST',
           body: JSON.stringify(threadArchiveBody),
@@ -8211,7 +8934,7 @@ describe('nanocore server', () => {
     const threadArchiveSecond = await app.request(
       ...operationRequest(
         'thread.archive',
-        { workspaceId: 'ws_demo', threadId: thread.id },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: thread.id },
         {
           method: 'POST',
           body: JSON.stringify(threadArchiveBody),
@@ -8233,8 +8956,8 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, store, turnExecutor: executor });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-idempotent-turn-repository-'));
     const body = {
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       requestId: '0190f4c8-0000-7000-8000-000000000509',
       input: 'Run the idempotent turn',
     };
@@ -8295,7 +9018,12 @@ describe('nanocore server', () => {
       expect(secondTurn.id).toBe(firstTurn.id);
       expect(executor.starts).toBe(1);
       expect(
-        store.listThreadTurns('ws_demo', 'th_demo').filter((turn) => turn.id === firstTurn.id)
+        store
+          .listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
+          .filter((turn) => turn.id === firstTurn.id)
       ).toHaveLength(1);
     } finally {
       coreDb.sqlite.close();
@@ -8308,17 +9036,25 @@ describe('nanocore server', () => {
     const executor = new FakeTurnExecutor();
     const app = createApp({ coreDb, store, turnExecutor: executor });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-active-turn-steering-repository-'));
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-    const thread = store.createThread('ws_demo', 'Active turn steering');
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Active turn steering'
+    );
     const activeTurn = store.updateTurn(
-      store.createTurn('ws_demo', thread.id, 'Keep this turn active', {
-        kind: 'user',
-        id: 'user_local',
-      }).id,
+      store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        thread.id,
+        'Keep this turn active',
+        {
+          kind: 'user',
+          id: 'usr_00000000-0000-7000-8000-000000000001',
+        }
+      ).id,
       { status: 'running' }
     );
     const body = {
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       requestId: '0190f4c8-0000-7000-8000-000000000516',
       input: 'Apply this to the active turn.',
@@ -8361,10 +9097,14 @@ describe('nanocore server', () => {
       await expect(replay.json()).resolves.toMatchObject({ code: 'thread_busy' });
       expect(admissionCountWhileActive).toBe(0);
       expect(executor.startContexts).toHaveLength(0);
-      expect(store.listThreadItems('ws_demo', thread.id)).toEqual([]);
-      expect(store.listThreadTurns('ws_demo', thread.id).map((turn) => turn.id)).toEqual([
-        activeTurn.id,
-      ]);
+      expect(store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', thread.id)).toEqual(
+        []
+      );
+      expect(
+        store
+          .listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id)
+          .map((turn) => turn.id)
+      ).toEqual([activeTurn.id]);
 
       store.updateTurn(activeTurn.id, {
         status: 'completed',
@@ -8387,8 +9127,12 @@ describe('nanocore server', () => {
       expect(acceptedTurn.id).not.toBe(activeTurn.id);
       await executor.waitForFinished(store, 1);
       expect(executor.startContexts).toHaveLength(1);
-      expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(2);
-      expect(store.listThreadItems('ws_demo', thread.id)).toContainEqual(
+      expect(
+        store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id)
+      ).toHaveLength(2);
+      expect(
+        store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', thread.id)
+      ).toContainEqual(
         expect.objectContaining({
           turnId: acceptedTurn.id,
           type: 'user-message',
@@ -8418,7 +9162,10 @@ describe('nanocore server', () => {
             : {}),
         },
         body: JSON.stringify(input),
-      }))({ ...{ requestId, name: 'Conflict A' }, workspaceId: 'ws_demo' });
+      }))({
+      ...{ requestId, name: 'Conflict A' },
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const conflict = await ((input: Record<string, unknown>) =>
       canonicalApp.request('/api/app/operations/thread.create', {
         method: 'POST',
@@ -8429,7 +9176,10 @@ describe('nanocore server', () => {
             : {}),
         },
         body: JSON.stringify(input),
-      }))({ ...{ requestId, name: 'Conflict B' }, workspaceId: 'ws_demo' });
+      }))({
+      ...{ requestId, name: 'Conflict B' },
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
 
     expect(first.status).toBe(200);
     expect(conflict.status).toBe(409);
@@ -8442,14 +9192,19 @@ describe('nanocore server', () => {
     const store = createDemoStore();
     const app = createApp({ store, turnExecutor: new ApprovalTurnExecutor() });
     const canonicalApp = createApp({ store, turnExecutor: new ApprovalTurnExecutor() }, true);
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Need input', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Need input',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     store.createApproval({
       id: 'ap_missing_request',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: turn.id,
       kind: 'permission',
       status: 'pending',
@@ -8463,7 +9218,7 @@ describe('nanocore server', () => {
       app.request(
         ...operationRequest(
           'workspace.update',
-          { workspaceId: 'ws_demo' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'PATCH',
             body: JSON.stringify({ name: 'Missing request id' }),
@@ -8474,7 +9229,7 @@ describe('nanocore server', () => {
       canonicalApp.request(
         ...knowledgeOperationRequest(
           'knowledge.create',
-          { workspaceId: 'ws_demo' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
             body: JSON.stringify({
@@ -8489,7 +9244,10 @@ describe('nanocore server', () => {
       canonicalApp.request(
         ...knowledgeOperationRequest(
           'knowledge.update',
-          { workspaceId: 'ws_demo', knowledgeEntryId: 'mem_project' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            knowledgeEntryId: 'mem_project',
+          },
           {
             method: 'PATCH',
             body: JSON.stringify({ title: 'Missing request id' }),
@@ -8500,7 +9258,10 @@ describe('nanocore server', () => {
       canonicalApp.request(
         ...knowledgeOperationRequest(
           'knowledge.delete',
-          { workspaceId: 'ws_demo', knowledgeEntryId: 'mem_project' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            knowledgeEntryId: 'mem_project',
+          },
           {
             method: 'DELETE',
             body: JSON.stringify({}),
@@ -8518,7 +9279,10 @@ describe('nanocore server', () => {
               : {}),
           },
           body: JSON.stringify(input),
-        }))({ ...{ name: 'Missing request id' }, workspaceId: 'ws_demo' }),
+        }))({
+        ...{ name: 'Missing request id' },
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      }),
       app.request(
         ...operationRequest(
           'turn.start',
@@ -8526,8 +9290,8 @@ describe('nanocore server', () => {
           {
             method: 'POST',
             body: JSON.stringify({
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               input: 'Missing request id',
             }),
             headers: jsonHeaders(),
@@ -8541,8 +9305,8 @@ describe('nanocore server', () => {
           {
             method: 'POST',
             body: JSON.stringify({
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               answers: { question: ['Missing request id'] },
             }),
             headers: jsonHeaders(),
@@ -8555,7 +9319,10 @@ describe('nanocore server', () => {
           { pendingRequestId: 'ui_missing_request' },
           {
             method: 'POST',
-            body: JSON.stringify({ workspaceId: 'ws_demo', threadId: 'th_demo' }),
+            body: JSON.stringify({
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+            }),
             headers: jsonHeaders(),
           }
         )
@@ -8567,8 +9334,8 @@ describe('nanocore server', () => {
           {
             method: 'POST',
             body: JSON.stringify({
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               turnId: turn.id,
               decision: 'granted',
             }),
@@ -8595,7 +9362,10 @@ describe('nanocore server', () => {
     const missingRequestId = await app.request(
       ...operationRequest(
         'thread.update',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'PATCH',
           body: JSON.stringify({ name: 'Missing request id' }),
@@ -8606,7 +9376,10 @@ describe('nanocore server', () => {
     const updateRes = await app.request(
       ...operationRequest(
         'thread.update',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'PATCH',
           body: JSON.stringify({
@@ -8620,7 +9393,10 @@ describe('nanocore server', () => {
     const archiveRes = await app.request(
       ...operationRequest(
         'thread.archive',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           body: JSON.stringify({
@@ -8652,8 +9428,8 @@ describe('nanocore server', () => {
     const app = createApp({ store, turnExecutor: new FakeTurnExecutor() });
     const timestamp = new Date().toISOString();
     store.createArtifact({
-      id: 'ar_server_test',
-      workspaceId: 'ws_demo',
+      id: 'ar_00000000-0000-78d6-833a-4ae1472d520a',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: null,
       turnId: null,
       kind: 'file',
@@ -8677,17 +9453,25 @@ describe('nanocore server', () => {
       updatedAt: timestamp,
     });
 
-    const response = await app.request('/api/workspaces/ws_demo/artifacts/ar_server_test', {
-      method: 'PATCH',
-      body: JSON.stringify({
-        requestId: '0190f4c8-0000-7000-8000-000000000210',
-        title: 'Unauthorized mutation',
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const response = await app.request(
+      '/api/workspaces/ws_00000000-0000-7000-8000-000000000001/artifacts/ar_00000000-0000-78d6-833a-4ae1472d520a',
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          requestId: '0190f4c8-0000-7000-8000-000000000210',
+          title: 'Unauthorized mutation',
+        }),
+        headers: { 'content-type': 'application/json' },
+      }
+    );
 
     expect(response.status).toBe(404);
-    expect(store.getArtifact('ws_demo', 'ar_server_test')).toMatchObject({
+    expect(
+      store.getArtifact(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'ar_00000000-0000-78d6-833a-4ae1472d520a'
+      )
+    ).toMatchObject({
       title: 'Draft summary',
       status: 'ready',
       summary: null,
@@ -8699,13 +9483,13 @@ describe('nanocore server', () => {
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     store.createTurn(
-      'ws_demo',
-      'th_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
       'Produce workspace review',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       {
-        turnId: 'turn_demo',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       }
     );
     const timestamp = new Date().toISOString();
@@ -8716,7 +9500,7 @@ describe('nanocore server', () => {
         id: 'wcs_1',
         materializationRecordId: 'wmr_1',
         inputSnapshotId: 'wis_1',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         resourceId: 'default',
         strategy: 'git',
         base: { commit: 'abc123', contentDigest: null },
@@ -8728,8 +9512,8 @@ describe('nanocore server', () => {
           bytes: Buffer.byteLength(patchText, 'utf8'),
         },
         bundle: null,
-        artifactIds: ['ar_workspace_changes_1'],
-        evidenceRefs: [{ kind: 'worker', ref: 'turn_demo' }],
+        artifactIds: ['ar_00000000-0000-7e93-b881-32f3f8c0b14a'],
+        evidenceRefs: [{ kind: 'worker', ref: 'tu_00000000-0000-77e3-bfde-66477d556f64' }],
         redaction: { status: 'redacted', notes: [] },
         createdAt: timestamp,
       },
@@ -8742,7 +9526,7 @@ describe('nanocore server', () => {
       review: {
         id: 'swr_1',
         changeSetId: 'wcs_1',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         status: 'pending',
         staging: {
           strategy: 'git_worktree',
@@ -8751,7 +9535,9 @@ describe('nanocore server', () => {
         },
         diffSummary: { filesChanged: 1, additions: 0, deletions: 0 },
         riskSummary: '1 changed path staged for human review.',
-        validation: [{ command: 'worker', status: 'passed', ref: 'turn_demo' }],
+        validation: [
+          { command: 'worker', status: 'passed', ref: 'tu_00000000-0000-77e3-bfde-66477d556f64' },
+        ],
         actionCenterRowId: 'workspace-review:swr_1',
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -8759,10 +9545,10 @@ describe('nanocore server', () => {
     };
 
     store.createArtifact({
-      id: 'ar_workspace_changes_1',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
+      id: 'ar_00000000-0000-7e93-b881-32f3f8c0b14a',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       kind: 'diff',
       title: 'Workspace changes ready for review',
       status: 'ready',
@@ -8773,18 +9559,18 @@ describe('nanocore server', () => {
       lastMutationRequestId: 'workspace-review-artifact-1',
       origin: {
         kind: 'turn-output',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         requestId: 'workspace-review-artifact-1',
       },
       createdAt: timestamp,
       updatedAt: timestamp,
     });
     store.createArtifact({
-      id: 'ar_regular_report',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
+      id: 'ar_00000000-0000-7732-af1b-aa93662fc3b3',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       kind: 'report',
       title: 'Regular report',
       status: 'ready',
@@ -8795,16 +9581,16 @@ describe('nanocore server', () => {
       lastMutationRequestId: 'regular-report-artifact-1',
       origin: {
         kind: 'turn-output',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         requestId: 'regular-report-artifact-1',
       },
       createdAt: timestamp,
       updatedAt: timestamp,
     });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      const item = { artifactId: 'ar_workspace_changes_1', ...workspaceReview };
+      const item = { artifactId: 'ar_00000000-0000-7e93-b881-32f3f8c0b14a', ...workspaceReview };
       recordTestWorkspaceReviewMaterialization(workspaceDb, item);
       recordWorkspaceSyncReview(workspaceDb, {
         item,
@@ -8814,32 +9600,60 @@ describe('nanocore server', () => {
     }
 
     const list = await app.request(
-      ...operationRequest('sync.review-list', { workspaceId: 'ws_demo' }, undefined)
+      ...operationRequest(
+        'sync.review-list',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        undefined
+      )
     );
     const detail = await app.request(
       ...operationRequest(
         'sync.review-read',
-        { workspaceId: 'ws_demo', reviewId: 'swr_1' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', reviewId: 'swr_1' },
         undefined
       )
     );
     const inputSnapshots = await app.request(
-      ...operationRequest('sync.input-snapshot-list', { workspaceId: 'ws_demo' }, undefined)
+      ...operationRequest(
+        'sync.input-snapshot-list',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        undefined
+      )
     );
     const materializations = await app.request(
-      ...operationRequest('sync.materialization-list', { workspaceId: 'ws_demo' }, undefined)
+      ...operationRequest(
+        'sync.materialization-list',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        undefined
+      )
     );
     const backendHandles = await app.request(
-      ...operationRequest('sync.backend-handle-list', { workspaceId: 'ws_demo' }, undefined)
+      ...operationRequest(
+        'sync.backend-handle-list',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        undefined
+      )
     );
     const outputManifests = await app.request(
-      ...operationRequest('sync.output-manifest-list', { workspaceId: 'ws_demo' }, undefined)
+      ...operationRequest(
+        'sync.output-manifest-list',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        undefined
+      )
     );
     const changeSets = await app.request(
-      ...operationRequest('sync.change-set-list', { workspaceId: 'ws_demo' }, undefined)
+      ...operationRequest(
+        'sync.change-set-list',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        undefined
+      )
     );
     const stagedReviews = await app.request(
-      ...operationRequest('sync.staged-review-list', { workspaceId: 'ws_demo' }, undefined)
+      ...operationRequest(
+        'sync.staged-review-list',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        undefined
+      )
     );
     const restartedApp = createApp({
       coreDb,
@@ -8849,18 +9663,18 @@ describe('nanocore server', () => {
     const persistedDetail = await restartedApp.request(
       ...operationRequest(
         'sync.review-read',
-        { workspaceId: 'ws_demo', reviewId: 'swr_1' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', reviewId: 'swr_1' },
         undefined
       )
     );
 
     expect(list.status).toBe(200);
     await expect(list.json()).resolves.toMatchObject({
-      items: [{ artifactId: 'ar_workspace_changes_1', review: { id: 'swr_1' } }],
+      items: [{ artifactId: 'ar_00000000-0000-7e93-b881-32f3f8c0b14a', review: { id: 'swr_1' } }],
     });
     expect(detail.status).toBe(200);
     await expect(detail.json()).resolves.toMatchObject({
-      artifactId: 'ar_workspace_changes_1',
+      artifactId: 'ar_00000000-0000-7e93-b881-32f3f8c0b14a',
       changeSet: { changedPaths: [{ path: 'docs/spec.md' }] },
       patchPayload: {
         mediaType: 'text/x-diff',
@@ -8894,7 +9708,7 @@ describe('nanocore server', () => {
     });
     expect(persistedDetail.status).toBe(200);
     await expect(persistedDetail.json()).resolves.toMatchObject({
-      artifactId: 'ar_workspace_changes_1',
+      artifactId: 'ar_00000000-0000-7e93-b881-32f3f8c0b14a',
       review: { id: 'swr_1' },
     });
   });
@@ -8905,21 +9719,21 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const item = workspaceSyncReviewRouteItem();
     store.createTurn(
-      'ws_demo',
-      'th_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
       'Produce artifact-only workspace review',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       {
-        turnId: 'turn_demo',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       }
     );
 
     store.createArtifact({
       id: item.artifactId,
       workspaceId: item.review.workspaceId,
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       kind: 'diff',
       title: 'Workspace changes ready for review',
       status: 'ready',
@@ -8930,27 +9744,31 @@ describe('nanocore server', () => {
       lastMutationRequestId: 'artifact-only-workspace-review-1',
       origin: {
         kind: 'turn-output',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         requestId: 'artifact-only-workspace-review-1',
       },
       createdAt: item.review.createdAt,
       updatedAt: item.review.updatedAt,
     });
 
-    const observerDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const observerDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     const beforeDataVersion = (
       observerDb.sqlite.prepare('PRAGMA data_version').get() as { data_version: number }
     ).data_version;
 
     try {
       const list = await app.request(
-        ...operationRequest('sync.review-list', { workspaceId: 'ws_demo' }, undefined)
+        ...operationRequest(
+          'sync.review-list',
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+          undefined
+        )
       );
       const detail = await app.request(
         ...operationRequest(
           'sync.review-read',
-          { workspaceId: 'ws_demo', reviewId: 'swr_route_1' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', reviewId: 'swr_route_1' },
           undefined
         )
       );
@@ -8958,7 +9776,9 @@ describe('nanocore server', () => {
         observerDb.sqlite.prepare('PRAGMA data_version').get() as { data_version: number }
       ).data_version;
 
-      expect(getWorkspaceSyncReview(observerDb, 'ws_demo', 'swr_route_1')).toBeNull();
+      expect(
+        getWorkspaceSyncReview(observerDb, 'ws_00000000-0000-7000-8000-000000000001', 'swr_route_1')
+      ).toBeNull();
       expect(afterDataVersion).toBe(beforeDataVersion);
 
       expect(list.status).toBe(200);
@@ -8981,21 +9801,21 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const item = workspaceSyncReviewRouteItem();
     store.createTurn(
-      'ws_demo',
-      'th_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
       'Produce durable workspace review',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       {
-        turnId: 'turn_demo',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       }
     );
 
     store.createArtifact({
       id: item.artifactId,
       workspaceId: item.review.workspaceId,
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       kind: 'diff',
       title: 'Workspace changes ready for review',
       status: 'ready',
@@ -9006,8 +9826,8 @@ describe('nanocore server', () => {
       lastMutationRequestId: 'durable-workspace-review-artifact-1',
       origin: {
         kind: 'turn-output',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         requestId: 'durable-workspace-review-artifact-1',
       },
       createdAt: item.review.createdAt,
@@ -9015,7 +9835,7 @@ describe('nanocore server', () => {
     });
 
     try {
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         recordTestWorkspaceReviewMaterialization(workspaceDb, item);
         recordWorkspaceSyncReview(workspaceDb, { item });
@@ -9031,12 +9851,16 @@ describe('nanocore server', () => {
       }
 
       const list = await app.request(
-        ...operationRequest('sync.review-list', { workspaceId: 'ws_demo' }, undefined)
+        ...operationRequest(
+          'sync.review-list',
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+          undefined
+        )
       );
       const detail = await app.request(
         ...operationRequest(
           'sync.review-read',
-          { workspaceId: 'ws_demo', reviewId: 'swr_route_1' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', reviewId: 'swr_route_1' },
           undefined
         )
       );
@@ -9063,7 +9887,7 @@ describe('nanocore server', () => {
     const patchText = 'diff --git a/docs/decision.md b/docs/decision.md\n';
     const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
     const item: Parameters<typeof recordWorkspaceSyncReview>[1]['item'] = {
-      artifactId: 'ar_missing_workspace_review_decision',
+      artifactId: 'ar_00000000-0000-7202-81ec-7369f889c26c',
       changeSet: {
         id: 'wcs_durable_review_decision',
         materializationRecordId: 'wmr_durable_review_decision',
@@ -9080,8 +9904,8 @@ describe('nanocore server', () => {
           bytes: Buffer.byteLength(patchText, 'utf8'),
         },
         bundle: null,
-        artifactIds: ['ar_missing_workspace_review_decision'],
-        evidenceRefs: [{ kind: 'worker', ref: 'turn_durable_review_decision' }],
+        artifactIds: ['ar_00000000-0000-7202-81ec-7369f889c26c'],
+        evidenceRefs: [{ kind: 'worker', ref: 'tu_00000000-0000-70ed-952e-916850e5a2e7' }],
         redaction: { status: 'redacted', notes: [] },
         createdAt: timestamp,
       },
@@ -9103,7 +9927,9 @@ describe('nanocore server', () => {
         },
         diffSummary: { filesChanged: 1, additions: 0, deletions: 0 },
         riskSummary: '1 changed path staged for human review.',
-        validation: [{ command: 'worker', status: 'passed', ref: 'turn_durable_review_decision' }],
+        validation: [
+          { command: 'worker', status: 'passed', ref: 'tu_00000000-0000-70ed-952e-916850e5a2e7' },
+        ],
         actionCenterRowId: 'workspace-review:swr_durable_review_decision',
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -9164,11 +9990,11 @@ describe('nanocore server', () => {
       const authorityDb = openTestWorkspaceDb(coreDb, workspace.id);
       const pendingDualOwnerItem = {
         ...item,
-        artifactId: 'ar_pending_dual_owner_review',
+        artifactId: 'ar_00000000-0000-7b7f-a621-9b120aa1cd3e',
         changeSet: {
           ...item.changeSet,
           id: 'wcs_pending_dual_owner_review',
-          artifactIds: ['ar_pending_dual_owner_review'],
+          artifactIds: ['ar_00000000-0000-7b7f-a621-9b120aa1cd3e'],
           inputSnapshotId: 'wis_pending_dual_owner_review',
           materializationRecordId: 'wmr_pending_dual_owner_review',
         },
@@ -9473,14 +10299,14 @@ describe('nanocore server', () => {
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
-        agentSessionId: 'as_aep_readback',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        agentSessionId: 'as_00000000-0000-72e3-9b12-57b26de5e555',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         backend: {
           kind: 'openshell',
         },
         requestId: 'req_aep_readback',
         turn: {
-          id: 'turn_aep_readback',
+          id: 'tu_00000000-0000-7c61-be6c-f0d572381e42',
           workspaceId: workspace.id,
           threadId: thread.id,
           items: [],
@@ -9490,7 +10316,7 @@ describe('nanocore server', () => {
           startedAt: '2026-07-06T00:00:00.000Z',
           completedAt: null,
           durationMs: null,
-          triggerActor: { kind: 'user', id: 'user_local' },
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         },
         turnInput: 'Run tests',
         workspaceCwd: '/workspace',
@@ -9530,8 +10356,8 @@ describe('nanocore server', () => {
           {
             snapshotId: environmentPackage.snapshotId,
             workspaceId: workspace.id,
-            turnId: 'turn_aep_readback',
-            agentSessionId: 'as_aep_readback',
+            turnId: 'tu_00000000-0000-7c61-be6c-f0d572381e42',
+            agentSessionId: 'as_00000000-0000-72e3-9b12-57b26de5e555',
             backendKind: 'openshell',
           },
         ],
@@ -9560,7 +10386,7 @@ describe('nanocore server', () => {
     const baseReview = workspaceSyncReviewRouteItem();
     const reviewId = 'swr_foreign_child_lineage';
     const changeSetId = 'wcs_foreign_child_lineage';
-    const artifactId = 'ar_foreign_child_lineage';
+    const artifactId = 'ar_00000000-0000-7b6d-9518-3dc583c8d4e3';
     const review = {
       ...baseReview,
       artifactId,
@@ -9824,16 +10650,16 @@ describe('nanocore server', () => {
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
-        agentSessionId: 'as_foreign_aep_child_lineage',
+        agentSessionId: 'as_00000000-0000-7377-b2d1-d67a0106e3d0',
         triggerActor: { kind: 'user', id: LOCAL_USER_ID },
         backend: {
           kind: 'openshell',
         },
         requestId: 'req_foreign_aep_child_lineage',
         turn: {
-          id: 'turn_foreign_aep_child_lineage',
+          id: 'tu_00000000-0000-714a-9b8b-01faad6fe7e3',
           workspaceId: foreignWorkspace.id,
-          threadId: 'th_foreign_aep_child_lineage',
+          threadId: 'th_00000000-0000-7d62-8841-68b28cc26957',
           items: [],
           status: 'running',
           error: null,
@@ -9893,15 +10719,23 @@ describe('nanocore server', () => {
 
   it('does not expose the unversioned Artifact Review command', async () => {
     const store = createDemoStore();
-    const thread = store.createThread('ws_demo', 'Unversioned Artifact Review');
-    const turn = store.createTurn('ws_demo', thread.id, 'Produce artifact', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Unversioned Artifact Review'
+    );
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Produce artifact',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const timestamp = new Date().toISOString();
     store.createArtifact({
-      id: 'artifact_unversioned_review',
-      workspaceId: 'ws_demo',
+      id: testEntityId('ar', 'artifact_unversioned_review'),
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: turn.id,
       kind: 'report',
@@ -9924,7 +10758,7 @@ describe('nanocore server', () => {
     const app = createApp({ store, turnExecutor: new FakeTurnExecutor() });
 
     const response = await app.request(
-      '/api/app/workspaces/ws_demo/artifacts/artifact_unversioned_review/review',
+      '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/artifacts/artifact_unversioned_review/review',
       {
         method: 'POST',
         body: JSON.stringify({
@@ -9955,12 +10789,19 @@ describe('nanocore server', () => {
       const first = await firstRes.json();
       expect(first).toMatchObject({
         review: {
-          reviewId: expect.stringMatching(/^kr_[a-f0-9]{64}$/),
+          reviewId: deriveEntityId('kr', {
+            ownerScope: {
+              kind: 'workspace',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            },
+            proposalId: accepted.proposalId,
+            requestId: acceptedRequestId,
+          }),
           proposalId: accepted.proposalId,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           requestId: acceptedRequestId,
           decision: 'accepted',
-          actor: { kind: 'user', id: 'user_local' },
+          actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           proposalDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
           knowledgePageId: accepted.knowledgePageId,
           contentDigest: accepted.contentDigest,
@@ -10032,7 +10873,7 @@ describe('nanocore server', () => {
         interrupted.knowledgePageId
       );
       rmSync(interruptedPagePath);
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
       workspaceDb.sqlite
         .prepare(
           `DELETE FROM idempotency_requests
@@ -10074,7 +10915,7 @@ describe('nanocore server', () => {
         );
         expect(completed.status, await completed.clone().text()).toBe(200);
 
-        const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+        const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
         if (missingEvidence === 'receipt') {
           workspaceDb.sqlite
             .prepare(
@@ -10101,7 +10942,7 @@ describe('nanocore server', () => {
           readFileSync(knowledgeProposalPagePath(coreDb.dataRoot, fixture.knowledgePageId), 'utf8')
         ).toBe(fixture.canonicalPageBytes);
 
-        const evidenceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+        const evidenceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
         const remaining =
           missingEvidence === 'receipt'
             ? evidenceDb.sqlite
@@ -10127,7 +10968,7 @@ describe('nanocore server', () => {
     const sourceResponse = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.source.register',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -10183,7 +11024,7 @@ describe('nanocore server', () => {
       const response = await app.request(
         ...knowledgeOperationRequest(
           'knowledge.proposal.draft',
-          { workspaceId: 'ws_demo' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -10206,7 +11047,7 @@ describe('nanocore server', () => {
       expect(body).not.toContain(unsafe.canary);
     }
 
-    expect(store.listKnowledgeProposals('ws_demo')).toEqual([]);
+    expect(store.listKnowledgeProposals('ws_00000000-0000-7000-8000-000000000001')).toEqual([]);
   });
 
   it('reverses only the unchanged proposal-created page and replays without another effect', async () => {
@@ -10321,7 +11162,7 @@ describe('nanocore server', () => {
     const res = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.proposal.decide',
-        { workspaceId: 'ws_demo', proposalId: 'kp_review_edit' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', proposalId: 'kp_review_edit' },
         {
           method: 'POST',
           body: JSON.stringify({
@@ -10337,7 +11178,7 @@ describe('nanocore server', () => {
     );
 
     expect(res.status).toBe(400);
-    expect(store.listKnowledgeProposals('ws_demo')).toEqual([]);
+    expect(store.listKnowledgeProposals('ws_00000000-0000-7000-8000-000000000001')).toEqual([]);
   });
 
   it('applies accepted filesystem workspace synchronization reviews through opaque staging', async () => {
@@ -10347,7 +11188,7 @@ describe('nanocore server', () => {
     const thread = store.createThread(workspace.id, 'Apply filesystem workspace review');
     const turn = store.createTurn(workspace.id, thread.id, 'Produce filesystem changes', {
       kind: 'user',
-      id: 'user_local',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     const targetRoot = mkdtempSync(join(tmpdir(), 'openkit-filesystem-apply-target-'));
     const workerRoot = mkdtempSync(join(tmpdir(), 'openkit-filesystem-apply-worker-'));
@@ -10389,7 +11230,7 @@ describe('nanocore server', () => {
     await stageFilesystemWorkspaceChanges({ changeSet, sourceRoot: workerRoot, stagingRoot });
 
     const workspaceReview = {
-      artifactId: 'ar_filesystem_workspace_apply_1',
+      artifactId: 'ar_00000000-0000-7b2c-824d-ba72c092c396',
       changeSet,
       patchPayload: null,
       review: {
@@ -10428,7 +11269,7 @@ describe('nanocore server', () => {
       workspaceDb.sqlite.close();
     }
     store.createArtifact({
-      id: 'ar_filesystem_workspace_apply_1',
+      id: 'ar_00000000-0000-7b2c-824d-ba72c092c396',
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -10624,7 +11465,7 @@ describe('nanocore server', () => {
     const thread = store.createThread(workspace.id, 'Rollback filesystem workspace review');
     const turn = store.createTurn(workspace.id, thread.id, 'Produce filesystem changes', {
       kind: 'user',
-      id: 'user_local',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     const targetRoot = mkdtempSync(join(tmpdir(), 'openkit-filesystem-rollback-target-'));
     const workerRoot = mkdtempSync(join(tmpdir(), 'openkit-filesystem-rollback-worker-'));
@@ -10666,7 +11507,7 @@ describe('nanocore server', () => {
       await stageFilesystemWorkspaceChanges({ changeSet, sourceRoot: workerRoot, stagingRoot });
 
       const workspaceReview = {
-        artifactId: 'ar_filesystem_persist_rollback',
+        artifactId: 'ar_00000000-0000-736f-926f-6331033b1f4f',
         changeSet,
         patchPayload: null,
         review: {
@@ -10709,7 +11550,7 @@ describe('nanocore server', () => {
         workspaceDb.sqlite.close();
       }
       store.createArtifact({
-        id: 'ar_filesystem_persist_rollback',
+        id: 'ar_00000000-0000-736f-926f-6331033b1f4f',
         workspaceId: workspace.id,
         threadId: thread.id,
         turnId: turn.id,
@@ -10776,10 +11617,15 @@ describe('nanocore server', () => {
   it('routes interrupts through the turn executor', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Interrupt this running turn', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Interrupt this running turn',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const executor = new FakeTurnExecutor();
     const app = createApp({ coreDb, store, turnExecutor: executor }, true);
     const entry = createSchedulerAdmissionEntry(coreDb, {
@@ -10796,8 +11642,8 @@ describe('nanocore server', () => {
     });
     recordTestExecutionAttempt(coreDb, {
       entry,
-      attemptId: 'attempt_interrupt_route',
-      agentSessionId: 'as_interrupt_route',
+      attemptId: 'attempt_00000000-0000-7cb2-98f2-3a36a5686b98',
+      agentSessionId: 'as_00000000-0000-7b1e-829e-a7d5f9fefd0d',
       inputRef: 'snapshot_interrupt_route',
       bindingRef: 'binding_interrupt_route',
       sessionCompatibilityKey: 'compat_interrupt_route',
@@ -10805,7 +11651,7 @@ describe('nanocore server', () => {
       operationId: 'original:interrupt_route',
     });
     store.createAgentSession({
-      id: 'as_interrupt_route',
+      id: 'as_00000000-0000-7b1e-829e-a7d5f9fefd0d',
       agentId: 'agent_codex_host',
       workspaceId: turn.workspaceId,
       threadId: turn.threadId,
@@ -10816,18 +11662,22 @@ describe('nanocore server', () => {
     });
     store.updateTurn(turn.id, {
       agentId: 'agent_codex_host',
-      agentSessionId: 'as_interrupt_route',
+      agentSessionId: 'as_00000000-0000-7b1e-829e-a7d5f9fefd0d',
       status: 'running',
     });
     const interruptRes = await app.request(
       ...operationRequest(
         'turn.interrupt',
-        { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: turn.id,
+        },
         {
           method: 'POST',
           body: JSON.stringify({
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
             turnId: turn.id,
             requestId: '0190f4c8-0000-7000-8000-000000000206',
           }),
@@ -10840,7 +11690,9 @@ describe('nanocore server', () => {
     expect((await interruptRes.json()) as { status: string }).toMatchObject({
       status: 'interrupted',
     });
-    expect(requireSchedulerExecutionAttempt(coreDb, 'attempt_interrupt_route')).toMatchObject({
+    expect(
+      requireSchedulerExecutionAttempt(coreDb, 'attempt_00000000-0000-7cb2-98f2-3a36a5686b98')
+    ).toMatchObject({
       phase: 'closing',
       operationId: 'original:interrupt_route',
       fenceRef: null,
@@ -10856,27 +11708,27 @@ describe('nanocore server', () => {
     const workspace = store.createWorkspace('Vault injection metadata route');
     createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://server/vault/vault_github_read',
+      backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-7d14-9747-33948cb59d1e',
       displayName: 'GitHub read token',
       ownerScope: 'server',
-      referenceId: 'vault_github_read',
+      referenceId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
       secretKind: 'github-token',
     });
     createVaultGrant(coreDb, {
       allowedInjectionPaths: ['backend-provider'],
-      grantId: 'grant_github_read_route',
+      grantId: 'grant_00000000-0000-778f-b367-ab336a86b7a5',
       lifetime: 'turn',
       ownerScope: 'workspace',
-      policyDecisionId: 'pd_grant_route',
-      targetAgentSessionId: 'as_route',
-      vaultReferenceId: 'vault_github_read',
+      policyDecisionId: 'pd_00000000-0000-7805-bdd7-fc511ebee7d8',
+      targetAgentSessionId: 'as_00000000-0000-70f4-ad2c-38b33b7fd38c',
+      vaultReferenceId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
       workspaceId: workspace.id,
       now: () => '2026-07-08T00:00:00.000Z',
     });
     createVaultInjectionPlan(coreDb, {
       backendCapabilityRequirement: 'OpenShell provider attachment.',
       expirationBehavior: 'Expires with turn grant.',
-      grantId: 'grant_github_read_route',
+      grantId: 'grant_00000000-0000-778f-b367-ab336a86b7a5',
       injectionVisibility: 'backend-provider',
       packageSnapshotId: 'aepsnap_route',
       planId: 'plan_github_read_route',
@@ -10885,9 +11737,9 @@ describe('nanocore server', () => {
       now: () => '2026-07-08T00:01:00.000Z',
     });
     createVaultInjectionReceipt(coreDb, {
-      agentSessionId: 'as_route',
+      agentSessionId: 'as_00000000-0000-70f4-ad2c-38b33b7fd38c',
       backendSummary: 'OpenShell provider github attached.',
-      grantId: 'grant_github_read_route',
+      grantId: 'grant_00000000-0000-778f-b367-ab336a86b7a5',
       injectedAt: '2026-07-08T00:02:00.000Z',
       planId: 'plan_github_read_route',
       receiptId: 'receipt_github_read_route',
@@ -10909,11 +11761,18 @@ describe('nanocore server', () => {
     expect(plans.status, await plans.clone().text()).toBe(200);
     expect(receipts.status, await receipts.clone().text()).toBe(200);
     expect(ListWorkspaceVaultGrantsResponseSchema.parse(await grants.json())).toMatchObject({
-      items: [{ grantId: 'grant_github_read_route', vaultReferenceId: 'vault_github_read' }],
+      items: [
+        {
+          grantId: 'grant_00000000-0000-778f-b367-ab336a86b7a5',
+          vaultReferenceId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
+        },
+      ],
       workspaceId: workspace.id,
     });
     expect(ListWorkspaceVaultInjectionPlansResponseSchema.parse(await plans.json())).toMatchObject({
-      items: [{ grantId: 'grant_github_read_route', planId: 'plan_github_read_route' }],
+      items: [
+        { grantId: 'grant_00000000-0000-778f-b367-ab336a86b7a5', planId: 'plan_github_read_route' },
+      ],
       workspaceId: workspace.id,
     });
     expect(
@@ -10951,7 +11810,7 @@ describe('nanocore server', () => {
     const catalogPath = join(
       coreDb.dataRoot,
       'workspaces',
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'config',
       'data-sources.jsonc'
     );
@@ -10972,7 +11831,7 @@ describe('nanocore server', () => {
         providerRegistry: testProviderRegistry(),
         workspaceDataSourceCatalogs: [
           {
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             path: catalogPath,
             catalog,
           },
@@ -10995,8 +11854,8 @@ describe('nanocore server', () => {
           {
             method: 'POST',
             body: JSON.stringify({
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               requestId: '0190f4c8-0000-7000-8000-000000000212',
               input: 'Work with the authored source',
             }),
@@ -11055,8 +11914,14 @@ describe('nanocore server', () => {
         workspaceMcpServerCatalogs: [
           {
             catalog,
-            path: join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'catalog', 'catalog.json'),
-            workspaceId: 'ws_demo',
+            path: join(
+              coreDb.dataRoot,
+              'workspaces',
+              'ws_00000000-0000-7000-8000-000000000001',
+              'catalog',
+              'catalog.json'
+            ),
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
         ],
       }),
@@ -11079,8 +11944,8 @@ describe('nanocore server', () => {
             body: JSON.stringify({
               input: 'Use the Workspace MCP server',
               requestId: '0190f4c8-0000-7000-8000-000000000214',
-              threadId: 'th_demo',
-              workspaceId: 'ws_demo',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             }),
             headers: { 'content-type': 'application/json' },
           }
@@ -11122,7 +11987,7 @@ describe('nanocore server', () => {
     const catalogPath = join(
       coreDb.dataRoot,
       'workspaces',
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'config',
       'data-sources.jsonc'
     );
@@ -11142,7 +12007,7 @@ describe('nanocore server', () => {
         providerRegistry: testProviderRegistry(),
         workspaceDataSourceCatalogs: [
           {
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             path: catalogPath,
             catalog,
           },
@@ -11165,8 +12030,8 @@ describe('nanocore server', () => {
           {
             method: 'POST',
             body: JSON.stringify({
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               requestId: '0190f4c8-0000-7000-8000-000000000213',
               input: 'Work with the blocked source',
             }),
@@ -11192,7 +12057,11 @@ describe('nanocore server', () => {
     const res = await app.request(
       ...operationRequest(
         'turn.interrupt',
-        { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: 'tu_missing' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-7577-9378-7e96d0d15fd2',
+        },
         {
           method: 'POST',
           body: JSON.stringify({}),
@@ -11237,7 +12106,7 @@ describe('nanocore server', () => {
               new OpenAICompatibleProviderError({
                 status: 429,
                 code: 'rate_limit_exceeded',
-                message: 'Rate limit exceeded token=tok_private_rate_limit.',
+                message: 'Rate limit exceeded token=tok_00000000-0000-77d0-8881-71a37eab36fc.',
               })
             );
           },
@@ -11279,8 +12148,8 @@ describe('nanocore server', () => {
         {
           method: 'POST',
           body: JSON.stringify({
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
             requestId: '0190f4c8-0000-7000-8000-000000000207',
             input: 'Ship the update',
           }),
@@ -11311,7 +12180,7 @@ describe('nanocore server', () => {
       expiresAt: '2999-01-01T00:00:00.000Z',
       now: new Date('2026-08-10T00:00:00.000Z'),
       ownerNanoHostIdentityId: 'integration_nanohost_main',
-      responsibleServerAdminActorId: 'user_admin',
+      responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
     });
     const routeHandler = vi.fn(async () => ({ status: 200 }));
     const effectHandler = vi.fn(async () => ({ status: 'succeeded' }));

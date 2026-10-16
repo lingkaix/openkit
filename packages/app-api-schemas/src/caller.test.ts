@@ -17,10 +17,13 @@ function contracts() {
   return { request, response, operation: family['caller.read'] };
 }
 
-const caller = { userId: 'user_owner', credential: { kind: 'token', scope: 'server-admin' } };
+const caller = {
+  userId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+  credential: { kind: 'token', scope: 'server-admin' },
+};
 const workspace = {
-  workspaceId: 'ws_owned',
-  ownerUserId: 'user_owner',
+  workspaceId: 'ws_00000000-0000-72e9-8139-d70c8d230fb9',
+  ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
   membershipStatus: 'removed',
   accessCause: 'administrator',
   observedAt: '2026-10-15T00:00:00.000Z',
@@ -33,18 +36,28 @@ describe('caller read contracts', () => {
     expect(operation).toMatchObject({ mutating: false, binding: 'json', successStatus: 200 });
     expect(operation.scope).toEqual({ kind: 'user' });
     expect(request.parse({})).toEqual({});
-    expect(request.parse({ workspaceId: 'ws_owned' })).toEqual({ workspaceId: 'ws_owned' });
-    expect(operation.inputSchema.parse({ workspaceId: 'ws_owned' })).toEqual({
-      workspaceId: 'ws_owned',
+    expect(request.parse({ workspaceId: 'ws_00000000-0000-72e9-8139-d70c8d230fb9' })).toEqual({
+      workspaceId: 'ws_00000000-0000-72e9-8139-d70c8d230fb9',
+    });
+    expect(
+      operation.inputSchema.parse({ workspaceId: 'ws_00000000-0000-72e9-8139-d70c8d230fb9' })
+    ).toEqual({
+      workspaceId: 'ws_00000000-0000-72e9-8139-d70c8d230fb9',
     });
     for (const invalid of [
       { workspaceId: '' },
       { workspaceId: null },
-      { userId: 'user_other' },
-      { workspaceId: 'ws_owned', ownerUserId: 'user_other' },
+      { userId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
+      {
+        workspaceId: 'ws_00000000-0000-72e9-8139-d70c8d230fb9',
+        ownerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+      },
       { credential: { kind: 'token', scope: 'server-admin' } },
-      { workspaceId: ['ws_owned'] },
-      { workspaceId: 'ws_owned', workspaceIds: ['ws_other'] },
+      { workspaceId: ['ws_00000000-0000-72e9-8139-d70c8d230fb9'] },
+      {
+        workspaceId: 'ws_00000000-0000-72e9-8139-d70c8d230fb9',
+        workspaceIds: ['ws_00000000-0000-71f5-922f-6fd42f52f580'],
+      },
     ])
       expect(request.safeParse(invalid).success).toBe(false);
   });
@@ -116,7 +129,10 @@ describe('caller read contracts', () => {
       { ...caller, workspace: null },
       { ...caller, workspace: { ...workspace, workspaceId: '' } },
       { ...caller, workspace: { ...workspace, ownerUserId: undefined } },
-      { ...caller, workspace: { ...workspace, ownerUserId: 'user_other' } },
+      {
+        ...caller,
+        workspace: { ...workspace, ownerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
+      },
       { ...caller, workspace: { ...workspace, membershipStatus: 'owner' } },
       { ...caller, workspace: { ...workspace, accessCause: 'filesystem' } },
       { ...caller, workspace: { ...workspace, accessCause: 'membership' } },
@@ -136,5 +152,18 @@ describe('caller read contracts', () => {
       { ...caller, workspace: { ...workspace, counts: { threads: 0 } } },
     ])
       expect(response.safeParse(value).success, JSON.stringify(value)).toBe(false);
+  });
+});
+
+/** Caller identity is a Core User reference, not an opaque account selector. */
+describe('caller canonical User boundary', () => {
+  it.each([
+    'user_legacy',
+    'ws_00000000-0000-7000-8000-000000000001',
+    'usr_00000000-0000-5000-8000-000000000001',
+    'usr_00000000-0000-7000-8000-000000000001\n',
+  ])('refuses a noncanonical or wrong-kind User reference: %s', (userId) => {
+    const { response } = contracts();
+    expect(response.safeParse({ ...caller, userId }).success).toBe(false);
   });
 });

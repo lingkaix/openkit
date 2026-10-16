@@ -12,6 +12,7 @@ import { WorkerControlGateway } from '../runtime/worker-control-gateway.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { registerWorkerInferenceRoutes } from './gateway-routes.js';
 import { OpenAICompatibleProviderError } from './openai-compatible-client.js';
@@ -48,7 +49,7 @@ function fixture(configured = true, nativeStop = true) {
   const thread = store.createThread(workspace.id, 'Diagnostics');
   const turn = store.createTurn(workspace.id, thread.id, 'Request', {
     kind: 'user',
-    id: 'user_local',
+    id: 'usr_00000000-0000-7000-8000-000000000001',
   });
   const environmentPackage = resolveAgentEnvironmentPackage({
     agentSetup: createTestAgentSetup({
@@ -56,12 +57,12 @@ function fixture(configured = true, nativeStop = true) {
       privateRoute: { providerProfileId: 'provider', providerModel: 'native-model' },
       requiredCapabilities: ['trusted-worker-inference-relay'],
     }),
-    agentSessionId: 'as_diagnostics',
+    agentSessionId: testEntityId('as', 'as_diagnostics'),
     backend: { kind: 'openshell' },
     captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
     createdAt: new Date().toISOString(),
     requestId: 'req_diagnostics',
-    triggerActor: { kind: 'user', id: 'user_local' },
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     turn,
     workspaceCwd: '/workspace',
     workspaceRoots: [],

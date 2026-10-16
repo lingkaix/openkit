@@ -7,6 +7,8 @@ import type {
 } from '@openkit/config-schema';
 import type { ActorRef, ApprovalRequestSchema, ItemSchema, ItemType } from '@openkit/protocol';
 import {
+  allocateEntityId,
+  deriveEntityId,
   ItemDeltaEventSchema,
   isSealedTurnTerminal,
   responsibleUserIdForActor,
@@ -570,6 +572,17 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           .bindingRef!,
       };
     const turn = store.getTurnById(turnId);
+    const agentSessionId =
+      context.agentSessionId ??
+      turn.agentSessionId ??
+      (this.coreDb ? null : allocateEntityId('as'));
+    if (agentSessionId === null) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'Canonical AgentSession admission is unavailable.',
+        409
+      );
+    }
     if (!context.agentSetup) {
       throw new Error('Simulator execution requires one resolved agent setup.');
     }
@@ -584,7 +597,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     }
     if (context.sessionCompatibilityKey) {
       const launchCompatibilityKey = resolveAgentSessionCompatibilityKey({
-        agentSessionId: context.agentSessionId ?? `session_sim_turn_${turn.id}`,
+        agentSessionId: agentSessionId,
         agentSetup: context.agentSetup,
         backend: { kind: 'openshell' },
         ...(this.coreDb ? { coreDb: this.coreDb } : {}),
@@ -656,7 +669,6 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           409
         );
       }
-      const agentSessionId = context.agentSessionId ?? `session_sim_turn_${turn.id}`;
       const workerInput = workspaceDb
         ? frozenPendingOutcomeInput(workspaceDb.sqlite, turn.id, input)
         : input;
@@ -710,7 +722,10 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       const environmentPackage: AgentEnvironmentPackage | null = resolvedEnvironmentPackage
         ? {
             ...resolvedEnvironmentPackage,
-            scope: { ...resolvedEnvironmentPackage.scope, itemId: `it_user_${turnId}` },
+            scope: {
+              ...resolvedEnvironmentPackage.scope,
+              itemId: deriveEntityId('it', ['task-user', turnId]),
+            },
           }
         : null;
       const sessionWorkspace = environmentPackage
@@ -1151,13 +1166,13 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
   }
 
   /**
-   * Returns the deterministic simulator session bound to one thread.
+   * Returns the recorded simulator session bound to one Thread, or null when unavailable.
    */
   public getAgentSession(
     store: FsStore,
     workspaceId: string,
     threadId: string
-  ): AgentSessionReadModel {
+  ): AgentSessionReadModel | null {
     const sessions = store.listThreadAgentSessions(workspaceId, threadId);
     const turns = store.listThreadTurns(workspaceId, threadId);
     const activeSessionId = turns.findLast(
@@ -1168,8 +1183,9 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       sessions.find((session) => session.id === activeSessionId) ??
       sessions.find((session) => session.id === latestSessionId);
 
+    if (!storedSession) return null;
     return {
-      id: storedSession?.id ?? `session_sim_${threadId}`,
+      id: storedSession.id,
       status: storedSession?.status ?? 'ready',
       message: null,
       configVersion: storedSession?.configVersion ?? null,
@@ -1211,7 +1227,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     const turn = store.getTurnById(state.turnId);
     const timestamp = turn.startedAt ?? new Date().toISOString();
     const userItem = store.createItem({
-      id: `it_user_${state.turnId}`,
+      id: deriveEntityId('it', ['task-user', state.turnId]),
       workspaceId: state.workspaceId,
       threadId: state.threadId,
       turnId: state.turnId,
@@ -1242,7 +1258,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
   private emitAssistant(store: FsStore, state: SimulatedTurnState): void {
     const timestamp = new Date().toISOString();
     const assistantItem = store.createItem({
-      id: `it_assistant_${state.turnId}`,
+      id: deriveEntityId('it', ['assistant', state.turnId]),
       workspaceId: state.workspaceId,
       threadId: state.threadId,
       turnId: state.turnId,
@@ -1284,7 +1300,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
   private emitReasoning(store: FsStore, state: SimulatedTurnState): void {
     const timestamp = new Date().toISOString();
     const reasoningItem = store.createItem({
-      id: `it_reasoning_${state.turnId}`,
+      id: deriveEntityId('it', ['reasoning', state.turnId]),
       workspaceId: state.workspaceId,
       threadId: state.threadId,
       turnId: state.turnId,
@@ -1320,7 +1336,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
   private emitCommand(store: FsStore, state: SimulatedTurnState): void {
     const timestamp = new Date().toISOString();
     const commandItem = store.createItem({
-      id: `it_command_${state.turnId}`,
+      id: deriveEntityId('it', ['command', state.turnId]),
       workspaceId: state.workspaceId,
       threadId: state.threadId,
       turnId: state.turnId,
@@ -1390,15 +1406,11 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     // Worker MCP submission still requires complete original Worker comparison evidence.
     for (const [index, bytes] of candidates.entries()) {
       const requestId = `simulator-material-${environmentPackage.snapshotId}-${index + 1}`;
-      const artifactId = `worker-artifact-${createHash('sha256')
-        .update(
-          JSON.stringify([
-            environmentPackage.snapshotId,
-            environmentPackage.scope.turnId,
-            requestId,
-          ])
-        )
-        .digest('hex')}`;
+      const artifactId = deriveEntityId('ar', [
+        environmentPackage.snapshotId,
+        environmentPackage.scope.turnId,
+        requestId,
+      ]);
       const prepared = prepareWorkerArtifact({
         store,
         workspaceDb,
@@ -1520,7 +1532,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     } else {
       // Standalone protocol fixtures have no durable product owner or answer command.
       requestItem = store.createItem({
-        id: `it_user_input_request_${state.turnId}`,
+        id: deriveEntityId('it', [state.userInputRequestId, 'request']),
         workspaceId: state.workspaceId,
         threadId: state.threadId,
         turnId: state.turnId,
@@ -1558,7 +1570,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     const timestamp = new Date().toISOString();
     const body = `Simulator answer: ${input}`;
     const artifact = store.createArtifact({
-      id: `ar_${state.turnId}`,
+      id: deriveEntityId('ar', state.turnId),
       workspaceId: state.workspaceId,
       threadId: state.threadId,
       turnId: state.turnId,

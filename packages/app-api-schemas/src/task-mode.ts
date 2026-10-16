@@ -1,4 +1,11 @@
-import { ProductTurnSchema, RequestIdSchema } from '@openkit/protocol';
+import {
+  ArtifactIdSchema,
+  ItemIdSchema,
+  ProductTurnSchema,
+  RequestIdSchema,
+  ThreadIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import { WorkerEnvironmentStorageChoiceSchema } from './worker-environment.js';
 
@@ -33,10 +40,13 @@ export const TaskModeAttemptStateSchema = z.enum([
 ]);
 
 /** Source context reference selected by Workflow Coordinator for a Task Mode worker. */
-export const TaskModeContextRefSchema = z.object({
-  kind: z.enum(['workspace', 'thread', 'artifact', 'knowledge', 'item']),
-  id: z.string().min(1),
-});
+export const TaskModeContextRefSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('workspace'), id: WorkspaceIdSchema }),
+  z.object({ kind: z.literal('thread'), id: ThreadIdSchema }),
+  z.object({ kind: z.literal('artifact'), id: ArtifactIdSchema }),
+  z.object({ kind: z.literal('knowledge'), id: z.string().min(1) }),
+  z.object({ kind: z.literal('item'), id: ItemIdSchema }),
+]);
 
 /** Workflow Coordinator decision used to launch one bounded worker attempt. */
 export const TaskDelegationDecisionSchema = z.object({
@@ -60,14 +70,14 @@ export const TaskModeGoalEscalationSchema = z.object({
 
 /** Final assistant item projected from a completed Task Mode worker attempt. */
 export const TaskModeCompletionSchema = z.object({
-  itemId: z.string().min(1),
+  itemId: ItemIdSchema,
   text: z.string(),
 });
 
 /** Existing thread and artifact records that evidence a Task Mode attempt. */
 export const TaskModeEvidenceSchema = z.object({
-  itemIds: z.array(z.string().min(1)).max(100),
-  artifactIds: z.array(z.string().min(1)).max(100),
+  itemIds: z.array(ItemIdSchema).max(100),
+  artifactIds: z.array(ArtifactIdSchema).max(100),
   reviewIds: z.array(z.string().min(1)).max(100).default([]),
 });
 

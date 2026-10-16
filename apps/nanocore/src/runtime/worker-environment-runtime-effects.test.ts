@@ -229,7 +229,7 @@ describe('Worker environment runtime effects', () => {
       runtimeTargetId: 'target_test',
       scopeDigest: workerStorageScopeDigest('workspace_test'),
       state: 'idle',
-      storageRef: 'wst_test',
+      storageRef: 'wst_00000000-0000-746a-bd34-30778524d47b',
       targets: [
         { active: true, initialized: true, target: '/sandbox', volumeRef: 'wsv_sandbox' },
         { active: true, initialized: true, target: '/workspace', volumeRef: 'wsv_workspace' },
@@ -278,7 +278,7 @@ describe('Worker environment runtime effects', () => {
   it('strips purge additions and refuses missing association or unknown outcomes', async () => {
     const binding = {
       state: 'purge-pending',
-      storageRef: 'wst_test',
+      storageRef: 'wst_00000000-0000-746a-bd34-30778524d47b',
       attachmentGeneration: 2,
     } as WorkerStorageBinding;
     let result: Record<string, unknown> = {
@@ -302,7 +302,10 @@ describe('Worker environment runtime effects', () => {
   });
 
   it('refuses missing and unknown storage core facts after ignoring additions', async () => {
-    const binding = { storageRef: 'wst_test', attachmentGeneration: 2 } as WorkerStorageBinding;
+    const binding = {
+      storageRef: 'wst_00000000-0000-746a-bd34-30778524d47b',
+      attachmentGeneration: 2,
+    } as WorkerStorageBinding;
     const core = {
       attachment: { generation: 2, sandboxId: 'sandbox_test' },
       capacity: { availableBytes: 1, totalBytes: 2 },

@@ -18,6 +18,7 @@ import {
   workObservationBodyBundleId,
 } from '../evidence-bundles.js';
 import { FsStore } from '../lib/store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
 import {
@@ -46,7 +47,7 @@ function fixture(value: 'off' | 'on' = 'on') {
     workspace.id,
     thread.id,
     'Request',
-    { kind: 'user', id: 'user_local' },
+    { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     null,
     { captureCoverage: { scope: 'server', value } }
   );
@@ -316,7 +317,7 @@ describe('durable work observations', () => {
     expect(new FsStore({ dataRoot: f.dataRoot }).getTurnById(f.owner.turnId)?.triggerActor).toEqual(
       {
         kind: 'user',
-        id: 'user_local',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
     expect(readWorkObservations(f.db, f.owner)).toEqual([]);
@@ -333,7 +334,7 @@ describe('durable work observations', () => {
     expect(new FsStore({ dataRoot: f.dataRoot }).getTurnById(f.owner.turnId)?.triggerActor).toEqual(
       {
         kind: 'user',
-        id: 'user_local',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
   });
@@ -468,7 +469,7 @@ describe('durable work observations', () => {
     expect(() =>
       parseWorkObservationRecord({
         ...rows[0],
-        payload: { ...rows[0].payload, turnId: 'tu_foreign' },
+        payload: { ...rows[0].payload, turnId: 'tu_00000000-0000-7f7b-9b65-51065b0acd8c' },
       })
     ).toThrow(/header identity/);
   });
@@ -857,7 +858,7 @@ process.kill(process.pid, 'SIGKILL');`,
   });
 
   it('rejects unknown semantics and forged publication edges while omitting unowned metadata', () => {
-    const row = { ...model(), turnId: 'turn', v: 1, seq: 1 };
+    const row = { ...model(), turnId: testEntityId('tu', 'turn'), v: 1, seq: 1 };
     expect(() => parseWorkObservationRecord({ ...row, type: 'unowned.fact' })).toThrow(
       /Unsupported/
     );

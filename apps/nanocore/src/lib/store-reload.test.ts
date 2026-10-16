@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { createHash } from 'node:crypto';
 import {
   appendFileSync,
@@ -12,7 +13,6 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-
 import {
   ItemSchema,
   KnowledgeEntrySchema,
@@ -22,13 +22,13 @@ import {
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
-
 import { parseOkfDocument } from '../knowledge/okf.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { discardAbandonedWorkspaceStaging } from '../storage/workspace-file-records.js';
 import { FsStore } from './store.js';
 
 const timestamp = '2026-07-06T00:00:00.000Z';
-const localActor = { kind: 'user', id: 'user_local' } as const;
+const localActor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
 
 /**
  * Computes the canonical S16 digest for exact UTF-8 Artifact content.
@@ -77,14 +77,14 @@ function turnOutputArtifactProof(
  */
 function workspaceImportPayload(
   workspaceId: string,
-  threadId: string = 'th_blocked',
-  itemId: string = 'it_blocked'
+  threadId: string = 'th_00000000-0000-7b57-9450-529f9b9cd0a5',
+  itemId: string = 'it_00000000-0000-7feb-a72e-1f8887e7b56c'
 ): Parameters<FsStore['importWorkspaceSnapshot']>[0] {
   const item = ItemSchema.parse({
     id: itemId,
     workspaceId,
     threadId,
-    turnId: `turn_${workspaceId}`,
+    turnId: testEntityId('tu', `turn_${workspaceId}`),
     type: 'user-message',
     actor: localActor,
     status: 'completed',
@@ -165,7 +165,7 @@ describe('FsStore canonical reload', () => {
       localActor
     );
     const firstItem = store.createItem({
-      id: `it_${firstTurn.id}`,
+      id: testEntityId('it', `it_${firstTurn.id}`),
       workspaceId: firstWorkspace.id,
       threadId: firstThread.id,
       turnId: firstTurn.id,
@@ -187,7 +187,7 @@ describe('FsStore canonical reload', () => {
       localActor
     );
     const secondItem = store.createItem({
-      id: `it_${secondTurn.id}`,
+      id: testEntityId('it', `it_${secondTurn.id}`),
       workspaceId: secondWorkspace.id,
       threadId: secondThread.id,
       turnId: secondTurn.id,
@@ -251,7 +251,7 @@ describe('FsStore canonical reload', () => {
     );
 
     store.createItem({
-      id: `it_${turn.id}`,
+      id: testEntityId('it', `it_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -279,7 +279,7 @@ describe('FsStore canonical reload', () => {
     const thread = store.createThread(workspace.id, 'Append-only item thread');
     const turn = store.createTurn(workspace.id, thread.id, 'Append item revisions', localActor);
     const item = store.createItem({
-      id: `it_${turn.id}`,
+      id: testEntityId('it', `it_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -329,7 +329,7 @@ describe('FsStore canonical reload', () => {
     const knowledgeSourceContent = 'Reload source material.';
     const knowledgeSource = store.createKnowledgeSource(
       {
-        id: `ks_${turn.id}`,
+        id: testEntityId('ks', `ks_${turn.id}`),
         workspaceId: workspace.id,
         kind: 'upload',
         title: 'Reload source',
@@ -345,7 +345,7 @@ describe('FsStore canonical reload', () => {
       knowledgeSourceContent
     );
     const userItem = store.createItem({
-      id: `it_user_${turn.id}`,
+      id: testEntityId('it', `it_user_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -357,7 +357,7 @@ describe('FsStore canonical reload', () => {
       completedAt: turn.startedAt ?? new Date().toISOString(),
     });
     store.createItem({
-      id: `it_assistant_${turn.id}`,
+      id: testEntityId('it', `it_assistant_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -380,7 +380,7 @@ describe('FsStore canonical reload', () => {
       resolvedAt: null,
     });
     const approvalRequestItem = store.createItem({
-      id: `it_approval_request_${turn.id}`,
+      id: testEntityId('it', `it_approval_request_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -394,7 +394,7 @@ describe('FsStore canonical reload', () => {
       completedAt: userItem.completedAt,
     });
     const approvalDecisionItem = store.createItem({
-      id: `it_approval_decision_${turn.id}`,
+      id: testEntityId('it', `it_approval_decision_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -413,7 +413,7 @@ describe('FsStore canonical reload', () => {
       resolvedAt: approvalDecisionItem.completedAt,
     });
     const agentSession = store.createAgentSession({
-      id: `session_${thread.id}`,
+      id: testEntityId('as', `session_${thread.id}`),
       agentId: 'agent_codex_host',
       workspaceId: workspace.id,
       threadId: thread.id,
@@ -424,7 +424,7 @@ describe('FsStore canonical reload', () => {
     });
     const artifactBody = '# Canonical artifact body\n\nOnly the content file owns these bytes.';
     const artifact = store.createArtifact({
-      id: `ar_${turn.id}`,
+      id: testEntityId('ar', `ar_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -665,6 +665,7 @@ describe('FsStore canonical reload', () => {
     const turn = store.createTurn(workspace.id, thread.id, 'Reject unsafe artifact id', localActor);
     const artifactBody = 'Must not escape.';
     const escapedPath = join(dataRoot, 'workspaces', workspace.id, 'escaped_artifact');
+    const beforeItems = structuredClone(store.listThreadItems(workspace.id, thread.id));
 
     expect(() =>
       store.createArtifact({
@@ -687,8 +688,16 @@ describe('FsStore canonical reload', () => {
         createdAt: turn.startedAt ?? timestamp,
         updatedAt: turn.startedAt ?? timestamp,
       })
-    ).toThrow(/safe path segment/);
+    ).toThrowError(
+      expect.objectContaining({
+        name: 'ArtifactAuthorityError',
+        code: 'invalid_request',
+        status: 400,
+      })
+    );
     expect(existsSync(escapedPath)).toBe(false);
+    expect(store.listArtifacts(workspace.id)).toEqual([]);
+    expect(store.listThreadItems(workspace.id, thread.id)).toEqual(beforeItems);
   });
 
   it('rejects symbolic links for canonical artifact bodies and source materials', () => {
@@ -699,7 +708,7 @@ describe('FsStore canonical reload', () => {
     const turn = store.createTurn(workspace.id, thread.id, 'Reject canonical symlinks', localActor);
     const artifactBody = 'Canonical artifact body.';
     const artifact = store.createArtifact({
-      id: `ar_${turn.id}`,
+      id: testEntityId('ar', `ar_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -720,7 +729,7 @@ describe('FsStore canonical reload', () => {
     });
     const source = store.createKnowledgeSource(
       {
-        id: `ks_${turn.id}`,
+        id: testEntityId('ks', `ks_${turn.id}`),
         workspaceId: workspace.id,
         kind: 'upload',
         title: 'Canonical source',
@@ -784,7 +793,7 @@ describe('FsStore canonical reload', () => {
       resolvedAt: null,
     });
     const requestItem = store.createItem({
-      id: `it_approval_request_${turn.id}`,
+      id: testEntityId('it', `it_approval_request_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -849,7 +858,7 @@ describe('FsStore canonical reload', () => {
       resolvedAt: null,
     });
     const requestItem = store.createItem({
-      id: `it_approval_request_${turn.id}`,
+      id: testEntityId('it', `it_approval_request_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -864,7 +873,7 @@ describe('FsStore canonical reload', () => {
     });
 
     store.createItem({
-      id: `it_approval_decision_${turn.id}`,
+      id: testEntityId('it', `it_approval_decision_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -927,7 +936,7 @@ describe('FsStore canonical reload', () => {
     const approvalId = `ap_${turn.id}`;
 
     store.createItem({
-      id: `it_approval_request_${turn.id}`,
+      id: testEntityId('it', `it_approval_request_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -994,7 +1003,7 @@ describe('FsStore canonical reload', () => {
       localActor
     );
     const item = store.createItem({
-      id: `it_${turn.id}`,
+      id: testEntityId('it', `it_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -1041,7 +1050,7 @@ describe('FsStore canonical reload', () => {
       localActor
     );
     const item = store.createItem({
-      id: `it_${turn.id}`,
+      id: testEntityId('it', `it_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -1123,7 +1132,7 @@ describe('FsStore canonical reload', () => {
       'Reject the linked artifact root',
       localActor
     );
-    const artifactId = `ar_linked_${turn.id}`;
+    const artifactId = testEntityId('ar', `ar_linked_${turn.id}`);
     const artifactBody = 'Must not escape through the linked parent.';
     const outsideRoot = join(dataRoot, 'outside-artifact-root');
     const linkedRoot = join(dataRoot, 'workspaces', workspace.id, 'artifacts', artifactId);
@@ -1169,7 +1178,7 @@ describe('FsStore canonical reload', () => {
       localActor
     );
     const item = store.createItem({
-      id: `it_${turn.id}`,
+      id: testEntityId('it', `it_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -1212,7 +1221,7 @@ describe('FsStore canonical reload', () => {
       localActor
     );
     const item = store.createItem({
-      id: `it_${turn.id}`,
+      id: testEntityId('it', `it_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -1225,7 +1234,7 @@ describe('FsStore canonical reload', () => {
     });
     const artifactBody = 'Canonical artifact body.';
     const artifact = store.createArtifact({
-      id: `ar_${turn.id}`,
+      id: testEntityId('ar', `ar_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -1300,7 +1309,7 @@ describe('FsStore canonical reload', () => {
 
     writeFileSync(
       eventPath,
-      `${JSON.stringify({ ...event, data: { ...event.data, turnId: 'tu_other' } })}\n`
+      `${JSON.stringify({ ...event, data: { ...event.data, turnId: 'tu_00000000-0000-7bf1-990f-799cdaa2a481' } })}\n`
     );
     expect(() => new FsStore({ dataRoot })).toThrow(/nested payload lineage/);
   });
@@ -1358,7 +1367,7 @@ describe('FsStore canonical reload', () => {
     const workspace = store.createWorkspace('Duplicate current AgentSession workspace');
     const thread = store.createThread(workspace.id, 'Duplicate current AgentSession thread');
     const current = store.createAgentSession({
-      id: 'as_reload_current_first',
+      id: 'as_00000000-0000-73d1-9376-f1617050293b',
       agentId: 'agent_codex_host',
       workspaceId: workspace.id,
       threadId: thread.id,
@@ -1369,7 +1378,7 @@ describe('FsStore canonical reload', () => {
     });
     const duplicate = {
       ...current,
-      id: 'as_reload_current_second',
+      id: 'as_00000000-0000-750a-a946-095b79c29d9c',
       status: 'ready' as const,
     };
     const duplicateRoot = join(
@@ -1395,7 +1404,7 @@ describe('FsStore canonical reload', () => {
     const turn = store.createTurn(workspace.id, thread.id, 'Missing identity turn', localActor);
     const artifactBody = 'Artifact body.';
     const artifact = store.createArtifact({
-      id: `ar_${turn.id}`,
+      id: testEntityId('ar', `ar_${turn.id}`),
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -1415,7 +1424,7 @@ describe('FsStore canonical reload', () => {
       updatedAt: turn.startedAt ?? timestamp,
     });
     const session = store.createAgentSession({
-      id: `as_${turn.id}`,
+      id: testEntityId('as', `as_${turn.id}`),
       agentId: 'agent_codex_host',
       workspaceId: workspace.id,
       threadId: thread.id,
@@ -1450,7 +1459,7 @@ describe('FsStore canonical reload', () => {
       'turn',
       null,
       'triggerActor',
-      { kind: 'automation', id: 'automation_invalid' },
+      { kind: 'automation', id: 'auto_00000000-0000-754b-a729-32f4e11f10ad' },
     ],
     ['missing user-message actor', 'item', 'user-message', 'actor', undefined],
     [
@@ -1458,7 +1467,7 @@ describe('FsStore canonical reload', () => {
       'item',
       'user-message',
       'actor',
-      { kind: 'automation', id: 'automation_invalid' },
+      { kind: 'automation', id: 'auto_00000000-0000-754b-a729-32f4e11f10ad' },
     ],
     ['missing approval-decision actor', 'item', 'approval-decision', 'actor', undefined],
     [
@@ -1466,7 +1475,11 @@ describe('FsStore canonical reload', () => {
       'item',
       'approval-decision',
       'actor',
-      { kind: 'automation', id: 'automation_invalid', responsibleUserId: 'user_local' },
+      {
+        kind: 'automation',
+        id: 'auto_00000000-0000-754b-a729-32f4e11f10ad',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      },
     ],
     [
       'missing user-input-request responsible user',
@@ -1480,7 +1493,7 @@ describe('FsStore canonical reload', () => {
       'item',
       'user-input-request',
       'responsibleUserId',
-      'user_other',
+      'usr_00000000-0000-73d4-904a-d4c4b905df7c',
     ],
     ['missing user-input-response actor', 'item', 'user-input-response', 'actor', undefined],
     [
@@ -1488,13 +1501,21 @@ describe('FsStore canonical reload', () => {
       'item',
       'user-input-response',
       'actor',
-      { kind: 'automation', id: 'automation_invalid', responsibleUserId: 'user_local' },
+      {
+        kind: 'automation',
+        id: 'auto_00000000-0000-754b-a729-32f4e11f10ad',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      },
     ],
   ] as const)('rejects a canonical Workspace with %s', (_name, recordKind, itemType, field, invalidValue) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-invalid-attribution-'));
     const store = new FsStore({ dataRoot });
-    const workspaceId = `ws_attribution_${itemType ?? 'turn'}`;
-    const input = workspaceImportPayload(workspaceId, 'th_attribution', 'it_attribution');
+    const workspaceId = testEntityId('ws', `ws_attribution_${itemType ?? 'turn'}`);
+    const input = workspaceImportPayload(
+      workspaceId,
+      'th_00000000-0000-7b11-b339-beca8166a3ac',
+      'it_00000000-0000-7f81-af06-68845b8e697b'
+    );
     store.importWorkspaceSnapshot(input);
     const turn = input.turns[0]!;
 
@@ -1526,7 +1547,7 @@ describe('FsStore canonical reload', () => {
       if (itemType === 'approval-decision') {
         Object.assign(record, {
           actor: localActor,
-          causationId: 'it_approval_request_attribution',
+          causationId: 'it_00000000-0000-7f99-9fbd-01c9b2a9c1bf',
           approvalRequestId: 'apr_attribution',
           decision: 'granted',
         });
@@ -1549,7 +1570,7 @@ describe('FsStore canonical reload', () => {
       } else if (itemType === 'user-input-response') {
         Object.assign(record, {
           actor: localActor,
-          causationId: 'it_user_input_request_attribution',
+          causationId: 'it_00000000-0000-792e-85bf-b1de19e1a97f',
           userInputRequestId: 'uir_attribution',
           answers: { question_attribution: ['Yes'] },
         });
@@ -1577,11 +1598,11 @@ describe('FsStore canonical reload', () => {
   ] as const)('rejects imported workspace history with %s', (violation, expectedError) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-invalid-import-history-'));
     const store = new FsStore({ dataRoot });
-    const workspaceId = `ws_${violation.replaceAll(' ', '_')}`;
+    const workspaceId = testEntityId('ws', `ws_${violation.replaceAll(' ', '_')}`);
     const input = workspaceImportPayload(
       workspaceId,
-      `th_${violation.replaceAll(' ', '_')}`,
-      `it_${violation.replaceAll(' ', '_')}`
+      testEntityId('th', `th_${violation.replaceAll(' ', '_')}`),
+      testEntityId('it', `it_${violation.replaceAll(' ', '_')}`)
     );
     const turn = input.turns[0]!;
 
@@ -1615,7 +1636,7 @@ describe('FsStore canonical reload', () => {
       case 'null-thread AgentSession':
         input.agentSessions = [
           {
-            id: 'as_null_thread_import',
+            id: 'as_00000000-0000-7184-84d7-24a9f8287d62',
             agentId: 'agent_codex_host',
             workspaceId,
             threadId: null,
@@ -1637,7 +1658,7 @@ describe('FsStore canonical reload', () => {
         const artifactBody = 'This Artifact has no Item lineage.';
         input.artifacts = [
           {
-            id: 'ar_orphan_turn_bound_import',
+            id: 'ar_00000000-0000-7de4-82e1-7ffade16c8e2',
             workspaceId,
             threadId: turn.threadId,
             turnId: turn.id,
@@ -1667,7 +1688,7 @@ describe('FsStore canonical reload', () => {
   it('preserves imported capture bindings without observations across live reads, restart and eviction', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-import-capture-'));
     const store = new FsStore({ dataRoot });
-    const input = workspaceImportPayload('ws_capture_import');
+    const input = workspaceImportPayload('ws_00000000-0000-7bc7-b442-e31e007633c2');
     const turnId = input.turns[0]!.id;
     const binding = { scope: 'task', value: 'on' } as const;
     const turnCaptureCoverage = new Map([[turnId, binding]]);
@@ -1697,8 +1718,8 @@ describe('FsStore canonical reload', () => {
   it('rolls back imported records when persistence fails', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-import-rollback-'));
     const store = new FsStore({ dataRoot });
-    const workspaceId = 'ws_blocked';
-    const threadId = 'th_blocked';
+    const workspaceId = 'ws_00000000-0000-78b7-97e1-b6c5b0981867';
+    const threadId = 'th_00000000-0000-7b57-9450-529f9b9cd0a5';
     const workspacePath = join(dataRoot, 'workspaces', workspaceId);
 
     mkdirSync(join(dataRoot, 'workspaces'), { recursive: true });
@@ -1719,13 +1740,19 @@ describe('FsStore canonical reload', () => {
   it('stages imported workspace files before publishing the final workspace root', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-import-staging-'));
     const store = new FsStore({ dataRoot });
-    const workspaceId = 'ws_staged';
+    const workspaceId = 'ws_00000000-0000-70fa-aca1-3c0855aeb3ab';
     const stagingPath = join(dataRoot, 'workspaces', '.staging');
 
     writeFileSync(stagingPath, 'not a directory');
 
     expect(() =>
-      store.importWorkspaceSnapshot(workspaceImportPayload(workspaceId, 'th_staged', 'it_staged'))
+      store.importWorkspaceSnapshot(
+        workspaceImportPayload(
+          workspaceId,
+          'th_00000000-0000-753a-b4e7-471c451bf422',
+          'it_00000000-0000-7491-bbe4-7331e38976e9'
+        )
+      )
     ).toThrow();
 
     expect(existsSync(join(dataRoot, 'workspaces', workspaceId))).toBe(false);
@@ -1735,12 +1762,16 @@ describe('FsStore canonical reload', () => {
   it('runs imported workspace side effects inside the staging root', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-import-staged-effects-'));
     const store = new FsStore({ dataRoot });
-    const workspaceId = 'ws_staged_effects';
+    const workspaceId = 'ws_00000000-0000-7cac-857f-51e7edd615f0';
     const finalRoot = join(dataRoot, 'workspaces', workspaceId);
     let finalRootExistedDuringCallback = true;
 
     store.importWorkspaceSnapshot({
-      ...workspaceImportPayload(workspaceId, 'th_staged_effects', 'it_staged_effects'),
+      ...workspaceImportPayload(
+        workspaceId,
+        'th_00000000-0000-74f7-8476-f112f3aace3b',
+        'it_00000000-0000-733b-af1a-fd5eb911fda4'
+      ),
       stageWorkspace: ({ workspaceRoot }) => {
         finalRootExistedDuringCallback = existsSync(finalRoot);
         writeFileSync(join(workspaceRoot, 'db', 'staged-side-effect.txt'), 'published');
@@ -1755,13 +1786,13 @@ describe('FsStore canonical reload', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-import-approval-state-'));
     const store = new FsStore({ dataRoot });
     const input = workspaceImportPayload(
-      'ws_import_approval_state',
-      'th_import_approval_state',
-      'it_import_approval_message'
+      'ws_00000000-0000-7082-b8f4-3b87a7a96dac',
+      'th_00000000-0000-7a02-86a7-43518e932293',
+      'it_00000000-0000-70c4-826e-f85941f17654'
     );
     const turn = input.turns[0]!;
     const approvalItem = ItemSchema.parse({
-      id: 'it_import_approval_request',
+      id: 'it_00000000-0000-7111-b184-6426d094dd88',
       workspaceId: input.workspace.id,
       threadId: turn.threadId,
       turnId: turn.id,
@@ -1800,11 +1831,15 @@ describe('FsStore canonical reload', () => {
   it('discards staged workspace side effects when import staging fails', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-import-staged-effects-fail-'));
     const store = new FsStore({ dataRoot });
-    const workspaceId = 'ws_staged_effects_fail';
+    const workspaceId = 'ws_00000000-0000-78b3-a616-54d4ff20d1af';
 
     expect(() =>
       store.importWorkspaceSnapshot({
-        ...workspaceImportPayload(workspaceId, 'th_staged_effects_fail', 'it_staged_effects_fail'),
+        ...workspaceImportPayload(
+          workspaceId,
+          'th_00000000-0000-7b04-8425-dda262fc84d5',
+          'it_00000000-0000-78ae-a2dc-3edab64ca782'
+        ),
         stageWorkspace: ({ workspaceRoot }) => {
           writeFileSync(join(workspaceRoot, 'db', 'staged-side-effect.txt'), 'discarded');
           throw new Error('staged effect failed');
@@ -1820,7 +1855,12 @@ describe('FsStore canonical reload', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-import-staging-cleanup-'));
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Staging cleanup workspace');
-    const stagingRoot = join(dataRoot, 'workspaces', '.staging', 'ws_orphaned');
+    const stagingRoot = join(
+      dataRoot,
+      'workspaces',
+      '.staging',
+      'ws_00000000-0000-7abd-b275-f889620b6f13'
+    );
 
     mkdirSync(stagingRoot, { recursive: true });
     writeFileSync(join(stagingRoot, 'orphaned-import'), 'discarded');

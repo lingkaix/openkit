@@ -20,7 +20,12 @@ import {
   ResourceCatalogIdSchema,
   ResourceDigestSchema,
 } from '@openkit/config-schema';
-import { ReasoningEffortSchema, SystemPromptDigestSchema } from '@openkit/protocol';
+import {
+  ReasoningEffortSchema,
+  SystemPromptDigestSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import {
@@ -185,7 +190,7 @@ const draftSchema = z
 const recordSchema = draftSchema.extend({
   v: z.literal(1),
   seq: z.number().int().positive(),
-  turnId: z.string().min(1),
+  turnId: TurnIdSchema,
 });
 const bodyDescriptorSchema = z
   .object({
@@ -261,7 +266,7 @@ const payloadSchemas = {
   'env.bound': z
     .object({
       version: z.string().min(1),
-      workspaceId: z.string().min(1),
+      workspaceId: WorkspaceIdSchema,
       assistantSkillAdmission: AssistantSkillAdmissionSchema.optional(),
       systemPromptDigest: SystemPromptDigestSchema,
       tools: z.array(

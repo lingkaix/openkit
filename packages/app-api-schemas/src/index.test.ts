@@ -205,19 +205,20 @@ function jsonContainsKey(value: unknown, key: string): boolean {
   }
   return false;
 }
-const retrievalTraceId = 'krt_123e4567-e89b-42d3-a456-426614174000';
-const knowledgePageScopeId = 'page/workspace/ws_demo';
+const retrievalTraceId = 'krt_00000000-0000-75f3-bd1b-a7b739921bbd';
+const knowledgePageScopeId = 'page/workspace/ws_00000000-0000-7000-8000-000000000001';
 const retrievalTraceRef = {
-  scopeId: 'retrieval-trace/thread/ws_demo/th_demo',
+  scopeId:
+    'retrieval-trace/thread/ws_00000000-0000-7000-8000-000000000001/th_00000000-0000-7000-8000-000000000001',
   objectId: retrievalTraceId,
 } as const;
 const knowledgeQueryContext = {
   serverId: 'srv_demo',
-  workspaceId: 'ws_demo',
-  actor: { kind: 'user', id: 'user_local' },
-  threadId: 'th_demo',
+  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+  threadId: 'th_00000000-0000-7000-8000-000000000001',
 } as const;
-const knowledgeSourceReference = `source:ks_123e4567-e89b-42d3-a456-426614174000@sha256:${'1'.repeat(64)}`;
+const knowledgeSourceReference = `source:ks_00000000-0000-7e28-9211-1f67fd14ca84@sha256:${'1'.repeat(64)}`;
 const knowledgePageId = 'lessons/release-review';
 const canonicalKnowledgePageBytes = [
   '---',
@@ -365,33 +366,33 @@ describe('app api schema package boundary', () => {
 describe('S16 Material and Artifact Review schemas', () => {
   const contentDigest = `sha256:${'a'.repeat(64)}`;
   const material = {
-    workspaceId: 'ws_demo',
-    materialId: 'material_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
     title: 'Working notes',
     kind: 'markdown',
-    currentRevisionId: 'revision_1',
+    currentRevisionId: 'mrev_00000000-0000-7dfd-b321-ac6a81c1b523',
     sensitivity: 'internal',
     createdAt: timestamp,
     updatedAt: timestamp,
   } as const;
   const revisionSummary = {
-    workspaceId: 'ws_demo',
-    materialId: 'material_demo',
-    revisionId: 'revision_1',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+    revisionId: 'mrev_00000000-0000-7000-8000-000000000001',
     parentRevisionId: null,
     mediaType: 'text/markdown',
     contentDigest,
-    authorId: 'user_demo',
+    authorId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
     createdAt: timestamp,
   } as const;
   const unresolvedReview = {
-    workspaceId: 'ws_demo',
-    reviewId: 'artifact_review_demo',
-    artifactId: 'artifact_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    reviewId: 'arev_00000000-0000-5fec-bd54-6ef3c5727e32',
+    artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
     artifactVersion: 1,
     contentDigest,
-    sourceThreadId: 'thread_demo',
-    sourceTurnId: 'turn_demo',
+    sourceThreadId: 'th_00000000-0000-7852-ab38-2cf70969cb1c',
+    sourceTurnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
     sourceAgentId: 'agent_demo',
     materialProposal: null,
     decision: null,
@@ -405,34 +406,43 @@ describe('S16 Material and Artifact Review schemas', () => {
 
   it('accepts only the 15 closed operation success identities', () => {
     const responses = [
-      [ImportWorkspaceArtifactResponseSchema, { artifactId: 'artifact_demo', artifactVersion: 1 }],
+      [
+        ImportWorkspaceArtifactResponseSchema,
+        { artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af', artifactVersion: 1 },
+      ],
       [
         IntroduceWorkspaceArtifactResponseSchema,
         {
-          artifactId: 'artifact_demo',
+          artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
           artifactVersion: 1,
-          turnId: 'turn_demo',
-          itemId: 'item_demo',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+          itemId: 'it_00000000-0000-7167-b408-becd17a436db',
         },
       ],
       [ListArtifactReviewsResponseSchema, { reviews: [unresolvedReview] }],
       [
         SubmitArtifactReviewDecisionResponseSchema,
         {
-          reviewId: 'artifact_review_demo',
-          artifactId: 'artifact_demo',
+          reviewId: 'arev_00000000-0000-5fec-bd54-6ef3c5727e32',
+          artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
           artifactVersion: 1,
           decision: 'accepted',
           followUpTurnId: null,
         },
       ],
       [ListWorkspaceMaterialsResponseSchema, { materials: [material] }],
-      [CreateWorkspaceMaterialResponseSchema, { materialId: 'material_demo' }],
+      [
+        CreateWorkspaceMaterialResponseSchema,
+        { materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3' },
+      ],
       [GetWorkspaceMaterialResponseSchema, { material }],
       [ListWorkspaceMaterialRevisionsResponseSchema, { revisions: [revisionSummary] }],
       [
         SaveWorkspaceMaterialRevisionResponseSchema,
-        { materialId: 'material_demo', revisionId: 'revision_1' },
+        {
+          materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+          revisionId: 'mrev_00000000-0000-7000-8000-000000000001',
+        },
       ],
       [
         GetWorkspaceMaterialRevisionResponseSchema,
@@ -442,23 +452,23 @@ describe('S16 Material and Artifact Review schemas', () => {
         GetThreadMaterialResponseSchema,
         {
           material: {
-            workspaceId: 'ws_demo',
-            threadId: 'thread_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7852-ab38-2cf70969cb1c',
             resource: material,
             currentRevision: revisionSummary,
             inclusionState: 'included',
-            latestQueuedRevisionId: 'revision_1',
+            latestQueuedRevisionId: 'mrev_00000000-0000-7000-8000-000000000001',
             lastWorkerSeenRevisionId: null,
             currentTurnRevisionId: null,
             activeDelivery: {
               state: 'queued',
-              pendingTurnId: 'turn_pending',
+              pendingTurnId: 'tu_00000000-0000-7840-ba75-ca03fb2115a3',
               requestId: 'request_steering',
-              contentItemId: 'item_steering',
+              contentItemId: 'it_00000000-0000-7e2c-91ba-c8a92695b9a1',
               goalId: 'goal_demo',
-              activeTurnId: 'turn_active',
-              materialId: 'material_demo',
-              revisionId: 'revision_1',
+              activeTurnId: 'tu_00000000-0000-7f6c-8538-e35e2d71b14f',
+              materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+              revisionId: 'mrev_00000000-0000-7000-8000-000000000001',
               contentDigest,
             },
           },
@@ -466,49 +476,66 @@ describe('S16 Material and Artifact Review schemas', () => {
       ],
       [
         BindThreadMaterialResponseSchema,
-        { materialId: 'material_demo', threadId: 'thread_demo', outcome: 'bound' },
+        {
+          materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+          threadId: 'th_00000000-0000-7852-ab38-2cf70969cb1c',
+          outcome: 'bound',
+        },
       ],
       [
         UnbindThreadMaterialResponseSchema,
-        { materialId: 'material_demo', threadId: 'thread_demo', outcome: 'unbound' },
+        {
+          materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+          threadId: 'th_00000000-0000-7852-ab38-2cf70969cb1c',
+          outcome: 'unbound',
+        },
       ],
       [
         ExcludeThreadMaterialResponseSchema,
-        { materialId: 'material_demo', threadId: 'thread_demo', outcome: 'excluded' },
+        {
+          materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+          threadId: 'th_00000000-0000-7852-ab38-2cf70969cb1c',
+          outcome: 'excluded',
+        },
       ],
       [
         RestoreThreadMaterialResponseSchema,
-        { materialId: 'material_demo', threadId: 'thread_demo', outcome: 'included' },
+        {
+          materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+          threadId: 'th_00000000-0000-7852-ab38-2cf70969cb1c',
+          outcome: 'included',
+        },
       ],
     ] as const;
 
     for (const [schema, response] of responses) {
       expect(schema.safeParse(response).success).toBe(true);
       expect(
-        schema.safeParse({ ...response, workspaceId: 'path_id_is_not_a_body_field' }).success
+        schema.safeParse({ ...response, workspaceId: 'ws_00000000-0000-7ed3-96eb-8737bd07515e' })
+          .success
       ).toBe(false);
     }
     expect(GetThreadMaterialResponseSchema.safeParse({ material: null }).success).toBe(true);
     expect(
       GetThreadMaterialResponseSchema.safeParse({
         material: {
-          workspaceId: 'ws_demo',
-          threadId: 'thread_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7852-ab38-2cf70969cb1c',
           resource: material,
           currentRevision: revisionSummary,
           inclusionState: 'included',
-          latestQueuedRevisionId: 'revision_1',
+          latestQueuedRevisionId: 'mrev_00000000-0000-7000-8000-000000000001',
           lastWorkerSeenRevisionId: null,
           currentTurnRevisionId: null,
           activeDelivery: {
             state: 'queued',
-            pendingTurnId: 'turn_pending',
+            pendingTurnId: 'tu_00000000-0000-7840-ba75-ca03fb2115a3',
             requestId: 'import-lineage:reserved',
-            contentItemId: 'item_steering',
+            contentItemId: 'it_00000000-0000-7e2c-91ba-c8a92695b9a1',
             goalId: 'goal_demo',
-            activeTurnId: 'turn_active',
-            materialId: 'material_demo',
-            revisionId: 'revision_1',
+            activeTurnId: 'tu_00000000-0000-7f6c-8538-e35e2d71b14f',
+            materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+            revisionId: 'mrev_00000000-0000-7000-8000-000000000001',
             contentDigest,
           },
         },
@@ -516,7 +543,7 @@ describe('S16 Material and Artifact Review schemas', () => {
     ).toBe(false);
     expect(
       ImportWorkspaceArtifactResponseSchema.safeParse({
-        artifactId: 'artifact_demo',
+        artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
         artifactVersion: 2,
       }).success
     ).toBe(false);
@@ -578,7 +605,7 @@ describe('S16 Material and Artifact Review schemas', () => {
           requestId: 'request_exclude',
           expectedBindingState: 'bound',
           expectedInclusionState: 'included',
-          expectedQueuedRevisionId: 'revision_1',
+          expectedQueuedRevisionId: 'mrev_00000000-0000-7000-8000-000000000001',
         },
         'workspaceId',
       ],
@@ -625,7 +652,7 @@ describe('S16 Material and Artifact Review schemas', () => {
     expect(
       SaveWorkspaceMaterialRevisionRequestSchema.safeParse({
         ...request,
-        expectedRevisionId: 'revision_1',
+        expectedRevisionId: 'mrev_00000000-0000-7000-8000-000000000001',
       }).success
     ).toBe(true);
     expect(
@@ -730,10 +757,10 @@ describe('S16 Material and Artifact Review schemas', () => {
     const decidedReview = {
       ...unresolvedReview,
       decision: 'needs_refinement',
-      decisionActorId: 'user_demo',
+      decisionActorId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
       feedback: 'Revise the proposal.',
       decidedAt: timestamp,
-      followUpTurnId: 'turn_follow_up',
+      followUpTurnId: 'tu_00000000-0000-72d1-b818-434d696c7933',
     } as const;
     expect(ListArtifactReviewsResponseSchema.safeParse({ reviews: [decidedReview] }).success).toBe(
       true
@@ -741,14 +768,14 @@ describe('S16 Material and Artifact Review schemas', () => {
     const acceptedProposalReview = {
       ...unresolvedReview,
       materialProposal: {
-        materialId: 'material_demo',
-        baseRevisionId: 'revision_1',
+        materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
+        baseRevisionId: 'mrev_00000000-0000-7dfd-b321-ac6a81c1b523',
         baseContentDigest: contentDigest,
       },
       decision: 'accepted',
-      decisionActorId: 'user_demo',
+      decisionActorId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
       decidedAt: timestamp,
-      appliedMaterialRevisionId: 'revision_2',
+      appliedMaterialRevisionId: 'mrev_00000000-0000-7000-8000-000000000002',
     } as const;
     expect(
       ListArtifactReviewsResponseSchema.safeParse({ reviews: [acceptedProposalReview] }).success
@@ -756,7 +783,7 @@ describe('S16 Material and Artifact Review schemas', () => {
     for (const review of [
       { ...decidedReview, feedback: null },
       { ...decidedReview, followUpTurnId: null },
-      { ...decidedReview, appliedMaterialRevisionId: 'revision_2' },
+      { ...decidedReview, appliedMaterialRevisionId: 'mrev_00000000-0000-7000-8000-000000000002' },
       { ...acceptedProposalReview, appliedMaterialRevisionId: null },
       { ...unresolvedReview, decidedAt: timestamp },
     ]) {
@@ -766,11 +793,11 @@ describe('S16 Material and Artifact Review schemas', () => {
     }
     expect(
       SubmitArtifactReviewDecisionResponseSchema.safeParse({
-        reviewId: 'artifact_review_demo',
-        artifactId: 'artifact_demo',
+        reviewId: 'arev_00000000-0000-5fec-bd54-6ef3c5727e32',
+        artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
         artifactVersion: 1,
         decision: 'accepted',
-        followUpTurnId: 'turn_not_allowed',
+        followUpTurnId: 'tu_00000000-0000-7f20-9928-aae7c6463fb5',
       }).success
     ).toBe(false);
   });
@@ -889,14 +916,14 @@ function runtimeConfigValidationResponse(): Record<string, unknown> {
 describe('app api schemas', () => {
   it('accepts knowledge source registration and read payloads', () => {
     const source = {
-      id: 'ks_demo',
-      workspaceId: 'ws_demo',
+      id: 'ks_00000000-0000-7ef0-a551-80b39073108f',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       kind: 'document',
       title: 'Release notes',
       uri: 'file://release.md',
       contentDigest: 'sha256:abc123',
-      originatingThreadId: 'th_demo',
-      originatingTurnId: 'turn_demo',
+      originatingThreadId: 'th_00000000-0000-7000-8000-000000000001',
+      originatingTurnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       originatingFileId: null,
       capturedAt: timestamp,
       createdAt: timestamp,
@@ -910,18 +937,18 @@ describe('app api schemas', () => {
         title: 'Release notes',
         uri: 'file://release.md',
         content: 'Release cadence is weekly.',
-        originatingThreadId: 'th_demo',
-        originatingTurnId: 'turn_demo',
+        originatingThreadId: 'th_00000000-0000-7000-8000-000000000001',
+        originatingTurnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       })
     ).toMatchObject({ kind: 'document', requestId: 'req_source' });
     expect(KnowledgeSourceSchema.parse(source)).toEqual(source);
     const derivedRepresentation = {
-      id: 'ks_demo:text',
-      workspaceId: 'ws_demo',
-      sourceId: 'ks_demo',
+      id: 'ks_00000000-0000-7ef0-a551-80b39073108f:text',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      sourceId: 'ks_00000000-0000-7ef0-a551-80b39073108f',
       kind: 'text',
-      path: 'sources/derived/ks_demo/text.json',
-      materialPath: 'sources/materials/ks_demo/content.txt',
+      path: 'sources/derived/ks_00000000-0000-7ef0-a551-80b39073108f/text.json',
+      materialPath: 'sources/materials/ks_00000000-0000-7ef0-a551-80b39073108f/content.txt',
       contentDigest: 'sha256:abc123',
       sourceContentDigest: 'sha256:abc123',
       createdAt: timestamp,
@@ -946,11 +973,11 @@ describe('app api schemas', () => {
 
   it('accepts Knowledge Store observation ledger payloads', () => {
     const observation = {
-      id: 'ko_demo',
-      workspaceId: 'ws_demo',
+      id: 'ko_00000000-0000-7998-bb5a-f6e99a870e41',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       kind: 'retrieval',
       summary: 'Worker repeatedly needed release cadence context.',
-      sourceReferences: ['knowledge:kn_demo', 'source:ks_demo'],
+      sourceReferences: ['knowledge:kn_demo', 'source:ks_00000000-0000-7ef0-a551-80b39073108f'],
       scope: 'workspace',
       producer: 'knowledge-manager',
       confidence: 0.75,
@@ -981,10 +1008,13 @@ describe('app api schemas', () => {
 
   it('accepts Knowledge Store claim ledger payloads', () => {
     const claim = {
-      id: 'kc_demo',
-      workspaceId: 'ws_demo',
+      id: 'kc_00000000-0000-7120-8707-e527057f1dd9',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       statement: 'Release cadence is weekly.',
-      sourceReferences: ['knowledge:release-plan', 'source:ks_release'],
+      sourceReferences: [
+        'knowledge:release-plan',
+        'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
+      ],
       scope: 'workspace',
       producer: 'knowledge-manager',
       confidence: 0.8,
@@ -1023,10 +1053,16 @@ describe('app api schemas', () => {
 
   it('accepts Knowledge Store conflict ledger payloads', () => {
     const conflict = {
-      id: 'kf_demo',
-      workspaceId: 'ws_demo',
-      subjectReferences: ['knowledge:release-plan', 'claim:kc_release'],
-      sourceReferences: ['source:ks_release', 'source:ks_correction'],
+      id: 'kf_00000000-0000-7b22-b99c-14cb0ba3c7ef',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      subjectReferences: [
+        'knowledge:release-plan',
+        'claim:kc_00000000-0000-78d1-ade0-e140ee38bc7a',
+      ],
+      sourceReferences: [
+        'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
+        'source:ks_00000000-0000-7cfe-8f5a-5c42a2b55641',
+      ],
       status: 'conflicting',
       summary: 'Release cadence has contradictory source evidence.',
       suggestedActions: ['Ask the user which source is authoritative.'],
@@ -1100,7 +1136,7 @@ describe('app api schemas', () => {
       revision: `sha256:${'b'.repeat(64)}`,
       contentDigest: `sha256:${'b'.repeat(64)}`,
       score: 4,
-      sourceReferences: ['source:ks_demo'],
+      sourceReferences: ['source:ks_00000000-0000-7ef0-a551-80b39073108f'],
     };
     const excluded = {
       reference: { scopeId: knowledgePageScopeId, objectId: 'old-plan' },
@@ -1113,7 +1149,7 @@ describe('app api schemas', () => {
       queryContext: knowledgeQueryContext,
       sourceScope: knowledgePageScopeId,
       notebookRevision: null,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       caller: 'assistant',
       requestDigest: `sha256:${'a'.repeat(64)}`,
       retrievalParameters: {
@@ -1209,7 +1245,7 @@ describe('app api schemas', () => {
       KnowledgeDerivedIndexesResponseSchema.parse({
         linkGraph: {
           schemaVersion: 1,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           rebuiltAt: timestamp,
           edges: [
             {
@@ -1222,7 +1258,7 @@ describe('app api schemas', () => {
         },
         validation: {
           schemaVersion: 1,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           rebuiltAt: timestamp,
           records: [
             {
@@ -1244,7 +1280,8 @@ describe('app api schemas', () => {
                 {
                   code: 'reference.unresolved_source',
                   field: 'source_refs',
-                  message: 'Knowledge source reference source:ks_missing does not resolve.',
+                  message:
+                    'Knowledge source reference source:ks_00000000-0000-7e65-a399-d53a84c98ecb does not resolve.',
                 },
               ],
             },
@@ -1252,23 +1289,23 @@ describe('app api schemas', () => {
         },
         sourceReferences: {
           schemaVersion: 1,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           rebuiltAt: timestamp,
           references: [
             {
               conceptId: 'alpha',
               path: 'knowledge/pages/alpha.md',
-              reference: 'source:ks_demo',
+              reference: 'source:ks_00000000-0000-7ef0-a551-80b39073108f',
               kind: 'registered-source',
-              targetId: 'ks_demo',
+              targetId: 'ks_00000000-0000-7ef0-a551-80b39073108f',
               resolved: true,
             },
             {
               conceptId: 'missing-source',
               path: 'knowledge/pages/missing-source.md',
-              reference: 'source:ks_missing',
+              reference: 'source:ks_00000000-0000-7e65-a399-d53a84c98ecb',
               kind: 'registered-source',
-              targetId: 'ks_missing',
+              targetId: 'ks_00000000-0000-7e65-a399-d53a84c98ecb',
               resolved: false,
             },
           ],
@@ -1283,7 +1320,10 @@ describe('app api schemas', () => {
       },
       sourceReferences: {
         references: expect.arrayContaining([
-          expect.objectContaining({ reference: 'source:ks_demo', resolved: true }),
+          expect.objectContaining({
+            reference: 'source:ks_00000000-0000-7ef0-a551-80b39073108f',
+            resolved: true,
+          }),
         ]),
       },
     });
@@ -1300,7 +1340,7 @@ describe('app api schemas', () => {
       KnowledgeManagerAnswerResponseSchema.parse({
         operationId: 'km_answer_demo',
         operation: 'answer',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         caller: 'assistant',
         query: 'release cadence',
         outcome: 'answered',
@@ -1342,7 +1382,7 @@ describe('app api schemas', () => {
     expect(
       KnowledgeManagerPrepareContextRequestSchema.safeParse({
         query: 'release cadence',
-        artifactIds: ['artifact_release_log'],
+        artifactIds: ['ar_00000000-0000-72b0-af20-358179c1710c'],
       }).success
     ).toBe(false);
   });
@@ -1351,7 +1391,7 @@ describe('app api schemas', () => {
     const response = {
       operationId: 'km_context_demo',
       operation: 'prepare-context-material' as const,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       caller: 'app-api' as const,
       outcome: 'prepared' as const,
       selected: [
@@ -1360,7 +1400,7 @@ describe('app api schemas', () => {
           revision: 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
           contentDigest: 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
           score: 3,
-          sourceReferences: ['source:ks_release'],
+          sourceReferences: ['source:ks_00000000-0000-7b52-90c5-8003864b63f9'],
         },
       ],
       excluded: [
@@ -1438,9 +1478,9 @@ describe('app api schemas', () => {
       KnowledgeManagerDraftProposalRequestSchema.safeParse({
         ...request,
         sourceReferences: [
-          `context-package:turn_demo@ctxpkg_sha256_${'a'.repeat(64)}`,
-          'item:item_demo',
-          'turn:turn_demo',
+          `context-package:tu_00000000-0000-77e3-bfde-66477d556f64@ctxpkg_sha256_${'a'.repeat(64)}`,
+          'item:it_00000000-0000-7167-b408-becd17a436db',
+          'turn:tu_00000000-0000-77e3-bfde-66477d556f64',
         ],
       }).success
     ).toBe(true);
@@ -1448,9 +1488,9 @@ describe('app api schemas', () => {
       KnowledgeManagerDraftProposalRequestSchema.safeParse({
         ...request,
         sourceReferences: [
-          `context-package:turn_demo@sha256:${'a'.repeat(64)}`,
-          'item:item_demo',
-          'turn:turn_demo',
+          `context-package:tu_00000000-0000-77e3-bfde-66477d556f64@sha256:${'a'.repeat(64)}`,
+          'item:it_00000000-0000-7167-b408-becd17a436db',
+          'turn:tu_00000000-0000-77e3-bfde-66477d556f64',
         ],
       }).success
     ).toBe(false);
@@ -1458,11 +1498,11 @@ describe('app api schemas', () => {
     const response = {
       operationId: 'km_proposal_demo',
       operation: 'draft-proposal' as const,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       caller: 'app-api' as const,
       proposal: {
         id: 'kp_demo',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         operation: 'create' as const,
         knowledgePageId: request.knowledgePageId,
         canonicalPageBytes: request.canonicalPageBytes,
@@ -1473,7 +1513,7 @@ describe('app api schemas', () => {
         producer: {
           kind: 'agent' as const,
           id: 'knowledge-manager',
-          responsibleUserId: 'user_demo',
+          responsibleUserId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
         },
         status: 'pending' as const,
         createdAt: timestamp,
@@ -1555,7 +1595,7 @@ describe('app api schemas', () => {
       KnowledgeManagerSuggestRepairResponseSchema.parse({
         operationId: 'km_repair_demo',
         operation: 'suggest-repair',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         caller: 'app-api',
         outcome: 'suggested',
         suggestions: [
@@ -1584,7 +1624,7 @@ describe('app api schemas', () => {
       KnowledgeManagerHealthCheckResponseSchema.parse({
         operationId: 'km_health_demo',
         operation: 'health-check',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         caller: 'app-api',
         outcome: 'needs-attention',
         summary: 'Knowledge Manager found 1 repair suggestion.',
@@ -1669,9 +1709,9 @@ describe('app api schemas', () => {
       },
       users: [
         {
-          userId: 'user_1',
+          userId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
           userDb: {
-            path: 'users/user_1/db/user.sqlite',
+            path: 'users/usr_00000000-0000-7e68-8ab1-8dcac1be1b5b/db/user.sqlite',
             exists: true,
             appliedMigrations: ['user_0000_setup'],
           },
@@ -1679,14 +1719,14 @@ describe('app api schemas', () => {
       ],
       workspaces: [
         {
-          workspaceId: 'ws_1',
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
           workspaceDb: {
-            path: 'workspaces/ws_1/db/workspace.sqlite',
+            path: 'workspaces/ws_00000000-0000-73c3-900f-8d310e4ba201/db/workspace.sqlite',
             exists: true,
             appliedMigrations: ['workspace_0000_setup'],
           },
           indexesDir: {
-            path: 'workspaces/ws_1/indexes',
+            path: 'workspaces/ws_00000000-0000-73c3-900f-8d310e4ba201/indexes',
             exists: true,
             entryCount: 1,
           },
@@ -1695,8 +1735,8 @@ describe('app api schemas', () => {
       quarantineEntries: [
         {
           scope: 'workspace',
-          workspaceId: 'ws_1',
-          path: 'workspaces/ws_1/quarantine/1-workspace.sqlite',
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          path: 'workspaces/ws_00000000-0000-73c3-900f-8d310e4ba201/quarantine/1-workspace.sqlite',
           bytes: 128,
         },
       ],
@@ -1714,21 +1754,23 @@ describe('app api schemas', () => {
     expect(
       StorageLayoutReportResponseSchema.safeParse({
         ...report,
-        quarantineEntries: [{ ...report.quarantineEntries[0], userId: 'user_1' }],
+        quarantineEntries: [
+          { ...report.quarantineEntries[0], userId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
+        ],
       }).success
     ).toBe(false);
   });
 
   it('accepts workspace export responses and rejects secret-shaped payloads', () => {
     const payload = {
-      exportId: 'wsexp_demo',
-      workspaceId: 'ws_demo',
+      exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       manifest: {
         schemaVersion: 1,
         recordType: 'workspace-export',
-        id: 'wsexp_demo',
+        id: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
         ownerScope: 'workspace',
-        lineage: { workspaceId: 'ws_demo' },
+        lineage: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         createdAt: timestamp,
         updatedAt: timestamp,
         contentDigest: 'sha256:manifest',
@@ -1736,10 +1778,10 @@ describe('app api schemas', () => {
         sensitivity: 'internal',
         requiredFeatures: [],
         extensions: {},
-        sourceDeploymentId: 'dep_local',
-        workspaceId: 'ws_demo',
+        sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         exportCreatedAt: timestamp,
-        exportFormatVersion: 2,
+        exportFormatVersion: 3,
         contentInventory: [
           {
             path: 'records/workspace-record.json',
@@ -1754,8 +1796,8 @@ describe('app api schemas', () => {
     };
 
     expect(WorkspaceExportResponseSchema.parse(payload)).toMatchObject({
-      exportId: 'wsexp_demo',
-      workspaceId: 'ws_demo',
+      exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       fileCount: 1,
     });
 
@@ -1774,7 +1816,7 @@ describe('app api schemas', () => {
     const manifest = {
       schemaVersion: 1,
       recordType: 'data-root-backup',
-      id: 'drb_demo',
+      id: 'drb_00000000-0000-795e-9322-0c2b42caa5d0',
       ownerScope: 'server',
       lineage: {},
       createdAt: timestamp,
@@ -1784,7 +1826,7 @@ describe('app api schemas', () => {
       sensitivity: 'internal',
       requiredFeatures: [],
       extensions: {},
-      sourceDeploymentId: 'dep_local',
+      sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
       backupStartedAt: timestamp,
       backupCompletedAt: timestamp,
       backupMode: 'hot',
@@ -1801,54 +1843,65 @@ describe('app api schemas', () => {
 
     expect(
       DataRootBackupCreateResponseSchema.parse({
-        backupId: 'drb_demo',
+        backupId: 'drb_00000000-0000-795e-9322-0c2b42caa5d0',
         manifest,
         fileCount: 1,
         totalBytes: 16,
         checkedFiles: ['server/db/core.sqlite'],
       })
-    ).toMatchObject({ backupId: 'drb_demo', fileCount: 1 });
-    expect(DataRootBackupVerifyRequestSchema.parse({ backupId: 'drb_demo-1' })).toEqual({
-      backupId: 'drb_demo-1',
+    ).toMatchObject({ backupId: 'drb_00000000-0000-795e-9322-0c2b42caa5d0', fileCount: 1 });
+    expect(
+      DataRootBackupVerifyRequestSchema.parse({
+        backupId: 'drb_00000000-0000-71b9-9183-a46d80f383de',
+      })
+    ).toEqual({
+      backupId: 'drb_00000000-0000-71b9-9183-a46d80f383de',
     });
-    expect(() => DataRootBackupVerifyRequestSchema.parse({ backupId: '..' })).toThrow();
+    expect(() =>
+      DataRootBackupVerifyRequestSchema.parse({
+        backupId: '..',
+      })
+    ).toThrow();
     expect(
       DataRootBackupVerifyResponseSchema.parse({
-        backupId: 'drb_demo',
+        backupId: 'drb_00000000-0000-795e-9322-0c2b42caa5d0',
         manifest,
         fileCount: 1,
         totalBytes: 16,
         checkedFiles: ['server/db/core.sqlite'],
       })
-    ).toMatchObject({ backupId: 'drb_demo' });
+    ).toMatchObject({ backupId: 'drb_00000000-0000-795e-9322-0c2b42caa5d0' });
   });
 
   it('accepts workspace import dry-run reports and rejects unsafe export handles', () => {
     expect(
       WorkspaceImportDryRunRequestSchema.parse({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: 'wsexp_demo-1',
+        sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        exportId: 'wsexp_00000000-0000-7f8f-a228-c5edd2ef12d4',
       })
-    ).toEqual({ sourceWorkspaceId: 'ws_demo', exportId: 'wsexp_demo-1' });
+    ).toEqual({
+      sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      exportId: 'wsexp_00000000-0000-7f8f-a228-c5edd2ef12d4',
+    });
     expect(() =>
       WorkspaceImportDryRunRequestSchema.parse({
         sourceWorkspaceId: '..',
-        exportId: 'wsexp_demo',
+        exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
       })
     ).toThrow();
 
     expect(
       WorkspaceImportDryRunResponseSchema.parse({
         mode: 'dry-run',
-        exportId: 'wsexp_demo',
-        sourceWorkspaceId: 'ws_demo',
-        exportedWorkspaceId: 'ws_demo',
+        exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+        sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        exportedWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         manifest: {
           schemaVersion: 1,
           recordType: 'workspace-export',
-          id: 'wsexp_demo',
+          id: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
           ownerScope: 'workspace',
-          lineage: { workspaceId: 'ws_demo' },
+          lineage: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           createdAt: timestamp,
           updatedAt: timestamp,
           contentDigest: 'sha256:manifest',
@@ -1856,17 +1909,17 @@ describe('app api schemas', () => {
           sensitivity: 'internal',
           requiredFeatures: [],
           extensions: {},
-          sourceDeploymentId: 'dep_local',
-          workspaceId: 'ws_demo',
+          sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           exportCreatedAt: timestamp,
-          exportFormatVersion: 2,
+          exportFormatVersion: 3,
           contentInventory: [],
         },
         verification: { fileCount: 0, totalBytes: 0, checkedFiles: [] },
         collision: {
           status: 'collides',
-          workspaceId: 'ws_demo',
-          suggestedWorkspaceId: 'ws_imported_ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          suggestedWorkspaceId: 'ws_00000000-0000-7089-bb95-d4e3b1944597',
         },
       }).collision.status
     ).toBe('collides');
@@ -1875,26 +1928,30 @@ describe('app api schemas', () => {
   it('accepts workspace import responses and request ids', () => {
     expect(
       WorkspaceImportRequestSchema.parse({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: 'wsexp_demo',
+        sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
         requestId: 'req_import',
       })
-    ).toEqual({ sourceWorkspaceId: 'ws_demo', exportId: 'wsexp_demo', requestId: 'req_import' });
+    ).toEqual({
+      sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+      requestId: 'req_import',
+    });
 
     expect(
       WorkspaceImportResponseSchema.parse({
         mode: 'imported',
         requestId: 'req_import',
-        exportId: 'wsexp_demo',
-        sourceWorkspaceId: 'ws_demo',
-        exportedWorkspaceId: 'ws_demo',
-        importedWorkspaceId: 'ws_imported_ws_demo',
+        exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
+        sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        exportedWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        importedWorkspaceId: 'ws_00000000-0000-7089-bb95-d4e3b1944597',
         manifest: {
           schemaVersion: 1,
           recordType: 'workspace-export',
-          id: 'wsexp_demo',
+          id: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
           ownerScope: 'workspace',
-          lineage: { workspaceId: 'ws_demo' },
+          lineage: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           createdAt: timestamp,
           updatedAt: timestamp,
           contentDigest: 'sha256:manifest',
@@ -1902,21 +1959,21 @@ describe('app api schemas', () => {
           sensitivity: 'internal',
           requiredFeatures: [],
           extensions: {},
-          sourceDeploymentId: 'dep_local',
-          workspaceId: 'ws_demo',
+          sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           exportCreatedAt: timestamp,
-          exportFormatVersion: 2,
+          exportFormatVersion: 3,
           contentInventory: [],
         },
         workspace: {
-          id: 'ws_imported_ws_demo',
+          id: 'ws_00000000-0000-7089-bb95-d4e3b1944597',
           name: 'Demo workspace',
           kind: 'general',
           status: 'active',
           counts: { threadCount: 1, artifactCount: 0, knowledgeEntryCount: 1 },
           importedFrom: {
-            sourceDeploymentId: 'dep_source',
-            sourceWorkspaceId: 'ws_demo',
+            sourceDeploymentId: 'dep_00000000-0000-7737-8fe7-61ca07c79d45',
+            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             exportCreatedAt: timestamp,
             manifestDigest:
               'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
@@ -1931,11 +1988,11 @@ describe('app api schemas', () => {
         },
         collision: {
           status: 'collides',
-          workspaceId: 'ws_demo',
-          suggestedWorkspaceId: 'ws_imported_ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          suggestedWorkspaceId: 'ws_00000000-0000-7089-bb95-d4e3b1944597',
         },
       }).workspace.importedFrom?.sourceWorkspaceId
-    ).toBe('ws_demo');
+    ).toBe('ws_00000000-0000-7000-8000-000000000001');
   });
 
   it('keeps credential-pattern rejection on secret-adjacent Vault metadata', () => {
@@ -1970,9 +2027,9 @@ describe('app api schemas', () => {
     expect(
       VaultAdminBootstrapCodexAuthJsonResponseSchema.parse({
         backendKind: 'encrypted-file',
-        grantId: 'grant_codex_auth_json',
+        grantId: 'grant_00000000-0000-79cb-b598-745f38b7a39a',
         grantScope: 'agent-session',
-        referenceId: 'vault_codex_auth_json',
+        referenceId: 'vault_00000000-0000-72d1-b90a-e14fea8ea955',
         secretKind: 'codex-auth-json',
         targetPath: '/sandbox/.codex/auth.json',
         expiresAt: null,
@@ -1998,10 +2055,10 @@ describe('app api schemas', () => {
         backendKind: 'encrypted-file',
         currentVersion: 1,
         ownerScope: 'workspace',
-        referenceId: 'vault_imported',
+        referenceId: 'vault_00000000-0000-7f9a-ae09-1112bc878c49',
         secretKind: 'api-token',
         status: 'active',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       }).status
     ).toBe('active');
     expect(
@@ -2011,13 +2068,13 @@ describe('app api schemas', () => {
             backendKind: 'encrypted-file',
             currentVersion: 0,
             ownerScope: 'workspace',
-            referenceId: 'vault_imported',
+            referenceId: 'vault_00000000-0000-7f9a-ae09-1112bc878c49',
             secretKind: 'api-token',
             status: 'unbound',
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
         ],
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       }).items[0]?.status
     ).toBe('unbound');
     expect(
@@ -2045,9 +2102,9 @@ describe('app api schemas', () => {
       expect(
         VaultAdminBootstrapCodexAuthJsonResponseSchema.safeParse({
           backendKind: 'encrypted-file',
-          grantId: 'grant_codex_auth_json',
+          grantId: 'grant_00000000-0000-79cb-b598-745f38b7a39a',
           grantScope: 'agent-session',
-          referenceId: 'vault_codex_auth_json',
+          referenceId: 'vault_00000000-0000-72d1-b90a-e14fea8ea955',
           secretKind: 'codex-auth-json',
           targetPath: '/sandbox/.codex/auth.json',
           expiresAt: null,
@@ -2059,10 +2116,10 @@ describe('app api schemas', () => {
           backendKind: 'encrypted-file',
           currentVersion: 1,
           ownerScope: 'workspace',
-          referenceId: 'vault_imported',
+          referenceId: 'vault_00000000-0000-7f9a-ae09-1112bc878c49',
           secretKind: secret,
           status: 'active',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         }).success
       ).toBe(false);
       expect(
@@ -2088,9 +2145,9 @@ describe('app api schemas', () => {
       name: 'Codex auth bootstrap',
       payload: {
         backendKind: 'os-keychain',
-        grantId: 'grant_codex_auth_json',
+        grantId: 'grant_00000000-0000-79cb-b598-745f38b7a39a',
         grantScope: 'agent-session',
-        referenceId: 'vault_codex_auth_json',
+        referenceId: 'vault_00000000-0000-72d1-b90a-e14fea8ea955',
         secretKind: 'codex-auth-json',
         targetPath: '/sandbox/.codex/auth.json',
         expiresAt: null,
@@ -2103,10 +2160,10 @@ describe('app api schemas', () => {
         backendKind: 'os-keychain',
         currentVersion: 1,
         ownerScope: 'workspace',
-        referenceId: 'vault_imported',
+        referenceId: 'vault_00000000-0000-7f9a-ae09-1112bc878c49',
         secretKind: 'api-token',
         status: 'active',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       },
       schema: VaultAdminRebindWorkspaceReferenceResponseSchema,
     },
@@ -2118,13 +2175,13 @@ describe('app api schemas', () => {
             backendKind: 'os-keychain',
             currentVersion: 0,
             ownerScope: 'workspace',
-            referenceId: 'vault_imported',
+            referenceId: 'vault_00000000-0000-7f9a-ae09-1112bc878c49',
             secretKind: 'api-token',
             status: 'unbound',
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
         ],
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       },
       schema: VaultAdminListWorkspaceReferencesResponseSchema,
     },
@@ -2149,17 +2206,17 @@ describe('app api schemas', () => {
     {
       name: 'workspace Vault use records',
       payload: {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         vaultUseRecords: [
           {
-            useId: 'use_legacy',
+            useId: 'vu_00000000-0000-75fa-849e-4340c0f82434',
             ownerScope: 'workspace',
-            workspaceId: 'ws_demo',
-            vaultReferenceId: 'vault_legacy',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            vaultReferenceId: 'vault_00000000-0000-7853-804c-d936d74689a9',
             materialVersion: 1,
             backendKind: 'os-keychain',
             resolvingPath: 'grant',
-            grantId: 'grant_legacy',
+            grantId: 'grant_00000000-0000-7c9a-b1a6-5332fc0a70f3',
             planId: null,
             receiptId: null,
             agentSessionId: null,
@@ -2178,10 +2235,10 @@ describe('app api schemas', () => {
       payload: {
         vaultUseRecords: [
           {
-            useId: 'use_server_legacy',
+            useId: 'vu_00000000-0000-7b30-8b4d-e1ffa9d38436',
             ownerScope: 'server',
             workspaceId: null,
-            vaultReferenceId: 'vault_legacy',
+            vaultReferenceId: 'vault_00000000-0000-7853-804c-d936d74689a9',
             materialVersion: 1,
             backendKind: 'os-keychain',
             resolvingPath: 'provider',
@@ -2447,13 +2504,13 @@ describe('app api schemas', () => {
     const parsed = CapabilityUsageResponseSchema.parse({
       capabilityCalls: [
         {
-          id: 'cap_1',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
-          itemId: 'it_demo',
+          id: 'cap_00000000-0000-7d4f-884e-ab4fdf8dc968',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+          itemId: 'it_00000000-0000-7d53-9abb-fba003a3df39',
           agentId: 'assistant',
-          agentSessionId: 'session_demo',
+          agentSessionId: 'as_00000000-0000-78be-889a-02eee50dd060',
           packageSnapshotId: 'aepsnap_demo',
           runtimeOriginRef: `rto_${'a'.repeat(24)}`,
           runtimeCacheLineageRef: `rcl_${'b'.repeat(24)}`,
@@ -2474,17 +2531,17 @@ describe('app api schemas', () => {
       ],
       usageRecords: [
         {
-          id: 'usage_1',
-          workspaceId: 'ws_demo',
-          responsibleUserId: 'user_1',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
-          itemId: 'it_demo',
+          id: 'use_00000000-0000-7bad-8061-11b8ce86e984',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          responsibleUserId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+          itemId: 'it_00000000-0000-7d53-9abb-fba003a3df39',
           agentId: 'assistant',
-          agentSessionId: 'session_demo',
+          agentSessionId: 'as_00000000-0000-78be-889a-02eee50dd060',
           sourceIds: ['repo_default'],
           requestId,
-          capabilityCallId: 'cap_1',
+          capabilityCallId: 'cap_00000000-0000-7d4f-884e-ab4fdf8dc968',
           category: 'llm',
           unit: 'usd',
           quantity: 0.012,
@@ -2494,10 +2551,12 @@ describe('app api schemas', () => {
           recordedAt: timestamp,
         },
       ],
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
-    expect(parsed.usageRecords[0]?.capabilityCallId).toBe('cap_1');
+    expect(parsed.usageRecords[0]?.capabilityCallId).toBe(
+      'cap_00000000-0000-7d4f-884e-ab4fdf8dc968'
+    );
     expect(parsed.usageRecords[0]?.unit).toBe('usd');
     expect(parsed.capabilityCalls[0]).toMatchObject({
       packageSnapshotId: 'aepsnap_demo',
@@ -2539,10 +2598,10 @@ describe('app api schemas', () => {
   it('accepts read-only evidence bundle list models', () => {
     const evidenceBundle = {
       id: 'evb_demo',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       goalId: 'goal_demo',
-      turnId: 'turn_demo',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       agentSessionId: null,
       backendType: null,
       sourceKind: 'workspace-apply-result',
@@ -2561,11 +2620,11 @@ describe('app api schemas', () => {
 
     expect(
       ListWorkspaceEvidenceBundlesResponseSchema.parse({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         evidenceBundles: [evidenceBundle],
       })
     ).toEqual({
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       evidenceBundles: [evidenceBundle],
     });
   });
@@ -2610,12 +2669,12 @@ describe('app api schemas', () => {
   it('accepts workspace runtime evidence read models without raw backend payloads', () => {
     const runtimeEvidence = RuntimeEvidenceRecordSchema.parse({
       id: 'rte_demo',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       goalId: 'goal_demo',
       taskId: 'task_demo',
-      agentSessionId: 'session_demo',
+      agentSessionId: 'as_00000000-0000-78be-889a-02eee50dd060',
       backendType: 'openshell',
       backendVersion: null,
       placement: 'local',
@@ -2650,11 +2709,11 @@ describe('app api schemas', () => {
     expect(
       ListWorkspaceRuntimeEvidenceResponseSchema.parse({
         runtimeEvidence: [runtimeEvidence],
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
     ).toEqual({
       runtimeEvidence: [runtimeEvidence],
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     expect(JSON.stringify(runtimeEvidence)).not.toContain('Authorization');
     expect(JSON.stringify(runtimeEvidence)).not.toContain('sk-openkit-secret');
@@ -2668,37 +2727,42 @@ describe('app api schemas', () => {
 
   it('accepts workspace permission decision read models with ordinary credential-looking context', () => {
     const response = ListWorkspacePermissionDecisionsResponseSchema.parse({
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       permissionDecisions: [
         {
-          decisionId: 'pd_demo',
+          decisionId: 'pd_00000000-0000-76cb-aeec-205247da1d48',
           ownerScope: 'workspace',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           policyEngineVersion: 'nanocore-worker-policy:v1',
           policySnapshotId: 'worker_turn_launch_policy',
           subjectSummary: { kind: 'nanocore', id: 'worker-coordinator' },
           action: 'runtime.launch',
-          resourceSummary: { kind: 'worker-turn', turnId: 'turn_demo' },
+          resourceSummary: {
+            kind: 'worker-turn',
+            turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+          },
           contextSummary: {
             requestId: '00000000-0000-4000-8000-00000000d791',
-            threadId: 'th_demo',
-            turnId: 'turn_demo',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
           },
           result: 'require_escalation',
           reasonCode: 'higher_authority_required',
           enforcementPoint: 'runtime.worker_turn_loop.start',
           requiredApprovalKind: null,
           approvalId: null,
-          auditEventId: 'aud_demo',
+          auditEventId: 'aud_00000000-0000-7a69-8a43-4327a55d44c3',
           createdAt: timestamp,
         },
       ],
     });
 
-    expect(response.permissionDecisions[0]?.decisionId).toBe('pd_demo');
+    expect(response.permissionDecisions[0]?.decisionId).toBe(
+      'pd_00000000-0000-76cb-aeec-205247da1d48'
+    );
     expect(
       ListWorkspacePermissionDecisionsResponseSchema.safeParse({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         permissionDecisions: [
           {
             ...response.permissionDecisions[0],
@@ -2713,7 +2777,7 @@ describe('app api schemas', () => {
     const response = ListServerPermissionDecisionsResponseSchema.parse({
       permissionDecisions: [
         {
-          decisionId: 'pd_server_demo',
+          decisionId: 'pd_00000000-0000-787f-8828-437c03348633',
           ownerScope: 'server',
           workspaceId: null,
           policyEngineVersion: 'nanocore-gateway-policy:v1',
@@ -2733,7 +2797,9 @@ describe('app api schemas', () => {
       ],
     });
 
-    expect(response.permissionDecisions[0]?.decisionId).toBe('pd_server_demo');
+    expect(response.permissionDecisions[0]?.decisionId).toBe(
+      'pd_00000000-0000-787f-8828-437c03348633'
+    );
     expect(
       ListServerPermissionDecisionsResponseSchema.safeParse({
         permissionDecisions: [
@@ -2749,7 +2815,7 @@ describe('app api schemas', () => {
   it('preserves ordinary workspace synchronization content and canonical patch encoding', () => {
     const inputSnapshot = WorkspaceInputSnapshotSchema.parse({
       id: 'wis_1',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       resourceId: 'default',
       resourceKind: 'git_repository',
       strategy: 'git',
@@ -2769,10 +2835,10 @@ describe('app api schemas', () => {
     const materialization = WorkspaceMaterializationRecordSchema.parse({
       id: 'wmr_1',
       inputSnapshotId: inputSnapshot.id,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       backendKind: 'openshell',
       packageSnapshotId: 'aepsnap_1',
-      workerSessionId: 'session_1',
+      workerSessionId: 'as_00000000-0000-7fee-81f4-cfcfc003f25f',
       strategy: 'git',
       materializedRootRef: 'worker-root://repo',
       base: { commit: 'abc123', contentDigest: null },
@@ -2782,11 +2848,11 @@ describe('app api schemas', () => {
     });
     const backendHandle = BackendWorkspaceHandleSchema.parse({
       id: 'bwh_1',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       materializationRecordId: materialization.id,
       backendKind: 'openshell',
       packageSnapshotId: 'aepsnap_1',
-      workerSessionId: 'session_1',
+      workerSessionId: 'as_00000000-0000-7fee-81f4-cfcfc003f25f',
       transportRefs: [{ kind: 'worker-root', ref: 'worker-root://repo' }],
       cleanupStatus: 'pending',
       retention: 'until-reconciliation',
@@ -2795,10 +2861,10 @@ describe('app api schemas', () => {
     });
     const outputManifest = WorkerOutputManifestSchema.parse({
       id: 'wom_1',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       materializationRecordId: materialization.id,
       inputSnapshotId: inputSnapshot.id,
-      workerSessionId: 'session_1',
+      workerSessionId: 'as_00000000-0000-7fee-81f4-cfcfc003f25f',
       backendKind: 'openshell',
       strategy: 'git',
       changedPaths: [
@@ -2812,7 +2878,7 @@ describe('app api schemas', () => {
           newPermissions: '0755',
         },
       ],
-      artifactIds: ['ar_patch'],
+      artifactIds: ['ar_00000000-0000-7f26-8292-8ac950dddeba'],
       logRefs: [{ kind: 'worker-log', ref: 'artifact://log', digest: 'sha256:log', bytes: 64 }],
       testOutputRefs: [
         { kind: 'test-output', ref: 'artifact://test', digest: 'sha256:test', bytes: 128 },
@@ -2826,7 +2892,7 @@ describe('app api schemas', () => {
       id: 'wcs_1',
       materializationRecordId: materialization.id,
       inputSnapshotId: inputSnapshot.id,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       resourceId: 'default',
       sourceId: 'repo_default',
       strategy: 'git',
@@ -2855,7 +2921,7 @@ describe('app api schemas', () => {
       ],
       patch: { ref: 'artifact://patch', digest: 'sha256:patch', bytes: 1200 },
       bundle: null,
-      artifactIds: ['ar_patch'],
+      artifactIds: ['ar_00000000-0000-7f26-8292-8ac950dddeba'],
       evidenceRefs: [{ kind: 'test', ref: 'ev_test' }],
       redaction: { status: 'redacted', notes: [] },
       createdAt: timestamp,
@@ -2899,7 +2965,7 @@ describe('app api schemas', () => {
       StagedWorkspaceReviewSchema.parse({
         id: 'swr_1',
         changeSetId: changeSet.id,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         status: 'pending',
         staging: {
           strategy: 'git_worktree',
@@ -2918,7 +2984,7 @@ describe('app api schemas', () => {
     const workspaceReviews = ListWorkspaceSyncReviewsResponseSchema.parse({
       items: [
         {
-          artifactId: 'ar_workspace_changes_1',
+          artifactId: 'ar_00000000-0000-7e93-b881-32f3f8c0b14a',
           changeSet,
           patchPayload: {
             mediaType: 'text/x-diff',
@@ -2929,7 +2995,7 @@ describe('app api schemas', () => {
           review: {
             id: 'swr_1',
             changeSetId: changeSet.id,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             status: 'pending',
             staging: {
               strategy: 'git_worktree',
@@ -2946,7 +3012,7 @@ describe('app api schemas', () => {
         },
       ],
     });
-    expect(workspaceReviews.items[0]?.artifactId).toBe('ar_workspace_changes_1');
+    expect(workspaceReviews.items[0]?.artifactId).toBe('ar_00000000-0000-7e93-b881-32f3f8c0b14a');
 
     const item = workspaceReviews.items[0]!;
     for (const text of [
@@ -2978,7 +3044,7 @@ describe('app api schemas', () => {
 
     const applyResult = {
       id: 'war_swr_1',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       reviewId: 'swr_1',
       changeSetId: changeSet.id,
       status: 'applied',
@@ -3006,7 +3072,7 @@ describe('app api schemas', () => {
         review: {
           id: 'swr_1',
           changeSetId: changeSet.id,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           status: 'needs_refinement',
           staging: {
             strategy: 'git_worktree',
@@ -3035,7 +3101,7 @@ describe('app api schemas', () => {
       SubmitWorkspaceRecoveryDecisionResponseSchema.parse({
         reconciliationRecord: {
           id: 'wrr_decision_1',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           triggerReason: 'manual',
           affectedRecordIds: ['wmr_1', 'bwh_1'],
           backendHandleSummary: {},
@@ -3057,7 +3123,7 @@ describe('app api schemas', () => {
         items: [
           {
             id: 'wis_1',
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             resourceId: 'repo_default',
             resourceKind: 'git_repository',
             strategy: 'git',
@@ -3078,12 +3144,12 @@ describe('app api schemas', () => {
           {
             id: 'wmr_1',
             inputSnapshotId: 'wis_1',
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             backendKind: 'openshell',
             packageSnapshotId: 'aepsnap_1',
-            workerSessionId: 'session_1',
+            workerSessionId: 'as_00000000-0000-7fee-81f4-cfcfc003f25f',
             strategy: 'git',
-            materializedRootRef: 'workspace://ws_demo/repo_default',
+            materializedRootRef: 'workspace://ws_00000000-0000-7000-8000-000000000001/repo_default',
             base: { commit: 'abc123', contentDigest: null },
             policyDigest: 'sha256:policy',
             readinessEvidence: [],
@@ -3103,10 +3169,15 @@ describe('app api schemas', () => {
             materializationRecordId: 'wmr_1',
             packageSnapshotId: 'aepsnap_1',
             retention: 'until-reconciliation',
-            transportRefs: [{ kind: 'materialized-root', ref: 'workspace://ws_demo/repo_default' }],
+            transportRefs: [
+              {
+                kind: 'materialized-root',
+                ref: 'workspace://ws_00000000-0000-7000-8000-000000000001/repo_default',
+              },
+            ],
             updatedAt: timestamp,
-            workerSessionId: 'session_1',
-            workspaceId: 'ws_demo',
+            workerSessionId: 'as_00000000-0000-7fee-81f4-cfcfc003f25f',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
         ],
       }).items[0]?.id
@@ -3116,7 +3187,7 @@ describe('app api schemas', () => {
     ).toBe('wom_1');
     const applyPlan = WorkspaceApplyPlanSchema.parse({
       id: 'wap_1',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       reviewId: 'swr_1',
       changeSetId: changeSet.id,
       strategy: 'git',
@@ -3136,13 +3207,13 @@ describe('app api schemas', () => {
     );
     const reconciliation = WorkspaceReconciliationRecordSchema.parse({
       id: 'wrr_1',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       triggerReason: 'restart',
       affectedRecordIds: ['wmr_1', 'bwh_1'],
       backendHandleSummary: {
         backendKind: 'openshell',
         handleId: 'bwh_1',
-        workerSessionId: 'session_1',
+        workerSessionId: 'as_00000000-0000-7fee-81f4-cfcfc003f25f',
         cleanupStatus: 'pending',
       },
       backendReachability: { status: 'unavailable', checkedAt: timestamp, detail: null },
@@ -3166,7 +3237,7 @@ describe('app api schemas', () => {
           {
             id: 'workspace-recovery:wrr_1',
             kind: 'blocked_turn',
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             title: 'Workspace recovery needs review',
             summary: 'Recovery requires a human decision: inspect_recovery.',
             severity: 'blocked',
@@ -3176,7 +3247,7 @@ describe('app api schemas', () => {
             source: {
               type: 'workspace_recovery',
               reconciliationRecordId: 'wrr_1',
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               triggerReason: 'restart',
               stateAfter: 'requires-human',
               affectedRecordIds: ['wmr_1', 'bwh_1'],
@@ -3206,7 +3277,7 @@ describe('app api schemas', () => {
     ).toBe('workspace_recovery');
     const quarantine = WorkspaceQuarantineRecordSchema.parse({
       id: 'wqr_1',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       lifecycleRecordIds: ['wrr_1', 'wom_1'],
       failureKind: 'digest_mismatch',
       storageRef: 'quarantine/workspace-sync/wqr_1',
@@ -3229,7 +3300,7 @@ describe('app api schemas', () => {
           {
             id: 'swr_1',
             changeSetId: changeSet.id,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             status: 'pending',
             staging: {
               strategy: 'git_worktree',
@@ -3253,7 +3324,7 @@ describe('app api schemas', () => {
       id: 'wcs_unsafe',
       materializationRecordId: 'wmr_1',
       inputSnapshotId: 'wis_1',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       resourceId: 'default',
       strategy: 'git',
       base: { commit: 'abc123', contentDigest: null },
@@ -3271,10 +3342,10 @@ describe('app api schemas', () => {
     expect(
       WorkerOutputManifestSchema.safeParse({
         id: 'wom_unsafe',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         materializationRecordId: 'wmr_1',
         inputSnapshotId: 'wis_1',
-        workerSessionId: 'session_1',
+        workerSessionId: 'as_00000000-0000-7fee-81f4-cfcfc003f25f',
         backendKind: 'openshell',
         strategy: 'git',
         changedPaths: [{ path: '../secret.txt', status: 'modified' }],
@@ -3291,7 +3362,7 @@ describe('app api schemas', () => {
     expect(
       WorkspaceApplyPlanSchema.safeParse({
         id: 'wap_unsafe',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         reviewId: 'swr_1',
         changeSetId: 'wcs_1',
         strategy: 'git',
@@ -3308,7 +3379,7 @@ describe('app api schemas', () => {
     expect(
       WorkspaceReconciliationRecordSchema.safeParse({
         id: 'wrr_unsafe',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         triggerReason: 'restart',
         affectedRecordIds: ['ghp_openkit_secret'],
         backendHandleSummary: { backendKind: 'openshell', handleId: 'bwh_1' },
@@ -3327,7 +3398,7 @@ describe('app api schemas', () => {
     expect(
       WorkspaceQuarantineRecordSchema.safeParse({
         id: 'wqr_unsafe',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         lifecycleRecordIds: ['ghp_openkit_secret'],
         failureKind: 'schema_failure',
         storageRef: '../secret.txt',
@@ -3346,10 +3417,10 @@ describe('app api schemas', () => {
       snapshotId: 'aepsnap_1',
       packageId: 'aepkg_1',
       scope: {
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
-        agentSessionId: 'as_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+        agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
       },
       agent: {
         agentId: 'agent_codex',
@@ -3362,10 +3433,10 @@ describe('app api schemas', () => {
 
     const record = GetAgentEnvironmentPackageSnapshotResponseSchema.parse({
       snapshotId: 'aepsnap_1',
-      workspaceId: 'ws_demo',
-      turnId: 'turn_demo',
-      threadId: 'th_demo',
-      agentSessionId: 'as_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
       agentId: 'agent_codex',
       packageId: 'aepkg_1',
       runtimeKind: 'coder',
@@ -3459,7 +3530,7 @@ describe('app api schemas', () => {
 
   it('preserves bounded optional runtime activity without claiming complete coverage', () => {
     const activity = {
-      turnId: 'tu_demo',
+      turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
       contentCapture: 'off',
       coverage: 'partial',
       entries: [
@@ -3523,7 +3594,7 @@ describe('app api schemas', () => {
       })
     ).toEqual(workStatus);
     const activeWork = {
-      threadId: 'th_demo',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       title: 'Active conversation',
       status: 'running',
       agentId: 'quick-chat',
@@ -3560,25 +3631,27 @@ describe('app api schemas', () => {
 
   it('keeps AgentSession identity out of ordinary embedded Turn projections', () => {
     const turn = {
-      id: 'tu_demo',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      triggerActor: { kind: 'user', id: 'user_1' },
+      id: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
       items: [],
       status: 'running' as const,
       error: null,
-      agentSessionId: 'as_hidden',
+      agentSessionId: 'as_00000000-0000-7271-8ba3-bea82b217022',
       configVersion: null,
       startedAt: timestamp,
       completedAt: null,
       durationMs: null,
     };
     const dashboard = appApiSchemas.ThreadDashboardResponseSchema.parse({
-      viewerUserId: 'user_local',
-      participants: [{ kind: 'user', id: 'user_local', displayName: 'Simon' }],
+      viewerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      participants: [
+        { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001', displayName: 'Simon' },
+      ],
       thread: {
-        id: 'th_demo',
-        workspaceId: 'ws_demo',
+        id: 'th_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         entryPath: 'conversation',
         visibility: 'workspace',
         name: 'Demo',
@@ -3600,7 +3673,9 @@ describe('app api schemas', () => {
         disabled: false,
         defaultAgentId: null,
       },
-      itemLog: { href: '/api/app/workspaces/ws_demo/threads/th_demo/items' },
+      itemLog: {
+        href: '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/items',
+      },
       taskInputs: [],
     });
     const chat = SubmitConversationResponseSchema.parse({
@@ -3608,10 +3683,10 @@ describe('app api schemas', () => {
       explanation: 'Answered.',
       turn,
       item: {
-        id: 'it_chat_1',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'tu_demo',
+        id: 'it_00000000-0000-7636-ae96-fc295661d12a',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
         type: 'status',
         status: 'completed',
         level: 'info',
@@ -3621,10 +3696,10 @@ describe('app api schemas', () => {
         completedAt: timestamp,
       },
       handoff: null,
-      originatingWorkspaceId: 'ws_demo',
-      originatingThreadId: 'th_demo',
-      receivingWorkspaceId: 'ws_demo',
-      receivingThreadId: 'th_demo',
+      originatingWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      originatingThreadId: 'th_00000000-0000-7000-8000-000000000001',
+      receivingWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      receivingThreadId: 'th_00000000-0000-7000-8000-000000000001',
       targetRef: 'internal-role:assistant',
       logicalModelId: 'default',
     });
@@ -3634,7 +3709,7 @@ describe('app api schemas', () => {
       evidence: { itemIds: [], artifactIds: [] },
     });
 
-    expect(dashboard.viewerUserId).toBe('user_local');
+    expect(dashboard.viewerUserId).toBe('usr_00000000-0000-7000-8000-000000000001');
     expect(dashboard.participants[0]?.displayName).toBe('Simon');
     expect(jsonContainsKey(dashboard, 'agentSessionId')).toBe(false);
     expect(jsonContainsKey(chat, 'agentSessionId')).toBe(false);
@@ -3668,9 +3743,9 @@ describe('app api schemas', () => {
       RuntimeConfigFileListResponseSchema.parse({
         files: [
           {
-            id: 'workspaces/ws_demo/data-sources.jsonc',
+            id: 'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
             kind: 'data-source',
-            path: 'workspaces/ws_demo/data-sources.jsonc',
+            path: 'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
             exists: true,
             revision: 'sha256:abc',
             updatedAt: timestamp,
@@ -3680,7 +3755,7 @@ describe('app api schemas', () => {
     ).toBe('data-source');
     expect(
       RuntimeConfigFileWriteRequestSchema.parse({
-        id: 'workspaces/ws_demo/data-sources.jsonc',
+        id: 'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
         kind: 'data-source',
         content: '{"schemaVersion":1,"sources":[]}',
       }).kind
@@ -3692,7 +3767,7 @@ describe('app api schemas', () => {
     ).toBe('data-source');
     expect(
       RuntimeConfigFileWriteRequestSchema.safeParse({
-        id: 'workspaces/ws_demo/mcp-servers.jsonc',
+        id: 'workspaces/ws_00000000-0000-7000-8000-000000000001/mcp-servers.jsonc',
         kind: 'mcp-server',
         content: '{"schemaVersion":1,"servers":[]}',
       }).success
@@ -3705,7 +3780,10 @@ describe('app api schemas', () => {
       requestId: '0190f4c8-0000-7000-8000-000000000133',
     };
     const selector = { agentId: 'agent_selected' };
-    const scope = { workspaceId: 'ws_demo', threadId: 'th_demo' };
+    const scope = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+    };
     expect(StartTaskModeRequestSchema.parse({ ...request, ...selector })).toEqual({
       ...request,
       ...selector,
@@ -3733,8 +3811,8 @@ describe('app api schemas', () => {
     expect(
       TASK_OPERATION_DEFINITIONS['task.start'].inputSchema.safeParse({
         ...request,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
       }).success
     ).toBe(false);
   });
@@ -3785,17 +3863,17 @@ describe('app api schemas', () => {
         expectedStopCondition: 'one bounded worker turn',
         escalationRecommended: false,
         contextRefs: [
-          { kind: 'workspace', id: 'ws_demo' },
-          { kind: 'thread', id: 'th_demo' },
+          { kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' },
+          { kind: 'thread', id: 'th_00000000-0000-7000-8000-000000000001' },
           { kind: 'knowledge', id: 'mem_project' },
         ],
       },
       state: 'completed',
       turn: {
-        id: 'tu_task_1',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        triggerActor: { kind: 'user', id: 'user_1' },
+        id: 'tu_00000000-0000-7535-81b9-0d55f9492809',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
         items: [],
         status: 'completed',
         configVersion: null,
@@ -3806,24 +3884,24 @@ describe('app api schemas', () => {
         durationMs: 1,
       },
       completion: {
-        itemId: 'it_assistant_tu_task_1',
+        itemId: 'it_00000000-0000-7d7d-9289-0dbf0bfeea93',
         text: 'Completed by worker.',
       },
       evidence: {
-        itemIds: ['it_assistant_tu_task_1'],
-        artifactIds: ['ar_task_result'],
+        itemIds: ['it_00000000-0000-7d7d-9289-0dbf0bfeea93'],
+        artifactIds: ['ar_00000000-0000-71b9-88b9-1f73be293bf4'],
         reviewIds: ['swr_task_result'],
       },
     });
 
     expect(taskResponse).not.toHaveProperty('decision');
     expect(taskResponse.completion).toEqual({
-      itemId: 'it_assistant_tu_task_1',
+      itemId: 'it_00000000-0000-7d7d-9289-0dbf0bfeea93',
       text: 'Completed by worker.',
     });
     expect(taskResponse.evidence).toEqual({
-      itemIds: ['it_assistant_tu_task_1'],
-      artifactIds: ['ar_task_result'],
+      itemIds: ['it_00000000-0000-7d7d-9289-0dbf0bfeea93'],
+      artifactIds: ['ar_00000000-0000-71b9-88b9-1f73be293bf4'],
       reviewIds: ['swr_task_result'],
     });
     expect(TaskModeAttemptStateSchema.parse('cancelled')).toBe('cancelled');
@@ -3837,14 +3915,14 @@ describe('app api schemas', () => {
           reason: 'The request needs explicit Goal Mode planning.',
         },
         evidence: {
-          itemIds: ['it_task_goal'],
+          itemIds: ['it_00000000-0000-7af7-a15f-76f69a2469cb'],
           artifactIds: [],
         },
         turn: {
-          id: 'tu_task_goal',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          triggerActor: { kind: 'user', id: 'user_1' },
+          id: 'tu_00000000-0000-7ae2-b8ad-bd9415f8e874',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
           items: [],
           status: 'completed',
           configVersion: null,
@@ -3894,10 +3972,14 @@ describe('app api schemas', () => {
           expectedRevision: 4,
           kind: 'selected',
           purpose: 'work',
-          storageRef: `wst_${'a'.repeat(32)}`,
+          storageRef: 'wst_00000000-0000-7b39-9ec2-cb19893c9f63',
         },
       }).workerStorageChoice
-    ).toMatchObject({ expectedRevision: 4, kind: 'selected', storageRef: `wst_${'a'.repeat(32)}` });
+    ).toMatchObject({
+      expectedRevision: 4,
+      kind: 'selected',
+      storageRef: 'wst_00000000-0000-7b39-9ec2-cb19893c9f63',
+    });
     expect(
       SubmitConversationRequestSchema.safeParse({
         input: 'Ship the bounded task.',
@@ -3908,7 +3990,7 @@ describe('app api schemas', () => {
           goalId: 'goal_forged',
           kind: 'selected',
           purpose: 'work',
-          storageRef: `wst_${'a'.repeat(32)}`,
+          storageRef: 'wst_00000000-0000-7b39-9ec2-cb19893c9f63',
         },
       }).success
     ).toBe(false);
@@ -3919,13 +4001,13 @@ describe('app api schemas', () => {
         handoff: {
           targetMode: 'task',
           reason: 'The request needs bounded worker execution.',
-          statusItemId: 'it_chat_status_1',
+          statusItemId: 'it_00000000-0000-77cd-a3ff-b9fd6e85f6b3',
         },
         turn: {
-          id: 'tu_chat_1',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          triggerActor: { kind: 'user', id: 'user_1' },
+          id: 'tu_00000000-0000-72d8-abbb-24b8f02f0976',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
           items: [],
           status: 'completed',
           configVersion: null,
@@ -3936,10 +4018,10 @@ describe('app api schemas', () => {
           durationMs: 1,
         },
         item: {
-          id: 'it_chat_status_1',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'tu_chat_1',
+          id: 'it_00000000-0000-77cd-a3ff-b9fd6e85f6b3',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-72d8-abbb-24b8f02f0976',
           type: 'status',
           status: 'completed',
           level: 'info',
@@ -3948,10 +4030,10 @@ describe('app api schemas', () => {
           createdAt: timestamp,
           completedAt: timestamp,
         },
-        originatingWorkspaceId: 'ws_demo',
-        originatingThreadId: 'th_demo',
-        receivingWorkspaceId: 'ws_demo',
-        receivingThreadId: 'th_demo',
+        originatingWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        originatingThreadId: 'th_00000000-0000-7000-8000-000000000001',
+        receivingWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        receivingThreadId: 'th_00000000-0000-7000-8000-000000000001',
         targetRef: 'internal-role:assistant',
         logicalModelId: 'default',
       }).handoff?.targetMode
@@ -3973,19 +4055,21 @@ describe('app api schemas', () => {
 
   it('rejects caller Workspace authority from Quick Chat requests', () => {
     expect(
-      QuickChatRequestSchema.safeParse({ input: 'Hello', workspaceId: 'ws_caller_selected' })
-        .success
+      QuickChatRequestSchema.safeParse({
+        input: 'Hello',
+        workspaceId: 'ws_00000000-0000-7349-9b29-0b0df94928e7',
+      }).success
     ).toBe(false);
   });
 
   it('preserves ordinary Git push summaries and rejects host paths', () => {
     const pushRecord = {
       id: 'gpr_1',
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       repositoryResourceId: 'repo_default',
       approvalRowId: 'har_1',
-      policyDecisionId: 'pd_1',
-      actorId: 'user_1',
+      policyDecisionId: 'pd_00000000-0000-7a55-84b6-910265042f6b',
+      actorId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
       remoteSummary: 'GitHub repository openkit on origin',
       sourceRef: 'HEAD',
       targetBranch: 'main',
@@ -4628,9 +4712,9 @@ describe('app api schemas', () => {
   it('accepts dashboard, auth, quick chat, agent catalog, and action center payloads', () => {
     expect(
       AuthSignUpEmailResponseSchema.parse({
-        token: 'session_token',
+        token: 'as_00000000-0000-78f3-bdfb-13f04d6a5a83',
         user: {
-          id: 'user_1',
+          id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
           email: 'user@example.com',
           name: 'Demo User',
           emailVerified: false,
@@ -4639,14 +4723,14 @@ describe('app api schemas', () => {
           image: null,
         },
       }).user.id
-    ).toBe('user_1');
+    ).toBe('usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
     expect(
       AuthSignInEmailResponseSchema.parse({
         redirect: false,
-        token: 'session_token',
+        token: 'as_00000000-0000-78f3-bdfb-13f04d6a5a83',
         url: null,
         user: {
-          id: 'user_1',
+          id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
           email: 'user@example.com',
           name: 'Demo User',
           emailVerified: false,
@@ -4659,9 +4743,9 @@ describe('app api schemas', () => {
     expect(AuthSignOutResponseSchema.parse({ success: true }).success).toBe(true);
     expect(
       AuthGetSessionResponseSchema.parse({
-        session: { id: 'session_1' },
+        session: { id: 'as_00000000-0000-7fee-81f4-cfcfc003f25f' },
         user: {
-          id: 'user_1',
+          id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
           email: 'user@example.com',
           name: 'Demo User',
           emailVerified: true,
@@ -4669,25 +4753,29 @@ describe('app api schemas', () => {
           updatedAt: timestamp,
         },
       }).user.id
-    ).toBe('user_1');
+    ).toBe('usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
     expect(AuthGetSessionResultSchema.parse(null)).toBeNull();
-    expect(AuthSignUpEmailResponseSchema.safeParse({ user: { id: 'user_1' } }).success).toBe(false);
+    expect(
+      AuthSignUpEmailResponseSchema.safeParse({
+        user: { id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
+      }).success
+    ).toBe(false);
     expect(
       ConsumeOpenKitBootstrapTokenRequestSchema.parse({
         displayName: 'Owner',
         email: 'owner@example.com',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         password: 'password123456',
         token: 'okt_bootstrap_secret',
         tokenExpiresAt: timestamp,
       }).ownerUserId
-    ).toBe('user_owner');
+    ).toBe('usr_00000000-0000-7011-88df-c2b1e8466b6f');
     expect(
       ConsumeOpenKitBootstrapTokenResponseSchema.parse({
         token: 'okt_owner_secret',
         record: {
-          tokenId: 'tok_owner',
-          ownerUserId: 'user_owner',
+          tokenId: 'tok_00000000-0000-7194-b4f8-8fa26eda7175',
+          ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
           scope: 'server-admin',
           workspaceIds: [],
           status: 'active',
@@ -4701,11 +4789,11 @@ describe('app api schemas', () => {
           lastUsedSource: null,
         },
       }).record.ownerUserId
-    ).toBe('user_owner');
+    ).toBe('usr_00000000-0000-7011-88df-c2b1e8466b6f');
     expect(
       CreateOpenKitAccessTokenRequestSchema.parse({
         scope: 'workspace',
-        workspaceIds: ['ws_demo'],
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
         expiresAt: timestamp,
       }).scope
     ).toBe('workspace');
@@ -4714,15 +4802,15 @@ describe('app api schemas', () => {
         scope: 'server-admin',
         workspaceIds: [],
         expiresAt: timestamp,
-        ownerUserId: 'user_member',
+        ownerUserId: 'usr_00000000-0000-7d56-82f8-ec994b63859b',
       }).ownerUserId
-    ).toBe('user_member');
+    ).toBe('usr_00000000-0000-7d56-82f8-ec994b63859b');
     expect(
       CreateOpenKitAccessTokenResponseSchema.parse({
         token: 'okt_openkit_secret',
         record: {
-          tokenId: 'tok_1',
-          ownerUserId: 'user_owner',
+          tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
+          ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
           scope: 'server-admin',
           workspaceIds: [],
           status: 'active',
@@ -4741,8 +4829,8 @@ describe('app api schemas', () => {
       ListOpenKitAccessTokensResponseSchema.parse({
         items: [
           {
-            tokenId: 'tok_1',
-            ownerUserId: 'user_owner',
+            tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
+            ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
             scope: 'server-admin',
             workspaceIds: [],
             status: 'active',
@@ -4757,12 +4845,12 @@ describe('app api schemas', () => {
           },
         ],
       }).items[0]?.tokenId
-    ).toBe('tok_1');
+    ).toBe('tok_00000000-0000-71d2-a336-a862021357ff');
     expect(
       RevokeOpenKitAccessTokenResponseSchema.parse({
         record: {
-          tokenId: 'tok_1',
-          ownerUserId: 'user_owner',
+          tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
+          ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
           scope: 'server-admin',
           workspaceIds: [],
           status: 'revoked',
@@ -4782,23 +4870,23 @@ describe('app api schemas', () => {
       RotateOpenKitAccessTokenResponseSchema.parse({
         token: 'okt_rotated_secret',
         record: {
-          tokenId: 'tok_2',
-          ownerUserId: 'user_owner',
+          tokenId: 'tok_00000000-0000-7c9e-a136-86e094ee0dc9',
+          ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
           scope: 'server-admin',
           workspaceIds: [],
           status: 'active',
           issuedAt: timestamp,
           expiresAt: timestamp,
           revokedAt: null,
-          predecessorTokenId: 'tok_1',
+          predecessorTokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
           rotatedGraceExpiresAt: null,
           lastUsedAt: null,
           lastUsedChannel: null,
           lastUsedSource: null,
         },
         rotatedRecord: {
-          tokenId: 'tok_1',
-          ownerUserId: 'user_owner',
+          tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
+          ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
           scope: 'server-admin',
           workspaceIds: [],
           status: 'rotated',
@@ -4817,8 +4905,8 @@ describe('app api schemas', () => {
       ListOpenKitAccessTokensResponseSchema.safeParse({
         items: [
           {
-            tokenId: 'tok_1',
-            ownerUserId: 'user_owner',
+            tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
+            ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
             scope: 'server-admin',
             workspaceIds: [],
             status: 'active',
@@ -4838,8 +4926,8 @@ describe('app api schemas', () => {
       ListMyAdminAccessTokensResponseSchema.parse({
         items: [
           {
-            tokenId: 'tok_1',
-            ownerUserId: 'user_owner',
+            tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
+            ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
             scope: 'server-admin',
             workspaceIds: [],
             status: 'active',
@@ -4853,18 +4941,20 @@ describe('app api schemas', () => {
             lastUsedSource: null,
           },
         ],
-        defaultTokenId: 'tok_1',
+        defaultTokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
       }).defaultTokenId
-    ).toBe('tok_1');
-    expect(SetMyAdminAccessTokenDefaultRequestSchema.parse({ tokenId: 'tok_1' }).tokenId).toBe(
-      'tok_1'
-    );
+    ).toBe('tok_00000000-0000-71d2-a336-a862021357ff');
+    expect(
+      SetMyAdminAccessTokenDefaultRequestSchema.parse({
+        tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
+      }).tokenId
+    ).toBe('tok_00000000-0000-71d2-a336-a862021357ff');
     expect(
       ListMyAdminAccessTokensResponseSchema.safeParse({
         items: [
           {
-            tokenId: 'tok_1',
-            ownerUserId: 'user_owner',
+            tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
+            ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
             scope: 'server-admin',
             workspaceIds: [],
             status: 'active',
@@ -4878,23 +4968,23 @@ describe('app api schemas', () => {
             lastUsedSource: 'okt_openkit_secret',
           },
         ],
-        defaultTokenId: 'tok_1',
+        defaultTokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
       }).success
     ).toBe(false);
     expect(
       QuickChatResponseSchema.parse({
         id: 'quick_1',
         status: 'completed',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         modelId: 'default',
         content: 'ok',
       }).content
     ).toBe('ok');
     expect(
       AutomationRecordSchema.parse({
-        id: 'auto_1',
+        id: 'auto_00000000-0000-753e-a23a-1b96fc74424c',
         name: 'Daily summary',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         cron: '0 9 * * *',
         prompt: 'Summarize yesterday.',
         status: 'paused',
@@ -4904,12 +4994,19 @@ describe('app api schemas', () => {
     ).toBe('paused');
     expect(
       AppSearchResponseSchema.parse({
-        items: [{ kind: 'thread', id: 'th_demo', title: 'Thread', workspaceId: 'ws_demo' }],
+        items: [
+          {
+            kind: 'thread',
+            id: 'th_00000000-0000-7000-8000-000000000001',
+            title: 'Thread',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          },
+        ],
       }).items[0]?.kind
     ).toBe('thread');
     expect(
       TurnFeedbackResponseSchema.parse({
-        turnId: 'turn_1',
+        turnId: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
         agentId: 'agent_1',
         rating: 'good',
         note: null,
@@ -4922,7 +5019,7 @@ describe('app api schemas', () => {
     expect(
       WorkspaceDashboardResponseSchema.parse({
         workspace: {
-          id: 'ws_demo',
+          id: 'ws_00000000-0000-7000-8000-000000000001',
           name: 'Demo',
           kind: 'code',
           status: 'active',
@@ -4944,21 +5041,22 @@ describe('app api schemas', () => {
         items: [
           {
             kind: 'interrupted_worker_state',
-            checkpointId: 'ws_demo:th_demo:turn_demo',
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: 'turn_demo',
+            checkpointId:
+              'ws_00000000-0000-7000-8000-000000000001:th_00000000-0000-7000-8000-000000000001:tu_00000000-0000-77e3-bfde-66477d556f64',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
             goalId: null,
             taskId: null,
             stage: 'running_worker',
             iteration: 1,
             workerSessionId: 'deterministic-worker',
-            contextDigest: 'deterministic:turn_demo',
+            contextDigest: 'deterministic:tu_00000000-0000-77e3-bfde-66477d556f64',
             contextAssembly: {
-              contextDigest: 'deterministic:turn_demo',
+              contextDigest: 'deterministic:tu_00000000-0000-77e3-bfde-66477d556f64',
               contextRefs: [
-                { kind: 'workspace', id: 'ws_demo' },
-                { kind: 'thread', id: 'th_demo' },
+                { kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' },
+                { kind: 'thread', id: 'th_00000000-0000-7000-8000-000000000001' },
               ],
             },
             stopReason: null,
@@ -4985,10 +5083,10 @@ describe('app api schemas', () => {
         ],
       }).items[0]?.contextAssembly
     ).toEqual({
-      contextDigest: 'deterministic:turn_demo',
+      contextDigest: 'deterministic:tu_00000000-0000-77e3-bfde-66477d556f64',
       contextRefs: [
-        { kind: 'workspace', id: 'ws_demo' },
-        { kind: 'thread', id: 'th_demo' },
+        { kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' },
+        { kind: 'thread', id: 'th_00000000-0000-7000-8000-000000000001' },
       ],
     });
     for (const unownedStage of ['reviewing', 'verifying', 'saving', 'recovering']) {
@@ -5008,9 +5106,9 @@ describe('app api schemas', () => {
     expect(
       RetryInterruptedWorkerCheckpointResponseSchema.parse({
         outcome: 'released_for_retry',
-        turnId: 'turn_demo',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       })
-    ).toEqual({ outcome: 'released_for_retry', turnId: 'turn_demo' });
+    ).toEqual({ outcome: 'released_for_retry', turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64' });
     expect(CancelSchedulerAdmissionResponseSchema.parse({ cancelled: true }).cancelled).toBe(true);
     expect(RetrySchedulerAdmissionResponseSchema.parse({ retried: true }).retried).toBe(true);
     expect(
@@ -5022,9 +5120,9 @@ describe('app api schemas', () => {
           {
             queueEntryId: 'queue_1',
             requestId: '00000000-0000-4000-8000-000000000001',
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: 'turn_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
             requestedAgentId: 'agent_codex_host',
             profileRef: 'default',
             modelId: null,
@@ -5036,9 +5134,9 @@ describe('app api schemas', () => {
           {
             queueEntryId: 'queue_denied',
             requestId: null,
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: 'turn_denied',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: 'tu_00000000-0000-7e56-9ec6-94a079616b6f',
             requestedAgentId: 'agent_codex_host',
             profileRef: 'default',
             modelId: null,
@@ -5054,7 +5152,7 @@ describe('app api schemas', () => {
       ListServerAuditEventsResponseSchema.parse({
         auditEvents: [
           {
-            id: 'aud_server_1',
+            id: 'aud_00000000-0000-726b-8ee2-162b4bf37c24',
             workspaceId: null,
             protocolVersion: '0.4.0',
             threadId: null,
@@ -5081,14 +5179,14 @@ describe('app api schemas', () => {
     ).toHaveLength(1);
     expect(
       ListWorkspaceAuditEventsResponseSchema.parse({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         auditEvents: [
           {
-            id: 'aud_1',
-            workspaceId: 'ws_demo',
+            id: 'aud_00000000-0000-72f4-8dcc-8c92fd4028d3',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             protocolVersion: '0.4.0',
-            threadId: 'th_demo',
-            turnId: 'turn_demo',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
             itemId: null,
             capabilityCallId: null,
             permissionDecisionId: null,
@@ -5111,24 +5209,24 @@ describe('app api schemas', () => {
     ).toHaveLength(1);
     expect(
       ListWorkspaceVaultUseRecordsResponseSchema.parse({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         vaultUseRecords: [
           {
-            useId: 'use_1',
+            useId: 'vu_00000000-0000-743f-be9c-c9e897c3ec54',
             ownerScope: 'workspace',
-            workspaceId: 'ws_demo',
-            vaultReferenceId: 'vault_github',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
             materialVersion: 1,
             backendKind: 'encrypted-file',
             resolvingPath: 'grant',
-            grantId: 'grant_github',
+            grantId: 'grant_00000000-0000-7fe9-9377-b84721e910b4',
             planId: null,
             receiptId: null,
-            agentSessionId: 'as_1',
+            agentSessionId: 'as_00000000-0000-7b98-8803-ea4242ad797b',
             capabilityCallId: null,
             outcome: 'succeeded',
             failureCode: null,
-            auditEventId: 'aud_1',
+            auditEventId: 'aud_00000000-0000-72f4-8dcc-8c92fd4028d3',
             usedAt: timestamp,
           },
         ],
@@ -5138,10 +5236,10 @@ describe('app api schemas', () => {
       ListServerVaultUseRecordsResponseSchema.parse({
         vaultUseRecords: [
           {
-            useId: 'use_server_1',
+            useId: 'vu_00000000-0000-7172-b60a-9708e418f9c9',
             ownerScope: 'server',
             workspaceId: null,
-            vaultReferenceId: 'vault_provider',
+            vaultReferenceId: 'vault_00000000-0000-74ac-b50a-3150f74675d0',
             materialVersion: 1,
             backendKind: 'encrypted-file',
             resolvingPath: 'provider',
@@ -5152,7 +5250,7 @@ describe('app api schemas', () => {
             capabilityCallId: null,
             outcome: 'failed',
             failureCode: 'backend-locked',
-            auditEventId: 'aud_server_1',
+            auditEventId: 'aud_00000000-0000-726b-8ee2-162b4bf37c24',
             usedAt: timestamp,
           },
         ],
@@ -5165,12 +5263,12 @@ describe('app api schemas', () => {
   it('accepts only exact version-keyed Artifact Review Action Center sources', () => {
     const source = {
       type: 'artifact_review',
-      reviewId: 'arev_demo',
-      artifactId: 'artifact_demo',
+      reviewId: 'arev_00000000-0000-725e-9350-18e29b99fc35',
+      artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
       artifactVersion: 2,
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
     } as const;
 
     expect(appApiSchemas.ArtifactReviewHumanAttentionSourceSchema.parse(source)).toEqual(source);
@@ -5194,10 +5292,10 @@ describe('app api schemas', () => {
       {
         id: 'approval:ap_demo',
         kind: 'approval',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
-        itemId: 'it_approval',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+        itemId: 'it_00000000-0000-7069-8bdd-c3aee83f1f35',
         title: 'Approval required',
         summary: 'Approve the command before the worker continues.',
         severity: 'needs_input',
@@ -5206,10 +5304,10 @@ describe('app api schemas', () => {
         source: {
           type: 'approval',
           approvalRequestId: 'ap_demo',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
-          itemId: 'it_approval',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+          itemId: 'it_00000000-0000-7069-8bdd-c3aee83f1f35',
         },
         actions: [
           {
@@ -5227,12 +5325,12 @@ describe('app api schemas', () => {
         ],
       },
       {
-        id: 'question:it_question',
+        id: 'question:it_00000000-0000-7552-bffa-5f2e0a67b337',
         kind: 'question',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
-        itemId: 'it_question',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+        itemId: 'it_00000000-0000-7552-bffa-5f2e0a67b337',
         title: 'Answer required',
         summary: 'Choose a path.',
         severity: 'needs_input',
@@ -5240,26 +5338,26 @@ describe('app api schemas', () => {
         source: {
           type: 'protocol_item',
           itemType: 'user-input-request',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
-          itemId: 'it_question',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+          itemId: 'it_00000000-0000-7552-bffa-5f2e0a67b337',
         },
         actions: [
           {
             kind: 'answer_question',
             label: 'Answer',
             method: 'POST',
-            href: '/api/turns/turn_demo/input',
+            href: '/api/turns/tu_00000000-0000-77e3-bfde-66477d556f64/input',
           },
         ],
       },
       {
         id: 'checkpoint:checkpoint_demo',
         kind: 'checkpoint_recovery',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         title: 'Worker checkpoint needs review',
         summary: 'Interrupted before terminal save.',
         severity: 'blocked',
@@ -5267,9 +5365,9 @@ describe('app api schemas', () => {
         source: {
           type: 'worker_checkpoint',
           checkpointId: 'checkpoint_demo',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
           stage: 'running_worker',
           stopReason: null,
         },
@@ -5285,7 +5383,7 @@ describe('app api schemas', () => {
       {
         id: 'agent-readiness:agent_demo',
         kind: 'agent_readiness',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         title: 'Agent is blocked',
         summary: 'Runtime binary is not available.',
         severity: 'blocked',
@@ -5293,7 +5391,7 @@ describe('app api schemas', () => {
         source: {
           type: 'agent_readiness',
           agentId: 'agent_demo',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           status: 'blocked',
         },
         actions: [
@@ -5306,13 +5404,13 @@ describe('app api schemas', () => {
         ],
       },
       {
-        id: 'artifact-review:arev_demo',
+        id: 'artifact-review:arev_00000000-0000-725e-9350-18e29b99fc35',
         kind: 'artifact_review',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
-        reviewId: 'arev_demo',
-        artifactId: 'artifact_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+        reviewId: 'arev_00000000-0000-725e-9350-18e29b99fc35',
+        artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
         artifactVersion: 1,
         title: 'Review artifact',
         summary: 'The artifact is ready for acceptance.',
@@ -5320,12 +5418,12 @@ describe('app api schemas', () => {
         createdAt: timestamp,
         source: {
           type: 'artifact_review',
-          reviewId: 'arev_demo',
-          artifactId: 'artifact_demo',
+          reviewId: 'arev_00000000-0000-725e-9350-18e29b99fc35',
+          artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
           artifactVersion: 1,
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         },
         actions: [
           { kind: 'accept_review', label: 'Accept', method: 'POST' },
@@ -5335,8 +5433,8 @@ describe('app api schemas', () => {
       {
         id: 'workspace-review:swr_demo',
         kind: 'workspace_review',
-        workspaceId: 'ws_demo',
-        artifactId: 'artifact_workspace_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        artifactId: 'ar_00000000-0000-7a1b-992d-86a6a4ca1a23',
         title: 'Review workspace changes',
         summary: '1 changed path staged for human review.',
         severity: 'needs_input',
@@ -5345,8 +5443,8 @@ describe('app api schemas', () => {
           type: 'workspace_review',
           reviewId: 'swr_demo',
           changeSetId: 'wcs_demo',
-          artifactId: 'artifact_workspace_demo',
-          workspaceId: 'ws_demo',
+          artifactId: 'ar_00000000-0000-7a1b-992d-86a6a4ca1a23',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           status: 'pending',
         },
         actions: [
@@ -5359,7 +5457,7 @@ describe('app api schemas', () => {
       {
         id: 'knowledge:knowledge_proposal_demo',
         kind: 'knowledge_review',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         title: 'Review knowledge proposal',
         summary: 'A knowledge proposal is waiting for review.',
         severity: 'needs_input',
@@ -5367,7 +5465,7 @@ describe('app api schemas', () => {
         source: {
           type: 'knowledge',
           knowledgeProposalId: 'knowledge_proposal_demo',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           status: 'pending',
         },
         actions: [
@@ -5378,7 +5476,7 @@ describe('app api schemas', () => {
       {
         id: 'external:side_effect_demo',
         kind: 'external_side_effect',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         title: 'External side effect needs review',
         summary: 'A side effect requires explicit human action.',
         severity: 'risk',
@@ -5386,19 +5484,19 @@ describe('app api schemas', () => {
         source: {
           type: 'protocol_item',
           itemType: 'approval-request',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
-          itemId: 'it_side_effect',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+          itemId: 'it_00000000-0000-700c-9754-b8c00fd380a8',
         },
         actions: [{ kind: 'open_turn', label: 'Open turn', method: 'GET' }],
       },
       {
         id: 'scheduler-admission:queue_demo',
         kind: 'pending_input',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         title: 'Worker turn is queued',
         summary: 'The worker turn is waiting for scheduler capacity.',
         severity: 'info',
@@ -5407,9 +5505,9 @@ describe('app api schemas', () => {
           type: 'scheduler_admission',
           queueEntryId: 'queue_demo',
           status: 'queued',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
           requestedAgentId: 'agent_codex_host',
         },
         actions: [{ kind: 'open_thread', label: 'Open thread', method: 'GET' }],
@@ -5417,9 +5515,9 @@ describe('app api schemas', () => {
       {
         id: 'worker-control-rejection:wcr_demo',
         kind: 'blocked_turn',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         title: 'Worker control evidence was rejected',
         summary: 'A worker control request failed lineage validation.',
         severity: 'risk',
@@ -5427,9 +5525,9 @@ describe('app api schemas', () => {
         source: {
           type: 'worker_control_rejection',
           rejectionId: 'wcr_demo',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
           packageSnapshotId: 'pkg_demo',
           route: '/api/worker-control/events/append',
           operation: 'event_append',
@@ -5439,24 +5537,24 @@ describe('app api schemas', () => {
         actions: [{ kind: 'open_thread', label: 'Open thread', method: 'GET' }],
       },
       {
-        id: 'execution-attempt:attempt_demo',
+        id: 'execution-attempt:attempt_00000000-0000-791f-9772-e5a5525d4f6a',
         kind: 'blocked_turn',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: 'turn_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         title: 'Worker session needs recovery review',
         summary: 'An unresolved execution attempt retains its exclusion.',
         severity: 'risk',
         createdAt: timestamp,
         source: {
           type: 'execution_attempt',
-          attemptId: 'attempt_demo',
+          attemptId: 'attempt_00000000-0000-791f-9772-e5a5525d4f6a',
           backendId: 'nanohost',
           phase: 'closing',
           disposition: 'unknown',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         },
         actions: [{ kind: 'open_thread', label: 'Open thread', method: 'GET' }],
       },
@@ -5470,10 +5568,10 @@ describe('app api schemas', () => {
       ListHumanAttentionResponseSchema.safeParse({
         items: [
           {
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: 'turn_demo',
-            itemId: 'it_approval',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+            itemId: 'it_00000000-0000-7069-8bdd-c3aee83f1f35',
             threadTitle: 'Old row',
             createdAt: timestamp,
             approval: {},
@@ -5488,7 +5586,7 @@ describe('app api schemas', () => {
           {
             id: 'invalid:action',
             kind: 'approval',
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             title: 'Invalid action',
             summary: 'The action kind is not part of the public contract.',
             severity: 'needs_input',
@@ -5496,9 +5594,9 @@ describe('app api schemas', () => {
             source: {
               type: 'approval',
               approvalRequestId: 'ap_demo',
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
-              turnId: 'turn_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
             },
             actions: [{ kind: 'archive_everything', label: 'Archive' }],
           },
@@ -5524,12 +5622,12 @@ describe('app api schemas', () => {
 
     const response = {
       review: {
-        reviewId: 'kr_demo',
+        reviewId: 'kr_00000000-0000-7612-9103-c189935bbc75',
         proposalId: 'kp_demo',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         requestId: requestIds.accepted,
         decision: 'accepted' as const,
-        actor: { kind: 'user' as const, id: 'user_demo' },
+        actor: { kind: 'user' as const, id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
         proposalDigest: knowledgeProposalDigest,
         knowledgePageId,
         contentDigest: knowledgeContentDigest,
@@ -5587,7 +5685,7 @@ describe('app api schemas', () => {
   it('accepts only bounded knowledge proposal reversal projections', () => {
     const request = {
       requestId: '00000000-0000-4000-8000-000000000618',
-      reviewId: 'kr_demo',
+      reviewId: 'kr_00000000-0000-7612-9103-c189935bbc75',
       knowledgePageId,
       expectedContentDigest: knowledgeContentDigest,
     };
@@ -5627,7 +5725,7 @@ describe('app api schemas', () => {
 describe('WP5 Workspace sharing schemas', () => {
   const requestId = '00000000-0000-4000-8000-000000000001';
   const workspace = {
-    id: 'ws_demo',
+    id: 'ws_00000000-0000-7000-8000-000000000001',
     name: 'Demo Workspace',
     kind: 'general',
     status: 'active',
@@ -5639,14 +5737,14 @@ describe('WP5 Workspace sharing schemas', () => {
     membershipStatus: 'active',
     accessCause: 'membership',
     workspace,
-    ownerUserId: 'user_owner',
+    ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
     effectiveRole: 'owner',
     registryRevision: 4,
     membershipRevision: 2,
   } as const;
   const activeOwner = {
     workspaceId: workspace.id,
-    userId: 'user_owner',
+    userId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
     status: 'active',
     accessLevel: 'editor',
     effectiveRole: 'owner',
@@ -5658,11 +5756,11 @@ describe('WP5 Workspace sharing schemas', () => {
     updatedAt: timestamp,
   } as const;
   const pendingInvitation = {
-    invitationId: 'invite_demo',
+    invitationId: 'inv_00000000-0000-745d-88a0-12495fca5f0d',
     workspaceId: workspace.id,
-    inviteeUserId: 'user_invitee',
+    inviteeUserId: 'usr_00000000-0000-7a9e-8345-2bce44a3dce0',
     proposedAccessLevel: 'viewer',
-    inviterUserId: 'user_owner',
+    inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
     effectiveStatus: 'pending',
     expiresAt: timestamp,
     acceptedAt: null,
@@ -5674,7 +5772,7 @@ describe('WP5 Workspace sharing schemas', () => {
   } as const;
   const accessRecovery = {
     workspaceId: workspace.id,
-    ownerUserId: 'user_owner',
+    ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
     administratorRole: null,
     registryRevision: 4,
   } as const;
@@ -5707,11 +5805,11 @@ describe('WP5 Workspace sharing schemas', () => {
       appApiSchemas.WorkspaceInvitationMutationResponseSchema.parse({
         invitation: pendingInvitation,
       }).invitation.invitationId
-    ).toBe('invite_demo');
+    ).toBe('inv_00000000-0000-745d-88a0-12495fca5f0d');
     expect(
       appApiSchemas.WorkspaceMemberMutationResponseSchema.parse({ member: activeOwner }).member
         .userId
-    ).toBe('user_owner');
+    ).toBe('usr_00000000-0000-7011-88df-c2b1e8466b6f');
     expect(
       appApiSchemas.WorkspaceOwnershipMutationResponseSchema.parse({
         workspace: authorizedWorkspace,
@@ -5733,7 +5831,7 @@ describe('WP5 Workspace sharing schemas', () => {
 
   it('keeps user disable and invitee discovery projections strict and minimal', () => {
     const disabledUser = {
-      userId: 'user_disabled',
+      userId: 'usr_00000000-0000-7e63-b85a-c188de8ee1c3',
       status: 'disabled',
       disabledAt: timestamp,
     } as const;
@@ -5760,11 +5858,11 @@ describe('WP5 Workspace sharing schemas', () => {
       appApiSchemas.ListWorkspaceInvitationsResponseSchema.parse({
         items: [pendingInvitation],
       }).items[0]?.inviteeUserId
-    ).toBe('user_invitee');
+    ).toBe('usr_00000000-0000-7a9e-8345-2bce44a3dce0');
     expect(
       appApiSchemas.ListWorkspaceInvitationsResponseSchema.safeParse({
         items: [pendingInvitation],
-        userId: 'user_invitee',
+        userId: 'usr_00000000-0000-7a9e-8345-2bce44a3dce0',
       }).success
     ).toBe(false);
   });
@@ -5800,7 +5898,7 @@ describe('WP5 Workspace sharing schemas', () => {
     expect(
       appApiSchemas.TransferWorkspaceOwnershipRequestSchema.safeParse({
         requestId,
-        targetUserId: 'user_next_owner',
+        targetUserId: 'usr_00000000-0000-78d4-ac7e-58c6c985f80a',
         expectedRegistryRevision: 4,
       }).success
     ).toBe(true);
@@ -5819,19 +5917,19 @@ describe('WP5 Workspace sharing schemas', () => {
     const deletedWorkspaceRecovery = {
       sourceWorkspaceId: workspace.id,
       deletionRequestId: '00000000-0000-4000-8000-000000000002',
-      recoveryExportId: 'wsexp_recovery',
+      recoveryExportId: 'wsexp_00000000-0000-7b20-a16c-5e4b4bdc5e50',
       closureId: 'closure_recovery',
       import: {
         mode: 'imported',
         requestId,
-        exportId: 'wsexp_recovery',
+        exportId: 'wsexp_00000000-0000-7b20-a16c-5e4b4bdc5e50',
         sourceWorkspaceId: workspace.id,
         exportedWorkspaceId: workspace.id,
-        importedWorkspaceId: 'ws_recovered',
+        importedWorkspaceId: 'ws_00000000-0000-7070-8f2f-a7b85ec0a443',
         manifest: {
           schemaVersion: 1,
           recordType: 'workspace-export',
-          id: 'wsexp_recovery',
+          id: 'wsexp_00000000-0000-7b20-a16c-5e4b4bdc5e50',
           ownerScope: 'workspace',
           lineage: { workspaceId: workspace.id },
           createdAt: timestamp,
@@ -5841,15 +5939,15 @@ describe('WP5 Workspace sharing schemas', () => {
           sensitivity: 'internal',
           requiredFeatures: [],
           extensions: {},
-          sourceDeploymentId: 'dep_local',
+          sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
           workspaceId: workspace.id,
           exportCreatedAt: timestamp,
-          exportFormatVersion: 2,
+          exportFormatVersion: 3,
           contentInventory: [],
         },
         workspace: {
           ...workspace,
-          id: 'ws_recovered',
+          id: 'ws_00000000-0000-7070-8f2f-a7b85ec0a443',
           name: 'Recovered Workspace',
           counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
         },
@@ -5857,7 +5955,7 @@ describe('WP5 Workspace sharing schemas', () => {
         collision: {
           status: 'collides',
           workspaceId: workspace.id,
-          suggestedWorkspaceId: 'ws_recovered',
+          suggestedWorkspaceId: 'ws_00000000-0000-7070-8f2f-a7b85ec0a443',
         },
       },
     } as const;
@@ -5891,7 +5989,7 @@ describe('WP5 Workspace sharing schemas', () => {
       appApiSchemas.RecoverDeletedWorkspaceResponseSchema.parse({
         recovery: deletedWorkspaceRecovery,
       }).recovery.import.importedWorkspaceId
-    ).toBe('ws_recovered');
+    ).toBe('ws_00000000-0000-7070-8f2f-a7b85ec0a443');
     for (const invalidDeletion of [
       { ...workspaceDeletion, path: '/private/workspace' },
       { ...workspaceDeletion, status: 'deleted' },
@@ -5902,8 +6000,11 @@ describe('WP5 Workspace sharing schemas', () => {
       );
     }
     for (const invalidRecovery of [
-      { ...deletedWorkspaceRecovery, sourceWorkspaceId: 'ws_other' },
-      { ...deletedWorkspaceRecovery, recoveryExportId: 'wsexp_other' },
+      { ...deletedWorkspaceRecovery, sourceWorkspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580' },
+      {
+        ...deletedWorkspaceRecovery,
+        recoveryExportId: 'wsexp_00000000-0000-727e-90ff-47fb691fffd7',
+      },
       {
         ...deletedWorkspaceRecovery,
         import: {
@@ -5967,7 +6068,7 @@ describe('WP5 Workspace sharing schemas', () => {
       expect(
         appApiSchemas.WorkspaceMemberSchema.safeParse({
           ...activeOwner,
-          userId: 'user_member',
+          userId: 'usr_00000000-0000-7d56-82f8-ec994b63859b',
           ...mismatch,
         }).success
       ).toBe(false);

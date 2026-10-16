@@ -15,6 +15,7 @@ import {
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import {
   createNanoHostHarnessRuntime,
   openNanoHostAgentSessionBinding,
@@ -273,8 +274,8 @@ describe('authoritative NanoHost session dispatch', () => {
       const liveInput = {
         purpose: 'artifact-submission',
         submissionRequestId: 'submission-1',
-        turnId: 'turn-1',
-        agentSessionId: 'session-1',
+        turnId: testEntityId('tu', 'turn-1'),
+        agentSessionId: testEntityId('as', 'session-1'),
         packageSnapshotId: 'package-1',
         leaseId: 'lease-1',
         backendSessionId: 'backend-1',
@@ -572,7 +573,7 @@ describe('authoritative NanoHost session dispatch', () => {
         kind: 'workspace.collect' as never,
         requestId,
         input: {
-          storageRef: 'wst_collection',
+          storageRef: 'wst_00000000-0000-75b8-8427-7b4778a52c54',
           scopeDigest: `sha256:${'b'.repeat(64)}`,
           attachmentGeneration: 1,
           sandboxId: 'sandbox-collection',
@@ -594,7 +595,7 @@ describe('authoritative NanoHost session dispatch', () => {
       ).toBe(204);
       expect(await settled).toEqual({ outcome: 'baseline', head });
       const captureInput = {
-        storageRef: 'wst_collection',
+        storageRef: 'wst_00000000-0000-75b8-8427-7b4778a52c54',
         scopeDigest: `sha256:${'b'.repeat(64)}`,
         attachmentGeneration: 1,
         sandboxId: 'sandbox-collection',
@@ -999,13 +1000,13 @@ describe('authoritative NanoHost session dispatch', () => {
       if (state !== 'draining')
         openNanoHostAgentSessionBinding(coreDb, {
           agentSessionCompatibilityKey: 'c'.repeat(64),
-          agentSessionId: 'agent-session-ack',
+          agentSessionId: testEntityId('as', 'agent-session-ack'),
           agentSessionRuntimeBindingId: 'agent-session-binding-ack',
           effectiveSetupGeneration: 1,
           harnessInstanceId: 'harness-ack',
-          threadId: 'thread-ack',
+          threadId: testEntityId('th', 'thread-ack'),
           timestamp: '2098-08-21T00:00:00.000Z',
-          workspaceId: 'workspace-ack',
+          workspaceId: testEntityId('ws', 'workspace-ack'),
         });
       queueNanoHostHarnessOperation(coreDb, {
         body:
@@ -1013,17 +1014,17 @@ describe('authoritative NanoHost session dispatch', () => {
             ? {
                 adapterId: 'codex',
                 agentSessionCompatibilityKey: 'c'.repeat(64),
-                agentSessionId: 'agent-session-ack',
+                agentSessionId: testEntityId('as', 'agent-session-ack'),
                 agentSessionRuntimeBindingId: 'agent-session-binding-ack',
                 effectiveSetupGeneration: 1,
                 resume: null,
-                threadId: 'thread-ack',
-                workspaceId: 'workspace-ack',
+                threadId: testEntityId('th', 'thread-ack'),
+                workspaceId: testEntityId('ws', 'workspace-ack'),
               }
             : state === 'draining'
               ? {}
               : {
-                  agentSessionId: 'agent-session-ack',
+                  agentSessionId: testEntityId('as', 'agent-session-ack'),
                   agentSessionRuntimeBindingId: 'agent-session-binding-ack',
                 },
         harnessInstanceId: 'harness-ack',
@@ -1276,7 +1277,7 @@ describe('authoritative NanoHost session dispatch', () => {
       ).rejects.toThrow(/physical Epoch changed/i);
       const requestId = 'e'.repeat(64);
       const imageSettlement = {
-        authoredArtifactId: 'artifact_settlement',
+        authoredArtifactId: testEntityId('ar', 'artifact_settlement'),
         authoredArtifactVersion: 1,
         authoredContentDigest: `sha256:${'a'.repeat(64)}`,
         inputDigest: `sha256:${'b'.repeat(64)}`,
@@ -1708,12 +1709,18 @@ describe('authoritative NanoHost session dispatch', () => {
           requestId: '1'.repeat(64),
         },
         {
-          input: { attachmentGeneration: 1, storageRef: 'wst_inspect' },
+          input: {
+            attachmentGeneration: 1,
+            storageRef: 'wst_00000000-0000-7961-a0ab-d2116f02fc2d',
+          },
           kind: 'storage.inspect' as const,
           requestId: '2'.repeat(64),
         },
         {
-          input: { attachmentGeneration: 1, storageRef: 'wst_purge' },
+          input: {
+            attachmentGeneration: 1,
+            storageRef: 'wst_00000000-0000-7408-95ec-23aa22e91333',
+          },
           kind: 'storage.purge' as const,
           requestId: '3'.repeat(64),
         },

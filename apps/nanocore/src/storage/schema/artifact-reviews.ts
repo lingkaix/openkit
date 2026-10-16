@@ -62,9 +62,10 @@ export const artifactReviews = sqliteTable(
   (table) => [
     primaryKey({ columns: [table.workspaceId, table.artifactId, table.artifactVersion] }),
     uniqueIndex('artifact_reviews_identity_idx').on(table.workspaceId, table.reviewId),
+    // SQLite projects the shared arev grammar; the Review owner also verifies the complete derivation.
     check(
       'artifact_reviews_review_id_check',
-      sql`length(${table.reviewId}) = 29 AND substr(${table.reviewId}, 1, 5) = 'arev_' AND substr(${table.reviewId}, 6) NOT GLOB '*[^0-9a-f]*'`
+      sql`length(${table.reviewId}) = 41 AND ${table.reviewId} GLOB 'arev_[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[57][0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'`
     ),
     check(
       'artifact_reviews_version_check',

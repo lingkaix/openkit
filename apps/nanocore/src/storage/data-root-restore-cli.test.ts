@@ -49,8 +49,8 @@ describe('data-root restore operator cli', () => {
     writeFileSync(join(dataRoot, 'stale.txt'), 'stale\n');
     writeColdDataRootBackupManifest({
       backupRoot,
-      backupId: 'drbak_cli',
-      sourceDeploymentId: 'dep_local',
+      backupId: 'drb_0190f4c8-0000-7000-8000-000000000001',
+      sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
       startedAt: timestamp,
       completedAt: timestamp,
     });
@@ -61,7 +61,7 @@ describe('data-root restore operator cli', () => {
     );
 
     expect(summary).toEqual({
-      backupId: 'drbak_cli',
+      backupId: 'drb_0190f4c8-0000-7000-8000-000000000001',
       backupMode: 'cold',
       checkedFiles: ['server/layout.json'],
       consistency: 'clean',
@@ -86,8 +86,8 @@ describe('data-root restore operator cli', () => {
     writeFileSync(join(backupRoot, 'server', 'layout.json'), '{"layoutVersion":1}\n');
     writeColdDataRootBackupManifest({
       backupRoot,
-      backupId: 'drbak_cli_child',
-      sourceDeploymentId: 'dep_local',
+      backupId: 'drb_0190f4c8-0000-7000-8000-000000000002',
+      sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
       startedAt: timestamp,
       completedAt: timestamp,
     });
@@ -99,7 +99,7 @@ describe('data-root restore operator cli', () => {
       (line) => stdout.push(line)
     );
 
-    expect(summary.backupId).toBe('drbak_cli_child');
+    expect(summary.backupId).toBe('drb_0190f4c8-0000-7000-8000-000000000002');
     expect(summary.restored).toBe(true);
     expect(existsSync(join(dataRoot, 'server', 'layout.json'))).toBe(true);
     expect(existsSync(`${dataRoot}.restore-staging`)).toBe(false);

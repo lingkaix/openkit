@@ -10,9 +10,9 @@ import {
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
+import { deriveEntityId } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import {
   listWorkspaceCapabilityCalls,
   listWorkspaceUsageRecords,
@@ -80,12 +80,14 @@ import { artifactReferenceItemId } from './storage/workspace-file-records.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp, createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
-const STORAGE_REF = `wst_${'1'.repeat(32)}`;
+const STORAGE_REF = 'wst_00000000-0000-7ac8-9f6c-13552db6aa87';
 const SELECTED_CHOICE = {
   expectedRevision: 7,
   kind: 'selected' as const,
@@ -289,14 +291,15 @@ class CompletingTurnExecutor extends SimulatedTurnExecutor {
       throw new Error('Conversation worker turn requires a selected agent id.');
     }
     const completedAt = turn.startedAt ?? new Date().toISOString();
-    const agentSessionId = context.agentSessionId ?? `session_${turnId}`;
+    const agentSessionId = context.agentSessionId;
+    if (!agentSessionId) throw new Error('The modeled Worker requires its recorded AgentSession.');
     const agentSession = store.updateAgentSession(agentSessionId, {
       status: 'idle',
       message: null,
       updatedAt: completedAt,
     });
     store.createItem({
-      id: `it_assistant_${turnId}`,
+      id: testEntityId('it', `it_assistant_${turnId}`),
       workspaceId: turn.workspaceId,
       threadId: turn.threadId,
       turnId,
@@ -402,7 +405,7 @@ class HoldingTurnExecutor extends CompletingTurnExecutor {
       const turn = store.getTurnById(turnId);
       const at = turn.startedAt ?? new Date().toISOString();
       store.createItem({
-        id: `it_user_${turnId}`,
+        id: deriveEntityId('it', ['task-user', turnId]),
         workspaceId: turn.workspaceId,
         threadId: turn.threadId,
         turnId,
@@ -477,7 +480,7 @@ function createImportedMarkdownArtifact(
   const contentDigest = artifactDigest(input.body);
   return store.createArtifact({
     id: input.id,
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     threadId: null,
     turnId: null,
     kind: 'file',
@@ -493,7 +496,7 @@ function createImportedMarkdownArtifact(
       sourceKind: 'direct-import',
       sourceId: input.requestId,
       sourceDigest: contentDigest,
-      actor: { kind: 'user', id: 'user_local' },
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       requestId: input.requestId,
       recordedAt: timestamp,
     },
@@ -588,12 +591,19 @@ describe('Assistant pending input', () => {
       agentManifests: [setup.manifest],
       turnExecutor: executor,
     });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     try {
       const initial = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -618,8 +628,8 @@ describe('Assistant pending input', () => {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               userInputRequestId: requestId,
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               requestId: '00000000-0000-4000-8000-000000000882',
               answers: {
                 chat_clarification: [
@@ -635,7 +645,7 @@ describe('Assistant pending input', () => {
       await vi.waitFor(() =>
         expect(
           listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             statuses: ['queued', 'admitted'],
           })
         ).toHaveLength(1)
@@ -663,7 +673,7 @@ describe('Assistant pending input', () => {
       expect(response.status, await response.clone().text()).toBe(200);
       await executor.launched.promise;
       const lease = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         statuses: ['admitted'],
       })[0]!;
       const currentAttempt = observeExecutionAttempts(coreDb).find(
@@ -683,20 +693,28 @@ describe('Assistant pending input', () => {
         let i = 0;
         i < 1000 &&
         !store
-          .listThreadItems('ws_demo', 'th_demo')
+          .listThreadItems(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
           .some((item) => item.type === 'status' && item.title === 'Task Mode handoff');
         i++
       )
         await setImmediate();
       const handoff = store
-        .listThreadItems('ws_demo', 'th_demo')
+        .listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
         .find((item) => item.type === 'status' && item.title === 'Task Mode handoff');
       expect(handoff).toBeDefined();
       expect(handoff!.turnId).not.toBe(first.turn.id);
-      const tasks = store.listThreads('ws_demo').filter((thread) => thread.id !== 'th_demo');
+      const tasks = store
+        .listThreads('ws_00000000-0000-7000-8000-000000000001')
+        .filter((thread) => thread.id !== 'th_00000000-0000-7000-8000-000000000001');
       const task = tasks.find((thread) =>
         store
-          .listThreadTurns('ws_demo', thread.id)
+          .listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id)
           .some((turn) => turn.agentId === setup.manifest.id)
       );
       expect(task).toMatchObject({ visibility: 'workspace' });
@@ -732,8 +750,12 @@ describe('conversation.submit worker storage choice', () => {
       store,
       turnExecutor: executor,
     });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-    const threadsBefore = store.listThreads('ws_demo');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
+    const threadsBefore = store.listThreads('ws_00000000-0000-7000-8000-000000000001');
     const createThread = vi.spyOn(store, 'createThread');
     const createTurn = vi.spyOn(store, 'createTurn');
     let accepted: ReturnType<typeof SubmitConversationResponseSchema.parse> | undefined;
@@ -741,7 +763,10 @@ describe('conversation.submit worker storage choice', () => {
       app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             body: conversationBody({ input, requestId, targetRef: 'new-task-worker' }),
             headers: { 'content-type': 'application/json' },
@@ -759,14 +784,16 @@ describe('conversation.submit worker storage choice', () => {
       });
       expect(createThread).not.toHaveBeenCalled();
       expect(createTurn).not.toHaveBeenCalled();
-      expect(store.listThreads('ws_demo')).toEqual(threadsBefore);
+      expect(store.listThreads('ws_00000000-0000-7000-8000-000000000001')).toEqual(threadsBefore);
       for (const thread of threadsBefore) {
-        expect(store.listThreadTurns('ws_demo', thread.id)).toEqual([]);
+        expect(store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id)).toEqual(
+          []
+        );
       }
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
           statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).toEqual([]);
       expect(executor.startContexts).toEqual([]);
@@ -778,7 +805,7 @@ describe('conversation.submit worker storage choice', () => {
       await waitForSelectedWorkerLoopCloseout({
         coreDb,
         dataRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: accepted.turn.threadId,
         turnId: accepted.turn.id,
       });
@@ -794,7 +821,7 @@ describe('conversation.submit worker storage choice', () => {
         await waitForSelectedWorkerLoopCloseout({
           coreDb,
           dataRoot,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: accepted.turn.threadId,
           turnId: accepted.turn.id,
         });
@@ -808,11 +835,11 @@ describe('conversation.submit worker storage choice', () => {
   it('rejects a supplied choice on an inapplicable target before effects', async () => {
     const store = createDemoStore();
     const workerSetup = createTestAgentSetup();
-    const thread = store.createThread('ws_demo', 'Running worker');
+    const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Running worker');
     store.createAgentSession({
-      id: 'as_ready',
+      id: 'as_00000000-0000-713e-88a7-b182503728ab',
       agentId: workerSetup.manifest.id,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       status: 'ready',
       message: null,
@@ -829,7 +856,10 @@ describe('conversation.submit worker storage choice', () => {
     const assistantRes = await app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           body: conversationBody({
             input: 'Answer from Assistant.',
@@ -846,13 +876,18 @@ describe('conversation.submit worker storage choice', () => {
     await expect(assistantRes.json()).resolves.toMatchObject({
       code: 'worker_storage_choice_not_applicable',
     });
-    expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
+    expect(
+      store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toEqual([]);
     expect(store.listCommandRequests()).toEqual([]);
 
     const runningRes = await app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: thread.id },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: thread.id },
         {
           body: conversationBody({
             input: 'Continue this Worker.',
@@ -869,7 +904,7 @@ describe('conversation.submit worker storage choice', () => {
     await expect(runningRes.json()).resolves.toMatchObject({
       code: 'worker_storage_choice_not_applicable',
     });
-    expect(store.listThreadTurns('ws_demo', thread.id)).toEqual([]);
+    expect(store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id)).toEqual([]);
   });
 
   it('forwards the exact choice on new-task-worker and conflicts when the choice changes', async () => {
@@ -889,8 +924,8 @@ describe('conversation.submit worker storage choice', () => {
     });
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const requestId = '0190f4c8-0000-7000-8000-000000000401';
     const input = 'Implement the focused Task Mode fix.';
@@ -905,7 +940,10 @@ describe('conversation.submit worker storage choice', () => {
       const response = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             body,
             headers: { 'content-type': 'application/json' },
@@ -921,14 +959,17 @@ describe('conversation.submit worker storage choice', () => {
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
           statuses: ['admitted'],
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).toEqual([expect.objectContaining({ workerStorageChoice: admittedChoice })]);
 
       const replay = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             body,
             headers: { 'content-type': 'application/json' },
@@ -942,7 +983,7 @@ describe('conversation.submit worker storage choice', () => {
           ...accepted,
           turn: store.getTurnById(accepted.turn.id),
           item: store
-            .listThreadItems('ws_demo', accepted.turn.threadId)
+            .listThreadItems('ws_00000000-0000-7000-8000-000000000001', accepted.turn.threadId)
             .find((item) => item.id === accepted.item.id),
         })
       );
@@ -951,7 +992,10 @@ describe('conversation.submit worker storage choice', () => {
       const conflict = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             body: conversationBody({
               input,
@@ -995,12 +1039,12 @@ describe('conversation.submit worker acceptance wait', () => {
     });
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const requestId = '0190f4c8-0000-7000-8000-000000000501';
     const artifact = createImportedMarkdownArtifact(store, {
-      id: 'ar_submit_context',
+      id: 'ar_00000000-0000-7659-a019-91948394f91d',
       title: 'Task context',
       body: 'Read this material.',
       requestId,
@@ -1010,7 +1054,10 @@ describe('conversation.submit worker acceptance wait', () => {
     const pending = app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           body: conversationBody({
             artifactRefs,
@@ -1029,12 +1076,14 @@ describe('conversation.submit worker acceptance wait', () => {
     try {
       await executor.launched.promise;
       const receivingThreads = store
-        .listThreads('ws_demo')
-        .filter((thread) => thread.id.startsWith('th_task_'));
+        .listThreads('ws_00000000-0000-7000-8000-000000000001')
+        .filter((thread) => thread.parentThreadId === 'th_00000000-0000-7000-8000-000000000001');
       expect(receivingThreads).toHaveLength(1);
       const receiving = receivingThreads[0]!;
       receivingId = receiving.id;
-      const workerTurn = store.listThreadTurns('ws_demo', receiving.id).at(-1);
+      const workerTurn = store
+        .listThreadTurns('ws_00000000-0000-7000-8000-000000000001', receiving.id)
+        .at(-1);
       workerTurnId = workerTurn?.id;
       expect(workerTurn?.status).toBe('running');
 
@@ -1054,7 +1103,7 @@ describe('conversation.submit worker acceptance wait', () => {
         (attempt) =>
           attempt.turn_id ===
           {
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             threadId: workerTurn!.threadId,
             turnId: workerTurn!.id,
           }.turnId
@@ -1083,9 +1132,9 @@ describe('conversation.submit worker acceptance wait', () => {
       });
       expect(
         store.getCommandRequest('conversation.submit', requestId, {
-          actorId: 'user_local',
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
+          actorId: 'usr_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).toMatchObject({
         command: 'conversation.submit',
@@ -1102,7 +1151,10 @@ describe('conversation.submit worker acceptance wait', () => {
       const replay = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             body: conversationBody({
               artifactRefs,
@@ -1121,18 +1173,23 @@ describe('conversation.submit worker acceptance wait', () => {
           ...accepted,
           turn: store.getTurnById(accepted.turn.id),
           item: store
-            .listThreadItems('ws_demo', accepted.turn.threadId)
+            .listThreadItems('ws_00000000-0000-7000-8000-000000000001', accepted.turn.threadId)
             .find((item) => item.id === accepted.item.id),
         })
       );
       expect(
-        store.listWorkspaceItemRevisions('ws_demo').filter((item) => item.id === accepted.item.id)
+        store
+          .listWorkspaceItemRevisions('ws_00000000-0000-7000-8000-000000000001')
+          .filter((item) => item.id === accepted.item.id)
       ).toHaveLength(1);
       store.updateItem(accepted.item.id, { title: 'Worker Turn failed' });
       const contradictedReplay = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             body: conversationBody({
               artifactRefs,
@@ -1154,7 +1211,10 @@ describe('conversation.submit worker acceptance wait', () => {
         app.request(
           ...operationRequest(
             'conversation.submit',
-            { workspaceId: 'ws_demo', threadId: 'th_demo' },
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+            },
             {
               body: conversationBody({
                 artifactRefs,
@@ -1167,10 +1227,10 @@ describe('conversation.submit worker acceptance wait', () => {
             }
           )
         );
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       const checkpoint = getWorkerCheckpoint(
         workspaceDb,
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         receiving.id,
         accepted.turn.id
       )!;
@@ -1201,7 +1261,7 @@ describe('conversation.submit worker acceptance wait', () => {
           dataRoot,
           threadId: receivingId,
           turnId: workerTurnId,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         });
       }
       try {
@@ -1221,7 +1281,11 @@ describe('conversation.submit worker acceptance wait', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    });
     const setup = createTestAgentSetup({
       requiredCapabilities: ['trusted-worker-inference-relay'],
     });
@@ -1261,7 +1325,10 @@ describe('conversation.submit worker acceptance wait', () => {
       app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -1293,7 +1360,12 @@ describe('conversation.submit worker acceptance wait', () => {
         });
       expect(observeExecutionAttempts(coreDb)).toEqual(before);
       expect(effect).toHaveBeenCalledOnce();
-      expect(store.listThreadAgentSessions('ws_demo', original.turn.threadId)).toHaveLength(1);
+      expect(
+        store.listThreadAgentSessions(
+          'ws_00000000-0000-7000-8000-000000000001',
+          original.turn.threadId
+        )
+      ).toHaveLength(1);
     } finally {
       coreDb.sqlite.close();
     }
@@ -1317,10 +1389,14 @@ describe('conversation.submit worker acceptance wait', () => {
       turnExecutor: executor,
       openKitConfig: { defaults: { defaultAgentId: workerSetup.manifest.id } },
     });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const requestId = '0190f4c8-0000-7000-8000-000000000502';
     const artifact = createImportedMarkdownArtifact(store, {
-      id: 'ar_submit_failure_context',
+      id: 'ar_00000000-0000-74d6-92c6-39a9c2b53457',
       title: 'Task context',
       body: 'Keep this context.',
       requestId,
@@ -1335,7 +1411,10 @@ describe('conversation.submit worker acceptance wait', () => {
       app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             body,
             headers: { 'content-type': 'application/json' },
@@ -1373,7 +1452,7 @@ describe('conversation.submit worker acceptance wait', () => {
         checkpointOutcome: 'preserved',
         coreDb,
         dataRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: accepted.turn.threadId,
         turnId,
       });
@@ -1389,15 +1468,20 @@ describe('conversation.submit worker acceptance wait', () => {
       const current = store.getTurnById(turnId);
       expect(current.status).toBe('failed');
       expect(current.items).toContainEqual(expect.objectContaining(reference));
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
-        expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', current.threadId, turnId)).toMatchObject(
-          {
-            stage: 'running_worker',
-            stopReason: null,
-            requestId,
-          }
-        );
+        expect(
+          getWorkerCheckpoint(
+            workspaceDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            current.threadId,
+            turnId
+          )
+        ).toMatchObject({
+          stage: 'running_worker',
+          stopReason: null,
+          requestId,
+        });
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -1406,7 +1490,7 @@ describe('conversation.submit worker acceptance wait', () => {
           (attempt) =>
             attempt.turn_id ===
             {
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               threadId: current.threadId,
               turnId,
             }.turnId
@@ -1415,7 +1499,9 @@ describe('conversation.submit worker acceptance wait', () => {
       const replay = await submit();
       expect(replay.status).toBe(409);
       await expect(replay.json()).resolves.toMatchObject({ code: 'recovery_required' });
-      expect(store.listThreadTurns('ws_demo', current.threadId)).toHaveLength(1);
+      expect(
+        store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', current.threadId)
+      ).toHaveLength(1);
     } finally {
       executor.completion.resolve();
       await pending.catch(() => undefined);
@@ -1425,7 +1511,7 @@ describe('conversation.submit worker acceptance wait', () => {
             checkpointOutcome: 'preserved',
             coreDb,
             dataRoot,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             threadId: accepted.turn.threadId,
             turnId: accepted.turn.id,
           });
@@ -1482,8 +1568,11 @@ describe('mode command failure diagnostics', () => {
           openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
           workspaceConfigs: [
             {
-              workspaceId: 'ws_demo',
-              path: join(dataRoot, 'workspaces/ws_demo/config/workspace.jsonc'),
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              path: join(
+                dataRoot,
+                'workspaces/ws_00000000-0000-7000-8000-000000000001/config/workspace.jsonc'
+              ),
               config: {
                 schemaVersion: 1,
                 workspace: { name: 'Demo Workspace', defaultAgentId: setup.manifest.id },
@@ -1493,11 +1582,18 @@ describe('mode command failure diagnostics', () => {
         }),
       }),
     });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const thread =
       mode === 'conversation'
-        ? store.getThread('ws_demo', 'th_demo')
-        : store.createThread('ws_demo', 'Task admission');
+        ? store.getThread(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
+        : store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Task admission');
     // The generic App fixture admits synthetic defaults; retain acquisition but remove admission.
     coreDb.sqlite
       .prepare('UPDATE worker_image_settlements SET native_environment_json = NULL')
@@ -1522,7 +1618,7 @@ describe('mode command failure diagnostics', () => {
       const response = await app.request(
         ...operationRequest(
           mode === 'conversation' ? 'conversation.submit' : 'task.start',
-          { workspaceId: 'ws_demo', threadId: thread.id },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: thread.id },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -1576,11 +1672,18 @@ describe('mode command failure diagnostics', () => {
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const thread =
       mode === 'conversation'
-        ? store.getThread('ws_demo', 'th_demo')
-        : store.createThread('ws_demo', 'Task diagnostics');
+        ? store.getThread(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
+        : store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Task diagnostics');
     const diagnostics = vi.spyOn(console, 'error').mockImplementation(() => {});
     // Fail inside command execution, after request authorization has read the Workspace.
     vi.spyOn(store, 'getCommandRequest').mockImplementation(() => {
@@ -1591,7 +1694,7 @@ describe('mode command failure diagnostics', () => {
       const response = await app.request(
         ...operationRequest(
           mode === 'conversation' ? 'conversation.submit' : 'task.start',
-          { workspaceId: 'ws_demo', threadId: thread.id },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: thread.id },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -1666,12 +1769,16 @@ describe('reasoning effort admission and replay', () => {
         turnExecutor: executor,
       });
     const app = makeApp(store);
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const payload =
       entry === 'turn.start'
         ? {
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
             requestId: '00000000-0000-4000-8000-000000000777',
             input: 'Implement the focused correction.',
             agentId: manifest.id,
@@ -1687,7 +1794,10 @@ describe('reasoning effort admission and replay', () => {
       targetApp.request(
         ...operationRequest(
           entry,
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -1709,7 +1819,7 @@ describe('reasoning effort admission and replay', () => {
           dataRoot,
           threadId: turn.threadId,
           turnId: turn.id,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         });
       await vi.waitFor(() =>
         expect(
@@ -1764,7 +1874,7 @@ describe('reasoning effort admission and replay', () => {
           dataRoot,
           threadId: laterTurn.threadId,
           turnId: laterTurn.id,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         });
     } finally {
       coreDb.sqlite.close();
@@ -1778,12 +1888,12 @@ describe('reasoning effort admission and replay', () => {
   ])('rejects unknown effort before %s effects', async (entry) => {
     const store = createDemoStore();
     const app = createApp({ store });
-    const before = store.listThreads('ws_demo').length;
+    const before = store.listThreads('ws_00000000-0000-7000-8000-000000000001').length;
     const input =
       entry === 'turn.start'
         ? {
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
             requestId: '00000000-0000-4000-8000-000000000778',
             input: 'Run',
             reasoningEffort: 'default',
@@ -1797,7 +1907,10 @@ describe('reasoning effort admission and replay', () => {
     const response = await app.request(
       ...operationRequest(
         entry,
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1806,8 +1919,13 @@ describe('reasoning effort admission and replay', () => {
       )
     );
     expect(response.status).toBe(400);
-    expect(store.listThreads('ws_demo')).toHaveLength(before);
-    expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
+    expect(store.listThreads('ws_00000000-0000-7000-8000-000000000001')).toHaveLength(before);
+    expect(
+      store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toEqual([]);
     expect(store.listCommandRequests()).toEqual([]);
   });
 });
@@ -1851,7 +1969,11 @@ it('publishes resolver effort levels, empty controls, and absent controls in the
     openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
   });
   const response = await app.request(
-    ...operationRequest('conversation.targets', { workspaceId: 'ws_demo' }, undefined)
+    ...operationRequest(
+      'conversation.targets',
+      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+      undefined
+    )
   );
   expect(response.status, await response.clone().text()).toBe(200);
   const catalog = await response.json();
@@ -1888,18 +2010,25 @@ describe('Task durable admission response', () => {
       turnExecutor: executor,
       agentManifests: [setup.manifest],
     });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const token = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace-readonly',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
     try {
       const response = await app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             headers: {
@@ -1917,11 +2046,16 @@ describe('Task durable admission response', () => {
       expect(response.status).toBe(403);
       expect(await response.json()).toMatchObject({ code: 'workspace_access_denied' });
       expect(executor.startContexts).toHaveLength(0);
-      expect(store.listThreadTurns('ws_demo', 'th_demo')).toHaveLength(0);
+      expect(
+        store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      ).toHaveLength(0);
       expect(store.listCommandRequests()).toHaveLength(0);
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
         })
       ).toHaveLength(0);
@@ -1995,16 +2129,24 @@ describe('Task durable admission response', () => {
       agentManifests: [setup.manifest],
       openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
     });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const requestId = '0190f4c8-0000-7000-8000-000000000601';
     const command = entry === 'assistant' ? 'conversation.submit' : 'task.start';
-    const scope = { actorId: 'user_local', workspaceId: 'ws_demo', threadId: 'th_demo' };
+    const scope = {
+      actorId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+    };
     const token =
       entry === 'remote-mcp'
         ? createOpenKitAccessTokenRecord(coreDb, {
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             scope: 'workspace',
-            workspaceIds: ['ws_demo'],
+            workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
             expiresAt: '2099-01-01T00:00:00.000Z',
           })
         : null;
@@ -2030,7 +2172,11 @@ describe('Task durable admission response', () => {
               name: 'call',
               arguments: {
                 operation: 'task.start',
-                input: { ...body, workspaceId: 'ws_demo', threadId: 'th_demo' },
+                input: {
+                  ...body,
+                  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                  threadId: 'th_00000000-0000-7000-8000-000000000001',
+                },
               },
             },
           }),
@@ -2038,7 +2184,10 @@ describe('Task durable admission response', () => {
       return app.request(
         ...operationRequest(
           command,
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -2073,7 +2222,7 @@ describe('Task durable admission response', () => {
       const response = await pending;
       expect(response.status, await response.clone().text()).toBe(token ? 200 : 202);
       turnId = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
       })[0]!.turnId;
       let completionObserved = false;
@@ -2147,7 +2296,10 @@ describe('Task durable admission response', () => {
           gatewayConfig: createTestGatewayConfig(),
           maxDispatches: 1,
         });
-        const publicationDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+        const publicationDb = openWorkspaceDb(
+          coreDb.dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001'
+        );
         try {
           console.info(
             'assistant-publication-probe',
@@ -2183,7 +2335,7 @@ describe('Task durable admission response', () => {
         (attempt) =>
           attempt.turn_id ===
           {
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             threadId: store.getTurnById(turnId!).threadId,
             turnId,
           }.turnId
@@ -2217,14 +2369,23 @@ describe('Task durable admission response', () => {
       );
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
         })
       ).toHaveLength(1);
-      expect(store.getTurnById(turnId).items.some((i) => i.id === `it_user_${turnId}`)).toBe(false);
+      expect(
+        store
+          .getTurnById(turnId)
+          .items.some((i) => i.id === deriveEntityId('it', ['task-user', turnId]))
+      ).toBe(false);
       if (entry === 'direct') {
-        const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
-        const checkpoint = getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', turnId)!;
+        const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+        const checkpoint = getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          store.getTurnById(turnId).threadId,
+          turnId
+        )!;
         try {
           for (const [column, original] of [
             ['request_input_hash', checkpoint.requestInputHash],
@@ -2257,7 +2418,11 @@ describe('Task durable admission response', () => {
       const turnRead = await app.request(
         ...operationRequest(
           'turn.read',
-          { workspaceId: 'ws_demo', threadId: 'th_demo', turnId },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: store.getTurnById(turnId).threadId,
+            turnId,
+          },
           { method: 'GET' }
         )
       );
@@ -2266,14 +2431,17 @@ describe('Task durable admission response', () => {
       const itemsRead = await app.request(
         ...operationRequest(
           'thread.items',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: store.getTurnById(turnId).threadId,
+          },
           { method: 'GET' }
         )
       );
       expect(itemsRead.status).toBe(200);
       expect((await itemsRead.json()).items).toContainEqual(
         expect.objectContaining({
-          id: `it_assistant_${turnId}`,
+          id: testEntityId('it', `it_assistant_${turnId}`),
           type: 'assistant-message',
           status: 'completed',
         })
@@ -2299,13 +2467,18 @@ describe('Task durable admission response', () => {
           expect(terminal).toMatchObject({
             state: 'completed',
             turn: { id: turnId },
-            completion: { itemId: `it_assistant_${turnId}` },
+            completion: { itemId: testEntityId('it', `it_assistant_${turnId}`) },
           });
         }
       }
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
-        const checkpoint = getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', turnId);
+        const checkpoint = getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          store.getTurnById(turnId).threadId,
+          turnId
+        );
         if (entry === 'closeout-failure' || entry === 'assistant')
           expect(checkpoint?.stage).toBe('completed');
         else expect(checkpoint).toBeNull();
@@ -2319,8 +2492,8 @@ describe('Task durable admission response', () => {
         (attempt) =>
           attempt.turn_id ===
           {
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: store.getTurnById(turnId).threadId,
             turnId,
           }.turnId
       )[0]!;
@@ -2331,8 +2504,8 @@ describe('Task durable admission response', () => {
           (attempt) =>
             attempt.turn_id ===
             {
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               turnId,
             }.turnId
         )[0]
@@ -2345,7 +2518,7 @@ describe('Task durable admission response', () => {
       expect(executor.launches).toBe(1);
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
         })
       ).toHaveLength(1);
@@ -2387,17 +2560,25 @@ describe('Task terminal replay closeout ownership', () => {
       agentManifests: [setup.manifest],
       openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
     });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const requestId = '0190f4c8-0000-7000-8000-000000000602';
-    const scope = { actorId: 'user_local', workspaceId: 'ws_demo', threadId: 'th_demo' };
+    const scope = {
+      actorId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+    };
     const command = entry === 'assistant' ? 'conversation.submit' : 'task.start';
     const submit = () =>
       app.request(
         ...operationRequest(
           command,
           {
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
           },
           {
             method: 'POST',
@@ -2476,7 +2657,10 @@ describe('Task terminal replay closeout ownership', () => {
           gatewayConfig: createTestGatewayConfig(),
           maxDispatches: 1,
         });
-        const publicationDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+        const publicationDb = openWorkspaceDb(
+          coreDb.dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001'
+        );
         try {
           console.info(
             'assistant-publication-probe',
@@ -2517,8 +2701,8 @@ describe('Task terminal replay closeout ownership', () => {
           (attempt) =>
             attempt.turn_id ===
             {
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               turnId,
             }.turnId
         )[0]?.phase
@@ -2550,7 +2734,7 @@ describe('Task terminal replay closeout ownership', () => {
         expect(StartTaskModeResponseSchema.parse(await result.json())).toMatchObject({
           state: 'completed',
           turn: { id: turnId },
-          completion: { itemId: `it_assistant_${turnId}` },
+          completion: { itemId: testEntityId('it', `it_assistant_${turnId}`) },
         });
       }
       expect(closeoutOwner).toHaveBeenCalledTimes(1);
@@ -2602,12 +2786,20 @@ describe('exact Task Agent selection', () => {
         openKitConfig: { defaults: { defaultAgentId: preferred.id } },
       });
     const app = makeApp();
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    });
     const prepare = vi
       .spyOn(executor, 'prepareAgentSessionForTurn')
       .mockRejectedValue(new WorkerGovernanceCapacityUnavailableError());
     const requestId = '0190f4c8-0000-7000-8000-000000000133';
-    const scope = { actorId: 'user_local', workspaceId: 'ws_demo', threadId: 'th_demo' };
+    const scope = {
+      actorId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+    };
     const post = (target: typeof app, choice: { agentId?: string; modelId?: string } = {}) =>
       target.request(
         ...operationRequest(
@@ -2692,14 +2884,26 @@ describe('exact Task Agent selection', () => {
       const turn = turns[0]!;
       expect(turn).toMatchObject({ agentId: expectedAgentId, status: 'pending' });
       expect(turns[1]).toEqual(turn);
-      expect(f.store.listThreadTurns('ws_demo', 'th_demo')).toHaveLength(1);
+      expect(
+        f.store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      ).toHaveLength(1);
       expect(f.store.getCommandRequest('task.start', f.requestId, f.scope)).toMatchObject({
         inputHash: expectedHash,
         response: { kind: 'turn', id: turn.id },
       });
-      const db = openWorkspaceDb(f.dataRoot, 'ws_demo');
+      const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
-        expect(getWorkerCheckpoint(db, 'ws_demo', 'th_demo', turn.id)).toMatchObject({
+        expect(
+          getWorkerCheckpoint(
+            db,
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001',
+            turn.id
+          )
+        ).toMatchObject({
           requestInputHash: expectedHash,
         });
       } finally {
@@ -2772,7 +2976,12 @@ describe('exact Task Agent selection', () => {
       });
       expect(response.status, await response.clone().text()).toBe(400);
       expect(await response.json()).toMatchObject({ code: 'model_not_supported_by_agent' });
-      expect(f.store.listThreadTurns('ws_demo', 'th_demo')).toEqual(before.turns);
+      expect(
+        f.store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      ).toEqual(before.turns);
       expect(f.effects().admissions).toEqual(before.admissions);
       expect(f.prepare).not.toHaveBeenCalled();
       expect(f.executor.launches).toBe(0);
@@ -2831,7 +3040,7 @@ describe('exact Task Agent selection', () => {
             vendor: 'openai',
             baseUrl: 'https://inference.example.invalid/v1',
             models: [healthyModelId],
-            secretRef: 'vault://absent-model-override-key',
+            secretRef: 'vault://vault_00000000-0000-7256-b454-e714d6ce8135',
           },
         ]),
         providerCredentialResolver: () => null,
@@ -2911,7 +3120,7 @@ describe('exact Task Agent selection', () => {
             vendor: 'openai',
             baseUrl: 'https://inference.example.invalid/v1',
             models: [healthyModelId],
-            secretRef: 'vault://absent-requested-model-key',
+            secretRef: 'vault://vault_00000000-0000-74f1-9f1c-de471b56860f',
           },
         ]),
         providerCredentialResolver: () => null,
@@ -2990,10 +3199,18 @@ describe('route B queued Task receipts', () => {
         openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
       });
     const app = makeApp(store);
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    });
     const command = entry === 'direct' ? 'task.start' : 'conversation.submit';
     const requestId = '0190f4c8-0000-7000-8000-000000000999';
-    const scope = { actorId: 'user_local', workspaceId: 'ws_demo', threadId: 'th_demo' };
+    const scope = {
+      actorId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+    };
     const post = (
       target: typeof app,
       identity = requestId,
@@ -3002,7 +3219,10 @@ describe('route B queued Task receipts', () => {
       target.request(
         ...operationRequest(
           command,
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -3072,13 +3292,21 @@ describe('route B queued Task receipts', () => {
       agentManifests: [setup.manifest],
       openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
     });
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
-    store.createThread('ws_demo', 'Independent Task', 'th_task_second');
-    const post = (requestId: string, threadId = 'th_demo') =>
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    });
+    store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Independent Task',
+      'th_00000000-0000-7097-b0d8-3022e574cd4d'
+    );
+    const post = (requestId: string, threadId = 'th_00000000-0000-7000-8000-000000000001') =>
       app.request(
         ...operationRequest(
           'task.start',
-          { workspaceId: 'ws_demo', threadId },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -3094,7 +3322,10 @@ describe('route B queued Task receipts', () => {
       expect(firstResponse.status, await firstResponse.clone().text()).toBe(202);
       const first = await firstResponse.json();
       await executor.launched.promise;
-      const secondResponse = await post('0190f4c8-0000-7000-8000-000000000992', 'th_task_second');
+      const secondResponse = await post(
+        '0190f4c8-0000-7000-8000-000000000992',
+        'th_00000000-0000-7097-b0d8-3022e574cd4d'
+      );
       expect(secondResponse.status, await secondResponse.clone().text()).toBe(202);
       const second = await secondResponse.json();
       expect(second.turn.threadId).not.toBe(first.turn.threadId);
@@ -3114,12 +3345,12 @@ describe('route B queued Task receipts', () => {
         operation_id: `modeled:${first.turn.id}`,
         fence_ref: null,
       });
-      const queuedDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const queuedDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         const checkpoint = getWorkerCheckpoint(
           queuedDb,
-          'ws_demo',
-          'th_task_second',
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7097-b0d8-3022e574cd4d',
           second.turn.id
         )!;
         await expect(
@@ -3140,7 +3371,12 @@ describe('route B queued Task receipts', () => {
             })
           ).resolves.toBe('live');
           expect(
-            getWorkerCheckpoint(queuedDb, 'ws_demo', 'th_task_second', second.turn.id)
+            getWorkerCheckpoint(
+              queuedDb,
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7097-b0d8-3022e574cd4d',
+              second.turn.id
+            )
           ).toEqual(checkpoint);
         }
       } finally {
@@ -3182,9 +3418,14 @@ describe('route B queued Task receipts', () => {
           observeExecutionAttempts(coreDb).find((a) => a.turn_id === second.turn.id)?.phase
         ).toBe('closed')
       );
-      expect((await post('0190f4c8-0000-7000-8000-000000000992', 'th_task_second')).status).toBe(
-        202
-      );
+      expect(
+        (
+          await post(
+            '0190f4c8-0000-7000-8000-000000000992',
+            'th_00000000-0000-7097-b0d8-3022e574cd4d'
+          )
+        ).status
+      ).toBe(202);
       expect(executor.launches).toBe(2);
       expect(
         observeExecutionAttempts(coreDb).filter(
@@ -3227,7 +3468,11 @@ describe('route B queued Task receipts', () => {
       agentManifests: [setup.manifest],
       openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
     });
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    });
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const originalPrepare = executor.prepareAgentSessionForTurn.bind(executor);
@@ -3246,7 +3491,10 @@ describe('route B queued Task receipts', () => {
       app.request(
         ...operationRequest(
           entry === 'direct' ? 'task.start' : 'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -3278,9 +3526,9 @@ describe('route B queued Task receipts', () => {
           entry === 'direct' ? 'task.start' : 'conversation.submit',
           requestId,
           {
-            actorId: 'user_local',
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            actorId: 'usr_00000000-0000-7000-8000-000000000001',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
           }
         )
       ).toMatchObject({ response: { kind: 'turn', id: admittedId } });
@@ -3291,7 +3539,7 @@ describe('route B queued Task receipts', () => {
         expect(executor.launches).toBe(0);
         expect(
           listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             statuses: ['queued', 'admitted', 'cancelled', 'denied'],
           }).map((row) => row.turnId)
         ).toEqual([admittedId]);
@@ -3309,17 +3557,24 @@ describe('route B queued Task receipts', () => {
             fence_ref: null,
           })
         );
-        const checkpointDb = openWorkspaceDb(dataRoot, 'ws_demo');
+        const checkpointDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
         try {
           if (entry === 'selected-conversation') {
             await vi.waitFor(() =>
-              expect(getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', admittedId)).toBeNull()
+              expect(
+                getWorkerCheckpoint(
+                  checkpointDb,
+                  'ws_00000000-0000-7000-8000-000000000001',
+                  'th_00000000-0000-7000-8000-000000000001',
+                  admittedId
+                )
+              ).toBeNull()
             );
             expect(
               store.getCommandRequest('task.start', requestId, {
-                actorId: 'user_local',
-                workspaceId: 'ws_demo',
-                threadId: 'th_demo',
+                actorId: 'usr_00000000-0000-7000-8000-000000000001',
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                threadId: 'th_00000000-0000-7000-8000-000000000001',
               })
             ).toBeNull();
             expect(store.getTurnById(admittedId)).toMatchObject({
@@ -3329,17 +3584,27 @@ describe('route B queued Task receipts', () => {
             expect(store.getTurnById(admittedId).agentSessionId ?? null).toBeNull();
             return;
           }
-          const checkpoint = getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', admittedId)!;
+          const checkpoint = getWorkerCheckpoint(
+            checkpointDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001',
+            admittedId
+          )!;
           expect(checkpoint).toMatchObject({ stage: 'preparing', workerSessionId: null });
           expect(
-            store.getTurnById(admittedId).items.some((item) => item.id === `it_user_${admittedId}`)
+            store
+              .getTurnById(admittedId)
+              .items.some((item) => item.id === deriveEntityId('it', ['task-user', admittedId]))
           ).toBe(false);
           /** Replays the original admitted command without another worker launch. */
           const replay = () =>
             app.request(
               ...operationRequest(
                 'task.start',
-                { workspaceId: 'ws_demo', threadId: 'th_demo' },
+                {
+                  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                  threadId: 'th_00000000-0000-7000-8000-000000000001',
+                },
                 {
                   method: 'POST',
                   headers: { 'content-type': 'application/json' },
@@ -3375,9 +3640,14 @@ describe('route B queued Task receipts', () => {
               const before = await replay();
               expect(before.status, 'Native evidence must prevent pre-effect replay.').toBe(409);
               expect(await before.json()).toMatchObject({ code: 'recovery_required' });
-              expect(getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', admittedId)).toEqual(
-                checkpoint
-              );
+              expect(
+                getWorkerCheckpoint(
+                  checkpointDb,
+                  'ws_00000000-0000-7000-8000-000000000001',
+                  'th_00000000-0000-7000-8000-000000000001',
+                  admittedId
+                )
+              ).toEqual(checkpoint);
               await expect(
                 classifyDirectTaskCheckpointAfterSchedulerRecovery({
                   coreDb,
@@ -3391,9 +3661,14 @@ describe('route B queued Task receipts', () => {
                 409
               );
               expect(await after.json()).toMatchObject({ code: 'recovery_required' });
-              expect(getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', admittedId)).toEqual(
-                checkpoint
-              );
+              expect(
+                getWorkerCheckpoint(
+                  checkpointDb,
+                  'ws_00000000-0000-7000-8000-000000000001',
+                  'th_00000000-0000-7000-8000-000000000001',
+                  admittedId
+                )
+              ).toEqual(checkpoint);
               coreDb.sqlite
                 .prepare(
                   `UPDATE scheduler_execution_attempts SET ${columns.map((column) => `${column} = NULL`).join(', ')} WHERE attempt_id = ?`
@@ -3420,9 +3695,14 @@ describe('route B queued Task receipts', () => {
               409
             );
             expect(await before.json()).toMatchObject({ code: 'recovery_required' });
-            expect(getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', admittedId)).toEqual(
-              checkpoint
-            );
+            expect(
+              getWorkerCheckpoint(
+                checkpointDb,
+                'ws_00000000-0000-7000-8000-000000000001',
+                'th_00000000-0000-7000-8000-000000000001',
+                admittedId
+              )
+            ).toEqual(checkpoint);
             coreDb.sqlite
               .prepare('UPDATE scheduler_admission_entries SET turn_input = ? WHERE turn_id = ?')
               .run(row.turn_input, admittedId);
@@ -3434,7 +3714,14 @@ describe('route B queued Task receipts', () => {
                 checkpoint,
               })
             ).resolves.toBe('complete');
-            expect(getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', admittedId)).toBeNull();
+            expect(
+              getWorkerCheckpoint(
+                checkpointDb,
+                'ws_00000000-0000-7000-8000-000000000001',
+                'th_00000000-0000-7000-8000-000000000001',
+                admittedId
+              )
+            ).toBeNull();
             coreDb.sqlite
               .prepare('UPDATE scheduler_admission_entries SET turn_input = ? WHERE turn_id = ?')
               .run(changedInput, admittedId);
@@ -3444,7 +3731,14 @@ describe('route B queued Task receipts', () => {
               'Collected checkpoint must still reject changed admission input.'
             ).toBe(409);
             expect(await after.json()).toMatchObject({ code: 'recovery_required' });
-            expect(getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', admittedId)).toBeNull();
+            expect(
+              getWorkerCheckpoint(
+                checkpointDb,
+                'ws_00000000-0000-7000-8000-000000000001',
+                'th_00000000-0000-7000-8000-000000000001',
+                admittedId
+              )
+            ).toBeNull();
             expect(executor.launches).toBe(0);
             expect(prepare).toHaveBeenCalledTimes(1);
             expect(observeExecutionAttempts(coreDb)).toHaveLength(1);
@@ -3473,9 +3767,14 @@ describe('route B queued Task receipts', () => {
             const rejected = await replay();
             expect(rejected.status).toBe(409);
             expect(await rejected.json()).toMatchObject({ code: 'recovery_required' });
-            expect(getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', admittedId)).toEqual(
-              checkpoint
-            );
+            expect(
+              getWorkerCheckpoint(
+                checkpointDb,
+                'ws_00000000-0000-7000-8000-000000000001',
+                'th_00000000-0000-7000-8000-000000000001',
+                admittedId
+              )
+            ).toEqual(checkpoint);
             coreDb.sqlite
               .prepare(
                 `UPDATE scheduler_execution_attempts SET phase = 'closed', disposition = 'not_accepted', operation_id = NULL, input_ref = NULL, binding_ref = NULL WHERE attempt_id = ?`
@@ -3521,10 +3820,20 @@ describe('route B queued Task receipts', () => {
               })
             ).resolves.toBe('complete');
           }
-          expect(getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', admittedId)).toBeNull();
-          expect(checkpointOwners.listExportableWorkerCheckpoints(checkpointDb, 'ws_demo')).toEqual(
-            []
-          );
+          expect(
+            getWorkerCheckpoint(
+              checkpointDb,
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001',
+              admittedId
+            )
+          ).toBeNull();
+          expect(
+            checkpointOwners.listExportableWorkerCheckpoints(
+              checkpointDb,
+              'ws_00000000-0000-7000-8000-000000000001'
+            )
+          ).toEqual([]);
           const response = await replay();
           expect(response.status, await response.clone().text()).toBe(202);
           expect(await response.json()).toMatchObject({
@@ -3551,7 +3860,14 @@ describe('route B queued Task receipts', () => {
               'UPDATE scheduler_execution_attempts SET input_ref = NULL WHERE attempt_id = ?'
             )
             .run(attemptId);
-          expect(getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', admittedId)).toBeNull();
+          expect(
+            getWorkerCheckpoint(
+              checkpointDb,
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001',
+              admittedId
+            )
+          ).toBeNull();
           expect(executor.launches).toBe(0);
           expect(prepare).toHaveBeenCalledTimes(1);
         } finally {
@@ -3602,8 +3918,14 @@ function assistantWiringFixture(
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-  const actorUserId = memberCredential ? 'assistant-member' : 'user_local';
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
+  const actorUserId = memberCredential
+    ? testEntityId('usr', 'assistant-member')
+    : 'usr_00000000-0000-7000-8000-000000000001';
   if (memberCredential) {
     const timestamp = new Date().toISOString();
     coreDb.sqlite
@@ -3613,12 +3935,12 @@ function assistantWiringFixture(
       .run(actorUserId, Date.now(), Date.now());
     coreDb.sqlite
       .prepare(
-        "INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_demo', ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)"
+        "INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)"
       )
       .run(actorUserId, timestamp, timestamp, timestamp);
   }
   const thread = store.createThread(
-    'ws_demo',
+    'ws_00000000-0000-7000-8000-000000000001',
     'Selected Skill command',
     undefined,
     'conversation',
@@ -3627,13 +3949,13 @@ function assistantWiringFixture(
   const imported = selected
     ? importWorkspaceSkill({
         dataRoot,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         id: 'alpha',
         displayName: 'Original selected metadata',
         expectedRevision: 0,
         activate: true,
         createdAt: '2026-10-15T00:00:00.000Z',
-        producer: { kind: 'user', id: 'user_local' },
+        producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         tree: [
           {
             kind: 'file',
@@ -3644,7 +3966,7 @@ function assistantWiringFixture(
       })
     : undefined;
   const catalogRevision = selected
-    ? loadWorkspaceResourceCatalog(dataRoot, 'ws_demo').revision
+    ? loadWorkspaceResourceCatalog(dataRoot, 'ws_00000000-0000-7000-8000-000000000001').revision
     : null;
   const createResponses = vi
     .fn<LLMGatewayProviderDispatcher['createResponses']>()
@@ -3696,8 +4018,11 @@ function assistantWiringFixture(
       ]),
       workspaceConfigs: [
         {
-          workspaceId: 'ws_demo',
-          path: join(dataRoot, 'workspaces/ws_demo/config/workspace.jsonc'),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          path: join(
+            dataRoot,
+            'workspaces/ws_00000000-0000-7000-8000-000000000001/config/workspace.jsonc'
+          ),
           config: WorkspaceConfigSchema.parse({
             schemaVersion: 1,
             workspace: {
@@ -3713,7 +4038,7 @@ function assistantWiringFixture(
     ? createOpenKitAccessTokenRecord(coreDb, {
         ownerUserId: actorUserId,
         scope: 'workspace',
-        workspaceIds: ['ws_demo'],
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
         expiresAt: '2099-01-01T00:00:00.000Z',
       })
     : undefined;
@@ -3733,7 +4058,7 @@ function assistantWiringFixture(
     app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: thread.id },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: thread.id },
         {
           method: 'POST',
           headers: {
@@ -3748,7 +4073,7 @@ function assistantWiringFixture(
         }
       )
     );
-  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   return {
     app,
     actorUserId,
@@ -3765,7 +4090,7 @@ function assistantWiringFixture(
     submit,
     environments: () =>
       store
-        .listThreadTurns('ws_demo', thread.id)
+        .listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id)
         .flatMap((turn) =>
           readWorkObservations(workspaceDb, { threadId: thread.id, turnId: turn.id })
         )
@@ -3839,7 +4164,12 @@ function observePrivateSkillInvocation(
 
 /** Observes content access while retaining the actual filesystem and catalog owners. */
 function observeSkillBodyReads(f: ReturnType<typeof assistantWiringFixture>) {
-  const snapshot = skillSnapshotPath(f.dataRoot, 'ws_demo', 'alpha', f.imported!.version.digest);
+  const snapshot = skillSnapshotPath(
+    f.dataRoot,
+    'ws_00000000-0000-7000-8000-000000000001',
+    'alpha',
+    f.imported!.version.digest
+  );
   const reads = [
     vi.spyOn(fs, 'readFileSync'),
     vi.spyOn(fs, 'openSync'),
@@ -3955,13 +4285,16 @@ describe('#144 real Assistant command wiring', () => {
           );
           const replacement = importWorkspaceSkill({
             dataRoot: f.dataRoot,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             id: 'alpha',
             displayName: 'Replacement metadata',
-            expectedRevision: loadWorkspaceResourceCatalog(f.dataRoot, 'ws_demo').revision,
+            expectedRevision: loadWorkspaceResourceCatalog(
+              f.dataRoot,
+              'ws_00000000-0000-7000-8000-000000000001'
+            ).revision,
             activate: true,
             createdAt: '2026-10-16T00:00:00.000Z',
-            producer: { kind: 'user', id: 'user_local' },
+            producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
             tree: [
               {
                 kind: 'file',
@@ -3972,7 +4305,7 @@ describe('#144 real Assistant command wiring', () => {
           });
           setWorkspaceSkillPin({
             dataRoot: f.dataRoot,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             entryId: 'alpha',
             digest: replacement.version.digest,
             expectedRevision: replacement.catalog.revision,
@@ -4041,8 +4374,8 @@ describe('#144 real Assistant command wiring', () => {
         expect.objectContaining({
           kind: 'assistant-command',
           entryScope: 'conversation.submit',
-          actor: { kind: 'local', userId: 'user_local' },
-          workspaceId: 'ws_demo',
+          actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: f.thread.id,
           turnId: original.turn.id,
           requestId: f.requestId,
@@ -4059,29 +4392,33 @@ describe('#144 real Assistant command wiring', () => {
       expect(bodyReads().length).toBeGreaterThan(0);
       expect(f.createChatCompletion).not.toHaveBeenCalled();
       expect(f.environments()).toEqual(originalEnvironment);
-      const calls = listWorkspaceCapabilityCalls(f.workspaceDb, 'ws_demo').filter(
-        (call) => call.family === 'llm'
-      );
+      const calls = listWorkspaceCapabilityCalls(
+        f.workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001'
+      ).filter((call) => call.family === 'llm');
       expect(calls).toHaveLength(2);
       expect(new Set(calls.map((call) => call.id)).size).toBe(2);
-      const usage = listWorkspaceUsageRecords(f.workspaceDb, 'ws_demo');
+      const usage = listWorkspaceUsageRecords(
+        f.workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       expect(usage).toHaveLength(2);
       expect(usage.map((row) => row.quantity).sort((a, b) => a - b)).toEqual([12, 17]);
       for (const call of calls) {
         expect(call).toMatchObject({
           requestId: null,
           status: 'succeeded',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: f.thread.id,
           turnId: original.turn.id,
         });
         expect(usage.filter((row) => row.capabilityCallId === call.id)).toEqual([
           expect.objectContaining({
             requestId: null,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             threadId: f.thread.id,
             turnId: original.turn.id,
-            responsibleUserId: 'user_local',
+            responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
             providerRef: 'agent-openrouter',
           }),
         ]);
@@ -4094,24 +4431,30 @@ describe('#144 real Assistant command wiring', () => {
             action: 'capability.finish',
             capability_call_id: call.id,
             request_id: f.requestId,
-            workspace_id: 'ws_demo',
+            workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
             thread_id: f.thread.id,
             turn_id: original.turn.id,
             outcome: 'succeeded',
           }),
         ]);
       }
-      const turns = f.store.listThreadTurns('ws_demo', f.thread.id);
-      const items = f.store.listThreadItems('ws_demo', f.thread.id);
+      const turns = f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id);
+      const items = f.store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id);
       const replay = await f.submit();
       expect(replay.status, await replay.clone().text()).toBe(200);
       expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(original);
       expect(f.dispatchCount()).toBe(2);
       expect(native.invoked).toHaveBeenCalledOnce();
       expect(native.dispatched).toHaveBeenCalledOnce();
-      expect(f.store.listThreadTurns('ws_demo', f.thread.id)).toEqual(turns);
-      expect(f.store.listThreadItems('ws_demo', f.thread.id)).toEqual(items);
-      expect(listWorkspaceCapabilityCalls(f.workspaceDb, 'ws_demo')).toEqual(calls);
+      expect(
+        f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+      ).toEqual(turns);
+      expect(
+        f.store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+      ).toEqual(items);
+      expect(
+        listWorkspaceCapabilityCalls(f.workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual(calls);
       expect(f.environments()).toEqual(originalEnvironment);
       const publicViews = {
         response: originalBody,
@@ -4153,7 +4496,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(f.environments()).toEqual([]);
       expect(
         f.store
-          .listThreadItems('ws_demo', f.thread.id)
+          .listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
           .filter((item) => item.type === 'assistant-message')
       ).toEqual([]);
     } finally {
@@ -4174,11 +4517,16 @@ describe('#144 real Assistant command wiring', () => {
     const pending = f.submit();
     try {
       await admitted.promise;
-      const before = f.store.listThreadTurns('ws_demo', f.thread.id);
+      const before = f.store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        f.thread.id
+      );
       const duplicate = f.submit();
       await setImmediate();
       expect(f.dispatchCount()).toBe(1);
-      expect(f.store.listThreadTurns('ws_demo', f.thread.id)).toEqual(before);
+      expect(
+        f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+      ).toEqual(before);
       release.resolve();
       const [original, joined] = await Promise.all([pending, duplicate]);
       expect(original.status, await original.clone().text()).toBe(200);
@@ -4197,8 +4545,8 @@ describe('#144 real Assistant command wiring', () => {
     try {
       const first = await f.submit();
       expect(first.status, await first.clone().text()).toBe(200);
-      const turns = f.store.listThreadTurns('ws_demo', f.thread.id);
-      const items = f.store.listThreadItems('ws_demo', f.thread.id);
+      const turns = f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id);
+      const items = f.store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id);
       expect(f.dispatchCount()).toBe(1);
       f.workspaceDb.sqlite
         .prepare('DELETE FROM idempotency_requests WHERE command_name = ? AND request_id = ?')
@@ -4210,8 +4558,12 @@ describe('#144 real Assistant command wiring', () => {
       expect(replay.status, await replay.clone().text()).toBe(409);
       expect(await replay.json()).toMatchObject({ code: 'recovery_required' });
       expect(f.dispatchCount()).toBe(1);
-      expect(f.store.listThreadTurns('ws_demo', f.thread.id)).toEqual(turns);
-      expect(f.store.listThreadItems('ws_demo', f.thread.id)).toEqual(items);
+      expect(
+        f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+      ).toEqual(turns);
+      expect(
+        f.store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+      ).toEqual(items);
     } finally {
       f.close();
     }
@@ -4239,20 +4591,24 @@ describe('#144 real Assistant command wiring', () => {
       const first = await f.submit();
       expect(first.status).toBeGreaterThanOrEqual(400);
       publication.mockRestore();
-      expect(f.store.listThreadTurns('ws_demo', f.thread.id)).toEqual([
-        expect.objectContaining({ status }),
-      ]);
+      expect(
+        f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+      ).toEqual([expect.objectContaining({ status })]);
       expect(f.store.listCommandRequests().filter((row) => row.requestId === f.requestId)).toEqual(
         []
       );
-      const turns = f.store.listThreadTurns('ws_demo', f.thread.id);
-      const items = f.store.listThreadItems('ws_demo', f.thread.id);
+      const turns = f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id);
+      const items = f.store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id);
       const replay = await f.submit();
       expect(replay.status, await replay.clone().text()).toBe(409);
       expect(await replay.json()).toMatchObject({ code: 'recovery_required' });
       expect(f.dispatchCount()).toBe(1);
-      expect(f.store.listThreadTurns('ws_demo', f.thread.id)).toEqual(turns);
-      expect(f.store.listThreadItems('ws_demo', f.thread.id)).toEqual(items);
+      expect(
+        f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+      ).toEqual(turns);
+      expect(
+        f.store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+      ).toEqual(items);
     } finally {
       f.close();
     }
@@ -4264,7 +4620,10 @@ describe('#144 real Assistant command wiring', () => {
     try {
       const first = await f.submit();
       expect(first.status).toBeGreaterThanOrEqual(400);
-      const [failed] = f.store.listThreadTurns('ws_demo', f.thread.id);
+      const [failed] = f.store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        f.thread.id
+      );
       expect(failed).toMatchObject({ status: 'failed' });
       expect(f.dispatchCount()).toBe(1);
       const replay = await f.submit();
@@ -4276,7 +4635,9 @@ describe('#144 real Assistant command wiring', () => {
       const result = SubmitConversationResponseSchema.parse(await retry.json());
       expect(result.turn.id).not.toBe(failed!.id);
       expect(f.dispatchCount()).toBe(2);
-      expect(f.store.listThreadTurns('ws_demo', f.thread.id)).toHaveLength(2);
+      expect(
+        f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+      ).toHaveLength(2);
     } finally {
       f.close();
     }
@@ -4305,10 +4666,10 @@ describe('#144 real Assistant command wiring', () => {
   }) => {
     const f = assistantWiringFixture(true);
     const changed: Record<string, unknown> = {
-      actor: { kind: 'session', userId: 'user_local' },
-      workspaceId: 'another-workspace',
-      threadId: 'another-thread',
-      turnId: 'another-turn',
+      actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+      workspaceId: testEntityId('ws', 'another-workspace'),
+      threadId: testEntityId('th', 'another-thread'),
+      turnId: testEntityId('tu', 'another-turn'),
       entryScope: 'chat.quick',
       requestId: '00000000-0000-4000-8000-000000001499',
       kind: 'unknown',
@@ -4405,17 +4766,20 @@ describe('#144 real Assistant command wiring', () => {
             .prepare(
               "UPDATE workspace_members SET status = 'removed', removed_at = updated_at, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
             )
-            .run('ws_demo', f.actorUserId);
+            .run('ws_00000000-0000-7000-8000-000000000001', f.actorUserId);
         if (condition === 'audience')
-          Object.assign(f.store.getThread('ws_demo', f.thread.id), {
-            privateOwnerUserId: 'another-user',
+          Object.assign(f.store.getThread('ws_00000000-0000-7000-8000-000000000001', f.thread.id), {
+            privateOwnerUserId: testEntityId('usr', 'another-user'),
           });
         if (condition === 'removed') {
-          const catalog = loadWorkspaceResourceCatalog(f.dataRoot, 'ws_demo');
+          const catalog = loadWorkspaceResourceCatalog(
+            f.dataRoot,
+            'ws_00000000-0000-7000-8000-000000000001'
+          );
           catalog.skills.entries[0]!.availability = 'removed';
           publishWorkspaceResourceCatalog({
             dataRoot: f.dataRoot,
-            workspaceId: 'ws_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             catalog,
             expectedRevision: catalog.revision,
           });
@@ -4432,7 +4796,7 @@ describe('#144 real Assistant command wiring', () => {
         expect(
           f.coreDb.sqlite
             .prepare('SELECT status FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-            .get('ws_demo', f.actorUserId)
+            .get('ws_00000000-0000-7000-8000-000000000001', f.actorUserId)
         ).toMatchObject({ status: 'removed' });
         await expect(native.results[0]).rejects.toMatchObject({ code: 'workspace_access_denied' });
       }
@@ -4440,7 +4804,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(f.dispatchCount()).toBe(1);
       expect(
         f.store
-          .listThreadItems('ws_demo', f.thread.id)
+          .listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
           .filter((item) => item.type === 'assistant-message')
       ).toEqual([]);
     } finally {
@@ -4463,7 +4827,12 @@ describe('#144 real Assistant command wiring', () => {
     const native = observePrivateSkillInvocation();
     f.createResponses.mockImplementationOnce(async () => {
       const file = join(
-        skillSnapshotPath(f.dataRoot, 'ws_demo', 'alpha', f.imported!.version.digest),
+        skillSnapshotPath(
+          f.dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'alpha',
+          f.imported!.version.digest
+        ),
         'SKILL.md'
       );
       if (condition === 'changed bytes') fs.writeFileSync(file, 'private-source-canary');
@@ -4586,7 +4955,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(f.dispatchCount()).toBe(1);
       expect(
         f.store
-          .listThreadItems('ws_demo', f.thread.id)
+          .listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
           .filter((item) => item.type === 'assistant-message')
       ).toEqual([]);
     } finally {
@@ -4608,17 +4977,24 @@ describe('#144 real Assistant command wiring', () => {
     const pending = f.submit();
     try {
       await entered.promise;
-      const [turn] = f.store.listThreadTurns('ws_demo', f.thread.id);
+      const [turn] = f.store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        f.thread.id
+      );
       expect(turn).toBeDefined();
       const interrupt = await f.app.request(
         ...operationRequest(
           'turn.interrupt',
-          { workspaceId: 'ws_demo', threadId: f.thread.id, turnId: turn!.id },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: f.thread.id,
+            turnId: turn!.id,
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               threadId: f.thread.id,
               turnId: turn!.id,
               requestId: '00000000-0000-4000-8000-000000001498',
@@ -4637,7 +5013,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(f.dispatchCount()).toBe(1);
       expect(
         f.store
-          .listThreadItems('ws_demo', f.thread.id)
+          .listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
           .filter((item) => item.type === 'assistant-message')
       ).toEqual([]);
     } finally {
@@ -4684,7 +5060,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(f.environments()).toHaveLength(condition === 'immutable conflict' ? 1 : 0);
       expect(
         f.store
-          .listThreadItems('ws_demo', f.thread.id)
+          .listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
           .filter((item) => item.type === 'assistant-message')
       ).toEqual([]);
     } finally {
@@ -4700,8 +5076,8 @@ describe('#144 real Assistant command wiring', () => {
       .mockResolvedValueOnce(selectedSkillCall(f))
       .mockImplementationOnce(async (...args) => {
         const result = await final(...args);
-        Object.assign(f.store.getThread('ws_demo', f.thread.id), {
-          privateOwnerUserId: 'another-user',
+        Object.assign(f.store.getThread('ws_00000000-0000-7000-8000-000000000001', f.thread.id), {
+          privateOwnerUserId: testEntityId('usr', 'another-user'),
         });
         return result;
       });
@@ -4713,7 +5089,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(f.dispatchCount()).toBe(2);
       expect(
         f.store
-          .listThreadItems('ws_demo', f.thread.id)
+          .listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
           .filter((item) => item.type === 'assistant-message')
       ).toEqual([]);
     } finally {
@@ -4731,7 +5107,12 @@ describe('#144 real Assistant command wiring', () => {
       f.createResponses.mockImplementationOnce(async () => {
         const outside = join(f.dataRoot, 'outside-canary');
         const file = join(
-          skillSnapshotPath(f.dataRoot, 'ws_demo', 'alpha', f.imported!.version.digest),
+          skillSnapshotPath(
+            f.dataRoot,
+            'ws_00000000-0000-7000-8000-000000000001',
+            'alpha',
+            f.imported!.version.digest
+          ),
           'SKILL.md'
         );
         fs.writeFileSync(outside, 'private-source-canary');

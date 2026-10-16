@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
-import { ArtifactSchema, ItemSchema } from '@openkit/protocol';
+import { ArtifactSchema, deriveEntityId, ItemSchema } from '@openkit/protocol';
 import {
   type WorkerCanonicalEventRecord,
   type WorkerLineage,
@@ -252,7 +252,7 @@ function importItemRecords(
 
     const timestamp = recordedAt ?? new Date().toISOString();
     const item = {
-      id: `it_worker_${environmentPackage.scope.turnId}_${parsed.data.sequence}`,
+      id: deriveEntityId('it', ['worker', environmentPackage.scope.turnId, parsed.data.sequence]),
       workspaceId: environmentPackage.scope.workspaceId,
       threadId: environmentPackage.scope.threadId,
       turnId: environmentPackage.scope.turnId,

@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type { ARTIFACT_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import {
   type ArtifactReviewView,
@@ -7,6 +6,9 @@ import {
   type SubmitArtifactReviewDecisionResponse,
 } from '@openkit/app-api-schemas';
 import {
+  type ActorRef,
+  canonicalIdentifierName,
+  deriveEntityId,
   isSealedTurnTerminal,
   ListArtifactsResponseSchema,
   responsibleUserIdForActor,
@@ -120,8 +122,8 @@ export function createArtifactOperationImplementations(
       } catch (error) {
         artifactOperationFailure(error);
       }
-      const turnId = deterministicArtifactCommandId('tu_artifact', [
-        actorId,
+      const turnId = deriveEntityId('tu', [
+        actor,
         workspaceId,
         threadId,
         'artifact.introduce',
@@ -159,13 +161,13 @@ export function createArtifactOperationImplementations(
                 requestId: input.requestId,
                 acceptedAt: new Date().toISOString(),
                 turnId,
-                triggerActor: { kind: 'user', id: actorId },
+                triggerActor: actor,
               })
             );
           },
           replay: (record) =>
             replayArtifactIntroduction(store, {
-              actorId,
+              actor,
               artifactId,
               expectedArtifactVersion: input.expectedArtifactVersion,
               record,
@@ -321,6 +323,7 @@ export function createArtifactOperationImplementations(
                 );
               }
               const decisionInput = {
+                actor,
                 actorId,
                 ...contentProof,
                 artifactId,
@@ -421,7 +424,7 @@ export function createArtifactOperationImplementations(
               await new Promise<void>((resolve, reject) => {
                 void startModeWorkerTurn({
                   store,
-                  triggerActor: { kind: 'user', id: actorId },
+                  triggerActor: actor,
                   ...(context.kind === 'public' ? { requestActor: context.actor } : {}),
                   workspaceId,
                   threadId: sourceThreadId,
@@ -484,6 +487,7 @@ export function createArtifactOperationImplementations(
                 assertArtifactReviewProposalTrace(coreDb, store, workspaceDb, review);
               }
               return decideArtifactReview(workspaceDb, {
+                actor,
                 actorId,
                 ...artifactReviewContentProof(
                   artifact,
@@ -801,7 +805,7 @@ function artifactMediaType(
 function replayArtifactIntroduction(
   store: FsStore,
   expected: {
-    readonly actorId: string;
+    readonly actor: ActorRef;
     readonly artifactId: string;
     readonly expectedArtifactVersion: number;
     readonly record: CommandRequestRecord;
@@ -838,8 +842,7 @@ function replayArtifactIntroduction(
     origin.recordedAt !== artifact.createdAt ||
     turn.workspaceId !== expected.workspaceId ||
     turn.threadId !== expected.threadId ||
-    turn.triggerActor.kind !== 'user' ||
-    turn.triggerActor.id !== expected.actorId ||
+    canonicalIdentifierName(turn.triggerActor) !== canonicalIdentifierName(expected.actor) ||
     turn.status !== 'completed' ||
     turn.error !== null ||
     turn.configVersion !== null ||
@@ -869,23 +872,6 @@ function replayArtifactIntroduction(
     turnId: turn.id,
     itemId: item.id,
   });
-}
-
-/**
- * Derives one deterministic command-owned resource identity.
- *
- * @param prefix Resource namespace.
- * @param scope Immutable actor and command scope.
- * @returns Stable non-secret resource id.
- */
-export function deterministicArtifactCommandId(
-  prefix: 'ar_import' | 'tu_artifact',
-  scope: readonly string[]
-): string {
-  return `${prefix}_${createHash('sha256')
-    .update(JSON.stringify(scope), 'utf8')
-    .digest('hex')
-    .slice(0, 24)}`;
 }
 
 /**

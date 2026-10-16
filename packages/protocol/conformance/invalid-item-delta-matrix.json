@@ -1,9 +1,9 @@
 {
-  "protocolVersion": "0.5.0",
+  "protocolVersion": "0.6.0",
   "schema": "item-delta",
   "data": {
     "type": "item-delta",
-    "itemId": "0190f4c8-0019-7abc-8def-000000000019",
+    "itemId": "it_00000000-0000-7dd4-a599-0671f02977fa",
     "itemType": "artifact-reference",
     "deltaKind": "text-delta",
     "delta": "Artifact references cannot stream text deltas."

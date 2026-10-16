@@ -30,7 +30,7 @@ function createVaultProviderFixture() {
   vaultUnlockState.backend().store({
     material: 'sk-vault-provider',
     metadata: { ownerScope: 'server' },
-    referenceId: 'vault_provider',
+    referenceId: 'vault_00000000-0000-74ac-b50a-3150f74675d0',
   });
 
   return { coreDb, dataRoot, vaultUnlockState };
@@ -69,7 +69,9 @@ describe('vault provider credential resolver', () => {
         vaultBackend: () => vaultUnlockState.backend(),
       });
 
-      expect(resolver('vault://vault_provider')).toBe('sk-vault-provider');
+      expect(resolver('vault://vault_00000000-0000-74ac-b50a-3150f74675d0')).toBe(
+        'sk-vault-provider'
+      );
       expect(listVaultUseRecords(coreDb)).toEqual([
         expect.objectContaining({
           backendKind: 'encrypted-file',
@@ -77,7 +79,7 @@ describe('vault provider credential resolver', () => {
           outcome: 'succeeded',
           ownerScope: 'server',
           resolvingPath: 'provider',
-          vaultReferenceId: 'vault_provider',
+          vaultReferenceId: 'vault_00000000-0000-74ac-b50a-3150f74675d0',
         }),
       ]);
       expect(JSON.stringify(listVaultUseRecords(coreDb))).not.toContain('sk-vault-provider');
@@ -101,13 +103,15 @@ describe('vault provider credential resolver', () => {
         vaultBackend: () => vaultUnlockState.backend(),
       });
 
-      expect(() => resolver('vault://vault_locked_provider')).toThrow('vault-locked');
+      expect(() => resolver('vault://vault_00000000-0000-73c9-84d7-7a0377419111')).toThrow(
+        'vault-locked'
+      );
       expect(listVaultUseRecords(coreDb)).toEqual([
         expect.objectContaining({
           failureCode: 'vault-locked',
           outcome: 'failed',
           resolvingPath: 'provider',
-          vaultReferenceId: 'vault_locked_provider',
+          vaultReferenceId: 'vault_00000000-0000-73c9-84d7-7a0377419111',
         }),
       ]);
     } finally {
@@ -120,18 +124,25 @@ it('credential presence uses fallback precedence without inspecting a shadowed V
   const { coreDb, vaultUnlockState } = createVaultProviderFixture();
   const configured = createProviderCredentialConfigured({
     coreDb,
-    fallback: (ref) => (ref === 'vault://absent' ? 'synthetic-injected-key' : null),
+    fallback: (ref) =>
+      ref === 'vault://vault_00000000-0000-790a-a8d3-11cf6548c308'
+        ? 'synthetic-injected-key'
+        : null,
   });
   try {
-    expect(configured('vault://absent')).toBe(true);
+    expect(configured('vault://vault_00000000-0000-790a-a8d3-11cf6548c308')).toBe(true);
     expect(configured('unsupported:ref')).toBe(false);
     expect(configured('vault://')).toBe(false);
     expect(configured(undefined)).toBe(false);
-    expect(createProviderCredentialConfigured({ fallback: () => null })('vault://absent')).toBe(
-      false
-    );
     expect(
-      createProviderCredentialConfigured({ coreDb, fallback: () => '' })('vault://vault_provider')
+      createProviderCredentialConfigured({ fallback: () => null })(
+        'vault://vault_00000000-0000-790a-a8d3-11cf6548c308'
+      )
+    ).toBe(false);
+    expect(
+      createProviderCredentialConfigured({ coreDb, fallback: () => '' })(
+        'vault://vault_00000000-0000-74ac-b50a-3150f74675d0'
+      )
     ).toBe(false);
     expect(listVaultUseRecords(coreDb)).toEqual([]);
     expect(vaultUnlockState.backend().listReferences()).toHaveLength(1);

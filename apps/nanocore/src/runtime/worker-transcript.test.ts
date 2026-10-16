@@ -8,6 +8,7 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from '../workspace-materials.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
@@ -37,15 +38,20 @@ import {
 function createTranscriptFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-transcript-'));
   const store = createDemoStore({ dataRoot });
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Import transcript', {
-    kind: 'user',
-    id: 'user_local',
-  });
+  const turn = store.createTurn(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
+    'Import transcript',
+    {
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    }
+  );
   const environmentPackage = resolveAgentEnvironmentPackage({
     agentSetup: createTestAgentSetup(),
-    agentSessionId: 'as_transcript_1',
+    agentSessionId: 'as_00000000-0000-73fb-927c-5d84e16d5481',
     triggerActor: turn.triggerActor,
-    userId: 'user_local',
+    userId: 'usr_00000000-0000-7000-8000-000000000001',
     backend: {
       kind: 'openshell',
     },
@@ -57,9 +63,9 @@ function createTranscriptFixture() {
   });
   store.updateTurn(turn.id, {
     agentId: environmentPackage.agent.agentId,
-    agentSessionId: 'as_transcript_1',
+    agentSessionId: 'as_00000000-0000-73fb-927c-5d84e16d5481',
   });
-  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(workspaceDb);
   onTestFinished(() => workspaceDb.sqlite.close());
 
@@ -74,12 +80,12 @@ function artifactDigest(bytes: Buffer): string {
 /** Builds exact transcript lineage. @param fixture Transcript fixture. @returns Lineage. */
 function transcriptLineage(fixture: ReturnType<typeof createTranscriptFixture>) {
   return {
-    agentSessionId: 'as_transcript_1',
+    agentSessionId: 'as_00000000-0000-73fb-927c-5d84e16d5481',
     packageSnapshotId: fixture.environmentPackage.snapshotId,
     requestId: 'req_transcript_1',
-    threadId: 'th_demo',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
     turnId: fixture.turn.id,
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   };
 }
 
@@ -113,10 +119,13 @@ const transcriptImportOptions = { recordedAt: '2026-07-16T00:00:00.000Z' };
 function importedOwnerCounts(fixture: ReturnType<typeof createTranscriptFixture>) {
   return {
     artifacts: fixture.store
-      .listArtifacts('ws_demo')
+      .listArtifacts('ws_00000000-0000-7000-8000-000000000001')
       .filter((entry) => entry.id.startsWith('worker-artifact-')).length,
     references: fixture.store
-      .listThreadItems('ws_demo', 'th_demo')
+      .listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
       .filter((entry) => entry.type === 'artifact-reference').length,
     reviews: fixture.workspaceDb.sqlite
       .prepare('SELECT count(*) AS count FROM artifact_reviews')
@@ -164,9 +173,9 @@ function transcriptItemHistory(fixture: ReturnType<typeof createTranscriptFixtur
     join(
       fixture.store.getDataRoot() as string,
       'workspaces',
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'threads',
-      'th_demo',
+      'th_00000000-0000-7000-8000-000000000001',
       'turns',
       fixture.turn.id,
       'items.jsonl'
@@ -200,9 +209,12 @@ describe('worker transcript product-safe diagnostics', () => {
     );
     expect(result.itemIds).toHaveLength(failure === 'malformed-json' ? 1 : 2);
     for (const id of result.itemIds) {
-      expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
-        expect.objectContaining({ id, text: 'Reply [redacted]' })
-      );
+      expect(
+        fixture.store.listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      ).toContainEqual(expect.objectContaining({ id, text: 'Reply [redacted]' }));
     }
     expect(importedOwnerCounts(fixture)).toEqual({
       artifacts: 0,
@@ -210,10 +222,20 @@ describe('worker transcript product-safe diagnostics', () => {
       reviews: { count: 0 },
     });
     const reopened = createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
-    expect(JSON.stringify(reopened.listThreadItems('ws_demo', 'th_demo'))).not.toContain(value);
-    expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
-      expect.objectContaining({ id: result.itemIds[0], text: 'Reply [redacted]' })
-    );
+    expect(
+      JSON.stringify(
+        reopened.listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      )
+    ).not.toContain(value);
+    expect(
+      fixture.store.listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toContainEqual(expect.objectContaining({ id: result.itemIds[0], text: 'Reply [redacted]' }));
     expect(transcriptItemHistory(fixture)).not.toContain(value);
     expect(JSON.stringify(result.diagnostics)).not.toContain(value);
     expect(result.diagnostics).toEqual(
@@ -318,7 +340,12 @@ describe('worker transcript product-safe diagnostics', () => {
     expect(result.artifactIds).toEqual([]);
     expect(transcriptItemHistory(fixture)).toBe(before);
     expect(before).not.toContain(value);
-    expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
+    expect(
+      fixture.store.listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toContainEqual(
       expect.objectContaining({ id: admitted.itemIds[0], text: 'Reply [redacted]' })
     );
     expect(JSON.stringify(result.diagnostics)).not.toContain(value);
@@ -351,7 +378,14 @@ describe('worker transcript product-safe diagnostics', () => {
       reviews: { count: 0 },
     });
     const reopened = createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
-    expect(JSON.stringify(reopened.listThreadItems('ws_demo', 'th_demo'))).not.toContain(value);
+    expect(
+      JSON.stringify(
+        reopened.listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      )
+    ).not.toContain(value);
   });
 });
 
@@ -377,7 +411,7 @@ describe('worker transcript Item exact-value admission', () => {
       )
     ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
     expect(transcriptItemHistory(fixture)).toBe(before);
-    expect(fixture.store.listArtifacts('ws_demo')).toHaveLength(0);
+    expect(fixture.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toHaveLength(0);
     expect(
       fixture.workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM artifact_reviews').get()
     ).toEqual({ count: 0 });
@@ -389,9 +423,12 @@ describe('worker transcript Item exact-value admission', () => {
     );
     expect(result.itemIds).toHaveLength(1);
     expect(result.artifactIds).toHaveLength(0);
-    expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
-      expect.objectContaining({ id: result.itemIds[0], text })
-    );
+    expect(
+      fixture.store.listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toContainEqual(expect.objectContaining({ id: result.itemIds[0], text }));
   });
 
   it('refuses absent or reconstructed local proof before any local transcript writes', () => {
@@ -437,7 +474,12 @@ describe('worker transcript Item exact-value admission', () => {
     );
     expect(result.itemIds).toHaveLength(1);
     expect(result.diagnostics).toEqual([]);
-    expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
+    expect(
+      fixture.store.listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toContainEqual(
       expect.objectContaining({
         id: result.itemIds[0],
         type: 'assistant-message',
@@ -446,7 +488,12 @@ describe('worker transcript Item exact-value admission', () => {
     );
     expect(transcriptItemHistory(fixture)).not.toContain(value);
     const reopened = createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
-    expect(reopened.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
+    expect(
+      reopened.listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toContainEqual(
       expect.objectContaining({
         id: result.itemIds[0],
         text: 'Before [redacted] after [redacted].',
@@ -470,7 +517,12 @@ describe('worker transcript Item exact-value admission', () => {
     const result = importWorkerTranscript(fixture.store, fixture.environmentPackage, payload);
     expect(result.itemIds).toHaveLength(1);
     expect(transcriptItemHistory(fixture)).not.toContain(value);
-    expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
+    expect(
+      fixture.store.listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toContainEqual(
       expect.objectContaining({ id: result.itemIds[0], text: 'Before [redacted] after.' })
     );
   });
@@ -485,9 +537,12 @@ describe('worker transcript Item exact-value admission', () => {
     );
     expect(result.itemIds).toHaveLength(1);
     expect(result.diagnostics).toEqual([]);
-    expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
-      expect.objectContaining({ id: result.itemIds[0], text })
-    );
+    expect(
+      fixture.store.listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toContainEqual(expect.objectContaining({ id: result.itemIds[0], text }));
     expect(transcriptItemHistory(fixture)).toContain(text);
   });
 
@@ -497,7 +552,12 @@ describe('worker transcript Item exact-value admission', () => {
     const payload = credentialItemPayload(fixture, { text: `prefix_${credential}_suffix` });
     const result = importWorkerTranscript(fixture.store, fixture.environmentPackage, payload);
     expect(result.itemIds).toHaveLength(1);
-    expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
+    expect(
+      fixture.store.listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toContainEqual(
       expect.objectContaining({ id: result.itemIds[0], text: 'prefix_[redacted]_suffix' })
     );
     expect(transcriptItemHistory(fixture)).not.toContain(credential);
@@ -531,7 +591,12 @@ describe('worker transcript Item exact-value admission', () => {
     );
     expect(result.itemIds).toHaveLength(1);
     expect(result.diagnostics).toEqual([]);
-    expect(reopened.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
+    expect(
+      reopened.listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toContainEqual(
       expect.objectContaining({
         id: result.itemIds[0],
         text: `prefix_[redacted]_suffix alternative_${alternate}_end`,
@@ -539,7 +604,12 @@ describe('worker transcript Item exact-value admission', () => {
     );
     expect(transcriptItemHistory(fixture)).not.toContain(token);
     const rereopened = createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
-    expect(rereopened.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
+    expect(
+      rereopened.listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toContainEqual(
       expect.objectContaining({
         id: result.itemIds[0],
         text: `prefix_[redacted]_suffix alternative_${alternate}_end`,
@@ -606,10 +676,10 @@ describe('worker transcript import', () => {
         schemaVersion: 1,
         kind: 'item',
         lineage: {
-          workspaceId: 'ws_other',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: turn.id,
-          agentSessionId: 'as_transcript_1',
+          agentSessionId: 'as_00000000-0000-73fb-927c-5d84e16d5481',
           packageSnapshotId: environmentPackage.snapshotId,
         },
         sequence: 1,
@@ -630,7 +700,10 @@ describe('worker transcript import', () => {
     ]);
     expect(
       store
-        .listThreadItems('ws_demo', 'th_demo')
+        .listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
         .some(
           (item) => item.type === 'assistant-message' && item.text === 'This should be rejected.'
         )
@@ -640,10 +713,10 @@ describe('worker transcript import', () => {
   it('deduplicates event transcript records already accepted through live append', () => {
     const { environmentPackage, store, turn } = createTranscriptFixture();
     const lineage = {
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: turn.id,
-      agentSessionId: 'as_transcript_1',
+      agentSessionId: 'as_00000000-0000-73fb-927c-5d84e16d5481',
       packageSnapshotId: environmentPackage.snapshotId,
       requestId: 'req_transcript_1',
     };
@@ -656,7 +729,7 @@ describe('worker transcript import', () => {
         type: 'item.delta',
         data: {
           delta: 'hello',
-          itemId: 'candidate_item_1',
+          itemId: testEntityId('it', 'candidate_item_1'),
         },
       },
     };
@@ -689,12 +762,12 @@ describe('worker transcript import', () => {
       },
       kind: 'event',
       lineage: {
-        agentSessionId: 'as_transcript_1',
+        agentSessionId: 'as_00000000-0000-73fb-927c-5d84e16d5481',
         packageSnapshotId: environmentPackage.snapshotId,
         requestId: 'req_transcript_1',
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       },
       schemaVersion: 1,
       sequence: 3,
@@ -717,10 +790,10 @@ describe('worker transcript import', () => {
   it('rejects event transcript records that conflict with accepted live events', () => {
     const { environmentPackage, store, turn } = createTranscriptFixture();
     const lineage = {
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: turn.id,
-      agentSessionId: 'as_transcript_1',
+      agentSessionId: 'as_00000000-0000-73fb-927c-5d84e16d5481',
       packageSnapshotId: environmentPackage.snapshotId,
       requestId: 'req_transcript_1',
     };
@@ -733,7 +806,7 @@ describe('worker transcript import', () => {
         type: 'item.delta',
         data: {
           delta: 'hello',
-          itemId: 'candidate_item_1',
+          itemId: testEntityId('it', 'candidate_item_1'),
         },
       },
     };
@@ -743,7 +816,7 @@ describe('worker transcript import', () => {
         type: 'item.delta',
         data: {
           delta: 'different',
-          itemId: 'candidate_item_1',
+          itemId: testEntityId('it', 'candidate_item_1'),
         },
       },
     };
@@ -775,12 +848,12 @@ describe('worker transcript import', () => {
       event: { data: { status: 'running' }, type: 'worker.heartbeat' as const },
       kind: 'event' as const,
       lineage: {
-        agentSessionId: 'as_transcript_1',
+        agentSessionId: 'as_00000000-0000-73fb-927c-5d84e16d5481',
         packageSnapshotId: environmentPackage.snapshotId,
         requestId: 'req_transcript_1',
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       },
       schemaVersion: 1 as const,
       sequence: 3,
@@ -817,12 +890,12 @@ describe('worker transcript import', () => {
       event: { data: { status: 'running' }, type: 'worker.heartbeat' as const },
       kind: 'event' as const,
       lineage: {
-        agentSessionId: 'as_transcript_1',
+        agentSessionId: 'as_00000000-0000-73fb-927c-5d84e16d5481',
         packageSnapshotId: environmentPackage.snapshotId,
         requestId: 'req_transcript_1',
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       },
       schemaVersion: 1 as const,
       sequence: 3,
@@ -881,7 +954,7 @@ function prepareCandidate(
     store: fixture.store,
     workspaceDb: fixture.workspaceDb,
     environmentPackage: fixture.environmentPackage,
-    artifactId: 'worker-artifact-candidate',
+    artifactId: testEntityId('ar', 'worker-artifact-candidate'),
     requestId: 'request_file',
     recordedAt: '2026-10-05T00:00:00.000Z',
     metadata: { kind: 'file', mediaType: 'text/markdown', title: 'Candidate' },
@@ -912,7 +985,7 @@ describe('live Artifact Material candidate validation', () => {
     const fixture = createTranscriptFixture();
     const material = createWorkspaceMaterial(fixture.workspaceDb, {
       acceptedAt: '2026-10-05T00:00:00.000Z',
-      actorId: 'user_local',
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       kind: 'markdown',
       requestId: 'create-material',
       sensitivity: 'internal',
@@ -922,7 +995,7 @@ describe('live Artifact Material candidate validation', () => {
     const digest = artifactDigest(Buffer.from(content));
     const base = saveWorkspaceMaterialRevision(fixture.workspaceDb, {
       acceptedAt: '2026-10-05T00:00:01.000Z',
-      actorId: 'user_local',
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       content,
       contentDigest: digest,
       expectedRevisionId: null,
@@ -978,8 +1051,8 @@ describe('live Artifact Material candidate validation', () => {
   ])('rejects $name before any canonical write', ({ name, code }) => {
     const fixture = createTranscriptFixture();
     const proposal = {
-      materialId: 'mat_target',
-      baseRevisionId: 'mrev_base',
+      materialId: 'mat_00000000-0000-7aed-981f-d98411b7cd79',
+      baseRevisionId: 'mrev_00000000-0000-7ab7-8a57-afda5d5abfd6',
       baseContentDigest: `sha256:${'a'.repeat(64)}`,
     };
     const selection = {
@@ -996,7 +1069,7 @@ describe('live Artifact Material candidate validation', () => {
           : name === 'duplicate selection'
             ? [selection, selection]
             : [selection],
-      ...(name === 'wrong lineage' ? { turnId: 'turn_other' } : {}),
+      ...(name === 'wrong lineage' ? { turnId: 'tu_00000000-0000-7e18-a597-336d92a699e9' } : {}),
     } as WorkerContextPackageTrace;
     expect(() =>
       prepareCandidate(fixture, {

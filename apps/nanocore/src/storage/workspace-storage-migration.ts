@@ -17,6 +17,7 @@ import {
   redactAgentEnvironmentPackageSnapshot,
   WorkspaceConfigSchema,
 } from '@openkit/config-schema';
+import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 
@@ -305,11 +306,12 @@ export function migrateWorkspaceStorage(
 
     stage = 'backup';
     const backupStartedAt = now();
+    const backupId = allocateEntityId('drb');
     copyColdDataRoot({ backupRoot: input.backupRoot, dataRoot: input.dataRoot });
     const backupCompletedAt = now();
     backup = writeColdDataRootBackupManifest({
       backupRoot: input.backupRoot,
-      backupId: createBackupId(marker.deploymentId, backupStartedAt),
+      backupId,
       sourceDeploymentId: marker.deploymentId,
       startedAt: backupStartedAt,
       completedAt: backupCompletedAt,
@@ -751,7 +753,13 @@ function openPredecessorCoreDb(dataRoot: string): CoreDb {
     throw new Error('Predecessor Core database failed SQLite integrity validation.');
   }
 
-  return { scope: 'core', sqlite, db: drizzle(sqlite, { schema }), dataRoot };
+  return {
+    scope: 'core',
+    canInitializeLocalUser: false,
+    sqlite,
+    db: drizzle(sqlite, { schema }),
+    dataRoot,
+  };
 }
 
 /**
@@ -779,21 +787,6 @@ function createMigrationSources(dataRoot: string): WorkspaceMigrationSource[] {
       workspaceId: root.workspaceId,
     }))
     .sort((left, right) => left.workspaceId.localeCompare(right.workspaceId));
-}
-
-/**
- * Creates a deterministic backup id from predecessor lineage and capture time.
- *
- * @param deploymentId Preserved deployment identity.
- * @param startedAt Backup start timestamp.
- * @returns Stable backup id.
- */
-function createBackupId(deploymentId: string, startedAt: string): string {
-  const suffix = createHash('sha256')
-    .update(`${deploymentId}\0${startedAt}`)
-    .digest('hex')
-    .slice(0, 24);
-  return `backup_workspace_storage_${suffix}`;
 }
 
 /**
