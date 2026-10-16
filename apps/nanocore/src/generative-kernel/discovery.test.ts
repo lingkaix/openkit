@@ -79,14 +79,14 @@ describe('native Light App semantic discovery', () => {
         {
           store,
           dataRoot,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           requestId: randomUUID(),
-          actor: { kind: 'user', id: 'user_local' },
+          actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           inflightCommands: new WeakMap(),
         },
         schema
       );
-      const index = listLightApps(dataRoot, 'ws_demo');
+      const index = listLightApps(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       expect(index.items).toEqual([
         expect.objectContaining({
           appId: created.appId,
@@ -97,7 +97,7 @@ describe('native Light App semantic discovery', () => {
         }),
       ]);
       expect(index.items[0]).not.toHaveProperty('records');
-      const exact = getLightApp(dataRoot, 'ws_demo', created.appId);
+      const exact = getLightApp(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', created.appId);
       expect(exact.schema).toEqual(created.schema);
       const tenants = exact.schema!.collections[0]!;
       const mappings = exact.schema!.collections[1]!;
@@ -113,7 +113,16 @@ describe('native Light App semantic discovery', () => {
       expect(mappings.fields[3]).not.toHaveProperty('namespace');
       expect(mappings.fields[3]).not.toHaveProperty('unit');
       expect(exact.schema!.purpose).toContain('freshness is unknown');
-      expect(exact.capabilities.filterOperators).toEqual(['=', '!=', '>', '>=', '<', '<=', '&&', '||']);
+      expect(exact.capabilities.filterOperators).toEqual([
+        '=',
+        '!=',
+        '>',
+        '>=',
+        '<',
+        '<=',
+        '&&',
+        '||',
+      ]);
       expect(exact.capabilities.maxBatchEntries).toBe(50);
     } finally {
       rmSync(dataRoot, { recursive: true, force: true });

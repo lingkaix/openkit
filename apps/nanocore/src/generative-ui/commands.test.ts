@@ -7,6 +7,7 @@ import {
   GENERATIVE_UI_PROTOCOL_VERSION,
   type LightAppSchemaInput,
 } from '@openkit/app-api-schemas';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -126,16 +127,16 @@ describe('Generative UI commands', () => {
     const context = createContext();
     try {
       const turn = context.store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Show the observation',
         context.actor
       );
       const text = 'The external source reported 3 matches.';
       const sourceItem = context.store.createItem({
-        id: `it_${randomUUID()}`,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        id: allocateEntityId('it'),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'tool-call',
         status: 'completed',
@@ -149,7 +150,7 @@ describe('Generative UI commands', () => {
         completedAt: new Date().toISOString(),
       });
       const published = await publishGenerativePresentation(context, {
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         title: 'Observation',
         fallbackText: text,
@@ -166,6 +167,16 @@ describe('Generative UI commands', () => {
       expect(listLightApps(context.dataRoot, context.workspaceId).totalItems).toBe(0);
       expect(published.source).toMatchObject({ kind: 'item', itemId: sourceItem.id });
       expect(published.messages[2]).toMatchObject({ updateDataModel: { value: { text } } });
+      for (const changedSource of [
+        { status: 'failed' as const },
+        { result: null },
+        { result: 'Changed retained observation' },
+      ]) {
+        context.store.updateItem(sourceItem.id, changedSource);
+        expect(() => getGenerativePresentation(context, published.id)).toThrow(KernelCommandError);
+        context.store.updateItem(sourceItem.id, sourceItem);
+      }
+      expect(getGenerativePresentation(context, published.id).id).toBe(published.id);
       expect(
         context.workspaceDb.sqlite
           .prepare('SELECT COUNT(*) AS n FROM generative_presentations')
@@ -180,13 +191,13 @@ describe('Generative UI commands', () => {
     const context = createContext();
     try {
       const turn = context.store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Present the answer',
         context.actor
       );
       const input = {
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         title: 'Answer',
         fallbackText: 'A generated answer.',
@@ -209,7 +220,13 @@ describe('Generative UI commands', () => {
         status: 'completed',
         turnId: turn.id,
       });
-      expect(context.store.getTurn('ws_demo', 'th_demo', turn.id).status).toBe(turn.status);
+      expect(
+        context.store.getTurn(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          turn.id
+        ).status
+      ).toBe(turn.status);
       expect(await publishGenerativePresentation(context, input)).toEqual(published);
       expect(
         context.store
@@ -240,15 +257,15 @@ describe('Generative UI commands', () => {
     const context = createContext();
     try {
       const turn = context.store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Show the observation',
         context.actor
       );
       const source = context.store.createItem({
-        id: `it_${randomUUID()}`,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        id: allocateEntityId('it'),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'tool-call',
         status,
@@ -263,7 +280,7 @@ describe('Generative UI commands', () => {
       });
       await expect(
         publishGenerativePresentation(context, {
-          threadId: 'th_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: turn.id,
           title: 'Observation',
           fallbackText: 'Observation',
@@ -297,13 +314,13 @@ describe('Generative UI commands', () => {
     const context = createContext();
     try {
       const turn = context.store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Present the answer',
         context.actor
       );
       const input = {
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         title: 'Answer',
         fallbackText: 'Retained answer.',
@@ -351,14 +368,14 @@ describe('Generative UI commands', () => {
     const context = createContext();
     try {
       const turn = context.store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Present the answer',
         context.actor
       );
       await expect(
         publishGenerativePresentation(context, {
-          threadId: 'th_demo',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: turn.id,
           title: 'Answer',
           fallbackText: 'Answer',
@@ -381,28 +398,28 @@ describe('Generative UI commands', () => {
     const context = createContext();
     try {
       const privateThread = context.store.createThread(
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         'Private Tool observation',
         undefined,
         'conversation',
-        { visibility: 'private', privateOwnerUserId: 'user_local' }
+        { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
       );
       const sourceTurn = context.store.createTurn(
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         privateThread.id,
         'Read a private source',
         context.actor
       );
       const destination = context.store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Show the result publicly',
         context.actor
       );
       const text = 'Private Tool result';
       const source = context.store.createItem({
-        id: `it_${randomUUID()}`,
-        workspaceId: 'ws_demo',
+        id: allocateEntityId('it'),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: privateThread.id,
         turnId: sourceTurn.id,
         type: 'tool-call',
@@ -420,7 +437,7 @@ describe('Generative UI commands', () => {
         publishGenerativePresentation(
           { ...context, administratorEligible: true },
           {
-            threadId: 'th_demo',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
             turnId: destination.id,
             title: 'Observation',
             fallbackText: 'Observation',
