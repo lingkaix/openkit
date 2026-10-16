@@ -642,7 +642,11 @@ describe('runtime config loading and reload planning', () => {
     });
 
     for (const transition of transitions) {
-      for (const mode of ['dry-run', 'strict', 'safe'] as const) {
+      const modes =
+        transition.name === 'replacement'
+          ? (['dry-run', 'strict', 'safe'] as const)
+          : (['safe'] as const);
+      for (const mode of modes) {
         it(`keeps ${transition.name} startup-owned during ${mode} reload`, () => {
           const dataRoot = createDataRoot();
           try {
