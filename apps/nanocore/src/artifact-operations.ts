@@ -26,6 +26,7 @@ import {
   listArtifactReviews,
   replayArtifactReviewDecision,
   serializeArtifactReviewFollowUpRequest,
+  selectArtifactReviewCandidate,
 } from './artifact-reviews.js';
 import {
   isCurrentDeploymentAdministrator,
@@ -336,6 +337,37 @@ export function createArtifactOperationImplementations(
         workspaceDb?.sqlite.close();
       }
     },
+    'artifact.review.select': async (input, context) => {
+      const actorId = responsibleUserIdForActor(context.actorRef)!;
+      const { workspaceId, artifactId, artifactVersion } = input;
+      assertArtifactWorkspaceLineage(actorId, administratorEligible(context), store, workspaceId, artifactId);
+      const workspaceDb = openReceiptDb(workspaceId);
+      try {
+        if (listWorkspaceSyncReviews(workspaceDb, workspaceId).some((review) => review.artifactId === artifactId)) throw recoveryRequired('A Workspace Sync Review already owns the target Artifact presentation.');
+        const choiceInput = { actorId, artifactId, artifactVersion, contentDigest: input.contentDigest, requestId: input.requestId, ...(input.reason === undefined ? {} : { reason: input.reason }), selectedAt: new Date().toISOString() };
+        const requireCandidate = () => {
+          const review = getArtifactReview(workspaceDb, artifactId, artifactVersion);
+          const artifact = store.getArtifact(workspaceId, artifactId);
+          if (artifact.version !== artifactVersion || artifact.contentDigest !== input.contentDigest || review.contentDigest !== input.contentDigest || artifact.status !== 'ready') throw new ArtifactReviewError('stale', 'The exact Artifact candidate is unavailable.');
+          requireCurrentReviewedArtifact(store, review);
+          artifactReviewContentProof(artifact, workspaceDb);
+        };
+        return await runIdempotentCommand({
+          store, inflightCommands, command: 'artifact.review.select', requestId: input.requestId,
+          scope: { workspaceId, artifactId, artifactVersion: String(artifactVersion) },
+          input: { contentDigest: input.contentDigest, reason: input.reason ?? null },
+          responseKind: 'artifact_review', workspaceDb, workspaceTransaction: true,
+          responseId: (result) => result.review.reviewId,
+          execute: () => { requireCandidate(); return { review: selectArtifactReviewCandidate(workspaceDb, choiceInput) }; },
+          replay: (record) => {
+            requireCandidate();
+            const review = selectArtifactReviewCandidate(workspaceDb, choiceInput, true);
+            if (record.response.kind !== 'artifact_review' || record.response.id !== review.reviewId) throw recoveryRequired('The candidate choice receipt has invalid response lineage.');
+            return { review };
+          },
+        });
+      } catch (error) { artifactOperationFailure(error); } finally { workspaceDb.sqlite.close(); }
+    },
     'artifact.review.decide': async (input, context) => {
       const actor = context.actorRef;
       const { workspaceId, artifactId, artifactVersion } = input;
@@ -354,6 +386,7 @@ export function createArtifactOperationImplementations(
       );
       const workspaceDb = openReceiptDb(workspaceId);
       const feedback = input.feedback ?? null;
+      const rangeFeedback = input.rangeFeedback ?? null;
 
       try {
         if (
@@ -372,6 +405,7 @@ export function createArtifactOperationImplementations(
             artifactVersion,
             decision: input.decision,
             feedback,
+            rangeFeedback,
             requestId: input.requestId,
           });
           if (
@@ -410,7 +444,7 @@ export function createArtifactOperationImplementations(
           command: 'artifact.review.decide' as const,
           requestId: input.requestId,
           scope: { workspaceId, artifactId, artifactVersion: String(artifactVersion) },
-          input: { decision: input.decision, feedback },
+          input: { decision: input.decision, feedback, rangeFeedback },
           responseKind: 'artifact_review' as const,
           workspaceDb,
           replay,
@@ -456,6 +490,7 @@ export function createArtifactOperationImplementations(
                 decidedAt: new Date().toISOString(),
                 decision,
                 feedback,
+                rangeFeedback,
                 requestId: input.requestId,
               } as const;
               const claimedResponse =
@@ -519,7 +554,7 @@ export function createArtifactOperationImplementations(
               }
 
               const prompt = artifactReviewFollowUpPrompt(
-                review,
+                getArtifactReview(workspaceDb, artifactId, artifactVersion),
                 decision,
                 feedback,
                 artifact,
@@ -539,6 +574,7 @@ export function createArtifactOperationImplementations(
                   artifactVersion: review.artifactVersion,
                   decision,
                   feedback,
+                  rangeFeedback,
                 }),
                 stage: 'preparing',
                 iteration: 0,
@@ -624,6 +660,7 @@ export function createArtifactOperationImplementations(
                 decidedAt: new Date().toISOString(),
                 decision: input.decision,
                 feedback,
+                rangeFeedback,
                 requestId: input.requestId,
               });
             },
@@ -849,6 +886,7 @@ function artifactReviewFollowUpPrompt(
     sourceTurnId: review.sourceTurnId,
     sourceAgentId: review.sourceAgentId,
     materialProposal: review.materialProposal,
+    ...(review.rangeFeedback == null ? {} : { rangeFeedback: review.rangeFeedback }),
     decision,
     feedback,
     decisionRequestId,

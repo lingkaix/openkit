@@ -135,7 +135,7 @@ describe('scoped storage databases', () => {
         'workspace_snapshot_collections',
         'workspace_snapshot_cursors',
       ]);
-      expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual(['workspace_0000_setup']);
+      expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual(['workspace_0000_setup', 'workspace_0001_exact_review_feedback']);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -281,7 +281,7 @@ describe('scoped storage databases', () => {
     );
     const migratedUserDb = openUserDb(dataRoot, '.staging');
     try {
-      expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual(['workspace_0000_setup']);
+      expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual(['workspace_0000_setup', 'workspace_0001_exact_review_feedback']);
       expect(listMigrationIds(migratedUserDb.sqlite, 'user')).toEqual(['user_0000_setup']);
     } finally {
       workspaceDb.sqlite.close();
@@ -581,7 +581,7 @@ process.kill(process.pid, 'SIGKILL');`,
 
     try {
       expect(listMigrationIds(userDb.sqlite, 'user')).toEqual(['user_0000_setup']);
-      expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual(['workspace_0000_setup']);
+      expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual(['workspace_0000_setup', 'workspace_0001_exact_review_feedback']);
     } finally {
       userDb.sqlite.close();
       workspaceDb.sqlite.close();

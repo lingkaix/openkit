@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
 import {
+  type ArtifactReviewRangeFeedback,
+  ArtifactReviewRangeFeedbackSchema,
+  SelectArtifactReviewCandidateRequestSchema,
   type ArtifactMaterialProposal,
   ArtifactMaterialProposalSchema,
   type ArtifactReviewView,
@@ -54,6 +57,7 @@ export const ArtifactReviewFollowUpRequestSchema = z
     sourceTurnId: TurnIdSchema,
     sourceAgentId: z.string().min(1),
     materialProposal: ArtifactMaterialProposalSchema.nullable(),
+    rangeFeedback: ArtifactReviewRangeFeedbackSchema.optional(),
     decision: z.enum(['needs_refinement', 'redo']),
     feedback: z.string().min(1),
     decisionRequestId: z.string().min(1),
@@ -61,6 +65,9 @@ export const ArtifactReviewFollowUpRequestSchema = z
   })
   .strict()
   .superRefine((request, context) => {
+    if (request.rangeFeedback !== undefined && (request.materialProposal === null || request.rangeFeedback.materialId !== request.materialProposal.materialId || request.rangeFeedback.revisionId !== request.materialProposal.baseRevisionId || request.rangeFeedback.contentDigest !== request.materialProposal.baseContentDigest)) {
+      context.addIssue({ code: 'custom', message: 'Range feedback must identify the recorded Material proposal base.', path: ['rangeFeedback'] });
+    }
     if (request.artifactContent === null) {
       if (
         !request.artifactFile ||
@@ -145,6 +152,8 @@ export interface ReplayArtifactReviewDecisionInput {
   readonly decision: ArtifactReviewDecision;
   /** Optional non-empty feedback normalized to null when absent. */
   readonly feedback: string | null;
+  /** Exact original Material source range, when supplied. */
+  readonly rangeFeedback?: ArtifactReviewRangeFeedback | null;
   /** Caller command identity. */
   readonly requestId: string;
 }
@@ -169,7 +178,7 @@ export type DecideArtifactReviewInput = ReplayArtifactReviewDecisionInput & {
   );
 
 /** Raw Artifact Review authority row including private request proof. */
-type ArtifactReviewRow = typeof artifactReviews.$inferSelect;
+type ArtifactReviewRow = Omit<typeof artifactReviews.$inferSelect, 'rangeFeedback' | 'candidateSelections'> & { readonly rangeFeedbackJson: string | null; readonly candidateSelectionsJson: string };
 
 /** Portable Review owner retaining private decision request lineage. */
 export type ExportableArtifactReview = ArtifactReviewView & {
@@ -186,6 +195,7 @@ const REVIEW_SELECT = `SELECT
   proposal_base_content_digest AS proposalBaseContentDigest,
   decision, decision_actor_id AS decisionActorId,
   decision_request_id AS decisionRequestId, feedback, decided_at AS decidedAt,
+  range_feedback AS rangeFeedbackJson, candidate_selections AS candidateSelectionsJson,
   follow_up_turn_id AS followUpTurnId,
   applied_material_revision_id AS appliedMaterialRevisionId, created_at AS createdAt
 FROM artifact_reviews`;
@@ -229,8 +239,8 @@ export function createArtifactReview(
         source_thread_id, source_turn_id, source_agent_id,
         proposal_material_id, proposal_base_revision_id, proposal_base_content_digest,
         decision, decision_actor_id, decision_request_id, feedback, decided_at,
-        follow_up_turn_id, applied_material_revision_id, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?)`)
+        follow_up_turn_id, applied_material_revision_id, range_feedback, candidate_selections, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, '[]', ?)`)
       .run(
         workspaceDb.workspaceId,
         reviewId,
@@ -340,6 +350,13 @@ export function decideArtifactReview(
 
     const proposal = materialProposal(row);
     if (proposal) requireProposalAuthority(workspaceDb, proposal);
+    if (input.rangeFeedback != null) {
+      const rangeProposal = assertRangeFeedback(workspaceDb, row, input.rangeFeedback);
+      const material = requireProposalAuthority(workspaceDb, rangeProposal);
+      if (material.currentRevisionId !== rangeProposal.baseRevisionId) {
+        throw reviewError('conflict', 'The Material current revision no longer matches the proposal.');
+      }
+    }
 
     if (input.decision === 'accepted' && proposal) {
       return applyAcceptedProposal(workspaceDb, row, proposal, input);
@@ -395,6 +412,49 @@ export function replayArtifactReviewDecision(
   }
   assertDecisionInputMatches(row, input);
   return toDecisionResponse(workspaceDb, row);
+}
+
+/** Records or replays a choice on the existing Review without applying content or starting work. @param workspaceDb Existing Review database. @param input Admitted actor and exact candidate command. @returns Existing Review with ordered choice evidence. @throws ArtifactReviewError for stale, conflicting or invalid input. */
+export function selectArtifactReviewCandidate(
+  workspaceDb: WorkspaceDb,
+  input: { readonly actorId: string; readonly artifactId: string; readonly artifactVersion: number; readonly contentDigest: string; readonly requestId: string; readonly reason?: string; readonly selectedAt: string },
+  replay = false
+): ArtifactReviewView {
+  if (!input.actorId || !SelectArtifactReviewCandidateRequestSchema.safeParse({ requestId: input.requestId, contentDigest: input.contentDigest, ...(input.reason === undefined ? {} : { reason: input.reason }) }).success) {
+    throw reviewError('invalid_request', 'The Artifact candidate choice input is invalid.');
+  }
+  const row = requireReview(workspaceDb, input.artifactId, input.artifactVersion);
+  assertStoredReview(workspaceDb, row);
+  if (row.contentDigest !== input.contentDigest) throw reviewError('stale', 'The exact candidate digest is unavailable.');
+  const review = toView(row);
+  const prior = review.candidateSelections.find((selection) => selection.requestId === input.requestId);
+  if (prior) {
+    if (prior.actorId !== input.actorId || prior.reason !== (input.reason ?? null)) throw reviewError('idempotency_key_conflict', 'The requestId was already used for different candidate choice input.');
+    if (!replay) throw reviewError('recovery_required', 'The candidate choice has no command receipt.');
+    return review;
+  }
+  if (replay) throw reviewError('recovery_required', 'The candidate choice receipt has no matching choice.');
+  const candidateSelections = [...review.candidateSelections, { actorId: input.actorId, requestId: input.requestId, reason: input.reason ?? null, selectedAt: input.selectedAt }];
+  workspaceDb.sqlite.prepare('UPDATE artifact_reviews SET candidate_selections = ? WHERE workspace_id = ? AND artifact_id = ? AND artifact_version = ?').run(JSON.stringify(candidateSelections), workspaceDb.workspaceId, row.artifactId, row.artifactVersion);
+  return getArtifactReview(workspaceDb, row.artifactId, row.artifactVersion);
+}
+
+/** Parses the existing Review's JSON columns without masking corrupt retained evidence. @param value Stored JSON or null. @returns Parsed value. @throws ArtifactReviewError for invalid JSON. */
+function parseReviewJson(value: string | null): unknown {
+  try { return value === null ? null : JSON.parse(value); } catch { throw reviewError('recovery_required', 'The retained Artifact Review evidence is invalid.'); }
+}
+
+/** Validates exact source offsets and text against the recorded immutable proposal base. @param workspaceDb Review database. @param row Review owner. @param range Exact submitted source range. @param retained Whether this is retained authority validation. @throws ArtifactReviewError for an invalid range or contradictory authority. */
+function assertRangeFeedback(workspaceDb: WorkspaceDb, row: ArtifactReviewRow, range: ArtifactReviewRangeFeedback, retained = false): ArtifactMaterialProposal {
+  const proposal = materialProposal(row);
+  const code = retained ? 'recovery_required' : 'invalid_request';
+  if (!proposal || range.materialId !== proposal.materialId || range.revisionId !== proposal.baseRevisionId || range.contentDigest !== proposal.baseContentDigest) throw reviewError(code, 'Range feedback must identify the recorded Material proposal base.');
+  const base = getWorkspaceMaterialRevision(workspaceDb, proposal.materialId, proposal.baseRevisionId);
+  const content = base.content;
+  /** A UTF-16 source boundary cannot separate a high and low surrogate. */
+  const splitsPair = (offset: number) => offset > 0 && offset < content.length && content.charCodeAt(offset - 1) >= 0xd800 && content.charCodeAt(offset - 1) <= 0xdbff && content.charCodeAt(offset) >= 0xdc00 && content.charCodeAt(offset) <= 0xdfff;
+  if (range.start < 0 || range.start >= range.end || range.end > content.length || splitsPair(range.start) || splitsPair(range.end) || content.slice(range.start, range.end) !== range.originalText) throw reviewError(code, 'Range feedback does not match the exact original Material source.');
+  return proposal;
 }
 
 /**
@@ -492,7 +552,7 @@ function updateDecision(
   const updated = workspaceDb.sqlite
     .prepare(`UPDATE artifact_reviews SET
       decision = ?, decision_actor_id = ?, decision_request_id = ?, feedback = ?, decided_at = ?,
-      follow_up_turn_id = ?, applied_material_revision_id = ?
+      follow_up_turn_id = ?, applied_material_revision_id = ?, range_feedback = ?
       WHERE workspace_id = ? AND artifact_id = ? AND artifact_version = ? AND decision IS NULL`)
     .run(
       input.decision,
@@ -502,6 +562,7 @@ function updateDecision(
       input.decidedAt,
       followUpTurnId,
       appliedMaterialRevisionId,
+      input.rangeFeedback == null ? null : JSON.stringify(input.rangeFeedback),
       workspaceDb.workspaceId,
       row.artifactId,
       row.artifactVersion
@@ -517,6 +578,7 @@ function assertDecisionInput(input: ReplayArtifactReviewDecisionInput): void {
     decision: input.decision,
     ...(input.feedback === null ? {} : { feedback: input.feedback }),
     requestId: input.requestId,
+    ...(input.rangeFeedback == null ? {} : { rangeFeedback: input.rangeFeedback }),
   });
   if (
     !input.actorId ||
@@ -567,7 +629,8 @@ function assertDecisionInputMatches(
   if (
     row.decision !== input.decision ||
     row.decisionActorId !== input.actorId ||
-    row.feedback !== input.feedback
+    row.feedback !== input.feedback ||
+    JSON.stringify(toView(row).rangeFeedback ?? null) !== JSON.stringify(input.rangeFeedback ?? null)
   ) {
     throw reviewError(
       'idempotency_key_conflict',
@@ -740,6 +803,8 @@ function parseInputView(
     workspaceId,
     reviewId,
     ...input,
+    rangeFeedback: null,
+    candidateSelections: [],
     decision: null,
     decisionActorId: null,
     feedback: null,
@@ -782,6 +847,10 @@ function assertStoredReview(workspaceDb: WorkspaceDb, row: ArtifactReviewRow): v
   if (proposal) {
     requireProposalAuthority(workspaceDb, proposal);
   }
+  const view = toView(row);
+  if (new Set(view.candidateSelections.map((selection) => selection.requestId)).size !== view.candidateSelections.length) throw reviewError('recovery_required', 'The retained candidate choice request identity is duplicated.');
+  const range = view.rangeFeedback;
+  if (range != null) assertRangeFeedback(workspaceDb, row, range, true);
   if (row.decision !== null) {
     assertStoredDecisionResult(workspaceDb, row);
   }
@@ -802,6 +871,8 @@ function toView(row: ArtifactReviewRow): ArtifactReviewView {
     decision: row.decision,
     decisionActorId: row.decisionActorId,
     feedback: row.feedback,
+    rangeFeedback: parseReviewJson(row.rangeFeedbackJson),
+    candidateSelections: parseReviewJson(row.candidateSelectionsJson),
     decidedAt: row.decidedAt,
     followUpTurnId: row.followUpTurnId,
     appliedMaterialRevisionId: row.appliedMaterialRevisionId,
