@@ -42,6 +42,68 @@ function sourceFixture() {
 
 /** Keeps explicit registered-source selection distinct from coincidentally equal entry bytes. */
 describe('direct Knowledge saved-source lineage', () => {
+  it('withholds published page identities and content after a registered Source becomes private', async () => {
+    const f = sourceFixture();
+    try {
+      const origin = f.store.createThread('ws_demo', 'Initially shared source audience');
+      const { source } = await f.client.operations['knowledge.source.register']({
+        workspaceId: 'ws_demo',
+        requestId: crypto.randomUUID(),
+        kind: 'document',
+        title: 'Source audience can become narrower',
+        content: 'The protected meeting starts at eight.',
+        originatingThreadId: origin.id,
+      });
+      const created = await f.client.operations['knowledge.create']({
+        workspaceId: 'ws_demo',
+        requestId: crypto.randomUUID(),
+        baseRevision: (await f.client.operations['knowledge.list']({ workspaceId: 'ws_demo' }))
+          .notebookRevision,
+        knowledgePageId: 'protected-meeting-marker',
+        kind: 'project-context',
+        title: 'PROTECTED-TITLE-MARKER',
+        content: 'PROTECTED-BODY-MARKER',
+        sourceReferences: [`source:${source.id}@${source.contentDigest}`],
+      });
+      const issued = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: 'user_local',
+        scope: 'workspace-readonly',
+        workspaceIds: ['ws_demo'],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      const app = createApp({
+        mode: 'server',
+        coreDb: f.coreDb,
+        dataRoot: f.dataRoot,
+        store: f.store,
+      });
+      const client = createCoreClient({
+        baseUrl: 'http://127.0.0.1',
+        headers: { authorization: `Bearer ${issued.secret}` },
+        fetch: (input, init) => app.fetch(new Request(input, init)),
+      });
+      const before = await client.operations['knowledge.list']({ workspaceId: 'ws_demo' });
+      expect(before.items.map((entry) => entry.id)).toContain(created.id);
+      // Change the real current audience; immutable notebook bytes and their revision stay intact.
+      Object.assign(origin, {
+        visibility: 'private',
+        privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000002',
+      });
+      const after = await client.operations['knowledge.list']({ workspaceId: 'ws_demo' });
+      expect(after.notebookRevision).toBe(before.notebookRevision);
+      for (const denied of [
+        created.id,
+        created.title,
+        created.content,
+        source.id,
+        source.contentDigest,
+      ])
+        expect(JSON.stringify(after.items)).not.toContain(denied);
+    } finally {
+      f.close();
+    }
+  });
+
   it('filters private Source identities and refuses private metadata for a current ordinary readonly member', async () => {
     const f = sourceFixture();
     try {
