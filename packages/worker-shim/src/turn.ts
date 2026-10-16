@@ -268,6 +268,8 @@ async function runResidentTurnImplementation(
   };
   let terminalPublication: Promise<void> | null = null;
   let terminalOutcomeAttempted = false;
+  // Keep settled native warnings if a later drain or publication step fails.
+  let adapterDiagnostics: Record<string, string> = {};
   let workerControlReady = false;
   let residentTurn: WorkerResidentTurn | null = null;
   let interrupted = options.signal.aborted;
@@ -462,6 +464,7 @@ async function runResidentTurnImplementation(
         throw outcome.error;
       }
       adapterResult = outcome.result;
+      adapterDiagnostics = sanitizeAdapterDiagnostics(adapterResult.diagnostics, credentialValues);
       if (
         cancelledAppendFailure !== undefined &&
         !(adapterResult.status === 'interrupted' && adapterResult.interruptRequested === true)
@@ -534,10 +537,6 @@ async function runResidentTurnImplementation(
         heartbeatFailure,
       ]);
     }
-    const adapterDiagnostics = sanitizeAdapterDiagnostics(
-      adapterResult.diagnostics,
-      credentialValues
-    );
     if (status === 'failed') {
       // Adapter summaries are already normalized; shared code never reads native protocol fields.
       adapterDiagnostics.failureCause = assistantOutputRejected
@@ -548,7 +547,7 @@ async function runResidentTurnImplementation(
             summarizeProcessOutput(adapterResult.stopReason, credentialValues));
     }
     const terminalInput: WorkerTerminalOutcomeInput = {
-      ...(status === 'failed' && Object.keys(adapterDiagnostics).length > 0
+      ...(Object.keys(adapterDiagnostics).length > 0
         ? { diagnostics: adapterDiagnostics }
         : {}),
       status,
@@ -609,7 +608,10 @@ async function runResidentTurnImplementation(
         workerControlReady && !controlAbortController.signal.aborted ? controlSession : null,
         {
           diagnostics: sanitizeAdapterDiagnostics(
-            { native: failure instanceof Error ? failure.message : String(failure) },
+            {
+              ...adapterDiagnostics,
+              native: failure instanceof Error ? failure.message : String(failure),
+            },
             credentialValues
           ),
           status: 'failed',
@@ -1661,9 +1663,9 @@ function containsExactCredentialValue(
 }
 
 /**
- * Redacts and bounds adapter or local failure diagnostics before shared terminal merging.
+ * Redacts and bounds adapter or local diagnostics before shared terminal merging.
  *
- * @param diagnostics Adapter or local failure diagnostics.
+ * @param diagnostics Adapter or local diagnostics.
  * @param credentialValues Exact child credential values to remove.
  * @returns Product-safe non-empty diagnostic summaries.
  */
