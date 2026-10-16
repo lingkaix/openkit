@@ -221,6 +221,7 @@ function fixture(schemaPolicy: 'tracking' | 'pinned' = 'tracking', credentialReq
       dependencies: { coreDb, openWorkspace: (id) => openWorkspaceDb(dataRoot, id) },
       prepare: async () => {
         prepared = await prepareCapturedPendingCall({
+          actor: { userId: 'user_local' },
           record,
           catalog,
           coreDb,

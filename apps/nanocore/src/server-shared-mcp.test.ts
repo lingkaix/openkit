@@ -20,8 +20,12 @@ import {
   setSharedMcpDisabled,
   updateMcpBinding,
 } from './catalog/resource-catalog.js';
-import { createRuntimeConfigManager } from './config/runtime-config.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from './config/runtime-config.js';
 import { FsStore } from './lib/store.js';
+import { ProviderRegistry } from './providers/registry.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import {
@@ -29,11 +33,12 @@ import {
   schedulerExecutionCorrelation,
 } from './runtime/execution-attempt-records.js';
 import { bindNanoHostAttemptRouteTokenHashes } from './runtime/nanohost-attempt-records.js';
+import { listThreadPendingRequests, readPendingRequest } from './runtime/pending-requests.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { createTestAgentSetup } from './test-support/agent-environment.js';
+import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
@@ -148,7 +153,23 @@ async function fixture() {
     vaultUnlockState.lock();
   });
   const materialResolution = vi.spyOn(vaultUnlockState.backend(), 'resolve');
-  const manager = createRuntimeConfigManager({ dataRoot });
+  const manager = createRuntimeConfigManager({
+    dataRoot,
+    initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+      dataRoot,
+      openKitConfig: { mode: 'server' },
+      agentManifests: [createTestAgentSetup({ mcpIds: [serverId] }).manifest],
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Synthetic provider',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+    }),
+  });
   const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
   const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
   cleanups.push(() => workerMcpGateway.close());
@@ -276,28 +297,33 @@ async function fixture() {
       })?.disposition
     ).toBe('accepted');
     outputs.push(pkg);
+    const invokeMcp = async (
+      method: 'tools/call' | 'tools/list',
+      params: Record<string, unknown>
+    ) => {
+      const response = await app.request(`/api/worker-capabilities/mcp/${serverId}`, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json, text/event-stream',
+          'content-type': 'application/json',
+          authorization: `Bearer ${registration.workerCapabilityToken}`,
+        },
+        body: JSON.stringify({
+          id: randomUUID(),
+          jsonrpc: '2.0',
+          method,
+          params,
+        }),
+      });
+      const body = await response.json();
+      outputs.push(body);
+      return { status: response.status, body };
+    };
     return {
       pkg,
       workspaceId,
-      call: async (message: string) => {
-        const response = await app.request(`/api/worker-capabilities/mcp/${serverId}`, {
-          method: 'POST',
-          headers: {
-            accept: 'application/json, text/event-stream',
-            'content-type': 'application/json',
-            authorization: `Bearer ${registration.workerCapabilityToken}`,
-          },
-          body: JSON.stringify({
-            id: randomUUID(),
-            jsonrpc: '2.0',
-            method: 'tools/call',
-            params: { name: 'echo', arguments: { message } },
-          }),
-        });
-        const body = await response.json();
-        outputs.push(body);
-        return { status: response.status, body };
-      },
+      call: (message: string) => invokeMcp('tools/call', { name: 'echo', arguments: { message } }),
+      list: () => invokeMcp('tools/list', {}),
     };
   };
   const noLocalCatalog = () => {
@@ -749,6 +775,71 @@ describe('Server-shared MCP through governed Worker routes', () => {
     expectRefusal(await worker.call('must-not-resolve'));
     expect(f.materialResolution).not.toHaveBeenCalled();
     expect(f.upstream.methods).toEqual([]);
+  });
+
+  it.each([
+    'current',
+    'grant-revoked',
+    'server-disabled',
+  ] as const)('executes captured shared approval only with %s authority', async (authority) => {
+    const f = await fixture();
+    const { grant } = await sharedSetup(f);
+    const catalog = loadResourceCatalog(f.dataRoot, { kind: 'server' });
+    const binding = catalog.mcp.bindings.find((item) => item.entryId === serverId)!;
+    await f.call('administration.server-mcp-update-binding', {
+      mcpId: serverId,
+      expectedRevision: catalog.revision,
+      bindingRevision: binding.revision,
+      enabled: true,
+      allowedTools: ['echo'],
+      approvalRequiredTools: ['echo'],
+      schemaPolicy: 'tracking',
+    });
+    const worker = await f.worker(f.workspaces[0]!.id);
+    expect((await worker.list()).body).toMatchObject({ result: { tools: expect.any(Array) } });
+    expect((await worker.call('approved-shared-message')).body).toMatchObject({
+      result: { structuredContent: { status: 'pending-approval' } },
+    });
+    const db = f.workspaceDbs[0]!;
+    const records = listThreadPendingRequests(
+      db.sqlite,
+      worker.workspaceId,
+      worker.pkg.scope.threadId
+    );
+    expect(records).toHaveLength(1);
+    const pending = records[0]!;
+    expect(f.upstream.methods).not.toContain('tools/call');
+    if (authority === 'grant-revoked') {
+      await f.call('vault.server-mcp-grant-revoke', { grantId: grant.grantId });
+    } else if (authority === 'server-disabled') {
+      const current = loadResourceCatalog(f.dataRoot, { kind: 'server' });
+      const currentBinding = current.mcp.bindings.find((item) => item.entryId === serverId)!;
+      await f.call('administration.server-mcp-update-binding', {
+        mcpId: serverId,
+        expectedRevision: current.revision,
+        bindingRevision: currentBinding.revision,
+        enabled: false,
+        allowedTools: ['echo'],
+        approvalRequiredTools: ['echo'],
+        schemaPolicy: 'tracking',
+      });
+    }
+    await f.call('approval.respond', {
+      workspaceId: worker.workspaceId,
+      threadId: pending.threadId,
+      turnId: pending.raisingTurnId,
+      approvalRequestId: pending.requestId,
+      decision: 'granted',
+    });
+    const settled = readPendingRequest(db.sqlite, pending.requestId)!;
+    if (authority === 'current') {
+      expect(settled.disposition).toBe('approved-executed');
+      expect(f.upstream.methods.filter((method) => method === 'tools/call')).toHaveLength(1);
+    } else {
+      expect(settled.disposition).not.toBe('approved-executed');
+      expect(f.upstream.methods).not.toContain('tools/call');
+    }
+    expect(JSON.stringify(f.outputs)).not.toContain(canary);
   });
 
   it.each([
