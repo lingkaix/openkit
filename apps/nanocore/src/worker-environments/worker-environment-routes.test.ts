@@ -168,7 +168,7 @@ describe('Worker environment routes', () => {
         {},
         {
           body: JSON.stringify({
-            administrationThreadId: 'thread_admin',
+            administrationThreadId: testEntityId('th', 'thread_admin'),
             requestId: REQUEST_ID,
             recoverFrom: {
               artifactId: testEntityId('ar', 'artifact_candidate'),
@@ -201,7 +201,7 @@ describe('Worker environment routes', () => {
     });
     registerFamilyFixture({ app, operations: null, prepare });
     const input = {
-      administrationThreadId: 'thread_admin',
+      administrationThreadId: testEntityId('th', 'thread_admin'),
       requestId: REQUEST_ID,
       recoverFrom: {
         artifactId: testEntityId('ar', 'artifact_candidate'),
