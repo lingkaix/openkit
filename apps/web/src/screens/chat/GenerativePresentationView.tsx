@@ -51,7 +51,6 @@ export function GenerativePresentationView({
   const [conflict, setConflict] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const submitRequestId = useRef<string | null>(null);
-  const renderedSurface = useRef<NativeSurface | null>(null);
   const draft = useRef<Record<string, string | boolean>>({});
   const [hasDraft, setHasDraft] = useState(false);
   const messages = observation?.messages ?? query.data?.messages ?? [];
@@ -67,7 +66,7 @@ export function GenerativePresentationView({
         action: { ...event, timestamp: new Date().toISOString() },
       }),
     onSuccess: (result) => {
-      draft.current = readDraft(renderedSurface.current, messages);
+      draft.current = readDraft(surface, messages);
       setRefreshError(null);
       setObservation({
         messages: [...messages.slice(0, 2), ...result.messages],
@@ -103,7 +102,7 @@ export function GenerativePresentationView({
       });
     },
     onSuccess: (result, submitted) => {
-      draft.current = readDraft(renderedSurface.current, messages, submitted.context.values);
+      draft.current = readDraft(surface, messages, submitted.context.values);
       setConflict(null);
       submitRequestId.current = null;
       setObservation({
@@ -168,7 +167,6 @@ export function GenerativePresentationView({
       for (const [field, value] of Object.entries(draft.current)) {
         next?.dataModel.set(`/records/0/data/${field}`, value);
       }
-      renderedSurface.current = next;
       return next;
     } catch {
       return null;
