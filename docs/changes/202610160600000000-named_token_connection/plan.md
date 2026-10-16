@@ -25,3 +25,5 @@ Next action: wait for the integrator's landing window, update from landed main, 
 ## Landing Verification
 
 After merging the landed drain integration, `pnpm build:openkit`, `pnpm --filter @openkit/nanocore openapi:generate`, `pnpm check:repo`, `pnpm lint` and `pnpm typecheck` all exited 0. Generation left the checked interfaces unchanged. Lint reported 14 successful cached tasks; typecheck reported 16 successful cached tasks. The final focused command passed all 90 tests with zero failures or skips. Repository lint warnings remain visible and were not suppressed. The final diff has 12 files, two owning specifications, two behavioral owners, no new closed registry and no new durable state. Independent exact-head review, full CI and main landing remain the external completion steps.
+
+The strengthened named-selection regression also passed with exact server refusal codes and a transport that rejects a second call or another credential. Corrupt and linked named storage return credential_unavailable without a request identity or storage-path disclosure. These checks preserve the same production bytes.
