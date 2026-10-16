@@ -905,7 +905,7 @@ describe('Public Goal command publication', () => {
       expect(turn).toMatchObject({
         agentId: 'goal-coordinator',
         status: 'completed',
-        triggerActor: { kind: 'user', id: 'usr_00000000-0000-77f7-8ae0-7d20610de2fe' },
+        triggerActor: { kind: 'user', id: caller.actor.userId },
       });
       expect(turn.agentSessionId).toBeUndefined();
       const replay = await executeGoalOperation('goal.plan.propose', input, caller, store, db);
