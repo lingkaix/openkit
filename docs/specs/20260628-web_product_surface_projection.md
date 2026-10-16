@@ -99,7 +99,7 @@ An ordinary-user Web operation is included when it is a `PUBLIC_OPERATION_ACCESS
 
 The following are excluded from ordinary-user Web and MUST NOT appear on a published ordinary-user route:
 
-- Server-scoped catalog operations, including deployment-admin and bootstrap-secret authentication, currently 73 keys. Roadmap R048 owns their future separate admin surface.
+- Server-scoped catalog operations, including deployment-admin and bootstrap-secret authentication, currently 74 keys. Roadmap R048 owns their future separate admin surface.
 - Gateway-actor operations `POST /v1/chat/completions` and `POST /v1/responses`.
 - Worker-private routes that are not public catalog operations, including `/api/worker-control/*`.
 
@@ -181,6 +181,8 @@ The tree contains exactly the existing files NanoCore returns: server, Provider,
 ### Shared MCP Configuration Projection
 
 The deployment-admin Shared MCP settings screen projects the existing Server catalog owner, with explicit create-disabled configuration, immutable version staging and selection, exact binding revisions and removal. Configuration declarations contain no inline credential material. Credential administration remains with Vault; configuration binds only exact grant references. Saved configuration, enabled supply, consuming Workspace selection and an upstream tool effect remain distinct observations. Web does not connect upstream during configuration editing, infer a schema pin or replay an uncertain change. Current administrator denial hides previously loaded detail; conflict preserves the draft and requires explicit refresh. A failed refresh cannot establish current state.
+
+The same administrator surface explicitly invokes `administration.mcp-discovery-preview` for one exact retained Server MCP version and current catalog/binding revisions, including the no-binding case before an allowlist exists. Creating an inactive configuration with an explicit empty allowlist creates no binding; saving or enabling a binding still requires exact nonempty tools. Preview requires a deliberate action and may contact upstream for `tools/list` only. Optional transient grant IDs, slots and sinks use the existing strict schema and never persist as bindings. Web validates the schema and recognizable credential shapes before mutation-cache admission, uses fixed safe errors, and offers no raw material input or automatic retry. It shows bounded tool metadata with its observation time, without treating that observation as activation, selection, a schema pin or later permission. A context or account change discards the observation. Current denial hides prior data. A 409 can mean stale configuration or unconfirmed cleanup. Stale, failed or unknown connection/cleanup outcomes require inspection before another invocation; current configuration reread does not prove cleanup. Any new request is deliberate, never replay.
 
 The selected-Workspace Catalog separately lists redacted shared MCP supply, current tool rules, local disablement and same-id collisions through the existing shared-supply operations. Its explicit disable or restore changes only that Workspace's catalog at the observed revision. A retained local entry or removal remains a collision, so restore is not offered as a collision repair. No endpoint, secret material or Server edit control enters this ordinary projection. Disconnection, pending writes, stale reads and denied authority disable effects; unknown outcomes require inspection and never automatic mutation retry.
 
