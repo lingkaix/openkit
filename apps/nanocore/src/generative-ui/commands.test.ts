@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -7,8 +7,15 @@ import {
   GENERATIVE_UI_PROTOCOL_VERSION,
   type LightAppSchemaInput,
 } from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
-import { createLightApp, createRecord, updateRecord } from '../generative-kernel/commands.js';
+import { allocateEntityId } from '@openkit/protocol';
+import { describe, expect, it, vi } from 'vitest';
+
+import {
+  createLightApp,
+  createRecord,
+  listLightApps,
+  updateRecord,
+} from '../generative-kernel/commands.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -84,7 +91,10 @@ function createContext(requestId = randomUUID()): GenerativeUiCommandContext & {
     actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     requestId,
     workspaceDb,
-    close: () => workspaceDb.sqlite.close(),
+    close: () => {
+      workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    },
   };
 }
 
@@ -113,6 +123,346 @@ function nativeMessages(surfaceId: string, components: unknown[]) {
 }
 
 describe('Generative UI commands', () => {
+  it('binds exact completed Tool result text without creating a Kernel', async () => {
+    const context = createContext();
+    try {
+      const turn = context.store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Show the observation',
+        context.actor
+      );
+      const text = 'The external source reported 3 matches.';
+      const sourceItem = context.store.createItem({
+        id: allocateEntityId('it'),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: turn.id,
+        type: 'tool-call',
+        status: 'completed',
+        tool: 'search',
+        server: 'selected-source',
+        arguments: {},
+        result: text,
+        error: null,
+        durationMs: 1,
+        createdAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+      });
+      const published = await publishGenerativePresentation(context, {
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: turn.id,
+        title: 'Observation',
+        fallbackText: text,
+        messages: nativeMessages('tool-source', [
+          { id: 'root', component: 'Text', text: { path: '/text' } },
+        ]),
+        source: {
+          kind: 'item',
+          itemId: sourceItem.id,
+          contentDigest: `sha256:${createHash('sha256').update(text).digest('hex')}`,
+        },
+        actions: [],
+      });
+      expect(listLightApps(context.dataRoot, context.workspaceId).totalItems).toBe(0);
+      expect(published.source).toMatchObject({ kind: 'item', itemId: sourceItem.id });
+      expect(published.messages[2]).toMatchObject({ updateDataModel: { value: { text } } });
+      for (const changedSource of [
+        { status: 'failed' as const },
+        { result: null },
+        { result: 'Changed retained observation' },
+      ]) {
+        context.store.updateItem(sourceItem.id, changedSource);
+        expect(() => getGenerativePresentation(context, published.id)).toThrow(KernelCommandError);
+        context.store.updateItem(sourceItem.id, sourceItem);
+      }
+      expect(getGenerativePresentation(context, published.id).id).toBe(published.id);
+      expect(
+        context.workspaceDb.sqlite
+          .prepare('SELECT COUNT(*) AS n FROM generative_presentations')
+          .get()
+      ).toEqual({ n: 1 });
+    } finally {
+      context.close();
+    }
+  });
+
+  it('publishes generated text once and normalizes its source without terminalizing the Turn', async () => {
+    const context = createContext();
+    try {
+      const turn = context.store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Present the answer',
+        context.actor
+      );
+      const input = {
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: turn.id,
+        title: 'Answer',
+        fallbackText: 'A generated answer.',
+        messages: nativeMessages('answer-source', [
+          { id: 'root', component: 'Text', text: { path: '/text' } },
+        ]),
+        source: { kind: 'answer' as const, text: 'A generated answer.' },
+        actions: [],
+      };
+      const published = await publishGenerativePresentation(context, input);
+      expect(published.source.kind).toBe('item');
+      const source = context.store
+        .listAllItems()
+        .find(
+          (item) => item.id === (published.source.kind === 'item' ? published.source.itemId : '')
+        );
+      expect(source).toMatchObject({
+        type: 'assistant-message',
+        text: input.source.text,
+        status: 'completed',
+        turnId: turn.id,
+      });
+      expect(
+        context.store.getTurn(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          turn.id
+        ).status
+      ).toBe(turn.status);
+      expect(await publishGenerativePresentation(context, input)).toEqual(published);
+      expect(
+        context.store
+          .listAllItems()
+          .filter((item) => item.turnId === turn.id && item.type === 'assistant-message')
+      ).toHaveLength(1);
+      await expect(
+        publishGenerativePresentation(context, {
+          ...input,
+          source: { kind: 'answer', text: 'Changed answer' },
+        })
+      ).rejects.toMatchObject({ code: 'idempotency_key_conflict' });
+    } finally {
+      context.close();
+    }
+  });
+
+  it.each([
+    { status: 'in_progress' as const, result: 'Partial observation', digestMatches: true },
+    { status: 'failed' as const, result: 'Failed observation', digestMatches: true },
+    { status: 'completed' as const, result: null, digestMatches: true },
+    { status: 'completed' as const, result: 'Actual observation', digestMatches: false },
+  ])('refuses incomplete, missing or mismatched Tool bytes before publication: $status / $result', async ({
+    status,
+    result,
+    digestMatches,
+  }) => {
+    const context = createContext();
+    try {
+      const turn = context.store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Show the observation',
+        context.actor
+      );
+      const source = context.store.createItem({
+        id: allocateEntityId('it'),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: turn.id,
+        type: 'tool-call',
+        status,
+        tool: 'search',
+        server: null,
+        arguments: {},
+        result,
+        error: null,
+        durationMs: 1,
+        createdAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+      });
+      await expect(
+        publishGenerativePresentation(context, {
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: turn.id,
+          title: 'Observation',
+          fallbackText: 'Observation',
+          messages: nativeMessages('tool-refusal', [
+            { id: 'root', component: 'Text', text: { path: '/text' } },
+          ]),
+          source: {
+            kind: 'item',
+            itemId: source.id,
+            contentDigest: `sha256:${createHash('sha256')
+              .update(digestMatches ? (result ?? '') : 'Invented observation')
+              .digest('hex')}`,
+          },
+          actions: [],
+        })
+      ).rejects.toBeInstanceOf(KernelCommandError);
+      expect(
+        context.workspaceDb.sqlite
+          .prepare('SELECT COUNT(*) AS n FROM generative_presentations')
+          .get()
+      ).toEqual({ n: 0 });
+      expect(
+        context.store.listAllItems().some((item) => item.type === 'generative-ui-reference')
+      ).toBe(false);
+    } finally {
+      context.close();
+    }
+  });
+
+  it('keeps source-only interruption inspectable and refuses automatic publication repair', async () => {
+    const context = createContext();
+    try {
+      const turn = context.store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Present the answer',
+        context.actor
+      );
+      const input = {
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: turn.id,
+        title: 'Answer',
+        fallbackText: 'Retained answer.',
+        messages: nativeMessages('interrupted-answer', [
+          { id: 'root', component: 'Text', text: { path: '/text' } },
+        ]),
+        source: { kind: 'answer' as const, text: 'Retained answer.' },
+        actions: [],
+      };
+      const createItem = context.store.createItem.bind(context.store);
+      const interrupted = vi.spyOn(context.store, 'createItem').mockImplementation((item) => {
+        const retained = createItem(item);
+        if (item.type === 'assistant-message')
+          throw new Error('Injected source publication interruption');
+        return retained;
+      });
+      await expect(publishGenerativePresentation(context, input)).rejects.toThrow(
+        'Injected source publication interruption'
+      );
+      interrupted.mockRestore();
+      expect(
+        context.store
+          .listAllItems()
+          .filter((item) => item.turnId === turn.id && item.type === 'assistant-message')
+      ).toHaveLength(1);
+      await expect(publishGenerativePresentation(context, input)).rejects.toMatchObject({
+        code: 'recovery_required',
+      });
+      expect(
+        context.workspaceDb.sqlite
+          .prepare('SELECT COUNT(*) AS n FROM generative_presentations')
+          .get()
+      ).toEqual({ n: 0 });
+      expect(
+        context.store
+          .listCommandRequests()
+          .filter((receipt) => receipt.command === 'generative-ui.publish')
+      ).toHaveLength(0);
+    } finally {
+      context.close();
+    }
+  });
+
+  it('validates answer declarations before retaining source text', async () => {
+    const context = createContext();
+    try {
+      const turn = context.store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Present the answer',
+        context.actor
+      );
+      await expect(
+        publishGenerativePresentation(context, {
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: turn.id,
+          title: 'Answer',
+          fallbackText: 'Answer',
+          messages: nativeMessages('invalid-answer', [
+            { id: 'root', component: 'Script', text: 'Invalid' },
+          ]),
+          source: { kind: 'answer', text: 'Must not be retained.' },
+          actions: [],
+        })
+      ).rejects.toMatchObject({ code: 'validation_failed' });
+      expect(context.store.listAllItems().filter((item) => item.turnId === turn.id)).toHaveLength(
+        0
+      );
+    } finally {
+      context.close();
+    }
+  });
+
+  it('refuses private Tool result disclosure into a shared destination even for an administrator', async () => {
+    const context = createContext();
+    try {
+      const privateThread = context.store.createThread(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'Private Tool observation',
+        undefined,
+        'conversation',
+        { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
+      );
+      const sourceTurn = context.store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        privateThread.id,
+        'Read a private source',
+        context.actor
+      );
+      const destination = context.store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Show the result publicly',
+        context.actor
+      );
+      const text = 'Private Tool result';
+      const source = context.store.createItem({
+        id: allocateEntityId('it'),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: privateThread.id,
+        turnId: sourceTurn.id,
+        type: 'tool-call',
+        status: 'completed',
+        tool: 'query',
+        server: null,
+        arguments: {},
+        result: text,
+        error: null,
+        durationMs: 1,
+        createdAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+      });
+      await expect(
+        publishGenerativePresentation(
+          { ...context, administratorEligible: true },
+          {
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: destination.id,
+            title: 'Observation',
+            fallbackText: 'Observation',
+            messages: nativeMessages('private-tool', [
+              { id: 'root', component: 'Text', text: { path: '/text' } },
+            ]),
+            source: {
+              kind: 'item',
+              itemId: source.id,
+              contentDigest: `sha256:${createHash('sha256').update(text).digest('hex')}`,
+            },
+            actions: [],
+          }
+        )
+      ).rejects.toMatchObject({ code: 'not_found' });
+      expect(
+        context.workspaceDb.sqlite
+          .prepare('SELECT COUNT(*) AS n FROM generative_presentations')
+          .get()
+      ).toEqual({ n: 0 });
+    } finally {
+      context.close();
+    }
+  });
+
   it('publishes an item-source presentation onto a running turn', async () => {
     const context = createContext();
     try {

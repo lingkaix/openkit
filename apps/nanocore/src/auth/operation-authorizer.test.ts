@@ -133,11 +133,11 @@ function createFixture() {
     id: 'usr_00000000-0000-7000-8000-000000000001',
   });
   const foreignThread = store.createThread(foreignWorkspace.id, 'Foreign thread');
-  const automationStore = new AutomationStore();
   const actorState: { current: Actor } = {
     current: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
   };
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
   const app = new Hono<{ Variables: AuthVariables }>();
   let administrationHandlerReads = 0;
   let deleteWorkspaceHandlerReads = 0;
@@ -266,9 +266,10 @@ function createFixture() {
 
 let fixture: ReturnType<typeof createFixture>;
 
+// Synchronous Core/Store filesystem setup has a separate budget from authorization checks.
 beforeEach(() => {
   fixture = createFixture();
-});
+}, 30_000);
 
 afterEach(() => {
   fixture.coreDb.sqlite.close();
@@ -657,7 +658,8 @@ describe('central Workspace operation authorizer', () => {
 
   it('admits the complete automation body Workspace through native invocation', async () => {
     const body = {
-      cron: '0 9 * * *',
+      intervalSeconds: 60,
+      threadId: fixture.turn.threadId,
       name: 'Morning status',
       prompt: 'Summarize current work.',
       workspaceId: fixture.workspace.id,
@@ -893,7 +895,8 @@ describe('central Workspace operation authorizer', () => {
         {},
         {
           body: JSON.stringify({
-            cron: '0 9 * * *',
+            intervalSeconds: 60,
+            threadId: fixture.turn.threadId,
             name: 'Denied mutation',
             prompt: 'Do not create this.',
             workspaceId: fixture.workspace.id,
@@ -926,7 +929,8 @@ describe('central Workspace operation authorizer', () => {
         {},
         {
           body: JSON.stringify({
-            cron: '0 9 * * *',
+            intervalSeconds: 60,
+            threadId: fixture.turn.threadId,
             name: 'Fenced mutation',
             prompt: 'Do not create this.',
             workspaceId: fixture.workspace.id,

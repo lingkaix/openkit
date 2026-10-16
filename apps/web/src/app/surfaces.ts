@@ -202,15 +202,15 @@ export const SURFACES: Surface[] = [
     wp: 'WP-6',
   },
 
-  // Tier B — built, unpublished
+  // Tier A — fixed-interval lifecycle and history
   {
     id: 'automations',
     title: 'Automations',
     path: '/automations',
-    tier: 'B',
-    nav: 'demos',
+    tier: 'A',
+    nav: 'workspace-compact',
     icon: 'automations',
-    board: '09',
+    board: '09/11/22',
     wp: 'WP-8',
   },
   // Tier C — deferred render-shell only

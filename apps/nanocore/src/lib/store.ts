@@ -2617,7 +2617,7 @@ export class FsStore {
    * @param configVersion Runtime config version captured for the turn.
    * @param options Optional turn creation controls, including the admission-time capture pair.
    * @returns Created turn.
-   * @throws Error when the requested turn id already exists.
+   * @throws Error when the requested turn id already exists or file publication fails; retained files remain intact.
    */
   public createTurn(
     workspaceId: string,
@@ -2684,8 +2684,9 @@ export class FsStore {
         withCanonicalFileWriteAdmission(options.fileWriteAdmission, publish);
       } else publish();
     } catch (error) {
+      // No-file failures discard the derivative candidate; file inputs retain present or unknown canonical authority.
+      let discardCandidate = !options.fileInputs?.length;
       if (options.fileInputs?.length && this.dataRoot) {
-        let unpublished = false;
         try {
           const turnRoot = join(
             this.workspaceRootPath(workspaceId),
@@ -2695,17 +2696,17 @@ export class FsStore {
             turn.id
           );
           assertCanonicalDirectory(dirname(turnRoot));
-          unpublished = lstatSync(turnRoot, { throwIfNoEntry: false }) === undefined;
+          discardCandidate = lstatSync(turnRoot, { throwIfNoEntry: false }) === undefined;
         } catch {
           // A present or uninspectable canonical owner remains with existing recovery; absence is never inferred from an I/O refusal.
         }
-        if (unpublished) {
-          this.turns.delete(turn.id);
-          this.turnExecutors.delete(turn.id);
-          this.streams.delete(turn.id);
-          this.turnCaptureCoverage.delete(turn.id);
-          this.threads.set(threadId, thread);
-        }
+      }
+      if (discardCandidate) {
+        this.turns.delete(turn.id);
+        this.turnExecutors.delete(turn.id);
+        this.streams.delete(turn.id);
+        this.turnCaptureCoverage.delete(turn.id);
+        this.threads.set(threadId, thread);
       }
       throw error;
     }

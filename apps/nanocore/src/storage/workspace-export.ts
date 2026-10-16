@@ -29,6 +29,13 @@ import { WorkerContextPackageManifestSchema } from '../context/worker-context-pa
 import { artifactFilePayloadPath, verifyArtifactFilePayload } from './artifacts/file-records.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import {
+  RECURRING_PORTABLE_FEATURE,
+  RECURRING_PORTABLE_PATHS,
+  type RecurringPortableHistory,
+  readRecurringPortableFiles,
+  readRecurringPortableHistory,
+} from './recurring-portable-history.js';
+import {
   isSupportedWorkObservationType,
   parseWorkObservationRecord,
   type WorkObservationRecord,
@@ -72,6 +79,7 @@ export const UNSUPPORTED_WORKSPACE_EXPORT_RECORD_PATHS = [
   'records/injection-receipts.jsonl',
   'catalog/catalog.json',
   'records/knowledge-retrieval-traces.jsonl',
+  'workspace-files/imports/recurrence-history.json',
 ] as const;
 
 /** Workspace SQLite tables whose portable row families are covered by workspace export/import. */
@@ -201,6 +209,8 @@ export interface WriteWorkspaceExportTreeInput {
   turnEvents: readonly (readonly [string, readonly unknown[]])[];
   /** Authoritative workspace files not owned by canonical protocol records. */
   portableFileState?: WorkspacePortableFileState;
+  /** Captured inert Core and imported recurrence history, already stripped of local payload paths. */
+  recurringHistory?: RecurringPortableHistory;
   /** Knowledge source identity records to export as line-oriented records. */
   knowledgeSources?: readonly unknown[];
   /** Knowledge source text materials to export as evidence files. */
@@ -344,6 +354,17 @@ export function writeWorkspaceExportTree(
   ) {
     throw new Error('Private Thread history requires a separately authorized export.');
   }
+  const recurringHistory = readRecurringPortableHistory(
+    input.recurringHistory ??
+      (input.portableFileState?.recurringHistory
+        ? JSON.parse(input.portableFileState.recurringHistory)
+        : { schedules: [], occurrences: [], expiredRanges: [] }),
+    {
+      workspaceId: history.workspace.id,
+      threadIds: new Set(history.threads.map((thread) => thread.id)),
+      turns: new Map(history.turns.map((turn) => [turn.id, turn.threadId])),
+    }
+  );
   const knowledge = input.knowledge.map((record) => KnowledgeEntrySchema.parse(record));
   const portableFileState = input.portableFileState;
   if (!portableFileState?.workspaceConfig) {
@@ -391,6 +412,12 @@ export function writeWorkspaceExportTree(
     const recordsRoot = join(input.exportRoot, 'records');
 
     mkdirSync(recordsRoot, { recursive: true });
+    for (const [family, path] of Object.entries(RECURRING_PORTABLE_PATHS)) {
+      writeJsonl(
+        join(input.exportRoot, path),
+        recurringHistory[family as keyof typeof RECURRING_PORTABLE_PATHS]
+      );
+    }
     writeJson(
       join(recordsRoot, 'workspace-record.json'),
       projectWorkspaceSystemRecord(history.workspace)
@@ -783,7 +810,10 @@ export function writeWorkspaceExportTree(
         };
       })
       .sort((left, right) => left.path.localeCompare(right.path));
-    const requiredFeatures: RequiredFeatureId[] = [WORKSPACE_EXPORT_CATALOG_FEATURE];
+    const requiredFeatures: RequiredFeatureId[] = [
+      WORKSPACE_EXPORT_CATALOG_FEATURE,
+      RECURRING_PORTABLE_FEATURE,
+    ];
     if (
       input.lightApps?.length ||
       input.lightAppDefinitions?.length ||
@@ -822,6 +852,7 @@ export function writeWorkspaceExportTree(
       exportRoot: input.exportRoot,
       supportedFeatures: [
         WORKSPACE_EXPORT_CATALOG_FEATURE,
+        RECURRING_PORTABLE_FEATURE,
         'workspace.generative-kernel.v1',
         'workspace.generative-ui.native-v1',
         'openkit.work-observations.v1',
@@ -927,12 +958,20 @@ export function verifyWorkspaceExportTree(
   const manifest = parseWorkspaceExportManifest(originalManifest, {
     supportedFeatures: [
       WORKSPACE_EXPORT_CATALOG_FEATURE,
+      RECURRING_PORTABLE_FEATURE,
       'workspace.generative-kernel.v1',
       'workspace.generative-ui.native-v1',
       'openkit.work-observations.v1',
       ...(input.supportedFeatures ?? []),
     ],
   });
+  const hasRecurringFeature = manifest.requiredFeatures.includes(RECURRING_PORTABLE_FEATURE);
+  const recurringPaths = Object.values(RECURRING_PORTABLE_PATHS);
+  for (const path of recurringPaths) {
+    const included = manifest.contentInventory.some((entry) => entry.path === path);
+    if (included !== hasRecurringFeature)
+      throw new Error('Recurring portable files require their feature and all three families.');
+  }
   for (const entry of manifest.contentInventory) {
     if (
       /^workspace-files\/threads\/[^/]+\/turns\/[^/]+\/observations\.jsonl$/.test(entry.path) &&
@@ -1017,6 +1056,20 @@ export function verifyWorkspaceExportTree(
     }
   }
   verifyPortableRetrievalTraceFiles(fileContents, manifest.workspaceId);
+  if (hasRecurringFeature) {
+    const readRows = (path: string) =>
+      (fileContents.get(path) ?? '')
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+    const threads = readRows('records/threads.jsonl').map((row) => ThreadSchema.parse(row));
+    const turns = readRows('records/turns.jsonl').map((row) => TurnSchema.parse(row));
+    readRecurringPortableFiles(fileContents, {
+      workspaceId: manifest.workspaceId,
+      threadIds: new Set(threads.map((thread) => thread.id)),
+      turns: new Map(turns.map((turn) => [turn.id, turn.threadId])),
+    });
+  }
 
   const itemRevisionText = fileContents.get('records/item-revisions.jsonl');
   const itemRevisions =

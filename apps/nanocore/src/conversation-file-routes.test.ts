@@ -10,6 +10,7 @@ import fs, {
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CONVERSATION_FILE_MEDIA_TYPE } from './conversation-file-body.js';
 import * as assistantCommandOwners from './internal-agents/assistant-command-run.js';
@@ -377,14 +378,51 @@ describe('Turn-owned conversation originals', () => {
     'internal-role:assistant',
   ])('publishes originals on the actual Worker Turn before %s dispatch', async (targetRef) => {
     const state = fixture();
+    const source =
+      targetRef === 'new-task-worker'
+        ? state.store.createThread(
+            state.workspaceId,
+            'Private handoff',
+            undefined,
+            'conversation',
+            {
+              visibility: 'private',
+              privateOwnerUserId: LOCAL_USER_ID,
+            }
+          )
+        : state.thread;
+    const privateHistory = 'Unselected private history stays with the Assistant.';
+    if (targetRef === 'new-task-worker') {
+      const previous = state.store.createTurn(state.workspaceId, source.id, privateHistory, {
+        kind: 'user',
+        id: LOCAL_USER_ID,
+      });
+      const timestamp = new Date().toISOString();
+      state.store.createItem({
+        id: allocateEntityId('it'),
+        workspaceId: state.workspaceId,
+        threadId: source.id,
+        turnId: previous.id,
+        actor: { kind: 'user', id: LOCAL_USER_ID },
+        type: 'user-message',
+        text: privateHistory,
+        status: 'completed',
+        createdAt: timestamp,
+        completedAt: timestamp,
+      });
+      state.store.updateTurn(previous.id, { status: 'completed', completedAt: timestamp });
+    }
     const setup = createTestAgentSetup();
     const executor = new SimulatedTurnExecutor({ coreDb: state.coreDb });
-    const observed: Array<{ inventory: unknown; bytes: Buffer }> = [];
+    const observed: Array<{ inventory: unknown; bytes: Buffer; threadId: string; turn: string }> =
+      [];
     const prepare = vi
       .spyOn(executor, 'prepareAgentSessionForTurn')
       .mockImplementation(async (_store, preparation) => {
         observed.push({
           inventory: preparation.turn.fileInputs,
+          threadId: preparation.turn.threadId,
+          turn: JSON.stringify(preparation.turn),
           bytes: readFileSync(
             turnFilePayloadPath(
               join(state.dataRoot, 'workspaces', state.workspaceId),
@@ -407,7 +445,7 @@ describe('Turn-owned conversation originals', () => {
     const bytes = new Uint8Array([0xff, 0, 1]);
     const input = {
       workspaceId: state.workspaceId,
-      threadId: state.thread.id,
+      threadId: source.id,
       requestId: randomUUID(),
       input: 'Implement a focused correction.',
       targetRef,
@@ -431,6 +469,14 @@ describe('Turn-owned conversation originals', () => {
     for (const observation of observed) {
       expect(observation.inventory).toEqual(input.fileInputs);
       expect(observation.bytes).toEqual(Buffer.from(bytes));
+      if (targetRef === 'new-task-worker') {
+        expect(observation.threadId).not.toBe(source.id);
+        expect(observation.turn).not.toContain(privateHistory);
+        expect(state.store.getThread(state.workspaceId, observation.threadId).visibility).toBe(
+          'workspace'
+        );
+        expect(state.store.getThread(state.workspaceId, source.id).visibility).toBe('private');
+      }
     }
     const accepted = await response.json();
     if (targetRef === 'new-task-worker') expect(accepted.turn.fileInputs).toEqual(input.fileInputs);

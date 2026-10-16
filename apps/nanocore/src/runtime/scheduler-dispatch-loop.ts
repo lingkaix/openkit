@@ -37,6 +37,7 @@ import {
   openWorkspaceDb,
 } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import {
   bindSchedulerExecutionAttemptSession,
@@ -59,6 +60,7 @@ import {
   assistantPendingOutcomeSourceHash,
   listThreadPendingRequests,
 } from './pending-requests.js';
+import { recurringTurnPublicationIssue } from './recurring-turn-publication.js';
 import type { PrepareAgentSessionForTurnInput, TurnExecutor } from './types.js';
 import { WorkerGovernanceCapacityUnavailableError } from './worker-governance-backend.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
@@ -118,6 +120,7 @@ export interface SchedulerDispatchLoopResult {
           | 'thread-busy'
           | 'backend-busy'
           | 'entry-publication-pending'
+          | 'recovery-required'
           | 'max-dispatches';
       }
     | { status: 'denied'; entry: SchedulerAdmissionEntryRecord };
@@ -157,6 +160,7 @@ export async function runSchedulerDispatchLoop(
     return { startedTurns: [], terminalResult: { status: 'queued', reason: 'thread-busy' } };
   const startedTurns: SchedulerDispatchLoopStartedTurn[] = [];
   const unpublishedQueueEntryIds = new Set<string>();
+  let recurringRecoveryRequired = false;
   for (let count = 0; count < (input.maxDispatches ?? 1); count++) {
     const entry = findNextDispatchableSchedulerAdmissionEntry(
       input.coreDb,
@@ -167,11 +171,13 @@ export async function runSchedulerDispatchLoop(
         startedTurns,
         terminalResult: {
           status: 'queued',
-          reason: unpublishedQueueEntryIds.size
-            ? 'entry-publication-pending'
-            : listQueuedSchedulerAdmissionEntries(input.coreDb).length
-              ? 'thread-busy'
-              : 'no-queued-entry',
+          reason: recurringRecoveryRequired
+            ? 'recovery-required'
+            : unpublishedQueueEntryIds.size
+              ? 'entry-publication-pending'
+              : listQueuedSchedulerAdmissionEntries(input.coreDb).length
+                ? 'thread-busy'
+                : 'no-queued-entry',
         },
       };
     if (claims.has(entry.queueEntryId))
@@ -192,6 +198,8 @@ export async function runSchedulerDispatchLoop(
     // An incomplete cross-store publication fences only its own request/Thread. Continue
     // selecting eligible FIFO work; a receipt gap on A cannot veto independent Thread B.
     if (!schedulerEntryPublicationComplete(input, entry)) {
+      if (findAcceptedRecurringOccurrenceForQueue(input.coreDb, entry.queueEntryId))
+        recurringRecoveryRequired = true;
       unpublishedQueueEntryIds.add(entry.queueEntryId);
       count--;
       continue;
@@ -233,6 +241,8 @@ function schedulerEntryPublicationComplete(
   input: RunSchedulerDispatchLoopInput,
   entry: SchedulerAdmissionEntryRecord
 ): boolean {
+  const occurrence = findAcceptedRecurringOccurrenceForQueue(input.coreDb, entry.queueEntryId);
+  if (occurrence) return recurringTurnPublicationIssue(input.store, entry) === null;
   try {
     const turn = input.store.getTurn(entry.workspaceId, entry.threadId, entry.turnId);
     if (turn.status !== 'pending' || turn.agentId !== entry.requestedAgentId) return false;
