@@ -17,6 +17,7 @@ import {
 } from './agent-environment.js';
 import { SECRET_SHAPED_BUILD_ARGUMENT_PATTERN } from './build-argument-pattern.js';
 import { ProviderReadinessSchema } from './provider.js';
+import { ResourceDigestSchema } from './resource-catalog.js';
 import { isRegisteredRequiredFeature } from './schema-evolution.js';
 
 const BUILD_ARGUMENT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -189,6 +190,12 @@ export const AuthoredAgentMcpEntrySchema = z
   })
   .strict();
 
+/** One included Skill, optionally fixed to a retained exact version by composed setup. */
+export const AuthoredAgentSkillEntrySchema = z.object({
+  id: z.string().min(1),
+  digest: ResourceDigestSchema.optional(),
+}).strict();
+
 /** One authored Agent profile that may refine the base manifest. */
 export const AuthoredAgentProfileSchema = z
   .object({
@@ -203,7 +210,7 @@ export const AuthoredAgentProfileSchema = z
     allowedLogicalModelIds: z
       .union([z.literal('all'), z.array(z.string().min(1)).min(1)])
       .optional(),
-    skills: z.array(z.object({ id: z.string().min(1) }).strict()).default([]),
+    skills: z.array(AuthoredAgentSkillEntrySchema).default([]),
     mcp: z.array(AuthoredAgentMcpEntrySchema).default([]),
   })
   .strip();
@@ -277,7 +284,7 @@ export const AuthoredAgentConfigSchema = z
     runtime: AuthoredAgentRuntimeSchema,
     sandbox: AuthoredAgentSandboxSchema.optional(),
     schemaVersion: z.literal(1),
-    skills: z.array(z.object({ id: z.string().min(1) }).passthrough()).optional(),
+    skills: z.array(AuthoredAgentSkillEntrySchema.passthrough()).optional(),
     workspace: AuthoredAgentWorkspaceSchema.optional(),
   })
   .strip()

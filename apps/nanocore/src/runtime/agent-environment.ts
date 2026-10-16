@@ -452,7 +452,7 @@ function resolveOpenShellAgentEnvironmentPackage(
   }
 
   const workerSkills = resolveWorkerSkillSupply(
-    (manifest.skills ?? []).map((skill) => skill.id),
+    manifest.skills ?? [],
     manifest.runtime.adapter,
     input.turn.workspaceId,
     input.coreDb?.dataRoot,
@@ -1040,7 +1040,7 @@ function workspaceInputSource(
 /**
  * Verifies exact catalog Skill snapshots against release-owned adapter supply qualification.
  *
- * @param skillIds Worker Skill ids requested by the selected agent.
+ * @param skills Included Skill references from the composed Agent setup.
  * @param adapter Runtime adapter that will consume the supply.
  * @param workspaceId Workspace owning the Skill catalog.
  * @param dataRoot Core data root containing the catalog.
@@ -1050,13 +1050,13 @@ function workspaceInputSource(
  * @throws CatalogNotFoundError or CatalogIntegrityError when selected retained supply is unavailable or changed.
  */
 function resolveWorkerSkillSupply(
-  skillIds: string[],
+  skills: readonly { readonly id: string; readonly digest?: string }[],
   adapter: string,
   workspaceId: string,
   dataRoot: string | undefined,
   agentSessionId: string
 ) {
-  if (skillIds.length === 0) return [];
+  if (skills.length === 0) return [];
   if (!dataRoot) {
     throw new Error('Workspace Skill catalog requires a data root.');
   }
@@ -1065,10 +1065,11 @@ function resolveWorkerSkillSupply(
     .map(([id]) => id);
   const catalog = loadWorkspaceResourceCatalog(dataRoot, workspaceId);
   const { supplyRoot } = workerSessionInputPaths(agentSessionId);
-  const selected = skillIds.map((skillId) => {
+  const selected = skills.map((skill) => {
+    const skillId = skill.id;
     const entry = catalog.skills.entries.find((item) => item.id === skillId);
     const pin = catalog.skills.pins.find((item) => item.entryId === skillId);
-    const digest = pin?.digest ?? entry?.currentDigest;
+    const digest = skill.digest ?? pin?.digest ?? entry?.currentDigest;
     if (!entry || entry.availability !== 'available' || !digest) {
       throw new CatalogNotFoundError(`Worker supply catalog entry not found: skill:${skillId}`);
     }
@@ -1083,11 +1084,11 @@ function resolveWorkerSkillSupply(
       entryId: skillId,
       workspaceId,
     });
-    return { digest, entry, pin, version };
+    return { digest, entry, version, selectionSource: skill.digest ? 'setup' as const : pin?.digest ? 'pin' as const : 'current' as const };
   });
   // Recheck the complete selection after collection; a later Skill read can revoke an earlier entry.
   const current = loadWorkspaceResourceCatalog(dataRoot, workspaceId);
-  return selected.map(({ digest, entry, pin, version }) => {
+  return selected.map(({ digest, entry, selectionSource, version }) => {
     const retained = current.skills.versions.find(
       (item) => item.entryId === entry.id && item.digest === digest
     );
@@ -1127,7 +1128,7 @@ function resolveWorkerSkillSupply(
       policyRefIds: [],
       reviewStatus: 'approved' as const,
       secretRefIds: [],
-      selectionSource: pin?.digest ? ('pin' as const) : ('current' as const),
+      selectionSource,
       sourceRef: `catalog:skill:${entry.id}:${digest}`,
       target: targetPath,
       version: version.publisherVersion ?? digest,
