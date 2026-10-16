@@ -375,7 +375,10 @@ describe('Administration', () => {
           membershipStatus: workspace.id === foreignQuickChat.id ? null : 'active',
           accessCause: 'administrator',
           workspace,
-          ownerUserId: workspace.id === foreignQuickChat.id ? 'usr_00000000-0000-73d4-904a-d4c4b905df7c' : 'usr_00000000-0000-7000-8000-000000000001',
+          ownerUserId:
+            workspace.id === foreignQuickChat.id
+              ? 'usr_00000000-0000-73d4-904a-d4c4b905df7c'
+              : 'usr_00000000-0000-7000-8000-000000000001',
           effectiveRole: workspace.id === foreignQuickChat.id ? null : 'owner',
           registryRevision: 1,
           membershipRevision: workspace.id === foreignQuickChat.id ? null : 1,
@@ -410,7 +413,10 @@ describe('Administration', () => {
         membershipStatus: workspace.id === foreignQuickChat.id ? null : 'active',
         accessCause: 'administrator',
         workspace,
-        ownerUserId: workspace.id === foreignQuickChat.id ? 'usr_00000000-0000-73d4-904a-d4c4b905df7c' : 'usr_00000000-0000-7000-8000-000000000001',
+        ownerUserId:
+          workspace.id === foreignQuickChat.id
+            ? 'usr_00000000-0000-73d4-904a-d4c4b905df7c'
+            : 'usr_00000000-0000-7000-8000-000000000001',
         effectiveRole: workspace.id === foreignQuickChat.id ? null : 'owner',
         registryRevision: 1,
         membershipRevision: workspace.id === foreignQuickChat.id ? null : 1,

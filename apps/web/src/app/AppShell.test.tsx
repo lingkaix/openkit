@@ -44,15 +44,17 @@ function makeClient(): CoreClient {
       'thread.list': vi.fn().mockResolvedValue({ items: [] }),
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
       'workspace.list': vi.fn().mockResolvedValue({
-        items: [{ id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' }].map((workspace) => ({
-          membershipStatus: 'active' as const,
-          accessCause: 'membership' as const,
-          workspace,
-          effectiveRole: 'owner',
-          membershipRevision: 1,
-          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-          registryRevision: 1,
-        })),
+        items: [{ id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' }].map(
+          (workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+            registryRevision: 1,
+          })
+        ),
       }),
       'workspace.resources': vi.fn().mockResolvedValue({
         knowledge: [],

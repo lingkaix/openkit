@@ -180,22 +180,26 @@ function makeClient(core: Record<string, unknown> = {}, app: Record<string, unkn
       'workspace.list': vi
         .fn()
         .mockResolvedValueOnce({
-          items: [{ id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' }].map((workspace) => ({
-            membershipStatus: 'active' as const,
-            accessCause: 'membership' as const,
-            workspace,
-            effectiveRole: 'owner',
-            membershipRevision: 1,
-            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-            registryRevision: 1,
-          })),
+          items: [{ id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' }].map(
+            (workspace) => ({
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
+              workspace,
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+              registryRevision: 1,
+            })
+          ),
         })
         .mockImplementation(
           ((core['workspace.list'] ?? app['workspace.list']) as
             | CoreClient['operations']['workspace.list']
             | undefined) ??
             vi.fn().mockResolvedValue({
-              items: [{ id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' }].map((workspace) => ({
+              items: [
+                { id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' },
+              ].map((workspace) => ({
                 membershipStatus: 'active' as const,
                 accessCause: 'membership' as const,
                 workspace,

@@ -196,7 +196,11 @@ async function materialRevision(
   return (
     await getJson<{ revision: MaterialRevisionView }>(
       '/api/app/operations/material.revision-read',
-      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', materialId: materialId, revisionId: revisionId }
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        materialId: materialId,
+        revisionId: revisionId,
+      }
     )
   ).revision;
 }
@@ -274,9 +278,13 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     )
       return false;
     const input = response.request().postDataJSON();
-    return input.workspaceId === 'ws_00000000-0000-7000-8000-000000000001' && input.threadId === threadId;
+    return (
+      input.workspaceId === 'ws_00000000-0000-7000-8000-000000000001' && input.threadId === threadId
+    );
   });
-  await page.goto(`${stack.webUrl}/materials/ws_00000000-0000-7000-8000-000000000001/${threadId}/${primary.materialId}`);
+  await page.goto(
+    `${stack.webUrl}/materials/ws_00000000-0000-7000-8000-000000000001/${threadId}/${primary.materialId}`
+  );
   const projectionResponse = await materialProjectionResponse;
   const projectionBody = await projectionResponse.text();
   await expect(
@@ -305,7 +313,10 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     )
       return false;
     const input = response.request().postDataJSON();
-    return input.workspaceId === 'ws_00000000-0000-7000-8000-000000000001' && input.materialId === primary.materialId;
+    return (
+      input.workspaceId === 'ws_00000000-0000-7000-8000-000000000001' &&
+      input.materialId === primary.materialId
+    );
   });
   await page.getByRole('button', { name: /^Save$/ }).click();
   const revisionTwoSave = await saveResponse;
@@ -387,7 +398,9 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     )
   ).filter((artifact): artifact is ProposalArtifactSummary => artifact !== null);
   expect(proposals).toHaveLength(2);
-  await page.goto(`${stack.webUrl}/goals/ws_00000000-0000-7000-8000-000000000001/${threadId}/artifacts/${proposals[0]!.id}`);
+  await page.goto(
+    `${stack.webUrl}/goals/ws_00000000-0000-7000-8000-000000000001/${threadId}/artifacts/${proposals[0]!.id}`
+  );
   await expect(page.getByRole('region', { name: /reviewed artifact proposal/i })).toBeVisible();
   await expect(page.getByRole('region', { name: /recorded base revision/i })).toContainText(
     revisionTwoContent
@@ -410,7 +423,9 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await expect(page.getByRole('status', { name: 'Artifact review' })).toContainText('Approved');
   await page.setViewportSize(previousViewport);
 
-  await page.goto(`${stack.webUrl}/materials/ws_00000000-0000-7000-8000-000000000001/${threadId}/${primary.materialId}`);
+  await page.goto(
+    `${stack.webUrl}/materials/ws_00000000-0000-7000-8000-000000000001/${threadId}/${primary.materialId}`
+  );
   await expect(materialEditor).toHaveValue(proposals[0]!.content.body);
   const revisionsAfterApply = await materialRevisions(primary.materialId);
   expect(revisionsAfterApply).toHaveLength(3);
@@ -460,7 +475,9 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     .map((revision) => revision.revisionId)
     .sort();
 
-  await page.goto(`${stack.webUrl}/goals/ws_00000000-0000-7000-8000-000000000001/${threadId}/artifacts/${proposals[1]!.id}`);
+  await page.goto(
+    `${stack.webUrl}/goals/ws_00000000-0000-7000-8000-000000000001/${threadId}/artifacts/${proposals[1]!.id}`
+  );
   const reviewedProposal = page.getByRole('region', { name: /reviewed artifact proposal/i });
   const recordedBase = page.getByRole('region', { name: /recorded base revision/i });
   await expect(reviewedProposal).toBeVisible();
@@ -497,7 +514,9 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await expect(page.getByRole('region', { name: /recorded base revision/i })).toContainText(
     revisionTwoContent
   );
-  await page.goto(`${stack.webUrl}/materials/ws_00000000-0000-7000-8000-000000000001/${threadId}/${primary.materialId}`);
+  await page.goto(
+    `${stack.webUrl}/materials/ws_00000000-0000-7000-8000-000000000001/${threadId}/${primary.materialId}`
+  );
   const recoveredRevisions = await materialRevisions(primary.materialId);
   expect(recoveredRevisions.map((revision) => revision.revisionId).sort()).toEqual(
     revisionIdsAfterUserSave

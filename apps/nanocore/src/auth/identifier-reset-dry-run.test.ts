@@ -235,6 +235,16 @@ it('re-registers the protected synthetic account set on a clean candidate and re
         ...operationRequest('token.list', {}, { headers: { cookie: account.cookie } })
       );
       expect(adminRead.status).toBe(200);
+      const administratorRead = await reopened.app.request(
+        ...operationRequest(
+          'administration.cleanup-read',
+          {},
+          {
+            headers: { authorization: `Bearer ${admin.secret}` },
+          }
+        )
+      );
+      expect(administratorRead.status).toBe(200);
       administratorVerified = true;
     }
   }

@@ -364,7 +364,11 @@ test('catalog configuration application requires exact human confirmation and fo
   const contentDigest = `sha256:${'a'.repeat(64)}`;
   const input = {
     requestId: '11111111-1111-4111-8111-111111111111',
-    candidate: { artifactId: 'candidate', artifactVersion: 1, contentDigest },
+    candidate: {
+      artifactId: 'ar_00000000-0000-7000-8000-000000000088',
+      artifactVersion: 1,
+      contentDigest,
+    },
     confirmation: { action: 'administration.configuration.apply', contentDigest },
   };
   assert.equal(
@@ -1390,7 +1394,7 @@ test('bundled own invitation calls preserve typed transport and canonical auth d
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       inviteeUserId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
       proposedAccessLevel: 'editor',
-      inviterUserId: 'owner_demo',
+      inviterUserId: 'usr_00000000-0000-7000-8000-000000000088',
       revision: 2,
       createdAt: '2026-09-14T00:00:00.000Z',
       updatedAt: '2026-09-14T00:00:00.000Z',
