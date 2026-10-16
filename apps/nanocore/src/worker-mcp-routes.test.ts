@@ -2229,9 +2229,11 @@ describe('worker MCP routes', () => {
     const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
     const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
     const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+    const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
     const workerLifecycleRuntime = createConfiguredWorkerLifecycleRuntime({
       coreDb,
       env: {},
+      fileAdmission,
       nanoHostSessionDispatch,
       store,
       workerControlGateway,
@@ -2240,6 +2242,7 @@ describe('worker MCP routes', () => {
     const app = createApp({
       coreDb,
       dataRoot,
+      fileAdmission,
       nanoHostSessionDispatch,
       runtimeConfigManager,
       store,

@@ -739,7 +739,7 @@ async function sourceToolFixture(bytes: Buffer, mediaType: string) {
   const fixture = submissionFixture();
   ensureLocalUser(fixture.coreDb);
   recordWorkspaceOwnerMembership({ coreDb: fixture.coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-  fixture.captureArtifact.mockResolvedValue({ bytes, credentialCheckValues: fixture.credentialCheckValues });
+  fixture.captureArtifact.mockResolvedValue({ bytes: Buffer.from(bytes), credentialCheckValues: fixture.credentialCheckValues });
   const artifactId = acknowledgedArtifactId(await fixture.submit('req_source_tool', { mediaType }));
   const artifact = fixture.store.getArtifact('ws_demo', artifactId);
   const workspaceRoot = join(fixture.dataRoot, 'workspaces', 'ws_demo');
