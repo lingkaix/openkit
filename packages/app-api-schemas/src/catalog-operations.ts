@@ -113,19 +113,27 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
-    description: 'Check an immutable Skill version against its source without changing catalog selection.',
-    inputSchema: z.object({
-      workspaceId: WorkspaceIdSchema,
-      skillId: z.string().min(1),
-      digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-    }).strict(),
-    outputSchema: z.object({
-      status: z.enum(['changed', 'unchanged', 'unavailable']),
-      digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-      sourceCommit: z.string().min(1).nullable(),
-      observedDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/).nullable(),
-      observedCommit: z.string().min(1).nullable(),
-    }).strict(),
+    description:
+      'Check an immutable Skill version against its source without changing catalog selection.',
+    inputSchema: z
+      .object({
+        workspaceId: WorkspaceIdSchema,
+        skillId: z.string().min(1),
+        digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+      })
+      .strict(),
+    outputSchema: z
+      .object({
+        status: z.enum(['changed', 'unchanged', 'unavailable']),
+        digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+        sourceCommit: z.string().min(1).nullable(),
+        observedDigest: z
+          .string()
+          .regex(/^sha256:[a-f0-9]{64}$/)
+          .nullable(),
+        observedCommit: z.string().min(1).nullable(),
+      })
+      .strict(),
     credentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'workspace' },

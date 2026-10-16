@@ -741,6 +741,7 @@ it('keeps real catalog conflict, missing-version and host-execution refusals exa
     );
     expect(host.status).toBe(201);
     const before = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
+    const receiptsBefore = f.store.listCommandRequests();
     for (const [operation, input, expected] of [
       [
         'catalog.skill-import',
@@ -789,7 +790,7 @@ it('keeps real catalog conflict, missing-version and host-execution refusals exa
       expect(remote.isError).toBe(true);
       expect(JSON.parse(remote.content[0].text)).toMatchObject(expected);
       expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id)).toEqual(before);
-      expect(f.store.listCommandRequests()).toEqual([]);
+      expect(f.store.listCommandRequests()).toEqual(receiptsBefore);
     }
   } finally {
     f.coreDb.sqlite.close();

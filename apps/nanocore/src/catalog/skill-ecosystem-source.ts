@@ -2,7 +2,11 @@ import type { SkillVersionRecord } from '@openkit/config-schema';
 import { type CatalogTreeFile, validateCatalogTree } from './catalog-tree.js';
 import { acquireDownloadedEcosystemSkill } from './skill-download-source.js';
 import { acquireGitEcosystemSkill } from './skill-git-source.js';
-import { parseSkillImportSource, SkillSourceInputError, validateSkillSourceSubpath } from './skill-source.js';
+import {
+  parseSkillImportSource,
+  SkillSourceInputError,
+  validateSkillSourceSubpath,
+} from './skill-source.js';
 
 /** Complete staged bytes and descriptive provenance; no field grants current import authority. */
 export interface AcquiredSkillSupply {
@@ -20,10 +24,15 @@ export async function acquireRemoteEcosystemSkill(input: {
 }): Promise<AcquiredSkillSupply> {
   const parsed = parseSkillImportSource(input.source);
   if (parsed.kind === 'local') throw new SkillSourceInputError();
-  const subpath = input.sourceSubpath === undefined ? undefined : validateSkillSourceSubpath(input.sourceSubpath);
+  const subpath =
+    input.sourceSubpath === undefined ? undefined : validateSkillSourceSubpath(input.sourceSubpath);
   if (parsed.kind === 'git') {
-    if (subpath !== undefined && parsed.subpath !== null && subpath !== parsed.subpath ||
-        input.sourceSkillName !== undefined && parsed.skillName !== null && input.sourceSkillName !== parsed.skillName)
+    if (
+      (subpath !== undefined && parsed.subpath !== null && subpath !== parsed.subpath) ||
+      (input.sourceSkillName !== undefined &&
+        parsed.skillName !== null &&
+        input.sourceSkillName !== parsed.skillName)
+    )
       throw new SkillSourceInputError();
     const acquired = await acquireGitEcosystemSkill({
       ...parsed,
@@ -53,19 +62,28 @@ export async function acquireRemoteEcosystemSkill(input: {
 /** Observes the retained source without importing bytes, changing provenance or moving selection. */
 export async function checkEcosystemSkillUpdate(version: SkillVersionRecord) {
   const original = { digest: version.digest, sourceCommit: version.provenance.sourceCommit };
-  const unavailable = { ...original, status: 'unavailable' as const, observedDigest: null, observedCommit: null };
+  const unavailable = {
+    ...original,
+    status: 'unavailable' as const,
+    observedDigest: null,
+    observedCommit: null,
+  };
   if (!version.provenance.sourceLocator) return unavailable;
   try {
     const acquired = await acquireRemoteEcosystemSkill({
       source: version.provenance.sourceLocator,
-      ...(version.provenance.sourceSubpath === null ? {} : { sourceSubpath: version.provenance.sourceSubpath }),
+      ...(version.provenance.sourceSubpath === null
+        ? {}
+        : { sourceSubpath: version.provenance.sourceSubpath }),
     });
     const observedDigest = validateCatalogTree(acquired.tree).digest;
     const observedCommit = acquired.sourceCommit ?? null;
     return {
       ...original,
-      status: observedDigest === version.digest && observedCommit === version.provenance.sourceCommit
-        ? 'unchanged' as const : 'changed' as const,
+      status:
+        observedDigest === version.digest && observedCommit === version.provenance.sourceCommit
+          ? ('unchanged' as const)
+          : ('changed' as const),
       observedDigest,
       observedCommit,
     };

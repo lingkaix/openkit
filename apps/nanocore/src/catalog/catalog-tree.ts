@@ -62,4 +62,3 @@ export function treeFilesToEntries(tree: readonly CatalogTreeFile[]): OpenKitTre
   }
   return entries;
 }
-

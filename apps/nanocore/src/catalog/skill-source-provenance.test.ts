@@ -15,11 +15,15 @@ it('retains first source identity with exact bytes and does not invent Git linea
       activate: false,
       producer: { kind: 'user' as const, id: 'user_local' },
       createdAt: '2026-10-16T00:00:00Z',
-      tree: [{
-        kind: 'file' as const,
-        path: 'SKILL.md',
-        contentBase64: Buffer.from('---\nname: Example\ndescription: Retain supplied provenance.\n---\nOriginal bytes\n').toString('base64'),
-      }],
+      tree: [
+        {
+          kind: 'file' as const,
+          path: 'SKILL.md',
+          contentBase64: Buffer.from(
+            '---\nname: Example\ndescription: Retain supplied provenance.\n---\nOriginal bytes\n'
+          ).toString('base64'),
+        },
+      ],
     };
     const source = {
       sourceLocator: 'https://github.com/example/skills.git',
@@ -43,7 +47,9 @@ it('retains first source identity with exact bytes and does not invent Git linea
     });
     expect(upload.version.provenance.sourceCommit).toBeNull();
     expect(upload.version.provenance.uploadedSourceId).toBe('request-upload-example');
-    expect(loadWorkspaceResourceCatalog(dataRoot, base.workspaceId).skills.versions[0]?.provenance).toEqual(first.version.provenance);
+    expect(
+      loadWorkspaceResourceCatalog(dataRoot, base.workspaceId).skills.versions[0]?.provenance
+    ).toEqual(first.version.provenance);
   } finally {
     rmSync(dataRoot, { recursive: true, force: true });
   }

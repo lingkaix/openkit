@@ -39,7 +39,7 @@ import {
   createWorkspaceMcpConfig,
   decideWorkspaceSkillCandidate,
   importWorkspacePlugin,
-  importWorkspaceSkill,
+  type importWorkspaceSkill,
   loadWorkspaceResourceCatalog,
   McpBindingValidationError,
   materializeCatalogTree,
@@ -49,14 +49,17 @@ import {
   updateWorkspaceMcpBinding,
   validateCatalogTree,
 } from './resource-catalog.js';
-import { createSkillManagementCommands } from './skill-management-commands.js';
-import { acquireRemoteEcosystemSkill, checkEcosystemSkillUpdate } from './skill-ecosystem-source.js';
-import { SkillSourceInputError } from './skill-source.js';
+import {
+  acquireRemoteEcosystemSkill,
+  checkEcosystemSkillUpdate,
+} from './skill-ecosystem-source.js';
 import {
   diffWorkspaceSkillVersions,
   readWorkspaceSkillContent,
   readWorkspaceSkillVersion,
 } from './skill-inspection.js';
+import { createSkillManagementCommands } from './skill-management-commands.js';
+import { SkillSourceInputError } from './skill-source.js';
 
 /** Existing Audit and retention owners supply authority; absent proof blocks the affected effect. */
 export interface CatalogOperationHooks {
@@ -438,8 +441,10 @@ export function createCatalogOperationImplementations(
       try {
         revalidate(input.workspaceId, 'catalog.skill-update-check', context);
         const version = readWorkspaceSkillVersion({
-          dataRoot: root(), workspaceId: input.workspaceId,
-          entryId: input.skillId, digest: input.digest,
+          dataRoot: root(),
+          workspaceId: input.workspaceId,
+          entryId: input.skillId,
+          digest: input.digest,
         });
         const result = await checkEcosystemSkillUpdate(version);
         revalidate(input.workspaceId, 'catalog.skill-update-check', context);
@@ -490,13 +495,15 @@ export function createCatalogOperationImplementations(
     },
     'catalog.skill-import': async (input, context) => {
       try {
-        const result = await management.importSkill(input, context, () => input.source === undefined
-          ? { tree: catalogTree(input.tree!) }
-          : acquireRemoteEcosystemSkill({
-            source: input.source,
-            sourceSubpath: input.sourceSubpath,
-            sourceSkillName: input.sourceSkillName,
-          }));
+        const result = await management.importSkill(input, context, () =>
+          input.source === undefined
+            ? { tree: catalogTree(input.tree!) }
+            : acquireRemoteEcosystemSkill({
+                source: input.source,
+                sourceSubpath: input.sourceSubpath,
+                sourceSkillName: input.sourceSkillName,
+              })
+        );
         const entry = result.catalog.skills.entries.find(
           (item) => item.id === result.version.entryId
         )!;
