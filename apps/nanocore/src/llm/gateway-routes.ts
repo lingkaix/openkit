@@ -2063,10 +2063,14 @@ export function registerWorkerInferenceRoutes({
             499
           );
         const failure = (error as { failure?: PiAiFailure } | null)?.failure ?? observedFailure;
+        // Unavailable supply can end admitted compaction before a Provider attempt starts.
         if (
           runtimeHint?.requestKind === 'compaction' &&
-          activeExecution !== undefined &&
-          !activeExecution.outputBegan &&
+          !activeExecution?.outputBegan &&
+          (activeExecution !== undefined ||
+            error instanceof LogicalModelRoutesExhaustedError ||
+            failure?.kind === 'provider_unavailable' ||
+            failure?.kind === 'auth_rejected') &&
           failure?.kind !== 'cancelled'
         ) {
           throw new WorkerInferenceRouteError(
