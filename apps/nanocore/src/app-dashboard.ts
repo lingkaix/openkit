@@ -312,7 +312,11 @@ function buildWorkspaceWorkSections(
   const attentionNeeded: WorkspaceDashboardResponse['attentionNeeded'] = [];
 
   for (const thread of threads) {
-    const turns = sortTurns(store.listThreadTurns(workspaceId, thread.id));
+    const turns = sortTurns(
+      store
+        .listThreadTurns(workspaceId, thread.id)
+        .map((candidate) => store.getTurn(workspaceId, thread.id, candidate.id))
+    );
     const items = store.listThreadItems(workspaceId, thread.id);
     const threadArtifacts = artifacts.filter((artifact) => artifact.threadId === thread.id);
     const newestArtifact = selectNewestArtifact(threadArtifacts);
@@ -737,7 +741,11 @@ export function readConversationNavigation({
     const rows: ConversationNavigationResponse['items'] = visibleThreads
       .filter((thread) => thread.status === 'active')
       .map((thread) => {
-        const turns = sortTurns(store.listThreadTurns(workspaceId, thread.id));
+        const turns = sortTurns(
+          store
+            .listThreadTurns(workspaceId, thread.id)
+            .map((candidate) => store.getTurn(workspaceId, thread.id, candidate.id))
+        );
         const items = store.listThreadItems(workspaceId, thread.id);
         const activeTurn = turns.findLast((turn) => !isSealedTurnTerminal(turn.status));
         const latestTurn = activeTurn ?? turns.at(-1);
