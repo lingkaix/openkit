@@ -278,12 +278,37 @@ describe('Workspace JSON transfer cutover', () => {
     const exportedTurns = readFileSync(
       join(root, 'server', 'exports', 'workspaces', 'ws_demo', exportId, 'records', 'turns.jsonl'),
       'utf8'
-    )
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line));
-    expect(exportedTurns).toEqual([published.turn]);
-    expect(JSON.stringify(exportedTurns)).not.toContain('failed-cache');
+    );
+    expect(
+      exportedTurns
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line))
+    ).toEqual([published.turn]);
+    expect(exportedTurns).not.toContain('failed-cache');
+    // A discarded cache candidate cannot hide the same complete canonical Turn from later exports.
+    (store as unknown as { turns: Map<string, unknown> }).turns.delete(turn.id);
+    expect(store.listThreadTurns('ws_demo', thread.id)).toEqual([]);
+    const withoutCache = await app.request(
+      ...request('/api/app/operations/workspace.export', { workspaceId: 'ws_demo' })
+    );
+    expect(withoutCache.status, await withoutCache.clone().text()).toBe(200);
+    const withoutCacheResult = await withoutCache.json();
+    expect(
+      readFileSync(
+        join(
+          root,
+          'server',
+          'exports',
+          'workspaces',
+          'ws_demo',
+          withoutCacheResult.exportId,
+          'records',
+          'turns.jsonl'
+        ),
+        'utf8'
+      )
+    ).toBe(exportedTurns);
     for (const [name, bytes] of sourceBytes) {
       expect(readFileSync(join(turnRoot, name))).toEqual(bytes);
     }
