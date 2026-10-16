@@ -63,6 +63,12 @@ export function createAssistantGenerativeTools(invoke: AssistantGenerativeInvoca
       async execute(input: unknown, context: ToolExecutionContext) {
         context.signal.throwIfAborted();
         try {
+          if (!Number.isSafeInteger(context.toolOccurrence) || context.toolOccurrence < 1)
+            throw new OperationError(
+              'invalid_request',
+              'Accepted Tool occurrence is required.',
+              400
+            );
           const parsed = schema.safeParse(input);
           if (!parsed.success)
             throw new OperationError('invalid_request', 'Invalid operation input.', 400);

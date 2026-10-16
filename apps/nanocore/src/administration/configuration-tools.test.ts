@@ -49,7 +49,7 @@ describe('administration configuration Tools', () => {
 
     const listed = await tools[0].execute(
       { targetFamily: 'agent' },
-      { callId: 'call_list', signal: new AbortController().signal }
+      { callId: 'call_list', toolOccurrence: 1, signal: new AbortController().signal }
     );
     const catalog = JSON.parse(listed.content[0]!.type === 'text' ? listed.content[0]!.text : '{}');
     expect(catalog.agents).toEqual([
@@ -65,7 +65,7 @@ describe('administration configuration Tools', () => {
 
     const result = await tools[0].execute(
       { targetFamily: 'agent', agentId: manifest.id },
-      { callId: 'call_read', signal: new AbortController().signal }
+      { callId: 'call_read', toolOccurrence: 1, signal: new AbortController().signal }
     );
     const serialized = JSON.stringify(result.content);
     const payload = JSON.parse(result.content[0]!.type === 'text' ? result.content[0]!.text : '{}');
@@ -113,6 +113,7 @@ describe('administration configuration Tools', () => {
     } as never);
     const result = await tools[2].execute(proposal, {
       callId: 'catalog',
+      toolOccurrence: 1,
       signal: new AbortController().signal,
     });
     expect(result.isError).not.toBe(true);
@@ -129,7 +130,7 @@ describe('administration configuration Tools', () => {
 
     const schema = await tools[1].execute(
       { targetFamily: 'agent' },
-      { callId: 'call_schema', signal: new AbortController().signal }
+      { callId: 'call_schema', toolOccurrence: 1, signal: new AbortController().signal }
     );
     expect(JSON.stringify(schema.content)).toContain('OpenKit agent config');
     expect(JSON.stringify(schema.content)).toContain('pullPolicy');

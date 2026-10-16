@@ -51,8 +51,14 @@ describe('administration Tool assembly', () => {
     });
 
     expect(tools.map((tool) => tool.name)).toEqual(ADMINISTRATION_TOOL_NAMES);
-    await tools[3]!.execute({}, { callId: 'call_1', signal: new AbortController().signal });
-    await tools[3]!.execute({}, { callId: 'call_2', signal: new AbortController().signal });
+    await tools[3]!.execute(
+      {},
+      { callId: 'call_1', toolOccurrence: 1, signal: new AbortController().signal }
+    );
+    await tools[3]!.execute(
+      {},
+      { callId: 'call_2', toolOccurrence: 1, signal: new AbortController().signal }
+    );
 
     expect(requireCurrentAdministrator).toHaveBeenCalledTimes(2);
     expect(execute).toHaveBeenCalledTimes(2);
@@ -68,7 +74,7 @@ describe('administration Tool assembly', () => {
     });
     const result = await tools[0]!.execute(
       {},
-      { callId: 'call_configuration', signal: new AbortController().signal }
+      { callId: 'call_configuration', toolOccurrence: 1, signal: new AbortController().signal }
     );
 
     expect(result).toEqual({ content: [] });
@@ -90,9 +96,15 @@ describe('administration Tool assembly', () => {
       runtimeTargetTool: runtimeTargetTool(),
     });
 
-    await tools[0]!.execute({}, { callId: 'call_ready', signal: new AbortController().signal });
+    await tools[0]!.execute(
+      {},
+      { callId: 'call_ready', toolOccurrence: 1, signal: new AbortController().signal }
+    );
     await expect(
-      tools[0]!.execute({}, { callId: 'call_revoked', signal: new AbortController().signal })
+      tools[0]!.execute(
+        {},
+        { callId: 'call_revoked', toolOccurrence: 1, signal: new AbortController().signal }
+      )
     ).rejects.toThrow('Current deployment administrator authority is required.');
     expect(execute).toHaveBeenCalledOnce();
   });

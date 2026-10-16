@@ -26,7 +26,7 @@ describe('administration Worker environment Tools', () => {
 
     await tools[0].execute(
       { workspaceId: 'ws_target', limit: 20 },
-      { callId: 'call_list', signal: new AbortController().signal }
+      { callId: 'call_list', toolOccurrence: 1, signal: new AbortController().signal }
     );
 
     expect(list).toHaveBeenCalledWith({ actor, workspaceId: 'ws_target' }, { limit: 20 });
@@ -52,7 +52,7 @@ describe('administration Worker environment Tools', () => {
 
     const result = await tools[0].execute(
       { workspaceId: 'ws_other' },
-      { callId: 'call_denied', signal: new AbortController().signal }
+      { callId: 'call_denied', toolOccurrence: 1, signal: new AbortController().signal }
     );
 
     expect(result.isError).toBe(true);
@@ -84,7 +84,11 @@ describe('administration Worker environment Tools', () => {
         contentDigest: `sha256:${'a'.repeat(64)}`,
       },
     };
-    const context = { callId: 'call_prepare', signal: new AbortController().signal };
+    const context = {
+      callId: 'call_prepare',
+      toolOccurrence: 1,
+      signal: new AbortController().signal,
+    };
     const result = await tool.execute(args, context);
     await tool.execute(args, context);
     expect(prepare).toHaveBeenCalledTimes(2);
@@ -138,7 +142,11 @@ describe('administration Worker environment Tools', () => {
         prepare,
       });
       const tool = tools[mode === 'prepare' ? 0 : 1];
-      const context = { callId: 'call_candidate', signal: new AbortController().signal };
+      const context = {
+        callId: 'call_candidate',
+        toolOccurrence: 1,
+        signal: new AbortController().signal,
+      };
 
       await tool.execute(args, context);
       expect(prepare).toHaveBeenCalledTimes(1);
@@ -178,7 +186,7 @@ describe('administration Worker environment Tools', () => {
       const tool = tools[mode === 'prepare' ? 0 : 1];
       const result = await tool.execute(
         { ...args, mode },
-        { callId: 'call_obsolete_mode', signal: new AbortController().signal }
+        { callId: 'call_obsolete_mode', toolOccurrence: 1, signal: new AbortController().signal }
       );
 
       expect(result).toEqual({
