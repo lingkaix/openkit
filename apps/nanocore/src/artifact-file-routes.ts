@@ -208,7 +208,7 @@ export function registerArtifactFileRoutes(
   });
 }
 
-/** Projects only classified value-free refusals, leaving unexpected failures to the App boundary. */
+/** Projects classified refusals and the same value-free unexpected failure as the Artifact JSON owner. */
 function fileRouteError(error: unknown): Response {
   if (error instanceof IdempotencyKeyConflictError) {
     return Response.json(apiErrorPayload({ code: error.code, message: error.message }), {
@@ -244,7 +244,11 @@ function fileRouteError(error: unknown): Response {
     );
   }
   const projected = projectOperationError(error);
-  if (!projected) throw error;
+  if (!projected)
+    return Response.json(
+      apiErrorPayload({ code: 'internal_error', message: 'Internal Server Error' }),
+      { status: 500, headers: { 'Cache-Control': 'no-store' } }
+    );
   const { status, ...body } = projected;
   return Response.json(apiErrorPayload(body), { status, headers: { 'Cache-Control': 'no-store' } });
 }
