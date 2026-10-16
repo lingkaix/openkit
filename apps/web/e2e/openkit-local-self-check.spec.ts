@@ -209,12 +209,12 @@ async function materialRevision(
  * Starts one visible Task Turn and observes its emitted question after ordinary Turn completion.
  *
  * @param page Browser page connected to the isolated Web app.
- * @param threadId Thread that owns the Turn.
+ * @param threadId Originating Thread of this handoff.
  * @param input Exact user-visible Task request.
- * @returns Resolves after a 202 response, visible question, and verified terminal Turn prove non-vacuity.
+ * @returns Receiving Thread after a 202 response, visible question, and verified terminal Turn.
  * @throws When browser submission, the Task response, question rendering, or terminal proof fails.
  */
-async function startTaskTurn(page: Page, threadId: string, input: string): Promise<void> {
+async function startTaskTurn(page: Page, threadId: string, input: string): Promise<string> {
   await page.goto(`${stack?.webUrl}/tasks/ws_00000000-0000-7000-8000-000000000001/${threadId}`);
   await page.getByRole('textbox', { name: 'Message' }).fill(input);
   const turnResponse = page.waitForResponse(
@@ -227,17 +227,31 @@ async function startTaskTurn(page: Page, threadId: string, input: string): Promi
   const responseBody = await response.text();
   expect(response.status(), `Task Turn start response: ${responseBody}`).toBe(202);
   const submission = SubmitConversationResponseSchema.parse(JSON.parse(responseBody));
-  expect(submission.receivingThreadId).toBe(threadId);
+  const receivingThreadId = submission.receivingThreadId;
+  expect(receivingThreadId).not.toBe(threadId);
+  expect(submission.receivingWorkspaceId).toBe('ws_00000000-0000-7000-8000-000000000001');
+  expect(submission.turn.threadId).toBe(receivingThreadId);
+  expect(
+    await getJson('/api/app/operations/thread.read', {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: receivingThreadId,
+    })
+  ).toMatchObject({ id: receivingThreadId, parentThreadId: threadId });
   await expect(page.getByText('Which summary tone should the simulator use?')).toBeVisible({
     timeout: 15_000,
   });
   await expect(page.getByText("Couldn't send that message. Try again.")).toHaveCount(0);
   const turn = await getJson<{ status: string; contextPackageDigest: string | null }>(
     '/api/app/operations/turn.read',
-    { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId, turnId: submission.turn.id }
+    {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: receivingThreadId,
+      turnId: submission.turn.id,
+    }
   );
   expect(turn.status).toBe('completed');
   expect(turn.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
+  return receivingThreadId;
 }
 
 /**
@@ -253,7 +267,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   const browserRuntimeErrors: string[] = [];
   page.on('pageerror', (error) => browserRuntimeErrors.push(error.message));
   stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
-  const threadId = 'th_00000000-0000-7000-8000-000000000001';
+  let threadId = 'th_00000000-0000-7000-8000-000000000001';
   const revisionOneContent = '# Release note\n\nRevision one.';
   const revisionTwoContent =
     '# Release note\n\nRevision two, saved after revision one was delivered.';
@@ -271,7 +285,11 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     threadMaterial.getByText('Queued revision', { exact: true }).locator('..').locator('dd')
   ).toHaveText(revisionOne.revisionId);
 
-  await startTaskTurn(page, threadId, 'Create a summary from the exact first release revision.');
+  threadId = await startTaskTurn(
+    page,
+    threadId,
+    'Create a summary from the exact first release revision.'
+  );
   const materialProjectionResponse = page.waitForResponse((response) => {
     if (
       response.request().method() !== 'POST' ||
@@ -364,7 +382,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await expect(page.getByText('Which summary tone should the simulator use?')).toHaveCount(0);
 
   await stack.restartCore();
-  await startTaskTurn(page, threadId, 'Use the exact queued second release revision.');
+  threadId = await startTaskTurn(page, threadId, 'Use the exact queued second release revision.');
   await expect(page.getByText('Which summary tone should the simulator use?')).toBeVisible();
   await page.getByRole('textbox', { name: 'Tone' }).fill('Concise');
   const secondAnswerResponse = page.waitForResponse(isQuestionAnswerResponse);
