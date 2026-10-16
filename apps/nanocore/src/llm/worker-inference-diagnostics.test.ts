@@ -37,7 +37,7 @@ afterEach(() => {
 });
 
 /** Runs the real worker route with a controlled Provider boundary and real capability storage. */
-function fixture(configured = true) {
+function fixture(configured = true, nativeStop = true) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'worker-inference-diagnostics-'));
   roots.push(dataRoot);
   const coreDb = openCoreDb(dataRoot);
@@ -98,15 +98,24 @@ function fixture(configured = true) {
       gatewayCapabilities: { responses: 'native', chatCompletions: 'native' },
     })
   );
+  // This controlled Provider double knows its complete source before public SSE delivery.
+  const observedDispatch = (...args: unknown[]) => {
+    const boundary = (args[2] as LLMGatewayDispatchContext | undefined)?.transport?.rawOutput;
+    const settle = boundary?.sourceStarted();
+    boundary?.sourceEvent();
+    settle?.();
+    return dispatch(...args);
+  };
   const app = new Hono<{ Variables: AuthVariables }>();
   registerWorkerInferenceRoutes({
     app,
     coreDb,
     workerControlGateway: gateway,
+    ...(nativeStop ? { onRawOutputStop: vi.fn(async () => {}) } : {}),
     llmGatewayDispatcher: {
-      createResponses: dispatch,
-      createResponsesStream: dispatch,
-      createChatCompletionStream: dispatch,
+      createResponses: observedDispatch,
+      createResponsesStream: observedDispatch,
+      createChatCompletionStream: observedDispatch,
     } as unknown as LLMGatewayProviderDispatcher,
     resolveGatewayProvider,
     runtimeConfig: () =>
@@ -528,4 +537,10 @@ it.each([
   await response.text();
   expect(warn).not.toHaveBeenCalled();
   expect(f.calls()).toMatchObject([{ status: 'succeeded' }]);
+});
+
+it('blocks Provider access before execution when native stop coverage is absent', async () => {
+  const f = fixture(true, false);
+  expect((await f.post(false)).status).toBe(503);
+  expect(f.dispatch).not.toHaveBeenCalled();
 });

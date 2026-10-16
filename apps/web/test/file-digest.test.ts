@@ -2,7 +2,7 @@ import { Blob } from 'node:buffer';
 import { readFileSync } from 'node:fs';
 import { URL as NodeURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
-import { sha256ArtifactFile } from '../src/screens/artifacts/file-digest';
+import { sha256ArtifactFile } from '../src/screens/artifacts/file-digest.js';
 
 /** Independent exact originals frozen before the production file path. */
 const corpus = JSON.parse(

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -29,6 +29,7 @@ import {
   updateWorkspaceSyncReviewDecision,
 } from './runtime/workspace-sync-records.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from './scheduler-records.js';
+import { artifactFilePayloadPath } from './storage/artifacts/file-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -39,6 +40,28 @@ import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+
+/** Uses the current exact raw import binding; JSON bytes remain a test input only. */
+function fileImportRequest(
+  workspaceId: string,
+  input: {
+    requestId: string;
+    title: string;
+    mediaType: string;
+    contentDigest: string;
+    content: string;
+  }
+): [string, RequestInit] {
+  const { requestId, content, ...metadata } = input;
+  return [
+    `/api/app/operations/artifact.import?${new URLSearchParams({ ...metadata, workspaceId, byteLength: String(Buffer.byteLength(content)) })}`,
+    {
+      method: 'POST',
+      headers: { 'x-openkit-request-id': requestId, 'content-type': metadata.mediaType },
+      body: Buffer.from(content),
+    },
+  ];
+}
 
 /**
  * Records the implicit local actor as the owner of one test Workspace.
@@ -299,17 +322,7 @@ describe('Core artifact routes', () => {
     } as const;
 
     try {
-      const importedRes = await app.request(
-        ...operationRequest(
-          'artifact.import',
-          { workspaceId: workspace.id },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(importBody),
-          }
-        )
-      );
+      const importedRes = await app.request(...fileImportRequest(workspace.id, importBody));
       expect(importedRes.status).toBe(201);
       const imported = ImportWorkspaceArtifactResponseSchema.parse(await importedRes.json());
       expect(imported.artifactVersion).toBe(1);
@@ -320,7 +333,11 @@ describe('Core artifact routes', () => {
         threadId: null,
         turnId: null,
         version: 1,
-        content: { format: 'markdown', body: content },
+        content: {
+          format: 'file',
+          mediaType: 'text/markdown',
+          byteLength: Buffer.byteLength(content),
+        },
         contentDigest,
         lastMutationRequestId: importBody.requestId,
         origin: {
@@ -333,32 +350,18 @@ describe('Core artifact routes', () => {
         },
       });
 
-      const importReplayRes = await app.request(
-        ...operationRequest(
-          'artifact.import',
-          { workspaceId: workspace.id },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(importBody),
-          }
-        )
-      );
+      const importReplayRes = await app.request(...fileImportRequest(workspace.id, importBody));
       expect(importReplayRes.status).toBe(201);
       expect(ImportWorkspaceArtifactResponseSchema.parse(await importReplayRes.json())).toEqual(
         imported
       );
 
       const digestMismatchRes = await app.request(
-        ...operationRequest(
-          'artifact.import',
-          { workspaceId: workspace.id },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ ...importBody, content: `${content}!` }),
-          }
-        )
+        ...fileImportRequest(workspace.id, {
+          ...importBody,
+          requestId: 'artifact-import-mismatch',
+          content: `${content}!`,
+        })
       );
       expect(digestMismatchRes.status).toBe(400);
       await expect(digestMismatchRes.json()).resolves.toMatchObject({
@@ -366,15 +369,7 @@ describe('Core artifact routes', () => {
       });
 
       const changedImportRes = await app.request(
-        ...operationRequest(
-          'artifact.import',
-          { workspaceId: workspace.id },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ ...importBody, title: 'Changed import title' }),
-          }
-        )
+        ...fileImportRequest(workspace.id, { ...importBody, title: 'Changed import title' })
       );
       expect(changedImportRes.status).toBe(409);
       await expect(changedImportRes.json()).resolves.toMatchObject({
@@ -473,18 +468,15 @@ describe('Core artifact routes', () => {
       expect(store.listThreadTurns(workspace.id, thread.id)).toHaveLength(turnCount);
       expect(store.listThreadItems(workspace.id, thread.id)).toHaveLength(itemCount);
 
-      artifact.content.body = `${content}!`;
-      const corruptReplayRes = await app.request(
-        ...operationRequest(
-          'artifact.import',
-          { workspaceId: workspace.id },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(importBody),
-          }
-        )
+      writeFileSync(
+        artifactFilePayloadPath(
+          join(dataRoot, 'workspaces', workspace.id),
+          artifact.id,
+          artifact.version
+        ),
+        `${content}!`
       );
+      const corruptReplayRes = await app.request(...fileImportRequest(workspace.id, importBody));
       expect(corruptReplayRes.status).toBe(409);
       await expect(corruptReplayRes.json()).resolves.toMatchObject({
         code: 'recovery_required',

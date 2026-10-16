@@ -1,4 +1,4 @@
-import { closeSync, constants, createReadStream, fstatSync, openSync } from 'node:fs';
+import { closeSync, constants, createReadStream, fstatSync, openSync, readSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Readable } from 'node:stream';
 import { resolveDataRootPath } from '../fs-layout.js';
@@ -63,6 +63,59 @@ export function readArtifactFilePayload(input: {
     highWaterMark: 65_536,
     signal: input.signal,
   });
+}
+
+/** Existing inline Material publication has a bounded text processor, independent of arbitrary-file admission. */
+export const MAX_ARTIFACT_MATERIAL_TEXT_BYTES = 16_777_216;
+
+/** Reads a complete small UTF-8 original for text-only consumers. Larger or non-UTF-8 files have no inline representation; missing/corrupt originals still fail. BOM bytes are preserved in the exact text round trip. */
+export function readArtifactFileText(input: {
+  readonly workspaceRoot: string;
+  readonly artifactId: string;
+  readonly version: number;
+  readonly byteLength: number;
+  readonly contentDigest: string;
+  readonly maximumBytes: number;
+}): string | null {
+  if (
+    !Number.isSafeInteger(input.maximumBytes) ||
+    input.maximumBytes < 0 ||
+    input.maximumBytes > MAX_ARTIFACT_MATERIAL_TEXT_BYTES
+  )
+    throw new Error('Artifact text processor limit is invalid.');
+  if (input.byteLength > input.maximumBytes) return null;
+  const descriptor = openArtifactFilePayload(input);
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    const bytes = Buffer.alloc(input.byteLength);
+    let position = 0;
+    while (position < bytes.byteLength) {
+      const count = readSync(
+        descriptor,
+        bytes,
+        position,
+        Math.min(65_536, bytes.byteLength - position),
+        position
+      );
+      if (!count) throw new Error('The Artifact original changed during text reading.');
+      position += count;
+    }
+    const after = fstatSync(descriptor, { bigint: true });
+    if (
+      before.size !== after.size ||
+      before.mtimeNs !== after.mtimeNs ||
+      before.ctimeNs !== after.ctimeNs ||
+      after.nlink !== 1n
+    )
+      throw new Error('The Artifact original changed during text reading.');
+    try {
+      return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    } catch {
+      return null;
+    }
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 /** Verifies the owner path and original digest, retaining one descriptor on success. */

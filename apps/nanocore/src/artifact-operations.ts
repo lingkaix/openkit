@@ -46,6 +46,10 @@ import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { updateWorkerCheckpoint, upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from './scheduler-records.js';
+import {
+  MAX_ARTIFACT_MATERIAL_TEXT_BYTES,
+  readArtifactFileText,
+} from './storage/artifacts/file-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { resolveDataRootPath } from './storage/fs-layout.js';
 
@@ -263,7 +267,8 @@ export function createArtifactOperationImplementations(
                 input.decision,
                 feedback ?? '',
                 artifact,
-                input.requestId
+                input.requestId,
+                workspaceDb
               ),
               response,
               review,
@@ -305,7 +310,7 @@ export function createArtifactOperationImplementations(
               const artifact = requireCurrentReviewedArtifact(store, review);
               const decisionInput = {
                 actorId,
-                ...artifactReviewContentProof(artifact),
+                ...artifactReviewContentProof(artifact, workspaceDb),
                 artifactId,
                 artifactVersion,
                 decidedAt: new Date().toISOString(),
@@ -378,7 +383,8 @@ export function createArtifactOperationImplementations(
                 decision,
                 feedback,
                 artifact,
-                input.requestId
+                input.requestId,
+                workspaceDb
               );
               const workerRequestId = deriveArtifactReviewWorkerRequestId(input.requestId);
               upsertWorkerCheckpoint(workspaceDb, {
@@ -467,7 +473,11 @@ export function createArtifactOperationImplementations(
               }
               return decideArtifactReview(workspaceDb, {
                 actorId,
-                ...artifactReviewContentProof(artifact),
+                ...artifactReviewContentProof(
+                  artifact,
+                  workspaceDb,
+                  input.decision === 'accepted' && review.materialProposal !== null
+                ),
                 artifactId,
                 artifactVersion,
                 decidedAt: new Date().toISOString(),
@@ -680,7 +690,8 @@ function artifactReviewFollowUpPrompt(
   decision: 'needs_refinement' | 'redo',
   feedback: string,
   artifact: ReturnType<FsStore['getArtifact']>,
-  decisionRequestId: string
+  decisionRequestId: string,
+  workspaceDb: WorkspaceDb
 ): string {
   if (!review.sourceThreadId || !review.sourceTurnId || !review.sourceAgentId) {
     throw recoveryRequired('The Artifact Review source lineage is incomplete.');
@@ -692,7 +703,7 @@ function artifactReviewFollowUpPrompt(
     artifactId: review.artifactId,
     artifactVersion: review.artifactVersion,
     contentDigest: review.contentDigest,
-    ...artifactReviewContentProof(artifact),
+    ...artifactReviewContentProof(artifact, workspaceDb),
     sourceThreadId: review.sourceThreadId,
     sourceTurnId: review.sourceTurnId,
     sourceAgentId: review.sourceAgentId,
@@ -705,9 +716,40 @@ function artifactReviewFollowUpPrompt(
 }
 
 /** Projects verified original identity into Review input without a fabricated text body. */
-function artifactReviewContentProof(artifact: ReturnType<FsStore['getArtifact']>) {
+function artifactReviewContentProof(
+  artifact: ReturnType<FsStore['getArtifact']>,
+  workspaceDb: WorkspaceDb,
+  materialApply = false
+) {
   const content = artifact.content;
   if (content.format === 'file') {
+    const mediaType = content.mediaType;
+    if (
+      content.byteLength > 0 &&
+      (mediaType === 'text/markdown' ||
+        mediaType === 'text/plain' ||
+        mediaType === 'application/json')
+    ) {
+      let text: string | null;
+      try {
+        text = readArtifactFileText({
+          workspaceRoot: resolveDataRootPath(
+            workspaceDb.dataRoot,
+            'workspaces',
+            artifact.workspaceId
+          ),
+          artifactId: artifact.id,
+          version: artifact.version,
+          byteLength: content.byteLength,
+          contentDigest: artifact.contentDigest,
+          maximumBytes: materialApply ? MAX_ARTIFACT_MATERIAL_TEXT_BYTES : 2048,
+        });
+      } catch {
+        throw recoveryRequired('The Artifact original is unavailable.');
+      }
+      if (text !== null && (materialApply || text.split('\n').length <= 50))
+        return { artifactContent: text, artifactMediaType: mediaType } as const;
+    }
     return {
       artifactContent: null,
       artifactMediaType: content.mediaType,

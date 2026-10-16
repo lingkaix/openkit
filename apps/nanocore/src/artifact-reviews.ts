@@ -329,15 +329,7 @@ export function decideArtifactReview(
     }
 
     const proposal = materialProposal(row);
-    if (proposal) {
-      if (input.artifactContent === null) {
-        throw reviewError(
-          'invalid_request',
-          'A file descriptor cannot be applied as a text Material.'
-        );
-      }
-      requireProposalAuthority(workspaceDb, proposal);
-    }
+    if (proposal) requireProposalAuthority(workspaceDb, proposal);
 
     if (input.decision === 'accepted' && proposal) {
       return applyAcceptedProposal(workspaceDb, row, proposal, input);

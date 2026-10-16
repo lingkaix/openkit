@@ -90,7 +90,6 @@ import {
   type CaptureCoverageBinding,
   CaptureCoverageBindingSchema,
   deleteWorkspaceKnowledgeRecord,
-  discardAbandonedWorkspaceStaging,
   isCurrentAgentSessionStatus,
   KnowledgeProposalRecordSchema,
   KnowledgeProposalReviewFileSchema,
@@ -1203,7 +1202,6 @@ export class FsStore {
       this.liveCaptureCoverage = captureCoverageBindingFromOpenKitConfig(
         loadOpenKitConfig(this.dataRoot)
       );
-      discardAbandonedWorkspaceStaging(this.dataRoot);
       const workspaceRecords = loadWorkspaceFileRecords(this.dataRoot);
 
       if (workspaceRecords.length > 0) {

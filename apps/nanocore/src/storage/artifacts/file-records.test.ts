@@ -15,6 +15,7 @@ import { stageArtifactPayload } from './file-payload.js';
 import {
   artifactFilePayloadPath,
   readArtifactFilePayload,
+  readArtifactFileText,
   verifyArtifactFilePayload,
 } from './file-records.js';
 
@@ -24,12 +25,11 @@ afterEach(async () => {
 });
 
 /** Publishes a small exact original through the real stream and canonical durability owners. */
-async function fixture() {
+async function fixture(bytes = Buffer.from('00ffc328800a', 'hex')) {
   const root = await mkdtemp(join(tmpdir(), 'artifact-file-record-'));
   roots.push(root);
   const workspaceRoot = join(root, 'workspaces', 'workspace');
   await mkdir(workspaceRoot, { recursive: true });
-  const bytes = Buffer.from('00ffc328800a', 'hex');
   const contentDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
   const admission = new FileStorageAdmission(root, () => 0n);
   const reservation = admission.reserve({
@@ -78,6 +78,24 @@ async function fixture() {
 }
 
 describe('immutable Artifact payload files', () => {
+  it('preserves exact UTF-8 and BOM bytes in a complete bounded text representation', async () => {
+    const state = await fixture(Buffer.from('\uFEFF界\n', 'utf8'));
+    const text = readArtifactFileText({ ...state, maximumBytes: state.byteLength });
+    expect(text).toBe('\uFEFF界\n');
+    expect(Buffer.from(text!, 'utf8')).toEqual(state.bytes);
+    expect(readArtifactFileText({ ...state, maximumBytes: state.byteLength - 1 })).toBeNull();
+  });
+  it('does not replace invalid original bytes with lossy editable text', async () => {
+    const state = await fixture();
+    expect(readArtifactFileText({ ...state, maximumBytes: 2048 })).toBeNull();
+    expect(() => readArtifactFileText({ ...state, maximumBytes: 16_777_217 })).toThrow(
+      'processor limit'
+    );
+    expect(
+      await readFile(artifactFilePayloadPath(state.workspaceRoot, state.artifactId, state.version))
+    ).toEqual(state.bytes);
+  });
+
   it('streams exactly the published original and refuses a second writer', async () => {
     const state = await fixture();
     const chunks: Buffer[] = [];

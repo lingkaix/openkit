@@ -89,6 +89,7 @@ import {
 } from './runtime/worker-mcp-gateway.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { lightAppDbPath } from './storage/app-db.js';
+import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import {
   openCoreDb,
   openWorkspaceDb,
@@ -222,7 +223,12 @@ describe('worker MCP routes', () => {
       admit(readNanoHostPhysicalConnectionContext(request)!);
       response.writeHead(204).end();
     });
-    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
+    const dispatch = createNanoHostSessionDispatch({
+      coreDb,
+      sessionAuthority: authority,
+      fileAdmission,
+    });
     const admission = new WorkspaceMutationAdmission();
     const gateway = createDefaultWorkerMcpGateway(coreDb);
     const client = new Client({ name: 'capture-wait', version: '1.0.0' });
@@ -267,6 +273,7 @@ describe('worker MCP routes', () => {
         authenticatePackageToken: vi.fn(() => pkg),
       } as unknown as WorkerControlGateway,
       workerMcpGateway: gateway,
+      fileAdmission,
       captureArtifact: async (input) => {
         captureCount += 1;
         const result = dispatch.effect({ ...effectRequest, signal: input.signal });
@@ -2166,7 +2173,7 @@ describe('worker MCP routes', () => {
           if (request.input.purpose === 'artifact-submission') {
             expect(request.signal).toBeInstanceOf(AbortSignal);
             liveCaptureCount += 1;
-            expect(request.input.maxByteLength).toBeLessThanOrEqual(16 * 1024 * 1024 + 1);
+            expect(request.input.maxByteLength).toBe(1_000_000_001);
             const directory = mkdtempSync(join(exportRoot, 'live-'));
             const stagingPath = join(directory, 'body');
             expect(request.input.slot).toBe('turn-output');

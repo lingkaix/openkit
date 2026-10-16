@@ -168,7 +168,7 @@ interface DurableLlmGatewayCall {
   /** Releases process-local inference cancellation ownership after the durable call settles. */
   onFinished?: () => void;
   /** Seals exact native observation before terminal status becomes visible. */
-  beforeFinished?: () => void;
+  beforeFinished?: (status: 'succeeded' | 'failed' | 'aborted' | 'timed-out') => void;
 }
 
 /**
@@ -451,7 +451,7 @@ function finishDurableLlmGatewayCall(
   if (!durableCall || durableCall.finished) {
     return;
   }
-  durableCall.beforeFinished?.();
+  durableCall.beforeFinished?.(status);
   durableCall.finished = true;
   const failureCode = durableCall.rawOutputFailureCode ?? errorCode;
 
@@ -468,6 +468,13 @@ function finishDurableLlmGatewayCall(
     } finally {
       durableCall.onFinished?.();
     }
+  }
+  // A dispatcher result is not native coverage. Refuse a non-stream success before its
+  // response escapes; committed streams retain their existing terminal error boundary.
+  if (status === 'succeeded' && durableCall.rawOutputFailureCode) {
+    if (durableCall.rawOutputFailureCode === 'worker_raw_output_exhausted')
+      throw new WorkerRawOutputBudgetExceededError();
+    throw new WorkerRawOutputAuthorityError();
   }
 }
 
@@ -1907,11 +1914,13 @@ export function registerWorkerInferenceRoutes({
       };
       let rawInitialized = false;
       const rawObservers: Array<{ pending: number; started: number; events: number }> = [];
-      durableCall.beforeFinished = () => {
+      durableCall.beforeFinished = (status) => {
         if (!rawInitialized) return;
-        const complete = rawObservers.every(
-          (observer) => observer.pending === 0 && (observer.started === 0 || observer.events > 0)
-        );
+        const complete =
+          (status !== 'succeeded' || rawObservers.length > 0) &&
+          rawObservers.every(
+            (observer) => observer.pending === 0 && observer.started > 0 && observer.events > 0
+          );
         let persisted = false;
         try {
           withRawDb((db) => settleWorkerRawOutput(db, scope, durableCall.call.id, complete));

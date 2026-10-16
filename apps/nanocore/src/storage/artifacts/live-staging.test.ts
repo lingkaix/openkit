@@ -36,6 +36,8 @@ it('inspects canonical records without deleting a live upload; explicit boot cle
         workspace.id
       );
       expect(await readFile(staged.path)).toEqual(bytes);
+      expect(new FsStore({dataRoot}).listWorkspaces().map((workspace)=>workspace.id)).toContain(workspace.id);
+      expect(await readFile(staged.path)).toEqual(bytes);
       discardAbandonedWorkspaceStaging(dataRoot);
       await expect(readFile(staged.path)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {

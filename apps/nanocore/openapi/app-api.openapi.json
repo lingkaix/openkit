@@ -6665,7 +6665,7 @@
         "tags": [
           "artifact"
         ],
-        "summary": "Read one Artifact with its exact inline content and immutable origin.",
+        "summary": "Read one Artifact descriptor and immutable origin.",
         "security": [
           {
             "bearerAuth": []
@@ -6686,71 +6686,11 @@
         },
         "responses": {
           "200": {
-            "description": "Read one Artifact with its exact inline content and immutable origin.",
+            "description": "Read one Artifact descriptor and immutable origin.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/artifact.read.output"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/operations/artifact.import": {
-      "post": {
-        "operationId": "artifact.import",
-        "tags": [
-          "artifact"
-        ],
-        "summary": "Import one immutable Workspace Artifact version.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "x-openkit-request-id",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/artifact.import.input"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Import one immutable Workspace Artifact version.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/artifact.import.output"
                 }
               }
             }
@@ -12388,6 +12328,209 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/bootstrap.consume.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/artifact.import": {
+      "post": {
+        "operationId": "artifact.import",
+        "tags": [
+          "artifact"
+        ],
+        "summary": "Import one immutable Workspace Artifact version.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "title",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            }
+          },
+          {
+            "name": "mediaType",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+              "maxLength": 255,
+              "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+            }
+          },
+          {
+            "name": "contentDigest",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            }
+          },
+          {
+            "name": "byteLength",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000000
+            }
+          },
+          {
+            "name": "workspaceId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Accepted exact immutable original.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "artifactId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "artifactVersion": {
+                      "type": "number",
+                      "const": 1
+                    }
+                  },
+                  "required": [
+                    "artifactId",
+                    "artifactVersion"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/artifact.download": {
+      "get": {
+        "operationId": "artifact.download",
+        "tags": [
+          "artifact"
+        ],
+        "summary": "Download the exact original bytes of one immutable Artifact version.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workspaceId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "artifactId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "artifactVersion",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Exact immutable original; digest is in X-OpenKit-Content-Digest.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
                 }
               }
             }
@@ -48606,26 +48749,55 @@
                   "maximum": 9007199254740991
                 },
                 "content": {
-                  "type": "object",
-                  "properties": {
-                    "format": {
-                      "type": "string",
-                      "enum": [
-                        "markdown",
-                        "text",
-                        "json"
-                      ]
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "format": {
+                          "type": "string",
+                          "enum": [
+                            "markdown",
+                            "text",
+                            "json"
+                          ]
+                        },
+                        "body": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "format",
+                        "body"
+                      ],
+                      "additionalProperties": false
                     },
-                    "body": {
-                      "type": "string",
-                      "minLength": 1
+                    {
+                      "type": "object",
+                      "properties": {
+                        "format": {
+                          "type": "string",
+                          "const": "file"
+                        },
+                        "mediaType": {
+                          "type": "string",
+                          "maxLength": 255,
+                          "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                        },
+                        "byteLength": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 1000000000
+                        }
+                      },
+                      "required": [
+                        "format",
+                        "mediaType",
+                        "byteLength"
+                      ],
+                      "additionalProperties": false
                     }
-                  },
-                  "required": [
-                    "format",
-                    "body"
-                  ],
-                  "additionalProperties": false
+                  ]
                 },
                 "contentDigest": {
                   "type": "string",
@@ -48895,26 +49067,55 @@
             "maximum": 9007199254740991
           },
           "content": {
-            "type": "object",
-            "properties": {
-              "format": {
-                "type": "string",
-                "enum": [
-                  "markdown",
-                  "text",
-                  "json"
-                ]
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "format": {
+                    "type": "string",
+                    "enum": [
+                      "markdown",
+                      "text",
+                      "json"
+                    ]
+                  },
+                  "body": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "format",
+                  "body"
+                ],
+                "additionalProperties": false
               },
-              "body": {
-                "type": "string",
-                "minLength": 1
+              {
+                "type": "object",
+                "properties": {
+                  "format": {
+                    "type": "string",
+                    "const": "file"
+                  },
+                  "mediaType": {
+                    "type": "string",
+                    "maxLength": 255,
+                    "pattern": "^[A-Za-z0-9!#$&^_.+-]+\\/[A-Za-z0-9!#$&^_.+-]+$"
+                  },
+                  "byteLength": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000000
+                  }
+                },
+                "required": [
+                  "format",
+                  "mediaType",
+                  "byteLength"
+                ],
+                "additionalProperties": false
               }
-            },
-            "required": [
-              "format",
-              "body"
-            ],
-            "additionalProperties": false
+            ]
           },
           "contentDigest": {
             "type": "string",
@@ -49077,63 +49278,6 @@
           "origin",
           "createdAt",
           "updatedAt"
-        ],
-        "additionalProperties": false
-      },
-      "artifact.import.input": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "title": {
-            "type": "string",
-            "minLength": 1
-          },
-          "mediaType": {
-            "type": "string",
-            "enum": [
-              "text/markdown",
-              "text/plain",
-              "application/json"
-            ]
-          },
-          "contentDigest": {
-            "type": "string",
-            "pattern": "^sha256:[a-f0-9]{64}$"
-          },
-          "content": {
-            "type": "string",
-            "minLength": 1
-          },
-          "workspaceId": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "title",
-          "mediaType",
-          "contentDigest",
-          "content",
-          "workspaceId"
-        ],
-        "additionalProperties": false
-      },
-      "artifact.import.output": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "artifactId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "artifactVersion": {
-            "type": "number",
-            "const": 1
-          }
-        },
-        "required": [
-          "artifactId",
-          "artifactVersion"
         ],
         "additionalProperties": false
       },
@@ -94826,5 +94970,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:99579ebc20ea32fbe961ac5e1b4684d97e47bfe4003280f004b23e1f10368f85"
+  "x-openkit-source-digest": "sha256:89c648388b65661dae0af450c4d3eab86140955229a00dc4c461740b06bbe5d6"
 }

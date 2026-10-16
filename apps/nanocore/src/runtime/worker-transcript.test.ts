@@ -885,7 +885,10 @@ function prepareCandidate(
     requestId: 'request_file',
     recordedAt: '2026-10-05T00:00:00.000Z',
     metadata: { kind: 'file', mediaType: 'text/markdown', title: 'Candidate' },
-    bytes: Buffer.from('# Candidate\n'),
+    payload: {
+      byteLength: Buffer.byteLength('# Candidate\n'),
+      contentDigest: artifactDigest(Buffer.from('# Candidate\n')),
+    },
     checkValues: transcriptCredentialChecks(),
     ...overrides,
   });
@@ -1008,7 +1011,9 @@ describe('live Artifact Material candidate validation', () => {
                 : 'text/markdown',
           materialProposal: proposal,
         },
-        ...(name === 'JSON proposal' ? { bytes: Buffer.from('{}') } : {}),
+        ...(name === 'JSON proposal'
+          ? { payload: { byteLength: 2, contentDigest: artifactDigest(Buffer.from('{}')) } }
+          : {}),
         ...(name === 'missing trace' ? {} : { contextPackageTrace: trace }),
       })
     ).toThrowError(expect.objectContaining({ code }));

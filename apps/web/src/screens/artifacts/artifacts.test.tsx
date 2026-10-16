@@ -648,10 +648,18 @@ async function disconnectWrites(queryClient: QueryClient, meta: ReturnType<typeo
 
 beforeEach(() => {
   // jsdom's Blob lacks the browser byte-read method; FileReader supplies actual fixture bytes.
-  Object.defineProperty(Blob.prototype, 'arrayBuffer', {configurable:true, writable:true, value: function(this: Blob) {
-    return new Promise<ArrayBuffer>((resolve,reject)=>{ const reader = new FileReader();
-      reader.onload = ()=>resolve(reader.result as ArrayBuffer); reader.onerror = ()=>reject(reader.error); reader.readAsArrayBuffer(this); });
-  }});
+  Object.defineProperty(Blob.prototype, 'arrayBuffer', {
+    configurable: true,
+    writable: true,
+    value: function (this: Blob) {
+      return new Promise<ArrayBuffer>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as ArrayBuffer);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsArrayBuffer(this);
+      });
+    },
+  });
   localStorage.clear();
   useWorkspaceStore.setState({ currentWorkspaceId: null });
 });

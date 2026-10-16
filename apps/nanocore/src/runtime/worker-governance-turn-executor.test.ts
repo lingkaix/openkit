@@ -14,6 +14,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   CapabilityUsageResponseSchema,
@@ -69,6 +70,8 @@ import type {
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { LOCAL_USER_ID, workspaceDbPath } from '../storage/fs-layout.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
@@ -98,6 +101,7 @@ import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
 import {
   bindThreadMaterial,
   createWorkspaceMaterial,
+  getWorkspaceMaterialRevision,
   saveWorkspaceMaterialRevision,
   selectQueuedThreadMaterialRevision,
 } from '../workspace-materials.js';
@@ -3037,8 +3041,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
             store,
             workspaceDb,
             environmentPackage,
+            fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
             captureArtifact: async () => ({
-              bytes: artifactBytes,
+              byteLength: artifactBytes.byteLength,
+              contentDigest: turnRuntimeSha256(artifactBytes),
+              source: Readable.from([artifactBytes]),
+              remove: async () => {},
               credentialCheckValues: (await backend.collectTranscript()).credentialCheckValues!,
             }),
           },
@@ -3087,7 +3095,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(packageSnapshotId).toBeTruthy();
       expect(artifactId).toEqual(expect.any(String));
       expect(store.getArtifact(turn.workspaceId, artifactId!)).toMatchObject({
-        content: { body: artifactBytes.toString('utf8'), format: 'markdown' },
+        content: {
+          format: 'file',
+          mediaType: 'text/markdown',
+          byteLength: artifactBytes.byteLength,
+        },
         contentDigest: turnRuntimeSha256(artifactBytes),
         origin: {
           kind: 'turn-output',
@@ -3098,6 +3110,15 @@ describe('WorkerGovernanceTurnExecutor', () => {
         status: 'ready',
         version: 1,
       });
+      expect(
+        readFileSync(
+          artifactFilePayloadPath(
+            join(coreDb.dataRoot, 'workspaces', turn.workspaceId),
+            artifactId!,
+            1
+          )
+        )
+      ).toEqual(artifactBytes);
       const workspaceDb = openTestWorkspaceDb(coreDb);
       expect(getArtifactReview(workspaceDb, artifactId!, 1)).toMatchObject({
         artifactId,
@@ -3113,6 +3134,41 @@ describe('WorkerGovernanceTurnExecutor', () => {
         sourceTurnId: turn.id,
       });
       workspaceDb.sqlite.close();
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: LOCAL_USER_ID,
+        workspaceId: turn.workspaceId,
+      });
+      const app = createAppWithWorkspaceAuthority({ coreDb, dataRoot: coreDb.dataRoot, store });
+      const applied = await app.request('/api/app/operations/artifact.review.decide', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-openkit-request-id': 'apply_exact_file_proposal',
+        },
+        body: JSON.stringify({
+          workspaceId: turn.workspaceId,
+          artifactId,
+          artifactVersion: 1,
+          decision: 'accepted',
+        }),
+      });
+      expect(applied.status, await applied.clone().text()).toBe(200);
+      const verifyDb = openTestWorkspaceDb(coreDb);
+      try {
+        const appliedReview = getArtifactReview(verifyDb, artifactId!, 1);
+        expect(appliedReview.appliedMaterialRevisionId).not.toBeNull();
+        expect(
+          getWorkspaceMaterialRevision(
+            verifyDb,
+            material.materialId,
+            appliedReview.appliedMaterialRevisionId!
+          ).content
+        ).toBe(artifactBytes.toString('utf8'));
+      } finally {
+        verifyDb.sqlite.close();
+      }
     } finally {
       coreDb.sqlite.close();
     }

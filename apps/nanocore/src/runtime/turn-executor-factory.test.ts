@@ -28,6 +28,7 @@ import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import * as attemptActionOwners from '../scheduler-records.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { ensureLayout } from '../storage/fs-layout.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
@@ -1119,7 +1120,11 @@ describe('createConfiguredTurnExecutor', () => {
   it('retires one pre-witness cleanup through the first different fresh Epoch without dispatch', async () => {
     const coreDb = createFactoryCoreDb();
     const authority = createNanoHostTransportSessionAuthority();
-    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const dispatch = createNanoHostSessionDispatch({
+      coreDb,
+      sessionAuthority: authority,
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+    });
     const runtimeTarget = {
       coreDb,
       deploymentId: 'deployment_pre_witness_cleanup',
@@ -3009,7 +3014,11 @@ describe('createConfiguredTurnExecutor', () => {
       });
       const fixture = [];
       for (const { producer, request } of captured) {
-        const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+        const dispatch = createNanoHostSessionDispatch({
+          coreDb,
+          sessionAuthority: authority,
+          fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+        });
         await dispatch.readiness!(
           physical,
           Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
@@ -7956,7 +7965,11 @@ describe('createConfiguredTurnExecutor', () => {
   ] as const)('keeps the ready connection usable after rejected %s and live cleanup', async (operation) => {
     const coreDb = createFactoryCoreDb();
     const authority = createNanoHostTransportSessionAuthority();
-    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const dispatch = createNanoHostSessionDispatch({
+      coreDb,
+      sessionAuthority: authority,
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+    });
     const target = {
       coreDb,
       deploymentId: 'deployment_image_failure',

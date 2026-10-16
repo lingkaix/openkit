@@ -97,6 +97,7 @@ import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from './scheduler-records.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
+import { discardAbandonedWorkspaceStaging } from './storage/workspace-file-records.js';
 import {
   type CoreDb,
   listExistingWorkspaceDatabaseScopes,
@@ -330,6 +331,9 @@ const bootResult = await runBootPhases({
           workspaceMutationAdmission,
         });
         fenceNanoHostRuntimeTargetAfterRestart(recoveryCoreDb, new Date().toISOString());
+        // Startup owns abandoned private staging before dispatch and upload admission open.
+        // A later read-only Store construction must not remove another live request's bytes.
+        discardAbandonedWorkspaceStaging(dataRoot);
         sharedStore ??= new FsStore({ dataRoot });
         const recoveryStore = sharedStore;
         bootWorkerControlGateway = createDefaultWorkerControlGateway(
