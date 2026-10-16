@@ -208,7 +208,7 @@ function seedRetainedWork(f: Awaited<ReturnType<typeof fixture>>) {
     updatedAt: timestamp,
   });
   // A later revision changes bytes but not the number of current canonical Items.
-  f.store.updateItem('it_caller_0', { text: 'Revised private-content' });
+  f.store.updateItem(testEntityId('it', 'it_caller_0'), { text: 'Revised private-content' });
 }
 
 /** Returns a real Core Client over the App's actual JSON and authentication boundaries. */
