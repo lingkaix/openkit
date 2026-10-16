@@ -13,7 +13,6 @@ import { readWorkspaceDeletionRequest } from '../workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { openCoreDb } from './db.js';
-import { LOCAL_USER_ID } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
 
 it('seals the complete recurring graph before deletion removes its Core rows and Audit', async () => {
@@ -21,13 +20,13 @@ it('seals the complete recurring graph before deletion removes its Core rows and
   const coreDb = openCoreDb(dataRoot);
   try {
     applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
+    const localUserId = ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
     const workspace = store.createWorkspace('Recurring deletion');
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: workspace.id,
-      ownerUserId: LOCAL_USER_ID,
+      ownerUserId: localUserId,
     });
     const thread = store.createThread(workspace.id, 'Historical worker');
     let instant = '2026-10-16T00:00:00.000Z';
@@ -36,14 +35,14 @@ it('seals the complete recurring graph before deletion removes its Core rows and
       new WorkspaceMutationAdmission(),
       () => instant
     );
-    const schedule = automationStore.createAutomation(LOCAL_USER_ID, {
+    const schedule = automationStore.createAutomation(localUserId, {
       workspaceId: workspace.id,
       threadId: thread.id,
       name: 'Inspect',
       prompt: 'Retained recurring input',
       intervalSeconds: 3600,
     });
-    automationStore.updateAutomation(LOCAL_USER_ID, schedule.id, {
+    automationStore.updateAutomation(localUserId, schedule.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: instant,

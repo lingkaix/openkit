@@ -257,7 +257,7 @@ it('attributes a member edit to the actual caller while preserving the responsib
   expect(edited.actor).toEqual(schedule.actor);
   expect(
     db.sqlite
-      .prepare("SELECT actor_json FROM audit_events WHERE action = 'recurring.schedule.edited'")
+      .prepare("SELECT actor_json FROM audit_events WHERE action = 'recurring.schedule.edit'")
       .get()
   ).toEqual({
     actor_json: JSON.stringify({ kind: 'user', id: testEntityId('usr', 'user_member') }),

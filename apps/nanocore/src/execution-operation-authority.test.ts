@@ -20,7 +20,6 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
-import { FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
@@ -34,12 +33,12 @@ describe('execution operation authority', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-b9-authority-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
+    const localUserId = ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: DEMO_WORKSPACE_ID,
-      ownerUserId: FIXTURE_LOCAL_USER_ID,
+      ownerUserId: localUserId,
     });
     const workspaceMutationAdmission = new WorkspaceMutationAdmission();
     const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
@@ -74,7 +73,7 @@ describe('execution operation authority', () => {
       queueEntryId: 'queue_admin',
       denialReason: 'authority-denied',
     });
-    let actor: Actor = { kind: 'session', userId: FIXTURE_LOCAL_USER_ID };
+    let actor: Actor = { kind: 'session', userId: localUserId };
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use('*', async (c, next) => {
       c.set('actor', actor);
@@ -111,9 +110,9 @@ describe('execution operation authority', () => {
       });
       expect(
         coreDb.sqlite
-          .prepare("SELECT actor_json FROM audit_events WHERE action = 'recurring.schedule.edited'")
+          .prepare("SELECT actor_json FROM audit_events WHERE action = 'recurring.schedule.edit'")
           .get()
-      ).toEqual({ actor_json: JSON.stringify({ kind: 'user', id: FIXTURE_LOCAL_USER_ID }) });
+      ).toEqual({ actor_json: JSON.stringify({ kind: 'user', id: localUserId }) });
       const queueBefore = requireSchedulerAdmissionEntry(coreDb, 'queue_admin');
       const privateDenied = await app.request(
         ...operationRequest('scheduler.retry', {
@@ -125,17 +124,17 @@ describe('execution operation authority', () => {
       expect(requireSchedulerAdmissionEntry(coreDb, 'queue_admin')).toEqual(queueBefore);
       expect(automationStore.getAutomation(automation.id)).toEqual(edited);
       const token = createOpenKitAccessTokenRecord(coreDb, {
-        ownerUserId: FIXTURE_LOCAL_USER_ID,
+        ownerUserId: localUserId,
         scope: 'server-admin',
         workspaceIds: [],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
       actor =
         kind === 'session'
-          ? { kind, userId: FIXTURE_LOCAL_USER_ID }
+          ? { kind, userId: localUserId }
           : {
               kind,
-              userId: FIXTURE_LOCAL_USER_ID,
+              userId: localUserId,
               tokenId: token.record.tokenId,
               tokenScope: 'server-admin',
               tokenWorkspaceIds: [],
@@ -180,10 +179,10 @@ describe('execution operation authority', () => {
         expect(
           coreDb.sqlite
             .prepare(
-              "SELECT actor_json FROM audit_events WHERE action = 'recurring.schedule.deleted'"
+              "SELECT actor_json FROM audit_events WHERE action = 'recurring.schedule.delete'"
             )
             .get()
-        ).toEqual({ actor_json: JSON.stringify({ kind: 'user', id: FIXTURE_LOCAL_USER_ID }) });
+        ).toEqual({ actor_json: JSON.stringify({ kind: 'user', id: localUserId }) });
       } else {
         expect(automationStore.getAutomation(automation.id)).toEqual(updated);
       }
