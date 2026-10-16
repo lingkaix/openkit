@@ -544,10 +544,9 @@ describe('scheduler dispatch loop', () => {
       const accepted = occurrences[0]!.record;
       expect(accepted).toMatchObject({
         state: 'admission-accepted',
-        threadId: thread.id,
         scheduledAt: instant,
         attempts: [{ number: 1 }],
-        snapshot: { monthlyUtc: schedule.monthlyUtc },
+        snapshot: { threadId: thread.id, monthlyUtc: schedule.monthlyUtc },
       });
       expect(executor.prepareCalls).toEqual([]);
       expect(executor.calls).toEqual([]);
