@@ -17,6 +17,7 @@ import { FsStore } from '../lib/store.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
+  type AssistantSkillAdmission,
   appendWorkObservation,
   readWorkObservations,
   readWorkObservationTurnBinding,
@@ -301,6 +302,310 @@ describe('Turn environment retention', () => {
     const f = fixture('off');
     await expect(withTurnModelCapture(f, async () => 'ran')).resolves.toBe('ran');
     expect(readWorkObservations(f.workspaceDb, f)).toEqual([]);
+  });
+});
+
+describe('Assistant Skill admission capture', () => {
+  const firstSkill = {
+    skillId: 'skill-a',
+    versionId: `sha256:${'a'.repeat(64)}`,
+    contentDigest: `sha256:${'a'.repeat(64)}`,
+  };
+  const secondSkill = {
+    skillId: 'skill-b',
+    versionId: `sha256:${'b'.repeat(64)}`,
+    contentDigest: `sha256:${'b'.repeat(64)}`,
+  };
+  const admission: AssistantSkillAdmission = {
+    catalogRevision: 0,
+    skills: [firstSkill, secondSkill],
+  };
+  const environment = {
+    systemPrompt: 'PRIVATE_ASSISTANT_PROMPT',
+    tools: [{ name: 'skill.read', inputSchema: { type: 'object' } }],
+    assistantSkillAdmission: admission,
+  };
+
+  it.each([
+    'off',
+    'on',
+  ] as const)('retains exact minimal admission in the complete environment before dispatch with capture %s', async (value) => {
+    const f = fixture(value);
+    const input = { ...f, environment, requireAssistantSkillAdmission: true };
+    const run = vi.fn(async () => {
+      const rows = readWorkObservations(f.workspaceDb, f);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        id: `env:${f.turn.id}`,
+        ts: f.turn.startedAt,
+        type: 'env.bound',
+        obs: 'core',
+        ret: 'turn-evidence',
+        payload: {
+          workspaceId: f.workspaceDb.workspaceId,
+          assistantSkillAdmission: admission,
+          systemPromptDigest: digestLlmSystemPrompt({
+            endpoint: 'responses',
+            request: { instructions: environment.systemPrompt },
+          }),
+          tools: [
+            {
+              name: 'skill.read',
+              inputSchemaDigest: createHash('sha256')
+                .update(JSON.stringify(environment.tools[0]!.inputSchema))
+                .digest('hex'),
+            },
+          ],
+        },
+      });
+      expect(Object.keys(rows[0]!.payload).sort()).toEqual([
+        'assistantSkillAdmission',
+        'systemPromptDigest',
+        'tools',
+        'version',
+        'workspaceId',
+      ]);
+      expect(JSON.stringify(rows)).not.toContain('PRIVATE_');
+      expect(bodies(f)).toEqual([]);
+      expect(
+        f.workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM evidence_bundles').get()
+      ).toEqual({ count: 0 });
+      return 'dispatched';
+    });
+    await expect(withTurnModelCapture(input, run)).resolves.toBe('dispatched');
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    false,
+    true,
+  ])('records explicit empty selection without a catalog with required admission %s', async (required) => {
+    const f = fixture('off');
+    const empty: AssistantSkillAdmission = { catalogRevision: null, skills: [] };
+    const input = {
+      ...f,
+      environment: { ...environment, assistantSkillAdmission: empty },
+      requireAssistantSkillAdmission: required,
+    };
+    const run = vi.fn(async () => 'dispatched');
+    await expect(withTurnModelCapture(input, run)).resolves.toBe('dispatched');
+    expect(readWorkObservations(f.workspaceDb, f)[0]?.payload.assistantSkillAdmission).toEqual({
+      catalogRevision: null,
+      skills: [],
+    });
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    undefined,
+    { systemPrompt: 'Prompt', tools: [] },
+  ])('blocks missing required admission before dispatch for environment %j', async (missingEnvironment) => {
+    const f = fixture('off');
+    const input = {
+      ...f,
+      ...(missingEnvironment ? { environment: missingEnvironment } : {}),
+      requireAssistantSkillAdmission: true,
+    };
+    const run = vi.fn(async () => 'must not dispatch');
+    await expect(withTurnModelCapture(input, run)).rejects.toMatchObject({
+      name: 'ModelCaptureError',
+      code: 'model_capture_unavailable',
+    });
+    expect(run).not.toHaveBeenCalled();
+    expect(readWorkObservations(f.workspaceDb, f)).toEqual([]);
+  });
+
+  it.each([
+    ['negative revision', { ...admission, catalogRevision: -1 }],
+    ['fractional revision', { ...admission, catalogRevision: 0.5 }],
+    ['unordered IDs', { ...admission, skills: [secondSkill, firstSkill] }],
+    ['duplicate IDs', { ...admission, skills: [firstSkill, firstSkill] }],
+    ['invalid ID', { ...admission, skills: [{ ...firstSkill, skillId: '' }] }],
+    ['invalid digest', { ...admission, skills: [{ ...firstSkill, contentDigest: 'invalid' }] }],
+    [
+      'different version',
+      { ...admission, skills: [{ ...firstSkill, versionId: `sha256:${'b'.repeat(64)}` }] },
+    ],
+    [
+      'bare digest',
+      {
+        ...admission,
+        skills: [{ ...firstSkill, versionId: 'a'.repeat(64), contentDigest: 'a'.repeat(64) }],
+      },
+    ],
+    ['empty with revision', { catalogRevision: 0, skills: [] }],
+    ['nonempty without revision', { ...admission, catalogRevision: null }],
+    ['extra admission content', { ...admission, description: 'PRIVATE_DESCRIPTION' }],
+    ['extra Skill content', { ...admission, skills: [{ ...firstSkill, body: 'PRIVATE_BODY' }] }],
+    ['null admission', null],
+  ])('blocks %s at the capture boundary even when admission is optional', async (_name, invalid) => {
+    for (const required of [false, true]) {
+      const f = fixture('off');
+      const input = {
+        ...f,
+        environment: {
+          ...environment,
+          assistantSkillAdmission: invalid as unknown as AssistantSkillAdmission,
+        },
+        requireAssistantSkillAdmission: required,
+      };
+      const run = vi.fn(async () => 'must not dispatch');
+      await expect(withTurnModelCapture(input, run)).rejects.toMatchObject({
+        name: 'ModelCaptureError',
+        code: 'model_capture_unavailable',
+      });
+      expect(run).not.toHaveBeenCalled();
+      expect(readWorkObservations(f.workspaceDb, f)).toEqual([]);
+    }
+  });
+
+  it('re-enters the exact retained environment after reopening storage without adding a row', async () => {
+    const f = fixture('off');
+    const input = { ...f, environment, requireAssistantSkillAdmission: true };
+    const run = vi.fn(async () => 'dispatched');
+    await withTurnModelCapture(input, run);
+    const before = readWorkObservations(f.workspaceDb, f);
+    f.workspaceDb.sqlite.close();
+    const reopened = openWorkspaceDb(f.dataRoot, f.workspaceDb.workspaceId);
+    databases.push(reopened);
+    await expect(withTurnModelCapture({ ...input, workspaceDb: reopened }, run)).resolves.toBe(
+      'dispatched'
+    );
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(readWorkObservations(reopened, f)).toEqual(before);
+    expect(before[0]?.payload.assistantSkillAdmission).toEqual(admission);
+  });
+
+  it.each([
+    [
+      'catalog revision',
+      { ...environment, assistantSkillAdmission: { ...admission, catalogRevision: 1 } },
+    ],
+    [
+      'Skill ID',
+      {
+        ...environment,
+        assistantSkillAdmission: { ...admission, skills: [{ ...firstSkill, skillId: 'skill-c' }] },
+      },
+    ],
+    [
+      'version and digest',
+      {
+        ...environment,
+        assistantSkillAdmission: {
+          ...admission,
+          skills: [
+            {
+              ...firstSkill,
+              versionId: `sha256:${'c'.repeat(64)}`,
+              contentDigest: `sha256:${'c'.repeat(64)}`,
+            },
+            secondSkill,
+          ],
+        },
+      },
+    ],
+    ['prompt', { ...environment, systemPrompt: 'Changed prompt' }],
+    [
+      'Tool closure schema',
+      {
+        ...environment,
+        tools: [
+          { name: 'skill.read', inputSchema: { type: 'object', additionalProperties: false } },
+        ],
+      },
+    ],
+  ])('rejects changed %s under the same Turn identity without dispatch or replacement', async (_name, changedEnvironment) => {
+    const f = fixture('off');
+    const input = { ...f, environment, requireAssistantSkillAdmission: true };
+    await withTurnModelCapture(input, async () => 'first dispatch');
+    const before = readWorkObservations(f.workspaceDb, f);
+    const path = join(
+      f.dataRoot,
+      'workspaces',
+      f.turn.workspaceId,
+      'threads',
+      f.threadId,
+      'turns',
+      f.turnId,
+      'observations.jsonl'
+    );
+    const originalBytes = readFileSync(path, 'utf8');
+    const run = vi.fn(async () => 'must not dispatch');
+    await expect(
+      withTurnModelCapture({ ...input, environment: changedEnvironment }, run)
+    ).rejects.toMatchObject({ name: 'ModelCaptureError', code: 'model_capture_unavailable' });
+    expect(run).not.toHaveBeenCalled();
+    expect(readWorkObservations(f.workspaceDb, f)).toEqual(before);
+    expect(readFileSync(path, 'utf8')).toBe(originalBytes);
+  });
+
+  it.each([
+    admission,
+    { catalogRevision: null, skills: [] },
+  ])('does not enrich an earlier environment without admission with %j', async (laterAdmission) => {
+    const f = fixture('off');
+    const legacyEnvironment = {
+      systemPrompt: environment.systemPrompt,
+      tools: environment.tools,
+    };
+    await withTurnModelCapture({ ...f, environment: legacyEnvironment }, async () => 'legacy');
+    const before = readWorkObservations(f.workspaceDb, f);
+    expect(before[0]?.payload).not.toHaveProperty('assistantSkillAdmission');
+    const input = {
+      ...f,
+      environment: { ...environment, assistantSkillAdmission: laterAdmission },
+      requireAssistantSkillAdmission: true,
+    };
+    const run = vi.fn(async () => 'must not dispatch');
+    await expect(withTurnModelCapture(input, run)).rejects.toMatchObject({
+      name: 'ModelCaptureError',
+      code: 'model_capture_unavailable',
+    });
+    expect(run).not.toHaveBeenCalled();
+    expect(readWorkObservations(f.workspaceDb, f)).toEqual(before);
+  });
+
+  it('does not remove retained admission through an optional legacy environment', async () => {
+    const f = fixture('off');
+    const input = { ...f, environment, requireAssistantSkillAdmission: true };
+    await withTurnModelCapture(input, async () => 'first dispatch');
+    const before = readWorkObservations(f.workspaceDb, f);
+    const run = vi.fn(async () => 'must not dispatch');
+    await expect(
+      withTurnModelCapture(
+        { ...f, environment: { systemPrompt: environment.systemPrompt, tools: environment.tools } },
+        run
+      )
+    ).rejects.toMatchObject({ name: 'ModelCaptureError', code: 'model_capture_unavailable' });
+    expect(run).not.toHaveBeenCalled();
+    expect(readWorkObservations(f.workspaceDb, f)).toEqual(before);
+  });
+
+  it('blocks dispatch when the real canonical environment append cannot write', async () => {
+    const f = fixture('off');
+    const path = join(
+      f.dataRoot,
+      'workspaces',
+      f.turn.workspaceId,
+      'threads',
+      f.threadId,
+      'turns',
+      f.turnId,
+      'observations.jsonl'
+    );
+    mkdirSync(path);
+    const input = { ...f, environment, requireAssistantSkillAdmission: true };
+    const run = vi.fn(async () => 'must not dispatch');
+    await expect(withTurnModelCapture(input, run)).rejects.toMatchObject({
+      name: 'ModelCaptureError',
+      code: 'model_capture_unavailable',
+    });
+    expect(run).not.toHaveBeenCalled();
+    expect(f.workspaceDb.sqlite.open).toBe(true);
+    expect(
+      f.workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM evidence_bundles').get()
+    ).toEqual({ count: 0 });
   });
 });
 
