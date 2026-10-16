@@ -240,7 +240,7 @@ describe('turn feedback', () => {
     });
     coreDb.sqlite
       .prepare(
-        "INSERT INTO workspace_members (workspace_id, user_id, access_level, status, revision, joined_at, created_at, updated_at) VALUES (?, 'usr_00000000-0000-7a71-a8b1-dcc65a83481f', 'editor', 'active', 1, ?, ?, ?)"
+        "INSERT INTO workspace_members (workspace_id, user_id, status, revision, joined_at, created_at, updated_at) VALUES (?, 'usr_00000000-0000-7a71-a8b1-dcc65a83481f', 'active', 1, ?, ?, ?)"
       )
       .run(
         workspace.id,

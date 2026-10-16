@@ -1695,9 +1695,9 @@ describe('worker inference routes', () => {
       const joinedAt = new Date().toISOString();
       reloaded.sqlite
         .prepare(`INSERT INTO workspace_members (
-        workspace_id, user_id, status, access_level, invitation_id, joined_at,
+        workspace_id, user_id, status, invitation_id, joined_at,
         removed_at, revision, created_at, updated_at
-      ) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7e31-ad22-0a4ca76f76f3', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`)
+      ) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7e31-ad22-0a4ca76f76f3', 'active', NULL, ?, NULL, 1, ?, ?)`)
         .run(joinedAt, joinedAt, joinedAt);
       reloaded.sqlite
         .prepare(

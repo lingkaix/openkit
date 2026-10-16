@@ -136,7 +136,7 @@ function authorizedWorkspaceSummary() {
   return {
     membershipStatus: 'active',
     accessCause: 'membership',
-    effectiveRole: 'owner',
+    isOwner: true,
     membershipRevision: 1,
     ownerUserId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
     registryRevision: 1,
@@ -147,9 +147,8 @@ function authorizedWorkspaceSummary() {
 /** Returns one current Workspace member projection for sharing-client tests. */
 function workspaceMember(status: 'active' | 'removed' = 'active') {
   return {
-    accessLevel: 'editor',
     createdAt: timestamp,
-    effectiveRole: status === 'active' ? ('editor' as const) : null,
+    isOwner: false,
     invitationId: 'inv_01890f3e-0000-7000-8000-000000000071',
     joinedAt: timestamp,
     removedAt: status === 'removed' ? timestamp : null,
@@ -172,7 +171,7 @@ function workspaceInvitation() {
     invitationId: 'inv_01890f3e-0000-7000-8000-000000000071',
     inviteeUserId: 'usr_00000000-0000-7a71-a8b1-dcc65a83481f',
     inviterUserId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
-    proposedAccessLevel: 'editor',
+
     revision: 1,
     revokedAt: null,
     updatedAt: timestamp,
@@ -183,7 +182,7 @@ function workspaceInvitation() {
 /** Returns one administrator-safe Workspace recovery projection. */
 function workspaceAccessRecovery() {
   return {
-    administratorRole: null,
+    administratorMembershipStatus: null,
     ownerUserId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
     registryRevision: 1,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1631,7 +1630,7 @@ describe('createCoreClient', () => {
               workspace: workspace(),
               membershipStatus: 'active',
               accessCause: 'membership',
-              effectiveRole: 'owner',
+              isOwner: true,
               membershipRevision: 1,
               ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
               registryRevision: 1,
@@ -2666,14 +2665,13 @@ describe('createCoreClient', () => {
         body: {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           inviteeEmail: 'invitee@example.com',
-          proposedAccessLevel: 'editor',
         },
         invoke: (client) =>
           client.operations['workspace.invitation-create']({
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             ...{
               inviteeEmail: 'invitee@example.com',
-              proposedAccessLevel: 'editor',
+
               requestId,
             },
           }),
@@ -2735,26 +2733,6 @@ describe('createCoreClient', () => {
         body: {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           targetUserId: 'usr_00000000-0000-7a71-a8b1-dcc65a83481f',
-          accessLevel: 'viewer',
-          expectedRevision: 1,
-        },
-        invoke: (client) =>
-          client.operations['workspace.member-access-change']({
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            targetUserId: 'usr_00000000-0000-7a71-a8b1-dcc65a83481f',
-            ...{
-              accessLevel: 'viewer',
-              expectedRevision: 1,
-              requestId,
-            },
-          }),
-        methodPath: 'POST /api/app/operations/workspace.member-access-change',
-        response: { member },
-      },
-      {
-        body: {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          targetUserId: 'usr_00000000-0000-7a71-a8b1-dcc65a83481f',
           expectedRevision: 1,
         },
         invoke: (client) =>
@@ -2809,14 +2787,14 @@ describe('createCoreClient', () => {
       {
         body: {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          action: 'add-self-as-editor',
+          action: 'add-self-as-member',
           expectedRegistryRevision: 1,
         },
         invoke: (client) =>
           client.operations['workspace.access-recover']({
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             ...{
-              action: 'add-self-as-editor',
+              action: 'add-self-as-member',
               expectedRegistryRevision: 1,
               requestId,
             },

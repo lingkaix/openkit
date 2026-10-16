@@ -196,7 +196,11 @@ describe('database setup', () => {
 
       expect(
         readdirSync(join(process.cwd(), 'drizzle', 'core')).filter((name) => name.endsWith('.sql'))
-      ).toEqual(['0000_setup.sql', '0001_concurrent_turn_capacity.sql']);
+      ).toEqual([
+        '0000_setup.sql',
+        '0001_concurrent_turn_capacity.sql',
+        '0002_equal_workspace_members.sql',
+      ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
           existsSync(join(process.cwd(), 'drizzle', scope, 'meta', '_journal.json'))
@@ -205,6 +209,7 @@ describe('database setup', () => {
       expect(listAppliedMigrationIds(coreDb)).toEqual([
         'core_0000_setup',
         'core_0001_concurrent_turn_capacity',
+        'core_0002_equal_workspace_members',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       expect(listTableNames(coreDb)).toEqual(expect.arrayContaining(CORE_TABLES));
@@ -282,7 +287,6 @@ describe('database setup', () => {
         'workspace_id',
         'user_id',
         'status',
-        'access_level',
         'invitation_id',
         'joined_at',
         'removed_at',
@@ -294,7 +298,6 @@ describe('database setup', () => {
         'invitation_id',
         'workspace_id',
         'invitee_user_id',
-        'proposed_access_level',
         'inviter_user_id',
         'status',
         'expires_at',
@@ -751,11 +754,11 @@ describe('database setup', () => {
       });
       const insertInvitation = coreDb.sqlite.prepare(
         `INSERT INTO workspace_invitations (
-          invitation_id, workspace_id, invitee_user_id, proposed_access_level,
+          invitation_id, workspace_id, invitee_user_id,
           inviter_user_id, status, expires_at, accepted_at, declined_at, revoked_at,
           revision, created_at, updated_at
         ) VALUES (
-          ?, 'ws_00000000-0000-7c1f-9bfb-ef82611610b6', 'usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'editor', 'usr_00000000-0000-7011-88df-c2b1e8466b6f', ?,
+          ?, 'ws_00000000-0000-7c1f-9bfb-ef82611610b6', 'usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'usr_00000000-0000-7011-88df-c2b1e8466b6f', ?,
           '2026-07-26T00:00:00.000Z', ?, NULL, NULL, 1, ?, ?
         )`
       );

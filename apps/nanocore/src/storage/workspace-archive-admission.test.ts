@@ -204,16 +204,8 @@ describe('retained archive primary admission', () => {
     ).toEqual({ owner_user_id: 'usr_00000000-0000-7000-8000-000000000001' });
     expect(
       target.coreDb.sqlite
-        .prepare(
-          'SELECT user_id, status, access_level FROM workspace_members WHERE workspace_id = ?'
-        )
+        .prepare('SELECT user_id, status FROM workspace_members WHERE workspace_id = ?')
         .all(result.importedWorkspaceId)
-    ).toEqual([
-      {
-        user_id: 'usr_00000000-0000-7000-8000-000000000001',
-        status: 'active',
-        access_level: 'editor',
-      },
-    ]);
+    ).toEqual([{ user_id: 'usr_00000000-0000-7000-8000-000000000001', status: 'active' }]);
   });
 });

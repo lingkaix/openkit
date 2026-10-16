@@ -25,7 +25,7 @@ function makeClient(): CoreClient {
       'workspace.list': vi.fn().mockResolvedValue({
         items: [].map((workspace) => ({
           workspace,
-          effectiveRole: 'owner',
+          isOwner: true,
           membershipStatus: 'active',
           accessCause: 'membership',
           membershipRevision: 1,

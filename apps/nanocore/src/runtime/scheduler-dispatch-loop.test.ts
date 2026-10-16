@@ -2039,9 +2039,9 @@ describe('scheduler dispatch loop', () => {
         coreDb.sqlite
           .prepare(
             `INSERT INTO workspace_members (
-              workspace_id, user_id, status, access_level, invitation_id,
+              workspace_id, user_id, status, invitation_id,
               joined_at, removed_at, revision, created_at, updated_at
-            ) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7997-b89e-2b3070b94b62', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+            ) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7997-b89e-2b3070b94b62', 'active', NULL, ?, NULL, 1, ?, ?)`
           )
           .run(timestamp, timestamp, timestamp);
       } else {

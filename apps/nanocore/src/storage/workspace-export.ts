@@ -26,6 +26,10 @@ import {
 } from '../catalog/catalog-portability.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import {
+  assertWorkspaceDeletionRecoveryExportAuthority,
+  type WorkspaceDeletionRecoveryExportContext,
+} from '../workspace-deletion-request.js';
+import {
   isSupportedWorkObservationType,
   parseWorkObservationRecord,
   type WorkObservationRecord,
@@ -156,6 +160,8 @@ export interface VerifiedWorkspaceExportTree {
 export interface WriteWorkspaceExportTreeInput {
   /** Trusted current administrator eligibility for including private project history; never caller input. */
   administratorEligible?: boolean;
+  /** Exact internal deletion owner, revalidated before preserving private history. */
+  deletionRecoveryContext?: WorkspaceDeletionRecoveryExportContext;
   /** Export root directory to populate. */
   exportRoot: string;
   /** Stable export record id. */
@@ -317,6 +323,18 @@ export interface WorkspaceImportDryRunReport {
 export function writeWorkspaceExportTree(
   input: WriteWorkspaceExportTreeInput
 ): VerifiedWorkspaceExportTree {
+  let deletionRecoveryAuthorized = false;
+  if (input.deletionRecoveryContext) {
+    if (
+      input.deletionRecoveryContext.workspaceId !== input.workspace.id ||
+      input.deletionRecoveryContext.exportId !== input.exportId
+    ) {
+      throw new Error('Workspace deletion recovery export target is inconsistent.');
+    }
+    deletionRecoveryAuthorized = assertWorkspaceDeletionRecoveryExportAuthority(
+      input.deletionRecoveryContext
+    );
+  }
   const history = parseCanonicalWorkspaceHistory({
     workspace: input.workspace,
     threads: input.threads,
@@ -329,6 +347,7 @@ export function writeWorkspaceExportTree(
   });
   if (
     !input.administratorEligible &&
+    !deletionRecoveryAuthorized &&
     history.threads.some((thread) => thread.visibility === 'private')
   ) {
     throw new Error('Private Thread history requires a separately authorized export.');

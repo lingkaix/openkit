@@ -755,13 +755,13 @@ describe('action center app API', () => {
     coreDb.sqlite
       .prepare(
         `INSERT INTO workspace_members (
-          workspace_id, user_id, status, access_level, invitation_id,
+          workspace_id, user_id, status, invitation_id,
           joined_at, removed_at, revision, created_at, updated_at
         ) VALUES
-          ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7eb0-931a-b5d2be1d760f', 'active', 'editor', NULL, ?, NULL, 1, ?, ?),
-          ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7609-aed5-db4b5c95e76c', 'active', 'editor', NULL, ?, NULL, 1, ?, ?),
-          ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8', 'active', 'viewer', NULL, ?, NULL, 1, ?, ?),
-          ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7171-af76-f9d024000442', 'removed', 'editor', NULL, ?, ?, 2, ?, ?)`
+          ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7eb0-931a-b5d2be1d760f', 'active', NULL, ?, NULL, 1, ?, ?),
+          ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7609-aed5-db4b5c95e76c', 'active', NULL, ?, NULL, 1, ?, ?),
+          ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8', 'active', NULL, ?, NULL, 1, ?, ?),
+          ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7171-af76-f9d024000442', 'removed', NULL, ?, ?, 2, ?, ?)`
       )
       .run(
         timestamp,
@@ -813,7 +813,7 @@ describe('action center app API', () => {
         ],
       },
       {
-        name: 'responsible editor',
+        name: 'responsible member',
         secret: issueToken('usr_00000000-0000-7eb0-931a-b5d2be1d760f', 'workspace'),
         status: 200,
         visibleIds: [
@@ -823,25 +823,25 @@ describe('action center app API', () => {
         ],
       },
       {
-        name: 'nonresponsible editor',
+        name: 'nonresponsible member',
         secret: issueToken('usr_00000000-0000-7609-aed5-db4b5c95e76c', 'workspace'),
         status: 200,
         visibleIds: ['agent-readiness:agent_codex_host', `knowledge:${knowledgeProposal.id}`],
       },
       {
-        name: 'readonly responsible editor',
+        name: 'readonly responsible member',
         secret: issueToken('usr_00000000-0000-7eb0-931a-b5d2be1d760f', 'workspace-readonly'),
         status: 200,
         visibleIds: ['agent-readiness:agent_codex_host'],
       },
       {
-        name: 'viewer',
+        name: 'second active member',
         secret: issueToken('usr_00000000-0000-7b43-8df8-fd24a5ccdbe8', 'workspace'),
-        status: 403,
-        visibleIds: [],
+        status: 200,
+        visibleIds: ['agent-readiness:agent_codex_host', `knowledge:${knowledgeProposal.id}`],
       },
       {
-        name: 'removed editor',
+        name: 'removed member',
         secret: issueToken('usr_00000000-0000-7171-af76-f9d024000442', 'workspace'),
         status: 403,
         visibleIds: [],

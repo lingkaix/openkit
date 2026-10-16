@@ -365,7 +365,7 @@ describe('pending requests', () => {
         .run(testEntityId('usr', 'another-user'), Date.now(), Date.now());
       coreDb.sqlite
         .prepare(
-          `INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+          `INSERT INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', ?, 'active', NULL, ?, NULL, 1, ?, ?)`
         )
         .run(testEntityId('usr', 'another-user'), NOW, NOW, NOW);
       expect(preview('not for this viewer', testEntityId('usr', 'another-user'))).toMatchObject({
