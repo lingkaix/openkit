@@ -375,6 +375,12 @@ class PrivateManager:
                 self.entry_checked = True
             result = self.run(["/usr/bin/busctl", "--system", "--json=short", "get-property", "org.freedesktop.systemd1",
                                "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager", "UnitPath"], timeout=3)
+            self.failure_facts["managerBusQueryStatus"] = result.returncode
+            for name, marker in (("AccessDenied", b"denied"), ("ServiceUnknown", b"not provided"),
+                                 ("NoOwner", b"owner"), ("ConnectionRefused", b"refused"),
+                                 ("MissingFile", b"No such file"), ("Authentication", b"auth"),
+                                 ("UnknownProperty", b"Unknown property"), ("Timeout", b"timed out")):
+                self.failure_facts["managerBusQuery" + name] = marker in result.stderr
             return result.returncode == 0 and b'"as"' in result.stdout
 
         try:
@@ -382,6 +388,13 @@ class PrivateManager:
         except FixtureFailure:
             self.failure_facts["managerObserved"] = self.pid is not None
             if self.pid is not None:
+                result = self.run(["/usr/bin/busctl", "--system", "--json=short", "call", "org.freedesktop.DBus",
+                                   "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetId"], timeout=3)
+                self.failure_facts["privateBusGetIdSucceeded"] = result.returncode == 0
+                result = self.run(["/usr/bin/busctl", "--system", "--json=short", "call", "org.freedesktop.DBus",
+                                   "/org/freedesktop/DBus", "org.freedesktop.DBus", "ListNames"], timeout=3)
+                self.failure_facts["privateBusListNamesSucceeded"] = result.returncode == 0
+                self.failure_facts["privateBusHasManagerName"] = result.returncode == 0 and b'"org.freedesktop.systemd1"' in result.stdout
                 result = self.run(["/usr/bin/systemctl", "show", "--no-pager",
                                    "--property=ActiveState,SubState,Result,ExecMainStatus", "dbus.service"], timeout=3)
                 self.failure_facts["privateServiceQuerySucceeded"] = result.returncode == 0
