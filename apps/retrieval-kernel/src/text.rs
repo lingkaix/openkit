@@ -1,12 +1,15 @@
 //! Bounded canonical reads and the one selected tokenizer for each Document.
 use crate::model::{Result, error, io_error};
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
-use tantivy::tokenizer::{LowerCaser, SimpleTokenizer, TextAnalyzer, TokenStream};
+use tantivy::tokenizer::{
+    LowerCaser, SimpleTokenizer, TextAnalyzer, Token, TokenStream, Tokenizer,
+};
 
 /// Maximum indexing chunk; the stream keeps at most this plus one UTF-8 code point.
 pub const CHUNK_BYTES: usize = 16 * 1024;
@@ -238,16 +241,60 @@ fn japanese() -> Result<TextAnalyzer> {
                 .map_err(|_| "packaged IPADIC unavailable".to_string())?;
             let segmenter =
                 lindera::segmenter::Segmenter::new(lindera::mode::Mode::Normal, dictionary, None);
-            Ok(TextAnalyzer::builder(
-                lindera_tantivy::tokenizer::LinderaTokenizer::from_segmenter(segmenter),
-            )
-            .filter(LowerCaser)
-            .filter(Words)
-            .build())
+            Ok(TextAnalyzer::builder(JapaneseTokenizer(segmenter))
+                .filter(LowerCaser)
+                .filter(Words)
+                .build())
         })
         .clone()
         .map_err(|_| error("unavailable", "packaged IPADIC unavailable"))
 }
+
+/// Adapt the packaged Segmenter without the unused Lindera analysis filters and their dependencies.
+#[derive(Clone)]
+struct JapaneseTokenizer(lindera::segmenter::Segmenter);
+impl Tokenizer for JapaneseTokenizer {
+    type TokenStream<'a> = JapaneseTokenStream<'a>;
+
+    fn token_stream<'a>(&'a mut self, text: &'a str) -> Self::TokenStream<'a> {
+        let tokens = self
+            .0
+            .segment(Cow::Borrowed(text))
+            .expect("packaged IPADIC segmentation failed");
+        JapaneseTokenStream {
+            tokens: tokens.into_iter(),
+            token: Token::default(),
+        }
+    }
+}
+
+/// Keep Segmenter positions and original UTF-8 byte ranges for Tantivy's existing filters.
+struct JapaneseTokenStream<'a> {
+    tokens: std::vec::IntoIter<lindera::token::Token<'a>>,
+    token: Token,
+}
+impl TokenStream for JapaneseTokenStream<'_> {
+    fn advance(&mut self) -> bool {
+        let Some(token) = self.tokens.next() else {
+            return false;
+        };
+        self.token.text = token.surface.into_owned();
+        self.token.offset_from = token.byte_start;
+        self.token.offset_to = token.byte_end;
+        self.token.position = token.position;
+        self.token.position_length = token.position_length;
+        true
+    }
+
+    fn token(&self) -> &Token {
+        &self.token
+    }
+
+    fn token_mut(&mut self) -> &mut Token {
+        &mut self.token
+    }
+}
+
 /// The analyzer selected for one Document. No second dictionary tokenizer runs on its text.
 pub(crate) fn analyzer(language: &str) -> Result<TextAnalyzer> {
     match language {
