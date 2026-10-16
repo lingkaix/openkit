@@ -989,7 +989,11 @@ describe('Responses-native Chat function round trip', () => {
         return context.prepareStream(
           await dispatcher.createChatCompletionStream(
             provider,
-            { model: 'faux-chat', messages: [{ role: 'user', content: 'Lookup one' }] },
+            {
+              model: 'faux-chat',
+              messages: [{ role: 'user', content: 'Lookup one' }],
+              tools: [{ type: 'function', function: { name: 'lookup' } }],
+            },
             { onUsage }
           ),
           (state) => states.push(state)

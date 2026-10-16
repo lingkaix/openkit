@@ -275,7 +275,11 @@ describe('stock serialized canonical effort delivery', () => {
   for (const effort of ['none', 'high', undefined]) {
     it.each(paths)(`custom stock ${effort} control in $endpoint stream=$stream`, async (path) => {
       const f = customTransport();
-      const entry = vi.spyOn(f.models, path.stream ? 'stream' : 'complete');
+      // Final Chat consumes stock events to validate completed Tool calls before projection.
+      const entry = vi.spyOn(
+        f.models,
+        path.stream || path.endpoint === 'chat' ? 'stream' : 'complete'
+      );
       const body = await send(f, path, effort);
       expect(body).toHaveProperty('max_completion_tokens', 1000);
       if (effort === undefined) expect(body).not.toHaveProperty('reasoning_effort');
@@ -470,9 +474,9 @@ describe('stock serialized canonical effort delivery', () => {
   for (const effort of [undefined, 'high']) {
     it.each(
       paths
-    )(`observes handoff once before unchanged stock entry effort=${effort} $endpoint stream=$stream`, async (path) => {
+    )(`observes handoff once before stock entry effort=${effort} $endpoint stream=$stream`, async (path) => {
       const f = transport(openaiProvider, 'gpt-5.1');
-      const method = path.stream ? 'stream' : 'complete';
+      const method = path.stream || path.endpoint === 'chat' ? 'stream' : 'complete';
       const entry = vi.spyOn(f.models, method);
       const handoff = vi.fn(() => expect(entry).not.toHaveBeenCalled());
       await send(f, path, effort, false, handoff);
@@ -509,12 +513,15 @@ describe('stock serialized canonical effort delivery', () => {
         presented,
       };
     });
-    const observeInference = vi.fn(async () => {});
+    const observeInference = vi.fn<
+      subscriptions.ProviderSubscriptionPairHandle['observeInference']
+    >(async () => {});
     vi.spyOn(subscriptions, 'subscriptionInferenceHandle').mockReturnValue({
       resolveInferenceAuth,
       observeInference,
     } as unknown as subscriptions.ProviderSubscriptionPairHandle);
-    const signal = new AbortController().signal;
+    const cancellation = new AbortController();
+    const signal = cancellation.signal;
     const request = {
       model: f.config.models[0]!,
       messages: [{ role: 'user' as const, content: 'Hello' }],
@@ -549,8 +556,20 @@ describe('stock serialized canonical effort delivery', () => {
       presented,
       undefined,
       777,
-      resolveInferenceAuth.mock.calls[0]?.[0]
+      expect.any(AbortSignal)
     );
+    const authSignal = resolveInferenceAuth.mock.calls[0]?.[0];
+    const observationSignal = observeInference.mock.calls[0]?.[3];
+    expect(authSignal).toBeInstanceOf(AbortSignal);
+    expect(selected.mock.calls[0]?.[2]).toHaveProperty('signal', authSignal);
+    // Auth and observation can use different composites, but both retain caller cancellation.
+    for (const carried of [authSignal, observationSignal]) expect(carried?.aborted).toBe(false);
+    const reason = new Error('Synthetic caller cancellation');
+    cancellation.abort(reason);
+    for (const carried of [authSignal, observationSignal]) {
+      expect(carried?.aborted).toBe(true);
+      expect(carried?.reason).toBe(reason);
+    }
     expect(JSON.parse(f.bytes[0]!)).toHaveProperty(
       native ? 'reasoning.effort' : 'output_config.effort',
       'high'
