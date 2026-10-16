@@ -935,5 +935,14 @@ describe('Same-candidate read failure recovery', () => {
     await user.click(screen.getByRole('button', { name: 'Select candidate' }));
     await waitFor(() => expect(select).toHaveBeenCalledTimes(2));
     expect(select.mock.calls[0][0]).toEqual(select.mock.calls[1][0]);
+    cache.setQueryData(['artifact', ARTIFACT.workspaceId, ARTIFACT.id], { ...PROPOSAL_ARTIFACT, version: 2, contentDigest: `sha256:${'f'.repeat(64)}` });
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('This review is unavailable.'));
+    expect(screen.queryByRole('textbox', { name: 'Review feedback' })).not.toBeInTheDocument();
+    cache.setQueryData(['artifact', ARTIFACT.workspaceId, ARTIFACT.id], PROPOSAL_ARTIFACT);
+    expect(await screen.findByRole('textbox', { name: 'Review feedback' })).toHaveValue('Preserve this feedback');
+    expect(screen.getByRole('textbox', { name: 'Selection reason' })).toHaveValue('Preserve this reason');
+    await user.click(screen.getByRole('button', { name: 'Select candidate' }));
+    await waitFor(() => expect(select).toHaveBeenCalledTimes(3));
+    expect(select.mock.calls[0][0]).toEqual(select.mock.calls[2][0]);
   });
 });
