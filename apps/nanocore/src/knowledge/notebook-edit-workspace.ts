@@ -5,6 +5,7 @@ import {
   decodeBytesToUtf8,
   type FileContent,
   type IFileSystem,
+  type InitialFiles,
   InMemoryFs,
   stdoutAsBytes,
   stdoutKind,
@@ -162,7 +163,7 @@ export class NotebookEditWorkspace {
   private readonly sources: Readonly<Record<string, string>>;
   private readonly deadline: number;
   private files: Record<string, string>;
-  private directories: readonly string[] = [];
+  private snapshot: InMemoryFs | undefined;
   private busy = false;
   private signal: AbortSignal | undefined;
   private terminal: 'cancelled' | 'deadline_reached' | undefined;
@@ -253,14 +254,30 @@ export class NotebookEditWorkspace {
         );
     };
     try {
-      const initial = Object.fromEntries([
+      // Copy admitted bytes and virtual metadata so a rejected call cannot change prior temporary edits.
+      const initial: InitialFiles = Object.fromEntries([
         ...Object.entries(this.files).map(([path, text]) => [`/notebook/${path}`, text]),
         ...Object.entries(this.sources).map(([path, text]) => [`/sources/${path}`, text]),
       ]);
+      const directories: Array<{ path: string; mtime?: Date }> = [
+        { path: '/notebook' },
+        { path: '/sources' },
+      ];
+      if (this.snapshot) {
+        for (const path of this.snapshot.getAllPaths()) {
+          const stat = await this.snapshot.lstat(path);
+          if (stat.isDirectory) directories.push({ path, mtime: stat.mtime });
+          else
+            initial[path] = {
+              content: initial[path] as string,
+              mode: stat.mode,
+              mtime: stat.mtime,
+            };
+        }
+      }
       const memory = new InMemoryFs(initial, { maxTotalBytes: NOTEBOOK_EDIT_LIMITS.admittedBytes });
-      await memory.mkdir('/notebook', { recursive: true });
-      await memory.mkdir('/sources', { recursive: true });
-      for (const path of this.directories) await memory.mkdir(path, { recursive: true });
+      for (const { path } of directories) await memory.mkdir(path, { recursive: true });
+      for (const { path, mtime } of directories) if (mtime) await memory.utimes(path, mtime, mtime);
       const deny = (code: 'scope_denied' | 'limit_reached', message: string): never => {
         violation ??= new NotebookEditWorkspaceError(code, message);
         throw violation;
@@ -413,7 +430,6 @@ export class NotebookEditWorkspace {
           'Notebook editing reached a hardened execution limit.'
         );
       const next: Record<string, string> = Object.create(null) as Record<string, string>;
-      const directories: string[] = [];
       for (const path of memory.getAllPaths()) {
         const stat = await memory.lstat(path);
         if (!stat.isFile) {
@@ -422,7 +438,6 @@ export class NotebookEditWorkspace {
               'scope_denied',
               'Notebook editing requires regular files.'
             );
-          if (path.startsWith('/notebook/')) directories.push(path);
           continue;
         }
         if (!path.startsWith('/notebook/')) continue;
@@ -439,7 +454,7 @@ export class NotebookEditWorkspace {
       this.validate(next);
       ensureLive();
       this.files = next;
-      this.directories = directories;
+      this.snapshot = memory;
       const displayStdout =
         stdoutKind(result) === 'bytes' ? decodeBytesToUtf8(stdoutAsBytes(result)) : result.stdout;
       const stdout = clip(displayStdout, NOTEBOOK_EDIT_LIMITS.outputBytes);
@@ -535,6 +550,6 @@ export class NotebookEditWorkspace {
   private cancel(reason: 'cancelled' | 'deadline_reached'): void {
     this.terminal ??= reason;
     this.files = Object.create(null) as Record<string, string>;
-    this.directories = [];
+    this.snapshot = undefined;
   }
 }

@@ -60,6 +60,24 @@ describe('NotebookEditWorkspace', () => {
     }
   });
 
+  it('preserves virtual file metadata across calls to the same workspace', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2000-01-01T00:00:00Z'));
+      const editor = workspace();
+      expect((await editor.update({ script: 'stat -c %Y one.md' }, signal)).stdout).toBe(
+        '946684800\n'
+      );
+      vi.setSystemTime(new Date('2000-01-01T00:00:01Z'));
+      expect((await editor.update({ script: 'stat -c %Y one.md' }, signal)).stdout).toBe(
+        '946684800\n'
+      );
+      expect(editor.changes()).toEqual({});
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('refuses unsafe paths and commands without host, network, links or plugin capabilities', async () => {
     const editor = workspace();
     for (const command of ['curl', 'git', 'node', 'python3', 'js-exec', 'sqlite3', 'ln', 'mknod']) {
