@@ -58,6 +58,19 @@ describe('ecosystem Skill discovery', () => {
     ).toThrow(SkillSourceInputError);
   });
 
+  it('preserves authored skills containers when a common archive directory could also be a wrapper', () => {
+    const headers = new Map([
+      ['skills/.curated/category/group/one/SKILL.md', header('duplicate')],
+      ['skills/two/SKILL.md', header('duplicate')],
+    ]);
+    expect(
+      discoverEcosystemSkills({ headers, archiveRoot: 'skills' }).map(({ subpath }) => subpath)
+    ).toEqual(['skills/.curated/category/group/one', 'skills/two']);
+    expect(() =>
+      discoverEcosystemSkills({ headers, archiveRoot: 'skills', skillName: 'duplicate' })
+    ).toThrow(SkillSourceInputError);
+  });
+
   it('falls back to bounded nested discovery only when ordinary containers yield no valid Skill', () => {
     const headers = new Map([
       ['vendor/domain/package/SKILL.md', header('fallback')],

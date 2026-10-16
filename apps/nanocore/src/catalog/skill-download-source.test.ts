@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import { gzipSync } from 'node:zlib';
-import { pack, type Header } from 'tar-stream';
+import { type Header, pack } from 'tar-stream';
 import { afterEach, describe, expect, it } from 'vitest';
 import { validateCatalogTree } from './resource-catalog.js';
 import { acquireDownloadedEcosystemSkill } from './skill-download-source.js';
@@ -15,7 +15,7 @@ const zip = Buffer.from(
   'base64'
 );
 const unsafeZip = Buffer.from(
-  'UEsDBBQAAAAIAAAAIQCnBx0TWwAAAF4AAAALAAAALi4vU0tJTEwubWQdy7ENgCAQBdCehB1uAbRnBRujE5zwNRfxNEDjbBaO5Aoa65f3XLdzzhrlDZ76xKI0rpKSNRElZDmq7OqpAw7asyyinGg6K0pjzV8HcKSMGRkaUNrIlZtJ9PMXUEsBAhQDFAAAAAgAAAAhAKcHHRNbAAAAXgAAAAsAAAAAAAAAAAAAAKSBAAAAAC4uL1NLSUxMLm1kUEsFBgAAAAABAAEAOQAAAIQAAAAAAA==',
+  'UEsDBBQAAAAIAGIeUV16SNOCPwAAAD8AAAAOAAAAc2tpbGwvU0tJTEwubWTT1dXlykvMTbVSCE5MS+VKSS1OLsosKMnMzwOKpOakJpcolGRkFisUJCZnJ6an6nHpAjU4lpZk5BelpuhxAQBQSwMEFAAAAAgAYh5RXYqo6mwyAAAAMQAAAA4AAAAuLi9vdXRzaWRlLnR4dAvNK05MS1VILErOyCxLVShILMlQyC8tKc5MSVUoyUhVKE7NSU0uSU0ByiRnJ6an6gEAUEsBAhQDFAAAAAgAYh5RXXpI04I/AAAAPwAAAA4AAAAAAAAAAAAAAIABAAAAAHNraWxsL1NLSUxMLm1kUEsBAhQDFAAAAAgAYh5RXYqo6mwyAAAAMQAAAA4AAAAAAAAAAAAAAIABawAAAC4uL291dHNpZGUudHh0UEsFBgAAAAACAAIAeAAAAMkAAAAAAA==',
   'base64'
 );
 const duplicateZip = Buffer.from(
@@ -54,7 +54,9 @@ async function serve(body: Buffer, headers: Record<string, string> = {}) {
 }
 
 /** Uses the maintained TAR writer to preserve real headers, PAX Unicode names and entry types. */
-async function tar(entries: readonly { header: Partial<Header> & Pick<Header, 'name'>; body?: Buffer }[]) {
+async function tar(
+  entries: readonly { header: Partial<Header> & Pick<Header, 'name'>; body?: Buffer }[]
+) {
   const archive = pack();
   const chunks: Buffer[] = [];
   const collected = (async () => {
@@ -74,8 +76,17 @@ describe('downloaded ecosystem Skill acquisition', () => {
       name: 'Plain Skill',
       source: fixture.locator,
       subpath: '',
-      tree: [{ path: 'SKILL.md', kind: 'file', executable: false, contentBase64: header.toString('base64') }],
-      digest: validateCatalogTree([{ path: 'SKILL.md', kind: 'file', contentBase64: header.toString('base64') }]).digest,
+      tree: [
+        {
+          path: 'SKILL.md',
+          kind: 'file',
+          executable: false,
+          contentBase64: header.toString('base64'),
+        },
+      ],
+      digest: validateCatalogTree([
+        { path: 'SKILL.md', kind: 'file', contentBase64: header.toString('base64') },
+      ]).digest,
     });
     expect(fixture.requests).toEqual([{ authorization: undefined, cookie: undefined }]);
     expect(result).not.toHaveProperty('sourceCommit');
@@ -86,66 +97,153 @@ describe('downloaded ecosystem Skill acquisition', () => {
     const result = await acquireDownloadedEcosystemSkill(fixture.source);
     expect(result.subpath).toBe('repo/skills/plain');
     expect(result.tree).toEqual([
-      { path: 'SKILL.md', kind: 'file', executable: false, contentBase64: header.toString('base64') },
+      {
+        path: 'SKILL.md',
+        kind: 'file',
+        executable: false,
+        contentBase64: header.toString('base64'),
+      },
       { path: 'empty', kind: 'directory' },
-      { path: 'run.sh', kind: 'file', executable: true, contentBase64: Buffer.from('#!/bin/sh\necho authored\n').toString('base64') },
-      { path: 'references/data.bin', kind: 'file', executable: false, contentBase64: Buffer.from([0, 255, 1, 13, 10]).toString('base64') },
+      {
+        path: 'run.sh',
+        kind: 'file',
+        executable: true,
+        contentBase64: Buffer.from('#!/bin/sh\necho authored\n').toString('base64'),
+      },
+      {
+        path: 'references/data.bin',
+        kind: 'file',
+        executable: false,
+        contentBase64: Buffer.from([0, 255, 1, 13, 10]).toString('base64'),
+      },
     ]);
     expect(result.digest).toBe(validateCatalogTree(result.tree).digest);
   });
 
   it('reads TAR and compressed TAR, preserving Unicode paths and exact selected package bytes', async () => {
     const bytes = await tar([
-      { header: { name: 'repo/skills/one/SKILL.md' }, body: header },
-      { header: { name: 'repo/skills/one/référence.txt' }, body: Buffer.from('authored\r\n') },
-      { header: { name: 'repo/skills/one/empty/', type: 'directory' } },
+      { header: { name: 'repo/skills/.curated/category/group/one/SKILL.md' }, body: header },
+      {
+        header: { name: 'repo/skills/.curated/category/group/one/référence.txt' },
+        body: Buffer.from('authored\r\n'),
+      },
+      { header: { name: 'repo/skills/.curated/category/group/one/empty/', type: 'directory' } },
       { header: { name: 'repo/skills/two/SKILL.md' }, body: header },
     ]);
     const plain = await serve(bytes);
-    await expect(acquireDownloadedEcosystemSkill(plain.source)).rejects.toThrow(SkillSourceInputError);
-    await expect(acquireDownloadedEcosystemSkill({ ...plain.source, skillName: 'Plain Skill' })).rejects.toThrow(SkillSourceInputError);
-    await expect(acquireDownloadedEcosystemSkill({ ...plain.source, subpath: 'absent' })).rejects.toThrow(SkillSourceInputError);
-    const selected = await acquireDownloadedEcosystemSkill({ ...plain.source, subpath: 'repo/skills/one' });
+    await expect(acquireDownloadedEcosystemSkill(plain.source)).rejects.toThrow(
+      SkillSourceInputError
+    );
+    await expect(
+      acquireDownloadedEcosystemSkill({ ...plain.source, skillName: 'Plain Skill' })
+    ).rejects.toThrow(SkillSourceInputError);
+    await expect(
+      acquireDownloadedEcosystemSkill({ ...plain.source, subpath: 'absent' })
+    ).rejects.toThrow(SkillSourceInputError);
+    const selected = await acquireDownloadedEcosystemSkill({
+      ...plain.source,
+      subpath: 'repo/skills/.curated/category/group/one',
+    });
     const compressed = await serve(gzipSync(bytes));
-    const selectedGzip = await acquireDownloadedEcosystemSkill({ ...compressed.source, subpath: 'repo/skills/one' });
+    const selectedGzip = await acquireDownloadedEcosystemSkill({
+      ...compressed.source,
+      subpath: 'repo/skills/.curated/category/group/one',
+    });
     expect(selectedGzip.tree).toEqual(selected.tree);
     expect(selectedGzip.digest).toBe(selected.digest);
-    expect(selected.tree).toContainEqual({ path: 'référence.txt', kind: 'file', executable: false, contentBase64: Buffer.from('authored\r\n').toString('base64') });
+    expect(selected.tree).toContainEqual({
+      path: 'référence.txt',
+      kind: 'file',
+      executable: false,
+      contentBase64: Buffer.from('authored\r\n').toString('base64'),
+    });
     expect(selected.tree).toContainEqual({ path: 'empty', kind: 'directory' });
   });
 
   it('refuses unsafe ZIP paths and duplicate archive identities before returning a tree', async () => {
-    for (const bytes of [unsafeZip, duplicateZip]) {
-      const fixture = await serve(bytes);
-      await expect(acquireDownloadedEcosystemSkill(fixture.source)).rejects.toThrow(new SkillSourceInputError());
-    }
+    const unsafe = await serve(unsafeZip);
+    await expect(
+      acquireDownloadedEcosystemSkill({ ...unsafe.source, subpath: 'skill' })
+    ).rejects.toThrow(new SkillSourceInputError());
+    const duplicate = await serve(duplicateZip);
+    await expect(acquireDownloadedEcosystemSkill(duplicate.source)).rejects.toThrow(
+      new SkillSourceInputError()
+    );
+    const unsafeTar = await serve(
+      await tar([
+        { header: { name: 'skill/SKILL.md' }, body: header },
+        { header: { name: '../outside' }, body: Buffer.from('Outside the selected package.') },
+      ])
+    );
+    await expect(
+      acquireDownloadedEcosystemSkill({ ...unsafeTar.source, subpath: 'skill' })
+    ).rejects.toThrow(new SkillSourceInputError());
   });
 
   it('refuses TAR links even outside the selected package', async () => {
-    const fixture = await serve(await tar([
-      { header: { name: 'SKILL.md' }, body: header },
-      { header: { name: 'outside', type: 'symlink', linkname: '/host/path' } },
-    ]));
-    await expect(acquireDownloadedEcosystemSkill(fixture.source)).rejects.toThrow(SkillSourceInputError);
+    const fixture = await serve(
+      await tar([
+        { header: { name: 'skill/SKILL.md' }, body: header },
+        { header: { name: 'outside', type: 'symlink', linkname: '/host/path' } },
+      ])
+    );
+    await expect(
+      acquireDownloadedEcosystemSkill({ ...fixture.source, subpath: 'skill' })
+    ).rejects.toThrow(SkillSourceInputError);
+  });
+
+  it('refuses sparse TAR metadata rather than retaining packed extents as original file bytes', async () => {
+    const fixture = await serve(
+      await tar([
+        { header: { name: 'SKILL.md' }, body: header },
+        {
+          header: { name: 'sparse', pax: { 'GNU.sparse.realsize': '1024' } },
+          body: Buffer.from('extent'),
+        },
+      ])
+    );
+    await expect(acquireDownloadedEcosystemSkill(fixture.source)).rejects.toThrow(
+      SkillSourceInputError
+    );
   });
 
   it('bounds actual streamed HTTP bytes despite a small compressed Content-Length', async () => {
-    const encoded = gzipSync(Buffer.alloc(10 * 1024 * 1024 + 1, 65));
-    const fixture = await serve(encoded, { 'content-encoding': 'gzip', 'content-length': String(encoded.length) });
-    await expect(acquireDownloadedEcosystemSkill(fixture.source)).rejects.toThrow(new SkillSourceInputError());
+    // This is a valid Skill below the selected-tree cap, so only the download cap refuses it.
+    const encoded = gzipSync(
+      Buffer.concat([header, Buffer.alloc(10 * 1024 * 1024 + 1 - header.length, 65)])
+    );
+    const fixture = await serve(encoded, {
+      'content-encoding': 'gzip',
+      'content-length': String(encoded.length),
+    });
+    await expect(acquireDownloadedEcosystemSkill(fixture.source)).rejects.toThrow(
+      new SkillSourceInputError()
+    );
   });
 
   it('refuses archive expansion and regular-file inventory beyond their limits', async () => {
-    const oversized = await serve(gzipSync(await tar([
-      { header: { name: 'SKILL.md' }, body: header },
-      { header: { name: 'large' }, body: Buffer.alloc(25 * 1024 * 1024 + 1) },
-    ])));
-    await expect(acquireDownloadedEcosystemSkill(oversized.source)).rejects.toThrow(SkillSourceInputError);
-    const many = await serve(gzipSync(await tar([
-      { header: { name: 'SKILL.md' }, body: header },
-      ...Array.from({ length: 1_000 }, (_, index) => ({ header: { name: `file-${index}` } })),
-    ])));
-    await expect(acquireDownloadedEcosystemSkill(many.source)).rejects.toThrow(SkillSourceInputError);
+    const oversized = await serve(
+      gzipSync(
+        await tar([
+          { header: { name: 'skill/SKILL.md' }, body: header },
+          { header: { name: 'outside' }, body: Buffer.alloc(25 * 1024 * 1024 + 1) },
+        ])
+      )
+    );
+    await expect(
+      acquireDownloadedEcosystemSkill({ ...oversized.source, subpath: 'skill' })
+    ).rejects.toThrow(SkillSourceInputError);
+    const many = await serve(
+      gzipSync(
+        await tar([
+          { header: { name: 'SKILL.md' }, body: header },
+          ...Array.from({ length: 1_000 }, (_, index) => ({ header: { name: `file-${index}` } })),
+        ])
+      )
+    );
+    await expect(acquireDownloadedEcosystemSkill(many.source)).rejects.toThrow(
+      SkillSourceInputError
+    );
   });
 
   it('refuses malformed selected content and corrupt ZIP size declarations without exposing source content', async () => {
@@ -153,16 +251,32 @@ describe('downloaded ecosystem Skill acquisition', () => {
     const central = corrupted.indexOf(Buffer.from('504b0102', 'hex'));
     corrupted.writeUInt32LE(1, central + 24);
     const fixture = await serve(corrupted);
-    await expect(acquireDownloadedEcosystemSkill(fixture.source)).rejects.toThrow(new SkillSourceInputError());
+    await expect(acquireDownloadedEcosystemSkill(fixture.source)).rejects.toThrow(
+      new SkillSourceInputError()
+    );
+    const checksum = Buffer.from(zip);
+    checksum.writeUInt32LE(0, central + 16);
+    const corruptChecksum = await serve(checksum);
+    await expect(acquireDownloadedEcosystemSkill(corruptChecksum.source)).rejects.toThrow(
+      new SkillSourceInputError()
+    );
     const invalid = await serve(Buffer.from('---\nname: missing-description\n---\nPrivate body.'));
-    await expect(acquireDownloadedEcosystemSkill(invalid.source)).rejects.toThrow(new SkillSourceInputError());
+    await expect(acquireDownloadedEcosystemSkill(invalid.source)).rejects.toThrow(
+      new SkillSourceInputError()
+    );
   });
 
   it('applies the selected catalog tree bound after bounded archive acquisition', async () => {
-    const fixture = await serve(gzipSync(await tar([
-      { header: { name: 'SKILL.md' }, body: header },
-      { header: { name: 'support' }, body: Buffer.alloc(16 * 1024 * 1024) },
-    ])));
-    await expect(acquireDownloadedEcosystemSkill(fixture.source)).rejects.toThrow(SkillSourceInputError);
+    const fixture = await serve(
+      gzipSync(
+        await tar([
+          { header: { name: 'SKILL.md' }, body: header },
+          { header: { name: 'support' }, body: Buffer.alloc(16 * 1024 * 1024) },
+        ])
+      )
+    );
+    await expect(acquireDownloadedEcosystemSkill(fixture.source)).rejects.toThrow(
+      SkillSourceInputError
+    );
   });
 });
