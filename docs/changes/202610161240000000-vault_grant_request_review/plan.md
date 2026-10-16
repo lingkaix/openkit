@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: implemented
 date: "2026-10-16"
 branch: lane/ga-request-review
 ---
@@ -61,3 +61,11 @@ The following explicit paths are outside `apps/nanocore/src/vault/` and are dire
 - `packages/core-client/README.md`
 - `skills/openkit-ops/references/nanocore-operations.en.md`
 - `skills/openkit-ops/references/using-openkit.en.md`
+
+## Primary Integration Checkpoint
+
+The complete helper source08c4da20513206d549f2a12505fe57a168c2f9e2 was merged with git merge into lane/ga-vault-integration, then joined with the reviewed Server MCP dependency and current main. Additive guide conflicts retained both complete owner paragraphs. The separate custody correctionab0680b430532094123c300fc3b07145106b9a21 was also merged normally; four real probes had proved that an existing Workspace grant restriction draft survived in mutation cache despite zero transport. Existing schema validation now runs before capture and eleven old-panel regressions pass. No new custody mechanism or grant API is introduced.
+
+Generated CLI and OpenAPI publish all three request/review/issue operations and both restricted Server delivery metadata reads. The exact Web contract now accounts for263total operations,75Server and186ordinary, with all three supported Vault workflow rows backed by real screens. The explicit Skill authority inventory includes the two Server metadata operations. p22-request-integrated-joined.log passed all88root Skill/Web inventory assertions,25native request cases,11Workspace custody cases and NanoCore/Web typechecks. The old joined87of88root failure was stale bundled CLI and is preserved as a failure; regeneration resolved it. These checks are focused integration evidence, not whole-module acceptance.
+
+Independent review, exact committed-head express local-gate with whole affected-module suites and mandatory Web e2e, and the containing post-landing main-push CI remain required. No branch fullCI is dispatched under the engineer-approved12:55Z Express protocol. Equal membership and bounded preview are separate increments; when the former is integrated its member Policy accessor replaces the one current role accessor without changing the separate technical-administrator Vault gate.
