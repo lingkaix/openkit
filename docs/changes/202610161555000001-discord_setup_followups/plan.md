@@ -14,7 +14,7 @@ The coordinator directed L-CH to keep its first P23 increment intact, land after
 
 [Communication](../../core/communication.md) and [Pending Requests](../../specs/20260930-pending_requests.md) retain channel and decision authority. The existing Web projection and design owners retain the settings layout and account boundaries. The change adds passive text from admitted source identifiers. It adds no server operation, durable state, response path, compatibility reader, or delivery mechanism. The operator command reads the existing release-authored descriptor without duplicating it.
 
-Root owns the settings screen, its regression, the app guide, the Pending Request criterion, and this record. The Writer owns only the two English configuration and user manuals in its separate worktree. Root will inspect the actual manual diff and export evidence before merging that branch. The first P23 branch and its running gate remain unchanged.
+Root owns the settings screen, its regression, the app guide, the Pending Request criterion, and this record. The Writer owns only the two English configuration and user manuals in its separate worktree. Root inspected the actual manual diff and export evidence before merging that branch. The first P23 branch remains separate from this increment.
 
 ## Closeout Summary
 
@@ -26,4 +26,4 @@ The lowest-sufficient regression expects the complete private inspection command
 
 ## Next Action
 
-Local checks and the manual merge are complete. Push this branch and obtain independent implementation review as a separate follow-up. Merge the first P23 landing and P14 before this increment's final review and gate. Reviews block only for a reachable defect, a violation of an accepted owner contract, a security defect, or loss of user content. Every other finding is a non-blocking note.
+Local checks, the manual merge and the original independent review are complete. A separate preparation branch now includes the P14 candidate and first P23 adaptations; the added Web regression uses the shared canonical fixture identifiers. Review the resulting delta as a separate follow-up. Merge the first P23 landing and P14 before this increment's final review and gate. Reviews block only for a reachable defect, a violation of an accepted owner contract, a security defect, or loss of user content. Every other finding is a non-blocking note.

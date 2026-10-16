@@ -60,14 +60,14 @@ describe('Discord settings', () => {
         items: [
           {
             id: '10000000-0000-4000-8000-000000000003',
-            appPath: '/tasks/ws_channels/th_channels?requestId=req_channels',
+            appPath: `/tasks/${workspaceId}/${threadId}?requestId=req_channels`,
             source: {
-              workspaceId: 'ws_channels',
-              threadId: 'th_channels',
+              workspaceId,
+              threadId,
               requestId: 'req_channels',
               kind: 'approval-request',
             },
-            recipientUserId: 'user_local',
+            recipientUserId,
             channel: null,
             status: 'queued',
             createdAt: '2026-10-16T00:00:00Z',
@@ -79,7 +79,7 @@ describe('Discord settings', () => {
     show(value);
     expect(
       await screen.findByText(
-        '/openkit inspect workspace:ws_channels thread:th_channels request:req_channels'
+        `/openkit inspect workspace:${workspaceId} thread:${threadId} request:req_channels`
       )
     ).toBeInTheDocument();
     expect(value.operations['notification.send']).not.toHaveBeenCalled();
