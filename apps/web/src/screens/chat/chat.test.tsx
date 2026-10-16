@@ -465,251 +465,71 @@ beforeEach(() => {
 describe.each([
   ['starter', '/chat'],
   ['Thread', '/chat/ws1/th1'],
-])('Composer file import on %s', (_surface, path) => {
-  afterEach(() => vi.restoreAllMocks());
-
-  it.each([
-    ['notes.md', 'text/markdown'],
-    ['notes.json', 'application/json'],
-    ['notes.txt', 'text/plain'],
-    ['notes.MD', 'text/plain'],
-    ['notes.JSON', 'text/plain'],
-  ])('imports %s with exact bytes and attachment identity without awaiting list refresh', async (name, mediaType) => {
+])('Composer client file drafts on %s', (_surface, path) => {
+  it('keeps arbitrary files local and removes them without publishing an Artifact', async () => {
     const user = userEvent.setup();
-    const content = '{"note":"héllo"}\n';
-    const read = createDeferred<string>();
-    const imported = createDeferred<{ artifactId: string; artifactVersion: number }>();
-    const refreshed = createDeferred<{ items: [] }>();
-    const listArtifacts = vi
-      .fn()
-      .mockResolvedValueOnce({ items: [] })
-      .mockReturnValue(refreshed.promise);
-    const importWorkspaceArtifact = vi.fn().mockReturnValue(imported.promise);
-    const submitConversation = vi.fn().mockReturnValue(new Promise(() => {}));
-    const queryClient = renderApp(
-      path,
-      makeClient(
-        { 'artifact.list': listArtifacts },
-        { 'artifact.import': importWorkspaceArtifact, 'conversation.submit': submitConversation }
-      )
-    );
-    await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Review this file');
-    await waitFor(() => expect(listArtifacts).toHaveBeenCalledTimes(1));
-    const send = screen.getByRole('button', { name: 'Send message' });
-    const trigger = screen.getByRole('button', { name: 'Add artifact or upload attachment' });
-    await user.click(trigger);
-    const file = new File([content], name, { type: 'application/json' });
-    const text = vi.fn().mockReturnValue(read.promise);
-    Object.defineProperty(file, 'text', { value: text });
-    const requestId = '11111111-1111-4111-8111-111111111111';
-    const randomUUID = vi.spyOn(crypto, 'randomUUID').mockReturnValue(requestId);
-    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, file);
-
-    expect(text).toHaveBeenCalledTimes(1);
-    expect(randomUUID).not.toHaveBeenCalled();
-    expect(importWorkspaceArtifact).not.toHaveBeenCalled();
-    expect(send).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Upload text file' })).toBeDisabled();
-    expect(document.querySelector('input[type="file"]')).toBeDisabled();
-    await act(async () => read.resolve(content));
-    await waitFor(() => expect(importWorkspaceArtifact).toHaveBeenCalledTimes(1));
-    expect(randomUUID).toHaveBeenCalledTimes(1);
-    expect(importWorkspaceArtifact).toHaveBeenCalledWith({
-      workspaceId: 'ws1',
-      ...{
-        title: name,
-        mediaType,
-        content,
-        contentDigest: 'sha256:2641e795d217a25722a8e1554b6d51257b2fabe3c1ce8f760f19da116706b696',
-        requestId,
-      },
-    });
-    expect(listArtifacts).toHaveBeenCalledTimes(1);
-    expect(send).toBeDisabled();
-
-    await act(async () => imported.resolve({ artifactId: 'uploaded-notes', artifactVersion: 3 }));
-    expect(await screen.findByRole('button', { name: `Remove ${name}` })).toBeInTheDocument();
-    expect(screen.queryByRole('dialog', { name: 'Attachments' })).not.toBeInTheDocument();
-    expect(listArtifacts.mock.calls).toEqual([[{ workspaceId: 'ws1' }], [{ workspaceId: 'ws1' }]]);
-    expect(queryClient.getQueryState(['artifacts', 'ws1'])?.fetchStatus).toBe('fetching');
-    expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled();
-    await user.click(screen.getByRole('button', { name: 'Send message' }));
-    await waitFor(() =>
-      expect(submitConversation).toHaveBeenCalledWith(
-        expect.objectContaining({
-          workspaceId: 'ws1',
-          threadId: path === '/chat' ? 'th-new' : 'th1',
-          ...{
-            input: 'Review this file',
-            artifactRefs: [{ artifactId: 'uploaded-notes', artifactVersion: 3 }],
-          },
-        })
-      )
-    );
-    await act(async () => refreshed.resolve({ items: [] }));
-  });
-
-  it.each([
-    'file read',
-    'import command',
-  ])('preserves the draft and existing attachment after a failed %s', async (stage) => {
-    const user = userEvent.setup();
-    const listArtifacts = vi.fn().mockResolvedValue({
-      items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
-    });
-    const importWorkspaceArtifact = vi.fn().mockRejectedValue(new Error('Import unavailable'));
-    const submitConversation = vi.fn().mockReturnValue(new Promise(() => {}));
-    renderApp(
-      path,
-      makeClient(
-        { 'artifact.list': listArtifacts },
-        { 'artifact.import': importWorkspaceArtifact, 'conversation.submit': submitConversation }
-      )
-    );
-    const message = await screen.findByRole('textbox', { name: 'Message' });
-    await user.type(message, 'Keep this draft');
-    const trigger = screen.getByRole('button', { name: 'Add artifact or upload attachment' });
-    await user.click(trigger);
-    await user.click(await screen.findByRole('button', { name: 'Existing brief' }));
-    const file = new File(['notes'], 'notes.txt', { type: 'text/plain' });
-    const text =
-      stage === 'file read'
-        ? vi.fn().mockRejectedValue(new Error('Read unavailable'))
-        : vi.fn().mockResolvedValue('notes');
-    Object.defineProperty(file, 'text', { value: text });
-    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
-    await user.upload(input, file);
-
-    await waitFor(() => expect(trigger).toBeEnabled());
-    expect(text).toHaveBeenCalledTimes(1);
-    expect(importWorkspaceArtifact).toHaveBeenCalledTimes(stage === 'file read' ? 0 : 1);
-    expect(listArtifacts.mock.calls).toEqual([[{ workspaceId: 'ws1' }]]);
-    expect(message).toHaveValue('Keep this draft');
-    expect(input).toHaveValue('');
-    expect(screen.getByRole('dialog', { name: 'Attachments' })).toBeInTheDocument();
-    const alert = within(screen.getByRole('dialog', { name: 'Attachments' })).getByRole('alert');
-    expect(alert).toHaveTextContent("Couldn't confirm the file import.");
-    expect(alert).toHaveTextContent('The file may already exist.');
-    expect(alert).toHaveTextContent('Select the same file to try again.');
-    expect(alert).not.toHaveTextContent('Read unavailable');
-    expect(alert).not.toHaveTextContent('Import unavailable');
-    await user.keyboard('{Escape}');
-    expect(screen.getByRole('button', { name: 'Remove Existing brief' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Remove notes.txt' })).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Send message' }));
-    await waitFor(() =>
-      expect(submitConversation).toHaveBeenCalledWith(
-        expect.objectContaining({
-          workspaceId: 'ws1',
-          threadId: path === '/chat' ? 'th-new' : 'th1',
-          ...{
-            input: 'Keep this draft',
-            artifactRefs: [{ artifactId: 'existing-brief', artifactVersion: 2 }],
-          },
-        })
-      )
-    );
-  });
-
-  it('uses a new import request when file content changes after failure', async () => {
-    const user = userEvent.setup();
-    const importWorkspaceArtifact = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('Response lost'))
-      .mockResolvedValue({ artifactId: 'changed-notes', artifactVersion: 1 });
-    renderApp(path, makeClient({}, { 'artifact.import': importWorkspaceArtifact }));
+    const imported = vi.fn();
+    const submit = vi.fn();
+    renderApp(path, makeClient({}, { 'artifact.import': imported, 'conversation.submit': submit }));
     const trigger = await screen.findByRole('button', {
       name: 'Add artifact or upload attachment',
     });
     await waitFor(() => expect(trigger).toBeEnabled());
     await user.click(trigger);
-    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
-    for (const content of ['First bytes', 'Corrected bytes']) {
-      const file = new File([content], 'notes.txt', { type: 'text/plain' });
-      Object.defineProperty(file, 'text', { value: vi.fn().mockResolvedValue(content) });
-      await user.upload(fileInput, file);
-      await waitFor(() => expect(trigger).toBeEnabled());
-    }
-    expect(await screen.findByRole('button', { name: 'Remove notes.txt' })).toBeInTheDocument();
-    expect(importWorkspaceArtifact).toHaveBeenCalledTimes(2);
-    const [first, second] = importWorkspaceArtifact.mock.calls.map(([input]) => input);
-    expect(first.content).toBe('First bytes');
-    expect(second.content).toBe('Corrected bytes');
-    expect(second.requestId).not.toBe(first.requestId);
+    const file = new File([new Uint8Array([0xff, 0, 0xc0])], 'arbitrary.bin', {
+      type: 'application/octet-stream',
+    });
+    const read = vi.fn().mockRejectedValue(new Error('Selection must not read bytes.'));
+    Object.defineProperty(file, 'arrayBuffer', { value: read });
+    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, file);
+    const remove = await screen.findByRole('button', { name: 'Remove file arbitrary.bin' });
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled();
+    expect(read).not.toHaveBeenCalled();
+    expect(imported).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+    await user.click(remove);
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
+    expect(imported).not.toHaveBeenCalled();
   });
 
-  it('clears import errors only after success and preserves the conversation request through file selection retries', async () => {
+  it('retains the exact File and request after an uncertain send and reconciles before upload', async () => {
     const user = userEvent.setup();
-    const draftRequestId = '11111111-1111-4111-8111-111111111111';
-    vi.spyOn(crypto, 'randomUUID')
-      .mockReturnValueOnce(draftRequestId)
-      .mockReturnValueOnce('22222222-2222-4222-8222-222222222222')
-      .mockReturnValue('33333333-3333-4333-8333-333333333333');
-    const importWorkspaceArtifact = vi
+    const submit = vi
       .fn()
-      .mockRejectedValueOnce(new Error('Private import failure details'))
-      .mockResolvedValue({ artifactId: 'uploaded-notes', artifactVersion: 3 });
-    const submitConversation = vi.fn().mockReturnValue(new Promise(() => {}));
-    renderApp(
+      .mockRejectedValueOnce(new Error('Response lost.'))
+      .mockResolvedValue(CHAT_MODE_RESPONSE);
+    const imported = vi.fn();
+    const queryClient = renderApp(
       path,
-      makeClient(
-        {
-          'artifact.list': vi.fn().mockResolvedValue({
-            items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
-          }),
-        },
-        { 'artifact.import': importWorkspaceArtifact, 'conversation.submit': submitConversation }
-      )
+      makeClient({}, { 'artifact.import': imported, 'conversation.submit': submit })
     );
-    const message = await screen.findByRole('textbox', { name: 'Message' });
-    await user.type(message, 'Keep this draft');
-    const trigger = screen.getByRole('button', { name: 'Add artifact or upload attachment' });
-    await user.click(trigger);
-    await user.click(await screen.findByRole('button', { name: 'Existing brief' }));
-    const file = new File(['notes'], 'notes.txt', { type: 'text/plain' });
-    const text = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('Private read failure details'))
-      .mockResolvedValue('notes');
-    Object.defineProperty(file, 'text', { value: text });
-    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
-
-    await user.upload(fileInput, file);
+    const trigger = await screen.findByRole('button', {
+      name: 'Add artifact or upload attachment',
+    });
     await waitFor(() => expect(trigger).toBeEnabled());
-    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't confirm the file import.");
-    expect(importWorkspaceArtifact).not.toHaveBeenCalled();
-    await user.upload(fileInput, file);
-    await waitFor(() => expect(importWorkspaceArtifact).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(trigger).toBeEnabled());
-    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't confirm the file import.");
-    expect(screen.getByRole('alert')).toHaveTextContent('The file may already exist.');
-    expect(screen.getByRole('alert')).not.toHaveTextContent(/Private.*failure details/);
-    expect(message).toHaveValue('Keep this draft');
-
-    await user.upload(fileInput, file);
-    expect(await screen.findByRole('button', { name: 'Remove notes.txt' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Remove Existing brief' })).toBeInTheDocument();
-    expect(message).toHaveValue('Keep this draft');
-    expect(importWorkspaceArtifact).toHaveBeenCalledTimes(2);
-    expect(importWorkspaceArtifact.mock.calls[1]).toEqual(importWorkspaceArtifact.mock.calls[0]);
     await user.click(trigger);
-    expect(
-      within(screen.getByRole('dialog', { name: 'Attachments' })).queryByRole('alert')
-    ).not.toBeInTheDocument();
-    await user.keyboard('{Escape}');
+    const bytes = new Uint8Array([0xff, 0, 0xc0]);
+    const file = new File([bytes], 'arbitrary.bin', { type: 'application/octet-stream' });
+    const read = vi.fn(async () => bytes.buffer.slice(0));
+    Object.defineProperty(file, 'slice', { value: () => ({ arrayBuffer: read }) });
+    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, file);
     await user.click(screen.getByRole('button', { name: 'Send message' }));
-    await waitFor(() =>
-      expect(submitConversation).toHaveBeenCalledWith(
-        expect.objectContaining({
-          requestId: draftRequestId,
-          input: 'Keep this draft',
-          artifactRefs: [
-            { artifactId: 'existing-brief', artifactVersion: 2 },
-            { artifactId: 'uploaded-notes', artifactVersion: 3 },
-          ],
-        })
-      )
-    );
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+    await screen.findByText("Couldn't send that message. Try again.");
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled());
+    expect(screen.getByRole('button', { name: 'Remove file arbitrary.bin' })).toBeInTheDocument();
+    const retained = queryClient
+      .getMutationCache()
+      .findAll({ mutationKey: chatKeys.submitMutation })
+      .at(-1)?.state.variables as { draft: { files: File[] } };
+    expect(retained.draft.files[0]).toBe(file);
+    expect(imported).not.toHaveBeenCalled();
+    expect(read).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
+    expect(submit.mock.calls[0]).toEqual(submit.mock.calls[1]);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(imported).not.toHaveBeenCalled();
   });
 });
 

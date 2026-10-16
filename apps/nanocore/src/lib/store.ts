@@ -557,6 +557,10 @@ export const DEFAULT_CAPTURE_COVERAGE_BINDING: CaptureCoverageBinding = {
 };
 
 interface CreateTurnOptions {
+  /** Exact ordered metadata and verified private payload sources published with this Turn. */
+  fileInputs?: Turn['fileInputs'];
+  /** Private same-filesystem sources; never serialized into protocol records. */
+  filePayloadPaths?: readonly string[];
   /** Scheduler-owned turn id when external coordination already reserved lineage. */
   turnId?: string;
   /** Immutable explicit or composed effort captured when the Turn is admitted. */
@@ -1416,7 +1420,8 @@ export class FsStore {
   private persist(
     workspaceId: string,
     updateWorkspaceConfigName = false,
-    exactKnowledgePageBytes: ReadonlyMap<string, string> = new Map()
+    exactKnowledgePageBytes: ReadonlyMap<string, string> = new Map(),
+    turnFilePayloads?: ReadonlyMap<string, readonly string[]>
   ): void {
     if (!this.dataRoot) {
       return;
@@ -1427,7 +1432,8 @@ export class FsStore {
       workspaceId,
       workspaceRoot,
       updateWorkspaceConfigName,
-      exactKnowledgePageBytes
+      exactKnowledgePageBytes,
+      turnFilePayloads
     );
   }
 
@@ -1497,7 +1503,8 @@ export class FsStore {
     workspaceId: string,
     workspaceRoot: string,
     updateWorkspaceConfigName = false,
-    exactKnowledgePageBytes: ReadonlyMap<string, string> = new Map()
+    exactKnowledgePageBytes: ReadonlyMap<string, string> = new Map(),
+    turnFilePayloads?: ReadonlyMap<string, readonly string[]>
   ): void {
     const workspace = this.getWorkspace(workspaceId);
     const turnIds = new Set(
@@ -1509,6 +1516,7 @@ export class FsStore {
     writeWorkspaceFileRecords(
       workspaceRoot,
       {
+        ...(turnFilePayloads ? { turnFilePayloads } : {}),
         workspace,
         knowledge: this.getWorkspaceResources(workspaceId).knowledge,
         threads: this.listThreads(workspaceId),
@@ -2722,6 +2730,7 @@ export class FsStore {
       startedAt: timestamp,
       completedAt: null,
       durationMs: null,
+      ...(options.fileInputs?.length ? { fileInputs: options.fileInputs } : {}),
       ...(options.reasoningEffort !== undefined
         ? { reasoningEffort: options.reasoningEffort }
         : {}),
@@ -2743,7 +2752,12 @@ export class FsStore {
       timers: new Set(),
     });
     this.turnCaptureCoverage.set(turn.id, options.captureCoverage ?? this.liveCaptureCoverage);
-    this.persist(workspaceId);
+    this.persist(
+      workspaceId,
+      false,
+      new Map(),
+      options.filePayloadPaths ? new Map([[turn.id, options.filePayloadPaths]]) : undefined
+    );
     this.turnAdmissionHooks?.onAdmitted?.(turn);
     return this.getTurnById(turn.id);
   }

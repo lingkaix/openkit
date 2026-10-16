@@ -55,6 +55,12 @@ it('admits an ordered exact file inventory without text and bounds combined decl
   expect(
     SubmitConversationRequestSchema.safeParse({
       ...input,
+      fileInputs: [{ ...file, requiredFeatures: ['unknown'] }],
+    }).success
+  ).toBe(false);
+  expect(
+    SubmitConversationRequestSchema.safeParse({
+      ...input,
       fileInputs: [{ ...file, contentDigest: 'not-a-digest' }],
     }).success
   ).toBe(false);

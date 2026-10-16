@@ -1,5 +1,9 @@
 import type { ConversationTargetCatalog } from '@openkit/app-api-schemas';
-import { REASONING_EFFORT_LEVELS, type ReasoningEffort } from '@openkit/protocol';
+import {
+  MAX_ARTIFACT_FILE_BYTES,
+  REASONING_EFFORT_LEVELS,
+  type ReasoningEffort,
+} from '@openkit/protocol';
 import {
   type FormEvent,
   type KeyboardEvent,
@@ -37,6 +41,8 @@ export interface ComposerArtifactOption {
 }
 
 export interface ComposerDraft {
+  /** Unsent original selections stay in this client draft until the exact command succeeds. */
+  files?: File[];
   input: string;
   targetRef: string;
   logicalModelId?: string;
@@ -98,7 +104,6 @@ export interface ComposerProps {
   lastAdmittedEffort?: ReasoningEffort;
   artifacts?: ComposerArtifactOption[];
   workerEnvironments?: ComposerWorkerEnvironments;
-  onImportFile?: (file: File) => Promise<ComposerArtifactOption>;
   onSubmit?: (draft: ComposerDraft) => unknown;
 }
 
@@ -114,7 +119,6 @@ export function Composer({
   lastAdmittedEffort,
   artifacts = [],
   workerEnvironments,
-  onImportFile,
   onSubmit,
 }: ComposerProps) {
   const [value, setValue] = useState(initialDraft?.input ?? '');
@@ -149,13 +153,13 @@ export function Composer({
       : null;
   });
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
+  const [files, setFiles] = useState<File[]>(initialDraft?.files ?? []);
   const [pending, setPending] = useState(false);
-  const [pendingImport, setPendingImport] = useState(false);
   const [importFailed, setImportFailed] = useState(false);
   const [requestId, setRequestId] = useState(() => initialDraft?.requestId ?? crypto.randomUUID());
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const disabled = Boolean(disabledReason) || isSubmitting;
+  const disabled = Boolean(disabledReason) || isSubmitting || pending;
   const selectedTarget = targetCatalog?.targets.find((target) => target.targetRef === targetRef);
   const selectedModel = selectedTarget?.logicalModels.find((model) => model.id === logicalModelId);
   const effortLevels = selectedModel?.capabilities.includes('reasoning')
@@ -180,9 +184,8 @@ export function Composer({
   const canSubmit =
     !disabled &&
     !pending &&
-    !pendingImport &&
     environmentReady &&
-    Boolean(value.trim() || selectedArtifacts.length) &&
+    Boolean(value.trim() || selectedArtifacts.length || files.length) &&
     (!targetCatalog ||
       (selectedTarget?.availability === 'available' &&
         (!logicalModelId ||
@@ -192,6 +195,7 @@ export function Composer({
   const clearSentDraft = useCallback(() => {
     setValue('');
     setSelectedArtifacts([]);
+    setFiles([]);
     setImportFailed(false);
     setSelectedEnvironment(null);
     setEffortChoice(null);
@@ -251,6 +255,7 @@ export function Composer({
     setPending(true);
     try {
       await onSubmit({
+        ...(files.length ? { files } : {}),
         input: value,
         targetRef,
         ...(logicalModelId ? { logicalModelId } : {}),
@@ -285,23 +290,20 @@ export function Composer({
     void submit();
   }
 
-  async function importFile(file: File) {
-    if (!onImportFile) return;
-    setPendingImport(true);
-    try {
-      const artifact = await onImportFile(file);
-      setSelectedArtifacts((current) =>
-        current.some((candidate) => candidate.id === artifact.id) ? current : [...current, artifact]
-      );
-      setAttachmentsOpen(false);
-      setImportFailed(false);
-    } catch {
-      // File-read and server errors share safe copy; raw failures can contain private details.
+  /** Retains ordered unsent selections locally, with no read or server publication. */
+  function selectFiles(selected: File[]) {
+    const next = [...files, ...selected];
+    if (
+      next.length > 10_000 ||
+      next.reduce((total, file) => total + file.size, 0) > MAX_ARTIFACT_FILE_BYTES
+    ) {
       setImportFailed(true);
-    } finally {
-      setPendingImport(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
+    } else {
+      setFiles(next);
+      setImportFailed(false);
+      setAttachmentsOpen(false);
     }
+    if (fileInputRef.current) fileInputRef.current.value = '';
   }
 
   return (
@@ -345,15 +347,31 @@ export function Composer({
           ))}
         </fieldset>
       ) : null}
+      {files.length ? (
+        <fieldset className="mt-2 flex flex-wrap gap-1.5 border-0 p-0" aria-label="Selected files">
+          {files.map((file, ordinal) => (
+            <AriaButton
+              key={ordinal}
+              type="button"
+              isDisabled={disabled}
+              onPress={() => setFiles((current) => current.filter((_, index) => index !== ordinal))}
+              className="rounded-full bg-overlay px-2 py-1 text-xs text-fg outline-none focus-visible:ring-2 focus-visible:ring-focus"
+              aria-label={`Remove file ${file.name}`}
+            >
+              {file.name} ×
+            </AriaButton>
+          ))}
+        </fieldset>
+      ) : null}
       <div className="mt-2 flex items-center gap-2">
         <DialogTrigger isOpen={attachmentsOpen} onOpenChange={setAttachmentsOpen}>
           <AriaButton
             type="button"
             aria-label="Add artifact or upload attachment"
-            isDisabled={disabled || pendingImport}
+            isDisabled={disabled}
             className="flex size-8 items-center justify-center rounded-full text-fg outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus disabled:text-disabled-fg"
           >
-            <Icon name={pendingImport ? 'spinner' : 'add'} />
+            <Icon name="add" />
           </AriaButton>
           <Popover
             placement="top start"
@@ -382,32 +400,31 @@ export function Composer({
                   <p className="px-2 py-1.5 text-sm text-fg-muted">No existing Artifacts.</p>
                 ) : null}
               </div>
-              {onImportFile ? (
+              {
                 <>
                   {importFailed ? (
-                    <ErrorBanner message="Couldn't confirm the file import. The file may already exist. Select the same file to try again." />
+                    <ErrorBanner message="Selected files exceed the combined 1,000,000,000-byte limit." />
                   ) : null}
                   <input
                     ref={fileInputRef}
                     type="file"
-                    disabled={disabled || pendingImport}
-                    accept=".md,.txt,.json,text/markdown,text/plain,application/json"
+                    disabled={disabled}
+                    multiple
                     className="sr-only"
                     onChange={(event) => {
-                      const file = event.target.files?.[0];
-                      if (file) void importFile(file);
+                      selectFiles(Array.from(event.target.files ?? []));
                     }}
                   />
                   <button
                     type="button"
-                    disabled={disabled || pendingImport}
+                    disabled={disabled}
                     onClick={() => fileInputRef.current?.click()}
                     className="mt-1 w-full rounded-ok border-t border-separator px-2 py-2 text-left text-sm font-medium text-accent-content outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus"
                   >
-                    Upload text file
+                    Attach files
                   </button>
                 </>
-              ) : null}
+              }
               {environmentApplicable || selectedEnvironment ? (
                 <WorkerEnvironmentPicker
                   environments={workerEnvironments}

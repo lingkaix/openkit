@@ -618,31 +618,22 @@ describe('primitive tier — behavior', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
-  it('keeps selected and uploaded artifacts when the attachment dialog closes', async () => {
+  it('keeps selected Artifacts and arbitrary client files when the attachment dialog closes', async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
-    const uploaded = { id: 'uploaded', version: 1, label: 'Notes' };
-    const onImportFile = vi.fn().mockResolvedValue(uploaded);
     render(
-      <Composer
-        artifacts={[{ id: 'existing', version: 2, label: 'Brief' }]}
-        onImportFile={onImportFile}
-        onSubmit={onSubmit}
-      />
+      <Composer artifacts={[{ id: 'existing', version: 2, label: 'Brief' }]} onSubmit={onSubmit} />
     );
     await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
     await user.click(screen.getByRole('button', { name: 'Brief' }));
     const file = new File(['notes'], 'notes.txt', { type: 'text/plain' });
     await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, file);
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(onImportFile).toHaveBeenCalledWith(file);
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
-        artifactRefs: [
-          { artifactId: 'existing', artifactVersion: 2 },
-          { artifactId: 'uploaded', artifactVersion: 1 },
-        ],
+        artifactRefs: [{ artifactId: 'existing', artifactVersion: 2 }],
+        files: [file],
       })
     );
   });

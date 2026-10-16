@@ -60,6 +60,10 @@ interface StartProductTurnInput
   readonly reservedTurnId?: string;
   /** Explicit retained-storage choice captured with scheduler admission. */
   readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
+  /** Verified originals accepted by conversation submission and published before dispatch eligibility. */
+  readonly fileInputs?: z.infer<typeof TurnSchema>['fileInputs'];
+  /** Private sources consumed by the first canonical Turn publication. */
+  readonly filePayloadPaths?: readonly string[];
   /**
    * Optional callback once this admission's Turn and resolved setup are durable, carrying its nullable AgentSession while queued acceptance remains independent of execution.
    *
@@ -255,6 +259,9 @@ export async function startProductTurn(input: StartProductTurnInput) {
         status: 'pending',
         agentId: requestedAgentId,
         executorKind: 'worker',
+        ...(input.fileInputs?.length
+          ? { fileInputs: input.fileInputs, filePayloadPaths: input.filePayloadPaths }
+          : {}),
         ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
       }
     );
