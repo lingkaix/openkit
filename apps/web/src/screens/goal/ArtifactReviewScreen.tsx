@@ -54,7 +54,8 @@ export function ArtifactReviewScreen() {
     );
   }
 
-  if (reviews.isError || artifact.isError) {
+  const sourceUnavailable = reviews.isError || artifact.isError;
+  if (sourceUnavailable && !review) {
     return (
       <div className="mx-auto w-full max-w-[960px] px-6 py-8">
         <ErrorBanner
@@ -88,7 +89,7 @@ export function ArtifactReviewScreen() {
       ? artifact.data
       : null;
 
-  if (review.decision === null && !exactArtifact) {
+  if (review.decision === null && !exactArtifact && !sourceUnavailable) {
     return (
       <div className="mx-auto w-full max-w-[960px] px-6 py-8">
         <ErrorBanner message="This review is unavailable. Recovery is required before a decision can be recorded." />
@@ -103,18 +104,20 @@ export function ArtifactReviewScreen() {
     threadId={threadId}
     artifactId={artifactId}
     review={review}
+    sourceUnavailable={sourceUnavailable}
     exactArtifact={exactArtifact}
     onRefresh={() => { void reviews.refetch(); void artifact.refetch(); }}
   />;
 }
 
 /** Keeps transient feedback and command retry identity within one exact reviewed candidate. */
-function ExactArtifactReview({ workspaceId, routeWorkspaceId, threadId, artifactId, review, exactArtifact, onRefresh }: {
+function ExactArtifactReview({ workspaceId, routeWorkspaceId, threadId, artifactId, review, sourceUnavailable, exactArtifact, onRefresh }: {
   workspaceId: string;
   routeWorkspaceId: string;
   threadId: string;
   artifactId: string;
   review: ArtifactReview;
+  sourceUnavailable: boolean;
   exactArtifact: GetArtifactResponse | null;
   onRefresh: () => void;
 }) {
@@ -131,6 +134,7 @@ function ExactArtifactReview({ workspaceId, routeWorkspaceId, threadId, artifact
   const fileProposal = Boolean(proposal && exactArtifact?.content.format === 'file');
   const proposalText = useMaterialProposalText(workspaceId, fileProposal ? exactArtifact : null);
   const conflict = decide.error instanceof ApiCallError && decide.error.status === 409 && decide.error.code === 'conflict';
+  if (sourceUnavailable) return <div className="mx-auto w-full max-w-[960px] px-6 py-8"><ErrorBanner message="Couldn't load this artifact review." onRetry={onRefresh} /></div>;
   if (proposal && base.isError) return <ErrorBanner message="Couldn't load the recorded Material base." onRetry={() => void base.refetch()} />;
   const exactBase = proposal && base.data && base.data.revision.materialId === proposal.materialId && base.data.revision.revisionId === proposal.baseRevisionId && base.data.revision.contentDigest === proposal.baseContentDigest ? base.data.revision : null;
   if (proposal && base.data && !exactBase) return <ErrorBanner message="The recorded Material base does not match this Review." onRetry={() => void base.refetch()} />;
