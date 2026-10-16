@@ -49,7 +49,6 @@ import { createVaultInjectionReceipt } from '../vault-injection-receipts.js';
 import { registerWorkerMcpRoutes } from '../worker-mcp-routes.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createVaultGrant, getVaultGrant } from './vault-grants.js';
-import { createVaultReference } from './vault-references.js';
 import { createVaultUnlockState } from './vault-unlock-state.js';
 
 /** Owns one isolated real App/API fixture and removes every synthetic record at closeout. */

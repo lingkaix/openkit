@@ -1,5 +1,5 @@
 /**
- * Settings screens (WP-7) — General, Configuration, App update, AI interface, Vault, Usage & audit, and Debug.
+ * Settings screens for Workspace, User and deployment administration.
  * Appearance remains the ThemePicker mounted at `/settings/appearance`.
  */
 export { AccessTokensScreen } from './AccessTokensScreen';
@@ -37,6 +37,7 @@ export {
 export { GeneralSettingsScreen } from './GeneralSettingsScreen';
 export { MyAdminAccessScreen } from './MyAdminAccessScreen';
 export { ServerAuditScreen } from './ServerAuditScreen';
+export { ServerOperationsScreen } from './ServerOperationsScreen';
 export { SharedMcpScreen } from './SharedMcpScreen';
 export {
   isSecretFieldName,

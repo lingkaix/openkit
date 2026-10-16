@@ -111,9 +111,11 @@ export function ConfigurationScreen() {
       if (!result.written) return;
       setSavedContent(result.content);
       setRevision(result.written.file.revision);
-      queryClient.setQueryData(['settings', 'configuration', 'file', selectedId], {
-        file: result.written.file,
-        content: result.content,
+      // Keep the saved revision local; a background read must not replace a newer draft.
+      void queryClient.invalidateQueries({
+        queryKey: ['settings', 'configuration', 'file', selectedId],
+        exact: true,
+        refetchType: 'none',
       });
       void queryClient.invalidateQueries({
         queryKey: ['settings', 'configuration', 'files'],
