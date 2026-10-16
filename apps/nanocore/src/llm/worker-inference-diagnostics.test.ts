@@ -540,13 +540,14 @@ it.each([
   expect(f.calls()).toMatchObject([{ status: 'succeeded' }]);
 });
 
-
 it('maps a confirmed pre-output native compaction failure to the owned envelope', async () => {
   const f = fixture(true, 'compaction');
   vi.spyOn(console, 'warn').mockImplementation(() => {});
-  f.dispatch.mockRejectedValue(Object.assign(new Error('private-provider-canary'), {
-    failure: { kind: 'unknown', settled: false },
-  }));
+  f.dispatch.mockRejectedValue(
+    Object.assign(new Error('private-provider-canary'), {
+      failure: { kind: 'unknown', settled: false },
+    })
+  );
   const response = await f.post(true);
   expect(response.status).toBe(503);
   expect(await response.json()).toEqual({
@@ -562,9 +563,11 @@ it('maps a confirmed pre-output native compaction failure to the owned envelope'
 it('keeps an indistinguishable ordinary native failure in its existing category', async () => {
   const f = fixture(true, 'turn');
   vi.spyOn(console, 'warn').mockImplementation(() => {});
-  f.dispatch.mockRejectedValue(Object.assign(new Error('private-provider-canary'), {
-    failure: { kind: 'unknown', settled: false },
-  }));
+  f.dispatch.mockRejectedValue(
+    Object.assign(new Error('private-provider-canary'), {
+      failure: { kind: 'unknown', settled: false },
+    })
+  );
   const response = await f.post(true);
   expect(response.status).toBe(400);
   expect(await response.json()).toEqual({

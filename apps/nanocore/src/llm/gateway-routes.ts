@@ -2062,11 +2062,12 @@ export function registerWorkerInferenceRoutes({
             'Worker inference request was cancelled.',
             499
           );
+        const failure = (error as { failure?: PiAiFailure } | null)?.failure ?? observedFailure;
         if (
           runtimeHint?.requestKind === 'compaction' &&
           activeExecution !== undefined &&
           !activeExecution.outputBegan &&
-          observedFailure?.kind !== 'cancelled'
+          failure?.kind !== 'cancelled'
         ) {
           throw new WorkerInferenceRouteError(
             'context_compaction_unavailable',
