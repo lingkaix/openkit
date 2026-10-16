@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
-import { allocateEntityId } from '@openkit/protocol';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { describe, expect, it } from 'vitest';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
