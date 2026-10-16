@@ -13,26 +13,30 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { OperationId } from '@openkit/app-api-schemas';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listWorkspaceAuditEvents, recordWorkspaceAuditEvent } from '../audit-events.js';
-import { type Actor, ensureLocalUser } from '../auth/identity.js';
+import type { Actor } from '../auth/identity.js';
 import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
-import { FsStore } from '../lib/store.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
+import { FsStore } from '../lib/store.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from '../runtime/aep-snapshot-ledger.js';
-import { createApp } from '../test-support/app.js';
+import { readSkillCandidateArtifact } from '../skill-candidate-artifact.js';
+import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
+import { createApp } from '../test-support/app.js';
+import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
+import {
+  ensureLocalUser,
+  FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
+} from '../test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
-import { readSkillCandidateArtifact } from '../skill-candidate-artifact.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
-import { LOCAL_USER_ID } from '../storage/fs-layout.js';
-import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { createDemoStore } from '../test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   CatalogConflictError,
@@ -110,7 +114,7 @@ function fixture(privateOwnerUserId?: string) {
   const tree = packageTree(join(fixtureRoot, 'workshop'));
   const body = JSON.stringify(tree);
   const artifact = store.createArtifact({
-    id: 'ar_synthetic_bwm',
+    id: allocateEntityId('ar'),
     workspaceId,
     threadId: thread.id,
     turnId: turn.id,
@@ -219,7 +223,7 @@ describe('synthetic BWM Artifact/catalog component', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    const workspaceId = 'ws_demo';
+    const workspaceId = DEMO_WORKSPACE_ID;
     recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: LOCAL_USER_ID });
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     cleanup.push(() => workspaceDb.sqlite.close());
@@ -546,7 +550,7 @@ describe('synthetic BWM Artifact/catalog component', () => {
     'revoked',
     'changed-source',
   ] as const)('refuses %s Artifact admission without a candidate or selection effect', (reason) => {
-    const f = fixture(reason === 'foreign-private' ? 'user_other' : undefined);
+    const f = fixture(reason === 'foreign-private' ? allocateEntityId('usr') : undefined);
     if (reason === 'revoked')
       f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, LOCAL_USER_ID))();
     if (reason === 'changed-source') f.selection.version += 1;
