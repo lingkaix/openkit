@@ -16,7 +16,7 @@ import {
 const imageDigest = `sha256:${'d'.repeat(64)}`;
 const defaultsDigest = 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a';
 const candidate = {
-  authoredArtifactId: 'ar_defaults',
+  authoredArtifactId: 'ar_00000000-0000-7ce7-b2d8-9d02176fb5b5',
   authoredArtifactVersion: 1 as const,
   authoredContentDigest: `sha256:${'a'.repeat(64)}`,
   inputDigest: `sha256:${'b'.repeat(64)}`,
@@ -97,7 +97,10 @@ describe('confirmed image environment settlement', () => {
     const db = openCoreDb(root);
     try {
       applyMigrations(db);
-      const second = { ...candidate, authoredArtifactId: 'ar_second' };
+      const second = {
+        ...candidate,
+        authoredArtifactId: 'ar_00000000-0000-7715-a7ab-a9e022886a62',
+      };
       writeWorkerImageSettlement(db, {
         ...candidate,
         requestId: '1'.repeat(64),

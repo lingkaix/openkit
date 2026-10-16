@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { isSealedTurnTerminal } from '@openkit/protocol';
+import { deriveEntityId, isSealedTurnTerminal } from '@openkit/protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import { authorizeWorkspace } from '../auth/operation-authorizer.js';
@@ -97,10 +97,16 @@ export function createCoordinatorTaskTool(options: {
         )
           throw new Error('Current Task write authority is unavailable.');
         const requestId = randomUUID();
-        const threadId = `th_task_${requestId}`;
+        const threadId = deriveEntityId('th', ['task', requestId]);
         receivingThreadId = threadId;
         const prompt = serializeStructuredWorkerDelegationRequest(input.request);
-        const turnId = `turn_${requestId}_${commandInputHash({ command: 'task.start', actorId: actor.userId, workspaceId: goal.workspaceId, threadId, requestId }).slice(-16)}`;
+        const turnId = deriveEntityId('tu', {
+          command: 'task.start',
+          actorId: actor.userId,
+          workspaceId: goal.workspaceId,
+          threadId,
+          requestId,
+        });
         const turn = await runIdempotentCommand({
           store: options.store,
           inflightCommands: options.inflightCommands,
@@ -142,7 +148,7 @@ export function createCoordinatorTaskTool(options: {
                   workspaceMutationAdmission: options.workspaceMutationAdmission,
                 })(
                   { workspaceId: goal.workspaceId, query: input.request.objective },
-                  { actor, traceId: `krt_${requestId}`, threadId }
+                  { actor, traceId: deriveEntityId('krt', requestId), threadId }
                 );
                 return {
                   delegationRequest: input.request,

@@ -2,15 +2,17 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { createApp } from './app.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import { createConfiguredWorkerLifecycleRuntime } from './runtime/turn-executor-factory.js';
 import { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
-import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
+import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
+import {
+  ensureLocalUser,
+  FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
+} from './test-support/local-user.js';
 
 /** NanoCore product deployment mode used by the verification matrix. */
 type CoreDeploymentMode = 'local' | 'server';

@@ -54,7 +54,7 @@ function entrypointMigrationPhase(rebuild: () => unknown[]): BootPhase {
     'readDataRootLayoutMarker',
     'requireBootValue',
     'listAppliedMigrationIds',
-    `let coreDb; const dataRoot = '/fixture'; const dataRootLock = {};\n${javascript}\nreturn phase;`
+    `let coreDb; const dataRoot = '/fixture'; const dataRootLock = {}; const freshCoreInitialization = false;\n${javascript}\nreturn phase;`
   )(
     vi.fn(() => ({})),
     vi.fn(),
@@ -69,7 +69,7 @@ function entrypointMigrationPhase(rebuild: () => unknown[]): BootPhase {
 
 describe('entrypoint index-rebuild classification', () => {
   it('reports a completed rebuild as nonblocking information through App diagnostics', async () => {
-    const rebuild = vi.fn(() => [{ workspaceId: 'ws_fixture' }]);
+    const rebuild = vi.fn(() => [{ workspaceId: 'ws_00000000-0000-7981-ab18-24cc470147b4' }]);
     const result = await runBootPhases({
       bootId: 'boot_actual_index_rebuild',
       phases: [entrypointMigrationPhase(rebuild)],

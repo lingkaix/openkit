@@ -69,7 +69,7 @@ function parseRecoverySummary(text, expiresAt) {
     'tokenId',
   ]);
   assert.equal(value.expiresAt, expiresAt);
-  assert.equal(value.ownerUserId, 'user_image_recovery');
+  assert.equal(value.ownerUserId, 'usr_00000000-0000-7000-8000-000000000091');
   assert.equal(value.status, 'completed');
   assert.equal(typeof value.auditEventId, 'string');
   assert.equal(typeof value.tokenId, 'string');
@@ -123,7 +123,7 @@ test('app image runs stopped-server administrator recovery through disposable mo
           const now = Date.now();
           coreDb.sqlite.prepare(
             'INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, status) VALUES (?, ?, ?, 1, ?, ?, ?)'
-          ).run('user_image_recovery', 'Image Recovery User', 'image-recovery@example.com', now, now, 'active');
+          ).run('usr_00000000-0000-7000-8000-000000000091', 'Image Recovery User', 'image-recovery@example.com', now, now, 'active');
         } finally {
           coreDb.sqlite.close();
         }
@@ -143,7 +143,7 @@ test('app image runs stopped-server administrator recovery through disposable mo
     {
       displayName: 'Image Recovery User',
       email: 'image-recovery@example.com',
-      userId: 'user_image_recovery',
+      userId: 'usr_00000000-0000-7000-8000-000000000091',
     },
   ]);
 
@@ -155,13 +155,13 @@ test('app image runs stopped-server administrator recovery through disposable mo
     '--data-root',
     '/data/openkit',
     '--owner-user-id',
-    'user_image_recovery',
+    'usr_00000000-0000-7000-8000-000000000091',
     '--expires-at',
     expiresAt,
     '--output',
     '/recovery/admin-recovery.json',
     '--confirm',
-    `issue-server-admin-token:user_image_recovery:${expiresAt}`,
+    `issue-server-admin-token:usr_00000000-0000-7000-8000-000000000091:${expiresAt}`,
   ];
   const firstRun = runDocker(recoveryCommand, { redactOutput: true });
   const envelopePath = join(outputRoot, 'admin-recovery.json');

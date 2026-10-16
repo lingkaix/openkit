@@ -12,12 +12,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { CodexRuntimeProvenanceCapture } from './codex-runtime-provenance.js';
 
 const LINEAGE: WorkerLineage = {
-  agentSessionId: 'as_provenance_1',
+  agentSessionId: 'as_00000000-0000-77f0-b6b1-aa089270d9f1',
   packageSnapshotId: 'pkg_provenance_1',
   requestId: 'req_provenance_1',
-  threadId: 'th_outer_1',
-  turnId: 'turn_outer_1',
-  workspaceId: 'ws_provenance_1',
+  threadId: 'th_00000000-0000-7afc-979f-7b7e3b8d2192',
+  turnId: 'tu_00000000-0000-7db2-80a0-e11c10d46caf',
+  workspaceId: 'ws_00000000-0000-7d64-afd8-bc49f3d28a3c',
 };
 const ROLLOUT_CANDIDATE_HARD_CAP = 256;
 const RETAINED_FRAME_HARD_CAP = 4096;

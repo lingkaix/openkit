@@ -57,7 +57,7 @@ function fixture(
   dbs.push(db);
   applyMigrations(db);
   const candidate = {
-    authoredArtifactId: 'ar_native',
+    authoredArtifactId: 'ar_00000000-0000-7b55-8ddd-fe0fdfdd5f21',
     authoredArtifactVersion: 1 as const,
     authoredContentDigest: `sha256:${'a'.repeat(64)}`,
     inputDigest: `sha256:${'b'.repeat(64)}`,

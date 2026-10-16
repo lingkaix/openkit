@@ -8,8 +8,8 @@ import {
   ConversationTargetCatalogSchema,
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
+import { deriveEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
 import { GatewayAttemptFailure } from './llm/gateway-execution.js';
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
@@ -24,7 +24,9 @@ import { artifactReferenceItemId } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { testEntityId } from './test-support/entity-ids.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
@@ -133,7 +135,11 @@ describe('quick chat app API', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const admitted = Promise.withResolvers<AbortSignal>();
     const provider = Promise.withResolvers<unknown>();
     const executor = new ThrowingTurnExecutor();
@@ -173,7 +179,10 @@ describe('quick chat app API', () => {
       app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -183,19 +192,26 @@ describe('quick chat app API', () => {
       );
     const pending = submit('00000000-0000-4000-8000-000000144000');
     const signal = await admitted.promise;
-    const turn = store.listThreadTurns('ws_demo', 'th_demo')[0]!;
+    const turn = store.listThreadTurns(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001'
+    )[0]!;
     expect(turn.status).toBe('running');
-    const interrupt = (threadId = 'th_demo') =>
+    const interrupt = (threadId = 'th_00000000-0000-7000-8000-000000000001') =>
       app.request(
         ...operationRequest(
           'turn.interrupt',
-          { workspaceId: 'ws_demo', threadId: threadId, turnId: turn.id },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: threadId,
+            turnId: turn.id,
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               requestId: '00000000-0000-4000-8000-000000000901',
-              workspaceId: 'ws_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               threadId,
               turnId: turn.id,
             }),
@@ -203,7 +219,7 @@ describe('quick chat app API', () => {
         )
       );
     try {
-      const wrongThread = await interrupt('th_wrong');
+      const wrongThread = await interrupt('th_00000000-0000-7e9e-8ca1-a96ae30af5d8');
       expect(wrongThread.status).toBe(404);
       expect(signal.aborted).toBe(false);
       const stopped = await interrupt();
@@ -224,26 +240,32 @@ describe('quick chat app API', () => {
       const freshStop = await app.request(
         ...operationRequest(
           'turn.interrupt',
-          { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: turn.id,
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               requestId: '00000000-0000-4000-8000-000000000903',
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               turnId: turn.id,
             }),
           }
         )
       );
       expect(freshStop.status).toBe(409);
-      await expect(freshStop.json()).resolves.toMatchObject({ code: 'turn_not_interruptible' });
+      await expect(freshStop.json()).resolves.toMatchObject({
+        code: 'turn_not_interruptible',
+      });
       expect(store.getTurnById(turn.id)).toEqual(retained);
       expect(
         store.getCommandRequest('turn.interrupt', '00000000-0000-4000-8000-000000000903', {
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: turn.id,
         })
       ).toBeNull();
@@ -257,7 +279,10 @@ describe('quick chat app API', () => {
       }).request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -277,14 +302,18 @@ describe('quick chat app API', () => {
       }).request(
         ...operationRequest(
           'turn.interrupt',
-          { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: turn.id,
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               requestId: '00000000-0000-4000-8000-000000000901',
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
               turnId: turn.id,
             }),
           }
@@ -298,7 +327,10 @@ describe('quick chat app API', () => {
       const changedInput = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -319,7 +351,12 @@ describe('quick chat app API', () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(store.getTurnById(turn.id)).toEqual(retained);
       expect(
-        store.listThreadItems('ws_demo', 'th_demo').filter((item) => item.turnId === turn.id)
+        store
+          .listThreadItems(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
+          .filter((item) => item.turnId === turn.id)
       ).toEqual([expect.objectContaining({ type: 'user-message' })]);
       expect(new FsStore({ dataRoot }).getTurnById(turn.id)).toEqual(retained);
       expect(calls).toBe(2);
@@ -339,7 +376,11 @@ describe('quick chat app API', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const transport = new AbortController();
     const admitted = Promise.withResolvers<AbortSignal>();
     const provider = Promise.withResolvers<unknown>();
@@ -358,7 +399,10 @@ describe('quick chat app API', () => {
     const pending = app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -371,7 +415,10 @@ describe('quick chat app API', () => {
     );
     const signal = await admitted.promise;
     transport.abort(new Error('private transport reason'));
-    const remainedRunning = store.listThreadTurns('ws_demo', 'th_demo')[0]!.status;
+    const remainedRunning = store.listThreadTurns(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001'
+    )[0]!.status;
     const aborted = signal.aborted;
     provider.resolve({
       id: 'chatcmpl_disconnect',
@@ -391,7 +438,12 @@ describe('quick chat app API', () => {
     expect(remainedRunning).toBe('running');
     expect(aborted).toBe(false);
     expect(response.status).toBe(200);
-    expect(store.listThreadTurns('ws_demo', 'th_demo')[0]!.status).toBe('completed');
+    expect(
+      store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )[0]!.status
+    ).toBe('completed');
   });
 
   it.each([
@@ -408,7 +460,11 @@ describe('quick chat app API', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const admitted = Promise.withResolvers<void>();
     const provider = Promise.withResolvers<unknown>();
     const createResponses = vi.fn(async () => {
@@ -426,7 +482,10 @@ describe('quick chat app API', () => {
       app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -441,7 +500,10 @@ describe('quick chat app API', () => {
       );
     const pending = submit();
     await admitted.promise;
-    const turn = store.listThreadTurns('ws_demo', 'th_demo')[0]!;
+    const turn = store.listThreadTurns(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001'
+    )[0]!;
     const originalUpdate = store.updateTurn.bind(store);
     const update = vi.spyOn(store, 'updateTurn').mockImplementation((...args) => {
       if (failure === 'Turn' && args[1].status === 'interrupted')
@@ -462,14 +524,18 @@ describe('quick chat app API', () => {
         app.request(
           ...operationRequest(
             'turn.interrupt',
-            { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id },
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              turnId: turn.id,
+            },
             {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify({
                 requestId: '00000000-0000-4000-8000-000000000902',
-                workspaceId: 'ws_demo',
-                threadId: 'th_demo',
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                threadId: 'th_00000000-0000-7000-8000-000000000001',
                 turnId: turn.id,
               }),
             }
@@ -496,8 +562,8 @@ describe('quick chat app API', () => {
       expect(JSON.stringify(body)).not.toContain('private');
       expect(
         store.getCommandRequest('turn.interrupt', '00000000-0000-4000-8000-000000000902', {
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: turn.id,
         })
       ).toBeNull();
@@ -509,8 +575,14 @@ describe('quick chat app API', () => {
         code: failure === 'interrupt receipt' ? 'provider_call_aborted' : 'recovery_required',
       });
       if (failure !== 'interrupt receipt') {
-        const retainedTurns = store.listThreadTurns('ws_demo', 'th_demo');
-        const retainedItems = store.listThreadItems('ws_demo', 'th_demo');
+        const retainedTurns = store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        );
+        const retainedItems = store.listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        );
         for (const change of [
           { input: 'Search the web for updates' },
           { targetRef: 'internal-role:knowledge-manager' },
@@ -518,7 +590,10 @@ describe('quick chat app API', () => {
           const changed = await app.request(
             ...operationRequest(
               'conversation.submit',
-              { workspaceId: 'ws_demo', threadId: 'th_demo' },
+              {
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                threadId: 'th_00000000-0000-7000-8000-000000000001',
+              },
               {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
@@ -534,13 +609,23 @@ describe('quick chat app API', () => {
           );
           expect(changed.status, await changed.clone().text()).toBe(409);
           await expect(changed.json()).resolves.toMatchObject({ code: 'recovery_required' });
-          expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual(retainedTurns);
-          expect(store.listThreadItems('ws_demo', 'th_demo')).toEqual(retainedItems);
+          expect(
+            store.listThreadTurns(
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001'
+            )
+          ).toEqual(retainedTurns);
+          expect(
+            store.listThreadItems(
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001'
+            )
+          ).toEqual(retainedItems);
           expect(
             store.getCommandRequest('conversation.submit', '00000000-0000-4000-8000-000000144003', {
-              actorId: 'user_local',
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
+              actorId: 'usr_00000000-0000-7000-8000-000000000001',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
             })
           ).toBeNull();
         }
@@ -549,14 +634,18 @@ describe('quick chat app API', () => {
         const stopReplay = await app.request(
           ...operationRequest(
             'turn.interrupt',
-            { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id },
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              turnId: turn.id,
+            },
             {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify({
                 requestId: '00000000-0000-4000-8000-000000000902',
-                workspaceId: 'ws_demo',
-                threadId: 'th_demo',
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                threadId: 'th_00000000-0000-7000-8000-000000000001',
                 turnId: turn.id,
               }),
             }
@@ -568,7 +657,10 @@ describe('quick chat app API', () => {
       expect(createResponses).toHaveBeenCalledTimes(1);
       expect(
         store
-          .listThreadItems('ws_demo', 'th_demo')
+          .listThreadItems(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
           .every((item) => item.type !== 'assistant-message')
       ).toBe(true);
     } finally {
@@ -597,11 +689,14 @@ describe('quick chat app API', () => {
       'closed',
     ] as const;
     const threads = states.map((status) => {
-      const thread = store.createThread('ws_demo', `Worker ${status}`);
+      const thread = store.createThread(
+        'ws_00000000-0000-7000-8000-000000000001',
+        `Worker ${status}`
+      );
       store.createAgentSession({
-        id: `as_${status}`,
+        id: testEntityId('as', `as_${status}`),
         agentId: workerSetup.manifest.id,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: thread.id,
         status,
         message: null,
@@ -621,7 +716,7 @@ describe('quick chat app API', () => {
       const response = await app.request(
         ...operationRequest(
           'conversation.targets',
-          { workspaceId: 'ws_demo', threadId: threads[index]!.id },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: threads[index]!.id },
           undefined
         )
       );
@@ -648,11 +743,11 @@ describe('quick chat app API', () => {
     }
 
     for (const index of [0, 2]) {
-      store.updateAgentSession(`as_${states[index]}`, { stale: true });
+      store.updateAgentSession(testEntityId('as', `as_${states[index]}`), { stale: true });
       const stale = await app.request(
         ...operationRequest(
           'conversation.targets',
-          { workspaceId: 'ws_demo', threadId: threads[index]!.id },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: threads[index]!.id },
           undefined
         )
       );
@@ -666,7 +761,11 @@ describe('quick chat app API', () => {
     }
 
     const starter = await app.request(
-      ...operationRequest('conversation.targets', { workspaceId: 'ws_demo' }, undefined)
+      ...operationRequest(
+        'conversation.targets',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        undefined
+      )
     );
     const catalog = ConversationTargetCatalogSchema.parse(await starter.json());
     expect(catalog.targets.some((target) => target.kind === 'running-worker')).toBe(false);
@@ -674,7 +773,10 @@ describe('quick chat app API', () => {
     const response = await app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -690,17 +792,25 @@ describe('quick chat app API', () => {
     );
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({ code: 'target_missing' });
-    expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
-    expect(store.listThreadTurns('ws_demo', threads[0]!.id)).toEqual([]);
+    expect(
+      store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toEqual([]);
+    expect(
+      store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', threads[0]!.id)
+    ).toEqual([]);
   });
 
   it('rejects an administration Thread at the ordinary conversation entry', async () => {
     const store = createDemoStore();
     const thread = store.createThread(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'Private administration',
       undefined,
-      'administration'
+      'administration',
+      { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
     );
     const app = createAppWithWorkspaceAuthority({
       ...createQuickChatProviderOptions(),
@@ -711,7 +821,7 @@ describe('quick chat app API', () => {
     const response = await app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: thread.id },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: thread.id },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -745,7 +855,11 @@ describe('quick chat app API', () => {
     });
 
     const response = await app.request(
-      ...operationRequest('conversation.targets', { workspaceId: 'ws_demo' }, undefined)
+      ...operationRequest(
+        'conversation.targets',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        undefined
+      )
     );
 
     expect(response.status).toBe(200);
@@ -775,6 +889,7 @@ describe('quick chat app API', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-mode-answer-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     onTestFinished(() => coreDb.sqlite.close());
     const calls: Array<{
       providerId: string;
@@ -806,12 +921,19 @@ describe('quick chat app API', () => {
         },
       } as unknown as PiAiGatewayClient,
     });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
 
     const res = await app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           body: JSON.stringify(
@@ -838,7 +960,10 @@ describe('quick chat app API', () => {
     expect(parsed.turn.status).toBe('completed');
     expect(parsed.turn.agentId).toBe('quick-chat');
     const dashboardResponse = await app.request(
-      ...operationRequest('thread.dashboard', { workspaceId: 'ws_demo', threadId: 'th_demo' })
+      ...operationRequest('thread.dashboard', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+      })
     );
     expect(dashboardResponse.status).toBe(200);
     const dashboard = await dashboardResponse.json();
@@ -850,7 +975,10 @@ describe('quick chat app API', () => {
       pendingQuestionCount: 0,
       latestArtifact: null,
     });
-    expect(parsed.turn.triggerActor).toEqual({ kind: 'user', id: 'user_local' });
+    expect(parsed.turn.triggerActor).toEqual({
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    });
     expect(parsed.turn.items.find((item) => item.type === 'user-message')).toMatchObject({
       actor: parsed.turn.triggerActor,
     });
@@ -865,10 +993,10 @@ describe('quick chat app API', () => {
       },
     });
     expect(calls[0]?.request).not.toHaveProperty('metadata');
-    const captureDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const captureDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       const observations = readWorkObservations(captureDb, {
-        threadId: 'th_demo',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: parsed.turn.id,
       });
       expect(observations[0]).toMatchObject({
@@ -876,7 +1004,7 @@ describe('quick chat app API', () => {
         obs: 'core',
         payload: {
           version: expect.any(String),
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           assistantSkillAdmission: { catalogRevision: null, skills: [] },
           tools: [
             {
@@ -896,7 +1024,10 @@ describe('quick chat app API', () => {
     const replayRes = await app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           body: JSON.stringify(
@@ -920,8 +1051,12 @@ describe('quick chat app API', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    const otherThread = store.createThread('ws_demo', 'Unrelated conversation');
+    const otherThread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Unrelated conversation'
+    );
     const initialInput = 'Explain why the sky is blue in two sentences.';
     const otherInput = 'Explain why leaves are green.';
     const currentInput = 'Shorten your previous answer to one sentence.';
@@ -957,16 +1092,24 @@ describe('quick chat app API', () => {
       } as unknown as PiAiGatewayClient,
     };
     const app = createAppWithWorkspaceAuthority({ ...appOptions, store });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
 
     for (const [threadId, input, requestId] of [
-      ['th_demo', initialInput, '00000000-0000-4000-8000-000000144007'],
+      [
+        'th_00000000-0000-7000-8000-000000000001',
+        initialInput,
+        '00000000-0000-4000-8000-000000144007',
+      ],
       [otherThread.id, otherInput, '00000000-0000-4000-8000-000000144008'],
     ] as const) {
       const response = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: threadId },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: threadId },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -980,15 +1123,20 @@ describe('quick chat app API', () => {
       expect(answer.turn.status).toBe('completed');
     }
     expect(calls).toHaveLength(2);
-    const priorTurn = store.createTurn('ws_demo', 'th_demo', 'Interrupted worker attempt', {
-      kind: 'user',
-      id: 'user_local',
-    }).id;
+    const priorTurn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Interrupted worker attempt',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    ).id;
     for (const status of ['in_progress', 'failed'] as const) {
       store.createItem({
-        id: `it_partial_${status}`,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        id: testEntityId('it', `it_partial_${status}`),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: priorTurn,
         type: 'assistant-message',
         status,
@@ -998,13 +1146,24 @@ describe('quick chat app API', () => {
       });
     }
     store.updateTurn(priorTurn, { status: 'failed', completedAt: new Date().toISOString() });
-    const priorItems = store.listThreadItems('ws_demo', 'th_demo');
+    const priorItems = store.listThreadItems(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001'
+    );
 
     // Reconstruct the app and store so continuity cannot depend on their in-memory history.
     const reloadedStore = new FsStore({ dataRoot });
-    expect(reloadedStore.listThreadItems('ws_demo', 'th_demo')).toEqual(priorItems);
+    expect(
+      reloadedStore.listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+    ).toEqual(priorItems);
     const priorMessages = reloadedStore
-      .listThreadItems('ws_demo', 'th_demo')
+      .listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
       .flatMap((item) =>
         item.status === 'completed' &&
         (item.type === 'user-message' || item.type === 'assistant-message')
@@ -1015,14 +1174,17 @@ describe('quick chat app API', () => {
       { role: 'user', content: initialInput },
       { role: 'assistant', content: replies[0] },
     ]);
-    expect(reloadedStore.listThreadItems('ws_demo', otherThread.id)).toEqual(
-      store.listThreadItems('ws_demo', otherThread.id)
-    );
+    expect(
+      reloadedStore.listThreadItems('ws_00000000-0000-7000-8000-000000000001', otherThread.id)
+    ).toEqual(store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', otherThread.id));
     const reloadedApp = createAppWithWorkspaceAuthority({ ...appOptions, store: reloadedStore });
     const response = await reloadedApp.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1054,6 +1216,7 @@ describe('quick chat app API', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-mode-handoff-summary-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     onTestFinished(() => coreDb.sqlite.close());
     const store = createDemoStore({ dataRoot });
     const calls: Array<{
@@ -1087,14 +1250,21 @@ describe('quick chat app API', () => {
         },
       } as unknown as PiAiGatewayClient,
     });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const listKnowledgeProposals = vi.spyOn(store, 'listKnowledgeProposals');
 
     try {
       const res = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: JSON.stringify(
@@ -1137,6 +1307,7 @@ describe('quick chat app API', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-mode-usage-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
 
     try {
       const store = createDemoStore({ dataRoot });
@@ -1168,7 +1339,7 @@ describe('quick chat app API', () => {
       });
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: workspace.id,
       });
 
@@ -1256,7 +1427,7 @@ describe('quick chat app API', () => {
     const createRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.create',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           body: JSON.stringify({
@@ -1275,7 +1446,10 @@ describe('quick chat app API', () => {
     const res = await app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           body: JSON.stringify({
@@ -1306,7 +1480,10 @@ describe('quick chat app API', () => {
     const replayRes = await app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           body: JSON.stringify({
@@ -1321,15 +1498,22 @@ describe('quick chat app API', () => {
     expect(replayRes.status).toBe(200);
     expect(SubmitConversationResponseSchema.parse(await replayRes.json())).toEqual(parsed);
     const pageBytes = readFileSync(
-      join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'pages', `${knowledge.id}.md`)
+      join(
+        dataRoot,
+        'workspaces',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'knowledge',
+        'pages',
+        `${knowledge.id}.md`
+      )
     );
     const contentDigest = `sha256:${createHash('sha256').update(pageBytes).digest('hex')}`;
     const traceRoot = join(
       dataRoot,
       'workspaces',
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       'threads',
-      'th_demo',
+      'th_00000000-0000-7000-8000-000000000001',
       'retrieval-traces'
     );
     const traces = existsSync(traceRoot)
@@ -1345,7 +1529,7 @@ describe('quick chat app API', () => {
           expect.objectContaining({
             contentDigest,
             reference: {
-              scopeId: 'page/workspace/ws_demo',
+              scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
               objectId: knowledge.id,
             },
           }),
@@ -1364,7 +1548,11 @@ describe('quick chat app API', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     let providerCalls = 0;
     const app = createAppWithWorkspaceAuthority({
       ...createQuickChatProviderOptions(),
@@ -1396,7 +1584,7 @@ describe('quick chat app API', () => {
     const createRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.create',
-        { workspaceId: 'ws_demo' },
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
           body: JSON.stringify({
@@ -1417,7 +1605,10 @@ describe('quick chat app API', () => {
     const res = await app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           body: JSON.stringify(
@@ -1435,7 +1626,17 @@ describe('quick chat app API', () => {
     const parsed = SubmitConversationResponseSchema.parse(await res.json());
     expect(providerCalls).toBe(1);
     expect(listKnowledgeProposals).not.toHaveBeenCalled();
-    expect(existsSync(join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'traces'))).toBe(false);
+    expect(
+      existsSync(
+        join(
+          dataRoot,
+          'workspaces',
+          'ws_00000000-0000-7000-8000-000000000001',
+          'knowledge',
+          'traces'
+        )
+      )
+    ).toBe(false);
     expect(parsed).toMatchObject({
       outcome: 'answered',
       explanation: 'The Assistant answered directly.',
@@ -1451,6 +1652,7 @@ describe('quick chat app API', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-artifact-source-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     try {
       const prompts: string[] = [];
       const app = createAppWithWorkspaceAuthority({
@@ -1482,11 +1684,15 @@ describe('quick chat app API', () => {
           },
         } as unknown as PiAiGatewayClient,
       });
-      recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
       const knowledge = await app.request(
         ...knowledgeOperationRequest(
           'knowledge.create',
-          { workspaceId: 'ws_demo' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -1504,7 +1710,7 @@ describe('quick chat app API', () => {
       const imported = await app.request(
         ...operationRequest(
           'artifact.import',
-          { workspaceId: 'ws_demo' },
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -1525,7 +1731,10 @@ describe('quick chat app API', () => {
       const response = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -1558,7 +1767,11 @@ describe('quick chat app API', () => {
       const reloaded = new FsStore({ dataRoot });
       expect(
         reloaded
-          .getTurn('ws_demo', 'th_demo', answer.turn.id)
+          .getTurn(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001',
+            answer.turn.id
+          )
           .items.filter((item) => item.type === 'artifact-reference')
           .map((item) => item.id)
       ).toEqual([referenceId]);
@@ -1573,7 +1786,11 @@ describe('quick chat app API', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const app = createAppWithWorkspaceAuthority({
       ...createQuickChatProviderOptions(),
       coreDb,
@@ -1590,7 +1807,10 @@ describe('quick chat app API', () => {
     const res = await app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           body: JSON.stringify(conversationRequest('Help', '00000000-0000-4000-8000-00000014400d')),
@@ -1613,28 +1833,36 @@ describe('quick chat app API', () => {
       },
     });
     expect(parsed.turn.status).toBe('completed');
-    expect(store.listThreadItems('ws_demo', 'th_demo').map((item) => item.type)).toEqual([
-      'user-message',
-      'user-input-request',
-    ]);
+    expect(
+      store
+        .listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+        .map((item) => item.type)
+    ).toEqual(['user-message', 'user-input-request']);
     expect(
       store.getCommandRequest('conversation.submit', '00000000-0000-4000-8000-00000014400d', {
-        actorId: 'user_local',
-        threadId: 'th_demo',
-        workspaceId: 'ws_demo',
+        actorId: 'usr_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })?.response.conversationMetadata
     ).toEqual({
       downstream: null,
       logicalModelId: 'quick-chat',
-      receivingThreadId: 'th_demo',
-      receivingWorkspaceId: 'ws_demo',
+      receivingThreadId: 'th_00000000-0000-7000-8000-000000000001',
+      receivingWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       resultKind: 'clarification',
       status: 202,
       targetRef: 'internal-role:assistant',
     });
 
     const actionCenterRes = await app.request(
-      ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)
+      ...operationRequest(
+        'attention.list',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        undefined
+      )
     );
     const actionCenter = (await actionCenterRes.json()) as {
       items: Array<{ kind: string; source: unknown }>;
@@ -1655,7 +1883,10 @@ describe('quick chat app API', () => {
     const replayRes = await app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           body: JSON.stringify(conversationRequest('Help', '00000000-0000-4000-8000-00000014400d')),
@@ -1670,16 +1901,22 @@ describe('quick chat app API', () => {
     expect(replay.item).toEqual(parsed.item);
 
     const storedRequest = store
-      .listThreadItems('ws_demo', 'th_demo')
+      .listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
       .find((item) => item.id === parsed.item.id);
     if (storedRequest?.type !== 'user-input-request') {
       throw new Error('Expected the stored Chat clarification request.');
     }
-    storedRequest.responsibleUserId = 'user_other';
+    storedRequest.responsibleUserId = 'usr_00000000-0000-73d4-904a-d4c4b905df7c';
     const contradictedReplay = await app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           body: JSON.stringify(conversationRequest('Help', '00000000-0000-4000-8000-00000014400d')),
@@ -1698,7 +1935,11 @@ describe('quick chat app API', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const app = createAppWithWorkspaceAuthority({
       ...createQuickChatProviderOptions(),
       coreDb,
@@ -1707,7 +1948,7 @@ describe('quick chat app API', () => {
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: {
         createChatCompletion: async () => {
-          const accepted = openWorkspaceDb(dataRoot, 'ws_demo');
+          const accepted = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
           expect(
             accepted.sqlite
               .prepare('SELECT delivery FROM pending_requests WHERE request_id = ?')
@@ -1725,7 +1966,10 @@ describe('quick chat app API', () => {
     const res = await app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           body: JSON.stringify(conversationRequest('Help', 'req_chat_clarify')),
@@ -1748,28 +1992,36 @@ describe('quick chat app API', () => {
       },
     });
     expect(parsed.turn.status).toBe('completed');
-    expect(store.listThreadItems('ws_demo', 'th_demo').map((item) => item.type)).toEqual([
-      'user-message',
-      'user-input-request',
-    ]);
+    expect(
+      store
+        .listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+        .map((item) => item.type)
+    ).toEqual(['user-message', 'user-input-request']);
     expect(
       store.getCommandRequest('conversation.submit', 'req_chat_clarify', {
-        actorId: 'user_local',
-        threadId: 'th_demo',
-        workspaceId: 'ws_demo',
+        actorId: 'usr_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })?.response.conversationMetadata
     ).toEqual({
       downstream: null,
       logicalModelId: 'quick-chat',
-      receivingThreadId: 'th_demo',
-      receivingWorkspaceId: 'ws_demo',
+      receivingThreadId: 'th_00000000-0000-7000-8000-000000000001',
+      receivingWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       resultKind: 'clarification',
       status: 202,
       targetRef: 'internal-role:assistant',
     });
 
     const actionCenterRes = await app.request(
-      ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)
+      ...operationRequest(
+        'attention.list',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        undefined
+      )
     );
     const actionCenter = (await actionCenterRes.json()) as {
       items: Array<{ kind: string; source: unknown }>;
@@ -1790,7 +2042,10 @@ describe('quick chat app API', () => {
     const replayRes = await app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           body: JSON.stringify(conversationRequest('Help', 'req_chat_clarify')),
@@ -1814,8 +2069,8 @@ describe('quick chat app API', () => {
           body: JSON.stringify({
             userInputRequestId: `ui_chat_clarify_${parsed.turn.id}`,
             requestId: '00000000-0000-4000-8000-00000000aa01',
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
             answers: { chat_clarification: ['What is two plus two?'] },
           }),
         }
@@ -1826,23 +2081,34 @@ describe('quick chat app API', () => {
       let attempt = 0;
       attempt < 1000 &&
       !store
-        .listThreadItems('ws_demo', 'th_demo')
+        .listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
         .some((item) => item.type === 'assistant-message' && item.text === 'Four is the answer.');
       attempt += 1
     )
       await new Promise<void>((resolve) => setTimeout(resolve, 1));
     const result = store
-      .listThreadItems('ws_demo', 'th_demo')
+      .listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
       .find((item) => item.type === 'assistant-message' && item.text === 'Four is the answer.');
     expect(
       result,
       JSON.stringify(
-        store.listThreadTurns('ws_demo', 'th_demo').map((turn) => ({
-          status: turn.status,
-          error: turn.error,
-          trigger: turn.triggerSource,
-          items: turn.items.map((item) => item.type),
-        }))
+        store
+          .listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
+          .map((turn) => ({
+            status: turn.status,
+            error: turn.error,
+            trigger: turn.triggerSource,
+            items: turn.items.map((item) => item.type),
+          }))
       )
     ).toBeDefined();
     expect(result?.turnId).not.toBe(parsed.turn.id);
@@ -1862,11 +2128,18 @@ describe('quick chat app API', () => {
     });
     const requestId = 'req_chat_missing_owner';
     const input = 'Search the web for current OpenKit news.';
-    const scope = { actorId: 'user_local', threadId: 'th_demo', workspaceId: 'ws_demo' };
+    const scope = {
+      actorId: 'usr_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    };
     const first = await app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           body: JSON.stringify(conversationRequest(input, requestId)),
@@ -1880,7 +2153,10 @@ describe('quick chat app API', () => {
     const successfulReplay = await app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           body: JSON.stringify(conversationRequest(input, requestId)),
@@ -1892,16 +2168,22 @@ describe('quick chat app API', () => {
     expect(successfulReplay.status).toBe(200);
     expect(SubmitConversationResponseSchema.parse(await successfulReplay.json())).toEqual(accepted);
     const userItem = store
-      .listThreadItems('ws_demo', 'th_demo')
-      .find((item) => item.id === `it_chat_user_${accepted.turn.id}`);
+      .listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+      .find((item) => item.id === deriveEntityId('it', ['chat-user', accepted.turn.id]));
     if (userItem?.type !== 'user-message') {
       throw new Error('Expected the stored Chat user message.');
     }
-    userItem.actor = { kind: 'user', id: 'user_other' };
+    userItem.actor = { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' };
     const contradictedActorReplay = await app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           body: JSON.stringify(conversationRequest(input, requestId)),
@@ -1919,7 +2201,10 @@ describe('quick chat app API', () => {
     const contradictedTurnReplay = await app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           body: JSON.stringify(conversationRequest(input, requestId)),
@@ -1939,14 +2224,17 @@ describe('quick chat app API', () => {
       command: 'conversation.submit',
       inputHash: receipt!.inputHash,
       requestId,
-      response: { id: 'tu_missing_chat_owner', kind: 'turn' },
+      response: { id: 'tu_00000000-0000-73cb-a293-4bafac039342', kind: 'turn' },
       scope,
     });
 
     const replay = await app.request(
       ...operationRequest(
         'conversation.submit',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
         {
           method: 'POST',
           body: JSON.stringify(conversationRequest(input, requestId)),
@@ -1963,6 +2251,7 @@ describe('quick chat app API', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-goal-handoff-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
 
     try {
       const store = createDemoStore({ dataRoot });
@@ -1976,8 +2265,8 @@ describe('quick chat app API', () => {
       });
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'user_local',
-        workspaceId: 'ws_demo',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const request = {
         input: 'Plan a multi-step release goal for NanoCore.',
@@ -1986,11 +2275,19 @@ describe('quick chat app API', () => {
         artifactRefs: [],
       };
 
-      const turnsBefore = store.listThreadTurns('ws_demo', 'th_demo').map((turn) => turn.id);
+      const turnsBefore = store
+        .listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+        .map((turn) => turn.id);
       const goalRes = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: JSON.stringify(request),
@@ -2002,13 +2299,19 @@ describe('quick chat app API', () => {
       expect(goalRes.status).toBe(202);
       const accepted = await goalRes.json();
       expect(accepted).toMatchObject({ outcome: 'goal-handoff', handoff: { targetMode: 'goal' } });
-      expect(store.listThreadTurns('ws_demo', 'th_demo').length).toBeGreaterThan(
-        turnsBefore.length
-      );
+      expect(
+        store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        ).length
+      ).toBeGreaterThan(turnsBefore.length);
       const replayRes = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             body: JSON.stringify(request),
@@ -2034,24 +2337,36 @@ describe('quick chat app API', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'goal-private-handoff-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     try {
       const store = createDemoStore({ dataRoot });
-      const thread = store.createThread('ws_demo', 'Private assistant', undefined, 'conversation', {
-        visibility: 'private',
-        privateOwnerUserId: 'user_local',
-      });
-      const artifactId = 'artifact_private_goal';
+      const thread = store.createThread(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'Private assistant',
+        undefined,
+        'conversation',
+        {
+          visibility: 'private',
+          privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        }
+      );
+      const artifactId = testEntityId('ar', 'artifact_private_goal');
       if (source === 'private-artifact') {
-        const turn = store.createTurn('ws_demo', thread.id, 'Private output', {
-          kind: 'user',
-          id: 'user_local',
-        });
+        const turn = store.createTurn(
+          'ws_00000000-0000-7000-8000-000000000001',
+          thread.id,
+          'Private output',
+          {
+            kind: 'user',
+            id: 'usr_00000000-0000-7000-8000-000000000001',
+          }
+        );
         const body = 'PRIVATE-GOAL-MARKER';
         const at = new Date().toISOString();
         const requestId = '20000000-0000-4000-8000-000000000001';
         store.createArtifact({
           id: artifactId,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: thread.id,
           turnId: turn.id,
           kind: 'report',
@@ -2076,11 +2391,19 @@ describe('quick chat app API', () => {
         store,
         turnExecutor: new ThrowingTurnExecutor(),
       });
-      recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
       const response = await app.request(
         ...operationRequest(
           'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: source === 'private-thread' ? thread.id : 'th_demo' },
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId:
+              source === 'private-thread' ? thread.id : 'th_00000000-0000-7000-8000-000000000001',
+          },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -2099,7 +2422,11 @@ describe('quick chat app API', () => {
       expect(
         store.listCommandRequests().filter((record) => record.command === 'goal.create')
       ).toEqual([]);
-      expect(store.listThreads('ws_demo').some((t) => t.id.startsWith('th_goal_'))).toBe(false);
+      expect(
+        store
+          .listThreads('ws_00000000-0000-7000-8000-000000000001')
+          .some((t) => t.id.startsWith('th_00000000-0000-76d8-97b6-767cd1373aa4'))
+      ).toBe(false);
     } finally {
       coreDb.sqlite.close();
     }
@@ -2187,7 +2514,7 @@ describe('quick chat app API', () => {
     await expect(res.json()).resolves.toEqual({
       id: 'chatcmpl_route_agent',
       status: 'completed',
-      workspaceId: 'ws_quick_chat',
+      workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       modelId: 'quick-chat',
       content: 'Agent-routed answer',
     });
@@ -2210,7 +2537,7 @@ describe('quick chat app API', () => {
     ['a schema-invalid body', JSON.stringify({ input: '' })],
     [
       'caller-supplied Workspace authority',
-      JSON.stringify({ input: 'Hello', workspaceId: 'ws_caller_selected' }),
+      JSON.stringify({ input: 'Hello', workspaceId: 'ws_00000000-0000-7349-9b29-0b0df94928e7' }),
     ],
   ])('rejects %s before provider dispatch', async (_label, body) => {
     const createChatCompletion = vi.fn();
@@ -2352,7 +2679,7 @@ describe('quick chat app API', () => {
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: {
         createChatCompletion: async () => {
-          throw new Error('provider failed token=tok_private_quick_chat');
+          throw new Error('provider failed token=tok_00000000-0000-7fb5-9752-7efecfbf0ee4');
         },
       } as unknown as PiAiGatewayClient,
     });
@@ -2375,7 +2702,7 @@ describe('quick chat app API', () => {
       code: 'quick_chat_failed',
       message: 'Quick chat failed.',
     });
-    expect(JSON.stringify(body)).not.toContain('tok_private_quick_chat');
+    expect(JSON.stringify(body)).not.toContain('tok_00000000-0000-7fb5-9752-7efecfbf0ee4');
   });
 
   it('answers with the configured quick-chat provider without starting an AgentSession', async () => {
@@ -2438,14 +2765,15 @@ describe('quick chat app API', () => {
 
     try {
       applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
       vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 6) });
       vaultUnlockState.backend().store({
         material: 'sk-vault-quick-chat',
         metadata: { ownerScope: 'server' },
-        referenceId: 'vault_quick_chat',
+        referenceId: 'vault_00000000-0000-7ffd-88f4-efdf51dec63e',
       });
       createVaultReference(coreDb, {
-        referenceId: 'vault_quick_chat',
+        referenceId: 'vault_00000000-0000-7ffd-88f4-efdf51dec63e',
         ownerScope: 'server',
         displayName: 'Quick Chat test key',
         secretKind: 'provider-api-key',
@@ -2489,7 +2817,7 @@ describe('quick chat app API', () => {
             id: 'quick-vault',
             kind: 'direct',
             models: ['openai/gpt-5.2'],
-            secretRef: 'vault://vault_quick_chat',
+            secretRef: 'vault://vault_00000000-0000-7ffd-88f4-efdf51dec63e',
           },
         ]),
         turnExecutor: new ThrowingTurnExecutor(),
@@ -2546,7 +2874,7 @@ describe('quick chat app API', () => {
         expect.objectContaining({
           outcome: 'succeeded',
           resolvingPath: 'provider',
-          vaultReferenceId: 'vault_quick_chat',
+          vaultReferenceId: 'vault_00000000-0000-7ffd-88f4-efdf51dec63e',
         }),
       ]);
       expect(JSON.stringify(listVaultUseRecords(coreDb))).not.toContain('sk-vault-quick-chat');
@@ -2559,6 +2887,7 @@ describe('quick chat app API', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-quick-chat-usage-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
 
     try {
       const app = createAppWithWorkspaceAuthority({
@@ -2601,7 +2930,10 @@ describe('quick chat app API', () => {
       );
       expect(res.status).toBe(200);
 
-      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_quick_chat');
+      const workspaceDb = openWorkspaceDb(
+        coreDb.dataRoot,
+        'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28'
+      );
       try {
         applyScopedMigrations(workspaceDb);
         const call = workspaceDb.sqlite
@@ -2614,7 +2946,7 @@ describe('quick chat app API', () => {
           operation: 'quick_chat',
           provider_ref: null,
           status: 'succeeded',
-          workspace_id: 'ws_quick_chat',
+          workspace_id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
         });
 
         const usage = workspaceDb.sqlite
@@ -2626,7 +2958,7 @@ describe('quick chat app API', () => {
           provider_ref: 'ollama',
           quantity: 12,
           unit: 'tokens',
-          workspace_id: 'ws_quick_chat',
+          workspace_id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
         });
         expect(usage?.provider_ref).toBe('ollama');
       } finally {

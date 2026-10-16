@@ -1,3 +1,4 @@
+import { AccessTokenIdSchema, UserIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { addRawSecretIssues } from './raw-secrets.js';
 
@@ -14,15 +15,15 @@ export const OpenKitAccessTokenStatusSchema = z.enum(['active', 'expired', 'revo
 /** Redacted OpenKit access-token read model. */
 export const OpenKitAccessTokenRecordSchema = z
   .object({
-    tokenId: z.string().min(1),
-    ownerUserId: z.string().min(1),
+    tokenId: AccessTokenIdSchema,
+    ownerUserId: UserIdSchema,
     scope: OpenKitAccessTokenScopeSchema,
-    workspaceIds: z.array(z.string().min(1)),
+    workspaceIds: z.array(WorkspaceIdSchema),
     status: OpenKitAccessTokenStatusSchema,
     issuedAt: z.string().datetime(),
     expiresAt: z.string().datetime(),
     revokedAt: z.string().datetime().nullable(),
-    predecessorTokenId: z.string().min(1).nullable(),
+    predecessorTokenId: AccessTokenIdSchema.nullable(),
     rotatedGraceExpiresAt: z.string().datetime().nullable(),
     lastUsedAt: z.string().datetime().nullable(),
     lastUsedChannel: z.string().min(1).nullable(),
@@ -37,9 +38,9 @@ export const OpenKitAccessTokenRecordSchema = z
 export const CreateOpenKitAccessTokenRequestSchema = z
   .object({
     scope: OpenKitAccessTokenScopeSchema,
-    workspaceIds: z.array(z.string().min(1)).default([]),
+    workspaceIds: z.array(WorkspaceIdSchema).default([]),
     expiresAt: z.string().datetime(),
-    ownerUserId: z.string().min(1).optional(),
+    ownerUserId: UserIdSchema.optional(),
   })
   .strict();
 
@@ -95,7 +96,7 @@ export const RotateOpenKitAccessTokenResponseSchema = z
 export const ListMyAdminAccessTokensResponseSchema = z
   .object({
     items: z.array(OpenKitAccessTokenRecordSchema),
-    defaultTokenId: z.string().min(1).nullable(),
+    defaultTokenId: AccessTokenIdSchema.nullable(),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -105,7 +106,7 @@ export const ListMyAdminAccessTokensResponseSchema = z
 /** Request to select one owned usable server-admin token as the effective default. */
 export const SetMyAdminAccessTokenDefaultRequestSchema = z
   .object({
-    tokenId: z.string().min(1),
+    tokenId: AccessTokenIdSchema,
   })
   .strict();
 
@@ -116,7 +117,7 @@ export const SetMyAdminAccessTokenDefaultResponseSchema = ListMyAdminAccessToken
 export const ConsumeOpenKitBootstrapTokenRequestSchema = z
   .object({
     token: z.string().regex(/^okt_[A-Za-z0-9_-]+$/),
-    ownerUserId: z.string().min(1),
+    ownerUserId: UserIdSchema,
     displayName: z.string().min(1),
     email: z.string().email(),
     password: z.string().min(8),
@@ -141,7 +142,7 @@ export const AuthSignUpEmailRequestSchema = AuthEmailRequestSchema.extend({
 /** Better Auth user payload returned to the browser. */
 export const AuthUserSchema = z
   .object({
-    id: z.string().min(1),
+    id: UserIdSchema,
     email: z.string().email(),
     name: z.string().min(1),
     image: z.string().nullable().optional(),

@@ -1,4 +1,5 @@
-import { index, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
+import { check, index, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 import type { VaultReferenceOwnerScope } from './vault-references.js';
 
@@ -16,6 +17,9 @@ export type VaultGrantLifetime =
 /** Durable vault grant lifecycle statuses. */
 export type VaultGrantStatus = 'active' | 'revoked' | 'expired';
 
+/** Immutable effect authority assigned by the issuer, never inferred from the ID. */
+export type VaultGrantIssuance = 'target' | 'imported-history';
+
 /**
  * Non-secret vault grant metadata.
  */
@@ -24,6 +28,8 @@ export const vaultGrants = sqliteTable(
   {
     /** Stable vault grant id. */
     grantId: text('grant_id').primaryKey().notNull(),
+    /** Required provenance; portable history cannot regain live issuance. */
+    issuance: text('issuance').$type<VaultGrantIssuance>().notNull(),
     /** Vault reference authorized by this grant. */
     vaultReferenceId: text('vault_reference_id').notNull(),
     /** Scope that owns this grant metadata. */
@@ -56,6 +62,7 @@ export const vaultGrants = sqliteTable(
     expiresAt: text('expires_at'),
   },
   (table) => [
+    check('vault_grants_issuance_check', sql`${table.issuance} IN ('target', 'imported-history')`),
     index('vault_grants_reference_idx').on(table.vaultReferenceId, table.status),
     index('vault_grants_owner_idx').on(
       table.ownerScope,

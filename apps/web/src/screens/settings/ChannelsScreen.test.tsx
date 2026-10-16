@@ -1,4 +1,5 @@
 import type { CoreClient } from '@openkit/core-client';
+import { allocateEntityId } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, renderHook, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -8,6 +9,10 @@ import { CoreClientProvider } from '../../app/core-client';
 import { surfaceById } from '../../app/surfaces';
 import { accountChannelsKey, useAccountMutation } from '../account/session';
 import { ChannelsScreen } from './ChannelsScreen';
+
+const workspaceId = allocateEntityId('ws');
+const threadId = allocateEntityId('th');
+const recipientUserId = allocateEntityId('usr');
 
 function client(operations: Partial<CoreClient['operations']> = {}) {
   return {
@@ -92,7 +97,7 @@ describe('Discord settings', () => {
       binding: { discordUserId: 'prior-account', pairedAt: 1 },
     });
     queryClient.setQueryData(oldDeliveriesKey, {
-      items: [{ appPath: '/chat/ws_private/th_private' }],
+      items: [{ appPath: `/chat/${workspaceId}/${threadId}` }],
     });
     const pairing = queryClient.getMutationCache().build(queryClient, {
       mutationKey: [...accountChannelsKey, 'pair'],
@@ -172,15 +177,15 @@ describe('Discord settings', () => {
   it('requires the exact failed attempt for retry and offers no resend after an unknown outcome', async () => {
     const base = {
       source: {
-        workspaceId: 'ws_channels',
-        threadId: 'th_channels',
+        workspaceId,
+        threadId,
         requestId: 'req_channels',
         kind: 'approval-request',
       },
-      recipientUserId: 'user_local',
+      recipientUserId,
       channel: 'discord',
       createdAt: '2026-10-16T00:00:00Z',
-      appPath: '/tasks/ws_channels/th_channels?requestId=req_channels',
+      appPath: `/tasks/${workspaceId}/${threadId}?requestId=req_channels`,
     };
     const value = client({
       'channel.discord.status': vi.fn().mockResolvedValue({

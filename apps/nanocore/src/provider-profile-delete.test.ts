@@ -12,7 +12,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { resolveLogicalModel } from './llm/logical-models.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
@@ -21,6 +20,7 @@ import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { createVaultReference, getVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
@@ -62,22 +62,22 @@ function fixture(subscription = false) {
         vendor: 'openai',
         models: ['gpt-5.1'],
         baseUrl: 'https://provider.example.test/v1',
-        secretRef: 'vault://removed_key',
+        secretRef: 'vault://vault_00000000-0000-7d1d-9a06-27e8a2468878',
       };
   writeFileSync(join(dataRoot, 'config', id), JSON.stringify(profile));
   if (!subscription) {
     backend.store({
-      referenceId: 'removed_key',
+      referenceId: 'vault_00000000-0000-7d1d-9a06-27e8a2468878',
       material: 'test-only-key',
       metadata: { ownerScope: 'server' },
     });
     createVaultReference(coreDb, {
-      referenceId: 'removed_key',
+      referenceId: 'vault_00000000-0000-7d1d-9a06-27e8a2468878',
       ownerScope: 'server',
       displayName: 'Removed',
       secretKind: 'provider-api-key',
       backendKind: backend.kind,
-      backendLocator: `${backend.kind}://server/vault/removed_key`,
+      backendLocator: `${backend.kind}://server/vault/vault_00000000-0000-7d1d-9a06-27e8a2468878`,
     });
   }
   const store = createDemoStore({ dataRoot });
@@ -106,7 +106,7 @@ function fixture(subscription = false) {
         { id: 'assistant-default', roleId: 'assistant', preferredLogicalModelId: 'referenced' },
       ],
     },
-    'workspaces/ws_demo/config/workspace.jsonc': {
+    'workspaces/ws_00000000-0000-7000-8000-000000000001/config/workspace.jsonc': {
       schemaVersion: 1,
       workspace: {
         name: 'Reference test',
@@ -187,7 +187,9 @@ describe('provider profile removal', () => {
     expect(response.status).toBe(204);
     expect(await response.text()).toBe('');
     expect(existsSync(join(f.dataRoot, 'config', f.id))).toBe(false);
-    expect(getVaultReference(f.coreDb, 'removed_key')?.status).toBe('revoked');
+    expect(getVaultReference(f.coreDb, 'vault_00000000-0000-7d1d-9a06-27e8a2468878')?.status).toBe(
+      'revoked'
+    );
     expect(f.backend.listReferences()[0]?.revoked).toBe(true);
   });
   it('rejects a stale revision before changing either effect domain', async () => {
@@ -197,7 +199,9 @@ describe('provider profile removal', () => {
     expect(response.status).toBe(409);
     expect((await response.json()).code).toBe('config_revision_conflict');
     expect(readFileSync(join(f.dataRoot, 'config', f.id))).toEqual(before);
-    expect(getVaultReference(f.coreDb, 'removed_key')?.status).toBe('active');
+    expect(getVaultReference(f.coreDb, 'vault_00000000-0000-7d1d-9a06-27e8a2468878')?.status).toBe(
+      'active'
+    );
     expect(f.backend.listReferences()[0]?.revoked).toBe(false);
   });
   it('preserves all authored references and keeps the active registry until restart', async () => {
@@ -262,9 +266,9 @@ describe('provider profile removal', () => {
   it('rejects a workspace token before any file or Vault effect', async () => {
     const f = fixture();
     const token = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
     const app = createApp({
@@ -306,7 +310,9 @@ describe('provider profile removal', () => {
     expect(response.status).toBe(409);
     expect((await response.json()).code).toBe('vault_mutation_failed');
     expect(readFileSync(join(f.dataRoot, 'config', f.id))).toEqual(before);
-    expect(getVaultReference(f.coreDb, 'removed_key')?.status).toBe('active');
+    expect(getVaultReference(f.coreDb, 'vault_00000000-0000-7d1d-9a06-27e8a2468878')?.status).toBe(
+      'active'
+    );
   });
   it('reports a Core failure after backend revocation without restoring material or removing the file', async () => {
     const f = fixture();
@@ -317,7 +323,9 @@ describe('provider profile removal', () => {
     expect(response.status).toBe(409);
     expect((await response.json()).code).toBe('vault_mutation_failed');
     expect(existsSync(join(f.dataRoot, 'config', f.id))).toBe(true);
-    expect(getVaultReference(f.coreDb, 'removed_key')?.status).toBe('active');
+    expect(getVaultReference(f.coreDb, 'vault_00000000-0000-7d1d-9a06-27e8a2468878')?.status).toBe(
+      'active'
+    );
     expect(f.backend.listReferences()[0]?.revoked).toBe(true);
   });
 

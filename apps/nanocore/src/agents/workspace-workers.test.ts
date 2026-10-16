@@ -9,7 +9,6 @@ import {
 import { WorkspaceResourcesResponseSchema } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import * as usageLedger from '../capability/usage-ledger.js';
 import { recordUsage, startCapabilityCall } from '../capability/usage-ledger.js';
 import { FsStore } from '../lib/store.js';
@@ -20,6 +19,7 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -45,7 +45,7 @@ function createCoreDb(): CoreDb {
  * @returns Migrated workspace database handle.
  */
 function openTestWorkspaceDb(coreDb: CoreDb): WorkspaceDb {
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }
@@ -67,7 +67,7 @@ function createAuthorizedApp(
   for (const workspace of store.listWorkspaces()) {
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
   }
@@ -102,12 +102,12 @@ function createCurrentWorkerSession(
   }
 ) {
   const turn = store.createTurn(
-    'ws_demo',
+    'ws_00000000-0000-7000-8000-000000000001',
     input.threadId,
     'Worker turn',
     {
       kind: 'user',
-      id: 'user_local',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
     },
     null,
     { startedAt: timestamp, turnId: input.turnId }
@@ -120,7 +120,7 @@ function createCurrentWorkerSession(
     status: input.status ?? 'busy',
     threadId: input.threadId,
     updatedAt: timestamp,
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   store.updateTurn(turn.id, { agentId: input.agentId, agentSessionId: session.id });
   return session;
@@ -186,7 +186,7 @@ function recordWorkerPackage(
       agentSessionId: input.sessionId,
       backend: { kind: 'openshell' },
       requestId: `req_${input.turnId}`,
-      triggerActor: { kind: 'user', id: 'user_local' },
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       turn: {
         completedAt: null,
         configVersion: null,
@@ -197,8 +197,8 @@ function recordWorkerPackage(
         startedAt: timestamp,
         status: 'running',
         threadId: input.threadId,
-        triggerActor: { kind: 'user', id: 'user_local' },
-        workspaceId: 'ws_demo',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       },
       turnInput: 'Run the Worker',
       workspaceCwd: '/secret/host/path',
@@ -254,7 +254,7 @@ function recordSessionLlmUsage(
   const call = startCapabilityCall({
     agentId: input.agentId,
     agentSessionId: input.sessionId,
-    authorityActor: { kind: 'user', id: 'user_local' },
+    authorityActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     callId: input.callId,
     capabilityId: 'llm.responses',
     family: input.family ?? 'llm',
@@ -265,7 +265,7 @@ function recordSessionLlmUsage(
     threadId: input.threadId,
     turnId: input.turnId,
     workspaceDb,
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   recordUsage({
     call,
@@ -288,10 +288,13 @@ describe('worker.list operation', () => {
   it('keeps catalog-only supply and internal-role Turns out of current Worker inventory', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const thread = store.createThread('ws_demo', 'Assistant conversation');
-    const turn = store.createTurn('ws_demo', thread.id, 'Hello', {
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Assistant conversation'
+    );
+    const turn = store.createTurn('ws_00000000-0000-7000-8000-000000000001', thread.id, 'Hello', {
       kind: 'user',
-      id: 'user_local',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     store.updateTurn(turn.id, { agentId: 'quick-chat' });
     const app = createAuthorizedApp(coreDb, store);
@@ -304,20 +307,23 @@ describe('worker.list operation', () => {
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ workspaceId: 'ws_demo' }),
+            body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
           }
         )
       );
       const resourcesRes = await app.request('/api/app/operations/workspace.resources', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ workspaceId: 'ws_demo' }),
+        body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
       });
       const workers = WorkspaceWorkersResponseSchema.parse(await workersRes.json());
       const resources = WorkspaceResourcesResponseSchema.parse(await resourcesRes.json());
 
       expect(workersRes.status).toBe(200);
-      expect(workers).toEqual({ workspaceId: 'ws_demo', items: [] });
+      expect(workers).toEqual({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        items: [],
+      });
       expect(resources.agents.map((agent) => agent.id)).toContain('agent_codex_host');
     } finally {
       coreDb.sqlite.close();
@@ -327,45 +333,57 @@ describe('worker.list operation', () => {
   it('keeps a removed-catalog Agent visible and omits terminal predecessors, prelaunch, idle history, and incomplete lineage', async () => {
     let coreDb = createCoreDb();
     let store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const liveThread = store.createThread('ws_demo', 'Removed catalog Worker ghp_publicFixture');
-    const closedThread = store.createThread('ws_demo', 'Closed predecessor');
-    const idleThread = store.createThread('ws_demo', 'Idle Worker');
-    const prelaunchThread = store.createThread('ws_demo', 'Prelaunch Worker');
-    const halfNullThread = store.createThread('ws_demo', 'Half null Worker');
+    const liveThread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Removed catalog Worker ghp_publicFixture'
+    );
+    const closedThread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Closed predecessor'
+    );
+    const idleThread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Idle Worker');
+    const prelaunchThread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Prelaunch Worker'
+    );
+    const halfNullThread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Half null Worker'
+    );
     const liveSession = createCurrentWorkerSession(store, {
       agentId: 'agent_removed_codex',
-      sessionId: 'as_removed_live',
+      sessionId: 'as_00000000-0000-7285-8900-19db303a73c0',
       threadId: liveThread.id,
-      turnId: 'turn_removed_live',
+      turnId: 'tu_00000000-0000-70ac-880b-8087adbcb6c1',
     });
     store.createAgentSession({
       agentId: 'agent_removed_codex',
       createdAt: timestamp,
-      id: 'as_closed_predecessor',
+      id: 'as_00000000-0000-70b4-8d5f-3842173f113d',
       message: null,
       status: 'closed',
       threadId: closedThread.id,
       updatedAt: timestamp,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const idleSession = createCurrentWorkerSession(store, {
       agentId: 'agent_removed_codex',
-      sessionId: 'as_idle_worker',
+      sessionId: 'as_00000000-0000-780a-a435-d0f1f7a9c9b2',
       status: 'idle',
       threadId: idleThread.id,
-      turnId: 'turn_idle_worker',
+      turnId: 'tu_00000000-0000-7e72-a456-0270c65934a6',
     });
     const prelaunchSession = createCurrentWorkerSession(store, {
       agentId: 'agent_removed_codex',
-      sessionId: 'as_prelaunch_worker',
+      sessionId: 'as_00000000-0000-70f1-aa0b-7c49c5a815d5',
       threadId: prelaunchThread.id,
-      turnId: 'turn_prelaunch_worker',
+      turnId: 'tu_00000000-0000-7a5b-bdc1-1800ee3a79ba',
     });
     const halfNullSession = createCurrentWorkerSession(store, {
       agentId: 'agent_removed_codex',
-      sessionId: 'as_half_null_worker',
+      sessionId: 'as_00000000-0000-7176-8240-cb8e2db56a9b',
       threadId: halfNullThread.id,
-      turnId: 'turn_half_null_worker',
+      turnId: 'tu_00000000-0000-7420-9535-a55451a2a2f3',
     });
     const workspaceDb = openTestWorkspaceDb(coreDb);
     try {
@@ -376,7 +394,7 @@ describe('worker.list operation', () => {
         preferredLogicalModelId: 'openai/gpt-preferred',
         sessionId: liveSession.id,
         threadId: liveThread.id,
-        turnId: 'turn_removed_live',
+        turnId: 'tu_00000000-0000-70ac-880b-8087adbcb6c1',
       });
       store.updateAgentSession(liveSession.id, { environmentPackageSnapshotId: snapshotId });
       upsertWorkerCheckpoint(workspaceDb, {
@@ -388,9 +406,9 @@ describe('worker.list operation', () => {
         stage: 'running_worker',
         taskId: 'task_removed',
         threadId: liveThread.id,
-        turnId: 'turn_removed_live',
+        turnId: 'tu_00000000-0000-70ac-880b-8087adbcb6c1',
         workerSessionId: liveSession.id,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       upsertWorkerCheckpoint(workspaceDb, {
         goalId: 'goal_prelaunch',
@@ -401,9 +419,9 @@ describe('worker.list operation', () => {
         stage: 'preparing',
         taskId: 'task_prelaunch',
         threadId: prelaunchThread.id,
-        turnId: 'turn_prelaunch_worker',
+        turnId: 'tu_00000000-0000-7a5b-bdc1-1800ee3a79ba',
         workerSessionId: null,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       upsertWorkerCheckpoint(workspaceDb, {
         goalId: 'goal_half',
@@ -414,9 +432,9 @@ describe('worker.list operation', () => {
         stage: 'running_worker',
         taskId: null,
         threadId: halfNullThread.id,
-        turnId: 'turn_half_null_worker',
+        turnId: 'tu_00000000-0000-7420-9535-a55451a2a2f3',
         workerSessionId: halfNullSession.id,
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
     } finally {
       workspaceDb.sqlite.close();
@@ -424,8 +442,8 @@ describe('worker.list operation', () => {
     ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: 'ws_demo',
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     coreDb.sqlite.close();
     coreDb = openCoreDb(coreDb.dataRoot);
@@ -449,7 +467,7 @@ describe('worker.list operation', () => {
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ workspaceId: 'ws_demo' }),
+            body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
           }
         )
       );
@@ -457,7 +475,7 @@ describe('worker.list operation', () => {
       const byThread = Object.fromEntries(body.items.map((item) => [item.threadId, item]));
 
       expect(response.status).toBe(200);
-      expect(store.getThread('ws_demo', liveThread.id).name).toBe(
+      expect(store.getThread('ws_00000000-0000-7000-8000-000000000001', liveThread.id).name).toBe(
         'Removed catalog Worker ghp_publicFixture'
       );
       expect(byThread[liveThread.id]).toMatchObject({
@@ -468,7 +486,7 @@ describe('worker.list operation', () => {
           goalId: 'goal_removed',
           kind: 'goal',
           taskId: 'task_removed',
-          turnId: 'turn_removed_live',
+          turnId: 'tu_00000000-0000-70ac-880b-8087adbcb6c1',
         },
       });
       expect(byThread[closedThread.id]).toBeUndefined();
@@ -479,8 +497,8 @@ describe('worker.list operation', () => {
       expect(byThread[idleThread.id]?.work).toEqual({ kind: 'none' });
       expect(byThread[prelaunchThread.id]?.work).toEqual({ kind: 'none' });
       expect(byThread[halfNullThread.id]?.work).toEqual({ kind: 'unavailable' });
-      expect(idleSession.id).toBe('as_idle_worker');
-      expect(prelaunchSession.id).toBe('as_prelaunch_worker');
+      expect(idleSession.id).toBe('as_00000000-0000-780a-a435-d0f1f7a9c9b2');
+      expect(prelaunchSession.id).toBe('as_00000000-0000-70f1-aa0b-7c49c5a815d5');
     } finally {
       coreDb.sqlite.close();
     }
@@ -489,22 +507,25 @@ describe('worker.list operation', () => {
   it('reports missing Turns and conflicting checkpoint session lineage as unavailable', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const thread = store.createThread('ws_demo', 'Incomplete worker');
+    const thread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Incomplete worker'
+    );
     const session = createCurrentWorkerSession(store, {
       agentId: 'agent_codex_host',
-      sessionId: 'as_incomplete',
+      sessionId: 'as_00000000-0000-70c0-addb-3f25fbfb971f',
       threadId: thread.id,
-      turnId: 'turn_incomplete',
+      turnId: 'tu_00000000-0000-7ac3-97b3-02904dd64098',
     });
     const app = createAuthorizedApp(coreDb, store);
     const workspaceDb = openTestWorkspaceDb(coreDb);
     try {
       for (const [turnId, workerSessionId] of [
-        ['turn_missing', session.id],
-        ['turn_incomplete', 'as_other'],
+        ['tu_00000000-0000-76d4-be96-fe2dccab50f4', session.id],
+        ['tu_00000000-0000-7ac3-97b3-02904dd64098', 'as_00000000-0000-7436-9246-ac6dd3ca3fe4'],
       ]) {
         upsertWorkerCheckpoint(workspaceDb, {
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: thread.id,
           turnId: turnId!,
           workerSessionId: workerSessionId!,
@@ -522,7 +543,7 @@ describe('worker.list operation', () => {
             {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ workspaceId: 'ws_demo' }),
+              body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
             }
           )
         );
@@ -531,7 +552,12 @@ describe('worker.list operation', () => {
         expect(body.items.find((item) => item.threadId === thread.id)?.work).toEqual({
           kind: 'unavailable',
         });
-        clearWorkerCheckpoint(workspaceDb, 'ws_demo', thread.id, turnId!);
+        clearWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          thread.id,
+          turnId!
+        );
       }
     } finally {
       workspaceDb.sqlite.close();
@@ -542,36 +568,39 @@ describe('worker.list operation', () => {
   it('labels package preference and last-used model separately and restricts usage without audit.read', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const thread = store.createThread('ws_demo', 'Model Worker');
-    const predecessorThread = store.createThread('ws_demo', 'Predecessor Worker');
+    const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Model Worker');
+    const predecessorThread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Predecessor Worker'
+    );
     const session = createCurrentWorkerSession(store, {
       agentId: 'agent_codex_host',
-      sessionId: 'as_model_current',
+      sessionId: 'as_00000000-0000-7c5d-93c5-ea2808ca86f7',
       status: 'idle',
       threadId: thread.id,
-      turnId: 'turn_model_current',
+      turnId: 'tu_00000000-0000-7b64-ab5a-4855db181097',
     });
     store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: timestamp,
-      id: 'as_model_predecessor',
+      id: 'as_00000000-0000-7709-bb38-c94cb60bb065',
       message: null,
       status: 'closed',
       threadId: predecessorThread.id,
       updatedAt: timestamp,
-      workspaceId: 'ws_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const predecessorTurn = store.createTurn(
-      'ws_demo',
+      'ws_00000000-0000-7000-8000-000000000001',
       predecessorThread.id,
       'Predecessor turn',
-      { kind: 'user', id: 'user_local' },
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
-      { startedAt: timestamp, turnId: 'turn_model_predecessor' }
+      { startedAt: timestamp, turnId: 'tu_00000000-0000-74fc-b0da-01927fa8e961' }
     );
     store.updateTurn(predecessorTurn.id, {
       agentId: 'agent_codex_host',
-      agentSessionId: 'as_model_predecessor',
+      agentSessionId: 'as_00000000-0000-7709-bb38-c94cb60bb065',
     });
     const workspaceDb = openTestWorkspaceDb(coreDb);
     try {
@@ -581,30 +610,30 @@ describe('worker.list operation', () => {
         preferredLogicalModelId: 'openai/gpt-preferred',
         sessionId: session.id,
         threadId: thread.id,
-        turnId: 'turn_model_current',
+        turnId: 'tu_00000000-0000-7b64-ab5a-4855db181097',
       });
       store.updateAgentSession(session.id, { environmentPackageSnapshotId: snapshotId });
       recordSessionLlmUsage(workspaceDb, {
         agentId: 'agent_codex_host',
-        callId: 'cap_current_llm',
+        callId: 'cap_00000000-0000-7682-9329-8d28c3eddeef',
         modelId: 'openai/gpt-last-used',
         recordedAt: '2026-09-17T02:01:00.000Z',
         requestId: '00000000-0000-4000-8000-000000000201',
         sessionId: session.id,
         threadId: thread.id,
-        turnId: 'turn_model_current',
-        usageId: 'use_current_llm',
+        turnId: 'tu_00000000-0000-7b64-ab5a-4855db181097',
+        usageId: 'use_00000000-0000-720e-a059-ea2496d083a3',
       });
       recordSessionLlmUsage(workspaceDb, {
         agentId: 'agent_codex_host',
-        callId: 'cap_predecessor_llm',
+        callId: 'cap_00000000-0000-70c7-8f0b-db044f2644fa',
         modelId: 'openai/gpt-predecessor',
         recordedAt: '2026-09-17T02:02:00.000Z',
         requestId: '00000000-0000-4000-8000-000000000202',
-        sessionId: 'as_model_predecessor',
+        sessionId: 'as_00000000-0000-7709-bb38-c94cb60bb065',
         threadId: predecessorThread.id,
-        turnId: 'turn_model_predecessor',
-        usageId: 'use_predecessor_llm',
+        turnId: 'tu_00000000-0000-74fc-b0da-01927fa8e961',
+        usageId: 'use_00000000-0000-7dc9-9cba-0a11208bcfd3',
       });
     } finally {
       workspaceDb.sqlite.close();
@@ -615,7 +644,7 @@ describe('worker.list operation', () => {
       .prepare(
         `INSERT INTO users
           (id, display_name, email, email_verified, created_at, updated_at, kind)
-         VALUES ('user_viewer', 'Viewer', 'viewer-workers@example.com', false, ?, ?, 'human')`
+         VALUES ('usr_00000000-0000-7b43-8df8-fd24a5ccdbe8', 'Viewer', 'viewer-workers@example.com', false, ?, ?, 'human')`
       )
       .run(now, now);
     coreDb.sqlite
@@ -623,14 +652,14 @@ describe('worker.list operation', () => {
         `INSERT INTO workspace_members (
           workspace_id, user_id, status, access_level, invitation_id,
           joined_at, removed_at, revision, created_at, updated_at
-        ) VALUES ('ws_demo', 'user_viewer', 'active', 'viewer', NULL, ?, NULL, 1, ?, ?)`
+        ) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8', 'active', 'viewer', NULL, ?, NULL, 1, ?, ?)`
       )
       .run(new Date(now).toISOString(), new Date(now).toISOString(), new Date(now).toISOString());
     const viewerToken = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'user_viewer',
+      ownerUserId: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
       scope: 'workspace-readonly',
-      workspaceIds: ['ws_demo'],
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
     });
     const viewerApp = createApp({
       agentManifests: [
@@ -658,7 +687,7 @@ describe('worker.list operation', () => {
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ workspaceId: 'ws_demo' }),
+            body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
           }
         )
       );
@@ -676,7 +705,7 @@ describe('worker.list operation', () => {
               ...{ authorization: `Bearer ${viewerToken.secret}` },
               'content-type': 'application/json',
             },
-            body: JSON.stringify({ workspaceId: 'ws_demo' }),
+            body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
           }
         )
       );
@@ -724,20 +753,24 @@ it('admits current administrators to foreign private Threads under the accepted 
   const coreDb = createCoreDb();
   const store = createDemoStore({ dataRoot: coreDb.dataRoot });
   const foreign = store.createThread(
-    'ws_demo',
+    'ws_00000000-0000-7000-8000-000000000001',
     'Foreign private Worker',
     undefined,
     'conversation',
-    { visibility: 'private', privateOwnerUserId: 'user_foreign' }
+    { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' }
   );
   createCurrentWorkerSession(store, {
     agentId: 'agent_codex_host',
-    sessionId: 'as_foreign_private',
+    sessionId: 'as_00000000-0000-7a52-acda-ab0e51b27751',
     threadId: foreign.id,
-    turnId: 'turn_foreign_private',
+    turnId: 'tu_00000000-0000-75a4-a0e0-d617a6fe00cb',
   });
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
   const app = createApp({
     coreDb,
     dataRoot: coreDb.dataRoot,
@@ -750,15 +783,15 @@ it('admits current administrators to foreign private Threads under the accepted 
     agentManifests: [createTestAgentSetup().manifest],
   });
   const admin = createOpenKitAccessTokenRecord(coreDb, {
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: 'server-admin',
     workspaceIds: [],
     expiresAt: '2999-01-01T00:00:00.000Z',
   });
   const member = createOpenKitAccessTokenRecord(coreDb, {
-    ownerUserId: 'user_local',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: 'workspace',
-    workspaceIds: ['ws_demo'],
+    workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
     expiresAt: '2999-01-01T00:00:00.000Z',
   });
   try {
@@ -769,13 +802,16 @@ it('admits current administrators to foreign private Threads under the accepted 
           {},
           {
             headers: { authorization: `Bearer ${secret}` },
-            body: JSON.stringify({ workspaceId: 'ws_demo' }),
+            body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
           }
         )
       );
     const hidden = await http(member.secret);
     expect(hidden.status).toBe(200);
-    expect(await hidden.json()).toEqual({ items: [], workspaceId: 'ws_demo' });
+    expect(await hidden.json()).toEqual({
+      items: [],
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const visible = await http(admin.secret);
     expect(visible.status).toBe(200);
     const expected = WorkspaceWorkersResponseSchema.parse(await visible.json());
@@ -802,7 +838,10 @@ it('admits current administrators to foreign private Threads under the accepted 
         method: 'tools/call',
         params: {
           name: 'call',
-          arguments: { operation: 'worker.list', input: { workspaceId: 'ws_demo' } },
+          arguments: {
+            operation: 'worker.list',
+            input: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+          },
         },
       }),
     });

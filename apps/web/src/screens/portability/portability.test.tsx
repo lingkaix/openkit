@@ -38,18 +38,26 @@ const VAULT_MATERIAL_BASE64 = btoa(
 );
 const ASCII_VAULT_MATERIAL = 'vault-material';
 const ASCII_VAULT_MATERIAL_BASE64 = btoa(ASCII_VAULT_MATERIAL);
-const WORKSPACE = { id: 'ws1', name: 'Market research', kind: 'general' } as const;
-const WORKSPACE_B = { id: 'ws2', name: 'Second workspace', kind: 'general' } as const;
-const EXPORTED_ABSENT_ID = 'ws_exported_absent';
+const WORKSPACE = {
+  id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  name: 'Market research',
+  kind: 'general',
+} as const;
+const WORKSPACE_B = {
+  id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+  name: 'Second workspace',
+  kind: 'general',
+} as const;
+const EXPORTED_ABSENT_ID = 'ws_00000000-0000-73f4-8366-3b35ef8cc8de';
 const QUICK_CHAT_WORKSPACE = {
-  id: 'ws_quick_chat',
+  id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
   name: 'Quick Chat',
   kind: 'quick-chat',
 } as const;
-const EXPORT_ID = 'wsexp_1';
-const EXPORT_ID_B = 'wsexp_2';
-const LOCAL_SOURCE_DEPLOYMENT_ID = 'dep_local';
-const EXTERNAL_SOURCE_DEPLOYMENT_ID = 'dep_source';
+const EXPORT_ID = 'wsexp_00000000-0000-7569-b23e-40ca1402f214';
+const EXPORT_ID_B = 'wsexp_00000000-0000-7a9c-98db-a5d2c980ee99';
+const LOCAL_SOURCE_DEPLOYMENT_ID = 'dep_00000000-0000-7562-9a88-afe7e367ea27';
+const EXTERNAL_SOURCE_DEPLOYMENT_ID = 'dep_00000000-0000-7737-8fe7-61ca07c79d45';
 const WORKSPACE_EXPORT_FILE_BYTES = serializeExportJson({
   id: WORKSPACE.id,
   name: WORKSPACE.name,
@@ -65,7 +73,11 @@ const ARCHIVE_BYTES = new Uint8Array([40, 181, 47, 253]);
 const ARCHIVE_FILE_NAME = `${WORKSPACE.id}-${EXPORT_ID}.openkit-workspace.tar.zst`;
 const SECOND_ARCHIVE_FILE_NAME = `${WORKSPACE_B.id}-${EXPORT_ID_B}.openkit-workspace.tar.zst`;
 const CONTENT_INVENTORY = [
-  { path: 'records/workspace-record.json', digest: FILE_DIGEST, bytes: FILE_BYTES },
+  {
+    path: 'records/ws_00000000-0000-70f9-a923-618c488a4651.json',
+    digest: FILE_DIGEST,
+    bytes: FILE_BYTES,
+  },
 ];
 const CONTENT_DIGEST = 'sha256:0cd2fa898af279bb1179b690909444b73031fa36d246fa4037346c598ca2c9f5';
 const DRY_RUN_REQUEST = WorkspaceImportDryRunRequestSchema.parse({
@@ -107,7 +119,7 @@ const MANIFEST = {
   sourceDeploymentId: LOCAL_SOURCE_DEPLOYMENT_ID,
   workspaceId: WORKSPACE.id,
   exportCreatedAt: TIMESTAMP,
-  exportFormatVersion: 2 as const,
+  exportFormatVersion: 3 as const,
   contentInventory: CONTENT_INVENTORY,
 };
 
@@ -133,13 +145,13 @@ const CHANGED_EXPORT_MANIFEST = {
 const VERIFICATION = {
   fileCount: 1,
   totalBytes: FILE_BYTES,
-  checkedFiles: ['records/workspace-record.json'],
+  checkedFiles: ['records/ws_00000000-0000-70f9-a923-618c488a4651.json'],
 };
 
 const COLLISION = {
   status: 'collides' as const,
   workspaceId: WORKSPACE.id,
-  suggestedWorkspaceId: 'ws_imported_ws1',
+  suggestedWorkspaceId: 'ws_00000000-0000-7ca9-b277-954ac43692f1',
 };
 
 const AVAILABLE_COLLISION = {
@@ -168,7 +180,7 @@ const EXPORT_RESULT = WorkspaceExportResponseSchema.parse({
   manifest: MANIFEST,
   fileCount: 1,
   totalBytes: FILE_BYTES,
-  checkedFiles: ['records/workspace-record.json'],
+  checkedFiles: ['records/ws_00000000-0000-70f9-a923-618c488a4651.json'],
 });
 
 const DRY_RUN = WorkspaceImportDryRunResponseSchema.parse({
@@ -316,7 +328,7 @@ const UNBOUND_REFERENCE = {
   backendKind: 'encrypted-file' as const,
   currentVersion: 0,
   ownerScope: 'workspace' as const,
-  referenceId: 'vault_ref_imported',
+  referenceId: 'vault_00000000-0000-767a-8491-216d8363929d',
   secretKind: 'repository-credential',
   status: 'unbound' as const,
   workspaceId: WORKSPACE.id,
@@ -324,7 +336,7 @@ const UNBOUND_REFERENCE = {
 
 const UNBOUND_SAME_KIND = {
   ...UNBOUND_REFERENCE,
-  referenceId: 'vault_ref_imported_peer',
+  referenceId: 'vault_00000000-0000-7527-84d6-f93e78bfd616',
 };
 
 const REBOUND_REFERENCE = {
@@ -475,7 +487,7 @@ function makeClient(
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
-            ownerUserId: 'user_local',
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
         })
@@ -490,7 +502,7 @@ function makeClient(
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
-                ownerUserId: 'user_local',
+                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
                 registryRevision: 1,
               })),
             })
@@ -846,10 +858,10 @@ describe('Portability', () => {
     });
     expect(isSurfaceLive(surface!)).toBe(true);
 
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_stale' });
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-72a2-a815-916a363a02e2' });
     const listWorkspaces = vi
       .fn()
-      .mockRejectedValueOnce(new Error('workspace-private failure'))
+      .mockRejectedValueOnce(new Error('ws_00000000-0000-7b14-af76-27f19ffc88fa failure'))
       .mockResolvedValue({
         items: [WORKSPACE].map((workspace) => ({
           membershipStatus: 'active' as const,
@@ -857,7 +869,7 @@ describe('Portability', () => {
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       });
@@ -869,7 +881,7 @@ describe('Portability', () => {
     expect(screen.getByRole('textbox', { name: 'Export ID' })).toBeEnabled();
     const loadAlert = await screen.findByRole('alert');
     expect(loadAlert).toHaveTextContent(/couldn't load workspaces/i);
-    expect(loadAlert).not.toHaveTextContent('workspace-private failure');
+    expect(loadAlert).not.toHaveTextContent('ws_00000000-0000-7b14-af76-27f19ffc88fa failure');
     expect(screen.getByRole('heading', { level: 1, name: 'Portability' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Export workspace' })).not.toBeInTheDocument();
     expect(screen.queryByText(/no project workspace selected/i)).not.toBeInTheDocument();
@@ -937,11 +949,11 @@ describe('Portability', () => {
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       })
-      .mockRejectedValueOnce(new Error('workspace-private failure'))
+      .mockRejectedValueOnce(new Error('ws_00000000-0000-7b14-af76-27f19ffc88fa failure'))
       .mockResolvedValue({
         items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
           membershipStatus: 'active' as const,
@@ -949,7 +961,7 @@ describe('Portability', () => {
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       });
@@ -962,7 +974,7 @@ describe('Portability', () => {
     await queryClient.refetchQueries({ exact: true, queryKey: chatKeys.workspaces });
     const loadAlert = await screen.findByRole('alert');
     expect(loadAlert).toHaveTextContent(/couldn't load workspaces/i);
-    expect(loadAlert).not.toHaveTextContent('workspace-private failure');
+    expect(loadAlert).not.toHaveTextContent('ws_00000000-0000-7b14-af76-27f19ffc88fa failure');
     expect(screen.getByRole('heading', { level: 1, name: 'Portability' })).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Import' })).toBeInTheDocument();
     expect(
@@ -990,7 +1002,7 @@ describe('Portability', () => {
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       })
@@ -1115,7 +1127,7 @@ describe('Portability', () => {
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         registryRevision: 1,
       })),
     });
@@ -1221,7 +1233,7 @@ describe('Portability', () => {
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         registryRevision: 1,
       })),
     });
@@ -1565,7 +1577,7 @@ describe('Portability', () => {
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         registryRevision: 1,
       })),
     });
@@ -1707,7 +1719,7 @@ describe('Portability', () => {
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         registryRevision: 1,
       })),
     });
@@ -1759,7 +1771,7 @@ describe('Portability', () => {
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         registryRevision: 1,
       })),
     });
@@ -1794,7 +1806,7 @@ describe('Portability', () => {
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         registryRevision: 1,
       })),
     });
@@ -1832,11 +1844,11 @@ describe('Portability', () => {
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       })
-      .mockRejectedValueOnce(new Error('workspace-private failure'));
+      .mockRejectedValueOnce(new Error('ws_00000000-0000-7b14-af76-27f19ffc88fa failure'));
     const client = makeClient({ core: {}, operations: { 'workspace.list': listWorkspaces } });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -1860,7 +1872,9 @@ describe('Portability', () => {
       expect(screen.queryByText(/no project workspace selected/i)).not.toBeInTheDocument();
       expect(screen.queryByLabelText('Loading')).not.toBeInTheDocument();
     });
-    expect(screen.queryByText('workspace-private failure')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('ws_00000000-0000-7b14-af76-27f19ffc88fa failure')
+    ).not.toBeInTheDocument();
     assertNoLeakedInternals(queryClient);
   });
 
@@ -2044,7 +2058,7 @@ describe('Portability', () => {
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         registryRevision: 1,
       })),
     });
@@ -2354,7 +2368,7 @@ describe('Portability', () => {
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       })
@@ -2471,7 +2485,7 @@ describe('Portability', () => {
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       })
@@ -2482,7 +2496,7 @@ describe('Portability', () => {
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
-          ownerUserId: 'user_local',
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           registryRevision: 1,
         })),
       });
@@ -2611,7 +2625,7 @@ describe('Portability', () => {
         workspace,
         effectiveRole: 'owner' as const,
         membershipRevision: 1,
-        ownerUserId: 'user_local',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         registryRevision: 1,
       })),
     });

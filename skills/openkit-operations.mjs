@@ -12,6 +12,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import * as appSchemas from '@openkit/app-api-schemas';
 import { ApiCallError } from '@openkit/core-client';
+import { AccessTokenIdSchema, UserIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { isValidCredentialDestination } from './openkit-secrets.mjs';
 
@@ -29,8 +30,8 @@ const OPENKIT_ACCESS_TOKEN = z.string().regex(/^okt_[A-Za-z0-9_-]+$/);
 const ADMIN_RECOVERY_CREDENTIAL = strictScope({
   kind: z.literal('openkit-admin-recovery'),
   requestId: z.string().uuid(),
-  tokenId: z.string().uuid(),
-  ownerUserId: IDENTIFIER,
+  tokenId: AccessTokenIdSchema,
+  ownerUserId: UserIdSchema,
   expiresAt: z.string().datetime(),
   token: OPENKIT_ACCESS_TOKEN,
 });

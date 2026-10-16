@@ -1,5 +1,9 @@
-import { randomUUID } from 'node:crypto';
-import { type AuditEvent, AuditEventSchema, RequestIdSchema } from '@openkit/protocol';
+import {
+  type AuditEvent,
+  AuditEventSchema,
+  allocateEntityId,
+  RequestIdSchema,
+} from '@openkit/protocol';
 
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { ActorRefReaderSchema } from './storage/workspace-file-records.js';
@@ -332,7 +336,7 @@ function recordAuditEvent(
   const createdAt = (input.now ?? new Date()).toISOString();
   const occurredAt = (input.occurredAt ?? input.now ?? new Date()).toISOString();
   const event = AuditEventSchema.parse({
-    id: input.auditEventId ?? `aud_${randomUUID()}`,
+    id: input.auditEventId ?? allocateEntityId('aud'),
     workspaceId: input.workspaceId,
     protocolVersion: input.protocolVersion,
     threadId: input.threadId ?? null,
