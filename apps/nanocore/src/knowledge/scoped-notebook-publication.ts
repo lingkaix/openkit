@@ -4,6 +4,7 @@ import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { FsStore } from '../lib/store.js';
 import type { InflightIdempotentCommand } from '../runtime/idempotent-command.js';
 import type { UserDb } from '../storage/db.js';
+import { assertMemoryPagesNotSuppressed } from './memory-maintenance.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import { type NotebookEdit, publishNotebook } from './notebook-publication.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
@@ -49,7 +50,7 @@ function scopeSchema(notebookRoot: string): string {
 /**
  * Joins authenticated native self/Server authority to the one existing publisher, Audit and receipt owners.
  *
- * This internal direct-human foundation accepts only empty source_refs. Source disclosure, output audience, suppression and Agent delegation are not granted here and must be joined before broader operations exist.
+ * This internal direct-human foundation accepts only empty source_refs and enforces current User suppression. Source disclosure, output audience and Agent delegation are not granted here and must be joined before broader operations exist.
  */
 export async function publishScopedNotebook(
   input: WritableScopedNotebook & {
@@ -92,7 +93,12 @@ export async function publishScopedNotebook(
       },
       revalidate: () => {
         // Current identity/credential admission precedes every retained read and the publisher's final CAS.
-        assertEmptySourceReferences(pinScopedNotebook(context).read().files);
+        const currentFiles = pinScopedNotebook(context).read().files;
+        if (userDb) assertMemoryPagesNotSuppressed(owner.notebookRoot, userDb.userId, [
+          ...Object.keys(currentFiles), ...Object.keys(notebook.readRevision(request.baseRevision).files),
+          ...request.changes.map(({ path }) => path),
+        ]);
+        assertEmptySourceReferences(currentFiles);
         assertEmptySourceReferences(notebook.readRevision(request.baseRevision).files);
         assertEmptySourceReferences(
           Object.fromEntries(
