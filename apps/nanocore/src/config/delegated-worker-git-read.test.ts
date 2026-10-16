@@ -416,7 +416,11 @@ describe('finite delegated Worker Git-read application', () => {
       stage === 'outcome'
         ? vi.spyOn(f.store, 'createArtifact').mockImplementationOnce(interrupt)
         : vi.spyOn(f.store, 'recordCommandRequest').mockImplementationOnce(interrupt);
-    const context = { callId: randomUUID(), signal: new AbortController().signal };
+    const context = {
+      callId: randomUUID(),
+      toolOccurrence: 1,
+      signal: new AbortController().signal,
+    };
     const result = await tools[3].execute(request, context);
     publication.mockRestore();
     expect(JSON.parse(readFileSync(f.agentPath, 'utf8')).sandbox.network[0].rules).toEqual(

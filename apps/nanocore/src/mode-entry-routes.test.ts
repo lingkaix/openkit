@@ -28,6 +28,8 @@ import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
 } from './config/runtime-config.js';
+import { listLightApps } from './generative-kernel/commands.js';
+import { uuidv5 } from './generative-kernel/uuid.js';
 import * as assistantCommandOwners from './internal-agents/assistant-command-run.js';
 import * as knowledgeOwners from './knowledge-operations.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
@@ -3893,6 +3895,240 @@ function skillModelObservations(
 }
 
 describe('#144 real Assistant command wiring', () => {
+  it('assembles the fixed native Generative family and binds a distinct command after an accepted Skill call', async () => {
+    const f = assistantWiringFixture(true);
+    const original = privateInvocationOwners.createOperationEngine;
+    const invoked = vi.fn();
+    vi.spyOn(privateInvocationOwners, 'createOperationEngine').mockImplementation(
+      (implementations, dependencies) => {
+        const invoke = original(implementations, dependencies);
+        return ((id, value, entry) => {
+          if (id.startsWith('kernel.') || id === 'generative-ui.publish') invoked(id, value, entry);
+          return invoke(id, value, entry);
+        }) as typeof invoke;
+      }
+    );
+    const schema = {
+      format: 'openkit.light-app',
+      schemaVersion: 1,
+      title: 'Assistant native proof',
+      purpose: 'Retain entries',
+      collections: [
+        {
+          name: 'entries',
+          type: 'base',
+          description: 'Entries',
+          fields: [{ name: 'note', type: 'text', required: true, description: 'Note' }],
+          indexes: [],
+        },
+      ],
+    };
+    f.createResponses.mockResolvedValueOnce(selectedSkillCall(f)).mockResolvedValueOnce({
+      id: 'native-create-response',
+      object: 'response',
+      status: 'completed',
+      output: [
+        {
+          type: 'function_call',
+          call_id: 'model-occurrence-900',
+          name: 'kernel_apps_create',
+          arguments: JSON.stringify(schema),
+        },
+      ],
+    });
+    try {
+      const response = await f.submit();
+      expect(response.status, await response.clone().text()).toBe(200);
+      const body = SubmitConversationResponseSchema.parse(await response.json());
+      expect(f.createResponses.mock.calls[0]![1].tools?.map((tool) => tool.name)).toEqual([
+        'skill_read',
+        'kernel_apps_list',
+        'kernel_apps_create',
+        'kernel_apps_get',
+        'kernel_schema_update',
+        'kernel_apps_retire',
+        'kernel_records_list',
+        'kernel_records_get',
+        'kernel_records_create',
+        'kernel_records_update',
+        'kernel_records_batch',
+        'generative_ui_publish',
+      ]);
+      const requestId = uuidv5(
+        JSON.stringify([
+          'assistant-generative',
+          'ws_demo',
+          f.thread.id,
+          f.actorUserId,
+          f.requestId,
+          2,
+        ])
+      );
+      expect(invoked).toHaveBeenCalledExactlyOnceWith(
+        'kernel.apps.create',
+        { ...schema, workspaceId: 'ws_demo', requestId },
+        expect.objectContaining({
+          kind: 'public',
+          actor: { kind: 'local', userId: f.actorUserId },
+          queryContext: { threadId: f.thread.id, turnId: body.turn.id },
+          delivery: 'model',
+          signal: expect.any(AbortSignal),
+        })
+      );
+      const apps = listLightApps(f.dataRoot, 'ws_demo');
+      expect(apps.items).toHaveLength(1);
+      expect(apps.items[0]).toMatchObject({ title: schema.title });
+      expect(skillModelObservations(f.createResponses.mock.calls[2]![1]).join('')).toContain(
+        apps.items[0]!.appId
+      );
+      const replay = await f.submit();
+      expect(replay.status).toBe(200);
+      expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(body);
+      expect(invoked).toHaveBeenCalledOnce();
+      expect(listLightApps(f.dataRoot, 'ws_demo')).toEqual(apps);
+      expect(f.dispatchCount()).toBe(3);
+      const nextRequest = '00000000-0000-4000-8000-000000001441';
+      f.createResponses.mockResolvedValueOnce(selectedSkillCall(f)).mockResolvedValueOnce({
+        id: 'native-create-response',
+        object: 'response',
+        status: 'completed',
+        output: [
+          {
+            type: 'function_call',
+            call_id: 'model-occurrence-900',
+            name: 'kernel_apps_create',
+            arguments: JSON.stringify(schema),
+          },
+        ],
+      });
+      const next = await f.submit(nextRequest);
+      expect(next.status, await next.clone().text()).toBe(200);
+      expect(invoked).toHaveBeenCalledTimes(2);
+      expect(invoked.mock.calls[1]![1]).toMatchObject({
+        requestId: uuidv5(
+          JSON.stringify([
+            'assistant-generative',
+            'ws_demo',
+            f.thread.id,
+            f.actorUserId,
+            nextRequest,
+            2,
+          ])
+        ),
+      });
+      expect(invoked.mock.calls[1]![1].requestId).not.toBe(requestId);
+      expect(listLightApps(f.dataRoot, 'ws_demo').items).toHaveLength(2);
+    } finally {
+      f.close();
+    }
+  });
+
+  it('rechecks current member authority before native Generative data access', async () => {
+    const f = assistantWiringFixture(false, undefined, true);
+    const original = privateInvocationOwners.createOperationEngine;
+    const results: Promise<unknown>[] = [];
+    vi.spyOn(privateInvocationOwners, 'createOperationEngine').mockImplementation(
+      (implementations, dependencies) => {
+        const invoke = original(implementations, dependencies);
+        return ((id, value, entry) => {
+          const result = invoke(id, value, entry);
+          if (id.startsWith('kernel.')) results.push(result);
+          return result;
+        }) as typeof invoke;
+      }
+    );
+    f.createResponses.mockImplementationOnce(async () => {
+      f.coreDb.sqlite
+        .prepare(
+          "UPDATE workspace_members SET status = 'removed', removed_at = ? WHERE workspace_id = 'ws_demo' AND user_id = ?"
+        )
+        .run(new Date().toISOString(), f.actorUserId);
+      return {
+        id: 'native-read-after-revocation',
+        object: 'response',
+        status: 'completed',
+        output: [
+          {
+            type: 'function_call',
+            call_id: 'read-current',
+            name: 'kernel_apps_list',
+            arguments: '{}',
+          },
+        ],
+      };
+    });
+    try {
+      const response = await f.submit();
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(results).toHaveLength(0);
+      expect(f.createResponses).toHaveBeenCalledOnce();
+      expect(listLightApps(f.dataRoot, 'ws_demo').items).toEqual([]);
+    } finally {
+      f.close();
+    }
+  });
+
+  it('retains an admitted native effect but withholds its result after the enclosing Turn is sealed', async () => {
+    const f = assistantWiringFixture();
+    const original = privateInvocationOwners.createOperationEngine;
+    vi.spyOn(privateInvocationOwners, 'createOperationEngine').mockImplementation(
+      (implementations, dependencies) => {
+        const invoke = original(implementations, dependencies);
+        return (async (id, value, entry) => {
+          const result = await invoke(id, value, entry);
+          if (id === 'kernel.apps.create' && entry.queryContext?.turnId)
+            f.store.updateTurn(entry.queryContext.turnId, {
+              status: 'failed',
+              completedAt: new Date().toISOString(),
+            });
+          return result;
+        }) as typeof invoke;
+      }
+    );
+    f.createResponses.mockResolvedValueOnce({
+      id: 'native-create-before-seal',
+      object: 'response',
+      status: 'completed',
+      output: [
+        {
+          type: 'function_call',
+          call_id: 'create-and-seal',
+          name: 'kernel_apps_create',
+          arguments: JSON.stringify({
+            format: 'openkit.light-app',
+            schemaVersion: 1,
+            title: 'Retained native effect',
+            purpose: 'Observe owner result',
+            collections: [
+              {
+                name: 'entries',
+                type: 'base',
+                description: 'Entries',
+                fields: [{ name: 'note', type: 'text', required: true, description: 'Note' }],
+                indexes: [],
+              },
+            ],
+          }),
+        },
+      ],
+    });
+    try {
+      const response = await f.submit();
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(f.dispatchCount()).toBe(1);
+      expect(listLightApps(f.dataRoot, 'ws_demo').items).toEqual([
+        expect.objectContaining({ title: 'Retained native effect' }),
+      ]);
+      expect(
+        f.store
+          .listThreadItems('ws_demo', f.thread.id)
+          .filter((item) => item.type === 'assistant-message')
+      ).toEqual([]);
+    } finally {
+      f.close();
+    }
+  });
+
   it('retains exact empty selection before dispatch with full model I/O off', async () => {
     const f = assistantWiringFixture();
     try {
