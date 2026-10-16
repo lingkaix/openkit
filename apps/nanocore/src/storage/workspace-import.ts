@@ -933,19 +933,12 @@ export function readWorkspaceImportSnapshot(
       .map(([path, content]) => [path.slice('workspace-files/'.length), content])
   );
   assertPortableKnowledgePagesMatch(sourceNotebookPages, canonical.knowledge);
-  const notebook = remintPortableWorkspaceNotebookPages({
-    pages: sourceNotebookPages,
-    sourceWorkspaceId: context.report.exportedWorkspaceId,
-    targetWorkspaceId: context.targetWorkspaceId,
-    rewriteReferences: (references) =>
-      rewritePortableReferences(references, portableReferenceReplacements(context)),
-  });
-  context.knowledgePageReferences = new Map(notebook.referenceReplacements);
+  const selectedNotebookPages = remintImportedNotebookPages(context, sourceNotebookPages);
   const retrievalTraces = readRetrievalTraceImportState(
     context,
     canonical,
     sourceTurns,
-    notebook.pages
+    selectedNotebookPages
   );
   const workerRuntime = readWorkerRuntimeControlState(context);
   const securityRuntime = readSecurityRuntimeLedgerState(context);
@@ -966,6 +959,16 @@ export function readWorkspaceImportSnapshot(
     new Map(workResources.itemRevisions.map((item) => [item.id, item])),
     workResources.turns
   );
+  // S39 digests exist only now; finish Page references before checking their canonical projections.
+  const notebookPages = remintImportedNotebookPages(context, sourceNotebookPages);
+  for (const selections of retrievalTraces.selectedPages.values()) {
+    for (const [pageId, selection] of selections) {
+      if (notebookPages.get(`knowledge/pages/${pageId}.md`) !== selection.content)
+        throw new Error(
+          'Portable Knowledge history requires unavailable historical notebook closure.'
+        );
+    }
+  }
   const knowledgeReferenceReplacements = [
     ...context.contextPackageReferences,
     ...context.turnIds,
@@ -991,7 +994,7 @@ export function readWorkspaceImportSnapshot(
     workResources.workerContextPackageFiles,
     knowledge,
     retrievalTraces.files,
-    notebook.pages
+    notebookPages
   );
   const importedCatalog = readImportedAgentResourceCatalog(context.files);
 
@@ -3594,7 +3597,7 @@ function retrievalTraceReferenceKey(reference: RetrievalTraceReference): string 
   return `${parsed.scopeId}\0${parsed.objectId}`;
 }
 
-/** Builds the already-owned id substitutions available before S39 digest reconstruction. */
+/** Builds the already-owned id substitutions available at the current import phase. */
 function portableReferenceReplacements(
   context: ImportRemintContext
 ): readonly (readonly [string, string])[] {
@@ -3906,6 +3909,29 @@ function readPortableImportState(
   const portableFileState = readPortableFileStateFromExport(context, notebookPages);
   assertPortableKnowledgePagesMatch(portableFileState.nativeKnowledgePages, knowledge);
   return { ...portableFileState, retrievalTraceFiles, workerContextPackageFiles };
+}
+
+/**
+ * Remints the current Page tree and refreshes its exact pin map as import owners become known.
+ *
+ * Retrieval and S39 need the early projection; the final projection also resolves newly reminted Context Package references.
+ * @param context Current invocation's owned identity and package mappings.
+ * @param pages Verified source Notebook bytes, never an earlier target projection.
+ * @returns Target Page bytes under the mappings available in this phase.
+ */
+function remintImportedNotebookPages(
+  context: ImportRemintContext,
+  pages: ReadonlyMap<string, string>
+): ReadonlyMap<string, string> {
+  const notebook = remintPortableWorkspaceNotebookPages({
+    pages,
+    sourceWorkspaceId: context.report.exportedWorkspaceId,
+    targetWorkspaceId: context.targetWorkspaceId,
+    rewriteReferences: (references) =>
+      rewritePortableReferences(references, portableReferenceReplacements(context)),
+  });
+  context.knowledgePageReferences = new Map(notebook.referenceReplacements);
+  return notebook.pages;
 }
 
 /**
