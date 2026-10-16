@@ -119,7 +119,7 @@ The existing Workspace Knowledge store supports OKF pages, registered sources, c
 
 ## Rollout / Migration Plan
 
-Implement personal scope, explicit save/read/edit/forget and visibility enforcement first; then bounded source registration and candidate creation; then exact replacement and optional assessment. Enable automatic capture only after the same operations work explicitly and their source/audience checks pass. Convert existing owned Workspace pages to profile v4 and retained Git history under the coordinated notebook cutover, preserving bytes/source lineage and reporting invalid pages rather than silently making them active. A separate implementation plan must retain these stages; acceptance of the full design does not claim every stage ships in the first release.
+Implement personal scope, explicit save/read/edit/forget and visibility enforcement first; then bounded source registration and candidate creation; then exact replacement and optional assessment. Enable automatic capture only after the same operations work explicitly and their source/audience checks pass. Initialize new notebooks directly in profile v4 with Git-owned history. Current prerelease data follows the accepted pre-stable reset boundary; add no offline conversion, predecessor reader or synthesized authority. A separate implementation plan must retain these stages; acceptance of the full design does not claim every stage ships in the first release.
 
 ## Testing Strategy / Acceptance Criteria
 

@@ -14,6 +14,7 @@ import {
   type RetrievalTraceReference,
 } from '@openkit/protocol';
 import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
+import { readWorkspaceNotebookIndexSource } from '../knowledge/notebook-index-source.js';
 import {
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
   isActiveOpenKitKnowledgePage,
@@ -39,6 +40,7 @@ import {
   knowledgePageConflicted,
   knowledgePageReadable,
   knowledgeSourceReferencesReadable,
+  readAuthorizedWorkspaceNotebookPages,
   resolveKnowledgeQueryContext,
 } from '../retrieval-knowledge-adapter.js';
 import { getRetrievalService } from '../retrieval-service.js';
@@ -48,12 +50,7 @@ import {
   publishRetrievalTrace,
   readRetrievalTrace,
 } from './retrieval-traces.js';
-import {
-  assertCanonicalDirectory,
-  listKnowledgePageIds,
-  readCanonicalTextFile,
-  readWorkspaceKnowledgePage,
-} from './workspace-file-records.js';
+import { assertCanonicalDirectory, readCanonicalTextFile } from './workspace-file-records.js';
 
 export type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
 
@@ -71,6 +68,8 @@ export interface WorkspaceKnowledgeLinkEdge {
 
 /** Derived workspace knowledge link graph file. */
 export interface WorkspaceKnowledgeLinkGraph {
+  /** Canonical Git revision used for this rebuildable projection. */
+  notebookRevision: string;
   /** Link graph schema version. */
   schemaVersion: 1;
   /** Workspace that owns the derived graph. */
@@ -103,6 +102,8 @@ export interface WorkspaceKnowledgeValidationRecord {
 
 /** Derived workspace knowledge validation report file. */
 export interface WorkspaceKnowledgeValidationIndex {
+  /** Canonical Git revision used for this rebuildable projection. */
+  notebookRevision: string;
   /** Validation index schema version. */
   schemaVersion: 1;
   /** Workspace that owns the derived report. */
@@ -137,6 +138,8 @@ export interface WorkspaceKnowledgeSourceReference {
 
 /** Derived workspace knowledge source-reference index file. */
 export interface WorkspaceKnowledgeSourceReferenceIndex {
+  /** Canonical Git revision used for this rebuildable projection. */
+  notebookRevision: string;
   /** Source-reference index schema version. */
   schemaVersion: 1;
   /** Workspace that owns the derived index. */
@@ -155,6 +158,8 @@ export interface RebuildWorkspaceDerivedIndexesInput {
   dataRoot: string;
   /** Workspace to rebuild. */
   workspaceId: string;
+  /** Optional server-selected retained published revision. */
+  notebookRevision?: string | undefined;
   /** Optional timestamp source for deterministic tests. */
   now?: () => string;
 }
@@ -177,6 +182,8 @@ export interface RebuildWorkspaceDerivedIndexesResult {
  * Input for reading one workspace's derived Knowledge Store indexes.
  */
 export interface ReadWorkspaceKnowledgeDerivedIndexesInput {
+  /** Optional server-selected retained published Notebook revision. */
+  notebookRevision?: string | undefined;
   /** Data root that owns the workspace. */
   dataRoot: string;
   /** Workspace to read. */
@@ -247,6 +254,8 @@ export interface WorkspaceKnowledgeRetrievalExclusion {
 
 /** Exact authoritative Knowledge Page selected for one Task worker Context Package. */
 export interface ResolvedWorkspaceKnowledgeRetrievalPage {
+  /** Exact selected Notebook commit, independent of page digest. */
+  notebookRevision: string;
   /** Qualified identity retained through citations and current-byte resolution. */
   reference: PageReference;
   /** Selected Knowledge Page id. */
@@ -299,23 +308,27 @@ export function rebuildWorkspaceDerivedIndexes(
   const indexesRoot = join(workspaceRoot, 'indexes');
   const indexPath = join(indexesRoot, 'knowledge-validation.json');
   const rebuiltAt = input.now?.() ?? new Date().toISOString();
+  const source = readWorkspaceNotebookIndexSource(workspaceRoot, input.notebookRevision);
   const linkGraph: WorkspaceKnowledgeLinkGraph = {
+    notebookRevision: source.notebookRevision,
     schemaVersion: 1,
     workspaceId: input.workspaceId,
     rebuiltAt,
-    edges: buildKnowledgeLinkEdges(workspaceRoot, input.workspaceId),
+    edges: buildKnowledgeLinkEdges(workspaceRoot, input.workspaceId, source.pages),
   };
   const validationIndex: WorkspaceKnowledgeValidationIndex = {
+    notebookRevision: source.notebookRevision,
     schemaVersion: 1,
     workspaceId: input.workspaceId,
     rebuiltAt,
-    records: buildKnowledgeValidationRecords(workspaceRoot, input.workspaceId),
+    records: buildKnowledgeValidationRecords(workspaceRoot, input.workspaceId, source.pages),
   };
   const sourceReferenceIndex: WorkspaceKnowledgeSourceReferenceIndex = {
+    notebookRevision: source.notebookRevision,
     schemaVersion: 1,
     workspaceId: input.workspaceId,
     rebuiltAt,
-    references: buildKnowledgeSourceReferences(workspaceRoot, input.workspaceId),
+    references: buildKnowledgeSourceReferences(workspaceRoot, input.workspaceId, source.pages),
   };
   const removedEntries = clearIndexDirectory(indexesRoot);
 
@@ -453,7 +466,11 @@ function derivedIndexSetNeedsRebuild(workspaceRoot: string, workspaceId: string)
     if (!isJsonObject(parsed)) {
       return true;
     }
-    if (parsed.schemaVersion !== 1 || parsed.workspaceId !== workspaceId) {
+    if (
+      parsed.schemaVersion !== 1 ||
+      parsed.workspaceId !== workspaceId ||
+      typeof parsed.notebookRevision !== 'string'
+    ) {
       return true;
     }
     if (!Array.isArray(parsed[file.collection])) {
@@ -599,12 +616,16 @@ export async function retrieveWorkspaceKnowledge(
   const createdAt = input.now?.() ?? new Date().toISOString();
   const traceId = input.traceId ?? allocateRetrievalTraceId();
   const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
+  const admittedPages = readAuthorizedWorkspaceNotebookPages(input);
+  const notebookRevision = admittedPages.notebookRevision;
+  const pinnedInput = { ...input, notebookRevision };
+  const pinnedPages = new Map(admittedPages.pages.map((page) => [page.id, page.content]));
   const scopeSchemaText = readScopeKnowledgeSchemaText(workspaceRoot);
   const registeredSources = readRegisteredSources(workspaceRoot, input.workspaceId);
-  const knowledgeIds = readKnowledgePageIds(join(workspaceRoot, 'knowledge', 'pages'));
+  const knowledgeIds = readKnowledgePageIds(pinnedPages);
   const service = getRetrievalService(input.dataRoot, workspaceRoot);
   await service.search({ mode: 'lexical', query: input.query, scopes: [], limit: 1 });
-  const indexes = readWorkspaceKnowledgeDerivedIndexes(input);
+  const indexes = readWorkspaceKnowledgeDerivedIndexes(pinnedInput);
   const sourceReferencesByConcept = new Map<string, string[]>();
   const scores = new Map<string, number>();
   const addressedIds = new Set(normalizedPinnedReferences.map((reference) => reference.objectId));
@@ -616,7 +637,7 @@ export async function retrieveWorkspaceKnowledge(
     sourceReferencesByConcept.set(reference.conceptId, references);
   }
 
-  const before = collectKnowledgeInventory(input);
+  const before = collectKnowledgeInventory(pinnedInput);
   await service.publish(before.view, await service.inspect(before.view.scope));
   const matches = await service.search({
     mode: 'lexical',
@@ -630,7 +651,7 @@ export async function retrieveWorkspaceKnowledge(
       'Knowledge retrieval is incomplete.',
       503
     );
-  const after = collectKnowledgeInventory(input);
+  const after = collectKnowledgeInventory(pinnedInput);
   if (canonicalJson(before.view) !== canonicalJson(after.view))
     throw new OperationError(
       'knowledge_retrieval_failed',
@@ -691,7 +712,7 @@ export async function retrieveWorkspaceKnowledge(
       );
     }
 
-    const content = readWorkspaceKnowledgePage(workspaceRoot, candidate.knowledgePageId);
+    const content = pinnedPages.get(candidate.knowledgePageId) ?? null;
     if (content === null) {
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
@@ -774,7 +795,7 @@ export async function retrieveWorkspaceKnowledge(
     if (!parsed.ok || !document || validation.conformance !== 'scope-schema-valid') {
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
-        contentDigest: knowledgePageReadable(input, candidate.knowledgePageId, content)
+        contentDigest: knowledgePageReadable(pinnedInput, candidate.knowledgePageId, content)
           ? contentDigest
           : null,
         reason: 'lower_conformance',
@@ -782,7 +803,7 @@ export async function retrieveWorkspaceKnowledge(
       continue;
     }
 
-    if (!knowledgePageReadable(input, candidate.knowledgePageId, content)) {
+    if (!knowledgePageReadable(pinnedInput, candidate.knowledgePageId, content)) {
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
         contentDigest: null,
@@ -803,7 +824,7 @@ export async function retrieveWorkspaceKnowledge(
     ) {
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
-        contentDigest: knowledgePageReadable(input, candidate.knowledgePageId, content)
+        contentDigest: knowledgePageReadable(pinnedInput, candidate.knowledgePageId, content)
           ? contentDigest
           : null,
         reason: 'lower_conformance',
@@ -853,7 +874,7 @@ export async function retrieveWorkspaceKnowledge(
   const metadata = {
     queryContext,
     sourceScope,
-    notebookRevision: null,
+    notebookRevision,
     caller: input.caller,
     requestDigest: sha256Digest(
       canonicalJson({ queryContext, sourceScope, caller: input.caller, request })
@@ -872,12 +893,12 @@ export async function retrieveWorkspaceKnowledge(
     selected: selected.map(({ knowledgePageId, ...facts }) => ({
       ...facts,
       reference: referenceFor(knowledgePageId),
-      revision: facts.contentDigest,
+      revision: notebookRevision,
     })),
     excluded: excluded.map(({ knowledgePageId, ...facts }) => ({
       ...facts,
       reference: referenceFor(knowledgePageId),
-      revision: facts.contentDigest,
+      revision: notebookRevision,
       sourceReferences:
         facts.contentDigest === null
           ? []
@@ -888,7 +909,7 @@ export async function retrieveWorkspaceKnowledge(
   });
 
   admitKnowledgeRetrieval(input);
-  if (canonicalJson(before.view) !== canonicalJson(collectKnowledgeInventory(input).view))
+  if (canonicalJson(before.view) !== canonicalJson(collectKnowledgeInventory(pinnedInput).view))
     throw new OperationError(
       'knowledge_retrieval_failed',
       'Knowledge eligibility changed during retrieval.',
@@ -963,7 +984,12 @@ function knowledgeTraceUnavailable(): OperationError {
 
 /** Resolves one current reference for either metadata admission or selected-byte materialization. */
 function currentKnowledgeReferenceContent(
-  input: { dataRoot: string; workspaceId: string; access: KnowledgeRetrievalAccess },
+  input: {
+    dataRoot: string;
+    workspaceId: string;
+    access: KnowledgeRetrievalAccess;
+    notebookRevision?: string | undefined;
+  },
   reference: PageReference,
   serverId: string
 ): string | null {
@@ -989,10 +1015,11 @@ function currentKnowledgeReferenceContent(
       );
     throw knowledgeTraceUnavailable();
   }
-  const content = readWorkspaceKnowledgePage(
-    resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId),
-    reference.objectId
-  );
+  const selected = readAuthorizedWorkspaceNotebookPages({
+    ...input,
+    pageIds: [reference.objectId],
+  });
+  const content = selected.pages[0]?.content ?? null;
   if (content === null) return null;
   const document = parseOkfDocument({
     path: `knowledge/pages/${reference.objectId}.md`,
@@ -1013,7 +1040,9 @@ export function assertKnowledgeRetrievalTraceReadable(
   input: KnowledgeTraceReadInput
 ): KnowledgeRetrievalTrace {
   const trace = readAdmittedKnowledgeTrace(input);
+  if (trace.notebookRevision === null) throw knowledgeTraceUnavailable();
   const target = {
+    notebookRevision: trace.notebookRevision,
     ...input,
     access: {
       ...input.access,
@@ -1067,7 +1096,6 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
 }): ResolvedWorkspaceKnowledgeRetrievalPage[] | null {
   const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
   admitKnowledgeRetrieval(input);
-  const referenceProofs = currentKnowledgeReferenceProofs(input);
   const context = resolveKnowledgeQueryContext(input);
   if (Boolean(input.retrievalTraceRef) === Boolean(input.selection))
     throw new Error('Exactly one Knowledge selection or trace reference is required.');
@@ -1094,16 +1122,25 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
   )
     throw new Error('Knowledge retrieval trace lineage is contradictory.');
 
+  if (trace.notebookRevision === null) throw knowledgeTraceUnavailable();
+  const notebookRevision = trace.notebookRevision;
+  const pinnedInput = { ...input, notebookRevision };
+  const referenceProofs = currentKnowledgeReferenceProofs(pinnedInput);
+  const pinnedPages = readWorkspaceNotebookIndexSource(workspaceRoot, notebookRevision).pages;
   const scopeSchemaText = readScopeKnowledgeSchemaText(workspaceRoot);
   const registeredSources = readRegisteredSources(workspaceRoot, input.workspaceId);
-  const knowledgeIds = readKnowledgePageIds(join(workspaceRoot, 'knowledge', 'pages'));
+  const knowledgeIds = readKnowledgePageIds(pinnedPages);
   const pages: ResolvedWorkspaceKnowledgeRetrievalPage[] = [];
 
   for (const selected of trace.selected) {
-    if (selected.reference.scopeId !== trace.sourceScope)
+    if (selected.reference.scopeId !== trace.sourceScope || selected.revision !== notebookRevision)
       throw new Error('Knowledge selection source is contradictory.');
     const path = `knowledge/pages/${selected.reference.objectId}.md`;
-    const content = currentKnowledgeReferenceContent(input, selected.reference, context.serverId);
+    const content = currentKnowledgeReferenceContent(
+      pinnedInput,
+      selected.reference,
+      context.serverId
+    );
     if (content === null) {
       return null;
     }
@@ -1157,6 +1194,7 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
     }
 
     pages.push({
+      notebookRevision,
       reference: selected.reference,
       knowledgePageId: selected.reference.objectId,
       contentDigest,
@@ -1258,17 +1296,17 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
 }
 
 /**
- * Reads file-backed knowledge ids from workspace knowledge pages.
+ * Reads Knowledge ids from one pinned Notebook tree.
  *
- * @param pagesRoot Knowledge pages root.
+ * @param pages Exact page bytes from one Notebook revision.
  * @returns Knowledge ids available for knowledge-prefixed references.
  */
-function readKnowledgePageIds(pagesRoot: string): Set<string> {
+function readKnowledgePageIds(pages: ReadonlyMap<string, string>): Set<string> {
   const ids = new Set<string>();
 
-  for (const knowledgePageId of indexKnowledgePageIds(pagesRoot)) {
-    const path = join(pagesRoot, `${knowledgePageId}.md`);
-    const parsed = parseOkfDocument({ path, content: readCanonicalTextFile(path) });
+  for (const [knowledgePageId, content] of pages) {
+    const path = `knowledge/pages/${knowledgePageId}.md`;
+    const parsed = parseOkfDocument({ path, content });
 
     if (parsed.ok) {
       ids.add(
@@ -1280,16 +1318,6 @@ function readKnowledgePageIds(pagesRoot: string): Set<string> {
   }
 
   return ids;
-}
-
-/**
- * Lists non-reserved Knowledge Page ids recursively through the canonical path owner.
- *
- * @param pagesRoot Canonical OKF bundle pages root.
- * @returns Sorted bundle-relative Page ids.
- */
-function indexKnowledgePageIds(pagesRoot: string): string[] {
-  return listKnowledgePageIds(pagesRoot);
 }
 
 /**
@@ -1377,18 +1405,17 @@ function isStaticKnowledgeIndexPage(
  */
 function buildKnowledgeValidationRecords(
   workspaceRoot: string,
-  workspaceId: string
+  workspaceId: string,
+  pages: ReadonlyMap<string, string>
 ): WorkspaceKnowledgeValidationRecord[] {
-  const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
   const scopeSchemaText = readScopeKnowledgeSchemaText(workspaceRoot);
   const registeredSources = readRegisteredSources(workspaceRoot, workspaceId);
-  const knowledgeIds = readKnowledgePageIds(pagesRoot);
+  const knowledgeIds = readKnowledgePageIds(pages);
   const records: WorkspaceKnowledgeValidationRecord[] = [];
 
-  for (const knowledgePageId of indexKnowledgePageIds(pagesRoot)) {
-    const path = join(pagesRoot, `${knowledgePageId}.md`);
+  for (const [knowledgePageId, content] of pages) {
+    const path = `knowledge/pages/${knowledgePageId}.md`;
     const workspacePath = `knowledge/pages/${knowledgePageId}.md`;
-    const content = readCanonicalTextFile(path);
     const contentDigest = sha256Digest(content);
     const parsed = parseOkfDocument({ path, content });
 
@@ -1433,16 +1460,16 @@ function buildKnowledgeValidationRecords(
  */
 function buildKnowledgeSourceReferences(
   workspaceRoot: string,
-  workspaceId: string
+  workspaceId: string,
+  pages: ReadonlyMap<string, string>
 ): WorkspaceKnowledgeSourceReference[] {
-  const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
   const registeredSources = readRegisteredSources(workspaceRoot, workspaceId);
-  const knowledgeIds = readKnowledgePageIds(pagesRoot);
+  const knowledgeIds = readKnowledgePageIds(pages);
   const references: WorkspaceKnowledgeSourceReference[] = [];
 
-  for (const knowledgePageId of indexKnowledgePageIds(pagesRoot)) {
-    const path = join(pagesRoot, `${knowledgePageId}.md`);
-    const parsed = parseOkfDocument({ path, content: readCanonicalTextFile(path) });
+  for (const [knowledgePageId, content] of pages) {
+    const path = `knowledge/pages/${knowledgePageId}.md`;
+    const parsed = parseOkfDocument({ path, content });
     const document = parsed.document;
     const sourceRefs = document ? stringListFrontmatterField(document, 'source_refs') : null;
 
@@ -1553,22 +1580,22 @@ function classifyKnowledgeSourceReference(input: {
  */
 function buildKnowledgeLinkEdges(
   workspaceRoot: string,
-  workspaceId: string
+  workspaceId: string,
+  pages: ReadonlyMap<string, string>
 ): WorkspaceKnowledgeLinkEdge[] {
-  const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
   const schema = readScopeKnowledgeSchema(workspaceRoot);
   const registeredSources = readRegisteredSources(workspaceRoot, workspaceId);
-  const knowledgeIds = readKnowledgePageIds(pagesRoot);
-  const conceptIds = readKnowledgePageConceptIds(pagesRoot);
+  const knowledgeIds = readKnowledgePageIds(pages);
+  const conceptIds = readKnowledgePageConceptIds(pages);
   const edges: WorkspaceKnowledgeLinkEdge[] = [];
 
   if (!schema) {
     return edges;
   }
 
-  for (const knowledgePageId of indexKnowledgePageIds(pagesRoot)) {
-    const path = join(pagesRoot, `${knowledgePageId}.md`);
-    const parsed = parseOkfDocument({ path, content: readCanonicalTextFile(path) });
+  for (const [knowledgePageId, content] of pages) {
+    const path = `knowledge/pages/${knowledgePageId}.md`;
+    const parsed = parseOkfDocument({ path, content });
 
     if (
       !parsed.ok ||
@@ -1601,17 +1628,17 @@ function buildKnowledgeLinkEdges(
 }
 
 /**
- * Reads file-backed concept ids from workspace knowledge pages.
+ * Reads concept ids from one pinned Notebook tree.
  *
- * @param pagesRoot Knowledge pages root.
+ * @param pages Exact page bytes from one Notebook revision.
  * @returns Concept ids available for Markdown link resolution.
  */
-function readKnowledgePageConceptIds(pagesRoot: string): Set<string> {
+function readKnowledgePageConceptIds(pages: ReadonlyMap<string, string>): Set<string> {
   const ids = new Set<string>();
 
-  for (const knowledgePageId of indexKnowledgePageIds(pagesRoot)) {
-    const path = join(pagesRoot, `${knowledgePageId}.md`);
-    const parsed = parseOkfDocument({ path, content: readCanonicalTextFile(path) });
+  for (const [knowledgePageId, content] of pages) {
+    const path = `knowledge/pages/${knowledgePageId}.md`;
+    const parsed = parseOkfDocument({ path, content });
 
     if (parsed.ok) {
       ids.add(parsed.document.conceptId ?? knowledgePageId);
@@ -1696,7 +1723,7 @@ function readScopeKnowledgeSchema(workspaceRoot: string): ScopeKnowledgeSchema |
 
 /** Reads the exact workspace Knowledge schema text when present. */
 function readScopeKnowledgeSchemaText(workspaceRoot: string): string | undefined {
-  const schemaPath = join(workspaceRoot, 'knowledge', 'schema', 'workspace-schema.yaml');
+  const schemaPath = join(workspaceRoot, 'knowledge', 'schema', 'scope-schema.yaml');
   return existsSync(schemaPath) ? readCanonicalTextFile(schemaPath) : undefined;
 }
 

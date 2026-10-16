@@ -111,6 +111,7 @@ const KnowledgeSelectionInputSchema = z.object({
   retrievalTraceRef: RetainedRetrievalTraceReferenceSchema,
 });
 const KnowledgeSelectionSchema = z.object({
+  notebookRevision: IdSchema.optional(),
   contentDigest: Sha256Schema,
   knowledgePageId: IdSchema,
   packagePath: IdSchema,
@@ -228,6 +229,8 @@ export interface WorkerContextPackageMaterialExclusion {
 
 /** Governed Knowledge page bytes accepted for package construction. */
 export interface WorkerContextPackageKnowledgeSelectionInput {
+  /** Exact immutable Notebook commit supplied by the Knowledge owner. */
+  readonly notebookRevision?: string | undefined;
   /** Workspace Knowledge page identity. */
   readonly knowledgePageId: string;
   /** Digest of the exact canonical UTF-8 page bytes. */
@@ -240,6 +243,8 @@ export interface WorkerContextPackageKnowledgeSelectionInput {
 
 /** Governed Knowledge page delivered through the worker-visible package. */
 export interface WorkerContextPackageKnowledgeSelection {
+  /** Exact immutable Notebook commit supplied by the Knowledge owner. */
+  readonly notebookRevision?: string | undefined;
   /** Workspace Knowledge page identity. */
   readonly knowledgePageId: string;
   /** Digest of the exact delivered bytes. */
@@ -580,6 +585,7 @@ export function createWorkerContextPackageFiles(
     knowledgeSelections.push({
       contentDigest: selection.contentDigest,
       knowledgePageId: selection.knowledgePageId,
+      ...(selection.notebookRevision ? { notebookRevision: selection.notebookRevision } : {}),
       packagePath,
       sourceRefs,
     });

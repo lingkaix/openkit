@@ -24,8 +24,10 @@ export function readWorkspaceNotebookIndexSource(
   const { files } = notebook.readRevision(notebookRevision);
   return {
     notebookRevision,
-    pages: new Map(Object.entries(files)
-      .filter(([path]) => !['index.md', 'log.md'].includes(basename(path)))
-      .map(([path, content]) => [path.slice(0, -3), content])),
+    pages: new Map(
+      Object.entries(files)
+        .filter(([path]) => !['index.md', 'log.md'].includes(basename(path)))
+        .map(([path, content]) => [path.slice(0, -3), content])
+    ),
   };
 }
