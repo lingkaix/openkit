@@ -524,14 +524,7 @@ async function readSource(
       reason: input.signal?.aborted ? 'cancelled' : 'unavailable',
     };
   }
-  const result = {
-    isError: false,
-    structuredContent: { ...projection } as Record<string, unknown>,
-    content: [{ type: 'text' as const, text: JSON.stringify(projection) }],
-  };
-  if (Buffer.byteLength(JSON.stringify(result), 'utf8') > 512 * 1024)
-    throw new WorkerControlGatewayError('mcp-result-too-large', MCP_RESULT_TOO_LARGE_MESSAGE, 413);
-  return result;
+  return sourceToolResult({ ...projection });
 }
 
 function workRaiseInput(
