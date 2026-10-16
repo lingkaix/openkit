@@ -2,10 +2,12 @@ import type { VaultGrantRequestTerms, VaultGrantRequestView } from '@openkit/app
 import type { CoreClient } from '@openkit/core-client';
 import { allocateEntityId } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, renderHook, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
+import { useAccountMutation } from '../account/session';
 import { VaultGrantRequestsPanel } from './VaultGrantRequestsPanel';
 
 const WORKSPACE_ID = allocateEntityId('ws');
@@ -183,4 +185,146 @@ it('rejects secret-shaped request fields before operation or mutation-cache admi
   expect(screen.getByLabelText('Requested reference ID')).toHaveValue('');
   expect(screen.getByLabelText('Requested Agent')).toHaveValue('');
   expect(document.body.textContent).not.toContain(canary);
+});
+
+it('rechecks private request reads after account transition and cached remount without reviving departed work', async () => {
+  const held = <T,>() => {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  };
+  const currentThreadId = allocateEntityId('th');
+  const previous = {
+    ...request,
+    approvalRequestId: 'apr_previous_account',
+    state: 'resolved' as const,
+    resolution: 'granted' as const,
+  };
+  const current = {
+    ...request,
+    approvalRequestId: 'apr_current_account',
+    threadId: currentThreadId,
+  };
+  const previousRows = { workspaceId: WORKSPACE_ID, threadId: THREAD_ID, items: [previous] };
+  const currentRows = { workspaceId: WORKSPACE_ID, threadId: currentThreadId, items: [current] };
+  const previousThreads = {
+    items: [{ id: THREAD_ID, name: 'Previous private Thread', status: 'active' }],
+  };
+  const currentThreads = {
+    items: [{ id: currentThreadId, name: 'Current authorized Thread', status: 'active' }],
+  };
+  const issue = held<typeof previous>();
+  let threadRead = held<typeof currentThreads>();
+  let requestRead = held<typeof currentRows>();
+  let currentAccount = false;
+  const operations = {
+    'thread.list': vi.fn(() =>
+      currentAccount ? threadRead.promise : Promise.resolve(previousThreads)
+    ),
+    'vault.grant-request-list': vi.fn(() =>
+      currentAccount ? requestRead.promise : Promise.resolve(previousRows)
+    ),
+    'vault.grant-issue': vi.fn(() => issue.promise),
+  };
+  const cache = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } },
+  });
+  const client = {
+    core: { meta: vi.fn().mockResolvedValue({}) },
+    auth: {
+      email: {
+        signIn: vi.fn(async () => {
+          currentAccount = true;
+        }),
+      },
+    },
+    operations,
+  } as unknown as CoreClient;
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={cache}>
+      <CoreClientProvider client={client}>{children}</CoreClientProvider>
+    </QueryClientProvider>
+  );
+  const account = renderHook(() => useAccountMutation(), { wrapper });
+  const mount = () => render(<VaultGrantRequestsPanel workspaceId={WORKSPACE_ID} />, { wrapper });
+  const previousView = mount();
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Issue approved grant apr_previous_account' })
+  );
+  await waitFor(() => expect(operations['vault.grant-issue']).toHaveBeenCalledTimes(1));
+  const mutation = cache
+    .getMutationCache()
+    .getAll()
+    .find((entry) => entry.state.status === 'pending');
+  expect(mutation).toBeDefined();
+  await act(async () => {
+    await account.result.current.mutateAsync({
+      operation: 'signIn',
+      email: '',
+      password: '',
+      name: '',
+    });
+  });
+  previousView.unmount();
+  const currentView = mount();
+  expect(screen.queryByText('apr_previous_account')).not.toBeInTheDocument();
+  expect(screen.queryByText('Previous private Thread')).not.toBeInTheDocument();
+  expect(screen.getByLabelText('Requested reference ID')).toBeDisabled();
+  expect(
+    JSON.stringify(
+      cache
+        .getQueryCache()
+        .getAll()
+        .map((entry) => entry.state)
+    )
+  ).not.toContain('apr_previous_account');
+  await act(async () => {
+    threadRead.resolve(currentThreads);
+  });
+  await waitFor(() => expect(operations['vault.grant-request-list']).toHaveBeenCalledTimes(2));
+  expect(screen.getByLabelText('Requested reference ID')).toBeDisabled();
+
+  // A departed pending read cannot satisfy another mount, even with fresh Thread cache data.
+  const departedRead = requestRead;
+  threadRead = held<typeof currentThreads>();
+  requestRead = held<typeof currentRows>();
+  currentView.unmount();
+  mount();
+  await waitFor(() => expect(operations['thread.list']).toHaveBeenCalledTimes(3));
+  expect(screen.queryByText('apr_current_account')).not.toBeInTheDocument();
+  expect(screen.queryByText('Current authorized Thread')).not.toBeInTheDocument();
+  expect(screen.getByLabelText('Requested reference ID')).toBeDisabled();
+  await act(async () => {
+    departedRead.resolve(currentRows);
+    await departedRead.promise;
+  });
+  expect(screen.queryByText('apr_current_account')).not.toBeInTheDocument();
+  expect(
+    JSON.stringify(
+      cache
+        .getQueryCache()
+        .getAll()
+        .map((entry) => entry.state)
+    )
+  ).not.toContain('apr_current_account');
+  await act(async () => {
+    threadRead.resolve(currentThreads);
+  });
+  await waitFor(() => expect(operations['vault.grant-request-list']).toHaveBeenCalledTimes(3));
+  expect(screen.queryByText('apr_current_account')).not.toBeInTheDocument();
+  await act(async () => {
+    requestRead.resolve(currentRows);
+  });
+  await screen.findByText('apr_current_account');
+  expect(screen.getByLabelText('Requested reference ID')).toBeEnabled();
+  await act(async () => {
+    issue.resolve({ ...previous, grantId: GRANT_ID });
+  });
+  await waitFor(() => expect(mutation?.state.status).toBe('success'));
+  expect(cache.getMutationCache().getAll()).toContain(mutation);
+  expect(operations['vault.grant-issue']).toHaveBeenCalledTimes(1);
+  expect(operations['vault.grant-request-list']).toHaveBeenCalledTimes(3);
+  expect(screen.queryByText('apr_previous_account')).not.toBeInTheDocument();
 });

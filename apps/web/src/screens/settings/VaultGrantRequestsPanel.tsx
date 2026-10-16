@@ -41,31 +41,53 @@ export function VaultGrantRequestsPanel({ workspaceId }: { readonly workspaceId:
   const [reviewedId, setReviewedId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const threads = useQuery({
-    queryKey: ['vault-request-threads', workspaceId],
-    queryFn: async () => {
+    queryKey: ['settings', 'vault-request-threads', workspaceId],
+    queryFn: async ({ signal }) => {
       try {
-        return (await client.operations['thread.list']({ workspaceId })).items
+        const result = await client.operations['thread.list']({ workspaceId });
+        signal.throwIfAborted();
+        return result.items
           .filter((row) => row.status !== 'archived')
           .map(({ id, name }) => ({ id, label: name ?? id }));
       } catch (error) {
+        signal.throwIfAborted();
         throw safeFailure(error);
       }
     },
     retry: false,
+    staleTime: 0,
   });
-  const threadId = selectedThreadId || threads.data?.[0]?.id || '';
+  const threadsCurrent =
+    threads.isFetchedAfterMount && threads.isSuccess && threads.fetchStatus === 'idle';
+  const threadItems = threadsCurrent ? threads.data : [];
+  const threadId =
+    threadItems.find(({ id }) => id === selectedThreadId)?.id || threadItems[0]?.id || '';
+  const requestsKey = ['settings', 'vault-grant-requests', workspaceId, threadId];
   const requests = useQuery({
-    queryKey: ['vault-grant-requests', workspaceId, threadId],
+    queryKey: requestsKey,
     enabled: Boolean(threadId),
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       try {
-        return await client.operations['vault.grant-request-list']({ workspaceId, threadId });
+        const result = await client.operations['vault.grant-request-list']({
+          workspaceId,
+          threadId,
+        });
+        signal.throwIfAborted();
+        return result;
       } catch (error) {
+        signal.throwIfAborted();
         throw safeFailure(error);
       }
     },
     retry: false,
+    staleTime: 0,
   });
+  const requestsCurrent =
+    threadsCurrent &&
+    requests.isFetchedAfterMount &&
+    requests.isSuccess &&
+    requests.fetchStatus === 'idle';
+  const requestItems = requestsCurrent ? requests.data.items : [];
   const action = useMutation({
     mutationKey: ['vault-grant-request-action', workspaceId, threadId],
     retry: false,
@@ -108,7 +130,14 @@ export function VaultGrantRequestsPanel({ workspaceId }: { readonly workspaceId:
         throw safeFailure(error);
       }
     },
-    onSuccess: async (_, input) => {
+    // Account replacement removes settings queries. A departed mutation must not revive them.
+    onMutate: () => cache.getQueryCache().find({ queryKey: requestsKey, exact: true }),
+    onSuccess: async (_, input, sourceQuery) => {
+      if (
+        !sourceQuery ||
+        cache.getQueryCache().find({ queryKey: requestsKey, exact: true }) !== sourceQuery
+      )
+        return;
       setReviewedId(null);
       setNotice(
         input.kind === 'issue'
@@ -118,13 +147,17 @@ export function VaultGrantRequestsPanel({ workspaceId }: { readonly workspaceId:
             : 'Credential request updated.'
       );
       await requests.refetch();
-      await cache.invalidateQueries({ queryKey: ['settings', 'vault', workspaceId] });
-      await cache.invalidateQueries({ queryKey: ['settings', 'vault-secrets', workspaceId] });
+      if (cache.getQueryCache().find({ queryKey: requestsKey, exact: true }) !== sourceQuery)
+        return;
+      await Promise.all([
+        cache.invalidateQueries({ queryKey: ['settings', 'vault', workspaceId] }),
+        cache.invalidateQueries({ queryKey: ['settings', 'vault-secrets', workspaceId] }),
+      ]);
     },
   });
   const busy = action.isPending || requests.isFetching || threads.isFetching;
   const disabled =
-    busy || disconnected || requests.isError || threads.isError || action.isError || !threadId;
+    busy || disconnected || !threadsCurrent || !requestsCurrent || action.isError || !threadId;
   const denied = [threads.error, requests.error, action.error].some(
     (error) => error instanceof ApiCallError && [401, 403].includes(error.status)
   );
@@ -187,8 +220,8 @@ export function VaultGrantRequestsPanel({ workspaceId }: { readonly workspaceId:
           <Select
             label="Request Thread"
             selectedKey={threadId}
-            items={threads.data ?? []}
-            isDisabled={busy || disconnected}
+            items={threadItems}
+            isDisabled={busy || disconnected || !threadsCurrent}
             onSelectionChange={(key) => {
               setSelectedThreadId(String(key));
               setReviewedId(null);
@@ -196,7 +229,7 @@ export function VaultGrantRequestsPanel({ workspaceId }: { readonly workspaceId:
               setNotice(null);
             }}
           />
-          {!threads.isLoading && !threads.isError && !threads.data?.length ? (
+          {threadsCurrent && !threadItems.length ? (
             <EmptyState
               title="No request Thread"
               hint="Create a conversation Thread, then refresh to request credential use."
@@ -279,10 +312,10 @@ export function VaultGrantRequestsPanel({ workspaceId }: { readonly workspaceId:
             Request credential-use grant
           </Button>
           {requests.isLoading ? <Skeleton lines={3} /> : null}
-          {requests.data?.items.length === 0 ? (
+          {requestsCurrent && requestItems.length === 0 ? (
             <p>No credential-use requests on this Thread.</p>
           ) : null}
-          {requests.data?.items.map((record) => (
+          {requestItems.map((record) => (
             <div key={record.approvalRequestId} className="flex flex-col gap-2">
               <h3 className="font-semibold text-fg">{record.approvalRequestId}</h3>
               <p>
