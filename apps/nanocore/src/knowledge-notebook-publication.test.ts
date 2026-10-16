@@ -309,7 +309,8 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     expect((await listing(f)).items.some((entry) => entry.id === id)).toBe(false);
     expect(git(f, ['show', `${revision}:pages/${id}.md`])).toBe(content);
 
-    f.store.updateThread(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, {
+    // Change the fixture's actual current audience; metadata-only updateThread does not alter it.
+    Object.assign(f.store.getThread(DEMO_WORKSPACE_ID, DEMO_THREAD_ID), {
       visibility: 'private',
       privateOwnerUserId: LOCAL_USER_ID,
     });
