@@ -1,6 +1,7 @@
 import { createRequestId } from '@openkit/core-client';
 import { useEffect, useRef, useState } from 'react';
 import { useConnection } from '../../app/core-client';
+import { useGenerativeSourceGroups } from '../../generative/source-groups';
 import { EmptyState, ErrorBanner, Skeleton, TurnSeparator } from '../../primitives';
 import {
   groupItemsByTurn,
@@ -11,6 +12,7 @@ import {
   useThreadItems,
   useWithdrawPendingRequest,
 } from './data';
+import { GenerativePresentationView } from './GenerativePresentationView';
 import { ItemView } from './ItemView';
 
 const MISSING_TURN_ERROR = 'This turn failed. Review the conversation before trying again.';
@@ -92,6 +94,8 @@ export function ThreadStream({
 
   const baselineReady =
     baseline.workspaceId === workspaceId && baseline.threadId === threadId && baseline.ready;
+  const sourceGroups = useGenerativeSourceGroups(items.data);
+  const groupedSourceIds = new Set([...sourceGroups.values()].map((item) => item.id));
   const live = useLiveThreadItems(workspaceId, threadId, items.isSuccess, baselineReady);
   const dashboard = live.data;
   const respond = useRespondApproval(workspaceId ?? '', threadId);
@@ -229,12 +233,18 @@ export function ThreadStream({
             ) : null}
             {index > 0 ? <TurnSeparator label={`Turn ${index + 1}`} /> : null}
             {group.items.map((item) =>
-              item.type === 'user-input-request' &&
-              (items.data ?? []).some(
-                (candidate) =>
-                  candidate.type === 'user-input-response' &&
-                  candidate.userInputRequestId === item.userInputRequestId
-              ) ? null : (
+              groupedSourceIds.has(item.id) ? null : item.type === 'generative-ui-reference' ? (
+                <GenerativePresentationView
+                  key={item.id}
+                  item={item}
+                  source={sourceGroups.get(item.id)}
+                />
+              ) : item.type === 'user-input-request' &&
+                (items.data ?? []).some(
+                  (candidate) =>
+                    candidate.type === 'user-input-response' &&
+                    candidate.userInputRequestId === item.userInputRequestId
+                ) ? null : (
                 <ItemView
                   key={item.id}
                   item={item}
