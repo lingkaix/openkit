@@ -80,6 +80,12 @@ describe('NotebookEditWorkspace', () => {
     expect(
       (await editor.update({ script: 'cat /etc/passwd; cat /proc/self/environ' }, signal)).stdout
     ).toBe('');
+    await expect(
+      editor.update(
+        { script: 'echo scratch > scratch.md; echo nested > scratch.md/nested.md' },
+        signal
+      )
+    ).rejects.toMatchObject({ code: 'invalid_request' });
     expect(editor.changes()).toEqual({});
   });
 
@@ -215,7 +221,7 @@ describe('NotebookEditWorkspace', () => {
     });
     const bounded = workspace({ deadline: Date.now() + 50 });
     await expect(
-      bounded.update({ script: 'while true; do :; done' }, signal)
+      bounded.update({ script: 'while true; do touch scratch.md; done' }, signal)
     ).rejects.toMatchObject({ code: 'deadline_reached' });
     expect(() => bounded.changes()).toThrow(/deadline/);
   });

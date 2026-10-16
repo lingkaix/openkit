@@ -127,6 +127,16 @@ function safePage(path: string): boolean {
   }
 }
 
+/** A regular file cannot also be an ancestor directory in the candidate tree. */
+function hasFileParent(path: string, files: Readonly<Record<string, string>>): boolean {
+  const parts = path.split('/').slice(0, -1);
+  while (parts.length > 0) {
+    if (Object.hasOwn(files, parts.join('/'))) return true;
+    parts.pop();
+  }
+  return false;
+}
+
 /** Clips display on a UTF-8 boundary without introducing a replacement character. */
 function clip(text: string, bytes: number): string {
   const encoded = Buffer.from(text);
@@ -168,7 +178,7 @@ export class NotebookEditWorkspace {
       this.files[path] = this.base[path]!;
     }
     for (const path of Object.keys(this.sources))
-      if (!safeRelativePath(path))
+      if (!safeRelativePath(path) || hasFileParent(path, this.sources))
         throw new NotebookEditWorkspaceError(
           'invalid_request',
           'Notebook editing requires safe selected Source names.'
@@ -180,6 +190,7 @@ export class NotebookEditWorkspace {
   changes(): Record<string, string | null> {
     this.assertAvailable();
     this.validate(this.files);
+    this.assertAvailable();
     return this.diff(this.files);
   }
 
@@ -223,6 +234,15 @@ export class NotebookEditWorkspace {
     timer.unref();
     signal.addEventListener('abort', cancel, { once: true });
     let violation: NotebookEditWorkspaceError | undefined;
+    const ensureLive = (): void => {
+      if (signal.aborted) this.cancel('cancelled');
+      else if (controller.signal.aborted || Date.now() >= deadline) this.cancel('deadline_reached');
+      if (this.terminal)
+        throw new NotebookEditWorkspaceError(
+          this.terminal,
+          'Notebook editing was cancelled or reached its deadline.'
+        );
+    };
     try {
       const initial = Object.fromEntries([
         ...Object.entries(this.files).map(([path, text]) => [`/notebook/${path}`, text]),
@@ -252,13 +272,7 @@ export class NotebookEditWorkspace {
         }
       };
       const writable = (path: string, directory = false): string => {
-        if (controller.signal.aborted || Date.now() >= deadline) {
-          this.cancel(signal.aborted ? 'cancelled' : 'deadline_reached');
-          throw new NotebookEditWorkspaceError(
-            this.terminal!,
-            'Notebook editing was cancelled or reached its deadline.'
-          );
-        }
+        ensureLive();
         const normalized = posix.resolve('/', path);
         const relative = normalized.slice('/notebook/'.length);
         if (
@@ -266,12 +280,7 @@ export class NotebookEditWorkspace {
           !(directory ? safeRelativePath(relative) : safePage(relative)) ||
           (Object.hasOwn(this.base, relative) && !this.editable.has(relative)) ||
           (!directory && Object.keys(this.base).some((path) => path.startsWith(`${relative}/`))) ||
-          relative
-            .split('/')
-            .slice(0, -1)
-            .some((_, index, parts) =>
-              Object.hasOwn(this.base, parts.slice(0, index + 1).join('/'))
-            )
+          hasFileParent(relative, this.base)
         )
           deny(
             'scope_denied',
@@ -389,13 +398,7 @@ export class NotebookEditWorkspace {
         env: ENVIRONMENT,
       });
       if (violation) throw violation;
-      if (signal.aborted) this.cancel('cancelled');
-      else if (Date.now() >= deadline) this.cancel('deadline_reached');
-      if (this.terminal)
-        throw new NotebookEditWorkspaceError(
-          this.terminal,
-          'Notebook editing was cancelled or reached its deadline.'
-        );
+      ensureLive();
       // just-bash reports output exhaustion as exit 126 with a bounded resource diagnostic.
       const outputLimit =
         result.exitCode === 126 && /output size|output.*exceeded/.test(result.stderr);
@@ -429,6 +432,7 @@ export class NotebookEditWorkspace {
         next[path.slice('/notebook/'.length)] = text;
       }
       this.validate(next);
+      ensureLive();
       this.files = next;
       this.directories = directories;
       const stdout = clip(result.stdout, NOTEBOOK_EDIT_LIMITS.outputBytes);
@@ -443,6 +447,7 @@ export class NotebookEditWorkspace {
         truncated: outputLimit || stdout !== result.stdout || stderr !== result.stderr,
       };
     } catch (error) {
+      ensureLive();
       if (error instanceof NotebookEditWorkspaceError) throw error;
       throw (
         violation ??
@@ -460,6 +465,12 @@ export class NotebookEditWorkspace {
 
   /** Checks content and diff limits before temporary state is retained or submitted. */
   private validate(files: Readonly<Record<string, string>>): void {
+    for (const path of Object.keys(files))
+      if (hasFileParent(path, files))
+        throw new NotebookEditWorkspaceError(
+          'invalid_request',
+          'Notebook editing requires a regular-file page tree.'
+        );
     let total = 0;
     for (const text of [...Object.values(files), ...Object.values(this.sources)]) {
       if (typeof text !== 'string' || Buffer.from(text).toString('utf8') !== text)
