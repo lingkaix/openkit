@@ -23,7 +23,7 @@ test('test image jobs reap orphaned processes through Docker init', () => {
 });
 
 test('release workflow serializes tag releases and pins third-party actions', () => {
-  assert.deepEqual(workflow.on.push.tags, ['v*.*.*']);
+  assert.deepEqual(workflow.on.push.tags, ['v*.*.*-*']);
   assert.equal(workflow.concurrency['cancel-in-progress'], false);
   assert.match(workflow.concurrency.group, /openkit-release/);
 
@@ -526,6 +526,7 @@ test('release notes are checked before publication and verified against the gene
 // release-preflight, publish-container-images, github-release, and verify-release were re-recorded for the release-notes generator.
 // verify-release was re-recorded again when the published-body comparison moved into scripts/release-notes.mjs.
 // The App split re-records only the Worker matrix expression and final App dependency edges.
+// P15 re-records only github-release and verify-release for the fifth attachment and downloaded-manifest check.
 // New App jobs are frozen below; an additional normalization check proves unchanged Worker and final steps.
 const unchangedJobBaseline = {
   'container-image-matrix': '83615f34105ada997ed8c01f6fd06e95f87e9d5c05ffccc8c877069b1bfe849e',
@@ -547,8 +548,8 @@ const unchangedJobBaseline = {
   'package-release-assets': '9bb6035b4d43646481b89f1a40651ec23203e343a29a9506d209e5f551de4eea',
   'qualify-nanohost': '9c42422c9716a0ad27688e745ac4ca1716671c9709349dfdca2fd01abe619474',
   'publish-container-images': 'f27ed3a02d3135abb2dd6a026fd1c732a0149239b369c4c2f6120b9d85609c64',
-  'github-release': 'a958b120359eb1021bca3cc1f339f3eed559fdd35b1bce29e40f8ddbb480e766',
-  'verify-release': '40b71518d310e49c1a68ab3bc801f1500d3e813f0f2410017db67329b85896b9',
+  'github-release': 'f1258c06feaca85253fdaf3dd822151cfe731c10373d614ce8c86eac3a541b14',
+  'verify-release': 'aadccb3f97bfdb37c6d65dcb2bc5592bebdbe9d3bbb05001e1625efd305e727a',
 };
 
 const candidateJobBaseline = {
@@ -875,8 +876,8 @@ test('Worker publication and final verification retain the reviewed cadence step
   );
   const old = {
     'publish-container-images': 'b57d664fa2429d70e32d736f2bbd8045e08b95b145895600371d4eadbd366386',
-    'github-release': '342e687fc7bcb4773a791cc7d8925fb4bab7306f4cabade9513ac69238407cfd',
-    'verify-release': '20c614ff0f1300b403789cfb9145f5ca26fdfa2f5482d7a3089f0682681b5c9f',
+    'github-release': 'cf24c8b6455a061dc22969b5965ea64a851c2145ac72e73b0453e629a8a9ace3',
+    'verify-release': '81dc2791581d3d9b957f763167fd133728b8c9501ceafdec267c0bdd2c53540b',
   };
   for (const [name, digest] of Object.entries(old)) {
     const normalized = blocks
@@ -939,6 +940,17 @@ test('publication proof covers every App producer, consumer and native fixture b
         'scripts/release-app-no-as-limit.c',
       ].sort()
     );
+    writeFileSync(
+      join(root, '.github/workflows/release-promotion.yml'),
+      'jobs:\n  promote:\n    steps:\n      - run: node scripts/promotion-fixture.mjs\n'
+    );
+    writeFileSync(join(root, 'scripts/promotion-fixture.mjs'), 'export const version = 1;\n');
+    const promoted = publicationInputsAt(root, snapshot());
+    assert.ok(promoted.jobs['stable-promotion-workflow']);
+    assert.ok(promoted.files['.github/workflows/release-promotion.yml']);
+    assert.ok(promoted.files['scripts/promotion-fixture.mjs']);
+    writeFileSync(join(root, 'scripts/promotion-fixture.mjs'), 'export const version = 2;\n');
+    assert.notEqual(publicationInputsAt(root, snapshot()).sha256, promoted.sha256);
     writeFileSync(join(root, 'scripts/release-app-no-as-limit.c'), 'fixture changed\n');
     assert.notEqual(publicationInputsAt(root, snapshot()).sha256, before.sha256);
     const path = join(root, '.github/workflows/ci.yml');
@@ -1190,4 +1202,47 @@ test('App tag digest selection refuses missing proof and immutable disagreement'
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('manifest publication is required before notes and the existing immutable uploader carries all five assets', () => {
+  const publish = workflow.jobs['github-release'];
+  const manifest = step(publish, 'Generate release manifest and checksum');
+  assert.ok(
+    publish.steps.indexOf(manifest) < publish.steps.indexOf(step(publish, 'Create release notes'))
+  );
+  assert.match(manifest.run, /release-record\.mjs[\s\S]*--publication-assets portable-assets/u);
+  assert.match(
+    step(publish, 'Create immutable GitHub Release').run,
+    /portable-assets\/openkit-release-\$\{GITHUB_REF_NAME\}\.json/u
+  );
+  const verification = step(
+    workflow.jobs['verify-release'],
+    'Download and verify GitHub Release assets'
+  ).run;
+  assert.match(verification, /openkit-release-\$\{process.env.GITHUB_REF_NAME\}\.json/u);
+  assert.match(
+    verification,
+    /release-record\.mjs[\s\S]*--verify-publication-assets release-download/u
+  );
+});
+
+test('stable rehearsal is tag-only, scratch-only, serialized and has no construction path', () => {
+  const stable = parse(readFileSync('.github/workflows/release-promotion.yml', 'utf8'));
+  assert.deepEqual(stable.on.push.tags, ['v*.*.*', '!v*.*.*-*']);
+  assert.deepEqual(Object.keys(stable.on), ['push']);
+  assert.deepEqual(stable.permissions, {});
+  assert.equal(stable.concurrency.group, 'openkit-release');
+  assert.equal(stable.concurrency['cancel-in-progress'], false);
+  const job = stable.jobs.promote;
+  assert.equal(job.steps[0].name, 'Require bounded scratch authority');
+  assert.match(job.steps[0].run, /notrucked\/openkit/u);
+  assert.match(job.steps[0].run, /R001 remains open/u);
+  assert.ok(job.steps.find((s) => s.run?.includes('release-promotion.mjs')));
+  const commands = job.steps.map((s) => s.run ?? '').join('\n');
+  assert.doesNotMatch(
+    commands,
+    /(?:docker|pnpm|cargo) (?:build|buildx build)|package-release-assets\.mjs/u
+  );
+  for (const entry of job.steps) if (entry.uses) assert.match(entry.uses, /^[^@]+@[a-f0-9]{40}$/u);
+  assert.match(readFileSync('scripts/release-preflight.mjs', 'utf8'), /requirePrerelease: true/u);
 });

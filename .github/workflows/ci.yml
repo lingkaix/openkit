@@ -6,7 +6,7 @@ on:
     branches:
       - main
     tags:
-      - "v*.*.*"
+      - "v*.*.*-*"
   workflow_dispatch:
     inputs:
       gate:
@@ -1954,6 +1954,13 @@ jobs:
           name: release-portable-assets
           path: portable-assets
 
+      - name: Generate release manifest and checksum
+        run: |
+          node scripts/release-record.mjs \
+            --repo-root . --tag "${GITHUB_REF_NAME}" --sha "${GITHUB_SHA}" \
+            --repository "${GITHUB_REPOSITORY}" --records release-records \
+            --publication-assets portable-assets
+
       - name: Create release notes
         env:
           REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
@@ -1991,6 +1998,7 @@ jobs:
             "portable-assets/openkit-ops-skill-${GITHUB_REF_NAME}.tar.gz" \
             "portable-assets/openkit-nanohost-${GITHUB_REF_NAME}-linux-amd64.tar.gz" \
             "portable-assets/openkit-nanohost-${GITHUB_REF_NAME}-linux-arm64.tar.gz" \
+            "portable-assets/openkit-release-${GITHUB_REF_NAME}.json" \
             portable-assets/SHA256SUMS \
             --repo "${GITHUB_REPOSITORY}" \
             "${release_flags[@]}"
@@ -2071,6 +2079,7 @@ jobs:
           const names = release.assets.map((asset) => asset.name).sort();
           const expected = [
             'SHA256SUMS',
+            `openkit-release-${process.env.GITHUB_REF_NAME}.json`,
             `openkit-ops-skill-${process.env.GITHUB_REF_NAME}.tar.gz`,
             `openkit-nanohost-${process.env.GITHUB_REF_NAME}-linux-amd64.tar.gz`,
             `openkit-nanohost-${process.env.GITHUB_REF_NAME}-linux-arm64.tar.gz`,
@@ -2083,6 +2092,10 @@ jobs:
           }
           fs.writeFileSync('release-body.md', String(release.body ?? ''));
           NODE
+          node scripts/release-record.mjs \
+            --repo-root . --tag "${GITHUB_REF_NAME}" --sha "${GITHUB_SHA}" \
+            --repository "${GITHUB_REPOSITORY}" --records release-records \
+            --verify-publication-assets release-download
           node scripts/release-notes.mjs \
             --repo-root . \
             --tag "${GITHUB_REF_NAME}" \

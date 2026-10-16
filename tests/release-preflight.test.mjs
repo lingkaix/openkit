@@ -415,6 +415,15 @@ test('release preflight rejects worker images without an explicit build target',
  */
 function makeReleaseFixture(options = {}) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-release-preflight-'));
+  mkdirSync(join(root, 'release-notes'));
+  writeJson(join(root, 'release-notes', 'v0.0.1-rc.1.manifest.json'), {
+    previousAppImageId: `sha256:${'a'.repeat(64)}`,
+    migrationFree: true,
+    configurationCompatible: true,
+    retainedDataCompatible: true,
+    recovery: 'previous-image-compatible',
+    provenance: 'synthetic-reviewed-assessment',
+  });
   const version = '0.0.1';
   const packageVersion = options.packageVersion ?? version;
   const digest = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
