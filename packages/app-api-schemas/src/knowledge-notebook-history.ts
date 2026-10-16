@@ -6,6 +6,9 @@ import {
   UpdateKnowledgeNotebookResponseSchema,
 } from './knowledge-notebook.js';
 
+/** Total UTF-8 before/after text returned by one Notebook diff. */
+export const KNOWLEDGE_NOTEBOOK_DIFF_TEXT_LIMIT_BYTES = 64 * 1024;
+
 const RevisionSchema = z.string().min(1);
 const PageIdsSchema = z
   .array(z.string().refine((id) => KnowledgeNotebookPathSchema.safeParse(`${id}.md`).success))
@@ -62,12 +65,13 @@ export const KnowledgeNotebookDiffRequestSchema = z
   })
   .strict();
 
-/** Complete selected file text, including absent paths; callers render their preferred text diff. */
+/** Bounded selected text; truncated displays cannot authorize a restore or removal. */
 export const KnowledgeNotebookDiffResponseSchema = z
   .object({
     baseRevision: RevisionSchema,
     fromRevision: RevisionSchema,
     forRestore: z.boolean(),
+    truncated: z.boolean(),
     changes: z
       .array(
         z
@@ -80,7 +84,18 @@ export const KnowledgeNotebookDiffResponseSchema = z
       )
       .max(256),
   })
-  .strict();
+  .strict()
+  .refine(
+    ({ changes }) =>
+      changes.reduce(
+        (size, change) =>
+          size +
+          new TextEncoder().encode(change.before ?? '').length +
+          new TextEncoder().encode(change.after ?? '').length,
+        0
+      ) <= KNOWLEDGE_NOTEBOOK_DIFF_TEXT_LIMIT_BYTES,
+    'Notebook diff text exceeds its admitted bound.'
+  );
 
 /** Human restore binds its complete selected diff to immutable base and target revisions. */
 export const RestoreKnowledgeNotebookRequestSchema = z

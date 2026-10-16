@@ -92,7 +92,13 @@ async function call(
     },
     body: JSON.stringify({ workspaceId: 'ws_demo', ...body }),
   });
-  return { status: response.status, body: await response.json() };
+  const text = await response.text();
+  return {
+    status: response.status,
+    body: response.headers.get('content-type')?.includes('application/json')
+      ? JSON.parse(text)
+      : text,
+  };
 }
 afterEach(() => {
   for (const f of fixtures.splice(0)) {
@@ -187,7 +193,7 @@ describe('native Workspace Notebook history and restore', () => {
       revision: s.initial,
       parentRevision: null,
       availability: 'available',
-      changedPaths: ['index.md'],
+      changedPaths: ['index.md', 'mem_project.md'],
     });
     expect(rootHistory.body.nextRevision).toBeNull();
     const diff = await call(f, 'knowledge.notebook.diff', {
@@ -204,6 +210,7 @@ describe('native Workspace Notebook history and restore', () => {
       forRestore: true,
     });
     expect(preview.status, JSON.stringify(preview.body)).toBe(200);
+    expect(preview.body.truncated).toBe(false);
     expect(preview.body.changes).toEqual([{ path: 'alpha.md', before: updated, after: restored }]);
     const missing = await call(f, 'knowledge.notebook.restore', {
       requestId: randomUUID(),
@@ -267,6 +274,97 @@ describe('native Workspace Notebook history and restore', () => {
       )
       .all(input.requestId);
     expect(admissions).toHaveLength(1);
+  });
+  it('bounds ordinary UTF-8 diff display and refuses an oversized restore before publication', async () => {
+    const f = fixture();
+    const s = await seed(f);
+    const large = page('large', '🧭'.repeat(10_000), s.reference).replace(
+      'review_state: accepted',
+      'review_state: user-authored'
+    );
+    const published = await call(f, 'knowledge.notebook.update', {
+      requestId: randomUUID(),
+      baseRevision: s.revision,
+      changes: [{ path: 'large.md', content: large }],
+      summary: 'Large synthetic page',
+    });
+    expect(published.status, JSON.stringify(published.body)).toBe(200);
+    const updated = large.replace('🧭', '🗺');
+    const removed = page('removed', 'Selected removed text.', s.reference).replace(
+      'review_state: accepted',
+      'review_state: user-authored'
+    );
+    const current = await call(f, 'knowledge.notebook.update', {
+      requestId: randomUUID(),
+      baseRevision: published.body.notebookRevision,
+      changes: [
+        { path: 'large.md', content: updated },
+        { path: 'removed.md', content: removed },
+      ],
+      summary: 'Large selected restore with removal',
+    });
+    expect(current.status, JSON.stringify(current.body)).toBe(200);
+    const selection = {
+      baseRevision: current.body.notebookRevision,
+      fromRevision: published.body.notebookRevision,
+      pageIds: ['large', 'removed'],
+    };
+    expect(Buffer.byteLength(updated)).toBeLessThan(64 * 1024);
+    expect(Buffer.byteLength(large)).toBeLessThan(64 * 1024);
+    expect(Buffer.byteLength(updated) + Buffer.byteLength(large)).toBeGreaterThan(64 * 1024);
+    const diff = await call(f, 'knowledge.notebook.diff', selection);
+    expect(diff.status, JSON.stringify(diff.body)).toBe(200);
+    expect(diff.body.truncated).toBe(true);
+    expect(diff.body.changes).toHaveLength(2);
+    const [displayed, removal] = diff.body.changes;
+    expect(displayed.path).toBe('large.md');
+    expect(displayed.before).toBe(updated);
+    expect(large.startsWith(displayed.after)).toBe(true);
+    expect(displayed.after).not.toContain('\uFFFD');
+    expect(displayed.after).not.toBe(large);
+    expect(removal.path).toBe('removed.md');
+    expect(removal.after).toBeNull();
+    expect(removed.startsWith(removal.before)).toBe(true);
+    expect(removal.before).not.toBe(removed);
+    expect(
+      diff.body.changes.reduce(
+        (bytes: number, change: { before: string | null; after: string | null }) =>
+          bytes + Buffer.byteLength(change.before ?? '') + Buffer.byteLength(change.after ?? ''),
+        0
+      )
+    ).toBeLessThanOrEqual(64 * 1024);
+    const receipts = f.store.listCommandRequests();
+    for (const result of [
+      await call(f, 'knowledge.notebook.diff', { ...selection, forRestore: true }),
+      await call(f, 'knowledge.notebook.restore', {
+        ...selection,
+        requestId: randomUUID(),
+        summary: 'Oversized removal confirmation',
+        confirmRemoval: true,
+      }),
+    ]) {
+      expect(result.status, JSON.stringify(result.body)).toBe(400);
+      expect(result.body).toMatchObject({
+        code: 'invalid_request',
+        message: 'Selected Notebook diff exceeds the 64 KiB display limit. Select fewer pages.',
+      });
+    }
+    expect(f.store.listCommandRequests()).toEqual(receipts);
+    expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(selection.baseRevision);
+    expect(
+      execFileSync(
+        'git',
+        ['--git-dir', f.repositoryPath, 'show', `${selection.baseRevision}:pages/large.md`],
+        { encoding: 'utf8' }
+      )
+    ).toBe(updated);
+    expect(
+      execFileSync(
+        'git',
+        ['--git-dir', f.repositoryPath, 'show', `${selection.baseRevision}:pages/removed.md`],
+        { encoding: 'utf8' }
+      )
+    ).toBe(removed);
   });
   it('withholds source-denied historical metadata and bytes and rechecks a revoked credential', async () => {
     const f = fixture();
