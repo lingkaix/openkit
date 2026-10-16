@@ -20,8 +20,13 @@ import {
 } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { publishedErrorMessage } from '../api-errors.js';
-import { currentWorkerLineageWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import {
+  currentSchedulerAdmissionWorkspaceAuthority,
+  currentWorkerLineageWorkspaceAuthority,
+} from '../auth/operation-authorizer.js';
+import { isThreadVisible } from '../auth/thread-visibility.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
+import { prepareTurnFileSourceInputs } from '../context/turn-source-files.js';
 import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
 import {
   createWorkerContextPackageFiles,
@@ -35,6 +40,7 @@ import {
   type WorkerContextPackageKnowledgeSelectionReference,
   type WorkerContextPackageMaterialExclusion,
   type WorkerContextPackageMaterialSelectionInput,
+  type WorkerContextPackageSourceFileInput,
   type WorkerContextPackageTrace,
   writeWorkerContextPackageFiles,
   writeWorkerContextPackageTrace,
@@ -45,7 +51,10 @@ import {
   type FsStore,
 } from '../lib/store.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
-import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
+import {
+  listSchedulerAdmissionEntriesForWorkspace,
+  type SchedulerWorkerStorageChoice,
+} from '../scheduler-records.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { resolveWorkspaceKnowledgeRetrievalPages } from '../storage/index-rebuild.js';
@@ -431,8 +440,65 @@ export async function prepareWorkerTurnContextPackage(
     }
   }
 
+  const workspaceRoot = join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId);
+  const originalInputs = structuredClone(turn.fileInputs ?? []);
+  const assertCurrentSources = () => {
+    if (!originalInputs.length) return;
+    if (!coreDb)
+      throw new TurnStartValidationError(
+        'source_unavailable',
+        'Turn source authority is unavailable.',
+        503
+      );
+    const current = store.getTurn(input.workspaceId, input.threadId, input.turnId);
+    const admissions = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+      workspaceId: input.workspaceId,
+      statuses: ['admitted'],
+    }).filter(
+      (entry) =>
+        entry.threadId === input.threadId &&
+        entry.turnId === input.turnId &&
+        entry.requestId === input.requestId
+    );
+    const admission = admissions.length === 1 ? admissions[0] : undefined;
+    if (
+      isSealedTurnTerminal(current.status) ||
+      !isDeepStrictEqual(current.fileInputs ?? [], originalInputs) ||
+      !admission ||
+      !currentSchedulerAdmissionWorkspaceAuthority(coreDb, admission, 'thread.read', false) ||
+      !isThreadVisible(
+        store,
+        store.getThread(input.workspaceId, input.threadId),
+        responsibleUserIdForActor(admission.triggerActor) ?? undefined,
+        admission.serverAdminTokenId !== null
+      )
+    )
+      throw new TurnStartValidationError(
+        'source_unavailable',
+        'Current Turn input authority is unavailable.',
+        503
+      );
+  };
+  let sourceFiles: WorkerContextPackageSourceFileInput[];
+  try {
+    sourceFiles = await prepareTurnFileSourceInputs({
+      workspaceRoot,
+      turn,
+      assertCurrent: assertCurrentSources,
+    });
+  } catch (error) {
+    if (error instanceof TurnStartValidationError) throw error;
+    const refusal = new TurnStartValidationError(
+      'source_unavailable',
+      'Turn input originals are unavailable.',
+      503
+    );
+    refusal.cause = error;
+    throw refusal;
+  }
   const includedItemIds = [workerRequestItemId, ...includedPriorItems.map((item) => item.id)];
   const packageFiles = createWorkerContextPackageFiles({
+    sourceFiles,
     contextBudgetTokens,
     includedItemIds,
     knowledgeSelections,
@@ -443,7 +509,6 @@ export async function prepareWorkerTurnContextPackage(
     workerRequestItemId,
     workspaceId: input.workspaceId,
   });
-  const workspaceRoot = join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId);
   const packageRoot = join(
     workspaceRoot,
     'threads',
@@ -453,6 +518,7 @@ export async function prepareWorkerTurnContextPackage(
     'context-package'
   );
   await writeWorkerContextPackageFiles(workspaceRoot, packageFiles, { admission });
+  assertCurrentSources();
   return {
     checkpoint,
     requestId: input.requestId,
