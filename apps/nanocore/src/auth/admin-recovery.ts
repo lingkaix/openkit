@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
+import { deriveEntityId, isEntityId } from '@openkit/protocol';
 
 import { recordServerAuditEvent } from '../audit-events.js';
 import { acquireDataRootLock, DataRootLockError } from '../bootstrap/lock.js';
@@ -161,19 +162,18 @@ export function runOpenKitOperatorCli(
     const flags = parseFlags(argv.slice(2), ['--data-root']);
     const dataRoot = requireAbsolutePath(flags['--data-root']!, 'data-root');
 
-    return runLocked(
-      dataRoot,
-      options,
-      (coreDb) =>
-        coreDb.sqlite
-          .prepare(
-            `SELECT id AS userId, lower(trim(email)) AS email, display_name AS displayName
+    return runLocked(dataRoot, options, (coreDb) => {
+      const users = coreDb.sqlite
+        .prepare(
+          `SELECT id AS userId, lower(trim(email)) AS email, display_name AS displayName
            FROM users
            WHERE status = 'active'
            ORDER BY id`
-          )
-          .all() as AdminRecoveryUser[]
-    );
+        )
+        .all() as AdminRecoveryUser[];
+      if (users.some((user) => !isEntityId('usr', user.userId))) throw recoveryRequired();
+      return users;
+    });
   }
 
   if (argv[0] === 'admin' && argv[1] === 'recover-access') {
@@ -512,9 +512,9 @@ function readRecoveryEnvelope(fileDescriptor: number, path: string): AdminRecove
     typeof value.requestId !== 'string' ||
     !UUID_PATTERN.test(value.requestId) ||
     typeof value.tokenId !== 'string' ||
-    !UUID_PATTERN.test(value.tokenId) ||
+    !isEntityId('tok', value.tokenId) ||
     typeof value.ownerUserId !== 'string' ||
-    value.ownerUserId.length === 0 ||
+    !isEntityId('usr', value.ownerUserId) ||
     typeof value.expiresAt !== 'string' ||
     canonicalInstantOrNull(value.expiresAt) === null ||
     typeof value.token !== 'string' ||
@@ -616,13 +616,13 @@ function recoveryRequestId(outputPath: string): string {
   return recoveryIdentity('request', outputPath);
 }
 
-/** Derives the Token UUID from the same unique path under a separate domain. */
+/** Derives the canonical Token identity from the exact immutable recovery request under its declared owner name. */
 function recoveryTokenId(outputPath: string): string {
-  return recoveryIdentity('token', outputPath);
+  return deriveEntityId('tok', ['admin_recovery', recoveryRequestId(outputPath)]);
 }
 
 /** Derives one stable RFC 4122 UUIDv5-shaped identity without storing the path. */
-function recoveryIdentity(domain: 'request' | 'token', outputPath: string): string {
+function recoveryIdentity(domain: 'request', outputPath: string): string {
   const hash = createHash('sha256')
     .update(`openkit-admin-recovery:${domain}\0`)
     .update(outputPath)

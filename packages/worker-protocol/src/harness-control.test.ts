@@ -19,32 +19,32 @@ const digest = 'a'.repeat(64);
 const sessionOpen = {
   adapterId: 'pi',
   agentSessionCompatibilityKey: digest,
-  agentSessionId: 'as_1',
+  agentSessionId: 'as_00000000-0000-7b98-8803-ea4242ad797b',
   agentSessionRuntimeBindingId: 'asrb_1',
   capabilityLoopbackCredential: credential('c'),
   effectiveSetupGeneration: 1,
   inferenceLoopbackCredential: credential('i'),
   resume: null,
-  threadId: 'th_1',
-  workspaceId: 'ws_1',
+  threadId: 'th_00000000-0000-7267-800d-a65e1b6a22d7',
+  workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
 };
 
 const turnStart = {
-  aepRef: '/openkit/sessions/as_1/config/package.json',
-  agentSessionId: 'as_1',
+  aepRef: '/openkit/sessions/as_00000000-0000-7b98-8803-ea4242ad797b/config/package.json',
+  agentSessionId: 'as_00000000-0000-7b98-8803-ea4242ad797b',
   agentSessionRuntimeBindingId: 'asrb_1',
   capabilityToken: credential('c'),
   contextPackageId: 'ctxpkg_tu_1',
-  contextRef: '/openkit/sessions/as_1/context',
+  contextRef: '/openkit/sessions/as_00000000-0000-7b98-8803-ea4242ad797b/context',
   deadline: '2026-09-30T00:00:00.000Z',
   inferenceToken: credential('i'),
   leaseId: 'lease_1',
   packageSnapshotId: 'aep_1',
-  threadId: 'th_1',
-  turnId: 'tu_1',
+  threadId: 'th_00000000-0000-7267-800d-a65e1b6a22d7',
+  turnId: 'tu_00000000-0000-7612-9335-5946291cc91e',
   turnSequence: 0,
   workerControlToken: credential('w'),
-  workspaceId: 'ws_1',
+  workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
 };
 
 describe('private Harness command bodies', () => {
@@ -96,15 +96,18 @@ describe('private Harness command bodies', () => {
 
   it('carries resume as null or the exact predecessor locator and digest pair', () => {
     const schema = HarnessCommandBodySchemas['session.open'];
-    expect(schema.safeParse({ ...sessionOpen, resume: { digest, locator: 'as_0' } }).success).toBe(
-      true
-    );
+    expect(
+      schema.safeParse({
+        ...sessionOpen,
+        resume: { digest, locator: 'as_00000000-0000-700c-ad9c-2f2b80087807' },
+      }).success
+    ).toBe(true);
     const { resume: _resume, ...withoutResume } = sessionOpen;
     expect(schema.safeParse(withoutResume).success).toBe(false);
     for (const resume of [
-      { locator: 'as_0' },
-      { digest, locator: 'as_0', path: '/sandbox' },
-      { digest: 'A'.repeat(64), locator: 'as_0' },
+      { locator: 'as_00000000-0000-700c-ad9c-2f2b80087807' },
+      { digest, locator: 'as_00000000-0000-700c-ad9c-2f2b80087807', path: '/sandbox' },
+      { digest: 'A'.repeat(64), locator: 'as_00000000-0000-700c-ad9c-2f2b80087807' },
       { digest, locator: '' },
     ]) {
       expect(schema.safeParse({ ...sessionOpen, resume }).success).toBe(false);
@@ -167,11 +170,11 @@ describe('private Harness command bodies', () => {
 
   it('accepts only the interrupt purpose', () => {
     const body = {
-      agentSessionId: 'as_1',
+      agentSessionId: 'as_00000000-0000-7b98-8803-ea4242ad797b',
       agentSessionRuntimeBindingId: 'asrb_1',
       leaseId: 'lease_1',
       purpose: 'interrupt',
-      turnId: 'tu_1',
+      turnId: 'tu_00000000-0000-7612-9335-5946291cc91e',
     };
     const schema = HarnessCommandBodySchemas['turn.interrupt'];
     expect(schema.safeParse(body).success).toBe(true);
@@ -372,7 +375,10 @@ describe('private Harness results', () => {
 describe('exact Harness effect instructions', () => {
   it('refuses additions and unowned authority before forwarding', () => {
     const schema = HarnessQueuedCommandBodySchemas['session.inspect'];
-    const core = { agentSessionId: 'as_1', agentSessionRuntimeBindingId: 'asrb_1' };
+    const core = {
+      agentSessionId: 'as_00000000-0000-7b98-8803-ea4242ad797b',
+      agentSessionRuntimeBindingId: 'asrb_1',
+    };
     expect(schema.safeParse({ ...core, note: 'ignored' }).success).toBe(false);
     for (const field of [
       'command',

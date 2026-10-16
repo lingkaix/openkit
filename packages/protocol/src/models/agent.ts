@@ -1,6 +1,11 @@
 import { z } from 'zod';
-
-import { AgentIdSchema, AgentProfileIdSchema, AgentSessionIdSchema } from '../common/ids.js';
+import {
+  AgentIdSchema,
+  AgentProfileIdSchema,
+  AgentSessionIdSchema,
+  ThreadIdSchema,
+  WorkspaceIdSchema,
+} from '../common/ids.js';
 import { TimestampSchema } from '../common/timestamps.js';
 
 /**
@@ -38,8 +43,8 @@ export const AgentSandboxSummarySchema = z.object({
 export const AgentSessionSchema = z.object({
   id: AgentSessionIdSchema,
   agentId: AgentIdSchema,
-  workspaceId: z.string().min(1),
-  threadId: z.string().min(1).nullable(),
+  workspaceId: WorkspaceIdSchema,
+  threadId: ThreadIdSchema.nullable(),
   status: AgentSessionStatusSchema,
   message: z.string().min(1).nullable(),
   sandboxSummary: AgentSandboxSummarySchema.nullable().default(null),

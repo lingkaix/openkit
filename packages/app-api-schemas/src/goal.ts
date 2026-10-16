@@ -1,4 +1,10 @@
-import { RequestIdSchema, ThreadIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
+import {
+  AccessTokenIdSchema,
+  RequestIdSchema,
+  ThreadIdSchema,
+  UserIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import type { OperationDefinition } from './operation-contract.js';
 
@@ -33,34 +39,36 @@ export const GoalCompletionCandidateSchema = z.object({
 });
 /** Terminal Goal disposition records the actual human decider. */
 export const GoalDispositionSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('cancelled'), reason: text, actorId: id, at: z.string() }),
+  z.object({ kind: z.literal('cancelled'), reason: text, actorId: UserIdSchema, at: z.string() }),
   z.object({
     kind: z.literal('accepted'),
     candidate: GoalCompletionCandidateSchema,
     pendingRequestId: id,
-    actorId: id,
+    actorId: UserIdSchema,
     at: z.string(),
   }),
 ]);
 /** Non-secret originating credential identity, retained solely for current authority re-evaluation. */
 export const GoalActorContextSchema = z.object({
-  userId: id,
+  userId: UserIdSchema,
   kind: z.enum(['local', 'session', 'token']),
-  tokenId: id.optional(),
+  tokenId: AccessTokenIdSchema.optional(),
   tokenScope: z.enum(['server-admin', 'workspace', 'workspace-readonly']).optional(),
   tokenWorkspaceIds: z.array(WorkspaceIdSchema).optional(),
-  adminTokenId: id.optional(),
+  adminTokenId: AccessTokenIdSchema.optional(),
 });
 /** Core-owned outcome, intent history, pointers, and the two-field wake marker. */
 export const GoalRecordSchema = z.object({
   goalId: id,
   workspaceId: WorkspaceIdSchema,
   threadId: ThreadIdSchema,
-  responsibleUserId: id,
+  responsibleUserId: UserIdSchema,
   intent: text,
   intentRevision: revision,
   responsibleActorContext: GoalActorContextSchema,
-  intentHistory: z.array(z.object({ revision, intent: text, actorId: id, at: z.string() })),
+  intentHistory: z.array(
+    z.object({ revision, intent: text, actorId: UserIdSchema, at: z.string() })
+  ),
   proposedPlanVersionId: id.nullable(),
   activePlanVersionId: id.nullable(),
   disposition: GoalDispositionSchema.nullable(),

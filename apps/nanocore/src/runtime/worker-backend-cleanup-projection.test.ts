@@ -26,12 +26,12 @@ import {
 function createFixture(options: { omitBackendStatus?: boolean } = {}) {
   const workspaceDb = openWorkspaceDb(
     mkdtempSync(join(tmpdir(), 'openkit-cleanup-projection-')),
-    'ws_demo'
+    'ws_00000000-0000-7000-8000-000000000001'
   );
   applyScopedMigrations(workspaceDb);
   const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
     suffix: 'cleanup_projection',
-    triggerActor: { kind: 'user', id: 'user_owner' },
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7011-88df-c2b1e8466b6f' },
     workspaceInputIds: ['repo'],
   });
   const inputSnapshots = recordWorkspaceInputSnapshots(
@@ -69,20 +69,20 @@ function createFixture(options: { omitBackendStatus?: boolean } = {}) {
 /** Returns the canonical successful cleanup projection input. */
 function cleanupInput(environmentPackage: ReturnType<typeof recordTestAgentEnvironmentPackage>) {
   return {
-    agentSessionId: 'as_cleanup_projection',
+    agentSessionId: environmentPackage.scope.agentSessionId,
     backendType: 'openshell',
     backendVersion: '0.0.80',
     completedAt: '2026-07-15T00:01:00.000Z',
     outcome: 'succeeded' as const,
     backendSessionId: 'openkit-as_cleanup_projection',
     environmentPackage,
-    packageSnapshotId: 'aepsnap_turn_cleanup_projection_as_cleanup_projection',
+    packageSnapshotId: environmentPackage.snapshotId,
     placement: 'local' as const,
-    threadId: 'thread_cleanup_projection',
-    turnId: 'turn_cleanup_projection',
+    threadId: environmentPackage.scope.threadId,
+    turnId: environmentPackage.scope.turnId,
     workerImage: 'openkit/worker-codex:dev',
     workspaceHandoffState: 'complete' as const,
-    workspaceId: 'ws_demo',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   };
 }
 
@@ -163,7 +163,7 @@ const exactHandoffTamperCases: ReadonlyArray<
     (workspaceDb) => {
       mutateOnlyHandoffPayload(workspaceDb, 'backend_workspace_handles', (payload) => ({
         ...payload,
-        workspaceId: 'ws_tampered',
+        workspaceId: 'ws_00000000-0000-7ed5-af04-09748208a411',
       }));
     },
   ],
@@ -205,13 +205,20 @@ describe('worker backend cleanup projection', () => {
         handles: [],
         workspaceHandoffComplete: true,
       });
-      const evidence = listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo');
+      const evidence = listWorkspaceRuntimeEvidence(
+        workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       expect(projectWorkerBackendCleanup(workspaceDb, input)).toMatchObject({
         handles: [],
         workspaceHandoffComplete: true,
       });
-      expect(listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo')).toEqual(evidence);
-      expect(listWorkspaceMaterializationRecords(workspaceDb, 'ws_demo')).toEqual([]);
+      expect(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual(evidence);
+      expect(
+        listWorkspaceMaterializationRecords(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([]);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -223,7 +230,9 @@ describe('worker backend cleanup projection', () => {
   ] as const)('rejects partial rows despite no-materialization proof with a %s handoff', (workspaceHandoffState) => {
     const { environmentPackage, workspaceDb } = createFixture();
     try {
-      workspaceDb.sqlite.prepare('DELETE FROM backend_workspace_handles').run();
+      expect(
+        workspaceDb.sqlite.prepare('DELETE FROM backend_workspace_handles').run().changes
+      ).toBe(1);
       expect(() =>
         projectWorkerBackendCleanup(workspaceDb, {
           ...cleanupInput(environmentPackage),
@@ -232,7 +241,7 @@ describe('worker backend cleanup projection', () => {
         })
       ).toThrow('handoff is incomplete');
       expect(
-        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').filter(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001').filter(
           (record) => record.phase === 'teardown'
         )
       ).toEqual([]);
@@ -248,9 +257,9 @@ describe('worker backend cleanup projection', () => {
     ];
 
     try {
-      expect(listWorkspaceMaterializationRecords(workspaceDb, 'ws_demo')).toEqual([
-        expect.objectContaining({ readinessEvidence: sandboxOnlyReadiness }),
-      ]);
+      expect(
+        listWorkspaceMaterializationRecords(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([expect.objectContaining({ readinessEvidence: sandboxOnlyReadiness })]);
 
       expect(
         projectWorkerBackendCleanup(workspaceDb, cleanupInput(environmentPackage))
@@ -264,11 +273,11 @@ describe('worker backend cleanup projection', () => {
         ],
         workspaceHandoffComplete: true,
       });
-      expect(listWorkspaceMaterializationRecords(workspaceDb, 'ws_demo')).toEqual([
-        expect.objectContaining({ readinessEvidence: sandboxOnlyReadiness }),
-      ]);
       expect(
-        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').filter(
+        listWorkspaceMaterializationRecords(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([expect.objectContaining({ readinessEvidence: sandboxOnlyReadiness })]);
+      expect(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001').filter(
           (record) => record.phase === 'teardown'
         )
       ).toHaveLength(1);
@@ -283,12 +292,14 @@ describe('worker backend cleanup projection', () => {
     try {
       updateBackendWorkspaceHandleCleanupStatus(
         workspaceDb,
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         environmentPackage.snapshotId,
         'retained',
         '2026-07-15T00:00:30.000Z'
       );
-      expect(listBackendWorkspaceHandles(workspaceDb, 'ws_demo')).toEqual([
+      expect(
+        listBackendWorkspaceHandles(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([
         expect.objectContaining({
           cleanupStatus: 'retained',
           updatedAt: '2026-07-15T00:00:30.000Z',
@@ -307,7 +318,7 @@ describe('worker backend cleanup projection', () => {
         ],
       });
       expect(
-        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').filter(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001').filter(
           (record) => record.phase === 'teardown'
         )
       ).toHaveLength(1);
@@ -328,9 +339,9 @@ describe('worker backend cleanup projection', () => {
       expect(() =>
         projectWorkerBackendCleanup(workspaceDb, cleanupInput(environmentPackage))
       ).toThrow(/runtime evidence replay conflict/i);
-      expect(listBackendWorkspaceHandles(workspaceDb, 'ws_demo')).toEqual([
-        expect.objectContaining({ cleanupStatus: 'pending' }),
-      ]);
+      expect(
+        listBackendWorkspaceHandles(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([expect.objectContaining({ cleanupStatus: 'pending' })]);
 
       workspaceDb.sqlite.prepare('DELETE FROM runtime_evidence').run();
       expect(
@@ -345,11 +356,11 @@ describe('worker backend cleanup projection', () => {
         evidence: { outcome: 'succeeded', phase: 'teardown' },
         handles: [expect.objectContaining({ cleanupStatus: 'cleaned' })],
       });
-      expect(listBackendWorkspaceHandles(workspaceDb, 'ws_demo')).toEqual([
-        expect.objectContaining({ cleanupStatus: 'cleaned' }),
-      ]);
       expect(
-        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').filter(
+        listBackendWorkspaceHandles(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([expect.objectContaining({ cleanupStatus: 'cleaned' })]);
+      expect(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001').filter(
           (record) => record.phase === 'teardown'
         )
       ).toHaveLength(1);
@@ -387,7 +398,7 @@ describe('worker backend cleanup projection', () => {
         projectWorkerBackendCleanup(workspaceDb, cleanupInput(environmentPackage))
       ).toThrow('handoff is incomplete');
       expect(
-        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').filter(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001').filter(
           (evidence) => evidence.phase === 'teardown'
         )
       ).toEqual([]);
@@ -409,7 +420,7 @@ describe('worker backend cleanup projection', () => {
         })
       ).toThrow('handoff is incomplete');
       expect(
-        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').filter(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001').filter(
           (evidence) => evidence.phase === 'teardown'
         )
       ).toEqual([]);
@@ -440,7 +451,7 @@ describe('worker backend cleanup projection', () => {
         projectWorkerBackendCleanup(workspaceDb, cleanupInput(environmentPackage))
       ).toThrow('handoff is incomplete');
       expect(
-        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').filter(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001').filter(
           (evidence) => evidence.phase === 'teardown'
         )
       ).toEqual([]);
@@ -458,7 +469,7 @@ describe('worker backend cleanup projection', () => {
         projectWorkerBackendCleanup(workspaceDb, cleanupInput(environmentPackage))
       ).toThrow('handoff is incomplete');
       expect(
-        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').filter(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001').filter(
           (evidence) => evidence.phase === 'teardown'
         )
       ).toEqual([]);

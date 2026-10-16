@@ -2,12 +2,12 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
 import type { BetterAuthServer } from '../auth/middleware.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { feedbackFilePath, readTurnFeedback, updateTurnFeedback } from './feedback.js';
@@ -34,10 +34,15 @@ describe('turn feedback', () => {
   it('preserves descriptive disk additions across update and reopen while returning only known fields', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-extension-'));
     const store = createDemoStore({ dataRoot });
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Feedback', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Feedback',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
     const path = feedbackFilePath(store, turn);
     const original = JSON.parse(readFileSync(path, 'utf8'));
@@ -50,16 +55,24 @@ describe('turn feedback', () => {
     expect(JSON.parse(readFileSync(path, 'utf8')).futureNote).toBe('retained');
     writeFileSync(path, JSON.stringify({ ...original, rating: 'future' }));
     expect(() => readTurnFeedback(store, turn.id)).toThrow();
-    writeFileSync(path, JSON.stringify({ ...original, turnId: 'tu_wrong' }));
+    writeFileSync(
+      path,
+      JSON.stringify({ ...original, turnId: 'tu_00000000-0000-7629-845e-55588f675dfb' })
+    );
     expect(() => readTurnFeedback(store, turn.id)).toThrow();
   });
   it('creates a feedback file when a turn completes', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-'));
     const store = createDemoStore({ dataRoot });
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Run tests', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Run tests',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const completedAt = new Date().toISOString();
 
     store.updateTurn(turn.id, {
@@ -75,9 +88,9 @@ describe('turn feedback', () => {
       join(
         dataRoot,
         'workspaces',
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         'threads',
-        'th_demo',
+        'th_00000000-0000-7000-8000-000000000001',
         'turns',
         turn.id,
         'feedback.json'
@@ -94,10 +107,15 @@ describe('turn feedback', () => {
   it('updates rating and note through the feedback route', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-'));
     const store = createDemoStore({ dataRoot });
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Run tests', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Run tests',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
     const app = createApp({ store });
 
@@ -128,10 +146,15 @@ describe('turn feedback', () => {
   it('returns a typed 400 response for invalid feedback bodies', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-'));
     const store = createDemoStore({ dataRoot });
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Run tests', {
-      kind: 'user',
-      id: 'user_local',
-    });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Run tests',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
     const app = createApp({ store });
 
@@ -157,10 +180,15 @@ describe('turn feedback', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-replacement-'));
     try {
       const store = createDemoStore({ dataRoot });
-      const turn = store.createTurn('ws_demo', 'th_demo', 'Feedback replacement', {
-        kind: 'user',
-        id: 'user_local',
-      });
+      const turn = store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Feedback replacement',
+        {
+          kind: 'user',
+          id: 'usr_00000000-0000-7000-8000-000000000001',
+        }
+      );
       store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
       const path = feedbackFilePath(store, store.getTurnById(turn.id));
       const entriesBefore = readdirSync(dirname(path)).sort();
@@ -178,7 +206,7 @@ describe('turn feedback', () => {
 
   it('keeps feedback Workspace-owned across authenticated request actors', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-'));
-    const ownerStore = createDemoStore({ dataRoot }, 'user_1');
+    const ownerStore = createDemoStore({ dataRoot }, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
     const workspace = ownerStore.listWorkspaces().find((item) => item.kind === 'code') ?? null;
     const thread = workspace ? (ownerStore.listThreads(workspace.id)[0] ?? null) : null;
 
@@ -188,24 +216,31 @@ describe('turn feedback', () => {
 
     const turn = ownerStore.createTurn(workspace.id, thread.id, 'Run tests', {
       kind: 'user',
-      id: 'user_local',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     ownerStore.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
     const coreDb = openCoreDb(dataRoot);
     onTestFinished(() => coreDb.sqlite.close());
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    for (const userId of ['user_1', 'user_2']) {
+    for (const userId of [
+      'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
+      'usr_00000000-0000-7a71-a8b1-dcc65a83481f',
+    ]) {
       coreDb.sqlite
         .prepare(
-          "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, last_seen_at) SELECT ?, kind, display_name, ?, email_verified, created_at, updated_at, last_seen_at FROM users WHERE id = 'user_local'"
+          "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, last_seen_at) SELECT ?, kind, display_name, ?, email_verified, created_at, updated_at, last_seen_at FROM users WHERE id = 'usr_00000000-0000-7000-8000-000000000001'"
         )
         .run(userId, `${userId}@local.openkit.invalid`);
     }
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_1', workspaceId: workspace.id });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
+      workspaceId: workspace.id,
+    });
     coreDb.sqlite
       .prepare(
-        "INSERT INTO workspace_members (workspace_id, user_id, access_level, status, revision, joined_at, created_at, updated_at) VALUES (?, 'user_2', 'editor', 'active', 1, ?, ?, ?)"
+        "INSERT INTO workspace_members (workspace_id, user_id, access_level, status, revision, joined_at, created_at, updated_at) VALUES (?, 'usr_00000000-0000-7a71-a8b1-dcc65a83481f', 'editor', 'active', 1, ?, ?, ?)"
       )
       .run(
         workspace.id,
@@ -227,7 +262,10 @@ describe('turn feedback', () => {
         { turnId: turn.id },
         {
           body: JSON.stringify({ note: 'Shared feedback.', rating: 'bad' }),
-          headers: { 'content-type': 'application/json', 'x-user-id': 'user_2' },
+          headers: {
+            'content-type': 'application/json',
+            'x-user-id': 'usr_00000000-0000-7a71-a8b1-dcc65a83481f',
+          },
           method: 'POST',
         }
       )

@@ -2,7 +2,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import type {
   PrepareWorkerEnvironmentRequest,
   WorkerEnvironmentImageDeclaration,
@@ -21,6 +20,7 @@ import type { Actor } from '../auth/identity.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { commandInputHash, IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
 import type { WorkerEnvironmentRuntimeEffects } from '../runtime/worker-environment-runtime-effects.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { createWorkerEnvironmentOperationImplementations } from './worker-environment-operation-implementations.js';
 import { WorkerEnvironmentOperationError } from './worker-environment-operations.js';
 import {
@@ -33,10 +33,10 @@ const actor: Actor = {
   tokenId: 'token_admin',
   tokenScope: 'server-admin',
   tokenWorkspaceIds: [],
-  userId: 'user_admin',
+  userId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
 };
 const timestamp = '2026-09-11T01:02:03.000Z';
-const storageRef = `wst_${'a'.repeat(32)}`;
+const storageRef = 'wst_00000000-0000-7b39-9ec2-cb19893c9f63';
 const imageDigest = `sha256:${'b'.repeat(64)}`;
 const layoutDigest = `sha256:${'c'.repeat(64)}`;
 const dataRoots: string[] = [];
@@ -102,7 +102,7 @@ function createFixture() {
   const thread = store.createThread(
     workspace.id,
     'Administration',
-    'thread_admin',
+    testEntityId('th', 'thread_admin'),
     'administration',
     { privateOwnerUserId: actor.userId, visibility: 'private' }
   );
@@ -236,8 +236,8 @@ describe('Worker environment preparation', () => {
     const request = prepareRequest(fixture.thread.id, fixture.configuration, buildDeclaration());
     request.replaceNow = {
       prompt: 'Check hf_publicFixture exactly.',
-      threadId: 'th_successor',
-      workspaceId: 'ws_demo',
+      threadId: 'th_00000000-0000-7dc4-8f6f-c2ba445ba465',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     };
     const response = await fixture.createService().prepare({ actor }, request);
 
@@ -402,7 +402,7 @@ describe('Worker environment preparation', () => {
     const recoveryThread = fixture.store.createThread(
       fixture.workspace.id,
       'Recovery',
-      'thread_recovery',
+      testEntityId('th', 'thread_recovery'),
       'administration',
       { privateOwnerUserId: actor.userId, visibility: 'private' }
     );
@@ -511,8 +511,8 @@ describe('Worker environment preparation', () => {
       ...prepareRequest(fixture.thread.id, fixture.configuration),
       replaceNow: {
         prompt: 'Continue with the prepared environment',
-        threadId: 'thread_product',
-        workspaceId: 'workspace_product',
+        threadId: testEntityId('th', 'thread_product'),
+        workspaceId: testEntityId('ws', 'workspace_product'),
       },
     };
     vi.mocked(fixture.runtimeEffects.prepareImage).mockImplementationOnce(async (input) => {

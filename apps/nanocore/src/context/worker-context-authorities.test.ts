@@ -23,23 +23,23 @@ describe('worker Context Package authority reader', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
 
     try {
       const turn = store.createTurn(
-        'ws_demo',
-        'th_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
         'Run worker',
-        { kind: 'user', id: 'user_local' },
+        { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         null,
-        { turnId: 'tu_current' }
+        { turnId: 'tu_00000000-0000-72cd-966c-00128857206d' }
       );
       const session = store.createAgentSession({
-        id: 'as_current',
+        id: 'as_00000000-0000-777a-9b6e-9393a5c0d8cf',
         agentId: 'agent_codex_host',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         status: 'busy',
         message: null,
         createdAt: turn.startedAt!,
@@ -68,7 +68,7 @@ describe('worker Context Package authority reader', () => {
       const snapshotsRoot = join(
         dataRoot,
         'workspaces',
-        'ws_demo',
+        'ws_00000000-0000-7000-8000-000000000001',
         'runtime',
         'agent-sessions',
         session.id,
@@ -88,7 +88,10 @@ describe('worker Context Package authority reader', () => {
 
       let exportError: unknown;
       try {
-        listExportableAgentEnvironmentPackageSnapshots(workspaceDb, 'ws_demo');
+        listExportableAgentEnvironmentPackageSnapshots(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001'
+        );
       } catch (error) {
         exportError = error;
       }
@@ -101,16 +104,32 @@ describe('worker Context Package authority reader', () => {
           ]),
         },
       });
-      expect(reader.readAgentEnvironmentPackage('ws_demo', record.snapshotId)).toEqual(
-        record.snapshot
-      );
+      expect(
+        reader.readAgentEnvironmentPackage(
+          'ws_00000000-0000-7000-8000-000000000001',
+          record.snapshotId
+        )
+      ).toEqual(record.snapshot);
       // Historical delivery names its snapshot even after the reusable session pointer advances.
       store.updateAgentSession(session.id, { environmentPackageSnapshotId: 'aepsnap_later' });
-      expect(reader.readAgentEnvironmentPackage('ws_demo', record.snapshotId)).toEqual(
-        record.snapshot
-      );
-      expect(reader.readAgentEnvironmentPackage('ws_demo', 'aepsnap_missing')).toBeNull();
-      expect(reader.readAgentEnvironmentPackage('ws_other', record.snapshotId)).toBeNull();
+      expect(
+        reader.readAgentEnvironmentPackage(
+          'ws_00000000-0000-7000-8000-000000000001',
+          record.snapshotId
+        )
+      ).toEqual(record.snapshot);
+      expect(
+        reader.readAgentEnvironmentPackage(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'aepsnap_missing'
+        )
+      ).toBeNull();
+      expect(
+        reader.readAgentEnvironmentPackage(
+          'ws_00000000-0000-71f5-922f-6fd42f52f580',
+          record.snapshotId
+        )
+      ).toBeNull();
       expect(readFileSync(selectedPath, 'utf8')).toBe(selectedBytes);
       expect(readFileSync(historicalPath, 'utf8')).toBe(historicalBytes);
 
@@ -118,7 +137,12 @@ describe('worker Context Package authority reader', () => {
       delete invalidSelected.snapshot.observability.captureCoverage;
       invalidSelected.contentDigest = snapshotDigest(invalidSelected.snapshot);
       writeFileSync(selectedPath, JSON.stringify(invalidSelected));
-      expect(reader.readAgentEnvironmentPackage('ws_demo', record.snapshotId)).toBeNull();
+      expect(
+        reader.readAgentEnvironmentPackage(
+          'ws_00000000-0000-7000-8000-000000000001',
+          record.snapshotId
+        )
+      ).toBeNull();
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -130,7 +154,7 @@ describe('worker Context Package authority reader', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_other');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-71f5-922f-6fd42f52f580');
 
     try {
       expect(() =>

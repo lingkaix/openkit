@@ -1,3 +1,4 @@
+import { WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { AuthoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
 
@@ -13,7 +14,7 @@ export const UserInternalRolePreferenceSchema = z
 /** Personal preferences applied only while the User is in one Workspace. */
 export const UserWorkspacePreferenceSchema = z
   .object({
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     agentId: z.string().min(1).optional(),
     profileId: z.string().min(1).optional(),
     logicalModelId: z.string().min(1).optional(),

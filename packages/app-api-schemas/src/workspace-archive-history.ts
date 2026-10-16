@@ -1,4 +1,9 @@
-import { TimestampSchema } from '@openkit/protocol';
+import {
+  PermissionDecisionIdSchema,
+  TimestampSchema,
+  VaultGrantIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 
 /** Retired host records are archive history only; these codecs supply no resource or execution authority. */
@@ -28,7 +33,7 @@ export const ArchivedWorkspaceRepositoryGitConfigSchema = z
       .default(['main', 'master', 'release/*', 'v*']),
     requireReviewLinkage: z.boolean().default(true),
     stagingStrategy: z.enum(['staging-root', 'review-branch']).default('staging-root'),
-    vaultGrantRef: z.string().min(1).nullable().default(null),
+    vaultGrantRef: VaultGrantIdSchema.nullable().default(null),
   })
   .strict();
 
@@ -47,10 +52,10 @@ const GitPushRecordOutcomeSchema = z.enum([
 export const ArchivedGitPushRecordSchema = z
   .object({
     id: z.string().min(1),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     repositoryResourceId: z.string().min(1),
     approvalRowId: z.string().min(1).nullable(),
-    policyDecisionId: z.string().min(1).nullable(),
+    policyDecisionId: PermissionDecisionIdSchema.nullable(),
     actorId: z.string().min(1).nullable(),
     remoteSummary: RepositorySafeTextSchema,
     sourceRef: z.string().min(1),

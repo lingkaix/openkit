@@ -47,18 +47,18 @@ describe('NanoHost transport token class schema', () => {
 
   it('defines a redacted Token record that rejects raw okt_ secret material', () => {
     const record = NanoHostTransportTokenRecordSchema.parse({
-      tokenId: 'tok_nanohost_example',
+      tokenId: 'nhtok_00000000-0000-70cb-ad22-0520ba748398',
       ownerNanoHostIdentityId: 'integration_nanohost_primary',
       tokenType: 'nanohost-transport',
       scope: 'nanohost-transport',
-      deploymentId: 'deploy_primary',
+      deploymentId: 'dep_00000000-0000-7bdd-bdc3-910a52eaec87',
       status: 'active',
       issuedAt: '2026-08-08T00:00:00.000Z',
       expiresAt: '2026-09-08T00:00:00.000Z',
       revokedAt: null,
       predecessorTokenId: null,
       rotationOverlapExpiresAt: null,
-      responsibleServerAdminActorId: 'user_admin',
+      responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       lastUsedAt: null,
       lastUsedChannel: null,
       lastUsedSource: null,
@@ -77,18 +77,18 @@ describe('NanoHost transport token class schema', () => {
 });
 
 const redactedRecord = {
-  tokenId: 'tok_nanohost_example',
+  tokenId: 'nhtok_00000000-0000-70cb-ad22-0520ba748398',
   ownerNanoHostIdentityId: 'integration_nanohost_primary',
   tokenType: 'nanohost-transport' as const,
   scope: 'nanohost-transport' as const,
-  deploymentId: 'deploy_primary',
+  deploymentId: 'dep_00000000-0000-7bdd-bdc3-910a52eaec87',
   status: 'active' as const,
   issuedAt: '2026-08-08T00:00:00.000Z',
   expiresAt: '2026-09-08T00:00:00.000Z',
   revokedAt: null,
   predecessorTokenId: null,
   rotationOverlapExpiresAt: null,
-  responsibleServerAdminActorId: 'user_admin',
+  responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
   lastUsedAt: null,
   lastUsedChannel: null,
   lastUsedSource: null,
@@ -103,7 +103,7 @@ describe('NanoHost safe-sink App API schemas', () => {
   it('defines the strict configured RuntimeTarget observation response', () => {
     const response = NanoHostRuntimeTargetStatusResponseSchema.parse({
       identityId: 'integration_nanohost_primary',
-      deploymentId: 'deploy_primary',
+      deploymentId: 'dep_00000000-0000-7bdd-bdc3-910a52eaec87',
       connectionGeneration: 3,
       predecessorFenced: true,
       ready: true,
@@ -138,7 +138,7 @@ describe('NanoHost safe-sink App API schemas', () => {
   it('requires an explicit nullable physical Epoch with exact lowercase SHA-256 syntax', () => {
     const observation = {
       identityId: 'integration_nanohost_primary',
-      deploymentId: 'deploy_primary',
+      deploymentId: 'dep_00000000-0000-7bdd-bdc3-910a52eaec87',
       connectionGeneration: 3,
       predecessorFenced: true,
       ready: true,
@@ -193,7 +193,7 @@ describe('NanoHost safe-sink App API schemas', () => {
     expect(() =>
       EnrollNanoHostRequestSchema.parse({
         identityId: 'integration_attacker_selected',
-        deploymentId: 'deploy_attacker_selected',
+        deploymentId: 'dep_00000000-0000-7abc-85fb-9d6031c8c952',
         targetSlot: 'A',
         expiresAt: '2026-09-08T00:00:00.000Z',
         sink: {
@@ -206,7 +206,7 @@ describe('NanoHost safe-sink App API schemas', () => {
     expect(() =>
       IssueNanoHostTransportTokenRequestSchema.parse({
         ownerNanoHostIdentityId: 'integration_attacker_selected',
-        deploymentId: 'deploy_attacker_selected',
+        deploymentId: 'dep_00000000-0000-7abc-85fb-9d6031c8c952',
         targetSlot: 'B',
         expiresAt: '2026-09-08T00:00:00.000Z',
         sink: {
@@ -229,8 +229,8 @@ describe('NanoHost safe-sink App API schemas', () => {
 
     const enroll = EnrollNanoHostResponseSchema.parse({
       identityId: 'integration_nanohost_primary',
-      deploymentId: 'deploy_primary',
-      credentialRef: 'nanohost-token:tok_nanohost_example',
+      deploymentId: 'dep_00000000-0000-7bdd-bdc3-910a52eaec87',
+      credentialRef: 'nanohost-token:tok_00000000-0000-70cb-ad22-0520ba748398',
       targetSlot: 'A',
       slotResult,
       record: redactedRecord,
@@ -239,7 +239,7 @@ describe('NanoHost safe-sink App API schemas', () => {
     expect(enroll).not.toHaveProperty('token');
 
     const issued = IssueNanoHostTransportTokenResponseSchema.parse({
-      credentialRef: 'nanohost-token:tok_nanohost_example',
+      credentialRef: 'nanohost-token:tok_00000000-0000-70cb-ad22-0520ba748398',
       targetSlot: 'A',
       slotResult,
       record: redactedRecord,
@@ -248,11 +248,19 @@ describe('NanoHost safe-sink App API schemas', () => {
     expect(JSON.stringify(issued)).not.toContain('okt_');
 
     const rotated = RotateNanoHostTransportTokenResponseSchema.parse({
-      credentialRef: 'nanohost-token:tok_nanohost_successor',
+      credentialRef: 'nanohost-token:tok_00000000-0000-7c09-b269-c276b58022d7',
       targetSlot: 'B',
       slotResult: { slot: 'B', status: 'written', issuanceGeneration: 2 },
-      record: { ...redactedRecord, tokenId: 'tok_nanohost_successor', predecessorTokenId: 'tok_a' },
-      rotatedRecord: { ...redactedRecord, status: 'rotated', tokenId: 'tok_a' },
+      record: {
+        ...redactedRecord,
+        tokenId: 'nhtok_00000000-0000-7c09-b269-c276b58022d7',
+        predecessorTokenId: 'nhtok_00000000-0000-772a-932b-2071399fdc10',
+      },
+      rotatedRecord: {
+        ...redactedRecord,
+        status: 'rotated',
+        tokenId: 'nhtok_00000000-0000-772a-932b-2071399fdc10',
+      },
     });
     expect(rotated).not.toHaveProperty('token');
     expect(JSON.stringify(rotated)).not.toContain('okt_');

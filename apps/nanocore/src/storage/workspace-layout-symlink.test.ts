@@ -15,7 +15,11 @@ describe('workspace layout symbolic-link boundaries', () => {
     const workspacesRoot = join(dataRoot, 'workspaces');
 
     writeFileSync(join(outsideRoot, 'store.json'), '{"external":true}\n');
-    symlinkSync(outsideRoot, join(workspacesRoot, 'ws_linked'), 'dir');
+    symlinkSync(
+      outsideRoot,
+      join(workspacesRoot, 'ws_00000000-0000-7e1c-a673-731dfd2cab6a'),
+      'dir'
+    );
 
     expect(() => new FsStore({ dataRoot })).toThrow(/symbolic link/i);
     expect(readdirSync(outsideRoot)).toEqual(['store.json']);

@@ -15,14 +15,14 @@ import { applyScopedMigrations } from './storage/migrate.js';
 describe('evidence bundles', () => {
   it('accepts exact stable-id replays and rejects divergent content', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-bundle-replay-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const record = {
       id: 'evb_runtime_provenance_replay',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
       goalId: null,
-      turnId: 'turn_demo',
-      agentSessionId: 'as_demo',
+      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+      agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
       backendType: 'openshell',
       sourceKind: 'worker-runtime-provenance-index',
       summary: 'Verified worker runtime provenance index.',
@@ -45,7 +45,9 @@ describe('evidence bundles', () => {
       const replay = recordWorkspaceEvidenceBundle(workspaceDb, record);
 
       expect(replay).toEqual(first);
-      expect(listWorkspaceEvidenceBundles(workspaceDb, 'ws_demo')).toEqual([first]);
+      expect(
+        listWorkspaceEvidenceBundles(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([first]);
       expect(() =>
         recordWorkspaceEvidenceBundle(workspaceDb, {
           ...record,
@@ -58,7 +60,9 @@ describe('evidence bundles', () => {
           summary: 'Divergent worker runtime provenance index.',
         })
       ).toThrow(/evidence bundle replay conflict/i);
-      expect(listWorkspaceEvidenceBundles(workspaceDb, 'ws_demo')).toEqual([first]);
+      expect(
+        listWorkspaceEvidenceBundles(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([first]);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -66,17 +70,17 @@ describe('evidence bundles', () => {
 
   it('hides runtime provenance raw refs without changing other restricted projections', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-bundle-projection-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
       recordWorkspaceEvidenceBundle(workspaceDb, {
         id: 'evb_runtime_provenance_raw',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         goalId: null,
-        turnId: 'turn_demo',
-        agentSessionId: 'as_demo',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+        agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
         backendType: 'openshell',
         sourceKind: 'worker-runtime-provenance-raw',
         summary: 'Restricted worker runtime provenance capture.',
@@ -94,16 +98,16 @@ describe('evidence bundles', () => {
       });
       recordWorkspaceEvidenceBundle(workspaceDb, {
         id: 'evb_existing_restricted_turn',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         goalId: null,
-        turnId: 'turn_demo',
-        agentSessionId: 'as_demo',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+        agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
         backendType: 'openshell',
         sourceKind: 'worker-turn',
         summary: 'Existing restricted worker turn evidence.',
         rawEvidenceRefs: [{ kind: 'turn-log', ref: 'restricted://turn-log' }],
-        redactedEvidenceRefs: [{ kind: 'turn', ref: 'turn_demo' }],
+        redactedEvidenceRefs: [{ kind: 'turn', ref: 'tu_00000000-0000-77e3-bfde-66477d556f64' }],
         contentDigests: ['sha256:turn'],
         retentionClass: 'turn-evidence',
         sensitivityClass: 'restricted',
@@ -112,7 +116,9 @@ describe('evidence bundles', () => {
         createdAt: '2026-07-13T00:00:01.000Z',
       });
 
-      expect(listWorkspaceEvidenceBundles(workspaceDb, 'ws_demo')).toEqual([
+      expect(
+        listWorkspaceEvidenceBundles(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([
         expect.objectContaining({
           id: 'evb_runtime_provenance_raw',
           rawEvidenceRefs: [],
@@ -120,7 +126,7 @@ describe('evidence bundles', () => {
         expect.objectContaining({
           id: 'evb_existing_restricted_turn',
           rawEvidenceRefs: [{ kind: 'turn-log', ref: 'restricted://turn-log' }],
-          redactedEvidenceRefs: [{ kind: 'turn', ref: 'turn_demo' }],
+          redactedEvidenceRefs: [{ kind: 'turn', ref: 'tu_00000000-0000-77e3-bfde-66477d556f64' }],
         }),
       ]);
     } finally {
@@ -130,13 +136,13 @@ describe('evidence bundles', () => {
 
   it('expires old ephemeral diagnostic evidence without deleting governed records', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-bundle-compaction-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
       recordWorkspaceEvidenceBundle(workspaceDb, {
         id: 'evb_old_ephemeral',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: null,
         goalId: null,
         turnId: null,
@@ -155,10 +161,10 @@ describe('evidence bundles', () => {
       });
       recordWorkspaceEvidenceBundle(workspaceDb, {
         id: 'evb_old_turn',
-        workspaceId: 'ws_demo',
-        threadId: 'th_1',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7267-800d-a65e1b6a22d7',
         goalId: null,
-        turnId: 'turn_1',
+        turnId: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
         agentSessionId: null,
         backendType: 'openshell',
         sourceKind: 'worker-turn',
@@ -174,7 +180,7 @@ describe('evidence bundles', () => {
       });
       recordWorkspaceEvidenceBundle(workspaceDb, {
         id: 'evb_legal_hold',
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: null,
         goalId: null,
         turnId: null,
@@ -195,19 +201,22 @@ describe('evidence bundles', () => {
       expect(
         compactWorkspaceEvidenceBundles({
           workspaceDb,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           olderThan: '2026-07-02T00:00:00.000Z',
         })
       ).toEqual({ expiredCount: 1 });
       expect(
         compactWorkspaceEvidenceBundles({
           workspaceDb,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           olderThan: '2026-07-02T00:00:00.000Z',
         })
       ).toEqual({ expiredCount: 0 });
 
-      const bundles = listWorkspaceEvidenceBundles(workspaceDb, 'ws_demo');
+      const bundles = listWorkspaceEvidenceBundles(
+        workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
 
       expect(bundles).toHaveLength(3);
       expect(bundles).toContainEqual(
@@ -242,14 +251,14 @@ describe('evidence bundles', () => {
 
   it('rejects compaction outside the open Workspace database lineage', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-bundle-lineage-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
       expect(() =>
         compactWorkspaceEvidenceBundles({
           workspaceDb,
-          workspaceId: 'ws_other',
+          workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
           olderThan: '2026-07-02T00:00:00.000Z',
         })
       ).toThrow('Evidence bundle compaction has different Workspace lineage.');
@@ -260,8 +269,8 @@ describe('evidence bundles', () => {
 
   it('expires restricted runtime provenance without removing its normalized index', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-expiry-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
-    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const rawBundleId = 'evb_runtime_provenance_raw_expired';
     const indexBundleId = 'evb_runtime_provenance_index_retained';
     const rawRoot = join(workspaceRoot, 'evidence', 'backend', rawBundleId);
@@ -282,11 +291,11 @@ describe('evidence bundles', () => {
       writeFileSync(indexPath, '{"runtimeOriginRef":"rto_demo"}\n');
       recordWorkspaceEvidenceBundle(workspaceDb, {
         id: rawBundleId,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         goalId: null,
-        turnId: 'turn_demo',
-        agentSessionId: 'as_demo',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+        agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
         backendType: 'openshell',
         sourceKind: 'worker-runtime-provenance-raw',
         summary: 'Restricted worker runtime provenance capture.',
@@ -304,11 +313,11 @@ describe('evidence bundles', () => {
       });
       recordWorkspaceEvidenceBundle(workspaceDb, {
         id: indexBundleId,
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
         goalId: null,
-        turnId: 'turn_demo',
-        agentSessionId: 'as_demo',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+        agentSessionId: 'as_00000000-0000-7860-9e37-d1a60b30c856',
         backendType: 'openshell',
         sourceKind: 'worker-runtime-provenance-index',
         summary: 'Product-safe worker runtime provenance index.',
@@ -327,13 +336,15 @@ describe('evidence bundles', () => {
       expect(
         compactWorkspaceEvidenceBundles({
           workspaceDb,
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           olderThan: '2026-07-02T00:00:00.000Z',
         })
       ).toEqual({ expiredCount: 1 });
       expect(existsSync(rawRoot)).toBe(false);
       expect(readFileSync(indexPath, 'utf8')).toBe('{"runtimeOriginRef":"rto_demo"}\n');
-      expect(listWorkspaceEvidenceBundles(workspaceDb, 'ws_demo')).toEqual(
+      expect(
+        listWorkspaceEvidenceBundles(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ id: rawBundleId, importStatus: 'expired' }),
           expect.objectContaining({ id: indexBundleId, importStatus: 'promoted' }),
@@ -346,7 +357,7 @@ describe('evidence bundles', () => {
 
   it('quarantines imported evidence bundles with unknown evidence kinds', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-bundle-kind-quarantine-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -354,7 +365,7 @@ describe('evidence bundles', () => {
       importWorkspaceEvidenceBundles(workspaceDb, [
         {
           id: 'evb_imported_known',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: null,
           goalId: null,
           turnId: null,
@@ -371,9 +382,9 @@ describe('evidence bundles', () => {
             { kind: 'worker-runtime-provenance-stream', ref: 'raw/stream-0000.jsonl' },
           ],
           redactedEvidenceRefs: [
-            { kind: 'workspace', ref: 'ws_demo' },
+            { kind: 'workspace', ref: 'ws_00000000-0000-7000-8000-000000000001' },
             { kind: 'item', ref: 'item_demo' },
-            { kind: 'agent-session', ref: 'as_demo' },
+            { kind: 'agent-session', ref: 'as_00000000-0000-7860-9e37-d1a60b30c856' },
             { kind: 'worker-runtime-provenance-index', ref: 'runtime-origin-index.jsonl' },
           ],
           contentDigests: ['sha256:known'],
@@ -385,7 +396,7 @@ describe('evidence bundles', () => {
         },
         {
           id: 'evb_imported_unknown',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: null,
           goalId: null,
           turnId: null,
@@ -404,7 +415,9 @@ describe('evidence bundles', () => {
         },
       ]);
 
-      expect(listWorkspaceEvidenceBundles(workspaceDb, 'ws_demo')).toEqual([
+      expect(
+        listWorkspaceEvidenceBundles(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([
         expect.objectContaining({
           id: 'evb_imported_known',
           importStatus: 'promoted',
@@ -422,7 +435,7 @@ describe('evidence bundles', () => {
 
   it('strips unknown optional fields from imported evidence bundles', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-bundle-unknown-fields-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -430,7 +443,7 @@ describe('evidence bundles', () => {
       importWorkspaceEvidenceBundles(workspaceDb, [
         {
           id: 'evb_imported_extra',
-          workspaceId: 'ws_demo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: null,
           goalId: null,
           turnId: null,
@@ -439,7 +452,9 @@ describe('evidence bundles', () => {
           sourceKind: 'manual',
           summary: 'Imported evidence with a future optional field.',
           rawEvidenceRefs: [],
-          redactedEvidenceRefs: [{ kind: 'workspace', ref: 'ws_demo' }],
+          redactedEvidenceRefs: [
+            { kind: 'workspace', ref: 'ws_00000000-0000-7000-8000-000000000001' },
+          ],
           contentDigests: ['sha256:extra'],
           retentionClass: 'workspace-audit',
           sensitivityClass: 'product-safe',
@@ -450,9 +465,9 @@ describe('evidence bundles', () => {
         } as unknown as Parameters<typeof importWorkspaceEvidenceBundles>[1][number],
       ]);
 
-      expect(listWorkspaceEvidenceBundles(workspaceDb, 'ws_demo')).toEqual([
-        expect.not.objectContaining({ futureOptionalNote: expect.anything() }),
-      ]);
+      expect(
+        listWorkspaceEvidenceBundles(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual([expect.not.objectContaining({ futureOptionalNote: expect.anything() })]);
     } finally {
       workspaceDb.sqlite.close();
     }

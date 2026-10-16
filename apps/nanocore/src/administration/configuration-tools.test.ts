@@ -1,8 +1,8 @@
 import { PrepareWorkerEnvironmentRequestSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
-
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { createAdministrationConfigurationTools } from './configuration-tools.js';
 
 const CONFIG_REVISION = `sha256:${'a'.repeat(64)}`;
@@ -86,7 +86,7 @@ describe('administration configuration Tools', () => {
     expect(serialized).not.toContain('tenant-row');
     expect(
       PrepareWorkerEnvironmentRequestSchema.parse({
-        administrationThreadId: 'thread_administration',
+        administrationThreadId: testEntityId('th', 'thread_administration'),
         configuration: payload.configuration,
         declaration: payload.agent.runtime.image,
         mode: 'prepare',

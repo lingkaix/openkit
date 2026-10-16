@@ -3,7 +3,9 @@ import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import { ListThreadItemsResponseSchema } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
+  deriveEntityId,
   isSealedTurnTerminal,
+  MaterialIdSchema,
   ProductTurnSchema,
   RequestIdSchema,
   responsibleUserIdForActor,
@@ -69,7 +71,7 @@ const WorkSubmitArtifactArgsSchema = z
     mediaType: z.enum(['text/markdown', 'text/plain', 'application/json']),
     materialProposal: z
       .object({
-        materialId: z.string().min(1),
+        materialId: MaterialIdSchema,
         baseRevisionId: z.string().min(1),
         baseContentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
       })
@@ -371,7 +373,7 @@ function workRaiseInput(
     workspaceId: environmentPackage.scope.workspaceId,
     threadId: environmentPackage.scope.threadId,
     raisingTurnId: environmentPackage.scope.turnId,
-    requestItemId: `it_work_input_${createHash('sha256').update(args.requestId).digest('hex').slice(0, 24)}`,
+    requestItemId: deriveEntityId('it', [args.requestId, 'request']),
     kind: 'user-input',
     requesterKind: 'worker',
     agentId: environmentPackage.agent.agentId,
@@ -439,12 +441,11 @@ async function submitArtifact(
     turnId: scope.turnId,
     packageSnapshotId: environmentPackage.snapshotId,
   };
-  const identity = canonicalJsonText([
+  const artifactId = deriveEntityId('ar', [
     environmentPackage.snapshotId,
     scope.turnId,
     metadata.requestId,
   ]);
-  const artifactId = `worker-artifact-${createHash('sha256').update(identity).digest('hex')}`;
   const inputHash = createHash('sha256').update(canonicalJsonText(metadata)).digest('hex');
   const replay = () => {
     const receipt = store.getCommandRequest(

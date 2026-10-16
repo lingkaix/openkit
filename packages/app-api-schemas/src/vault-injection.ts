@@ -1,3 +1,12 @@
+import {
+  AgentSessionIdSchema,
+  AuditEventIdSchema,
+  CapabilityCallIdSchema,
+  PermissionDecisionIdSchema,
+  VaultGrantIdSchema,
+  VaultReferenceIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import { addRawSecretIssues } from './raw-secrets.js';
 
@@ -17,18 +26,19 @@ export type InjectionVisibility = z.infer<typeof InjectionVisibilitySchema>;
 /** Non-secret workspace vault grant metadata exposed through the App API. */
 export const WorkspaceVaultGrantSchema = z
   .object({
-    grantId: z.string().min(1),
-    vaultReferenceId: z.string().min(1),
+    issuance: z.enum(['target', 'imported-history']),
+    grantId: VaultGrantIdSchema,
+    vaultReferenceId: VaultReferenceIdSchema,
     ownerScope: z.literal('workspace'),
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     userId: z.null(),
     subjectSummary: z.string().min(1).nullable(),
     targetAgentId: z.string().min(1).nullable(),
-    targetAgentSessionId: z.string().min(1).nullable(),
+    targetAgentSessionId: AgentSessionIdSchema.nullable(),
     targetCapabilityId: z.string().min(1).nullable(),
     allowedInjectionPaths: z.array(z.string().min(1)),
     lifetime: z.enum(['session', 'turn', 'capability-call', 'workspace', 'until-revoked']),
-    policyDecisionId: z.string().min(1).nullable(),
+    policyDecisionId: PermissionDecisionIdSchema.nullable(),
     approvalId: z.string().min(1).nullable(),
     status: z.enum(['active', 'revoked', 'expired']),
     createdAt: z.string().datetime(),
@@ -41,7 +51,7 @@ export const WorkspaceVaultGrantSchema = z
 export const WorkspaceVaultInjectionPlanSchema = z
   .object({
     planId: z.string().min(1),
-    grantId: z.string().min(1),
+    grantId: VaultGrantIdSchema,
     packageSnapshotId: z.string().min(1).nullable(),
     capabilityId: z.string().min(1).nullable(),
     injectionVisibility: InjectionVisibilitySchema,
@@ -62,14 +72,14 @@ export const WorkspaceVaultInjectionReceiptSchema = z
   .object({
     receiptId: z.string().min(1),
     planId: z.string().min(1),
-    grantId: z.string().min(1),
-    agentSessionId: z.string().min(1).nullable(),
-    capabilityCallId: z.string().min(1).nullable(),
+    grantId: VaultGrantIdSchema,
+    agentSessionId: AgentSessionIdSchema.nullable(),
+    capabilityCallId: CapabilityCallIdSchema.nullable(),
     backendSummary: z.string().min(1),
     injectedAt: z.string().datetime(),
     expiresAt: z.string().datetime().nullable(),
     revocationStatus: z.enum(['active', 'revoked', 'expired', 'stale-session']),
-    auditEventId: z.string().min(1).nullable(),
+    auditEventId: AuditEventIdSchema.nullable(),
   })
   .strict()
   .superRefine((value, ctx) => addRawSecretIssues(value, ctx, []));
@@ -77,7 +87,7 @@ export const WorkspaceVaultInjectionReceiptSchema = z
 /** Workspace vault grant list response. */
 export const ListWorkspaceVaultGrantsResponseSchema = z
   .object({
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     items: z.array(WorkspaceVaultGrantSchema),
   })
   .strict()
@@ -86,7 +96,7 @@ export const ListWorkspaceVaultGrantsResponseSchema = z
 /** Workspace injection plan list response. */
 export const ListWorkspaceVaultInjectionPlansResponseSchema = z
   .object({
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     items: z.array(WorkspaceVaultInjectionPlanSchema),
   })
   .strict()
@@ -95,7 +105,7 @@ export const ListWorkspaceVaultInjectionPlansResponseSchema = z
 /** Workspace injection receipt list response. */
 export const ListWorkspaceVaultInjectionReceiptsResponseSchema = z
   .object({
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     items: z.array(WorkspaceVaultInjectionReceiptSchema),
   })
   .strict()

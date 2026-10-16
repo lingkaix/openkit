@@ -44,8 +44,8 @@ describe('Knowledge retrieval and answer segmentation', () => {
         query,
         access: {
           store,
-          actor: { kind: 'user', id: 'user_local' },
-          requestActor: { kind: 'local', userId: 'user_local' },
+          actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         },
       });
     expect(await answer(one)).toMatchObject({ outcome: 'insufficient-evidence', citations: [] });

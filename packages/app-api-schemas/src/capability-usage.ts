@@ -3,6 +3,7 @@ import {
   GatewayFailureKindSchema,
   isGatewayEntryLlmCapabilityId,
   UsageRecordSchema,
+  WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
 
@@ -64,7 +65,7 @@ export const CapabilityUsageCallSchema = CapabilityCallSchema.safeExtend({
 /** Read-only capability usage evidence for one workspace. */
 export const CapabilityUsageResponseSchema = z
   .object({
-    workspaceId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
     capabilityCalls: z.array(CapabilityUsageCallSchema),
     usageRecords: z.array(UsageRecordSchema),
   })
