@@ -337,7 +337,11 @@ class PrivateManager:
 
     def start(self):
         """Start PID1 with a fresh tmpfs /run and the exact owned cgroup namespace root."""
-        bootstrap = "import os;f=open('/sys/fs/cgroup/cgroup.procs','w');f.write('0');f.close();os.execv('/usr/bin/unshare',['unshare','--cgroup','/usr/lib/systemd/systemd','--system','--unit=openkit-fixture.target','--log-target=console','--log-level=warning'])"
+        # The canonical InaccessiblePaths rule needs a private socket inode to mask.
+        bootstrap = ("import os,socket;s=socket.socket(socket.AF_UNIX);s.bind('/run/docker.sock');s.close();"
+                     "f=open('/sys/fs/cgroup/cgroup.procs','w');f.write('0');f.close();"
+                     "os.execv('/usr/bin/unshare',['unshare','--cgroup','/usr/lib/systemd/systemd','--system',"
+                     "'--unit=openkit-fixture.target','--log-target=console','--log-level=warning'])")
         argv = ["/usr/bin/bwrap", "--unshare-user", "--cap-add", "CAP_SYS_ADMIN", "--uid", "0", "--gid", "0",
                 "--unshare-pid", "--as-pid-1", "--unshare-net", "--unshare-uts", "--hostname", "openkit-qualification",
                 "--die-with-parent", "--new-session", "--clearenv", "--setenv", "PATH", "/usr/bin:/bin",
