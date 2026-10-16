@@ -29,8 +29,11 @@ UNIT = "openkit-nanohost.service"
 UNIT_PATH = "/etc/systemd/system/" + UNIT
 GUARD_DIRECTORY = UNIT_PATH + ".d"
 GUARD = GUARD_DIRECTORY + "/zz-openkit-replacement-" + REPLACEMENT_ID + ".conf"
-PERMIT = GUARD_DIRECTORY + "/.openkit-replacement-" + REPLACEMENT_ID + ".permit"
-GUARD_BYTES = ("[Unit]\nConditionPathExists=" + PERMIT + "\n[Service]\nRestart=no\n").encode()
+PERMIT = "/run/openkit-replacement-" + REPLACEMENT_ID + "/permit"
+GUARD_BYTES = (
+    "[Unit]\nConditionPathExists=" + PERMIT + "\n[Service]\nRestart=no\n"
+    "ExecStartPre=/usr/bin/rm -- " + PERMIT + "\n"
+).encode()
 DOMAIN = "/sys/fs/cgroup/openkit.slice/openkit-nanohost.slice"
 CONTROL_GROUP = "/openkit.slice/openkit-nanohost.slice/openkit-nanohost.service"
 CONDITION = {"type": "a(sbbsi)", "data": [["ConditionPathExists", False, False, PERMIT, 0]]}
