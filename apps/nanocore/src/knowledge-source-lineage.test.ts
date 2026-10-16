@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCoreClient } from '@openkit/core-client';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -10,6 +10,7 @@ import {
 import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
+import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
@@ -42,6 +43,247 @@ function sourceFixture() {
 
 /** Keeps explicit registered-source selection distinct from coincidentally equal entry bytes. */
 describe('direct Knowledge saved-source lineage', () => {
+  it('filters private Source identities and refuses private metadata for a current ordinary readonly member', async () => {
+    const f = sourceFixture();
+    try {
+      const privateThread = f.store.createThread(
+        'ws_demo',
+        'Private source title',
+        undefined,
+        'conversation',
+        {
+          visibility: 'private',
+          privateOwnerUserId: crypto.randomUUID(),
+        }
+      );
+      const { source: privateSource } = await f.client.operations['knowledge.source.register']({
+        workspaceId: 'ws_demo',
+        requestId: crypto.randomUUID(),
+        kind: 'document',
+        title: 'Private source identity',
+        content: 'Private source material.',
+        originatingThreadId: privateThread.id,
+      });
+      const { source: sharedSource } = await f.client.operations['knowledge.source.register']({
+        workspaceId: 'ws_demo',
+        requestId: crypto.randomUUID(),
+        kind: 'document',
+        title: 'Shared source',
+        content: 'Shared material.',
+      });
+      const issued = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: 'user_local',
+        scope: 'workspace-readonly',
+        workspaceIds: ['ws_demo'],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      const app = createApp({
+        mode: 'server',
+        coreDb: f.coreDb,
+        dataRoot: f.dataRoot,
+        store: f.store,
+      });
+      const client = createCoreClient({
+        baseUrl: 'http://127.0.0.1',
+        headers: { authorization: `Bearer ${issued.secret}` },
+        fetch: (input, init) => app.fetch(new Request(input, init)),
+      });
+      const listed = await client.operations['knowledge.source.list']({ workspaceId: 'ws_demo' });
+      expect(listed.items.map((source) => source.id)).toContain(sharedSource.id);
+      expect.soft(listed.items.map((source) => source.id)).not.toContain(privateSource.id);
+      const derivedReads = vi.spyOn(f.store, 'listKnowledgeSourceDerivedRepresentations');
+      try {
+        await expect(
+          client.operations['knowledge.source.read']({
+            workspaceId: 'ws_demo',
+            sourceId: privateSource.id,
+          })
+        ).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
+        expect(derivedReads).not.toHaveBeenCalled();
+      } finally {
+        derivedReads.mockRestore();
+      }
+    } finally {
+      f.close();
+    }
+  });
+
+  it('withholds Source data when its derived metadata read revokes the presented credential', async () => {
+    const f = sourceFixture();
+    try {
+      const { source } = await f.client.operations['knowledge.source.register']({
+        workspaceId: 'ws_demo',
+        requestId: crypto.randomUUID(),
+        kind: 'document',
+        title: 'Readable source',
+        content: 'Must be withheld after revocation.',
+      });
+      const issued = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: 'user_local',
+        scope: 'workspace-readonly',
+        workspaceIds: ['ws_demo'],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      const app = createApp({
+        mode: 'server',
+        coreDb: f.coreDb,
+        dataRoot: f.dataRoot,
+        store: f.store,
+      });
+      const client = createCoreClient({
+        baseUrl: 'http://127.0.0.1',
+        headers: { authorization: `Bearer ${issued.secret}` },
+        fetch: (input, init) => app.fetch(new Request(input, init)),
+      });
+      const read = f.store.listKnowledgeSourceDerivedRepresentations.bind(f.store);
+      const derivedReads = vi
+        .spyOn(f.store, 'listKnowledgeSourceDerivedRepresentations')
+        .mockImplementation((workspaceId, sourceId) => {
+          const representations = read(workspaceId, sourceId);
+          revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
+          return representations;
+        });
+      try {
+        await expect(
+          client.operations['knowledge.source.read']({
+            workspaceId: 'ws_demo',
+            sourceId: source.id,
+          })
+        ).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
+        expect(derivedReads).toHaveBeenCalledTimes(1);
+      } finally {
+        derivedReads.mockRestore();
+      }
+    } finally {
+      f.close();
+    }
+  });
+
+  it('requires current originating Thread audience for new registration and exact registration replay', async () => {
+    const f = sourceFixture();
+    try {
+      const thread = f.store.createThread('ws_demo', 'Private capture', undefined, 'conversation', {
+        visibility: 'private',
+        privateOwnerUserId: crypto.randomUUID(),
+      });
+      const command = {
+        workspaceId: 'ws_demo',
+        requestId: crypto.randomUUID(),
+        kind: 'document' as const,
+        title: 'Private capture',
+        content: 'Privately owned capture.',
+        originatingThreadId: thread.id,
+      };
+      const registered = await f.client.operations['knowledge.source.register'](command);
+      expect(await f.client.operations['knowledge.source.register'](command)).toEqual(registered);
+      const issued = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: LOCAL_USER_ID,
+        scope: 'workspace',
+        workspaceIds: ['ws_demo'],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      const app = createApp({
+        mode: 'server',
+        coreDb: f.coreDb,
+        dataRoot: f.dataRoot,
+        store: f.store,
+      });
+      const client = createCoreClient({
+        baseUrl: 'http://127.0.0.1',
+        headers: { authorization: `Bearer ${issued.secret}` },
+        fetch: (input, init) => app.fetch(new Request(input, init)),
+      });
+      await expect(client.operations['knowledge.source.register'](command)).rejects.toMatchObject({
+        status: 403,
+        code: 'workspace_access_denied',
+      });
+      await expect(
+        client.operations['knowledge.source.register']({
+          ...command,
+          requestId: crypto.randomUUID(),
+        })
+      ).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
+      expect(f.store.listKnowledgeSources('ws_demo')).toEqual([registered.source]);
+    } finally {
+      f.close();
+    }
+  });
+
+  it('keeps private Sources out of shared Knowledge while permitting their owner-only personal Workspace', async () => {
+    const f = sourceFixture();
+    try {
+      const thread = f.store.createThread(
+        'ws_demo',
+        'Own private capture',
+        undefined,
+        'conversation',
+        {
+          visibility: 'private',
+          privateOwnerUserId: LOCAL_USER_ID,
+        }
+      );
+      const { source } = await f.client.operations['knowledge.source.register']({
+        workspaceId: 'ws_demo',
+        requestId: crypto.randomUUID(),
+        kind: 'document',
+        title: 'Own private source',
+        content: 'Private interpretation.',
+        originatingThreadId: thread.id,
+      });
+      const fields = {
+        kind: 'project-context' as const,
+        title: 'Private interpretation',
+        content: 'Private interpretation.',
+        sourceReferences: [`source:${source.id}@${source.contentDigest}`],
+      };
+      const before = await f.client.operations['knowledge.list']({ workspaceId: 'ws_demo' });
+      await expect(
+        f.client.operations['knowledge.create']({
+          ...fields,
+          workspaceId: 'ws_demo',
+          requestId: crypto.randomUUID(),
+        })
+      ).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
+      expect(await f.client.operations['knowledge.list']({ workspaceId: 'ws_demo' })).toEqual(
+        before
+      );
+      const personal = f.store.ensureQuickChatWorkspace(LOCAL_USER_ID);
+      recordWorkspaceOwnerMembership({
+        coreDb: f.coreDb,
+        workspaceId: personal.id,
+        ownerUserId: LOCAL_USER_ID,
+      });
+      const personalThread = f.store.createThread(personal.id, 'Personal capture');
+      const { source: personalSource } = await f.client.operations['knowledge.source.register']({
+        workspaceId: personal.id,
+        requestId: crypto.randomUUID(),
+        kind: 'document',
+        title: 'Personal source',
+        content: 'Private interpretation.',
+        originatingThreadId: personalThread.id,
+      });
+      const personalCommand = {
+        ...fields,
+        workspaceId: personal.id,
+        requestId: crypto.randomUUID(),
+        sourceReferences: [`source:${personalSource.id}@${personalSource.contentDigest}`],
+      };
+      const entry = await f.client.operations['knowledge.create'](personalCommand);
+      expect(await f.client.operations['knowledge.create'](personalCommand)).toEqual(entry);
+      const update = {
+        workspaceId: personal.id,
+        knowledgeEntryId: entry.id,
+        requestId: crypto.randomUUID(),
+        title: 'Updated private interpretation',
+      };
+      const updated = await f.client.operations['knowledge.update'](update);
+      expect(await f.client.operations['knowledge.update'](update)).toEqual(updated);
+      expect(updated.sourceReferences).toEqual(personalCommand.sourceReferences);
+    } finally {
+      f.close();
+    }
+  });
+
   it('retains the selected exact Source relationship through public indexes and restart', async () => {
     const f = sourceFixture();
     const { client, coreDb, dataRoot } = f;

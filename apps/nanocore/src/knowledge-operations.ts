@@ -36,7 +36,10 @@ import {
   recordUsage,
   startCapabilityCall,
 } from './capability/usage-ledger.js';
-import { KnowledgePageValidationError } from './knowledge/okf.js';
+import {
+  KnowledgePageValidationError,
+  resolveRegisteredKnowledgeSourceReference,
+} from './knowledge/okf.js';
 import {
   answerKnowledgeManager,
   checkKnowledgeHealth,
@@ -54,9 +57,18 @@ import {
   StoreRecordNotFoundError,
 } from './lib/store.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
-import { type OperationImplementations, publicOperationActor } from './operation-contract.js';
+import {
+  type AdmittedOperationContext,
+  type OperationImplementations,
+  publicOperationActor,
+} from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import { admitOperation } from './operation-resolvers.js';
+import {
+  admitKnowledgeRetrieval,
+  knowledgeSourceAudienceReadable,
+  threadReadable,
+} from './retrieval-knowledge-adapter.js';
 import { IdempotencyKeyConflictError, runIdempotentCommand } from './runtime/idempotent-command.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { openWorkspaceDb } from './storage/db.js';
@@ -292,6 +304,61 @@ export function createKnowledgeOperationImplementations(
   const inflightCommands = dependencies.inflightCommands!;
   const repositoryWorkspaceDb = dependencies.repositoryWorkspaceDb!;
 
+  /** Trusted current caller and query audience for the existing Source reader. */
+  function sourceReadInput(workspaceId: string, context: AdmittedOperationContext) {
+    return {
+      workspaceId,
+      access: {
+        store,
+        coreDb,
+        actor: context.actorRef,
+        requestActor: publicOperationActor(context),
+        outputThreadId: context.queryContext?.threadId,
+        outputTurnId: context.queryContext?.turnId,
+      },
+    };
+  }
+
+  /** Source identity and derived metadata share the same current disclosure admission. */
+  function requireSourceAudience(
+    workspaceId: string,
+    sourceId: string,
+    context: AdmittedOperationContext
+  ): void {
+    if (!knowledgeSourceAudienceReadable(sourceReadInput(workspaceId, context), sourceId))
+      throw new OperationError('workspace_access_denied', 'Knowledge source is unavailable.', 403);
+  }
+
+  /** Source selection preserves private origin restrictions; selection itself grants no sharing authority. */
+  function requireSourceReferenceAudience(
+    workspaceId: string,
+    references: readonly string[],
+    context: AdmittedOperationContext
+  ): void {
+    if (!references.some((reference) => reference.startsWith('source:'))) return;
+    const sources = new Map(
+      store.listKnowledgeSources(workspaceId).map((source) => [source.id, source.contentDigest])
+    );
+    for (const reference of references) {
+      if (!reference.startsWith('source:')) continue;
+      const resolution = resolveRegisteredKnowledgeSourceReference(reference, sources);
+      // The existing save validator retains invalid reference and digest failure semantics.
+      if (!resolution.resolved || !resolution.targetId) continue;
+      requireSourceAudience(workspaceId, resolution.targetId, context);
+      const source = store.getKnowledgeSource(workspaceId, resolution.targetId);
+      if (
+        source.originatingThreadId &&
+        store.getWorkspace(workspaceId).kind !== 'personal' &&
+        store.getThread(workspaceId, source.originatingThreadId).visibility === 'private'
+      )
+        throw new OperationError(
+          'workspace_access_denied',
+          'Knowledge source is unavailable.',
+          403
+        );
+    }
+  }
+
   return {
     'knowledge.answer': async (input, context) => {
       const actor = context.actorRef;
@@ -340,13 +407,19 @@ export function createKnowledgeOperationImplementations(
         );
       }
     },
-    'knowledge.source.list': async (input, _context) => {
+    'knowledge.source.list': async (input, context) => {
       const { workspaceId } = input;
 
       try {
-        return ListKnowledgeSourcesResponseSchema.parse({
-          items: store.listKnowledgeSources(workspaceId),
+        const current = sourceReadInput(workspaceId, context);
+        admitKnowledgeRetrieval(current);
+        const response = ListKnowledgeSourcesResponseSchema.parse({
+          items: store
+            .listKnowledgeSources(workspaceId)
+            .filter((source) => knowledgeSourceAudienceReadable(current, source.id)),
         });
+        admitKnowledgeRetrieval(current);
+        return response;
       } catch (error) {
         throw commandFailure(error, 'knowledge_source_list_failed', 404);
       }
@@ -356,6 +429,17 @@ export function createKnowledgeOperationImplementations(
       const { workspaceId, ...commandInput } = input;
 
       try {
+        const current = sourceReadInput(workspaceId, context);
+        admitKnowledgeRetrieval(current);
+        if (
+          commandInput.originatingThreadId &&
+          !threadReadable(current, commandInput.originatingThreadId)
+        )
+          throw new OperationError(
+            'workspace_access_denied',
+            'Knowledge source is unavailable.',
+            403
+          );
         const now = new Date().toISOString();
         const source = await runIdempotentCommand({
           store,
@@ -388,6 +472,7 @@ export function createKnowledgeOperationImplementations(
           replay: (record) => store.getKnowledgeSource(workspaceId, record.response.id),
           responseId: (result) => result.id,
         });
+        requireSourceAudience(workspaceId, source.id, context);
         recordKnowledgeGatewayUsage({
           authorityActor: actor,
           capabilityId: 'knowledge.source.register',
@@ -400,13 +485,15 @@ export function createKnowledgeOperationImplementations(
           ...(coreDb ? { coreDb: coreDb } : {}),
         });
 
-        return RegisterKnowledgeSourceResponseSchema.parse({
+        const response = RegisterKnowledgeSourceResponseSchema.parse({
           source,
           derivedRepresentations: store.listKnowledgeSourceDerivedRepresentations(
             workspaceId,
             source.id
           ),
         });
+        requireSourceAudience(workspaceId, source.id, context);
+        return response;
       } catch (error) {
         throw commandFailure(error, 'knowledge_source_register_failed');
       }
@@ -419,6 +506,7 @@ export function createKnowledgeOperationImplementations(
         const source = readAuthorizedKnowledgeOwner(workspaceId, () =>
           store.getKnowledgeSource(workspaceId, sourceId)
         );
+        requireSourceAudience(workspaceId, sourceId, context);
         const response = ReadKnowledgeSourceResponseSchema.parse({
           source,
           derivedRepresentations: store.listKnowledgeSourceDerivedRepresentations(
@@ -437,6 +525,7 @@ export function createKnowledgeOperationImplementations(
           ...(coreDb ? { coreDb: coreDb } : {}),
         });
 
+        requireSourceAudience(workspaceId, sourceId, context);
         return response;
       } catch (error) {
         if (error instanceof OperationError) throw error;
@@ -1259,6 +1348,7 @@ export function createKnowledgeOperationImplementations(
       const { workspaceId, ...commandInput } = input;
 
       try {
+        requireSourceReferenceAudience(workspaceId, commandInput.sourceReferences ?? [], context);
         const knowledge = await runIdempotentCommand({
           store,
           inflightCommands,
@@ -1273,6 +1363,7 @@ export function createKnowledgeOperationImplementations(
             KnowledgeEntrySchema.parse(store.getKnowledgeEntry(workspaceId, record.response.id)),
           responseId: (result) => result.id,
         });
+        requireSourceReferenceAudience(workspaceId, knowledge.sourceReferences ?? [], context);
         recordKnowledgeGatewayUsage({
           authorityActor: actor,
           capabilityId: 'knowledge.entry.create',
@@ -1300,6 +1391,11 @@ export function createKnowledgeOperationImplementations(
       });
 
       try {
+        requireSourceReferenceAudience(
+          workspaceId,
+          store.getKnowledgeEntry(workspaceId, knowledgeEntryId).sourceReferences ?? [],
+          context
+        );
         const knowledge = await runIdempotentCommand({
           store,
           inflightCommands,
@@ -1316,6 +1412,7 @@ export function createKnowledgeOperationImplementations(
             KnowledgeEntrySchema.parse(store.getKnowledgeEntry(workspaceId, record.response.id)),
           responseId: (result) => result.id,
         });
+        requireSourceReferenceAudience(workspaceId, knowledge.sourceReferences ?? [], context);
         recordKnowledgeGatewayUsage({
           authorityActor: actor,
           capabilityId: 'knowledge.entry.update',
