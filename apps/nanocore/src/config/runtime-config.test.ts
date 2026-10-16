@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -581,6 +581,131 @@ describe('runtime config loading and reload planning', () => {
         path: 'appUpdate',
       }),
     ]);
+  });
+
+  describe('NanoHost startup configuration reload', () => {
+    const initialHost = {
+      bind: { host: '127.0.0.1', port: 3101 },
+      credentialRef: 'fixture-nanohost',
+      credentialSlots: {
+        A: { companionPath: '/fixture/a-companion', secretPath: '/fixture/a-secret' },
+        B: { companionPath: '/fixture/b-companion', secretPath: '/fixture/b-secret' },
+      },
+      deploymentId: 'fixture-deployment',
+      identityId: 'fixture-host',
+      maxActiveTurnsPerSandbox: 20,
+      rendezvousUrl: 'http://127.0.0.1:3101',
+    };
+    const transitions = [
+      { name: 'addition', previous: undefined, next: initialHost },
+      {
+        name: 'replacement',
+        previous: initialHost,
+        next: {
+          ...initialHost,
+          bind: { host: '127.0.0.1', port: 3102 },
+          credentialRef: 'fixture-successor',
+          credentialSlots: {
+            A: { companionPath: '/fixture/next-a-companion', secretPath: '/fixture/next-a-secret' },
+            B: { companionPath: '/fixture/next-b-companion', secretPath: '/fixture/next-b-secret' },
+          },
+          deploymentId: 'fixture-successor-deployment',
+          identityId: 'fixture-successor',
+          maxActiveTurnsPerSandbox: 8,
+          rendezvousUrl: 'http://127.0.0.1:3102',
+        },
+      },
+      { name: 'removal', previous: initialHost, next: undefined },
+    ];
+
+    it('applies a capacity-only change without requiring restart', () => {
+      const dataRoot = createDataRoot();
+      try {
+        writeConfiguredServer(dataRoot, 'openai/gpt-5.1', `, "nanohost": ${JSON.stringify(initialHost)}`);
+        const manager = createRuntimeConfigManager({ dataRoot });
+        const next = { ...initialHost, maxActiveTurnsPerSandbox: 8 };
+        writeConfiguredServer(dataRoot, 'openai/gpt-5.1', `, "nanohost": ${JSON.stringify(next)}`);
+
+        const response = manager.reload({ mode: 'strict' });
+
+        expect(response.status).toBe('applied');
+        expect(response.plan.requiresRestart).toEqual([]);
+        expect(manager.status().pendingRestart).toEqual([]);
+        expect(manager.current().openKitConfig.nanohost).toEqual(next);
+      } finally {
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
+    });
+
+    for (const transition of transitions) {
+      for (const mode of ['dry-run', 'strict', 'safe'] as const) {
+        it(`keeps ${transition.name} startup-owned during ${mode} reload`, () => {
+          const dataRoot = createDataRoot();
+          try {
+            writeConfiguredServer(
+              dataRoot,
+              'openai/gpt-5.1',
+              transition.previous ? `, "nanohost": ${JSON.stringify(transition.previous)}` : ''
+            );
+            const manager = createRuntimeConfigManager({ dataRoot });
+            const previous = manager.current();
+            writeConfiguredServer(
+              dataRoot,
+              'openai/gpt-5.1',
+              `, "policy": { "workDataCapture": { "value": "on" } }${
+                transition.next ? `, "nanohost": ${JSON.stringify(transition.next)}` : ''
+              }`
+            );
+
+            const response = manager.reload({
+              dryRun: mode === 'dry-run',
+              mode: mode === 'strict' ? 'strict' : 'safe',
+            });
+
+            expect(response.status).toBe(
+              mode === 'dry-run' ? 'dry-run' : mode === 'strict' ? 'rejected' : 'applied'
+            );
+            const startupPaths = [
+              'bind',
+              'credentialRef',
+              'credentialSlots',
+              'deploymentId',
+              'identityId',
+              'rendezvousUrl',
+            ];
+            expect(response.plan.requiresRestart).toEqual(
+              startupPaths.map((path) =>
+                expect.objectContaining({
+                  action: 'requires-restart',
+                  category: 'restart-required',
+                  path: `nanohost.${path}`,
+                })
+              )
+            );
+            expect(manager.current().openKitConfig.nanohost).toEqual(
+              mode === 'safe' && transition.name === 'replacement'
+                ? { ...transition.previous, maxActiveTurnsPerSandbox: 8 }
+                : transition.previous
+            );
+            expect(captureCoverageBindingFromOpenKitConfig(manager.current().openKitConfig)).toEqual({
+              scope: 'server',
+              value: mode === 'safe' ? 'on' : 'off',
+            });
+            if (mode === 'safe') {
+              expect(manager.current().version).toBe(previous.version + 1);
+              expect(manager.status().pendingRestart).toEqual(response.plan.requiresRestart);
+            } else {
+              expect(manager.current()).toBe(previous);
+              expect(manager.status().pendingRestart).toEqual(
+                mode === 'strict' ? response.plan.requiresRestart : []
+              );
+            }
+          } finally {
+            rmSync(dataRoot, { recursive: true, force: true });
+          }
+        });
+      }
+    }
   });
 
   it('classifies agent config changes as session-scoped', () => {
