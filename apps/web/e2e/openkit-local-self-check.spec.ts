@@ -1,5 +1,6 @@
 import { StartTaskModeResponseSchema } from '@openkit/app-api-schemas';
-import { createRequestId } from '@openkit/core-client';
+import { createCoreClient, createRequestId } from '@openkit/core-client';
+import { ThreadSchema } from '@openkit/protocol';
 import { expect, type Page, test } from '@playwright/test';
 import { isQuestionAnswerResponse } from './_lib/question-answer-response.js';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
@@ -16,7 +17,7 @@ test.afterEach(async () => {
 });
 
 /**
- * Verifies the fixed local Workspace, Thread, and secret-safe Debug inspection path.
+ * Verifies local Workspace, private Assistant reuse without work, member navigation, and safe Debug inspection.
  *
  * Contract: docs/specs/20260529-test_strategy.md
  */
@@ -34,7 +35,27 @@ test('completes the local Workspace self-check', async ({ page }) => {
   await page.getByRole('button', { name: /^Create workspace$/ }).click();
   await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
 
+  const firstOpening = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/app/operations/thread.create' && response.ok()
+  );
   await page.getByRole('button', { name: /^Assistant$/ }).click();
+  const assistant = ThreadSchema.parse(await (await firstOpening).json());
+  expect(assistant.visibility).toBe('private');
+  const selector = { workspaceId: assistant.workspaceId, threadId: assistant.id };
+  const client = createCoreClient({ baseUrl: stack.coreUrl });
+  expect((await client.operations['thread.dashboard'](selector)).turns).toEqual([]);
+
+  await page.getByRole('button', { name: /^Members$/ }).click();
+  await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
+  await page.getByRole('button', { name: /^Back to app$/ }).click();
+  const secondOpening = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/app/operations/thread.create' && response.ok()
+  );
+  await page.getByRole('button', { name: /^Assistant$/ }).click();
+  expect(ThreadSchema.parse(await (await secondOpening).json()).id).toBe(assistant.id);
+  expect((await client.operations['thread.dashboard'](selector)).turns).toEqual([]);
   await page.getByRole('textbox', { name: 'Message' }).fill('Story thread');
   await page.getByRole('button', { name: /Conversation agent$/ }).click();
   await page.getByRole('option', { name: 'New Shard + Worker' }).click();
