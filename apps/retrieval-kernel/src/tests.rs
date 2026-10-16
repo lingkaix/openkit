@@ -2109,26 +2109,40 @@ fn preprocessed_representation_preserves_source_and_fragment_provenance() {
         assert!(!result.coverage.representations_complete);
         assert_eq!(result.coverage.reasons.get("partial"), Some(&1));
         assert_eq!(result.hits.len(), 2);
-        for (hit, (start, end, page)) in result.hits.iter().zip([
-            (6, 12, "page:1"),
-            (20, 26, "page:2"),
-        ]) {
+        for (hit, (start, end, page)) in result
+            .hits
+            .iter()
+            .zip([(6, 12, "page:1"), (20, 26, "page:2")])
+        {
             assert_eq!(hit.digest, digest(&original));
             assert_eq!(hit.representation, "sidecar");
             assert_eq!(hit.representation_digest, digest(text));
-            assert_eq!(hit.processor.as_deref(), Some("fixture-extractor-v1:fixed-output-profile"));
-            assert_eq!(hit.locator, Locator::Text { start, end, original: Some(page.into()) });
+            assert_eq!(
+                hit.processor.as_deref(),
+                Some("fixture-extractor-v1:fixed-output-profile")
+            );
+            assert_eq!(
+                hit.locator,
+                Locator::Text {
+                    start,
+                    end,
+                    original: Some(page.into())
+                }
+            );
         }
     }
     let lexical = f.search(Mode::Lexical, "needle", vec![view.clone()], 20);
     assert_eq!(lexical.hits.len(), 1);
     assert_eq!(lexical.hits[0].digest, digest(&original));
     assert_eq!(lexical.hits[0].representation_digest, digest(text));
-    assert_eq!(lexical.hits[0].locator, Locator::Text {
-        start: 0,
-        end: 13,
-        original: Some("page:1".into()),
-    });
+    assert_eq!(
+        lexical.hits[0].locator,
+        Locator::Text {
+            start: 0,
+            end: 13,
+            original: Some("page:1".into()),
+        }
+    );
     assert!(!lexical.coverage.representations_complete);
     let mut changed_processor = view.clone();
     if let Content::Representation { processor, .. } = &mut changed_processor.documents[0].content {
@@ -2174,7 +2188,10 @@ fn failed_source_representations_preserve_healthy_neighbors() {
     );
     fs::write(f.root.path().join("invalid.txt"), [255]).unwrap();
     let mut invalid = document("invalid.pdf", &[0, 255, 2], missing.content.clone());
-    if let Content::Representation { path, digest: hash, .. } = &mut invalid.content {
+    if let Content::Representation {
+        path, digest: hash, ..
+    } = &mut invalid.content
+    {
         *path = "invalid.txt".into();
         *hash = digest(&[255]);
     }
@@ -2183,12 +2200,14 @@ fn failed_source_representations_preserve_healthy_neighbors() {
     f.kernel.publish(view.clone(), None).unwrap();
     let restarted = Kernel::new(f.root.path(), f.store.path()).unwrap();
     for mode in [Mode::Exact, Mode::Regex, Mode::Lexical] {
-        let result = restarted.search(Query {
-            mode,
-            query: "needle".into(),
-            scopes: vec![view.clone()],
-            limit: 20,
-        }).expect("failed representations must not invalidate a healthy scope");
+        let result = restarted
+            .search(Query {
+                mode,
+                query: "needle".into(),
+                scopes: vec![view.clone()],
+                limit: 20,
+            })
+            .expect("failed representations must not invalidate a healthy scope");
         assert_eq!(result.hits.len(), 1);
         assert_eq!(result.hits[0].key.id, "healthy");
         assert_eq!(result.coverage.stopped_work, 2);
@@ -2202,14 +2221,18 @@ fn failed_source_representations_preserve_healthy_neighbors() {
 fn empty_source_representation_keeps_original_identity_and_partial_coverage() {
     let f = Fixture::new();
     fs::write(f.root.path().join("empty.txt"), []).unwrap();
-    let mut doc = document("blank.pdf", &[0, 255, 1], Content::Representation {
-        path: "empty.txt".into(),
-        digest: digest(b""),
-        size: 0,
-        processor: "fixture-extractor-v1".into(),
-        fragments: vec![],
-        complete: false,
-    });
+    let mut doc = document(
+        "blank.pdf",
+        &[0, 255, 1],
+        Content::Representation {
+            path: "empty.txt".into(),
+            digest: digest(b""),
+            size: 0,
+            processor: "fixture-extractor-v1".into(),
+            fragments: vec![],
+            complete: false,
+        },
+    );
     doc.title = "Visible title".into();
     let view = f.view("empty", vec![doc]);
     f.kernel.publish(view.clone(), None).unwrap();
@@ -2230,27 +2253,46 @@ fn empty_source_representation_keeps_original_identity_and_partial_coverage() {
 #[test]
 fn source_representation_bounds_are_independent_of_original_size() {
     let f = Fixture::new();
-    let doc = document("original.pdf", &[0, 255, 1], Content::Representation {
-        path: "text.txt".into(),
-        digest: digest(b"bounded identity"),
-        size: 2_097_152,
-        processor: "fixture-extractor-v1".into(),
-        fragments: (0..256).map(|start| RepresentationFragment {
-            start,
-            end: start + 1,
-            locator: format!("page:{start}"),
-        }).collect(),
-        complete: false,
-    });
+    let doc = document(
+        "original.pdf",
+        &[0, 255, 1],
+        Content::Representation {
+            path: "text.txt".into(),
+            digest: digest(b"bounded identity"),
+            size: 2_097_152,
+            processor: "fixture-extractor-v1".into(),
+            fragments: (0..256)
+                .map(|start| RepresentationFragment {
+                    start,
+                    end: start + 1,
+                    locator: format!("page:{start}"),
+                })
+                .collect(),
+            complete: false,
+        },
+    );
     let mut view = f.view("bounds", vec![doc]);
     validate_view(&view, true).unwrap();
     if let Content::Representation { size, .. } = &mut view.documents[0].content {
         *size = 2_097_153;
     }
-    assert_eq!(validate_view(&view, true).unwrap_err().code, "invalid-request");
-    if let Content::Representation { size, fragments, .. } = &mut view.documents[0].content {
+    assert_eq!(
+        validate_view(&view, true).unwrap_err().code,
+        "invalid-request"
+    );
+    if let Content::Representation {
+        size, fragments, ..
+    } = &mut view.documents[0].content
+    {
         *size = 2_097_152;
-        fragments.push(RepresentationFragment { start: 256, end: 257, locator: "page:257".into() });
+        fragments.push(RepresentationFragment {
+            start: 256,
+            end: 257,
+            locator: "page:257".into(),
+        });
     }
-    assert_eq!(validate_view(&view, true).unwrap_err().code, "invalid-request");
+    assert_eq!(
+        validate_view(&view, true).unwrap_err().code,
+        "invalid-request"
+    );
 }

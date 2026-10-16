@@ -313,7 +313,10 @@ impl Document {
             return fragments
                 .iter()
                 .filter(|fragment| fragment.start < fragment.end)
-                .map(|fragment| ByteRange { start: fragment.start, end: fragment.end })
+                .map(|fragment| ByteRange {
+                    start: fragment.start,
+                    end: fragment.end,
+                })
                 .collect();
         }
         self.text_ranges.clone().unwrap_or_else(|| {
