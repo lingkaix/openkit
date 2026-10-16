@@ -565,8 +565,14 @@ describe('scheduler dispatch loop', () => {
         gatewayConfig: createTestGatewayConfig(),
         providerRegistry: localProviderRegistry(),
       });
-      expect(dispatched.startedTurns).toEqual([
-        expect.objectContaining({ turnId: accepted.turnId }),
+      expect(
+        dispatched.startedTurns.map(({ dispatch, handle }) => ({
+          queueEntryId: dispatch.entry.queueEntryId,
+          threadId: handle.turn.threadId,
+          turnId: handle.turn.id,
+        }))
+      ).toEqual([
+        { queueEntryId: entry.queueEntryId, threadId: thread.id, turnId: entry.turnId },
       ]);
       expect(executor.prepareCalls).toEqual([{ threadId: thread.id, turnId: accepted.turnId }]);
       expect(executor.calls).toEqual([
