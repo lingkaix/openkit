@@ -90,6 +90,7 @@ describe('conversation navigation sidebar', () => {
       activity,
       state: index === 0 ? 'needs-you' : index === 1 ? 'working' : 'idle',
       lastActivityAt: '2026-09-16T00:00:00.000Z',
+      unreadCount: index === 2 ? 2 : 0,
     }));
     const list = vi.fn().mockImplementation(async () => ({
       items: structuredClone(rows.filter((row) => row.thread.status === 'active')),
@@ -157,7 +158,7 @@ describe('conversation navigation sidebar', () => {
     );
     expect(buttons[0]).toHaveAccessibleDescription('Goal · Needs your attention');
     expect(buttons[1]).toHaveAccessibleDescription('Worker task · Working');
-    expect(buttons[2]).toHaveAccessibleDescription('Assistant chat · Idle');
+    expect(buttons[2]).toHaveAccessibleDescription('Assistant chat · Idle · 2 unread replies');
     expect(buttons[3]).toHaveAccessibleDescription('Activity type unknown · Idle');
     const user = userEvent.setup();
     await user.click(buttons[0]!);
@@ -187,7 +188,7 @@ describe('conversation navigation sidebar', () => {
     await act(async () => {
       finishRequest({ receivingWorkspaceId: 'ws1', receivingThreadId: 'th2' });
     });
-    await waitFor(() => expect(buttons[2]).toHaveAccessibleDescription('Assistant chat · Idle'));
+    await waitFor(() => expect(buttons[2]).toHaveAccessibleDescription('Assistant chat · Idle · 2 unread replies'));
     await user.click(screen.getByRole('button', { name: 'Rename conversation' }));
     expect(await screen.findByRole('button', { name: 'Updated conversation' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Archive conversation' }));
