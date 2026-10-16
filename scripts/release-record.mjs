@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { createReleaseNotes, parseReleaseNotesInput } from './release-notes.mjs';
+import { parseVersionTag, readReleaseAssessment } from './release-preflight.mjs';
 import { noSecrets } from './release-safety.mjs';
 
 const SHA256 = /^sha256:[a-f0-9]{64}$/u;
@@ -15,9 +16,15 @@ export function createReleaseManifest({ repository, tag, sha, images, checksums,
   const fail = (message) => {
     throw Error(`Release Management: manifest refused: ${message}`);
   };
+  let version;
+  try {
+    version = parseVersionTag(tag);
+  } catch {
+    fail('source identity');
+  }
   if (
     !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/u.test(repository ?? '') ||
-    !/^v\d+\.\d+\.\d+-[a-z0-9.]+$/u.test(tag ?? '') ||
+    !version.includes('-') ||
     !/^[a-f0-9]{40}$/u.test(sha ?? '')
   )
     fail('source identity');
@@ -123,42 +130,6 @@ export function createReleaseManifest({ repository, tag, sha, images, checksums,
     assets: assets.sort((a, b) => a.name.localeCompare(b.name)),
     assertions,
   };
-}
-
-/** Admit only reviewed compatibility facts; source and published digest are joined by the producer. */
-export function readReleaseAssessment(repoRoot, tag) {
-  if (!/^v\d+\.\d+\.\d+-[a-z0-9.-]+$/u.test(tag))
-    throw Error('Release Management: assessment requires a prerelease tag');
-  const file = join(repoRoot, 'release-notes', `${tag}.manifest.json`);
-  if (!lstatSync(file).isFile())
-    throw Error('Release Management: assessment must be a regular reviewed file');
-  const facts = JSON.parse(readFileSync(file, 'utf8'));
-  noSecrets(facts);
-  if (
-    !facts ||
-    Array.isArray(facts) ||
-    Object.keys(facts).sort().join(',') !==
-      [
-        'previousAppImageId',
-        'migrationFree',
-        'configurationCompatible',
-        'retainedDataCompatible',
-        'recovery',
-        'provenance',
-      ]
-        .sort()
-        .join(',') ||
-    !SHA256.test(facts.previousAppImageId ?? '') ||
-    facts.migrationFree !== true ||
-    facts.configurationCompatible !== true ||
-    facts.retainedDataCompatible !== true ||
-    facts.recovery !== 'previous-image-compatible' ||
-    !/^[a-z0-9-]+$/u.test(facts.provenance ?? '')
-  )
-    throw Error(
-      'Release Management: reviewed compatibility/recovery assessment is missing or unassessed'
-    );
-  return facts;
 }
 
 /** Produce or independently compare the fifth attachment and its non-circular checksum entry. */

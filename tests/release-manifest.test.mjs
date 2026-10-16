@@ -312,7 +312,7 @@ test('publication attaches a fifth checksummed asset and compares all downloaded
 });
 
 test('reviewed publication assessment refuses absent, negative and caller-supplied binding facts', async (t) => {
-  const { readReleaseAssessment } = await import('../scripts/release-record.mjs');
+  const { readReleaseAssessment } = await import('../scripts/release-preflight.mjs');
   const dir = mkdtempSync(path.join(tmpdir(), 'release-assessment-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(path.join(dir, 'release-notes'));
@@ -337,4 +337,19 @@ test('reviewed publication assessment refuses absent, negative and caller-suppli
   }
   writeFileSync(file, JSON.stringify(facts));
   assert.deepEqual(readReleaseAssessment(dir, input.tag), facts);
+});
+
+test('manifest uses canonical hyphenated prerelease grammar before publication', () => {
+  const input = manifestInput();
+  const tag = 'v0.1.0-rc-test.1';
+  input.checksums = input.checksums.replaceAll(input.tag, tag);
+  for (const image of input.images)
+    image.tags = image.tags.map((t) =>
+      t === input.tag ? tag : t === input.tag.slice(1) ? tag.slice(1) : t
+    );
+  input.tag = tag;
+  assert.equal(createReleaseManifest(input).tag, tag);
+  for (const bad of ['v0.1.0-RC-test.1', 'v0.1.0-rc..1', 'v0.1.0-01']) {
+    assert.throws(() => createReleaseManifest({ ...input, tag: bad }), /source identity/);
+  }
 });

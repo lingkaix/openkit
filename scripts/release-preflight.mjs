@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { NANOHOST_TARGETS } from './lib/nanohost-elf.mjs';
-import { readReleaseAssessment } from './release-record.mjs';
+import { noSecrets } from './release-safety.mjs';
 
 /**
  * Validates release identity, portable inputs, image manifest, and optional main-branch ancestry.
@@ -59,6 +59,42 @@ export function parseVersionTag(tag) {
     );
   }
   return match[1];
+}
+
+/** Admit only reviewed compatibility facts; source and published digest are joined by the producer. */
+export function readReleaseAssessment(repoRoot, tag) {
+  if (!parseVersionTag(tag).includes('-'))
+    throw Error('Release Management: assessment requires a prerelease tag');
+  const file = join(repoRoot, 'release-notes', `${tag}.manifest.json`);
+  if (!lstatSync(file).isFile())
+    throw Error('Release Management: assessment must be a regular reviewed file');
+  const facts = JSON.parse(readFileSync(file, 'utf8'));
+  noSecrets(facts);
+  if (
+    !facts ||
+    Array.isArray(facts) ||
+    Object.keys(facts).sort().join(',') !==
+      [
+        'previousAppImageId',
+        'migrationFree',
+        'configurationCompatible',
+        'retainedDataCompatible',
+        'recovery',
+        'provenance',
+      ]
+        .sort()
+        .join(',') ||
+    !/^sha256:[a-f0-9]{64}$/u.test(facts.previousAppImageId ?? '') ||
+    facts.migrationFree !== true ||
+    facts.configurationCompatible !== true ||
+    facts.retainedDataCompatible !== true ||
+    facts.recovery !== 'previous-image-compatible' ||
+    !/^[a-z0-9-]+$/u.test(facts.provenance ?? '')
+  )
+    throw Error(
+      'Release Management: reviewed compatibility/recovery assessment is missing or unassessed'
+    );
+  return facts;
 }
 
 /**

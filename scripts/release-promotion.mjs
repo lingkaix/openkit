@@ -9,12 +9,8 @@ import { parseArgs } from 'node:util';
 import { verifyOperationsSkillArchive } from './package-release-assets.mjs';
 import { resolveImageDigest } from './release-image-state.mjs';
 import { readReleaseNotesInput } from './release-notes.mjs';
-import { parseVersionTag } from './release-preflight.mjs';
-import {
-  createReleaseManifest,
-  publicationManifest,
-  readReleaseAssessment,
-} from './release-record.mjs';
+import { parseVersionTag, readReleaseAssessment } from './release-preflight.mjs';
+import { createReleaseManifest, publicationManifest } from './release-record.mjs';
 import { verifyNanoHostRelease } from './verify-nanohost-release.mjs';
 
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
