@@ -179,7 +179,7 @@ export function AppUpdateScreen() {
                 setMaintenanceConsent(false);
                 void adminAccess.refetch().then((current) => {
                   if (current.isSuccess) {
-                    void diagnostics.refetch();
+                    void diagnostics.refetch({ cancelRefetch: false });
                   }
                 });
               }}

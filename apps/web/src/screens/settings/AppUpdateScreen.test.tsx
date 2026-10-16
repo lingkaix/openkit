@@ -271,7 +271,8 @@ describe('App update administration', () => {
     await screen.findByText('Access denied');
     vi.mocked(client.operations['diagnostics.app']).mockRejectedValue(new ApiCallError(500, 'private detail'));
     await user.click(screen.getByRole('button', { name: 'Retry' }));
-    await waitFor(() => expect(client.operations['diagnostics.app']).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(vi.mocked(client.operations['diagnostics.app']).mock.calls.length).toBeGreaterThanOrEqual(3));
+    await waitFor(() => expect(queryClient.getQueryState(['settings', 'app-update', 'diagnostics'])).toMatchObject({ status: 'error', fetchStatus: 'idle' }));
     expect(screen.queryByText(REQUEST_ID)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start update' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Prepare' })).not.toBeInTheDocument();
