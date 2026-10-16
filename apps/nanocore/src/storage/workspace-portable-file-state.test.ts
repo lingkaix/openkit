@@ -432,6 +432,13 @@ describe('workspace portable file state', () => {
     });
     const acceptedExportPath = `workspace-files/knowledge/pages/${acceptedPageId}.md`;
     expect(verified.fileContents.get(acceptedExportPath)).toBe(acceptedPageBytes);
+    expect(() =>
+      readWorkspaceImportSnapshot({
+        verified,
+        targetWorkspaceId: new FsStore().createWorkspace('Import validation').id,
+        targetServerId: readDataRootLayoutMarker(dataRoot).deploymentId,
+      })
+    ).not.toThrow();
     for (const [name, alter] of [
       ['missing', (files: Map<string, string>) => files.delete(acceptedExportPath)],
       [
