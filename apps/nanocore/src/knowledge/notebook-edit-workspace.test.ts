@@ -117,6 +117,13 @@ describe('NotebookEditWorkspace', () => {
     expect(editor.changes()).toEqual({ 'final.md': 'scratch\n' });
     await editor.update({ script: 'rm final.md' }, signal);
     expect(editor.changes()).toEqual({});
+    expect(await editor.update({ script: 'printf retained > one.md; exit 126' }, signal)).toEqual({
+      exitCode: 126,
+      stdout: '',
+      stderr: '',
+      truncated: false,
+    });
+    expect(editor.changes()).toEqual({ 'one.md': 'retained' });
   });
 
   it('uses only the fixed virtual environment and working directory', async () => {
@@ -213,6 +220,8 @@ describe('NotebookEditWorkspace', () => {
     await expect(
       editor.update({ script: 'for ((i=0; i<257; i++)); do echo new > "new-$i.md"; done' }, signal)
     ).rejects.toMatchObject({ code: 'limit_reached' });
+    expect(editor.changes()).toEqual({});
+    expect((await editor.update({ script: 'while true; do :; done' }, signal)).exitCode).toBe(126);
     expect(editor.changes()).toEqual({});
     const full = workspace({
       baseFiles: { 'one.md': 'x'.repeat(NOTEBOOK_EDIT_LIMITS.fileBytes) },

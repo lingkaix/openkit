@@ -434,11 +434,8 @@ export class NotebookEditWorkspace {
       });
       if (violation) throw violation;
       ensureLive();
-      if (result.exitCode === 126)
-        throw new NotebookEditWorkspaceError(
-          'limit_reached',
-          'Notebook editing reached a hardened execution limit.'
-        );
+      // The Tool closure must mark nonzero results as failures and retain the exact exit fields.
+      // Library exit 126 is also available to scripts, so stderr text supplies no authority.
       const next: Record<string, string> = Object.create(null) as Record<string, string>;
       for (const path of memory.getAllPaths()) {
         const stat = await memory.lstat(path);
