@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { applyNativeScopeMigrations } from '../storage/migrate.js';
 import {
-  ATTENTION_SCHEMA_SQL,
   AttentionNotifications,
   type AttentionSource,
   type AttentionTransport,
@@ -24,7 +24,7 @@ function fixture(path = ':memory:') {
   const sqlite = new Database(path);
   dbs.push(sqlite);
   sqlite.pragma('foreign_keys = ON');
-  sqlite.exec(ATTENTION_SCHEMA_SQL);
+  applyNativeScopeMigrations(sqlite, 'core');
   const notifications = new AttentionNotifications(sqlite, { now });
   const delivery = notifications.enqueue({ source, recipientUserId: 'user_alice' });
   return { sqlite, notifications, delivery };
