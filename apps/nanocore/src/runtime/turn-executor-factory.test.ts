@@ -12670,7 +12670,7 @@ describe('createConfiguredTurnExecutor', () => {
         insertFactoryUser(coreDb, 'user_local');
         coreDb.sqlite
           .prepare(
-            "INSERT OR IGNORE INTO workspace_members (workspace_id,user_id,status,access_level,revision,joined_at,created_at,updated_at) VALUES (?, 'user_local','active','editor',1,?,?,?)"
+            "INSERT OR IGNORE INTO workspace_members (workspace_id,user_id,status,revision,joined_at,created_at,updated_at) VALUES (?, 'user_local','active',1,?,?,?)"
           )
           .run(
             residentPackage.scope.workspaceId,

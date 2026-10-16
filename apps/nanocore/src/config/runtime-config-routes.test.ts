@@ -38,7 +38,7 @@ describe('canonical runtime configuration registration', () => {
     app.use('*', async (c, next) => {
       c.set('actor', { kind: 'session', userId: 'user_local' });
       c.set('workspaceAccess', {
-        effectiveRole: 'owner',
+        isOwner: true,
         kind: 'workspace',
         policyOperation: 'turn.run',
         workspaceId: 'ws_demo',

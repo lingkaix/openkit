@@ -205,7 +205,7 @@ describe('turn feedback', () => {
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_1', workspaceId: workspace.id });
     coreDb.sqlite
       .prepare(
-        "INSERT INTO workspace_members (workspace_id, user_id, access_level, status, revision, joined_at, created_at, updated_at) VALUES (?, 'user_2', 'editor', 'active', 1, ?, ?, ?)"
+        "INSERT INTO workspace_members (workspace_id, user_id, status, revision, joined_at, created_at, updated_at) VALUES (?, 'user_2', 'active', 1, ?, ?, ?)"
       )
       .run(
         workspace.id,

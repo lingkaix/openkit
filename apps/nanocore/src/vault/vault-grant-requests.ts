@@ -23,7 +23,7 @@ import {
 } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import { recordPermissionDecision } from '../policy/permission-decisions.js';
-import { evaluateWorkspaceRoleAccess } from '../policy/workspace-access.js';
+import { evaluateWorkspaceMemberAccess } from '../policy/workspace-access.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { projectApprovalEffect } from '../runtime/pending-request-disclosure.js';
 import {
@@ -842,12 +842,11 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
             ownerScope: 'workspace',
             workspaceId: input.workspaceId,
             decisionId: policyDecisionId,
-            policyDecision: evaluateWorkspaceRoleAccess({
+            policyDecision: evaluateWorkspaceMemberAccess({
               operation: 'vault.admin',
-              role: access.effectiveRole,
             }),
             policyEngineVersion: 'policy-kernel:v1',
-            policySnapshotId: 'workspace-role-baseline:v1',
+            policySnapshotId: 'workspace-member-baseline:v1',
             subjectSummary: { kind: 'user', id: record.decidingActorContext!.userId },
             action: 'vault.admin',
             resourceSummary: {

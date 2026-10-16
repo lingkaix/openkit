@@ -998,10 +998,6 @@ test('the catalog projects the bearer-reachable Workspace sharing subset', async
       'operations.workspace.invitation-revoke',
     ],
     'workspace.list': ['workspace.list', 'operations.workspace.list'],
-    'workspace.member-access-change': [
-      'workspace.member-access-change',
-      'operations.workspace.member-access-change',
-    ],
     'workspace.member-list': ['workspace.member-list', 'operations.workspace.member-list'],
     'workspace.member-remove': ['workspace.member-remove', 'operations.workspace.member-remove'],
     'workspace.ownership-transfer': [
@@ -1233,8 +1229,8 @@ test('bundled workspace leave preserves typed transport, request IDs, and auth d
       userId: 'user_demo',
       invitationId: null,
       status: 'removed',
-      accessLevel: 'editor',
-      effectiveRole: null,
+
+      isOwner: false,
       revision: 2,
       joinedAt: '2026-09-14T00:00:00.000Z',
       createdAt: '2026-09-14T00:00:00.000Z',
@@ -1361,7 +1357,7 @@ test('bundled own invitation calls preserve typed transport and canonical auth d
       invitationId: 'inv_demo',
       workspaceId: 'ws_demo',
       inviteeUserId: 'user_demo',
-      proposedAccessLevel: 'editor',
+
       inviterUserId: 'owner_demo',
       revision: 2,
       createdAt: '2026-09-14T00:00:00.000Z',

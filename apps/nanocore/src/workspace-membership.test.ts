@@ -15,7 +15,7 @@ import {
   ensureUserQuickChatWorkspace,
   listActiveWorkspaceIdsForActor,
   recordWorkspaceOwnerMembership,
-  resolveWorkspaceRole,
+  resolveWorkspaceMembershipRelation,
   WorkspaceOwnerMembershipRemovedError,
 } from './workspace-membership.js';
 
@@ -72,14 +72,14 @@ describe('workspace membership foundation', () => {
       coreDb.sqlite
         .prepare(
           `INSERT INTO workspace_members (
-            workspace_id, user_id, status, access_level, invitation_id,
+            workspace_id, user_id, status, invitation_id,
             joined_at, removed_at, revision, created_at, updated_at
           )
           VALUES
-            ('ws_editor', 'user_subject', 'active', 'editor', NULL, ?, NULL, 1, ?, ?),
-            ('ws_viewer', 'user_subject', 'active', 'viewer', NULL, ?, NULL, 1, ?, ?),
-            ('ws_removed', 'user_subject', 'removed', 'editor', NULL, ?, ?, 2, ?, ?),
-            ('ws_deleting', 'user_subject', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+            ('ws_editor', 'user_subject', 'active', NULL, ?, NULL, 1, ?, ?),
+            ('ws_viewer', 'user_subject', 'active', NULL, ?, NULL, 1, ?, ?),
+            ('ws_removed', 'user_subject', 'removed', NULL, ?, ?, 2, ?, ?),
+            ('ws_deleting', 'user_subject', 'active', NULL, ?, NULL, 1, ?, ?)`
         )
         .run(
           timestamp,
@@ -114,29 +114,37 @@ describe('workspace membership foundation', () => {
       coreDb.sqlite
         .prepare(
           `INSERT INTO workspace_members (
-            workspace_id, user_id, status, access_level, invitation_id,
+            workspace_id, user_id, status, invitation_id,
             joined_at, removed_at, revision, created_at, updated_at
-          ) VALUES ('ws_disabled_member', 'user_disabled', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+          ) VALUES ('ws_disabled_member', 'user_disabled', 'active', NULL, ?, NULL, 1, ?, ?)`
         )
         .run(timestamp, timestamp, timestamp);
       coreDb.sqlite.exec('DROP TRIGGER workspace_owner_member_update_guard');
       coreDb.sqlite
         .prepare(
           `UPDATE workspace_members
-           SET access_level = 'viewer'
+           SET status = 'removed', removed_at = updated_at
            WHERE workspace_id = 'ws_contradictory' AND user_id = 'user_subject'`
         )
         .run();
       const filesystemOnlyWorkspace = new FsStore({ dataRoot }).createWorkspace('Filesystem only');
 
-      expect(resolveWorkspaceRole(coreDb, 'ws_owner', 'user_subject')).toBe('owner');
-      expect(resolveWorkspaceRole(coreDb, 'ws_editor', 'user_subject')).toBe('editor');
-      expect(resolveWorkspaceRole(coreDb, 'ws_viewer', 'user_subject')).toBe('viewer');
-      expect(resolveWorkspaceRole(coreDb, 'ws_removed', 'user_subject')).toBeNull();
-      expect(resolveWorkspaceRole(coreDb, 'ws_deleting', 'user_subject')).toBeNull();
-      expect(resolveWorkspaceRole(coreDb, 'ws_disabled_member', 'user_disabled')).toBeNull();
-      expect(resolveWorkspaceRole(coreDb, 'ws_contradictory', 'user_subject')).toBeNull();
-      expect(resolveWorkspaceRole(coreDb, 'ws_missing', 'user_subject')).toBeNull();
+      expect(resolveWorkspaceMembershipRelation(coreDb, 'ws_owner', 'user_subject')).toBe('owner');
+      expect(resolveWorkspaceMembershipRelation(coreDb, 'ws_editor', 'user_subject')).toBe(
+        'member'
+      );
+      expect(resolveWorkspaceMembershipRelation(coreDb, 'ws_viewer', 'user_subject')).toBe(
+        'member'
+      );
+      expect(resolveWorkspaceMembershipRelation(coreDb, 'ws_removed', 'user_subject')).toBeNull();
+      expect(resolveWorkspaceMembershipRelation(coreDb, 'ws_deleting', 'user_subject')).toBeNull();
+      expect(
+        resolveWorkspaceMembershipRelation(coreDb, 'ws_disabled_member', 'user_disabled')
+      ).toBeNull();
+      expect(
+        resolveWorkspaceMembershipRelation(coreDb, 'ws_contradictory', 'user_subject')
+      ).toBeNull();
+      expect(resolveWorkspaceMembershipRelation(coreDb, 'ws_missing', 'user_subject')).toBeNull();
       expect(listActiveWorkspaceIdsForActor(coreDb, 'user_subject')).toEqual([
         'ws_editor',
         'ws_owner',
@@ -161,7 +169,7 @@ describe('workspace membership foundation', () => {
       const input = { coreDb, store, userId: 'user_local' };
       ensureUserQuickChatWorkspace(input);
       const workspace = store.ensureQuickChatWorkspace('user_local');
-      expect(resolveWorkspaceRole(coreDb, workspace.id, 'user_local')).toBe('owner');
+      expect(resolveWorkspaceMembershipRelation(coreDb, workspace.id, 'user_local')).toBe('owner');
       // Seed a retained contradiction directly; normal owner-removal commands prohibit this state.
       coreDb.sqlite.exec('DROP TRIGGER workspace_owner_member_update_guard');
       coreDb.sqlite
@@ -242,7 +250,7 @@ describe('workspace membership foundation', () => {
         .get(workspace.id);
       const member = coreDb.sqlite
         .prepare(
-          `SELECT workspace_id, user_id, status, access_level, invitation_id,
+          `SELECT workspace_id, user_id, status, invitation_id,
                   joined_at, removed_at, revision
            FROM workspace_members WHERE workspace_id = ?`
         )
@@ -256,7 +264,6 @@ describe('workspace membership foundation', () => {
         workspace_id: workspace.id,
       });
       expect(member).toEqual({
-        access_level: 'editor',
         invitation_id: null,
         joined_at: expect.any(String),
         removed_at: null,
@@ -387,7 +394,7 @@ describe('workspace membership foundation', () => {
         coreDb.sqlite
           .prepare(
             `UPDATE workspace_members
-             SET access_level = 'viewer'
+             SET user_id = 'user_second'
              WHERE workspace_id = ? AND user_id = ?`
           )
           .run('ws_imported_shared', 'user_first')
@@ -472,10 +479,10 @@ describe('workspace membership foundation', () => {
       coreDb.sqlite
         .prepare(
           `INSERT INTO workspace_members (
-            workspace_id, user_id, status, access_level, invitation_id,
+            workspace_id, user_id, status, invitation_id,
             joined_at, removed_at, revision, created_at, updated_at
           )
-          VALUES (?, ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+          VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)`
         )
         .run(removed.id, 'user_owner', joinedAt, joinedAt, joinedAt);
       coreDb.sqlite

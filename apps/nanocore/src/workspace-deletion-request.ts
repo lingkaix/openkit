@@ -19,11 +19,12 @@ import { dirname, join } from 'node:path';
 import { WorkspaceDeletionPhaseSchema } from '@openkit/app-api-schemas';
 import { RequestIdSchema, TimestampSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
-
+import type { CoreDb } from './storage/db.js';
 import {
   assertCanonicalDirectory,
   assertSafeWorkspacePathSegment,
 } from './storage/workspace-file-records.js';
+import { getWorkspaceRegistryLifecycleFact } from './workspace-sharing.js';
 
 const WORKSPACE_DELETION_PHASES = [
   'requested',
@@ -44,6 +45,8 @@ export const WorkspaceDeletionRequestRecordSchema = z
     workspaceId: WorkspaceIdSchema,
     requestId: RequestIdSchema,
     originalOwnerUserId: z.string().min(1),
+    // Absent retained records keep their original-owner retry authority without guessing an initiator.
+    initiatingUserId: z.string().min(1).optional(),
     expectedRegistryRevision: z.number().int().positive(),
     confirmation: z.string().min(1),
     createdAt: TimestampSchema,
@@ -238,6 +241,7 @@ export function createWorkspaceDeletionRequest(
     | 'createdAt'
     | 'expectedRegistryRevision'
     | 'originalOwnerUserId'
+    | 'initiatingUserId'
     | 'requestId'
     | 'workspaceId'
   >
@@ -343,4 +347,37 @@ function fsyncDirectory(path: string): void {
   } finally {
     closeSync(descriptor);
   }
+}
+
+/** Canonical context for the one private recovery export admitted by a deletion request. */
+export interface WorkspaceDeletionRecoveryExportContext {
+  readonly authorityUserId: string;
+  readonly coreDb: CoreDb | undefined;
+  readonly dataRoot: string;
+  readonly exportId: string;
+  readonly requestId: string;
+  readonly workspaceId: string;
+}
+
+/** Verifies current exact deletion authority; no caller-selected boolean grants private history. */
+export function assertWorkspaceDeletionRecoveryExportAuthority(
+  input: WorkspaceDeletionRecoveryExportContext
+): true {
+  if (!input.coreDb)
+    throw new Error('Workspace deletion recovery export requires durable authority.');
+  const request = readWorkspaceDeletionRequest(input.dataRoot, input.workspaceId, input.requestId);
+  const registry = getWorkspaceRegistryLifecycleFact(input.coreDb, input.workspaceId);
+  if (
+    request.phase !== 'deleting' ||
+    request.workspaceId !== input.workspaceId ||
+    request.originalOwnerUserId !== input.authorityUserId ||
+    request.recoveryExportId !== null ||
+    request.recoveryExportManifestDigest !== null ||
+    input.exportId !== `wsexp_delete_${request.requestId}` ||
+    registry?.status !== 'deleting' ||
+    registry.ownerUserId !== request.originalOwnerUserId ||
+    registry.registryRevision !== request.expectedRegistryRevision + 1
+  )
+    throw new Error('Workspace deletion recovery export authority is inconsistent.');
+  return true;
 }

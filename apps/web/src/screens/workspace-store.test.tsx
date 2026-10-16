@@ -52,7 +52,7 @@ function renderCurrentWorkspace(
           membershipStatus: 'active' as const,
           accessCause: 'membership' as const,
           workspace,
-          effectiveRole: 'owner',
+          isOwner: true,
           membershipRevision: 1,
           ownerUserId: 'user_local',
           registryRevision: 1,
@@ -110,7 +110,7 @@ describe('workspace switcher persistence', () => {
       await queryClient.cancelQueries({ queryKey: chatKeys.workspaces });
       queryClient.removeQueries({ queryKey: chatKeys.workspaceSummaries, exact: true });
       finishDiscovery({
-        items: [{ workspace: USER_A_QUICK_CHAT, ownerUserId: 'user_a', effectiveRole: 'owner' }],
+        items: [{ workspace: USER_A_QUICK_CHAT, ownerUserId: 'user_a', isOwner: true }],
       });
     });
     expect(queryClient.getQueryData(chatKeys.workspaceSummaries)).toBeUndefined();
@@ -175,7 +175,7 @@ describe('workspace switcher persistence', () => {
             membershipStatus: 'active' as const,
             accessCause: 'membership' as const,
             workspace,
-            effectiveRole: 'owner',
+            isOwner: true,
             membershipRevision: 1,
             ownerUserId: 'user_local',
             registryRevision: 1,
@@ -220,7 +220,7 @@ describe('workspace switcher persistence', () => {
               membershipStatus: null,
               accessCause: 'administrator',
               workspace: USER_A_QUICK_CHAT,
-              effectiveRole: null,
+              isOwner: false,
               membershipRevision: null,
               ownerUserId: 'user_a',
               registryRevision: 1,
@@ -229,7 +229,7 @@ describe('workspace switcher persistence', () => {
               membershipStatus: 'active',
               accessCause: 'administrator',
               workspace: USER_B_QUICK_CHAT,
-              effectiveRole: 'owner',
+              isOwner: true,
               membershipRevision: 1,
               ownerUserId: 'user_b',
               registryRevision: 1,
@@ -266,7 +266,7 @@ describe('workspace switcher persistence', () => {
         membershipStatus: index === 0 ? membershipStatus : 'active',
         accessCause: 'administrator',
         workspace,
-        effectiveRole: index === 0 ? null : 'owner',
+        isOwner: index !== 0,
         membershipRevision: index === 0 && membershipStatus === null ? null : 1,
         ownerUserId: index === 0 ? 'user_a' : 'user_b',
         registryRevision: 1,

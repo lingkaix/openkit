@@ -3,7 +3,6 @@ import { createHash } from 'node:crypto';
 import {
   AcceptWorkspaceInvitationRequestSchema,
   AppUpdateStatusResponseSchema,
-  ChangeWorkspaceMemberAccessRequestSchema,
   CreateWorkspaceInvitationRequestSchema,
   CreateWorkspaceVaultGrantRequestSchema,
   CreateWorkspaceVaultSecretRequestSchema,
@@ -517,7 +516,6 @@ export function createAppOpenApiDocument() {
             ])
         ),
         AcceptWorkspaceInvitationRequest: toJsonSchema(AcceptWorkspaceInvitationRequestSchema),
-        ChangeWorkspaceMemberAccessRequest: toJsonSchema(ChangeWorkspaceMemberAccessRequestSchema),
         CreateWorkspaceInvitationRequest: toJsonSchema(CreateWorkspaceInvitationRequestSchema),
         DeclineWorkspaceInvitationRequest: toJsonSchema(DeclineWorkspaceInvitationRequestSchema),
         DeleteWorkspaceRequest: toJsonSchema(DeleteWorkspaceRequestSchema),

@@ -81,3 +81,7 @@ p22-request-public-create-green.log then passed all25native request cases, NanoC
 ## Main Integration And Express Gate
 
 Merged main0f0673ba after independent APPROVEDe56bc629. Three additive conflicts retain both Shared MCP and Server operations route exports and both complete Web owner sections; Server audit current-account cache rules remain intact. Removed the unused fixture import noted in review. Regenerate the CLI and OpenAPI, then inspect and independently review the edited join. The exact committed-head Express gate must run all changed-module suites and Web e2e before acquiring the window. Branch full CI is not dispatched under the engineer-approved Express protocol.
+
+## Equal-Member Integration
+
+The primary integration branch merges the independently approved equal-member helper headbb485e1f with git merge. The issuer now consumes the existing evaluateWorkspaceMemberAccess adapter and labels its decision workspace-member-baseline:v1. Current issuing and deciding technical-administrator credential checks, actual actor/Approval linkage and one-claim issuance remain unchanged. Additive guide conflicts retain both complete feature procedures. Generated CLI/OpenAPI are temporary selected merge inputs until regeneration after the preview join; they are not accepted output yet. Before preview, the retired access-change operation reduces the integrated catalog to262total/75Server/185ordinary plus2Gateway operations. Final projection counts must be derived and checked again after all joins.

@@ -8,10 +8,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 263;
+const EXPECTED_CATALOG_SIZE = 262;
 const EXPECTED_SERVER_SIZE = 75;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 186;
+const EXPECTED_INCLUDED_SIZE = 185;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -220,7 +220,6 @@ const WEB_OPERATION_GROUPS = {
   },
   'Workspace sharing': {
     'workspace.my-invitation-accept': { disposition: 'live', surface: 'Account' },
-    'workspace.member-access-change': { disposition: 'live', surface: 'Account' },
     'workspace.invitation-create': { disposition: 'live', surface: 'Account' },
     'workspace.my-invitation-decline': { disposition: 'live', surface: 'Account' },
     'workspace.delete': { disposition: 'roadmap', roadmap: 'R049' },

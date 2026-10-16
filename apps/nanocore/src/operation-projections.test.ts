@@ -1210,7 +1210,7 @@ describe('Workspace Thread Turn projection cutover', () => {
             items: expect.arrayContaining([
               expect.objectContaining({
                 workspace: expect.objectContaining({ id: 'ws_demo' }),
-                effectiveRole: 'owner',
+                isOwner: true,
               }),
             ]),
           });

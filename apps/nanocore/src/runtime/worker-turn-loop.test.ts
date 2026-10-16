@@ -282,9 +282,9 @@ describe('worker turn loop', () => {
     coreDb.sqlite
       .prepare(
         `INSERT INTO workspace_members (
-          workspace_id, user_id, status, access_level, invitation_id,
+          workspace_id, user_id, status, invitation_id,
           joined_at, removed_at, revision, created_at, updated_at
-        ) VALUES ('ws_demo', 'user_removed_worker', 'removed', 'editor', NULL, ?, ?, 2, ?, ?)`
+        ) VALUES ('ws_demo', 'user_removed_worker', 'removed', NULL, ?, ?, 2, ?, ?)`
       )
       .run(timestamp, timestamp, timestamp, timestamp);
     let reserveCalls = 0;

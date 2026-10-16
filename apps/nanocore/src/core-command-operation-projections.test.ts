@@ -255,8 +255,8 @@ it('gates every migrated HTTP mutation before Workspace, Turn, feedback or recei
   }
 });
 
-it('keeps workspace.update lifecycle admission and refuses an editor before row or receipt writes', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-update-editor-'));
+it('admits member Workspace updates once and refuses readonly or removed authority before writes', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-update-member-'));
   roots.push(root);
   const store = createDemoStore({ dataRoot: root });
   const coreDb = openCoreDb(root);
@@ -272,7 +272,7 @@ it('keeps workspace.update lifecycle admission and refuses an editor before row 
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_owner', workspaceId: 'ws_demo' });
     coreDb.sqlite
       .prepare(
-        `INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_demo', 'user_editor', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+        `INSERT INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_demo', 'user_editor', 'active', NULL, ?, NULL, 1, ?, ?)`
       )
       .run(timestamp, timestamp, timestamp);
     const app = createAppWithWorkspaceAuthority({
@@ -289,19 +289,74 @@ it('keeps workspace.update lifecycle admission and refuses an editor before row 
         handler: async () => Response.json({ status: 'auth-ok' }),
       },
     });
-    const before = store.getWorkspace('ws_demo');
     const receipts = store.listCommandRequests();
-    const response = await app.request(
+    const request = operationRequest(
+      'workspace.update',
+      { workspaceId: 'ws_demo' },
+      { body: JSON.stringify({ name: 'Member rename', requestId: randomUUID() }) }
+    );
+    const response = await app.request(...request);
+    expect(response.status).toBe(200);
+    const updated = await response.json();
+    expect(updated).toMatchObject({ id: 'ws_demo', name: 'Member rename' });
+    expect(store.getWorkspace('ws_demo').name).toBe('Member rename');
+    const committedReceipts = store.listCommandRequests();
+    expect(committedReceipts).toHaveLength(receipts.length + 1);
+    const replay = await app.request(...request);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual(updated);
+    expect(store.listCommandRequests()).toEqual(committedReceipts);
+
+    const readonly = createOpenKitAccessTokenRecord(coreDb, {
+      ownerUserId: 'user_editor',
+      scope: 'workspace-readonly',
+      workspaceIds: ['ws_demo'],
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    const before = store.getWorkspace('ws_demo');
+    const readonlyDenied = await app.request(
       ...operationRequest(
         'workspace.update',
         { workspaceId: 'ws_demo' },
-        { body: JSON.stringify({ name: 'Editor rename', requestId: randomUUID() }) }
+        {
+          headers: { authorization: `Bearer ${readonly.secret}` },
+          body: JSON.stringify({ name: 'Readonly rename', requestId: randomUUID() }),
+        }
       )
     );
-    expect(response.status).toBe(403);
-    expect(await response.json()).toMatchObject({ code: 'workspace_access_denied' });
+    expect(readonlyDenied.status).toBe(403);
     expect(store.getWorkspace('ws_demo')).toEqual(before);
-    expect(store.listCommandRequests()).toEqual(receipts);
+    expect(store.listCommandRequests()).toEqual(committedReceipts);
+
+    const owner = createOpenKitAccessTokenRecord(coreDb, {
+      ownerUserId: 'user_owner',
+      scope: 'workspace',
+      workspaceIds: ['ws_demo'],
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    const removed = await app.request(
+      ...operationRequest(
+        'workspace.member-remove',
+        { workspaceId: 'ws_demo', targetUserId: 'user_editor' },
+        {
+          headers: { authorization: `Bearer ${owner.secret}` },
+          body: JSON.stringify({ expectedRevision: 1, requestId: randomUUID() }),
+        }
+      )
+    );
+    expect(removed.status).toBe(200);
+    const afterRemovalReceipts = store.listCommandRequests();
+    const denied = await app.request(
+      ...operationRequest(
+        'workspace.update',
+        { workspaceId: 'ws_demo' },
+        { body: JSON.stringify({ name: 'Removed member rename', requestId: randomUUID() }) }
+      )
+    );
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toMatchObject({ code: 'workspace_access_denied' });
+    expect(store.getWorkspace('ws_demo')).toEqual(before);
+    expect(store.listCommandRequests()).toEqual(afterRemovalReceipts);
   } finally {
     coreDb.sqlite.close();
   }

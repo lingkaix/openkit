@@ -351,7 +351,7 @@ describe('pending requests', () => {
         .run(Date.now(), Date.now());
       coreDb.sqlite
         .prepare(
-          `INSERT INTO workspace_members (workspace_id, user_id, status, access_level, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_demo', 'another-user', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+          `INSERT INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_demo', 'another-user', 'active', NULL, ?, NULL, 1, ?, ?)`
         )
         .run(NOW, NOW, NOW);
       expect(preview('not for this viewer', 'another-user')).toMatchObject({
