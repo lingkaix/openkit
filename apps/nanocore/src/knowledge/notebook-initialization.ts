@@ -8,10 +8,16 @@ import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook, NotebookError } from './note
 import type { NotebookPublicationAdmission } from './notebook-publication.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
 
-/** Actual native creation or import attribution; page bytes cannot supply these facts. */
+/** Native User attribution or the exact service-owned empty seed; page bytes cannot supply these facts. */
 export interface NotebookInitialization {
   readonly requestId: string;
-  readonly producer: Extract<ActorRef, { kind: 'user' }>;
+  readonly producer:
+    | Extract<ActorRef, { kind: 'user' }>
+    | {
+        readonly kind: 'system';
+        readonly id: 'notebook-initializer';
+        readonly responsibleUserId: null;
+      };
   readonly instructionReference: string;
 }
 
@@ -30,6 +36,16 @@ export function initializeWorkspaceNotebook(input: {
 }): string {
   const ownerScope = { kind: 'workspace', workspaceId: input.workspaceId } as const;
   const files = { 'index.md': DEFAULT_NOTEBOOK_INDEX, ...input.files };
+  // System attribution is only for the unchanged service seed, never authored content or navigation.
+  if (
+    input.initialization.producer.kind !== 'user' &&
+    (input.initialization.producer.kind !== 'system' ||
+      input.initialization.producer.id !== 'notebook-initializer' ||
+      input.initialization.producer.responsibleUserId !== null ||
+      Object.keys(files).length !== 1 ||
+      files['index.md'] !== DEFAULT_NOTEBOOK_INDEX)
+  )
+    throw new NotebookError('invalid_request');
   const authority = {
     kind: 'direct',
     instructionReference: input.initialization.instructionReference,
