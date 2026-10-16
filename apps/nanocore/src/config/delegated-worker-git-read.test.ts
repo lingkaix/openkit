@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createAdministrationConfigurationTools } from '../administration/configuration-tools.js';
 
 import {
   createOpenKitAccessTokenRecord,
@@ -391,6 +392,44 @@ describe('finite delegated Worker Git-read application', () => {
     );
     expect(f.manager.current()).toBe(loaded);
     expect(await f.service.applyDelegated(request, f.home)).toEqual(result);
+    expect(f.write).toHaveBeenCalledTimes(1);
+    expect(f.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    'outcome',
+    'receipt',
+  ] as const)('projects an unknown %s publication through the actual apply Tool without reporting refusal or repeating the write', async (stage) => {
+    const f = fixture();
+    const request = { requestId: randomUUID(), candidate: f.propose().candidate };
+    const tools = createAdministrationConfigurationTools(f.manager.current(), f.files, {
+      read: f.service.read,
+      schema: f.service.schema,
+      propose: (value) => f.service.propose(value, f.home),
+      applyDelegated: (value, context) =>
+        f.service.applyDelegated(value, { ...f.home, signal: context.signal }),
+    });
+    const interrupt = () => {
+      throw new Error('Injected private publication failure; never expose this message.');
+    };
+    const publication =
+      stage === 'outcome'
+        ? vi.spyOn(f.store, 'createArtifact').mockImplementationOnce(interrupt)
+        : vi.spyOn(f.store, 'recordCommandRequest').mockImplementationOnce(interrupt);
+    const context = { callId: randomUUID(), signal: new AbortController().signal };
+    const result = await tools[3].execute(request, context);
+    publication.mockRestore();
+    expect(JSON.parse(readFileSync(f.agentPath, 'utf8')).sandbox.network[0].rules).toEqual(
+      correctedRules
+    );
+    expect(result.isError).toBe(true);
+    const expected = {
+      code: 'configuration_recovery_required',
+      message:
+        'Configuration application could not be confirmed. Inspect the exact receipt, start status Item, outcome Artifact, current source revision and loaded state before a new request. Do not repeat an unknown effect.',
+    };
+    expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(expected) }]);
+    expect(await tools[3].execute(request, context)).toEqual(result);
     expect(f.write).toHaveBeenCalledTimes(1);
     expect(f.reload).toHaveBeenCalledTimes(1);
   });

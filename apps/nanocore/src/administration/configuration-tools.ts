@@ -27,7 +27,7 @@ export type AdministrationConfigurationTools = readonly [
  * Creates bounded administration configuration Tools for one admitted snapshot.
  *
  * @param snapshot Immutable runtime configuration admitted for this Turn.
- * @returns Read, schema, and immutable proposal Tools in stable order.
+ * @returns Read, schema, immutable proposal and bounded delegated apply Tools in stable order.
  */
 export function createAdministrationConfigurationTools(
   snapshot: RuntimeConfigSnapshot,
@@ -101,8 +101,7 @@ export function createAdministrationConfigurationTools(
       description:
         'Apply an exact Worker Git-read candidate only under the current finite Server Policy assignment. Provider and Gateway candidates require human confirmation through their public command. Inspect the receipt and source after an unknown outcome; do not regenerate a request to retry.',
       inputSchema: z.toJSONSchema(ApplyDelegatedAdministrationConfigurationRequestSchema),
-      execute: async (value, context) =>
-        catalogResult(() => catalog.applyDelegated(value, context)),
+      execute: async (value, context) => applyResult(() => catalog.applyDelegated(value, context)),
     },
   ];
 }
@@ -205,16 +204,31 @@ async function catalogResult(operation: () => unknown): Promise<AgentToolResult>
   }
 }
 
+/** A mutating owner can fail after CAS; unclassified failures must retain the existing inspection fence. */
+async function applyResult(operation: () => unknown): Promise<AgentToolResult> {
+  try {
+    return configurationResult(await operation());
+  } catch (error) {
+    return configurationFailure(
+      error instanceof RuntimeConfigFileServiceError
+        ? error.code
+        : 'configuration_recovery_required'
+    );
+  }
+}
+
 function configurationResult(value: unknown): AgentToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(value) }] };
 }
 
 function configurationFailure(code: string): AgentToolResult {
   const message =
-    code === 'configuration_target_not_found'
-      ? 'The requested Server Agent configuration is unavailable.'
-      : code === 'configuration_schema_unavailable'
-        ? 'The registered Agent schema is unavailable.'
-        : 'Configuration request was rejected. Read the current target and allowed schema before proposing again.';
+    code === 'configuration_recovery_required'
+      ? 'Configuration application could not be confirmed. Inspect the exact receipt, start status Item, outcome Artifact, current source revision and loaded state before a new request. Do not repeat an unknown effect.'
+      : code === 'configuration_target_not_found'
+        ? 'The requested Server Agent configuration is unavailable.'
+        : code === 'configuration_schema_unavailable'
+          ? 'The registered Agent schema is unavailable.'
+          : 'Configuration request was rejected. Read the current target and allowed schema before proposing again.';
   return { content: [{ type: 'text', text: JSON.stringify({ code, message }) }], isError: true };
 }
