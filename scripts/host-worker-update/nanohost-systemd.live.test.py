@@ -307,8 +307,9 @@ class PrivateManager:
                            "os-release": "NAME=OpenKit-Fixture\nID=openkit-fixture\n"}.items():
             write(root / "etc" / name, data.encode())
         write(root / "etc/dbus-1/system.conf", b'<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">\n<busconfig><type>system</type><listen>unix:path=/run/dbus/system_bus_socket</listen><policy context="default"><allow user="root"/><allow own="*"/><allow send_destination="*"/><allow receive_sender="*"/></policy></busconfig>\n')
-        units = {"openkit-fixture.target": "[Unit]\nDefaultDependencies=no\nWants=dbus.service openkit-nanohost.service\n",
-                 "dbus.service": "[Unit]\nDefaultDependencies=no\n[Service]\nType=simple\nRuntimeDirectory=dbus\nStandardError=append:/fixture/dbus.log\nExecStart=/usr/bin/dbus-daemon --nofork --nopidfile --nosyslog --config-file=/etc/dbus-1/system.conf\n",
+        units = {"openkit-fixture.target": "[Unit]\nDefaultDependencies=no\nWants=basic.target dbus.service openkit-nanohost.service\n",
+                 "dbus.socket": "[Unit]\nDefaultDependencies=no\n[Socket]\nListenStream=/run/dbus/system_bus_socket\n",
+                 "dbus.service": "[Unit]\nDefaultDependencies=no\nRequires=dbus.socket\nAfter=dbus.socket\nBefore=basic.target\n[Service]\nType=notify\nSockets=dbus.socket\nRuntimeDirectory=dbus\nStandardError=append:/fixture/dbus.log\nExecStart=/usr/bin/dbus-daemon --nofork --nopidfile --nosyslog --systemd-activation --address=systemd: --config-file=/etc/dbus-1/system.conf\n",
                  "openkit-fixture-oracle.service": "[Unit]\nDefaultDependencies=no\n[Service]\nExecStart=/usr/bin/sleep infinity\n",
                  "openkit.slice": "[Unit]\nDefaultDependencies=no\n",
                  "openkit-nanohost.slice": "[Unit]\nDefaultDependencies=no\n",
