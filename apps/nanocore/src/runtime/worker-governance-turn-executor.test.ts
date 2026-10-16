@@ -10574,6 +10574,7 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
   const commit = 'e'.repeat(40);
   const effects: NanoHostSessionEffectRequest[] = [];
   const runtime = createConfiguredWorkerLifecycleRuntime({
+    fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
     coreDb,
     store,
     env: {},

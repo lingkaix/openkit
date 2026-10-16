@@ -638,13 +638,9 @@ async function createLiveNullKnowledgeFixture(
 
 describe('worker Context Package owner', () => {
   it.each([
-    { knowledge: false, largeMetadata: false },
-    { knowledge: true, largeMetadata: false },
-    { knowledge: false, largeMetadata: true },
-  ])('verifies retained original bytes and reopens (Knowledge: $knowledge, large legacy metadata: $largeMetadata)', async ({
-    knowledge,
-    largeMetadata,
-  }) => {
+    false,
+    true,
+  ])('verifies additive annotation bytes and reopens (Knowledge: %s)', async (knowledge) => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-context-extended-'));
     const fixture = await createAcceptedFixture(workspaceRoot, { knowledge });
     const packagePath = join(
@@ -653,7 +649,6 @@ describe('worker Context Package owner', () => {
     );
     const manifest = JSON.parse(readFileSync(packagePath, 'utf8'));
     manifest.annotation = 'manifest';
-    if (largeMetadata) manifest.largeAnnotation = 'x'.repeat(16_777_216);
     manifest.materialSelections[0].annotation = 'manifest selection';
     if (knowledge) manifest.knowledgeSelections[0].annotation = 'manifest Knowledge selection';
     const canonical = (value: unknown): string => {

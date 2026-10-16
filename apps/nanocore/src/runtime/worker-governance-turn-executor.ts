@@ -53,7 +53,7 @@ import {
 } from '../lib/store.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import {
-  listSchedulerAdmissionEntriesForWorkspace,
+  findSchedulerAdmissionForTurn,
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
@@ -442,16 +442,7 @@ export async function prepareWorkerTurnContextPackage(
         503
       );
     const current = store.getTurn(input.workspaceId, input.threadId, input.turnId);
-    const admissions = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-      workspaceId: input.workspaceId,
-      statuses: ['admitted'],
-    }).filter(
-      (entry) =>
-        entry.threadId === input.threadId &&
-        entry.turnId === input.turnId &&
-        entry.requestId === input.requestId
-    );
-    const admission = admissions.length === 1 ? admissions[0] : undefined;
+    const admission = findSchedulerAdmissionForTurn(coreDb, input);
     if (
       isSealedTurnTerminal(current.status) ||
       !isDeepStrictEqual(current.fileInputs ?? [], originalInputs) ||

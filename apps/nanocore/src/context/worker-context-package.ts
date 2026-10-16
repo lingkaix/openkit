@@ -1771,16 +1771,7 @@ function verifyPackageFiles(workspaceRoot: string, trace: WorkerContextPackageTr
         readCanonicalPackageFile(packageRoot, entry.packagePath, entry.projection.byteLength)
       );
   }
-  const projected =
-    trace.sourceFiles !== undefined ||
-    [...trace.materialSelections, ...trace.knowledgeSelections].some(
-      (selection) => selection.projection !== undefined
-    );
-  const manifestBytes = readCanonicalPackageFile(
-    packageRoot,
-    'package.json',
-    projected ? 16_777_216 : undefined
-  );
+  const manifestBytes = readCanonicalPackageFile(packageRoot, 'package.json', 16_777_216);
   const originalManifest = JSON.parse(manifestBytes.toString('utf8'));
   const parsedManifest = WorkerContextPackageManifestSchema.safeParse(originalManifest);
   if (
