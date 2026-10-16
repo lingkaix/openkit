@@ -2778,7 +2778,9 @@ describe('worker MCP routes', () => {
         expect(response.status, await response.clone().text()).toBe(202);
         return response;
       });
-      const [firstResponse, firstRun] = await Promise.all([admittedFirstRequest, driveTask(true)]);
+      // Start the Harness dispatch budget after durable admission, not during request preparation.
+      const firstResponse = await admittedFirstRequest;
+      const firstRun = await driveTask(true);
       expect(firstResponse.status, await firstResponse.clone().text()).toBe(202);
       const firstTask =
         ownerCommand === 'conversation.submit'
