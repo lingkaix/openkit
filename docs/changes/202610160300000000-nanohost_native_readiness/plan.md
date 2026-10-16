@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: implemented
 date: "2026-10-16"
 branch: lane/rt
 ---
@@ -22,13 +22,13 @@ Source: coordinator authorization after the first published attempt hit its reta
 
 [NanoHost Runtime And Transport](../../specs/20260802-nanohost_runtime_and_transport.md) owns verified TLS, the physical session, admission, readiness and startup limits. [Runtime Model](../../core/runtime-model.md) owns substrate lifecycle and [Communication](../../core/communication.md) owns transport principles. [Test Strategy](../../specs/20260529-test_strategy.md) and [Verification Instruments](../../verification-instruments.md) own regression scope and deciding evidence. This repair restores accepted behavior and adds no transport fallback or authentication authority.
 
-The current seam is the Rust TLS byte adapter and the native Node HTTPS/H2 listener. Existing real-route regression fixtures will be reused where they can observe the defect. A real dev-host run must prove exact-pair positive readiness and complete stop separately from credential-free listener reachability.
+The current seam is the Rust TLS byte adapter and the native Node HTTPS/H2 listener. Existing real-route regression fixtures will be reused where they can observe the defect. A real dev-host run must prove exact-pair positive readiness and complete predecessor-group absence. Credential-free listener reachability is a separate observation.
 
 ## Rewritable Checkpoint
 
 The credential-free Rust probe proved that the original dev listener presented a CA as its server leaf. The published source and lane base have identical transport code. H2 driver completion discarded the verification error, and the initial session retried physical closes until startup expired. P02 adds inspection but leaves this path unchanged. Eager verification now preserves the closed TLS cause. Initial transport refusal also invokes the existing startup invalidation owner before returning.
 
-Ops corrected the retained App certificate. L-RT selected its issuer CA after strict verification. Published attempt 1 exited before TLS because the prior rebuild interval had expired. After whole-state retention, published attempt 2 reached fresh generation 1 with the exact configured pair and all readiness booleans true. The published NanoHost remains running and ready under Revision 2. Two published attempts occurred; no local-build host readiness is claimed. The initial collector observed readiness, then failed on a binary journal message; independent reads recovered the same running attempt without another start. Three structural comparisons pass. This is readiness evidence, not Worker or full release qualification.
+Ops corrected the retained App certificate. L-RT selected its issuer CA after strict verification. Published attempt 1 exited before TLS because the prior rebuild interval had expired. After whole-state retention, published attempt 2 reached fresh generation 1 with the exact configured pair and all readiness booleans true. The published NanoHost stayed healthy until the controlled local-build check described below. Two published attempts occurred. Their published-artifact evidence remains separate from the later local-build evidence. The initial collector observed readiness, then failed on a binary journal message; independent reads recovered the same running attempt without another start. Three structural comparisons pass. This is readiness evidence, not Worker or full release qualification.
 
 The Btrfs capacity fix shares one inode reserve interpretation between volume seeding and Workspace collection. Both still enforce their existing byte checks and finite inode reserves. Synthetic and real-consumer regressions failed before the correction and now pass. The independent test author has released all test paths. Final verification after train 3 remains open. Raw evidence and the live checkpoint stay in the external lane evidence directory.
 
@@ -42,4 +42,18 @@ The independent test author observed the intended red: no HTTP request or Runtim
 
 Before the capacity correction, the full NanoHost run recorded 265 passed, 68 failed and three existing ignored tests. The dev Btrfs filesystem reports all three inode counts as zero despite sufficient free bytes. The admitted chunk 1b corrects that interpretation. Eight new capacity regressions pass, including actual seed/collection writes and byte-reserve and overflow refusals. After the retained-attachment correction, the full suite passes 343 unit tests and three service/version integration tests, with three existing tests ignored. Exact-head full CI remains required.
 
-The affected NanoCore suites pass 23 tests; its typecheck and focused Biome check pass. Cargo formatting and Clippy pass after the capacity amendment. Documentation validation and index checks pass. The Skill interface and public-redaction suites pass all 87 tests. Train 3 must land before the final rebase, exact-head review and full CI. No landing or Worker-readiness claim is made.
+The affected NanoCore suites pass 23 tests; its typecheck and focused Biome check pass. Cargo formatting and Clippy pass after the capacity amendment. Documentation validation and index checks pass. The Skill interface and public-redaction suites pass all 87 tests. Train 3 must land before the final rebase, exact-head review and full CI. No landing or Worker acceptance is claimed.
+
+## Provisional Integration And Local Runtime Evidence
+
+A frozen merge of train 3 head `41830d22` and lane repair `b6e38228` produced provisional source `14996ba1`. The one TLS test conflict kept the verification-rejection helper and supplied P02's inspection-state argument. On that complete tree, 371 unit tests and seven integration tests pass, with three existing ignored tests. Cargo formatting and Clippy, NanoCore typecheck and focused lint pass. The probe changes stay within the lane's runtime, test and documentation paths. The primary lane branch still requires its ordinary rebase after train 3 lands.
+
+The locally compiled debug NanoHost from `14996ba1` passed one controlled real dev start at 06:31 UTC. It reached fresh exact-pair RuntimeTarget generation 2 with all readiness flags true. Three positive observations, the same live executable hash, one actual unit start and unchanged Docker bridge, canonical nftables and App container attachments were proved. Both complete prior epoch roots and the published payload were retained before replacement. The same healthy local candidate remains running, with its temporary restart override removed, under the coordinator's final-state direction. This is not the published rc.8 artifact and does not qualify a Worker or release.
+
+The new CLI's read-only RuntimeTarget query refused the retained App with `incompatible_contract`. The instrument uses a frozen CLI that accepts the current App's query contract; product compatibility behavior stays unchanged. Another preflight refused the instrument's incorrect top-level slice assumption before any host effect. The corrected reader uses the actual nested slice, proves live main-process membership, and detects the running predecessor as populated before accepting the later empty-slice proof. These setup refusals consumed no service starts. Ops received the local artifact identity and the completed maintenance result.
+
+The external build and runtime receipts bind source `14996ba1`, the executable SHA, observer SHA and build-input blobs. Compare those build inputs with the final main-based head before using this live result for final branch acceptance. A changed runtime input requires new local verification. Exact-head review, full CI and landing receipts remain external and pending.
+
+## Complexity Snapshot
+
+The provisional repair changes 18 files and three owning specifications across three owners. It adds no production registry, lifecycle or closed set. The test peer adds a two-role certificate choice and one observation query. Final main-based counts and closure evidence remain to be reconciled at landing.
