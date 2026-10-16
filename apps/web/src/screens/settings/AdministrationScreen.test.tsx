@@ -293,6 +293,8 @@ function makeClient(
         .fn()
         .mockResolvedValueOnce({
           items: [PROJECT, SECOND_PROJECT, QUICK_CHAT].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -305,6 +307,8 @@ function makeClient(
             app['workspace.list'] ??
             vi.fn().mockResolvedValue({
               items: [PROJECT, SECOND_PROJECT, QUICK_CHAT].map((workspace) => ({
+                membershipStatus: 'active' as const,
+                accessCause: 'membership' as const,
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
@@ -354,11 +358,13 @@ describe('Administration', () => {
       .mockReset()
       .mockResolvedValue({
         items: [foreignQuickChat, PROJECT, QUICK_CHAT].map((workspace) => ({
+          membershipStatus: workspace.id === foreignQuickChat.id ? null : 'active',
+          accessCause: 'administrator',
           workspace,
           ownerUserId: workspace.id === foreignQuickChat.id ? 'user_other' : 'user_local',
-          effectiveRole: 'owner',
+          effectiveRole: workspace.id === foreignQuickChat.id ? null : 'owner',
           registryRevision: 1,
-          membershipRevision: 1,
+          membershipRevision: workspace.id === foreignQuickChat.id ? null : 1,
         })),
       } as Awaited<ReturnType<CoreClient['operations']['workspace.list']>>);
     renderScreen(client);
@@ -383,11 +389,13 @@ describe('Administration', () => {
     const foreignQuickChat = { ...QUICK_CHAT, id: 'ws_foreign', name: 'Other Quick Chat' };
     const result = {
       items: [foreignQuickChat, QUICK_CHAT].map((workspace) => ({
+        membershipStatus: workspace.id === foreignQuickChat.id ? null : 'active',
+        accessCause: 'administrator',
         workspace,
         ownerUserId: workspace.id === foreignQuickChat.id ? 'user_other' : 'user_local',
-        effectiveRole: 'owner',
+        effectiveRole: workspace.id === foreignQuickChat.id ? null : 'owner',
         registryRevision: 1,
-        membershipRevision: 1,
+        membershipRevision: workspace.id === foreignQuickChat.id ? null : 1,
       })),
     } as Awaited<ReturnType<CoreClient['operations']['workspace.list']>>;
     let resolveSummaries!: (value: typeof result) => void;
@@ -398,34 +406,11 @@ describe('Administration', () => {
       .mockReset()
       .mockReturnValueOnce(pendingSummaries)
       .mockResolvedValue(result);
-    let resolveSession!: (
-      value: Awaited<ReturnType<CoreClient['auth']['email']['getSession']>>
-    ) => void;
-    vi.mocked(client.auth.email.getSession).mockReturnValue(
-      new Promise((resolve) => {
-        resolveSession = resolve;
-      })
-    );
     renderScreen(client);
     await waitFor(() => expect(client.operations['workspace.list']).toHaveBeenCalledTimes(1));
     expect(client.operations['thread.list']).not.toHaveBeenCalled();
     expect(useWorkspaceStore.getState().selectionUserKey).toBeNull();
     await act(async () => resolveSummaries(result));
-    await waitFor(() => expect(client.auth.email.getSession).toHaveBeenCalledTimes(1));
-    expect(client.operations['thread.list']).not.toHaveBeenCalled();
-    expect(useWorkspaceStore.getState().selectionUserKey).toBeNull();
-    await act(async () =>
-      resolveSession({
-        user: {
-          id: 'user_local',
-          email: 'local@example.com',
-          name: 'Local user',
-          emailVerified: true,
-          createdAt: TIMESTAMP,
-          updatedAt: TIMESTAMP,
-        },
-      })
-    );
     await waitFor(() =>
       expect(client.operations['thread.list']).toHaveBeenCalledWith({ workspaceId: QUICK_CHAT.id })
     );

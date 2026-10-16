@@ -343,7 +343,7 @@ Theme selection applies to the document root, so account pages, native selects, 
 
 Account groups the current Workspace name, id, role and non-owner leave action in one card. My invitations prefers names from the existing authorized-Workspace admission cache, keeps ids secondary, and uses an explicit id fallback for Workspaces outside that authorized collection without adding a metadata lookup.
 
-When administrator discovery includes several owners, identity-scoped selection restoration waits for the signed-in session and stays unresolved if that read fails; explicit authorized route selection still applies. Confirmed self-leave removes the departed Workspace from account admission, discovery records, and sidebar summaries before rediscovery, so pending or failed refresh cannot retain it as a choice.
+The Workspace switcher includes only rows with active membership, including active members admitted through administrator access. Administrator-only rows with absent or removed membership appear separately in Administration and can be opened for inspection. The caller-owned active Quick Chat scopes persisted selection and supplies the private Administration conversation; a foreign Quick Chat never supplies either identity. Selection uses the required relationship fields without a separate session lookup; explicit authorized route selection still applies. Confirmed self-leave removes the departed Workspace from account admission, discovery records, and sidebar summaries before rediscovery, so pending or failed refresh cannot retain it as a choice.
 
 ### Inclusion count
 

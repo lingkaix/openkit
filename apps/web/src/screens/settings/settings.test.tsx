@@ -871,6 +871,8 @@ function makeClient(
         .fn()
         .mockResolvedValueOnce({
           items: [WORKSPACE].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -884,6 +886,8 @@ function makeClient(
             | undefined) ??
             vi.fn().mockResolvedValue({
               items: [WORKSPACE].map((workspace) => ({
+                membershipStatus: 'active' as const,
+                accessCause: 'membership' as const,
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
@@ -1223,6 +1227,8 @@ describe('Vault settings (board 15)', () => {
       .mockRejectedValueOnce(new Error('workspace-store-private failure'))
       .mockResolvedValue({
         items: [WORKSPACE].map((workspace) => ({
+          membershipStatus: 'active' as const,
+          accessCause: 'membership' as const,
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,
@@ -1501,6 +1507,8 @@ describe('Debug settings (board 11)', () => {
         operations: {
           'workspace.list': vi.fn().mockResolvedValue({
             items: [].map((workspace) => ({
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
               workspace,
               effectiveRole: 'owner',
               membershipRevision: 1,
@@ -1539,6 +1547,8 @@ describe('Debug settings (board 11)', () => {
         'environment.snapshot-read': getAgentEnvironmentPackageSnapshot,
         'workspace.list': vi.fn().mockResolvedValue({
           items: [WORKSPACE, workspaceB].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -1697,6 +1707,8 @@ describe('Usage and audit settings (board 17)', () => {
       .mockRejectedValueOnce(new Error('workspace-discovery-private failure'))
       .mockResolvedValue({
         items: [WORKSPACE].map((workspace) => ({
+          membershipStatus: 'active' as const,
+          accessCause: 'membership' as const,
           workspace,
           effectiveRole: 'owner' as const,
           membershipRevision: 1,

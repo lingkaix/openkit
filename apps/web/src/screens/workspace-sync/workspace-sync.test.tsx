@@ -504,6 +504,8 @@ function makeClient(operations: OperationOverrides = {}, core: CoreOverrides = {
         .fn()
         .mockResolvedValueOnce({
           items: [WORKSPACE].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -516,6 +518,8 @@ function makeClient(operations: OperationOverrides = {}, core: CoreOverrides = {
             operations['workspace.list'] ??
             vi.fn().mockResolvedValue({
               items: [WORKSPACE].map((workspace) => ({
+                membershipStatus: 'active' as const,
+                accessCause: 'membership' as const,
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
@@ -959,6 +963,8 @@ describe('Workspace changes', () => {
       {
         'workspace.list': vi.fn().mockResolvedValue({
           items: [QUICK_CHAT_WORKSPACE].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -1021,6 +1027,8 @@ describe('Workspace changes', () => {
       {
         'workspace.list': vi.fn().mockResolvedValue({
           items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -1432,6 +1440,8 @@ describe('Workspace changes', () => {
       {
         'workspace.list': vi.fn().mockResolvedValue({
           items: [QUICK_CHAT_WORKSPACE].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,

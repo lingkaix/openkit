@@ -1,4 +1,4 @@
-import type { ThreadDashboardResponse } from '@openkit/app-api-schemas';
+import type { AuthorizedWorkspaceSummary, ThreadDashboardResponse } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import {
   ArtifactReferenceItemSchema,
@@ -223,6 +223,8 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
             { id: 'ws1', name: 'Market research' },
             { id: 'ws2', name: 'Second workspace' },
           ].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -239,6 +241,8 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
                 { id: 'ws1', name: 'Market research' },
                 { id: 'ws2', name: 'Second workspace' },
               ].map((workspace) => ({
+                membershipStatus: 'active' as const,
+                accessCause: 'membership' as const,
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
@@ -857,6 +861,8 @@ describe('chat starter (board 01)', () => {
             { id: 'ws_project', name: 'Project Workspace', kind: 'general' },
             { id: 'ws_quick_chat', name: 'Quick Chat', kind: 'quick-chat' },
           ].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -879,7 +885,7 @@ describe('chat starter (board 01)', () => {
   it('falls back from an unavailable selected Workspace before loading threads', async () => {
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws_unavailable' });
     const workspaces = createDeferred<{
-      items: { workspace: { id: string; name: string; kind: 'general' | 'quick-chat' } }[];
+      items: AuthorizedWorkspaceSummary[];
     }>();
     const listConversationNavigation = vi.fn().mockResolvedValue({ items: [] });
     const client = makeClient(
@@ -895,8 +901,29 @@ describe('chat starter (board 01)', () => {
     await act(async () => {
       workspaces.resolve({
         items: [
-          { workspace: { id: 'ws_authorized', name: 'Authorized Workspace', kind: 'general' } },
-          { workspace: { id: 'ws_quick_chat', name: 'Quick Chat', kind: 'quick-chat' } },
+          {
+            workspace: {
+              ...QUICK_CHAT_WORKSPACE,
+              id: 'ws_authorized',
+              name: 'Authorized Workspace',
+              kind: 'general',
+            },
+            effectiveRole: 'owner',
+            membershipStatus: 'active',
+            accessCause: 'membership',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          },
+          {
+            workspace: QUICK_CHAT_WORKSPACE,
+            effectiveRole: 'owner',
+            membershipStatus: 'active',
+            accessCause: 'membership',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          },
         ],
       });
       await workspaces.promise;
@@ -915,7 +942,7 @@ describe('chat starter (board 01)', () => {
 
   it('shows Recent empty only after Workspace discovery and navigation succeed', async () => {
     const workspaces = createDeferred<{
-      items: { workspace: typeof QUICK_CHAT_WORKSPACE }[];
+      items: AuthorizedWorkspaceSummary[];
     }>();
     const navigation = createDeferred<{ items: [] }>();
     const listWorkspaces = vi.fn().mockReturnValue(workspaces.promise);
@@ -936,7 +963,19 @@ describe('chat starter (board 01)', () => {
     expect(recent.getByRole('status', { name: 'Loading' })).toBeInTheDocument();
 
     await act(async () => {
-      workspaces.resolve({ items: [{ workspace: QUICK_CHAT_WORKSPACE }] });
+      workspaces.resolve({
+        items: [
+          {
+            workspace: QUICK_CHAT_WORKSPACE,
+            effectiveRole: 'owner' as const,
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          },
+        ],
+      });
       await workspaces.promise;
     });
     await waitFor(() =>
@@ -958,7 +997,19 @@ describe('chat starter (board 01)', () => {
     'navigation',
   ] as const)('keeps failed %s out of Recent empty and retries its own read', async (failure) => {
     const user = userEvent.setup();
-    const workspaceResult = { items: [{ workspace: QUICK_CHAT_WORKSPACE }] };
+    const workspaceResult = {
+      items: [
+        {
+          workspace: QUICK_CHAT_WORKSPACE,
+          effectiveRole: 'owner' as const,
+          membershipStatus: 'active' as const,
+          accessCause: 'membership' as const,
+          membershipRevision: 1,
+          ownerUserId: 'user_local',
+          registryRevision: 1,
+        },
+      ],
+    };
     const listWorkspaces = vi.fn().mockResolvedValue(workspaceResult);
     const listNavigation = vi.fn().mockResolvedValue({ items: [] });
     const failedRead = failure === 'discovery' ? listWorkspaces : listNavigation;
@@ -984,19 +1035,19 @@ describe('chat starter (board 01)', () => {
     expect(listNavigation).toHaveBeenCalledWith({ workspaceId: 'ws_quick_chat' });
   });
 
-  it('keeps unresolved and failed identity discovery out of Recent empty', async () => {
-    const user = userEvent.setup();
-    const session = createDeferred<{ user: { id: string } }>();
-    const getSession = vi.fn().mockReturnValue(session.promise);
+  it('loads Recent from actual caller membership without a separate session read', async () => {
+    const getSession = vi.fn().mockRejectedValue(new Error('Identity unavailable'));
     const listNavigation = vi.fn().mockResolvedValue({ items: [] });
     const client = makeClient(
       {
         'workspace.list': vi.fn().mockResolvedValue({
-          items: ['user_local', 'user_other'].map((ownerUserId, index) => ({
-            workspace: { ...QUICK_CHAT_WORKSPACE, id: index ? 'ws_other' : 'ws_quick_chat' },
-            effectiveRole: 'owner',
+          items: ['user_other', 'user_local'].map((ownerUserId, index) => ({
+            membershipStatus: index === 0 ? null : 'active',
+            accessCause: 'administrator',
+            workspace: { ...QUICK_CHAT_WORKSPACE, id: index === 0 ? 'ws_other' : 'ws_quick_chat' },
+            effectiveRole: index === 0 ? null : 'owner',
             ownerUserId,
-            membershipRevision: 1,
+            membershipRevision: index === 0 ? null : 1,
             registryRevision: 1,
           })),
         }),
@@ -1007,19 +1058,9 @@ describe('chat starter (board 01)', () => {
     renderApp('/chat', client);
 
     await screen.findByRole('heading', { name: 'What can we get done?' });
-    await waitFor(() => expect(getSession).toHaveBeenCalled());
     const recent = within(screen.getByText('Recent').closest('section')!);
-    expect(recent.queryByText('Start a chat')).not.toBeInTheDocument();
-    expect(recent.getByRole('status', { name: 'Loading' })).toBeInTheDocument();
-    expect(listNavigation).not.toHaveBeenCalled();
-    await act(async () => session.reject(new Error('Identity unavailable')));
-    expect(await recent.findByText("Couldn't load recent chats.")).toBeInTheDocument();
-    expect(recent.queryByText('Start a chat')).not.toBeInTheDocument();
-    expect(listNavigation).not.toHaveBeenCalled();
-
-    getSession.mockResolvedValue({ user: { id: 'user_local' } });
-    await user.click(recent.getByRole('button', { name: 'Try again' }));
     expect(await recent.findByText('Start a chat')).toBeInTheDocument();
+    expect(getSession).not.toHaveBeenCalled();
     expect(listNavigation).toHaveBeenCalledWith({ workspaceId: 'ws_quick_chat' });
     expect(listNavigation).not.toHaveBeenCalledWith({ workspaceId: 'ws_other' });
   });
@@ -1144,6 +1185,8 @@ describe('chat starter (board 01)', () => {
           'workspace.list': vi.fn().mockResolvedValue({
             items: [{ id: workspaceId, name: 'Encoded workspace', kind: 'general' }].map(
               (workspace) => ({
+                membershipStatus: 'active' as const,
+                accessCause: 'membership' as const,
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
@@ -5014,6 +5057,8 @@ describe('mode entry and feedback (S8)', () => {
         'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
         'workspace.list': vi.fn().mockResolvedValue({
           items: [QUICK_CHAT_WORKSPACE].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,

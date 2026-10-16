@@ -76,7 +76,7 @@ function AccountSelectionProbe() {
       <output aria-label="Account workspace">{selectedWorkspaceId ?? ''}</output>
       <output aria-label="Sidebar workspace choices">
         {(summaries.data ?? [])
-          .filter((item) => workspaceBelongsToCaller(item, null, false))
+          .filter((item) => workspaceBelongsToCaller(item))
           .map((item) => item.workspace.id)
           .join(',')}
       </output>
@@ -113,6 +113,8 @@ function renderAccountSelection(options: {
         options.admission.find((item) => item.workspace.id === workspace.id) ?? {
           workspace,
           effectiveRole: 'owner' as const,
+          membershipStatus: 'active' as const,
+          accessCause: 'membership' as const,
           membershipRevision: 1,
           ownerUserId: 'user_local',
           registryRevision: 1,
@@ -215,7 +217,17 @@ describe('account selected Workspace', () => {
       () =>
         new Promise<{ items: Array<{ workspace: WorkspaceRecord }> }>((resolve) => {
           releaseDiscovery = (items) =>
-            resolve({ items: items.map((workspace) => ({ workspace })) });
+            resolve({
+              items: items.map((workspace) => ({
+                workspace,
+                effectiveRole: 'owner' as const,
+                membershipStatus: 'active' as const,
+                accessCause: 'membership' as const,
+                membershipRevision: 1,
+                ownerUserId: 'user_local',
+                registryRevision: 1,
+              })),
+            });
         })
     );
     const listWorkspaceMembers = vi.fn().mockResolvedValue({ items: [] });

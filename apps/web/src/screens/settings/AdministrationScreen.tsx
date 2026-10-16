@@ -39,15 +39,13 @@ import {
   type StatusTone,
 } from '../../primitives';
 import {
+  callerQuickChatWorkspace,
   chatKeys,
   useCurrentWorkspaceId,
-  useSignedInUserId,
   useThreadItems,
   useThreads,
   useWorkspaceSummaries,
   useWorkspaces,
-  workspaceAdmissionIsAmbiguous,
-  workspaceBelongsToCaller,
 } from '../chat/data';
 import { ThreadStream } from '../chat/ThreadStream';
 import { useWorkspaceStore } from '../workspace-store';
@@ -100,15 +98,8 @@ function AdministratorWorkspaces() {
   const navigate = useNavigate();
   const setWorkspaceId = useWorkspaceStore((state) => state.setCurrentWorkspaceId);
   const summaries = useWorkspaceSummaries();
-  const ambiguous = summaries.isSuccess && workspaceAdmissionIsAmbiguous(summaries.data);
-  const sessionUser = useSignedInUserId(ambiguous);
-  const callerId = sessionUser.data ?? null;
   const foreign = (summaries.data ?? []).filter(
-    (item) =>
-      ambiguous &&
-      callerId != null &&
-      item.effectiveRole === 'owner' &&
-      item.ownerUserId !== callerId
+    (item) => item.accessCause === 'administrator' && item.membershipStatus !== 'active'
   );
   if (foreign.length === 0) return null;
   return (
@@ -153,18 +144,10 @@ export function AdministrationScreen() {
   const connection = useConnection();
   const workspaces = useWorkspaces();
   const summaries = useWorkspaceSummaries();
-  const ambiguous = summaries.isSuccess && workspaceAdmissionIsAmbiguous(summaries.data);
-  const sessionUser = useSignedInUserId(ambiguous);
   const workspaceId = useCurrentWorkspaceId();
   const workspace = workspaces.data?.find((candidate) => candidate.id === workspaceId) ?? null;
-  // Resolve ownership before reading private Threads: administrator discovery can list another user's Quick Chat first.
-  const quickChat = summaries.isSuccess
-    ? (summaries.data.find(
-        (item) =>
-          item.workspace.kind === 'quick-chat' &&
-          workspaceBelongsToCaller(item, sessionUser.data ?? null, ambiguous)
-      )?.workspace ?? null)
-    : null;
+  // Administrator eligibility does not make another user's personal Workspace our conversation.
+  const quickChat = callerQuickChatWorkspace(summaries.data);
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedThreadId = searchParams.get('threadId')?.trim() || null;
   const privateThreads = useThreads(quickChat?.id ?? null);

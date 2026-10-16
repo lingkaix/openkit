@@ -34,7 +34,6 @@ export type ThreadItem = ListThreadItemsResponse['items'][number];
 export const chatKeys = {
   workspaces: ['workspaces'] as const,
   workspaceSummaries: ['workspaces', 'summaries'] as const,
-  sessionUser: ['account', 'session-user'] as const,
   threads: (workspaceId: string) => ['threads', workspaceId] as const,
   navigation: (workspaceId: string) => ['threads', workspaceId, 'navigation'] as const,
   thread: (workspaceId: string, threadId: string) => ['thread', workspaceId, threadId] as const,
@@ -326,13 +325,13 @@ export function useWorkspaces() {
   });
 }
 
-/** One authorized Workspace row, including the owner the switcher uses to separate memberships. */
+/** One authorized Workspace row with the caller's explicit relationship and access cause. */
 export type WorkspaceAdmission = Awaited<
   ReturnType<CoreClient['operations']['workspace.list']>
 >['items'][number];
 
 /**
- * Reads the authorized Workspace rows without dropping owner and role.
+ * Reads the authorized Workspace rows without dropping ownership, membership, or access cause.
  *
  * `useWorkspaces` owns discovery and updates this projection from the same response as its Workspace record cache, so membership filtering adds no independent request or retry lifecycle.
  */
@@ -343,73 +342,29 @@ export function useWorkspaceSummaries() {
   });
 }
 
-/**
- * Reads the signed-in user id when administrator eligibility makes ownership ambiguous.
- *
- * A single owner id among owner-role rows is the caller, so the session read stays disabled. Multiple owner ids mean the list includes other people's Workspaces.
- */
-export function useSignedInUserId(enabled: boolean) {
-  const client = useCoreClient();
-  return useQuery({
-    queryKey: chatKeys.sessionUser,
-    queryFn: async () => {
-      const session = await client.auth.email.getSession();
-      if (!session) throw new Error('No signed-in session.');
-      return session.user.id;
-    },
-    enabled,
-    retry: false,
-    staleTime: Number.POSITIVE_INFINITY,
-  });
-}
-
-/**
- * True when owner-role rows name more than one owner.
- *
- * A real owner role is projected only for the registry owner, so one distinct owner id means every owner-role row belongs to the caller. Several owner ids mean current administrator eligibility added other people's Workspaces.
- */
-export function workspaceAdmissionIsAmbiguous(items: readonly WorkspaceAdmission[]): boolean {
-  const owners = new Set(
-    items.filter((item) => item.effectiveRole === 'owner').map((item) => item.ownerUserId)
+/** True only for an active caller membership, regardless of administrator eligibility. */
+export function workspaceBelongsToCaller(item: WorkspaceAdmission): boolean {
+  return (
+    item.membershipStatus === 'active' &&
+    (item.accessCause === 'membership' || item.accessCause === 'administrator')
   );
-  return owners.size > 1;
 }
 
-/**
- * True when the row is an active membership of the signed-in user.
- *
- * Editor and viewer rows are memberships. Owner-role rows belong to the caller when the list has one owner, or when `ownerUserId` matches the signed-in user after administrator eligibility mixed in other owners.
- */
-export function workspaceBelongsToCaller(
-  item: WorkspaceAdmission,
-  callerUserId: string | null,
-  ambiguous: boolean
-): boolean {
-  if (item.effectiveRole !== 'owner') return true;
-  if (!ambiguous) return true;
-  return callerUserId != null && item.ownerUserId === callerUserId;
-}
-
-/** Quick Chat Workspace id used to scope persisted switcher selection to one signed-in identity. */
-function workspaceSelectionUserKey(
-  workspaces: Array<{ id: string; kind: string }>,
-  summaries: readonly WorkspaceAdmission[] | undefined,
-  callerUserId: string | null
-): string | null {
-  if (summaries && workspaceAdmissionIsAmbiguous(summaries)) {
-    if (!callerUserId) return null;
-    return (
-      summaries.find(
-        (item) => item.workspace.kind === 'quick-chat' && item.ownerUserId === callerUserId
-      )?.workspace.id ?? null
-    );
-  }
-  return workspaces.find((workspace) => workspace.kind === 'quick-chat')?.id ?? null;
+/** Resolves the caller's personal Workspace from actual ownership and active membership. */
+export function callerQuickChatWorkspace(summaries: readonly WorkspaceAdmission[] | undefined) {
+  return (
+    summaries?.find(
+      (item) =>
+        item.workspace.kind === 'quick-chat' &&
+        item.effectiveRole === 'owner' &&
+        workspaceBelongsToCaller(item)
+    )?.workspace ?? null
+  );
 }
 
 /**
  * Returns the exact route Workspace when one is supplied and authorized. Without
- * route lineage, returns the current selection, Quick Chat, the first authorized
+ * route lineage, returns the current selection, caller Quick Chat, the first member
  * Workspace, or null when discovery is unresolved or empty. Persisted selection
  * restores only when it remains authorized for the signed-in identity.
  *
@@ -423,28 +378,21 @@ export function useCurrentWorkspaceId(preferredWorkspaceId?: string | null): str
   const bindSelectionUserKey = useWorkspaceStore((s) => s.bindSelectionUserKey);
   const workspaces = useWorkspaces();
   const summaries = useWorkspaceSummaries();
-  const ambiguous = summaries.isSuccess && workspaceAdmissionIsAmbiguous(summaries.data);
-  const sessionUser = useSignedInUserId(ambiguous);
-  const callerUserId = sessionUser.data ?? null;
   const preferred = preferredWorkspaceId
     ? (workspaces.data?.find((workspace) => workspace.id === preferredWorkspaceId)?.id ?? null)
     : null;
-  const actorKey =
-    workspaces.data && summaries.isSuccess
-      ? workspaceSelectionUserKey(workspaces.data, summaries.data, callerUserId)
-      : null;
+  const actorKey = callerQuickChatWorkspace(summaries.data)?.id ?? null;
 
   useEffect(() => {
     if (!workspaces.isSuccess || !workspaces.data || !summaries.isSuccess) return;
-    if (ambiguous && !callerUserId) return;
     const state = useWorkspaceStore.getState();
-    const nextActorKey = workspaceSelectionUserKey(workspaces.data, summaries.data, callerUserId);
-    if (nextActorKey && state.selectionUserKey && state.selectionUserKey !== nextActorKey) {
+    const nextActorKey = callerQuickChatWorkspace(summaries.data)?.id ?? null;
+    if (state.selectionUserKey && state.selectionUserKey !== nextActorKey) {
       setSelected(null);
       bindSelectionUserKey(nextActorKey);
       return;
     }
-    if (nextActorKey && state.selectionUserKey !== nextActorKey) {
+    if (state.selectionUserKey !== nextActorKey) {
       bindSelectionUserKey(nextActorKey);
     }
     const selectedId = useWorkspaceStore.getState().currentWorkspaceId;
@@ -453,9 +401,7 @@ export function useCurrentWorkspaceId(preferredWorkspaceId?: string | null): str
       if (nextActorKey) bindSelectionUserKey(nextActorKey);
     }
   }, [
-    ambiguous,
     bindSelectionUserKey,
-    callerUserId,
     setSelected,
     summaries.data,
     summaries.isSuccess,
@@ -479,16 +425,18 @@ export function useCurrentWorkspaceId(preferredWorkspaceId?: string | null): str
   if (preferredWorkspaceId) {
     return preferred;
   }
-  // Ambiguous discovery cannot verify an identity-scoped restore until the session resolves.
-  if (ambiguous && !callerUserId) return null;
   const scopedSelected =
     selected &&
-    (!selectionUserKey || !actorKey || selectionUserKey === actorKey) &&
+    (!selectionUserKey || selectionUserKey === actorKey) &&
     workspaces.data.some((workspace) => workspace.id === selected)
       ? selected
       : null;
-  const ownQuickChat = workspaceSelectionUserKey(workspaces.data, summaries.data, callerUserId);
-  return scopedSelected ?? ownQuickChat ?? (ambiguous ? null : (workspaces.data[0]?.id ?? null));
+  return (
+    scopedSelected ??
+    actorKey ??
+    summaries.data.find(workspaceBelongsToCaller)?.workspace.id ??
+    null
+  );
 }
 
 /** List a workspace's threads (most recent first, as returned by Core). */

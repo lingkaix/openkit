@@ -173,6 +173,8 @@ function makeClient(
         .fn()
         .mockResolvedValueOnce({
           items: [{ id: WORKSPACE_ID, name: 'Product workspace' }].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
             workspace,
             effectiveRole: 'owner',
             membershipRevision: 1,
@@ -186,6 +188,8 @@ function makeClient(
             | undefined) ??
             vi.fn().mockResolvedValue({
               items: [{ id: WORKSPACE_ID, name: 'Product workspace' }].map((workspace) => ({
+                membershipStatus: 'active' as const,
+                accessCause: 'membership' as const,
                 workspace,
                 effectiveRole: 'owner',
                 membershipRevision: 1,
@@ -344,7 +348,17 @@ describe('S19-F Material Workspace discovery barrier', () => {
     for (const operation of materialOperations) expect.soft(operation).not.toHaveBeenCalled();
 
     await act(async () => {
-      discovery.resolve({ items: workspaces.map((workspace) => ({ workspace })) });
+      discovery.resolve({
+        items: workspaces.map((workspace) => ({
+          workspace,
+          effectiveRole: 'owner' as const,
+          membershipStatus: 'active' as const,
+          accessCause: 'membership' as const,
+          membershipRevision: 1,
+          ownerUserId: 'user_local',
+          registryRevision: 1,
+        })),
+      });
       await discovery.promise;
     });
 
