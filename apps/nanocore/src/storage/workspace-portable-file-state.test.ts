@@ -1,3 +1,4 @@
+import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   existsSync,
@@ -17,7 +18,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { createApp } from '../app.js';
-import { ensureLocalUser } from '../auth/identity.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { assertPortableWorkspaceNotebookDisclosure } from '../knowledge/notebook-workspace-portability.js';
 import {
@@ -33,7 +34,7 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb } from './db.js';
-import { LOCAL_USER_ID, readDataRootLayoutMarker } from './fs-layout.js';
+import { readDataRootLayoutMarker } from './fs-layout.js';
 import { retrieveWorkspaceKnowledge } from './index-rebuild.js';
 import { applyMigrations } from './migrate.js';
 import { publishRetrievalTrace, retrievalTraceRelativePath } from './retrieval-traces.js';

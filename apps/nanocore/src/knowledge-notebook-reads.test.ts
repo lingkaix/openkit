@@ -8,7 +8,7 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { createKnowledgeOperationImplementations } from './knowledge-operations.js';
 import { FsStore } from './lib/store.js';
@@ -21,7 +21,7 @@ import {
 } from './retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
-import { LOCAL_USER_ID } from './storage/fs-layout.js';
+import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from './test-support/local-user.js';
 import {
   rebuildWorkspaceDerivedIndexes,
   resolveWorkspaceKnowledgeRetrievalPages,

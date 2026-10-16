@@ -1,14 +1,15 @@
+import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
 // openkit-test-platform: posix
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { FsStore } from '../lib/store.js';
 import { restoreDataRootBackup, writeHotDataRootBackup } from '../storage/data-root-backup.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
-import { LOCAL_USER_ID, readDataRootLayoutMarker } from '../storage/fs-layout.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { allocateRetrievalTraceId, readRetrievalTrace } from '../storage/retrieval-traces.js';

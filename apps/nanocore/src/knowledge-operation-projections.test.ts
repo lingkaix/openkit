@@ -6,7 +6,7 @@ import * as schemas from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { ensureLocalUser } from './auth/identity.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { createTaskKnowledgePreparation } from './knowledge-operations.js';
 import { createOperationInvocation } from './operation-composition.js';
