@@ -432,6 +432,10 @@ NanoCore implements Core Assistant as one role assembly over the bounded interna
 
 The Assistant remains app-local in `apps/nanocore`, owns no private execution lifecycle, and must not introduce a second loop, registry, event protocol, hook framework, or multi-agent framework for this role.
 
+## Predecessor Execution At The Identifier Cutover
+
+This prerelease joins the accepted P14 identifier cutover. Predecessor receipt-free Assistant Task admissions have no exact-selection descriptor or current receiving lineage and are not automatically resumed by this implementation. Any retained tuple remains inspectable as `recovery_required`; no confirmation, receipt or replacement effect is inferred. The separately authorized P14 deployment reset and its protected-account verification belong to their existing operator owner. This feature grants no reset and changes no ordinary retained pending-request lifecycle.
+
 ## Current Implementation Projection
 
 NanoCore exposes the Assistant through `conversation.targets` and `conversation.submit`. The stateless `chat.quick` operation is removed. New private conversation admission selects the User's single Timeline in the selected Workspace. Retained extra private Threads stay readable and their completed command receipts stay replayable; new Assistant work uses the Timeline. The personal Workspace can own shared Task and Goal execution while remaining owner-only.

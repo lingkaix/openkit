@@ -3,8 +3,7 @@ import type { FsStore } from '../lib/store.js';
 /**
  * Resolves the user's single ordinary Assistant Timeline from canonical Threads.
  *
- * Existing conversations retain their identities and history. The earliest private conversation is the continuing Timeline; administration uses a separate entry.
- * No pointer or second conversation store is required.
+ * Existing conversations retain their identities and history. The earliest private conversation is the continuing Timeline; administration uses a separate entry. No pointer or second conversation store is required.
  *
  * @param store Canonical Thread owner after current Workspace admission.
  * @param workspaceId Exact authorized Workspace.

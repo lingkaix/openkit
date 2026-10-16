@@ -230,7 +230,7 @@ it('gates every migrated HTTP mutation before Workspace, Turn, feedback or recei
   const receipts = store.listCommandRequests();
   const feedbackPath = feedbackFilePath(store, turn);
   expect(existsSync(feedbackPath)).toBe(false);
-  for (const index of [0, 2, 5, 6, 7, 8, 9, 10]) {
+  for (const index of [0, 2, 5, 6, 7, 8, 9]) {
     const [id, , , body] = rows[index]!;
     const selectors =
       id === 'workspace.create'

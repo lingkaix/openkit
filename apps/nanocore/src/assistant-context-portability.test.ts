@@ -12,6 +12,7 @@ import {
 import type { AgentMessage } from './internal-agents/internal-agent-loop.js';
 import { readInternalContextEvidence } from './internal-agents/internal-context-evidence.js';
 import {
+  internalContextItems,
   internalContextSourceDigest,
   prepareInternalAgentContext,
 } from './internal-agents/rolling-context.js';
@@ -222,14 +223,7 @@ async function seed() {
         trace.retrievalParameters.cursor !== undefined
     )
   ).toBe(true);
-  const exported = await f.app.request(
-    ...operationRequest('workspace.export', { workspaceId: f.workspace.id })
-  );
-  expect(exported.status, await exported.clone().text()).toBe(200);
-  const { exportId } = (await exported.json()) as { exportId: string };
-  const verified = verifyWorkspaceExportTree({
-    exportRoot: existingWorkspaceExportRoot(f.dataRoot, f.workspace.id, exportId),
-  });
+  const { exportId, verified } = await exportHistory(f);
   return {
     ...f,
     thread,
@@ -242,12 +236,181 @@ async function seed() {
   };
 }
 
+/** Exports canonical history through the real producer and verifies its consumed bytes. */
+async function exportHistory(f: ReturnType<typeof deployment>) {
+  const exported = await f.app.request(
+    ...operationRequest('workspace.export', { workspaceId: f.workspace.id })
+  );
+  expect(exported.status, await exported.clone().text()).toBe(200);
+  const { exportId } = (await exported.json()) as { exportId: string };
+  const verified = verifyWorkspaceExportTree({
+    exportRoot: existingWorkspaceExportRoot(f.dataRoot, f.workspace.id, exportId),
+  });
+  return { exportId, verified };
+}
+
+/** Creates valid original proofs whose tied Turn order changes under index-based import identities. */
+async function seedTiedOrderSummaryChain() {
+  const f = deployment();
+  const thread = f.store.createThread(
+    f.workspace.id,
+    'Tied source order',
+    undefined,
+    'conversation',
+    {
+      visibility: 'private',
+      privateOwnerUserId: LOCAL_USER_ID,
+    }
+  );
+  const originals: Item[] = [];
+  const summaries: Summary[] = [];
+  for (let index = 1; index <= 12; index += 1) {
+    const turn = f.store.createTurn(
+      f.workspace.id,
+      thread.id,
+      currentText,
+      { kind: 'user', id: LOCAL_USER_ID },
+      null,
+      {
+        turnId: `tu_source_${String(index).padStart(2, '0')}`,
+        agentId: 'quick-chat',
+        executorKind: 'assistant',
+        startedAt: timestamp,
+      }
+    );
+    if (index <= 10) {
+      originals.push(message(f, turn, 'user-message', `Tied source ${index}`));
+    } else {
+      const covered = originals.slice(0, index === 11 ? 4 : 10);
+      const previous = summaries.at(-1);
+      const summary = f.store.createItem({
+        id: randomUUID(),
+        workspaceId: f.workspace.id,
+        threadId: thread.id,
+        turnId: turn.id,
+        type: 'context-summary',
+        status: 'completed',
+        text: summaryText,
+        environmentDigest: sha('tied-order role environment'),
+        sourceRange: {
+          firstItemId: covered[0]!.id,
+          lastItemId: covered.at(-1)!.id,
+          itemCount: covered.length,
+          sourceDigest: internalContextSourceDigest(f.store, covered),
+          evidenceDigest: sha(JSON.stringify({ version: 1, entries: [] })),
+        },
+        ...(previous
+          ? { previousSummary: { itemId: previous.id, digest: sha(JSON.stringify(previous)) } }
+          : {}),
+        createdAt: timestamp,
+        completedAt: timestamp,
+      });
+      if (summary.type !== 'context-summary') throw new Error('Missing source summary.');
+      summaries.push(summary);
+    }
+    f.store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
+  }
+  return { ...f, thread, originals, summaries, ...(await exportHistory(f)) };
+}
+
 /** Computes expected selected body and canonical revision digests independently. */
 function sha(value: string) {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
 
 describe('Assistant conversation context portability', () => {
+  it('rejects a corrupt original predecessor before publication when tied source order changes on import', async () => {
+    const source = await seedTiedOrderSummaryChain();
+    const control = deployment();
+    const imported = importVerifiedWorkspace({
+      authorityUserId: LOCAL_USER_ID,
+      coreDb: control.coreDb,
+      dataRoot: control.dataRoot,
+      requestId: randomUUID(),
+      store: control.store,
+      verified: source.verified,
+    });
+    const targetThread = control.store.listThreads(imported.importedWorkspaceId)[0]!;
+    const targetTurns = control.store.listThreadTurns(
+      imported.importedWorkspaceId,
+      targetThread.id
+    );
+    const targetSummary = control.store
+      .listThreadItems(imported.importedWorkspaceId, targetThread.id)
+      .find(
+        (item): item is Summary =>
+          item.type === 'context-summary' && item.sourceRange.itemCount === 10
+      )!;
+    const targetHistory = internalContextItems(
+      control.store,
+      targetTurns.find((turn) => turn.id === targetSummary.turnId)!
+    );
+    expect(targetHistory.map((item) => ('text' in item ? item.text : ''))).toEqual(
+      [1, 10, 2, 3, 4, 5, 6, 7, 8, 9].map((index) => `Tied source ${index}`)
+    );
+    expect(targetSummary.sourceRange.sourceDigest).toBe(
+      source.summaries[1]!.sourceRange.sourceDigest
+    );
+    expect(targetSummary.sourceRange.sourceDigest).not.toBe(
+      internalContextSourceDigest(control.store, targetHistory)
+    );
+    expect(source.summaries[1]!.previousSummary!.digest).toBe(
+      sha(JSON.stringify(source.summaries[0]))
+    );
+
+    const target = deployment();
+    const inventory = readdirSync(join(target.dataRoot, 'workspaces')).sort();
+    const registry = target.coreDb.sqlite
+      .prepare('SELECT * FROM workspace_registry ORDER BY workspace_id')
+      .all();
+    const fileContents = new Map(source.verified.fileContents);
+    const corrupt = (item: Item): Item =>
+      item.id === source.summaries[1]!.id && item.type === 'context-summary'
+        ? {
+            ...item,
+            previousSummary: { ...item.previousSummary!, digest: `sha256:${'0'.repeat(64)}` },
+          }
+        : item;
+    // Both canonical representations carry the same single corrupt proof at the consumed-byte seam.
+    for (const path of ['records/item-revisions.jsonl', 'records/turns.jsonl']) {
+      const records = fileContents
+        .get(path)!
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line));
+      fileContents.set(
+        path,
+        `${records
+          .map((record) =>
+            JSON.stringify(
+              path.includes('turns')
+                ? { ...record, items: record.items.map(corrupt) }
+                : corrupt(record)
+            )
+          )
+          .join('\n')}\n`
+      );
+    }
+    expect
+      .soft(() =>
+        importVerifiedWorkspace({
+          authorityUserId: LOCAL_USER_ID,
+          coreDb: target.coreDb,
+          dataRoot: target.dataRoot,
+          requestId: randomUUID(),
+          store: target.store,
+          verified: { ...source.verified, fileContents },
+        })
+      )
+      .toThrow(/summary predecessor is contradictory/);
+    expect.soft(readdirSync(join(target.dataRoot, 'workspaces')).sort()).toEqual(inventory);
+    expect
+      .soft(
+        target.coreDb.sqlite.prepare('SELECT * FROM workspace_registry ORDER BY workspace_id').all()
+      )
+      .toEqual(registry);
+  });
+
   it('exports and imports real archive bytes, remints source evidence, and reuses the summary chain after target restart', async () => {
     const source = await seed();
     const target = deployment();

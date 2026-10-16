@@ -31,9 +31,9 @@ const RAW_HANDLE = 'sandbox-pid-9999-gateway-xyz';
 const POISON_SECRET = 'sk-secret-should-never-render';
 const WORKSPACE = { id: 'ws1', name: 'Market research', kind: 'general' } as const;
 const WORKSPACE_B = { id: 'ws2', name: 'Second workspace', kind: 'general' } as const;
-const QUICK_CHAT_WORKSPACE = {
+const PERSONAL_WORKSPACE = {
   id: 'ws_quick_chat',
-  name: 'Quick Chat',
+  name: 'Personal',
   kind: 'personal',
 } as const;
 const EVIDENCE_BUNDLE_ID = 'evb_wrr_1';
@@ -949,53 +949,61 @@ describe('Workspace changes', () => {
     expect(document.documentElement.outerHTML).not.toContain(POISON_SECRET);
   });
 
-  it('does not publish Workspace changes or call Sync APIs for Quick Chat', async () => {
-    const surface = surfaceById('workspace-changes');
-    expect(surface).toMatchObject({
-      title: 'Workspace changes',
-      path: '/workspace-changes',
-      tier: 'A',
-      nav: 'workspace-compact',
-    });
-
-    const client = makeClient(
-      {},
-      {
-        'workspace.list': vi.fn().mockResolvedValue({
-          items: [QUICK_CHAT_WORKSPACE].map((workspace) => ({
-            membershipStatus: 'active' as const,
-            accessCause: 'membership' as const,
-            workspace,
+  it.each([
+    false,
+    true,
+  ])('shows ordinary personal Workspace changes with exact scoped reads and no hidden mutation (selected=%s)', async (selected) => {
+    if (selected) useWorkspaceStore.setState({ currentWorkspaceId: PERSONAL_WORKSPACE.id });
+    const client = makeClient();
+    vi.mocked(client.operations['workspace.list'])
+      .mockReset()
+      .mockResolvedValue({
+        items: [
+          {
+            workspace: PERSONAL_WORKSPACE,
+            membershipStatus: 'active',
+            accessCause: 'membership',
             effectiveRole: 'owner',
             membershipRevision: 1,
             ownerUserId: 'user_local',
             registryRevision: 1,
-          })),
-        }),
-      }
-    );
+          },
+        ],
+      });
+    const reads = [
+      'sync.review-list',
+      'sync.input-snapshot-list',
+      'sync.materialization-list',
+      'sync.backend-handle-list',
+      'sync.output-manifest-list',
+      'sync.change-set-list',
+      'sync.staged-review-list',
+      'sync.apply-plan-list',
+      'sync.apply-result-list',
+      'sync.reconciliation-list',
+      'sync.quarantine-list',
+    ] as const;
+    for (const operation of reads)
+      vi.mocked(client.operations[operation]).mockResolvedValue({ items: [] });
     renderApp('/workspace-changes', client);
 
-    expect(await screen.findByText(QUICK_CHAT_WORKSPACE.name, { exact: true })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Workspace changes' })).not.toBeInTheDocument();
     expect(
-      screen.queryByRole('heading', { level: 1, name: 'Workspace changes' })
-    ).not.toBeInTheDocument();
-    expect(syncCalls(client)).toEqual({
-      listReviews: [],
+      await screen.findByRole('heading', { level: 1, name: 'Workspace changes' })
+    ).toBeInTheDocument();
+    expect(screen.getByText(PERSONAL_WORKSPACE.name, { exact: true })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Workspace changes' })).toBeInTheDocument();
+    expect(await screen.findByText('No reviews', { exact: true })).toBeInTheDocument();
+    expect(screen.getByRole('main', { name: 'Workspace' })).not.toHaveTextContent(
+      /workspace changes is unavailable/i
+    );
+    for (const operation of reads)
+      expect(vi.mocked(client.operations[operation]).mock.calls, operation).toEqual([
+        [{ workspaceId: PERSONAL_WORKSPACE.id }],
+      ]);
+    expect(syncCalls(client)).toMatchObject({
       getReview: [],
       submitDecision: [],
-      listSnapshots: [],
-      listMaterializations: [],
-      listHandles: [],
-      listManifests: [],
-      listChangeSets: [],
-      listStaged: [],
-      listPlans: [],
-      listResults: [],
       getResult: [],
-      listRecovery: [],
-      listQuarantine: [],
       submitRecovery: [],
     });
   });
@@ -1431,48 +1439,5 @@ describe('Workspace changes', () => {
     expect(within(recovery).getByText(EVIDENCE_BUNDLE_ID)).toBeInTheDocument();
     expect(within(recovery).getByText(OUTPUT_MANIFEST.id)).toBeInTheDocument();
     expectNoRecoveryDecisionActions(recovery);
-  });
-
-  it('renders a truthful unsupported or empty state instead of a blank pane for Quick Chat', async () => {
-    useWorkspaceStore.setState({ currentWorkspaceId: QUICK_CHAT_WORKSPACE.id });
-    const client = makeClient(
-      {},
-      {
-        'workspace.list': vi.fn().mockResolvedValue({
-          items: [QUICK_CHAT_WORKSPACE].map((workspace) => ({
-            membershipStatus: 'active' as const,
-            accessCause: 'membership' as const,
-            workspace,
-            effectiveRole: 'owner',
-            membershipRevision: 1,
-            ownerUserId: 'user_local',
-            registryRevision: 1,
-          })),
-        }),
-      }
-    );
-    renderApp('/workspace-changes', client);
-
-    expect(await screen.findByText(QUICK_CHAT_WORKSPACE.name, { exact: true })).toBeInTheDocument();
-    const main = screen.getByRole('main', { name: 'Workspace' });
-    expect(main).toHaveTextContent(/workspace changes is unavailable/i);
-    expect(main).toHaveTextContent(/create or select an eligible project workspace/i);
-    expect(syncCalls(client)).toEqual({
-      listReviews: [],
-      getReview: [],
-      submitDecision: [],
-      listSnapshots: [],
-      listMaterializations: [],
-      listHandles: [],
-      listManifests: [],
-      listChangeSets: [],
-      listStaged: [],
-      listPlans: [],
-      listResults: [],
-      getResult: [],
-      listRecovery: [],
-      listQuarantine: [],
-      submitRecovery: [],
-    });
   });
 });

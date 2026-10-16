@@ -50,7 +50,8 @@ export function assistantPendingOutcomeSourceHash(
       ending: record.ending,
       disposition: record.disposition,
       answerMap: record.answerMap,
-      assistantHandoff: record.assistantHandoff,
+      // An absent extension must not change an ordinary retained outcome's complete name.
+      ...(record.assistantHandoff ? { assistantHandoff: record.assistantHandoff } : {}),
       decidedAt: record.decidedAt,
       endedAt: record.endedAt,
     })),

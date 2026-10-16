@@ -41,9 +41,9 @@ const ASCII_VAULT_MATERIAL_BASE64 = btoa(ASCII_VAULT_MATERIAL);
 const WORKSPACE = { id: 'ws1', name: 'Market research', kind: 'general' } as const;
 const WORKSPACE_B = { id: 'ws2', name: 'Second workspace', kind: 'general' } as const;
 const EXPORTED_ABSENT_ID = 'ws_exported_absent';
-const QUICK_CHAT_WORKSPACE = {
+const PERSONAL_WORKSPACE = {
   id: 'ws_quick_chat',
-  name: 'Quick Chat',
+  name: 'Personal',
   kind: 'personal',
 } as const;
 const EXPORT_ID = 'wsexp_1';
@@ -786,7 +786,8 @@ function expectVaultUiAbsent(client: CoreClient) {
 async function proveUserScopedImport(
   user: ReturnType<typeof userEvent.setup>,
   client: CoreClient,
-  queryClient: QueryClient
+  queryClient: QueryClient,
+  expectWorkspaceSurface: () => void = () => expectVaultUiAbsent(client)
 ) {
   expect(DRY_RUN_AVAILABLE.manifest.sourceDeploymentId).toBe(EXTERNAL_SOURCE_DEPLOYMENT_ID);
   expect(DRY_RUN_AVAILABLE.sourceWorkspaceId).not.toBe(WORKSPACE.id);
@@ -794,7 +795,7 @@ async function proveUserScopedImport(
   expectReviewIdentities(DRY_RUN_AVAILABLE, AVAILABLE_DRY_RUN_REQUEST);
   expect(screen.getByRole('button', { name: 'Review import' })).toBeDisabled();
   expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
-  expectVaultUiAbsent(client);
+  expectWorkspaceSurface();
   await reviewImport(user, EXPORTED_ABSENT_ID, EXPORT_ID);
   await waitFor(() =>
     expect(vi.mocked(client.operations['workspace.import-dry-run']).mock.calls).toEqual([
@@ -815,7 +816,7 @@ async function proveUserScopedImport(
   await expectImportedSuccess({ id: EXPORTED_ABSENT_ID, name: IMPORTED_WORKSPACE.name });
   expect(client.app.dryRunWorkspaceArchiveImport).not.toHaveBeenCalled();
   expect(client.app.importWorkspaceArchive).not.toHaveBeenCalled();
-  expectVaultUiAbsent(client);
+  expectWorkspaceSurface();
   assertNoLeakedInternals(queryClient);
 }
 
@@ -1750,10 +1751,10 @@ describe('Portability', () => {
     assertNoLeakedInternals(queryClient);
   });
 
-  it('keeps user-scoped import without export or Vault for Quick Chat', async () => {
+  it('exports the selected personal Workspace and keeps user import available', async () => {
     const user = userEvent.setup();
     const listWorkspaces = vi.fn().mockResolvedValue({
-      items: [QUICK_CHAT_WORKSPACE].map((workspace) => ({
+      items: [PERSONAL_WORKSPACE].map((workspace) => ({
         membershipStatus: 'active' as const,
         accessCause: 'membership' as const,
         workspace,
@@ -1769,20 +1770,49 @@ describe('Portability', () => {
 
       operations: {
         'workspace.import-dry-run': vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE),
+        'vault.reference-list': vi
+          .fn()
+          .mockResolvedValue({ ...EMPTY_VAULT_B, workspaceId: PERSONAL_WORKSPACE.id }),
+        'workspace.export': vi.fn().mockResolvedValue({
+          ...EXPORT_RESULT,
+          workspaceId: PERSONAL_WORKSPACE.id,
+          manifest: {
+            ...MANIFEST,
+            workspaceId: PERSONAL_WORKSPACE.id,
+            lineage: { workspaceId: PERSONAL_WORKSPACE.id },
+          },
+        }),
         'workspace.list': listWorkspaces,
       },
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
-    expect(await screen.findByText(QUICK_CHAT_WORKSPACE.name, { exact: true })).toBeInTheDocument();
+    expect(await screen.findByText(PERSONAL_WORKSPACE.name, { exact: true })).toBeInTheDocument();
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Portability' })
     ).toBeInTheDocument();
     const main = screen.getByRole('main');
-    expect(main).toHaveTextContent(/select or create a project workspace/i);
+    expect(main).not.toHaveTextContent(/select or create a project workspace/i);
+    expect(screen.getByRole('button', { name: 'Export workspace' })).toBeEnabled();
+    await waitFor(() =>
+      expect(vi.mocked(client.operations['vault.reference-list']).mock.calls).toEqual([
+        [{ workspaceId: PERSONAL_WORKSPACE.id }],
+      ])
+    );
+    expect(client.operations['workspace.export']).not.toHaveBeenCalled();
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
     expect(screen.getByRole('textbox', { name: 'Source workspace ID' })).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Export ID' })).toBeInTheDocument();
-    await proveUserScopedImport(user, client, queryClient);
+    await user.click(screen.getByRole('button', { name: 'Export workspace' }));
+    await waitFor(() =>
+      expect(vi.mocked(client.operations['workspace.export']).mock.calls).toEqual([
+        [{ workspaceId: PERSONAL_WORKSPACE.id }],
+      ])
+    );
+    expectDownloadArchiveLink(PERSONAL_WORKSPACE.id, EXPORT_ID);
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
+    assertNoLeakedInternals(queryClient);
   });
 
   it('keeps user-scoped import available when no Workspace is selected and does not describe it as selected-Workspace permission', async () => {
@@ -2034,7 +2064,7 @@ describe('Portability', () => {
 
   it.each([
     ['zero workspaces', [] as const],
-    ['only Quick Chat', [QUICK_CHAT_WORKSPACE]],
+    ['only a personal Workspace', [PERSONAL_WORKSPACE]],
   ] as const)('reaches user-scoped Portability from Settings with %s', async (_label, items) => {
     const user = userEvent.setup();
     const listWorkspaces = vi.fn().mockResolvedValue({
@@ -2072,8 +2102,19 @@ describe('Portability', () => {
     expect(screen.getByRole('textbox', { name: 'Export ID' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Review import' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Import workspace' })).toBeInTheDocument();
-    expectVaultUiAbsent(client);
-    await proveUserScopedImport(user, client, queryClient);
+    const expectWorkspaceSurface = () => {
+      if (items.length === 0) expectVaultUiAbsent(client);
+      else {
+        expect(screen.getByRole('button', { name: 'Export workspace' })).toBeEnabled();
+        expect(vi.mocked(client.operations['vault.reference-list']).mock.calls).toEqual([
+          [{ workspaceId: PERSONAL_WORKSPACE.id }],
+        ]);
+        expect(client.operations['workspace.export']).not.toHaveBeenCalled();
+        expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
+      }
+    };
+    await waitFor(expectWorkspaceSurface);
+    await proveUserScopedImport(user, client, queryClient, expectWorkspaceSurface);
   });
 
   it('keeps user import visible, usable, and unremounted while the project Vault query is pending', async () => {
