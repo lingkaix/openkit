@@ -1,7 +1,7 @@
 import type { GetArtifactResponse } from '@openkit/core-client';
 import { Card, ErrorBanner, Eyebrow, Skeleton } from '../../primitives';
 import type { ArtifactReview } from '../goal/data';
-import { useWorkspaceMaterial, useWorkspaceMaterialRevision } from './data';
+import { useMaterialProposalText, useWorkspaceMaterial, useWorkspaceMaterialRevision } from './data';
 
 /**
  * Renders one exact reviewed Artifact proposal against its recorded Material base.
@@ -37,7 +37,9 @@ export function ProposalReview({
     conflict && proposal ? proposal.materialId : null,
     conflict ? (material.data?.material.currentRevisionId ?? null) : null
   );
-  const proposalBody = artifact
+  const fileProposal = Boolean(proposal && artifact?.content.format === 'file');
+  const proposalText = useMaterialProposalText(workspaceId, fileProposal ? artifact : null);
+  const proposalBody = fileProposal ? (proposalText.data ?? null) : artifact
     ? artifact.content.format === 'markdown' || artifact.content.format === 'text'
       ? artifact.content.body
       : JSON.stringify(artifact.content, null, 2)
@@ -56,7 +58,11 @@ export function ProposalReview({
       <section aria-label={artifact ? 'Reviewed artifact proposal' : 'Historical artifact review'}>
         <Eyebrow>{artifact ? 'Reviewed artifact proposal' : 'Historical artifact review'}</Eyebrow>
         <p className="mt-2 font-mono text-xs text-fg-muted">{review.contentDigest}</p>
-        {proposalBody ? (
+        {fileProposal && (proposalText.isPending || proposalText.isFetching) ? (
+          <div aria-busy="true"><p className="mt-3 text-sm text-fg-muted">Loading reviewed proposal text.</p><Skeleton lines={3} /></div>
+        ) : fileProposal && proposalText.isError ? (
+          <ErrorBanner message="Couldn't load the reviewed proposal text." onRetry={() => void proposalText.refetch()} />
+        ) : proposalBody ? (
           <pre className="mt-3 whitespace-pre-wrap font-sans text-sm leading-relaxed text-fg">
             {proposalBody}
           </pre>

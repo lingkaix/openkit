@@ -1,4 +1,6 @@
-import type { CoreClient } from '@openkit/core-client';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
+import type { CoreClient, GetArtifactResponse } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCoreClient } from '../../app/core-client';
 import { useCurrentWorkspaceId } from '../chat/data';
@@ -90,6 +92,61 @@ export function useWorkspaceMaterialRevision(
         revisionId: revisionId as string,
       }),
     enabled: Boolean(workspaceId && materialId && revisionId),
+  });
+}
+
+/** Loads one exact file-backed Material proposal within S16's complete UTF-8 text bound. */
+export function useMaterialProposalText(workspaceId: string, artifact: GetArtifactResponse | null) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: ['material-proposal-text', workspaceId, artifact?.id ?? '', artifact?.version ?? 0, artifact?.contentDigest ?? ''],
+    enabled: artifact?.content.format === 'file',
+    staleTime: 0,
+    retry: false,
+    queryFn: async ({ signal }) => {
+      const content = artifact?.content;
+      // This is the existing Material text-processing ceiling, not the arbitrary-file limit.
+      const maximumBytes = 16_777_216;
+      if (!artifact || artifact.workspaceId !== workspaceId || content?.format !== 'file' ||
+          content.byteLength > maximumBytes ||
+          (content.mediaType !== 'text/markdown' && content.mediaType !== 'text/plain'))
+        throw new Error('The reviewed proposal text is unavailable.');
+      signal.throwIfAborted();
+      const download = await client.artifactFiles.download({ workspaceId, artifactId: artifact.id, artifactVersion: artifact.version });
+      const reader = download.body.getReader();
+      const hash = sha256.create();
+      const cancel = () => { void reader.cancel().catch(() => undefined); };
+      signal.addEventListener('abort', cancel, { once: true });
+      try {
+        signal.throwIfAborted();
+        if (download.byteLength !== content.byteLength || download.contentDigest !== artifact.contentDigest)
+          throw new Error('The reviewed proposal text is unavailable.');
+        // Preserve BOM and exact Unicode/newline bytes; replacement decoding cannot prove the original.
+        const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+        const parts: string[] = [];
+        let byteLength = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          signal.throwIfAborted();
+          if (done) break;
+          if (value.byteLength === 0) continue;
+          if (value.byteLength > content.byteLength - byteLength)
+            throw new Error('The reviewed proposal text is unavailable.');
+          byteLength += value.byteLength;
+          hash.update(value);
+          parts.push(decoder.decode(value, { stream: true }));
+        }
+        parts.push(decoder.decode());
+        if (byteLength !== content.byteLength || `sha256:${bytesToHex(hash.digest())}` !== artifact.contentDigest)
+          throw new Error('The reviewed proposal text is unavailable.');
+        return parts.join('');
+      } finally {
+        signal.removeEventListener('abort', cancel);
+        await reader.cancel().catch(() => undefined);
+        reader.releaseLock();
+        hash.destroy();
+      }
+    },
   });
 }
 
