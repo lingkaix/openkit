@@ -120,6 +120,238 @@ describe('capability usage ledger', () => {
     }
   });
 
+  it('keeps fresh null-request inference calls and usage separate under one command audit lineage', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-command-audit-rounds-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      const auditLineage = { commandRequestId: '00000000-0000-4000-8000-000000000401' };
+      const calls = [];
+      const usageIds = [];
+
+      for (let round = 0; round < 2; round += 1) {
+        const call = startCapabilityCall({
+          authorityActor: { kind: 'user', id: 'user_ledger' },
+          capabilityId: 'llm.responses',
+          family: 'llm',
+          operation: 'responses.create',
+          redactionClass: 'metadata-only',
+          requestId: null,
+          threadId: 'th_command',
+          turnId: 'turn_command',
+          workspaceDb,
+          workspaceId: 'ws_demo',
+        });
+        calls.push(call);
+        const usageInput = {
+          auditLineage,
+          call,
+          records: [{ category: 'llm' as const, quantity: 12, unit: 'tokens' as const }],
+          workspaceDb,
+        };
+        usageIds.push(recordUsage(usageInput));
+        const finishInput = {
+          auditLineage,
+          callId: call.id,
+          status: 'succeeded' as const,
+          workspaceDb,
+        };
+        finishCapabilityCall(finishInput);
+      }
+
+      expect(calls[0].inserted).toBe(true);
+      expect(calls[1].inserted).toBe(true);
+      expect(calls[0].id).not.toBe(calls[1].id);
+      expect(usageIds[0]).toHaveLength(1);
+      expect(usageIds[1]).toHaveLength(1);
+      expect(usageIds[0][0]).not.toBe(usageIds[1][0]);
+      expect(listWorkspaceCapabilityCalls(workspaceDb, 'ws_demo')).toHaveLength(2);
+      for (const [index, call] of calls.entries()) {
+        expect(capabilityCallRow(workspaceDb, call.id)).toMatchObject({
+          request_id: null,
+          status: 'succeeded',
+          thread_id: 'th_command',
+          turn_id: 'turn_command',
+          workspace_id: 'ws_demo',
+        });
+        expect(usageRows(workspaceDb, call.id)).toEqual([
+          expect.objectContaining({
+            capability_call_id: call.id,
+            category: 'llm',
+            quantity: 12,
+            request_id: null,
+            responsible_user_id: 'user_ledger',
+            thread_id: 'th_command',
+            turn_id: 'turn_command',
+            unit: 'tokens',
+            usage_id: usageIds[index][0],
+            workspace_id: 'ws_demo',
+          }),
+        ]);
+      }
+      for (const call of calls) {
+        expect(auditRows(workspaceDb, call.id)).toEqual([
+          expect.objectContaining({
+            action: 'capability.finish',
+            capability_call_id: call.id,
+            outcome: 'succeeded',
+            request_id: auditLineage.commandRequestId,
+            thread_id: 'th_command',
+            turn_id: 'turn_command',
+            workspace_id: 'ws_demo',
+          }),
+        ]);
+      }
+    } finally {
+      workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    {
+      name: 'uses command audit lineage for a failed null-request call',
+      requestId: null,
+      auditLineage: { commandRequestId: '00000000-0000-4000-8000-000000000402' },
+      status: 'failed' as const,
+      expectedRequestId: '00000000-0000-4000-8000-000000000402',
+    },
+    {
+      name: 'keeps a null audit request when no command lineage is available',
+      requestId: null,
+      auditLineage: undefined,
+      status: 'succeeded' as const,
+      expectedRequestId: null,
+    },
+    {
+      name: 'keeps the stored request ahead of a different command audit lineage',
+      requestId: '00000000-0000-4000-8000-000000000403',
+      auditLineage: { commandRequestId: '00000000-0000-4000-8000-000000000404' },
+      status: 'succeeded' as const,
+      expectedRequestId: '00000000-0000-4000-8000-000000000403',
+    },
+  ])('$name', ({ requestId, auditLineage, status, expectedRequestId }) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-command-audit-finish-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      const call = startCapabilityCall({
+        authorityActor: { kind: 'user', id: 'user_ledger' },
+        capabilityId: 'llm.responses',
+        family: 'llm',
+        operation: 'responses.create',
+        redactionClass: 'metadata-only',
+        requestId,
+        workspaceDb,
+        workspaceId: 'ws_demo',
+      });
+      const errorCode = status === 'failed' ? 'provider_failed' : null;
+      const finishInput = { auditLineage, callId: call.id, errorCode, status, workspaceDb };
+      finishCapabilityCall(finishInput);
+
+      expect(capabilityCallRow(workspaceDb, call.id)).toMatchObject({
+        error_code: errorCode,
+        request_id: requestId,
+        status,
+      });
+      expect(auditRows(workspaceDb, call.id)).toEqual([
+        expect.objectContaining({
+          action: 'capability.finish',
+          capability_call_id: call.id,
+          error_code: errorCode,
+          outcome: status,
+          request_id: expectedRequestId,
+        }),
+      ]);
+    } finally {
+      workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps command audit lineage when usage recording fails for a null-request call', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-command-audit-usage-failure-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      const call = startCapabilityCall({
+        authorityActor: { kind: 'user', id: 'user_ledger' },
+        capabilityId: 'llm.responses',
+        family: 'llm',
+        operation: 'responses.create',
+        redactionClass: 'metadata-only',
+        requestId: null,
+        workspaceDb,
+        workspaceId: 'ws_demo',
+      });
+      const auditLineage = { commandRequestId: '00000000-0000-4000-8000-000000000405' };
+      const usageInput = {
+        auditLineage,
+        call,
+        records: [{ category: 'llm' as const, quantity: -1, unit: 'tokens' as const }],
+        workspaceDb,
+      };
+
+      expect(() => recordUsage(usageInput)).toThrow();
+      expect(capabilityCallRow(workspaceDb, call.id)).toMatchObject({
+        error_code: 'usage_record_failed',
+        request_id: null,
+        status: 'failed',
+      });
+      expect(usageRows(workspaceDb, call.id)).toEqual([]);
+      expect(auditRows(workspaceDb, call.id)).toEqual([
+        expect.objectContaining({
+          action: 'capability.finish',
+          capability_call_id: call.id,
+          error_code: 'usage_record_failed',
+          outcome: 'failed',
+          request_id: auditLineage.commandRequestId,
+          severity: 'error',
+          summary: 'Capability call failed: usage_record_failed',
+        }),
+      ]);
+    } finally {
+      workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects malformed command audit lineage without terminal or audit mutation', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-command-audit-invalid-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      const call = startCapabilityCall({
+        authorityActor: { kind: 'user', id: 'user_ledger' },
+        capabilityId: 'llm.responses',
+        family: 'llm',
+        operation: 'responses.create',
+        redactionClass: 'metadata-only',
+        requestId: null,
+        workspaceDb,
+        workspaceId: 'ws_demo',
+      });
+      const before = capabilityCallRow(workspaceDb, call.id);
+      const finishInput = {
+        auditLineage: { commandRequestId: 'invalid-request-id' },
+        callId: call.id,
+        status: 'succeeded' as const,
+        workspaceDb,
+      };
+
+      expect(() => finishCapabilityCall(finishInput)).toThrow();
+      expect(capabilityCallRow(workspaceDb, call.id)).toEqual(before);
+      expect(auditRows(workspaceDb, call.id)).toEqual([]);
+    } finally {
+      workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('uses the same recorder lifecycle for LLM and MCP usage producers', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-producers-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');

@@ -148,6 +148,12 @@ export interface UsageMeasurementInput {
   source?: string | null;
 }
 
+/** Trusted command lineage for audit only, separate from capability-call idempotency. */
+export interface CapabilityAuditLineage {
+  /** Admitted command request ID retained when the call has no per-invocation request ID. */
+  readonly commandRequestId: string;
+}
+
 /** Input for recording usage rows for one capability call. */
 export interface RecordUsageInput {
   /** Workspace-scoped database handle. */
@@ -156,6 +162,8 @@ export interface RecordUsageInput {
   call: StartedCapabilityCall;
   /** Usage rows to record. */
   records: UsageMeasurementInput[];
+  /** Trusted command lineage for the audit event if usage recording fails. */
+  auditLineage?: CapabilityAuditLineage | undefined;
   /** Recording time. */
   now?: Date;
 }
@@ -170,6 +178,8 @@ export interface FinishCapabilityCallInput {
   status: Exclude<CapabilityCall['status'], 'queued' | 'running'>;
   /** Stable error code for non-success terminal calls. */
   errorCode?: string | null;
+  /** Trusted command lineage for audit only; never copied into the call row. */
+  auditLineage?: CapabilityAuditLineage | undefined;
   /** Completion time. */
   now?: Date;
 }
@@ -334,7 +344,7 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
 /**
  * Records measured usage linked to a started capability call.
  *
- * @param input Usage rows and durable call summary.
+ * @param input Usage rows, durable call summary and optional command audit lineage.
  * @returns Retained IDs, including existing equivalent measurements, in input order.
  */
 export function recordUsage(input: RecordUsageInput): string[] {
@@ -419,6 +429,7 @@ export function recordUsage(input: RecordUsageInput): string[] {
   } catch (error) {
     try {
       finishCapabilityCall({
+        auditLineage: input.auditLineage,
         workspaceDb: input.workspaceDb,
         callId: input.call.id,
         errorCode: 'usage_record_failed',
@@ -471,7 +482,7 @@ function hasEquivalentUsageRecord(
 /**
  * Marks one capability call terminal.
  *
- * @param input Terminal status input.
+ * @param input Terminal status and optional trusted command lineage for audit.
  */
 export function finishCapabilityCall(input: FinishCapabilityCallInput): void {
   const now = input.now ?? new Date();
@@ -483,6 +494,11 @@ export function finishCapabilityCall(input: FinishCapabilityCallInput): void {
       if (!call || call.completed_at) {
         return;
       }
+      const auditRequestId =
+        call.request_id ??
+        (input.auditLineage === undefined
+          ? null
+          : RequestIdSchema.parse(input.auditLineage.commandRequestId));
       capabilityCallFromRow({
         ...call,
         completed_at: completedAt,
@@ -511,7 +527,7 @@ export function finishCapabilityCall(input: FinishCapabilityCallInput): void {
         now,
         occurredAt: now,
         outcome: capabilityAuditOutcome(input.status),
-        requestId: call.request_id,
+        requestId: auditRequestId,
         resource: `capability:${call.capability_id}`,
         severity: capabilityAuditSeverity(input.status),
         summary: capabilityAuditSummary(input.status, call, input.errorCode ?? null),
