@@ -9,6 +9,7 @@ import {
   operationMcpEligible,
   RotateOpenKitAccessTokenResponseSchema,
 } from '@openkit/app-api-schemas';
+import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listServerAuditEvents } from './audit-events.js';
 import {
@@ -344,7 +345,7 @@ describe('remote MCP App endpoint', () => {
         });
         expect(http.status).toBe(404);
         expect(await http.json()).toEqual({
-          protocolVersion: '0.5.0',
+          protocolVersion: PROTOCOL_VERSION,
           code: 'not_found',
           message: 'Thread not found.',
         });
@@ -483,16 +484,29 @@ describe('remote MCP App endpoint', () => {
           'vault.secret-rotate',
           {
             workspaceId: DEMO_WORKSPACE_ID,
-            referenceId: 'vault_b6',
+            referenceId: testEntityId('vault', 'vault_b6'),
             material: 'synthetic-b6-next',
           },
         ],
-        ['vault.secret-revoke', { workspaceId: DEMO_WORKSPACE_ID, referenceId: 'vault_b6' }],
-        ['vault.grant-create', { workspaceId: DEMO_WORKSPACE_ID, referenceId: 'vault_b6' }],
-        ['vault.grant-revoke', { workspaceId: DEMO_WORKSPACE_ID, grantId: 'grant_b6' }],
+        [
+          'vault.secret-revoke',
+          { workspaceId: DEMO_WORKSPACE_ID, referenceId: testEntityId('vault', 'vault_b6') },
+        ],
+        [
+          'vault.grant-create',
+          { workspaceId: DEMO_WORKSPACE_ID, referenceId: testEntityId('vault', 'vault_b6') },
+        ],
+        [
+          'vault.grant-revoke',
+          { workspaceId: DEMO_WORKSPACE_ID, grantId: testEntityId('grant', 'grant_b6') },
+        ],
         [
           'vault.reference-rebind',
-          { workspaceId: DEMO_WORKSPACE_ID, referenceId: 'vault_b6', materialBase64: 'e30=' },
+          {
+            workspaceId: DEMO_WORKSPACE_ID,
+            referenceId: testEntityId('vault', 'vault_b6'),
+            materialBase64: 'e30=',
+          },
         ],
       ] as const) {
         expect(OPERATION_DEFINITIONS[operation].mutating).toBe(true);
@@ -1549,7 +1563,7 @@ for (const sensitivity of ['restricted', 'public', 'internal'] as const) {
         kind: 'text',
         sensitivity,
         requestId: randomUUID(),
-        actorId: testEntityId('usr', 'user_remote_mcp'),
+        actor: { kind: 'user', id: testEntityId('usr', 'user_remote_mcp') },
         acceptedAt: new Date().toISOString(),
       });
       const { revisionId } = saveWorkspaceMaterialRevision(db, {
@@ -1558,7 +1572,7 @@ for (const sensitivity of ['restricted', 'public', 'internal'] as const) {
         contentDigest: materialDigest(content),
         expectedRevisionId: null,
         requestId: randomUUID(),
-        actorId: testEntityId('usr', 'user_remote_mcp'),
+        actor: { kind: 'user', id: testEntityId('usr', 'user_remote_mcp') },
         acceptedAt: new Date().toISOString(),
       });
       const selectors = { workspaceId: DEMO_WORKSPACE_ID, materialId };
