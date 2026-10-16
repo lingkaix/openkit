@@ -7,9 +7,11 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import { PassThrough, Readable } from 'node:stream';
 import { createZstdCompress } from 'node:zlib';
 import {
@@ -902,9 +904,22 @@ export function importVerifiedWorkspace({
       assertWorkspaceArchiveFilePath(path);
       const target = join(workspaceRoot, path);
       mkdirSync(dirname(target), { recursive: true });
-      copyFileSync(source, target, constants.COPYFILE_EXCL);
-      if (/^threads\/[^/]+\/turns\/[^/]+\/context-package\/originals\//.test(path))
-        chmodSync(target, 0o444);
+      const byteLength = lstatSync(source).size;
+      const reservation = reserveCanonicalFileWrite(byteLength);
+      let release = false;
+      try {
+        copyFileSync(source, target, constants.COPYFILE_EXCL);
+        reservation?.recordWritten(byteLength);
+        if (/^threads\/[^/]+\/turns\/[^/]+\/context-package\/originals\//.test(path))
+          chmodSync(target, 0o444);
+        release = true;
+      } catch (error) {
+        rmSync(target, { force: true });
+        release = true;
+        throw error;
+      } finally {
+        if (release) reservation?.release();
+      }
     }
     for (const artifact of snapshot.artifacts) {
       if (artifact.content.format !== 'file') continue;

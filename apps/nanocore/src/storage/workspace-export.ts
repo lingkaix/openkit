@@ -29,6 +29,7 @@ import {
 import { parseJsoncObject } from '../config/jsonc.js';
 import { WorkerContextPackageManifestSchema } from '../context/worker-context-package.js';
 import { artifactFilePayloadPath, verifyArtifactFilePayload } from './artifacts/file-records.js';
+import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import {
   isSupportedWorkObservationType,
   parseWorkObservationRecord,
@@ -416,10 +417,10 @@ export function writeWorkspaceExportTree(
       for (const ordinal of turn.fileInputs.keys()) {
         const target = turnFilePayloadPath(input.exportRoot, turn.threadId, turn.id, ordinal);
         mkdirSync(dirname(target), { recursive: true });
-        copyFileSync(
+        copyPortableOriginal(
           turnFilePayloadPath(input.sourceWorkspaceRoot, turn.threadId, turn.id, ordinal),
           target,
-          constants.COPYFILE_EXCL
+          turn.fileInputs[ordinal]!.sizeBytes
         );
       }
     }
@@ -487,7 +488,7 @@ export function writeWorkspaceExportTree(
           throw new Error('Context Package original source integrity is inconsistent.');
         const target = join(input.exportRoot, 'workspace-files', relativePath);
         mkdirSync(dirname(target), { recursive: true });
-        copyFileSync(sourcePath, target, constants.COPYFILE_EXCL);
+        copyPortableOriginal(sourcePath, target, original.byteLength);
       }
     }
 
@@ -504,10 +505,10 @@ export function writeWorkspaceExportTree(
         });
         const target = artifactFilePayloadPath(input.exportRoot, artifact.id, artifact.version);
         mkdirSync(dirname(target), { recursive: true });
-        copyFileSync(
+        copyPortableOriginal(
           artifactFilePayloadPath(input.sourceWorkspaceRoot, artifact.id, artifact.version),
           target,
-          constants.COPYFILE_EXCL
+          artifact.content.byteLength
         );
         writeJson(join(artifactRoot, 'artifact.json'), artifact);
         continue;
@@ -1049,6 +1050,23 @@ export function verifyWorkspaceExportTree(
     artifactPayloadFiles,
     manifestDigest: digestText(manifestText),
   };
+}
+
+/** Copies an original only into this export's unpublished tree, retaining admission if cleanup fails. */
+function copyPortableOriginal(source: string, target: string, byteLength: number): void {
+  const reservation = reserveCanonicalFileWrite(byteLength);
+  let release = false;
+  try {
+    copyFileSync(source, target, constants.COPYFILE_EXCL);
+    reservation?.recordWritten(byteLength);
+    release = true;
+  } catch (error) {
+    rmSync(target, { force: true });
+    release = true;
+    throw error;
+  } finally {
+    if (release) reservation?.release();
+  }
 }
 
 /** Validates every query-owned trace path against the exported canonical Thread and Turn graph. */
