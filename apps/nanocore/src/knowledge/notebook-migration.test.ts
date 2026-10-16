@@ -227,10 +227,13 @@ describe('offline Workspace notebook preparation', () => {
     const sourceDigest = `sha256:${'a'.repeat(64)}`;
     const original = page({
       review_state: 'accepted',
-      source_refs: ['source:ks_capture', `source:ks_capture@${sourceDigest}`],
+      source_refs: [
+        'source:ks_123e4567-e89b-42d3-a456-426614174000',
+        `source:ks_123e4567-e89b-42d3-a456-426614174000@${sourceDigest}`,
+      ],
     });
     const success = prepare(original, {
-      registeredSources: new Map([['ks_capture', sourceDigest]]),
+      registeredSources: new Map([['ks_123e4567-e89b-42d3-a456-426614174000', sourceDigest]]),
     });
     expect(success.files).not.toBeNull();
     expect(
@@ -240,10 +243,13 @@ describe('offline Workspace notebook preparation', () => {
     expect(
       parseOkfDocument({ path: 'page.md', content: success.files!['page.md']! }).document
         ?.frontmatter.source_refs
-    ).toEqual(['source:ks_capture', `source:ks_capture@${sourceDigest}`]);
+    ).toEqual([
+      'source:ks_123e4567-e89b-42d3-a456-426614174000',
+      `source:ks_123e4567-e89b-42d3-a456-426614174000@${sourceDigest}`,
+    ]);
     for (const registeredSources of [
       new Map(),
-      new Map([['ks_capture', `sha256:${'b'.repeat(64)}`]]),
+      new Map([['ks_123e4567-e89b-42d3-a456-426614174000', `sha256:${'b'.repeat(64)}`]]),
     ]) {
       const failed = prepare(original, { registeredSources });
       expect(failed.files).toBeNull();

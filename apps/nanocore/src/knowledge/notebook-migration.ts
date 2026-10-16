@@ -40,6 +40,7 @@ export interface NotebookMigrationDiagnostic {
 /** Pure preparation result; null files forbid target initialization or live cutover. */
 export interface NotebookMigrationPreparation {
   readonly files: Readonly<Record<string, string>> | null;
+  /** Converted schema for inspection; only non-null files permit target initialization. */
   readonly scopeSchemaText: string | null;
   readonly originals: readonly NotebookMigrationOriginal[];
   readonly diagnostics: readonly NotebookMigrationDiagnostic[];
