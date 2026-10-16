@@ -227,6 +227,7 @@ These kinds retain their owning derivations and use the same text form as any in
 | Artifact Review | `arev` | `59bffd58-b464-5c91-917f-a066bc9ce605` |
 | Knowledge Review | `kr` | `5e78300b-9458-5519-b104-d47e32923804` |
 | CapabilityCall | `cap` | `b447467a-3e9c-5e36-b988-7b4961a0d817` |
+| Stopped-server recovery Token, only the producer declared by the remote-auth owner | `tok` | `e87fb49e-00c1-53f3-adbd-a5cf0de72bcc` |
 | AuditEvent | `aud` | `c3d8713d-557b-5bf8-aa9c-a28bf50775d4` |
 | PermissionDecision | `pd` | `bcf1702a-4e6a-59c6-86ac-75352a8fc41d` |
 | Knowledge retrieval trace | `krt` | `32a06e66-912c-53a4-b9d2-85b0a9edfe0b` |

@@ -145,8 +145,8 @@ const fields = [
     derived: false,
   },
   { kind: 'usr', schema: AuthUserSchema.shape.id, derived: false },
-  { kind: 'tok', schema: OpenKitAccessTokenRecordSchema.shape.tokenId, derived: false },
-  { kind: 'tok', schema: SetMyAdminAccessTokenDefaultRequestSchema.shape.tokenId, derived: false },
+  { kind: 'tok', schema: OpenKitAccessTokenRecordSchema.shape.tokenId, derived: true },
+  { kind: 'tok', schema: SetMyAdminAccessTokenDefaultRequestSchema.shape.tokenId, derived: true },
   { kind: 'nhtok', schema: NanoHostTransportTokenRecordSchema.shape.tokenId, derived: false },
   {
     kind: 'dep',

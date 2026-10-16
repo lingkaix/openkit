@@ -8,7 +8,7 @@ import { CoreClientProvider } from '../../app/core-client';
 import { GenerativePresentationView } from './GenerativePresentationView';
 
 const ITEM = GenerativeUiReferenceItemSchema.parse({
-  id: 'i-gen',
+  id: 'it_00000000-0000-7000-8000-000000000071',
   workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
   threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
   turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',

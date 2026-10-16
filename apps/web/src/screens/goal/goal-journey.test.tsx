@@ -138,9 +138,11 @@ it('shows current cards, exact proposed commitment, and linked Task completion w
   expect(await screen.findByRole('heading', { name: 'Cards' })).toBeVisible();
   expect(screen.getByRole('heading', { name: 'Proposed Plan' })).toBeVisible();
   expect(screen.getByText('Exact commitment')).toBeVisible();
-  expect(screen.getByRole('link', { name: /task1/ })).toHaveAttribute(
+  expect(
+    screen.getByRole('link', { name: /th_00000000-0000-7c8c-8c46-80c1c4a0361b/ })
+  ).toHaveAttribute(
     'href',
-    '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/task1'
+    '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-7c8c-8c46-80c1c4a0361b'
   );
   expect(screen.getByText('Open')).toBeVisible();
 });

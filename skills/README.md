@@ -27,3 +27,5 @@ Run `pnpm build:openkit` and `node --test tests/openkit-skill-interface.test.mjs
 Worker-side MCP, product Skill Catalog/version/candidate operations, Agent Plugins and AEP supply remain separate owners. The removed user-facing stdio and setup/loop/developer variants remain absent. Worker publication uses selected vendor MCP through its Gateway; the administrator CLI gains no worker tunnel or bearer.
 
 Doctor reports service availability separately from product-work readiness, update qualification and content-free maintenance safety. Unknown evidence stays unknown. The operations archive includes reviewed App-update helper bytes outside the Skill tree, and the operator verifies and replaces them before preparation. See the operations reference for checksum, atomic installation, status identity, refusal and recovery steps.
+
+Stopped-server recovery-envelope ingestion uses the shared canonical Token and User schemas, including the one owner-declared recovery Token UUIDv5 producer. Local credential storage persists only the secret field; request and identity metadata remain excluded from its stored payload.

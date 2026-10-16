@@ -144,22 +144,26 @@ function makeClient(
       'workspace.list': vi
         .fn()
         .mockResolvedValueOnce({
-          items: [{ id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' }].map((workspace) => ({
-            membershipStatus: 'active' as const,
-            accessCause: 'membership' as const,
-            workspace,
-            effectiveRole: 'owner',
-            membershipRevision: 1,
-            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-            registryRevision: 1,
-          })),
+          items: [{ id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' }].map(
+            (workspace) => ({
+              membershipStatus: 'active' as const,
+              accessCause: 'membership' as const,
+              workspace,
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+              registryRevision: 1,
+            })
+          ),
         })
         .mockImplementation(
           (overrides.operations?.['workspace.list'] as
             | CoreClient['operations']['workspace.list']
             | undefined) ??
             vi.fn().mockResolvedValue({
-              items: [{ id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' }].map((workspace) => ({
+              items: [
+                { id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' },
+              ].map((workspace) => ({
                 membershipStatus: 'active' as const,
                 accessCause: 'membership' as const,
                 workspace,
@@ -241,7 +245,7 @@ describe('Artifact Review S14', () => {
       },
     });
     renderApp(
-      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/artifact1',
+      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
       client
     );
 
@@ -286,7 +290,7 @@ describe('Artifact Review S14', () => {
       },
     });
     renderApp(
-      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/artifact1',
+      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
       client
     );
 
@@ -333,7 +337,7 @@ describe('Artifact Review S14', () => {
       },
     });
     renderApp(
-      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/artifact1',
+      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
       client
     );
 
@@ -443,7 +447,7 @@ describe('Artifact Review S14', () => {
       },
     });
     renderApp(
-      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/artifact1',
+      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
       client
     );
 
@@ -532,7 +536,7 @@ describe('Artifact Review S14', () => {
       },
     });
     renderApp(
-      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/artifact1',
+      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
       client
     );
 
@@ -570,7 +574,7 @@ describe('Artifact Review S14', () => {
       },
     });
     renderApp(
-      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/artifact1',
+      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
       client
     );
 
@@ -650,7 +654,7 @@ describe('Artifact Review S14', () => {
         },
       });
       renderApp(
-        '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/artifact1',
+        '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
         client
       );
 
@@ -680,7 +684,7 @@ describe('Artifact Review S14', () => {
       },
     });
     renderApp(
-      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/artifact1',
+      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
       client
     );
 
@@ -701,7 +705,7 @@ describe('Artifact Review S14', () => {
       },
     });
     renderApp(
-      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/artifact1',
+      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
       client
     );
 
@@ -727,7 +731,7 @@ describe('Artifact Review S14', () => {
       },
     });
     renderApp(
-      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/artifact1',
+      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
       client
     );
 

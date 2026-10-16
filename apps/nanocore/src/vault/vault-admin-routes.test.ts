@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { OperationId } from '@openkit/app-api-schemas';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createDefaultVaultUnlockState } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
@@ -129,7 +130,7 @@ describe('vault admin app API', () => {
       const original = await grantResponse.json();
       const exactTargets = {
         targetAgentId: randomUUID(),
-        targetAgentSessionId: randomUUID(),
+        targetAgentSessionId: allocateEntityId('as'),
         targetCapabilityId: 'mcp.list_tools',
       };
       const constrained = await send('vault.grant-create', {
@@ -182,6 +183,9 @@ describe('vault admin app API', () => {
       expect(response.status).toBe(200);
       const result = await response.json();
       expect(result.revokedGrant).toEqual({ ...original, status: 'revoked' });
+      expect(result.grant.grantId).toMatch(
+        /^grant_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+      );
       expect(result.grant).toMatchObject({
         vaultReferenceId: referenceId,
         targetAgentId,
@@ -213,7 +217,10 @@ describe('vault admin app API', () => {
           .all()
       ).toEqual([
         {
-          actor_json: JSON.stringify({ kind: 'user', id: 'user_local' }),
+          actor_json: JSON.stringify({
+            kind: 'user',
+            id: 'usr_00000000-0000-7000-8000-000000000001',
+          }),
           resource: `vault-grant:${original.grantId}`,
           vault_grant_id: result.grant.grantId,
           workspace_id: workspaceId,
@@ -225,7 +232,7 @@ describe('vault admin app API', () => {
       const rollback = await send('vault.grant-narrow', {
         workspaceId,
         grantId: result.grant.grantId,
-        constraints: { targetAgentSessionId: randomUUID() },
+        constraints: { targetAgentSessionId: allocateEntityId('as') },
       });
       expect(rollback.status).toBe(409);
       expect(getVaultGrant(coreDb, result.grant.grantId)).toEqual(result.grant);
@@ -550,9 +557,27 @@ describe('vault admin app API', () => {
             grantId: 'grant_00000000-0000-7d6a-8280-d44c8fe5aefa',
           },
         ],
-        ['vault.secret-revoke', { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', referenceId: 'vault_00000000-0000-7be8-b8c8-3d3005ec3f3c' }],
-        ['vault.grant-create', { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', referenceId: 'vault_00000000-0000-7be8-b8c8-3d3005ec3f3c' }],
-        ['vault.grant-revoke', { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', grantId: 'grant_00000000-0000-7d6a-8280-d44c8fe5aefa' }],
+        [
+          'vault.secret-revoke',
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            referenceId: 'vault_00000000-0000-7be8-b8c8-3d3005ec3f3c',
+          },
+        ],
+        [
+          'vault.grant-create',
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            referenceId: 'vault_00000000-0000-7be8-b8c8-3d3005ec3f3c',
+          },
+        ],
+        [
+          'vault.grant-revoke',
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            grantId: 'grant_00000000-0000-7d6a-8280-d44c8fe5aefa',
+          },
+        ],
         [
           'vault.grant-narrow',
           {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ActorRefSchema } from '../models/actor.js';
 import { ThreadSchema } from '../models/thread.js';
 import {
+  AccessTokenIdSchema,
   ArtifactIdSchema,
   AuditEventIdSchema,
   PermissionDecisionIdSchema,
@@ -38,6 +39,7 @@ describe('owned identifier admission boundaries', () => {
   });
   it('admits declared derived kinds and refuses derived forms for independent-only kinds', () => {
     expect(ArtifactIdSchema.safeParse(`ar_${uuid5}`).success).toBe(true);
+    expect(AccessTokenIdSchema.safeParse(`tok_${uuid5}`).success).toBe(true);
     expect(AuditEventIdSchema.safeParse(`aud_${uuid5}`).success).toBe(true);
     expect(PermissionDecisionIdSchema.safeParse(`pd_${uuid5}`).success).toBe(true);
     expect(UserIdSchema.safeParse(`usr_${uuid5}`).success).toBe(false);

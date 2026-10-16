@@ -72,6 +72,16 @@ describe('canonical entity identifiers', () => {
     expect(isEntityId('wsexp', id)).toBe(true);
     expect(isEntityId('wsexp', `wsexp_delete_${requestId}`)).toBe(false);
   });
+  it('binds a stopped-server recovery Token to the exact retained attempt', () => {
+    const requestId = '0190f4c8-0000-4000-8000-000000000001';
+    const id = deriveEntityId('tok', ['admin_recovery', requestId]);
+    expect(id).toBe('tok_9cd8c207-2268-556f-b473-c80470a61936');
+    expect(deriveEntityId('tok', ['admin_recovery', requestId])).toBe(id);
+    expect(
+      deriveEntityId('tok', ['admin_recovery', '0190f4c8-0000-4000-8000-000000000002'])
+    ).not.toBe(id);
+    expect(isEntityId('tok', id)).toBe(true);
+  });
   it('matches every accepted namespace using an independent UUIDv5 reference', () => {
     for (const [kind, expected] of Object.entries(NAMESPACE_VECTORS)) {
       expect(
@@ -146,6 +156,7 @@ describe('canonical entity identifiers', () => {
           'pd',
           'krt',
           'wsexp',
+          'tok',
         ].includes(kind)
       );
     }
@@ -166,6 +177,7 @@ describe('canonical entity identifiers', () => {
 });
 
 const NAMESPACE_VECTORS = {
+  tok: 'd14e6a11-830c-5eef-83b9-7367b7b0fa1a',
   wsexp: 'e93015e7-103e-580a-aa06-af89abbd402e',
   ws: '2a8ccba5-18ce-5efd-bbe0-6c02d144bcab',
   th: '8349ef16-494b-5dd6-83cd-1a0249344085',

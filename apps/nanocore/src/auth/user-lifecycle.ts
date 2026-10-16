@@ -1,3 +1,4 @@
+import { isEntityId } from '@openkit/protocol';
 import type { CoreDb } from '../storage/db.js';
 
 /** Disabled canonical-user projection returned by the lifecycle mutation. */
@@ -26,6 +27,7 @@ export interface DisableCanonicalUserResult {
  * @returns True only when the canonical user exists and is active.
  */
 export function isCanonicalUserActive(coreDb: CoreDb, userId: string): boolean {
+  if (!isEntityId('usr', userId)) return false;
   const row = coreDb.sqlite.prepare('SELECT status FROM users WHERE id = ?').get(userId) as
     | { status: 'active' | 'disabled' }
     | undefined;

@@ -14,8 +14,8 @@ const reference = {
   status: 'active',
 };
 const grant = {
-  grantId: 'grant_existing',
-  vaultReferenceId: 'vault_example',
+  grantId: 'grant_00000000-0000-7304-a220-7c8803035355',
+  vaultReferenceId: 'vault_00000000-0000-7665-b682-3d8ade3ac72a',
   status: 'active',
   targetAgentId: 'agent_review',
   targetAgentSessionId: null,
@@ -80,11 +80,13 @@ describe('Vault secret administration', () => {
     await userEvent.type(agent, 'agent_selected');
     await userEvent.type(screen.getByLabelText('Grant expiry (UTC)'), '2098-01-01T00:00:00.000Z');
     await userEvent.click(
-      screen.getByRole('button', { name: 'Create gateway grant for vault_example' })
+      screen.getByRole('button', {
+        name: 'Create gateway grant for vault_00000000-0000-7665-b682-3d8ade3ac72a',
+      })
     );
     await waitFor(() =>
       expect(operations['vault.grant-create']).toHaveBeenCalledWith({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         referenceId: reference.referenceId,
         targetAgentId: 'agent_selected',
         expiresAt: '2098-01-01T00:00:00.000Z',
@@ -99,14 +101,26 @@ describe('Vault secret administration', () => {
     const expiry = await screen.findByLabelText('Grant expiry (UTC)');
     await waitFor(() => expect(expiry).toBeEnabled());
     await userEvent.type(expiry, '2098-01-01T00:00:00.000Z');
-    await userEvent.click(screen.getByRole('button', { name: 'Narrow grant grant_existing' }));
+    await userEvent.click(
+      screen.getByRole('button', {
+        name: 'Narrow grant grant_00000000-0000-7304-a220-7c8803035355',
+      })
+    );
     await screen.findByText(/Vault request failed/);
     expect(cacheBytes(cache)).not.toContain(SECRET);
     expect(document.body.textContent).not.toContain(SECRET);
-    expect(screen.getByRole('button', { name: 'Narrow grant grant_existing' })).toBeDisabled();
+    expect(
+      screen.getByRole('button', {
+        name: 'Narrow grant grant_00000000-0000-7304-a220-7c8803035355',
+      })
+    ).toBeDisabled();
     await userEvent.click(screen.getByRole('button', { name: 'Refresh inventory' }));
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Narrow grant grant_existing' })).toBeEnabled()
+      expect(
+        screen.getByRole('button', {
+          name: 'Narrow grant grant_00000000-0000-7304-a220-7c8803035355',
+        })
+      ).toBeEnabled()
     );
     expect(operations['vault.grant-narrow']).toHaveBeenCalledTimes(1);
     expect(operations['vault.grant-create']).not.toHaveBeenCalled();
@@ -117,13 +131,15 @@ describe('Vault secret administration', () => {
     expect(screen.getByText('Visibility: gateway-only')).toBeInTheDocument();
     expect(screen.getByText('Lifetime: workspace')).toBeInTheDocument();
     expect(screen.getByText('Expiry: 2099-01-01T00:00:00.000Z')).toBeInTheDocument();
-    const narrow = screen.getByRole('button', { name: 'Narrow grant grant_existing' });
+    const narrow = screen.getByRole('button', {
+      name: 'Narrow grant grant_00000000-0000-7304-a220-7c8803035355',
+    });
     expect(narrow).toBeDisabled();
     await userEvent.type(screen.getByLabelText('Grant expiry (UTC)'), '2098-01-01T00:00:00.000Z');
     await userEvent.click(narrow);
     await waitFor(() =>
       expect(operations['vault.grant-narrow']).toHaveBeenCalledWith({
-        workspaceId: 'ws_demo',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         grantId: grant.grantId,
         constraints: { expiresAt: '2098-01-01T00:00:00.000Z' },
       })

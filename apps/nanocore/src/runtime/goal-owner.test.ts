@@ -726,7 +726,9 @@ describe('Public Goal command publication', () => {
     const person = {
       actor: { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' },
     };
-    const caller = { actor: { kind: 'session' as const, userId: 'another-writer' } };
+    const caller = {
+      actor: { kind: 'session' as const, userId: 'usr_00000000-0000-7000-8000-000000000099' },
+    };
     try {
       const created = await executeGoalOperation(
         'goal.create',

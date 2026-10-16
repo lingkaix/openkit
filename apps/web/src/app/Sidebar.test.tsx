@@ -78,9 +78,15 @@ beforeEach(() => useWorkspaceStore.setState({ currentWorkspaceId: null }));
 describe('conversation navigation sidebar', () => {
   it('preserves authoritative order, describes activity and state, and reaches the matching work surface', async () => {
     const kinds = ['goal', 'task', 'chat', 'unknown'] as const;
+    const threadIds = [
+      'th_00000000-0000-70ad-bcb6-3098e81b33d6',
+      'th_00000000-0000-70a0-9cde-4561f64881c6',
+      'th_00000000-0000-7c00-b9fc-382312fdf476',
+      'th_00000000-0000-7b52-ab1a-ac5e81206bc1',
+    ];
     const rows: ConversationNavigationResponse['items'] = kinds.map((activity, index) => ({
       thread: {
-        id: `th${index}`,
+        id: threadIds[index]!,
         workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
         name: `Conversation ${index}`,
         preview: '',
@@ -129,7 +135,9 @@ describe('conversation navigation sidebar', () => {
         'conversation.navigation': list,
 
         'workspace.list': async () => ({
-          items: [{ id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Workspace', kind: 'general' }].map((workspace) => ({
+          items: [
+            { id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Workspace', kind: 'general' },
+          ].map((workspace) => ({
             membershipStatus: 'active' as const,
             accessCause: 'membership' as const,
             workspace,
@@ -364,7 +372,11 @@ describe('conversation navigation sidebar', () => {
             {
               membershipStatus: 'active' as const,
               accessCause: 'membership' as const,
-              workspace: { id: 'ws_00000000-0000-70b3-a3ac-118462639d82', name: 'My notes', kind: 'general' },
+              workspace: {
+                id: 'ws_00000000-0000-70b3-a3ac-118462639d82',
+                name: 'My notes',
+                kind: 'general',
+              },
               effectiveRole: 'owner',
               membershipRevision: 1,
               ownerUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
@@ -373,7 +385,11 @@ describe('conversation navigation sidebar', () => {
             {
               membershipStatus: 'active' as const,
               accessCause: 'membership' as const,
-              workspace: { id: 'ws_00000000-0000-706d-b903-72e27d4276af', name: 'My quick chat', kind: 'quick-chat' },
+              workspace: {
+                id: 'ws_00000000-0000-706d-b903-72e27d4276af',
+                name: 'My quick chat',
+                kind: 'quick-chat',
+              },
               effectiveRole: 'owner',
               membershipRevision: 2,
               ownerUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
@@ -382,7 +398,11 @@ describe('conversation navigation sidebar', () => {
             {
               membershipStatus: null,
               accessCause: 'administrator' as const,
-              workspace: { id: 'ws_00000000-0000-7934-b833-fdbc51d3c0a2', name: 'Someone else', kind: 'quick-chat' },
+              workspace: {
+                id: 'ws_00000000-0000-7934-b833-fdbc51d3c0a2',
+                name: 'Someone else',
+                kind: 'quick-chat',
+              },
               effectiveRole: null,
               membershipRevision: null,
               ownerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
@@ -391,7 +411,11 @@ describe('conversation navigation sidebar', () => {
             {
               membershipStatus: 'active' as const,
               accessCause: 'membership' as const,
-              workspace: { id: 'ws_00000000-0000-7f6f-8712-e3b3efe0bcb4', name: 'Read together', kind: 'general' },
+              workspace: {
+                id: 'ws_00000000-0000-7f6f-8712-e3b3efe0bcb4',
+                name: 'Read together',
+                kind: 'general',
+              },
               effectiveRole: 'viewer',
               membershipRevision: 1,
               ownerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
@@ -400,7 +424,11 @@ describe('conversation navigation sidebar', () => {
             {
               membershipStatus: 'active' as const,
               accessCause: 'membership' as const,
-              workspace: { id: 'ws_00000000-0000-7978-8378-5b5c5e93f76d', name: 'Shared notes', kind: 'general' },
+              workspace: {
+                id: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
+                name: 'Shared notes',
+                kind: 'general',
+              },
               effectiveRole: 'editor',
               membershipRevision: 3,
               ownerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',

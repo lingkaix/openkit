@@ -146,6 +146,22 @@ describe('stopped-server administrator recovery', () => {
     ).toEqual({ count: 1 });
     reopened.sqlite.close();
   });
+  it('refuses a noncanonical retained User before discovery output', () => {
+    const dataRoot = createRecoveryDataRoot();
+    const db = openCoreDb(dataRoot);
+    try {
+      db.sqlite.prepare('UPDATE users SET id = ? WHERE id = ?')
+        .run('user_legacy', 'usr_00000000-0000-7a88-a815-8b9385f27463');
+    } finally {
+      db.sqlite.close();
+    }
+    const output: string[] = [];
+    expect(() => runOpenKitOperatorCli(['admin', 'recovery-users', '--data-root', dataRoot], {
+      write: (line) => output.push(line),
+    })).toThrow(expect.objectContaining({ code: 'recovery_required' }));
+    expect(output).toEqual([]);
+    expect(existsSync(dataRootLockPath(dataRoot))).toBe(false);
+  });
   it('lists only redacted active canonical Users and releases the data-root lock', () => {
     const dataRoot = createRecoveryDataRoot();
     const output: string[] = [];
@@ -201,7 +217,9 @@ describe('stopped-server administrator recovery', () => {
         ownerUserId: 'usr_00000000-0000-7a88-a815-8b9385f27463',
       });
       expect(envelope.requestId).toMatch(/^[0-9a-f-]{36}$/u);
-      expect(envelope.tokenId).toMatch(/^[0-9a-f-]{36}$/u);
+      expect(envelope.tokenId).toMatch(
+        /^tok_[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+      );
       expect(envelope.token).toMatch(/^okt_[A-Za-z0-9_-]+$/u);
       expect(statSync(outputPath).mode & 0o777).toBe(0o600);
       expect(tokenRow.token_hash).toMatch(/^sha256:/u);
@@ -561,6 +579,24 @@ describe('stopped-server administrator recovery', () => {
   it('fails closed for contradictory Token, Audit, file, and retry-input states', () => {
     const cases = [
       {
+        name: 'different-canonical-token',
+        mutate(
+          _coreDb: ReturnType<typeof openCoreDb>,
+          fixture: ReturnType<typeof completeRecoveryFixture>
+        ) {
+          writeFileSync(
+            fixture.outputPath,
+            `${JSON.stringify({
+              ...fixture.envelope,
+              tokenId: 'tok_00000000-0000-5000-8000-000000000001',
+            })}\n`,
+            'utf8'
+          );
+        },
+        tokenCount: 1,
+        auditCount: 1,
+      },
+      {
         name: 'token-hash-mismatch',
         mutate(
           coreDb: ReturnType<typeof openCoreDb>,
@@ -637,13 +673,15 @@ describe('stopped-server administrator recovery', () => {
 
     for (const testCase of cases) {
       const fixture = completeRecoveryFixture(`${testCase.name}.json`);
-      const originalFile = readFileSync(fixture.outputPath, 'utf8');
       const coreDb = openCoreDb(fixture.dataRoot);
       try {
         testCase.mutate(coreDb, fixture);
       } finally {
         coreDb.sqlite.close();
       }
+      const retainedFile = existsSync(fixture.outputPath)
+        ? readFileSync(fixture.outputPath, 'utf8')
+        : null;
 
       expect(
         () =>
@@ -656,7 +694,7 @@ describe('stopped-server administrator recovery', () => {
       if (testCase.name === 'retained-token-with-lost-file-and-audit') {
         expect(existsSync(fixture.outputPath), testCase.name).toBe(false);
       } else {
-        expect(readFileSync(fixture.outputPath, 'utf8'), testCase.name).toBe(originalFile);
+        expect(readFileSync(fixture.outputPath, 'utf8'), testCase.name).toBe(retainedFile);
       }
 
       const after = openCoreDb(fixture.dataRoot);

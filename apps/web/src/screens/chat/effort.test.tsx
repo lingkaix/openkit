@@ -432,9 +432,9 @@ describe.each([
                 ? 'th_00000000-0000-75c2-bada-0a01c17d153e'
                 : 'th_00000000-0000-70a0-9cde-4561f64881c6',
           }),
-          'artifact.list': vi
-            .fn()
-            .mockResolvedValue({ items: [{ id: 'brief', version: 2, title: 'Brief' }] }),
+          'artifact.list': vi.fn().mockResolvedValue({
+            items: [{ id: 'ar_00000000-0000-7bc1-85a3-6c0dfcf6ab5d', version: 2, title: 'Brief' }],
+          }),
         },
         {
           'conversation.targets': getConversationTargets,

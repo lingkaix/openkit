@@ -116,7 +116,7 @@ function configuredNanoHost(slotRoot: string) {
         secretPath: join(slotRoot, 'B.token'),
       },
     },
-    deploymentId: 'deploy_primary',
+    deploymentId: 'dep_00000000-0000-7bdd-bdc3-910a52eaec87',
     identityId: 'integration_nanohost_primary',
     rendezvousUrl: 'https://nanocore.example:8443',
   };
@@ -320,7 +320,11 @@ describe('NanoHost transport App API safe-sink routes', () => {
           name: 'identity-mismatch',
           value: 'integration_nanohost_stale',
         },
-        { column: 'deployment_id', name: 'deployment-mismatch', value: 'deploy_stale' },
+        {
+          column: 'deployment_id',
+          name: 'deployment-mismatch',
+          value: 'dep_00000000-0000-712b-9705-a4a780652f9e',
+        },
       ]) {
         coreDb.sqlite
           .prepare(`UPDATE nanohost_runtime_targets SET ${mismatch.column} = ?`)
@@ -408,7 +412,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
       expect(JSON.stringify(body)).not.toMatch(/okt_/);
       expect(body).toMatchObject({
         identityId: 'integration_nanohost_primary',
-        deploymentId: 'deploy_primary',
+        deploymentId: 'dep_00000000-0000-7bdd-bdc3-910a52eaec87',
         targetSlot: 'A',
         slotResult: { slot: 'A', status: 'written', issuanceGeneration: 1 },
       });
@@ -422,7 +426,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
           .all()
       ).toEqual([
         {
-          deployment_id: 'deploy_primary',
+          deployment_id: 'dep_00000000-0000-7bdd-bdc3-910a52eaec87',
           identity_id: 'integration_nanohost_primary',
           status: 'active',
         },
@@ -464,7 +468,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         'token_id=tok_00000000-0000-79cc-9890-eba854d7c87b',
         'issuance_generation=1',
         'identity_id=integration_nanohost_primary',
-        'deployment_id=deploy_primary',
+        'deployment_id=dep_00000000-0000-7bdd-bdc3-910a52eaec87',
         '',
       ].join('\n');
       writeFileSync(join(slotRoot, 'A.token'), occupiedSecret, { mode: 0o600 });
@@ -1254,7 +1258,11 @@ describe('NanoHost transport App API safe-sink routes', () => {
       applyMigrations(coreDb);
       insertTokenOwnerUser(coreDb);
       writeFileSync(blocked, 'not-a-directory');
-      insertActiveNanoHostIdentity(coreDb, 'integration_nanohost_primary', 'deploy_primary');
+      insertActiveNanoHostIdentity(
+        coreDb,
+        'integration_nanohost_primary',
+        'dep_00000000-0000-7bdd-bdc3-910a52eaec87'
+      );
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
         ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
@@ -1327,7 +1335,9 @@ describe('NanoHost transport App API safe-sink routes', () => {
       insertTokenOwnerUser(coreDb);
       const config = configuredNanoHost(slotRoot);
       const retainedIdentityId = otherIdentity ? 'integration_nanohost_other' : config.identityId;
-      const retainedDeploymentId = otherDeployment ? 'deploy_other' : config.deploymentId;
+      const retainedDeploymentId = otherDeployment
+        ? 'dep_00000000-0000-7706-9387-f2c9db8deac7'
+        : config.deploymentId;
       insertActiveNanoHostIdentity(coreDb, retainedIdentityId, retainedDeploymentId);
       const retained = createNanoHostTransportTokenRecord(coreDb, {
         deploymentId: retainedDeploymentId,
@@ -1391,7 +1401,9 @@ describe('NanoHost transport App API safe-sink routes', () => {
       ).toEqual(historyBefore);
       expect(historyBefore).toEqual([
         {
-          deployment_id: otherDeployment ? 'deploy_other' : config.deploymentId,
+          deployment_id: otherDeployment
+            ? 'dep_00000000-0000-7706-9387-f2c9db8deac7'
+            : config.deploymentId,
           owner_nanohost_identity_id: retainedIdentityId,
           status: 'active',
           token_id: retained.tokenId,
@@ -1752,7 +1764,7 @@ describe('definition-derived deployment administration cutover', () => {
         deploymentId: f.config.deploymentId,
         expiresAt: '2999-01-01T00:00:00.000Z',
         ownerNanoHostIdentityId: f.config.identityId,
-        responsibleServerAdminActorId: 'user_owner',
+        responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       });
       const native = createNanoHostOperationImplementations({
         coreDb: f.coreDb,
@@ -1937,16 +1949,16 @@ describe('definition-derived deployment administration cutover', () => {
       }
       const readonly = createOpenKitAccessTokenRecord(f.coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'workspace-readonly',
-        workspaceIds: ['ws_demo'],
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       });
       insertActiveNanoHostIdentity(f.coreDb, f.config.identityId, f.config.deploymentId);
       const transport = createNanoHostTransportTokenRecord(f.coreDb, {
         deploymentId: f.config.deploymentId,
         expiresAt: '2999-01-01T00:00:00.000Z',
         ownerNanoHostIdentityId: f.config.identityId,
-        responsibleServerAdminActorId: 'user_owner',
+        responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       });
       const tokensBefore = f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all();
       for (const denied of [
@@ -2221,8 +2233,11 @@ describe('definition-derived deployment administration cutover', () => {
         ownerNanoHostIdentityId: f.config.identityId,
         responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       });
-      const tokenId = refusal === 'unproved-slot' ? retained.tokenId : 'token_missing';
-      const companionTokenId = 'token_missing';
+      const tokenId =
+        refusal === 'unproved-slot'
+          ? retained.tokenId
+          : 'nhtok_00000000-0000-7000-8000-000000000999';
+      const companionTokenId = 'nhtok_00000000-0000-7000-8000-000000000999';
       writeFileSync(f.config.credentialSlots.A.secretPath, retained.secret, { mode: 0o600 });
       writeFileSync(
         f.config.credentialSlots.A.companionPath,

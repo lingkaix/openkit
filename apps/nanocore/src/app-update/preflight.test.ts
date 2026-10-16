@@ -16,6 +16,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { observeAppUpdatePreflight } from './preflight.js';
@@ -68,7 +69,7 @@ describe('content-free deployment maintenance preflight', () => {
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: executionThread.id,
-          turnId: `turn_${phase}`,
+          turnId: testEntityId('tu', `turn_${phase}`),
           turnInput: 'Private admitted input',
           requestedAgentId: 'agent_codex_host',
           profileRef: 'agent_codex_host',

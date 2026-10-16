@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -25,6 +25,25 @@ function insertUser(coreDb: ReturnType<typeof openCoreDb>): void {
 }
 
 describe('canonical user lifecycle', () => {
+  it.each([
+    'user_legacy',
+    'ws_00000000-0000-7000-8000-000000000001',
+    'usr_00000000-0000-5000-8000-000000000001',
+  ])('does not authorize a malformed retained User identity %s', (userId) => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-user-kind-'));
+    const coreDb = openCoreDb(root);
+    try {
+      applyMigrations(coreDb);
+      insertUser(coreDb);
+      coreDb.sqlite.prepare('UPDATE users SET id = ?').run(userId);
+      expect(isCanonicalUserActive(coreDb, userId)).toBe(false);
+      expect(coreDb.sqlite.prepare('SELECT status FROM users WHERE id = ?').get(userId)).toEqual({ status: 'active' });
+    } finally {
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('fails closed for missing and disabled canonical users', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-user-active-')));
 
@@ -54,7 +73,7 @@ describe('canonical user lifecycle', () => {
       coreDb.sqlite
         .prepare(
           `INSERT INTO session (id, expires_at, token, created_at, updated_at, user_id)
-           VALUES ('session_1', ?, 'session-secret', ?, ?, 'usr_00000000-0000-745a-abae-746e1401d9c4')`
+           VALUES ('auth_00000000-0000-7000-8000-000000000001', ?, 'session-secret', ?, ?, 'usr_00000000-0000-745a-abae-746e1401d9c4')`
         )
         .run(Date.now() + 60_000, Date.now(), Date.now());
       const active = createOpenKitAccessTokenRecord(coreDb, {

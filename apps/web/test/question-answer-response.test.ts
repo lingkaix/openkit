@@ -16,8 +16,8 @@ it.each([
       observed.push({ request: () => ({ method: () => request.method }), url: () => request.url });
       return Response.json({
         requestId: 'question_1',
-        workspaceId: 'ws1',
-        threadId: 'th1',
+        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+        threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
         state: 'resolved',
         resolution: 'answered',
         ending: null,
@@ -25,8 +25,8 @@ it.each([
     },
   });
   const result = await client.operations['question.answer']({
-    workspaceId: 'ws1',
-    threadId: 'th1',
+    workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+    threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
     userInputRequestId: 'question_1',
     requestId: name,
     answers: { tone: ['Concise'] },

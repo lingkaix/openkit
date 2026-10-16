@@ -32,7 +32,12 @@ describe('createAuthMiddleware', () => {
   it('passes through local-mode requests and exposes the local actor', async () => {
     const app = new Hono();
 
-    app.use('/api/*', createAuthMiddleware('local'));
+    app.use(
+      '/api/*',
+      createAuthMiddleware('local', undefined, {
+        localUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      })
+    );
     app.get('/api/private', (c) => c.json(c.get('actor')));
 
     const res = await app.request('/api/private');

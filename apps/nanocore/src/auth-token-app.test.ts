@@ -10,6 +10,7 @@ import type { BetterAuthServer } from './auth/middleware.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 
 const OWNER_SESSION_HEADER = 'x-openkit-test-owner-session';
@@ -1319,12 +1320,7 @@ describe('personal administrator-token canonical-user access', () => {
     const coreDb = openCoreDb(dataRoot);
     try {
       applyMigrations(coreDb);
-      insertCanonicalUser(
-        coreDb,
-        'usr_00000000-0000-7000-8000-000000000001',
-        'Local',
-        'local@example.com'
-      );
+      ensureLocalUser(coreDb);
       insertTokenOwnerUser(coreDb);
       for (const [tokenId, ownerUserId] of [
         ['tok_00000000-0000-7c1a-914e-7b3f8202307f', 'usr_00000000-0000-7000-8000-000000000001'],
@@ -1343,10 +1339,12 @@ describe('personal administrator-token canonical-user access', () => {
       const listed = await app.request(...operationRequest('token.my-admin-list', {}, {}));
       expect(listed.status).toBe(200);
       const body = await listed.json();
-      expect(body.items.map((item: { tokenId: string }) => item.tokenId).sort()).toEqual([
-        'tok_00000000-0000-7c1a-914e-7b3f8202307f',
-        'tok_00000000-0000-738c-a01b-b50e38d149f1',
-      ]);
+      expect(body.items.map((item: { tokenId: string }) => item.tokenId).sort()).toEqual(
+        [
+          'tok_00000000-0000-7c1a-914e-7b3f8202307f',
+          'tok_00000000-0000-738c-a01b-b50e38d149f1',
+        ].sort()
+      );
       expect(JSON.stringify(body)).not.toMatch(/okt_|tokenHash|secret/);
       const selected = await app.request(
         ...operationRequest(

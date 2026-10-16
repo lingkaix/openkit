@@ -1063,7 +1063,7 @@ export function createVaultOperationImplementations(
         return coreDb.sqlite.transaction(() => {
           const result = narrowVaultGrant(coreDb, {
             grantId: source.grantId,
-            replacementGrantId: randomUUID(),
+            replacementGrantId: allocateEntityId('grant'),
             constraints: input.constraints,
           });
           recordVaultAdminAuditEvent({

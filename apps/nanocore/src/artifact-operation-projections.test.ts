@@ -32,7 +32,7 @@ function fixture(member = true, acceptingProductWork = true, privateOrigin = fal
   ensureLocalUser(coreDb);
   coreDb.sqlite
     .prepare(
-      "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, last_seen_at) SELECT 'usr_00000000-0000-7ed5-9b62-226e0a66887f', kind, display_name, 'foreign@local.openkit.invalid', email_verified, created_at, updated_at, last_seen_at FROM users WHERE id = 'usr_00000000-0000-7000-8000-000000000001'"
+      "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, last_seen_at) SELECT 'usr_00000000-0000-7ed5-9b62-226e0a66887f', 'human', display_name, 'foreign@local.openkit.invalid', email_verified, created_at, updated_at, last_seen_at FROM users WHERE id = 'usr_00000000-0000-7000-8000-000000000001'"
     )
     .run();
   const store = createDemoStore({ dataRoot });

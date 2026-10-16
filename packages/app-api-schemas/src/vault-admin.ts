@@ -1,5 +1,10 @@
-import { AgentIdSchema, AgentSessionIdSchema } from '@openkit/protocol';
-import { VaultGrantIdSchema, VaultReferenceIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
+import {
+  AgentIdSchema,
+  AgentSessionIdSchema,
+  VaultGrantIdSchema,
+  VaultReferenceIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import { addRawSecretIssues } from './raw-secrets.js';
 import { InjectionVisibilitySchema, WorkspaceVaultGrantSchema } from './vault-injection.js';
