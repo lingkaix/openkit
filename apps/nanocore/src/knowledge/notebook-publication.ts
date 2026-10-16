@@ -94,19 +94,32 @@ export async function publishWorkspaceNotebook(
   const scope = { workspaceId: request.workspaceId, actorId: dependencies.producer.id };
   dependencies.revalidate();
 
-  const project = (revision: string): NotebookPublication => {
+  const project = (revision: string, evidence: KnowledgeNotebookAdmission): NotebookPublication => {
     const candidate = dependencies.notebook.readRevision(revision);
     if (
       candidate.parentRevision !== request.baseRevision ||
       candidate.metadata.changeRequest.requestId !== request.requestId ||
       candidate.metadata.changeRequest.inputDigest !== inputDigest ||
       candidate.metadata.summary !== request.summary ||
-      !isDeepStrictEqual(candidate.metadata.producer, dependencies.producer)
+      !isDeepStrictEqual(candidate.metadata.producer, dependencies.producer) ||
+      evidence.baseRevision !== candidate.parentRevision ||
+      !isDeepStrictEqual(evidence.authority, candidate.metadata.authority) ||
+      !isDeepStrictEqual(evidence.sourceReferences, candidate.metadata.sourceReferences)
     )
       throw new NotebookError('recovery_required');
     // A saved unpublished candidate is not a completed publication.
     dependencies.notebook.history({ revision, limit: 1 });
     const base = dependencies.notebook.readRevision(request.baseRevision);
+    const expected = { ...base.files };
+    for (const { path, content } of request.changes) {
+      if (content === null) delete expected[path];
+      else expected[path] = content;
+    }
+    if (
+      Object.keys(expected).length !== Object.keys(candidate.files).length ||
+      Object.entries(expected).some(([path, content]) => candidate.files[path] !== content)
+    )
+      throw new NotebookError('recovery_required');
     const changedPageIds = [
       ...new Set([...Object.keys(base.files), ...Object.keys(candidate.files)]),
     ]
@@ -148,7 +161,7 @@ export async function publishWorkspaceNotebook(
         !isDeepStrictEqual(admitted.ownerScope, ownerScope)
       )
         throw new NotebookError('recovery_required');
-      return project(receipt.response.id);
+      return project(receipt.response.id, admitted);
     },
     execute: () => {
       for (const prior of admissions(dependencies, request, 'knowledge.notebook.admit')) {
@@ -229,7 +242,7 @@ export async function publishWorkspaceNotebook(
       audit('knowledge.notebook.admit');
       dependencies.notebook.publish({ baseRevision: request.baseRevision, candidateRevision });
       audit(OPERATION);
-      return project(candidateRevision);
+      return project(candidateRevision, evidence);
     },
   });
 }

@@ -201,4 +201,30 @@ describe('Notebook publication through existing Audit and command receipts', () 
       f.workspaceDb.sqlite.prepare('SELECT count(*) AS count FROM audit_events').get()
     ).toEqual({ count: 0 });
   });
+
+  it.each([
+    'authority',
+    'sourceReferences',
+    'baseRevision',
+  ] as const)('rejects Audit %s facts that contradict the exact published commit', async (field) => {
+    const f = fixture();
+    const first = await f.publish();
+    const rows = f.workspaceDb.sqlite
+      .prepare(
+        'SELECT audit_event_id AS id, notebook_admission_json AS admission FROM audit_events WHERE request_id = ?'
+      )
+      .all(f.request.requestId) as { id: string; admission: string }[];
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      const value = JSON.parse(row.admission);
+      if (field === 'authority') value.authority.instructionReference = 'invented instruction';
+      if (field === 'sourceReferences') value.sourceReferences = ['source:invented'];
+      if (field === 'baseRevision') value.baseRevision = '0'.repeat(40);
+      f.workspaceDb.sqlite
+        .prepare('UPDATE audit_events SET notebook_admission_json = ? WHERE audit_event_id = ?')
+        .run(JSON.stringify(value), row.id);
+    }
+    await expect(f.publish()).rejects.toMatchObject({ code: 'recovery_required' });
+    expect(f.notebook.publishedRevision()).toBe(first.notebookRevision);
+  });
 });
