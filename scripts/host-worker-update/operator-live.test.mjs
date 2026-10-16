@@ -181,7 +181,7 @@ async function fixture(t) {
     },
     worker: {
       prepare: {
-        administrationThreadId: 'private-administration-thread',
+        administrationThreadId: 'th_0190f4c8-0000-7000-8000-00000000000a',
         requestId: '44444444-4444-4444-8444-444444444444',
         configuration: { fileId: 'agents/worker.agent.jsonc', expectedRevision: index },
         target: { kind: 'agent', agentId: 'worker' },

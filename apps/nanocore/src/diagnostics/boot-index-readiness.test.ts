@@ -54,7 +54,7 @@ function entrypointMigrationPhase(rebuild: () => unknown[]): BootPhase {
     'readDataRootLayoutMarker',
     'requireBootValue',
     'listAppliedMigrationIds',
-    `let coreDb; const dataRoot = '/fixture'; const dataRootLock = {};\n${javascript}\nreturn phase;`
+    `let coreDb; const dataRoot = '/fixture'; const dataRootLock = {}; const freshCoreInitialization = false;\n${javascript}\nreturn phase;`
   )(
     vi.fn(() => ({})),
     vi.fn(),

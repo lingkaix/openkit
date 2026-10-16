@@ -1,4 +1,5 @@
-import { SubmitConversationResponseSchema } from '@openkit/app-api-schemas';
+import { StartTaskModeResponseSchema } from '@openkit/app-api-schemas';
+import { createRequestId } from '@openkit/core-client';
 import { expect, type Page, test } from '@playwright/test';
 import { isQuestionAnswerResponse } from './_lib/question-answer-response.js';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
@@ -206,35 +207,34 @@ async function materialRevision(
 }
 
 /**
- * Starts one visible Task Turn and observes its emitted question after ordinary Turn completion.
+ * Admits direct Task work in the explicitly bound Thread and observes its terminal question.
  *
  * @param page Browser page connected to the isolated Web app.
- * @param threadId Thread that owns the Turn.
+ * @param threadId Explicitly bound Thread that owns the Task Turn.
  * @param input Exact user-visible Task request.
- * @returns Resolves after a 202 response, visible question, and verified terminal Turn prove non-vacuity.
- * @throws When browser submission, the Task response, question rendering, or terminal proof fails.
+ * @returns Resolves after a 202 response, visible question, and verified terminal Turn.
+ * @throws When Task admission, question rendering, or terminal proof fails.
  */
 async function startTaskTurn(page: Page, threadId: string, input: string): Promise<void> {
-  await page.goto(`${stack?.webUrl}/tasks/ws_00000000-0000-7000-8000-000000000001/${threadId}`);
-  await page.getByRole('textbox', { name: 'Message' }).fill(input);
-  const turnResponse = page.waitForResponse(
-    (response) =>
-      response.request().method() === 'POST' &&
-      new URL(response.url()).pathname === '/api/app/operations/conversation.submit'
-  );
-  await page.getByRole('button', { name: /^Send message$/ }).click();
-  const response = await turnResponse;
+  if (!stack) throw new Error('The isolated Web stack is not running.');
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  const requestId = createRequestId();
+  const response = await page.request.post(`${stack.coreUrl}/api/app/operations/task.start`, {
+    headers: { 'x-openkit-request-id': requestId },
+    data: { workspaceId, threadId, input, requestId },
+  });
   const responseBody = await response.text();
   expect(response.status(), `Task Turn start response: ${responseBody}`).toBe(202);
-  const submission = SubmitConversationResponseSchema.parse(JSON.parse(responseBody));
-  expect(submission.receivingThreadId).toBe(threadId);
+  const submission = StartTaskModeResponseSchema.parse(JSON.parse(responseBody));
+  expect(submission.turn).toMatchObject({ workspaceId, threadId });
+  await page.goto(`${stack.webUrl}/tasks/${workspaceId}/${threadId}`);
   await expect(page.getByText('Which summary tone should the simulator use?')).toBeVisible({
     timeout: 15_000,
   });
   await expect(page.getByText("Couldn't send that message. Try again.")).toHaveCount(0);
   const turn = await getJson<{ status: string; contextPackageDigest: string | null }>(
     '/api/app/operations/turn.read',
-    { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId, turnId: submission.turn.id }
+    { workspaceId, threadId, turnId: submission.turn.id }
   );
   expect(turn.status).toBe('completed');
   expect(turn.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);

@@ -36,7 +36,7 @@ function params() {
     },
     worker: {
       prepare: {
-        administrationThreadId: 'private-administration-thread',
+        administrationThreadId: 'th_0190f4c8-0000-7000-8000-00000000000a',
         requestId: '22222222-2222-4222-8222-222222222222',
         configuration: {
           expectedRevision: `sha256:${'d'.repeat(64)}`,

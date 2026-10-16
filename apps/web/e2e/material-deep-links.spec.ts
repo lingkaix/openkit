@@ -1,3 +1,4 @@
+import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
 import { expect, test } from '@playwright/test';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
 
@@ -8,12 +9,14 @@ test.afterEach(async () => {
   stack = null;
 });
 
-/** Browser routing must preserve the exact owner tuple, including literal percent escapes. */
+/** Browser routing must preserve the exact owner tuple, using canonical identifiers. */
 test('opens and reloads the exact Artifact review from Action Center', async ({ page }) => {
   stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
-  const workspaceId = 'ws_/?#%_%2F';
-  const threadId = 'th_/?#%_%2F';
-  const artifactId = 'ar_/?#%_%2F';
+  const workspaceId = allocateEntityId('ws');
+  const threadId = allocateEntityId('th');
+  const artifactId = allocateEntityId('ar');
+  const turnId = allocateEntityId('tu');
+  const reviewId = deriveEntityId('arev', [workspaceId, artifactId, 1]);
   const at = '2026-10-15T00:00:00.000Z';
   const contentDigest = `sha256:${'a'.repeat(64)}`;
   const artifactReads: unknown[] = [];
@@ -37,12 +40,12 @@ test('opens and reloads the exact Artifact review from Action Center', async ({ 
       json: {
         items: [
           {
-            id: 'artifact-review:review1',
+            id: `artifact-review:${reviewId}`,
             kind: 'artifact_review',
             workspaceId,
             threadId,
-            turnId: 'turn1',
-            reviewId: 'review1',
+            turnId: turnId,
+            reviewId: reviewId,
             artifactId,
             artifactVersion: 1,
             title: 'Review exact output',
@@ -52,10 +55,10 @@ test('opens and reloads the exact Artifact review from Action Center', async ({ 
             recommendedAction: 'Inspect the output.',
             source: {
               type: 'artifact_review',
-              reviewId: 'review1',
+              reviewId: reviewId,
               workspaceId,
               threadId,
-              turnId: 'turn1',
+              turnId: turnId,
               artifactId,
               artifactVersion: 1,
             },
@@ -79,7 +82,7 @@ test('opens and reloads the exact Artifact review from Action Center', async ({ 
         id: artifactId,
         workspaceId,
         threadId,
-        turnId: 'turn1',
+        turnId: turnId,
         kind: 'report',
         title: 'Exact worker output',
         status: 'ready',
@@ -88,7 +91,7 @@ test('opens and reloads the exact Artifact review from Action Center', async ({ 
         content: { format: 'text', body: 'Exact output bytes.' },
         contentDigest,
         lastMutationRequestId: 'request1',
-        origin: { kind: 'turn-output', threadId, turnId: 'turn1', requestId: 'request1' },
+        origin: { kind: 'turn-output', threadId, turnId: turnId, requestId: 'request1' },
         createdAt: at,
         updatedAt: at,
       },
@@ -101,12 +104,12 @@ test('opens and reloads the exact Artifact review from Action Center', async ({ 
         reviews: [
           {
             workspaceId,
-            reviewId: 'review1',
+            reviewId: reviewId,
             artifactId,
             artifactVersion: 1,
             contentDigest,
             sourceThreadId: threadId,
-            sourceTurnId: 'turn1',
+            sourceTurnId: turnId,
             sourceAgentId: 'agent1',
             materialProposal: null,
             decision: null,
