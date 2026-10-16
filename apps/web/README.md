@@ -265,6 +265,8 @@ The live Tier-A **Catalog** screen projects selected-Workspace Skill, MCP, and A
 
 The live Chat surface renders `generative-ui-reference` Thread Items through the eight native A2UI types mapped onto OpenKit primitives.
 
+Generative refresh and action results preserve changed scalar fields from the rendered surface as a local draft. Surface construction has no ref side effect, so React Strict Mode cannot direct draft reads to a discarded surface. The presentation regression runs inside the same Strict Mode as the app.
+
 ### Debug
 
 The Settings **Debug** surface contains the component catalog and is the single Web placement for future developer-facing inspection panels after their contracts and authorization are accepted.
