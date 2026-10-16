@@ -441,7 +441,7 @@ function ExactArtifactReview({
             </div>
           )}
 
-          {decide.isError && !conflict ? (
+          {review.decision === null && decide.isError && !conflict ? (
             <ErrorBanner
               message="The review decision could not be confirmed. Inspect the review or retry the same decision."
               onRetry={onRefresh}
