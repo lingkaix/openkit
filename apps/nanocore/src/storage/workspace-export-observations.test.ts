@@ -441,10 +441,9 @@ describe('work observation portable closure', () => {
         expect(catalog.skills.entries).toEqual([]);
         expect(catalog.skills.versions).toEqual([]);
         expect(catalog.skills.pins).toEqual([]);
-        expect(
-          findWorkspaceConfig(loadRuntimeConfig(dataRoot), workspaceId)?.config.assistant?.resources
-            ?.skillIds ?? []
-        ).toEqual([]);
+        const importedConfig = findWorkspaceConfig(loadRuntimeConfig(dataRoot), workspaceId);
+        expect(importedConfig).not.toBeNull();
+        expect(importedConfig!.config.workspace.assistant?.resources?.skillIds ?? []).toEqual([]);
       }
       expect(
         readWorkObservations(db, { threadId: demo.thread.id, turnId: turn.id })[0]?.payload
