@@ -957,11 +957,17 @@ function replayTaskModeCommand(
     }
     const workspaceDb = repositoryWorkspaceDb(workspaceId);
     try {
+      const goal = readGoalView(store, workspaceDb, handoff.goalId).goal;
+      if (goal && goal.workspaceId !== workspaceId) {
+        throw new Error('Task escalation Goal contradicts its Workspace.');
+      }
       return StartTaskModeResponseSchema.parse({
         state: 'escalated-to-goal',
         turn: currentTurn,
         evidence: taskModeEvidenceForTurn(store, workspaceDb, workspaceId, threadId, currentTurn),
-        escalation: { targetMode: 'goal', goalId: handoff.goalId, reason: handoff.summary },
+        escalation: goal
+          ? { targetMode: 'goal', goalId: goal.goalId, reason: handoff.summary }
+          : null,
       });
     } finally {
       workspaceDb.sqlite.close();

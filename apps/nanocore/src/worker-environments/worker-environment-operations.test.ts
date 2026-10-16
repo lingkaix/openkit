@@ -724,9 +724,11 @@ describe('Worker environment operations', () => {
       },
     });
     addOtherMember(fixture);
-    fixture.coreDb.sqlite
-      .prepare(`UPDATE workspace_registry SET owner_user_id = 'user_other' WHERE workspace_id = ?`)
-      .run(fixture.workspaceId);
+    expect(
+      fixture.coreDb.sqlite
+        .prepare('UPDATE workspace_registry SET owner_user_id = ? WHERE workspace_id = ?')
+        .run(testEntityId('usr', 'user_other'), fixture.workspaceId).changes
+    ).toBe(1);
 
     const status = await fixture.operations.status(
       { actor: fixture.actor, workspaceId: fixture.workspaceId },

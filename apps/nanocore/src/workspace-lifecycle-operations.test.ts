@@ -403,14 +403,14 @@ it.each([
     expect(
       f.coreDb.sqlite
         .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-        .get(f.workspaceId, 'target')
+        .get(f.workspaceId, testEntityId('usr', 'target'))
     ).toBeUndefined();
     expect(
       listServerAuditEvents(f.coreDb).filter((event) => event.requestId === requestId)
     ).toEqual([
       expect.objectContaining({
-        actor: { kind: 'user', id: 'usr_00000000-0000-7e74-a359-c1b196ff8ccb' },
-        subject: { kind: 'user', id: 'usr_00000000-0000-7e9d-8ec8-69386ebe4dc2' },
+        actor: { kind: 'user', id: testEntityId('usr', 'target') },
+        subject: { kind: 'user', id: testEntityId('usr', 'member') },
       }),
     ]);
     f.coreDb.sqlite
@@ -432,7 +432,7 @@ it.each([
     expect(
       f.coreDb.sqlite
         .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-        .get(f.workspaceId, 'target')
+        .get(f.workspaceId, testEntityId('usr', 'target'))
     ).toBeUndefined();
     const transfer = await f.invoke(
       'workspace.ownership-transfer',
@@ -468,7 +468,7 @@ it.each([
         deniedId,
         {
           coreId: 'server',
-          actorId: 'target',
+          actorId: testEntityId('usr', 'target'),
           targetWorkspaceId: f.workspaceId,
           targetUserId: testEntityId('usr', 'member'),
         },
@@ -555,7 +555,10 @@ it('refuses HTTP user.disable during closed product admission without disabling 
   const f = fixture(() => readiness);
   try {
     const requestId = randomUUID();
-    const before = f.coreDb.sqlite.prepare('SELECT * FROM users WHERE id = ?').get('target');
+    const before = f.coreDb.sqlite
+      .prepare('SELECT * FROM users WHERE id = ?')
+      .get(testEntityId('usr', 'target'));
+    expect(before).toMatchObject({ id: testEntityId('usr', 'target'), status: 'active' });
     const response = await f.app.request(
       ...operationRequest(
         'user.disable',
@@ -565,9 +568,9 @@ it('refuses HTTP user.disable during closed product admission without disabling 
     );
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ code: 'product_work_unavailable' });
-    expect(f.coreDb.sqlite.prepare('SELECT * FROM users WHERE id = ?').get('target')).toEqual(
-      before
-    );
+    expect(
+      f.coreDb.sqlite.prepare('SELECT * FROM users WHERE id = ?').get(testEntityId('usr', 'target'))
+    ).toEqual(before);
     expect(
       f.store.getCommandRequest(
         'user.disable',
@@ -630,7 +633,7 @@ it('preserves administrator actor, original deletion owner, exact retry and reco
       listServerAuditEvents(f.coreDb).filter((event) => event.action === 'workspace.delete')
     ).toEqual([
       expect.objectContaining({
-        actor: { kind: 'user', id: 'usr_00000000-0000-7e74-a359-c1b196ff8ccb' },
+        actor: { kind: 'user', id: testEntityId('usr', 'target') },
       }),
     ]);
     const ownerToken = createOpenKitAccessTokenRecord(f.coreDb, {
