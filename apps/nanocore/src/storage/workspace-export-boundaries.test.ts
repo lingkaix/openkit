@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -36,6 +37,7 @@ import { FsStore } from '../lib/store.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
@@ -136,6 +138,7 @@ function createBoundaryStore(dataRoot: string): FsStore {
   const store = new FsStore({ dataRoot });
   const demo = createDemoWorkspaceForUser('usr_00000000-0000-7000-8000-000000000001');
   store.importWorkspaceSnapshot({
+    ...notebookImportFixture({ workspaceId: demo.workspace.id, knowledge: demo.knowledge }),
     workspace: demo.workspace,
     threads: [demo.thread],
     knowledge: demo.knowledge,

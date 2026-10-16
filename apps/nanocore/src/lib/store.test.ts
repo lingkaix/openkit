@@ -17,31 +17,11 @@ import { openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { userDbPath, workspaceDbPath } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { parseCanonicalWorkspaceHistory } from '../storage/workspace-file-records.js';
-import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
+import { seedDemoWorkspace } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { FsStore } from './store.js';
 
 const LOCAL_ACTOR = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
-
-/**
- * Creates the legacy project workspace fixture used by store tests.
- *
- * @param store Store that should own the fixture.
- */
-function seedDemoWorkspace(store: FsStore): void {
-  const demo = createDemoWorkspaceForUser('usr_00000000-0000-7000-8000-000000000001');
-
-  store.importWorkspaceSnapshot({
-    workspace: demo.workspace,
-    threads: [demo.thread],
-    knowledge: demo.knowledge,
-    turns: [],
-    itemRevisions: [],
-    artifacts: [],
-    agentSessions: [],
-    turnEvents: [],
-  });
-}
 
 /**
  * Finds serialized files containing one forbidden value.

@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { createHash } from 'node:crypto';
 import {
   copyFileSync,
@@ -20,6 +21,7 @@ import { listRecoverableWorkerCheckpoints } from '../runtime/worker-checkpoints.
 import { listExistingWorkspaceDatabaseScopes, openBootVerifiedWorkspaceDb } from '../storage/db.js';
 import { listAppliedNativeMigrationIds } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { FsStore } from './store.js';
 
 /**
@@ -369,6 +371,7 @@ function fixture() {
   const timestamp = '2026-07-12T00:00:00.000Z';
   const publish = () =>
     store.importWorkspaceSnapshot({
+      ...notebookImportFixture({ workspaceId: workspaceId, knowledge: [] }),
       workspace: {
         id: workspaceId,
         name: 'Durable import',

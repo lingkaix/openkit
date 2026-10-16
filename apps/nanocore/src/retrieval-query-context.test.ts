@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -27,6 +28,7 @@ import {
   retrieveWorkspaceKnowledge,
 } from './storage/index-rebuild.js';
 import { testEntityId } from './test-support/entity-ids.js';
+import { notebookImportFixture } from './test-support/notebook-import.js';
 
 const ACTOR = {
   kind: 'user',
@@ -915,6 +917,10 @@ function createFixture(
   const store = new FsStore({ dataRoot });
   const workspace = importedFrom
     ? store.importWorkspaceSnapshot({
+        ...notebookImportFixture({
+          workspaceId: testEntityId('ws', `imported-${label}`),
+          knowledge: [],
+        }),
         workspace: WorkspaceRecordSchema.parse({
           id: testEntityId('ws', `imported-${label}`),
           name: label,
