@@ -173,6 +173,7 @@ import {
   readCanonicalFile,
   readCanonicalTextFile,
   readPublishedTurnFileRecords,
+  readWorkspaceTurnEvents,
   writeFileAtomic,
 } from './workspace-file-records.js';
 import {
@@ -1314,7 +1315,7 @@ export function createVerifiedWorkspaceExport({
     workspaceMaterialRevisions: workspaceRowFamilies.workspaceMaterialRows.revisions,
     workspaceMaterials: workspaceRowFamilies.workspaceMaterialRows.materials,
     agentSessions: store.listWorkspaceAgentSessions(workspaceId),
-    turnEvents: turns.map((turn) => [turn.id, store.getTurnEventsForExport(turn.id)]),
+    turnEvents: turns.map((turn) => [turn.id, readWorkspaceTurnEvents(workspaceRoot, turn)]),
     portableFileState,
     recurringHistory,
     ...(dataSourceCatalog ? { dataSourceCatalog } : {}),
