@@ -194,14 +194,6 @@ The failure phase is allowlisted to `pre-transport`, `transport`, `provider-resp
 
 Correlation includes known request, Workspace, Thread, Turn and CapabilityCall ids, plus the existing logical-dispatch correlation and attempt index when a member was reached. Missing values are omitted; no id is minted or storage queried for this log. Raw exception text, stack traces, provider-private codes, schemas, Tool arguments, prompts, outputs and credentials are prohibited. Failed or absent logging leaves closeout and the existing public `provider_call_failed` / `internal_inference_failed` projection unchanged. These diagnostics have no recovery or restart lifecycle beyond the existing optional log sink.
 
-### Failed Worker Inference Logical Calls
-
-Worker inference emits one best-effort `worker_inference_failed` diagnostic at failed logical-call closeout or the first committed failure frame or stream-read failure. The fixed projection carries the observed phase, existing closed Gateway failure kind, elapsed milliseconds, whether output began, and existing request, Workspace, Thread, Turn, CapabilityCall and dispatch correlation. Phases are `selection`, `dispatch`, `stream-prepare` and `stream-read`; they name an observed seam and do not assert a root cause. Missing correlation is omitted rather than reconstructed.
-
-An actually exposed upstream HTTP status can come from the existing classified failure or the selected model's diagnostic transport observer. The observer admits only integer rejection statuses 400–599, including when stock terminal wrapping loses that status. Attempt start clears diagnostic evidence; a late observation from an earlier attempt cannot describe its successor. HTTP observation alone does not change failure classification, settlement, retry or failover eligibility. Local error-envelope status and status inferred from exception text are excluded. Provider-private codes, exception text, bodies, prompts, outputs, headers and credentials are excluded.
-
-Repeated terminal frames or a subsequent reader failure do not emit a second diagnostic. Successful calls emit no failure diagnostic. Missing or failed logging cannot change public errors, SSE, durable CapabilityCall closeout or Turn outcome. This is a projection through the existing optional process log sink, with no new durable state, recovery action or restart lifecycle.
-
 ## Test And CI Contract
 
 - The system under test emits the same production telemetry with `deployment.environment.name=test`; tests do not maintain a second instrumentation implementation.
