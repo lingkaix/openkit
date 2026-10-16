@@ -167,7 +167,7 @@ function addOtherMember(fixture: Fixture): void {
       `INSERT INTO workspace_members (
         workspace_id, user_id, status, invitation_id,
         joined_at, removed_at, revision, created_at, updated_at
-      ) VALUES (?, 'usr_00000000-0000-73d4-904a-d4c4b905df7c', 'active', NULL, ?, NULL, 1, ?, ?)`
+      ) VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)`
     )
     .run(fixture.workspaceId, testEntityId('usr', 'user_other'), NOW, NOW, NOW);
 }
