@@ -368,8 +368,15 @@ describe('Workspace JSON transfer cutover', () => {
     const sourceWeb = sessionApp(source);
     const targetWeb = sessionApp(target);
     const content = 'Web session archive: café and exact retained content.';
+    const notebookResponse = await sourceWeb.request(
+      ...request('/api/app/operations/knowledge.list', { workspaceId: DEMO_WORKSPACE_ID })
+    );
+    expect(notebookResponse.status, await notebookResponse.clone().text()).toBe(200);
+    const { notebookRevision } = await notebookResponse.json();
     const [createPath, createInit] = request('/api/app/operations/knowledge.create', {
       workspaceId: DEMO_WORKSPACE_ID,
+      baseRevision: notebookRevision,
+      knowledgePageId: 'web-archive-proof',
       title: 'Web archive proof',
       kind: 'project-context',
       content,
