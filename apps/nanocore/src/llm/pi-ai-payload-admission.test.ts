@@ -187,7 +187,9 @@ describe('final payload local admission', () => {
     });
     await Promise.race([
       entered.pending,
-      completion.then(() => { throw new Error('The serializer completed before its admission barrier.'); }),
+      completion.then(() => {
+        throw new Error('The serializer completed before its admission barrier.');
+      }),
     ]);
     expect(f.bodies).toEqual([]);
     expect(captured).toMatchObject({ outputReserveTokens: 32 });

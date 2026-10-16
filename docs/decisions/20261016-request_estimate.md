@@ -17,8 +17,6 @@ S39 owns the rule. The final selected payload after stock serialization and nati
 
 The engineer chose a small local estimate and an explicit error over additional network latency or loss of existing routes. Large input data stays with its original owner and uses bounded previews and on-demand reads. Independent source byte, line, envelope and aggregate bounds, authorization and original-versus-delivered identities are unchanged.
 
-## Superseded Requirement
-
 S39 previously required: "Use a model-specific tokenizer or a documented conservative model-specific bound; never use `ceil(bytes/4)` as a hard token limit." The model-specific accounting requirement in the 2026-10-15 Large Files And Model Context decision is superseded by this ruling for request admission. This ruling does not describe the estimate as a hard token proof and does not change source or output accounting.
 
 ## Rejected Alternatives
@@ -31,7 +29,7 @@ S39 previously required: "Use a model-specific tokenizer or a documented conserv
 
 Use a local exact counter when an existing route supplies one cheaply. Revisit the estimate if supported requests show material false refusals or repeated actionable context errors. Do not create a measurement campaign or new lifecycle to qualify ordinary admission.
 
-## Owners
+## Affected Owners
 
 - [Worker Context Package](../specs/20260703-worker_context_package.md).
 - [Internal Agent Runtime](../specs/20260813-internal_agent_runtime.md).
