@@ -10,7 +10,7 @@ The engineer assigned P20 to lane L-AK after P19. Implement ordinary Knowledge, 
 
 ## Accepted Owners
 
-The [Knowledge Core](../../../core/knowledge.md), [Knowledge Store](../../../specs/20260703-knowledge_store_implementation.md), [Personal Memory And Scoped Knowledge Learning](../../../specs/20260909-personal_memory_and_knowledge_learning.md), [Knowledge Notebook Editing And Publication](../../../specs/20260909-knowledge_notebook_editing.md), Knowledge Manager and Skill Catalog specifications own this work. Their accepted scope, fixed-base Git publication and source admission contracts apply together. Existing Workspace page writers and readers must cut over together; no second writable content authority is permitted.
+The [Knowledge Core](../../core/knowledge.md), [Knowledge Store](../../specs/20260703-knowledge_store_implementation.md), [Personal Memory And Scoped Knowledge Learning](../../specs/20260909-personal_memory_and_knowledge_learning.md), [Knowledge Notebook Editing And Publication](../../specs/20260909-knowledge_notebook_editing.md), Knowledge Manager and Skill Catalog specifications own this work. Their accepted scope, fixed-base Git publication and source admission contracts apply together. Existing Workspace page writers and readers must cut over together; no second writable content authority is permitted.
 
 ## Checkpoint
 
