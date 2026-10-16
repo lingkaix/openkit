@@ -217,11 +217,11 @@ describe('Notebook history and restore', () => {
     await screen.findByRole('region', { name: 'Historical notes/one.md' });
     f.denyHistory();
     await user.click(screen.getByRole('button', { name: 'Refresh history' }));
-    await waitFor(() => expect(f.diffs).toHaveLength(2));
-    await waitFor(() => expect(screen.queryByRole('radio', { name: 'Earlier human edit' })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Unavailable revision')).toHaveLength(2));
     expect(screen.queryByRole('region', { name: 'Historical notes/one.md' })).not.toBeInTheDocument();
     expect(screen.queryByText('Current exact text.')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Prepare restore' })).not.toBeInTheDocument();
+    await waitFor(() => expect(f.diffs).toHaveLength(2));
     expect(f.restores).toHaveLength(0);
   });
 

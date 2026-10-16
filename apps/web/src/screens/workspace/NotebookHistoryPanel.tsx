@@ -70,6 +70,7 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
     retry: false,
     refetchOnMount: 'always',
   });
+  // A refreshed denial must also hide bytes cached by the independent diff query.
   const preview =
     history.isSuccess &&
     !history.isFetching &&
