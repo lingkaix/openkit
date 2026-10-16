@@ -592,7 +592,9 @@ describe('administrator runtime cleanup view', () => {
       }
       return prepare(sql);
     });
-    await expect(async () => read(input)).rejects.toThrow('injected authority storage failure');
+    await expect(async () => read(input)).rejects.toThrow(
+      'Administrator cleanup authority storage is unavailable.'
+    );
   });
 
   it.each(TABLES)('keeps independent source observations when %s is unavailable', async (table) => {

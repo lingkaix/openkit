@@ -6907,7 +6907,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       ...rest: unknown[]
     ) {
       const filename = typeof this.name === 'string' ? this.name : '';
-      if (filename.endsWith('workspace.sqlite') && sql.includes('__drizzle_migrations')) {
+      if (
+        filename.endsWith('workspace.sqlite') &&
+        sql.includes('__drizzle_migrations') &&
+        /^\s*select\b/i.test(sql)
+      ) {
         throw new Error('injected workspace migration failure');
       }
       return originalPrepare.call(this, sql, ...rest);
@@ -6948,7 +6952,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           workspaceRoots: [],
         })
       ).rejects.toThrow(
-        /Failed to apply workspace native Drizzle migrations:[\s\S]*injected workspace migration failure/
+        /Failed to apply workspace native Drizzle migrations: injected workspace migration failure/
       );
 
       expect(store.getTurnById(turn.id)).toMatchObject({ status: 'failed' });
