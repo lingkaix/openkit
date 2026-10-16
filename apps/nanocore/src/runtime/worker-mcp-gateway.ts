@@ -117,7 +117,12 @@ export interface WorkerMcpGatewayServerInput {
   /** Cancellation signal for this operation only. */
   readonly signal?: AbortSignal;
   /** Current strict catalog entry. */
-  readonly server: ResolvedWorkspaceMcpServer;
+  readonly server: Pick<
+    ResolvedWorkspaceMcpServer,
+    'id' | 'scope' | 'transport' | 'timeoutMs' | 'packageRootDigest' | 'catalogDigest'
+  >;
+  /** Trusted one-off preview paths; never accepted from a Worker or public operation payload. */
+  readonly temporaryContext?: { readonly dataDirectory: string; readonly packageRoot?: string };
   /** Workspace that owns the selected catalog entry. */
   readonly workspaceId: string;
 }
@@ -514,7 +519,10 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       if (pluginEnvironment.PLUGIN_DATA) {
         mkdirSync(pluginEnvironment.PLUGIN_DATA, { recursive: true });
       }
-      const cwdSource = input.server.transport.cwd ?? pluginEnvironment.PLUGIN_ROOT;
+      const cwdSource =
+        input.server.transport.cwd ??
+        pluginEnvironment.PLUGIN_ROOT ??
+        input.temporaryContext?.dataDirectory;
       const child = spawn(
         process.execPath,
         [
@@ -1010,6 +1018,13 @@ function pluginOwnedEnvironment(
   coreDb: CoreDb | undefined,
   input: WorkerMcpGatewayServerInput
 ): Record<string, string> {
+  if (input.temporaryContext)
+    return {
+      PLUGIN_DATA: input.temporaryContext.dataDirectory,
+      ...(input.temporaryContext.packageRoot
+        ? { PLUGIN_ROOT: input.temporaryContext.packageRoot }
+        : {}),
+    };
   if (!coreDb) return {};
   const catalog = loadResourceCatalog(
     coreDb.dataRoot,
