@@ -90,7 +90,7 @@ export interface OperationInvocationDependencies {
   /** Restricted App-update host adapter and audit database. */
   readonly appUpdateServices?: Parameters<typeof createAppUpdateOperationImplementations>[0];
 
-  /** Existing process-local automation owner, shared across public projections. */
+  /** Durable recurrence owner sharing Core storage and the application's mutation fence. */
   readonly automationStore?: AutomationStore;
   /** Closes existing Worker MCP sessions when deletion fences a Workspace. */
   /** Closes only Server-origin MCP connections across consuming Workspaces. */

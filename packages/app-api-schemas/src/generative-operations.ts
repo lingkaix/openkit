@@ -172,7 +172,7 @@ export const GENERATIVE_UI_OPERATION_DEFINITIONS = {
     binding: 'json',
     returnsOneTimeSecret: false,
     description: 'Publish one admitted native Generative UI presentation.',
-    inputSchema: PublishGenerativePresentationRequestSchema.extend({
+    inputSchema: PublishGenerativePresentationRequestSchema.safeExtend({
       ...workspace,
       requestId: RequestIdSchema,
     }),

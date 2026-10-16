@@ -16,7 +16,11 @@ import {
   WorkspaceDeletionResponseSchema,
   type WorkspaceDeletionState,
 } from '@openkit/app-api-schemas';
-import { listServerAuditEvents, recordServerAuditEvent } from './audit-events.js';
+import {
+  listServerAuditEvents,
+  listSqliteAuditEvents,
+  recordServerAuditEvent,
+} from './audit-events.js';
 import type { Actor } from './auth/identity.js';
 import {
   hasWorkspaceDeletionRetryAuthority,
@@ -448,12 +452,27 @@ async function advanceWorkspaceDeletion(input: {
     verifyDeletionArtifacts(input.dataRoot, request);
     removeSupersededWorkspaceExports(input.dataRoot, request);
     const terminal = input.coreDb.sqlite.transaction(() => {
+      const recurringAudit = listSqliteAuditEvents(input.coreDb.sqlite, input.workspaceId, true);
       const registry = completeWorkspaceDeletion({
         coreDb: input.coreDb,
         workspaceId: input.workspaceId,
         originalOwnerUserId: request.originalOwnerUserId,
         expectedRegistryRevision: request.expectedRegistryRevision + 1,
       });
+      // The verified closure and recovery export now retain this exact Core-homed graph.
+      // Remove children first; a failure rolls back the terminal registry transition too.
+      for (const table of [
+        'recurring_occurrences',
+        'recurring_expired_ranges',
+        'recurring_schedules',
+      ])
+        input.coreDb.sqlite
+          .prepare(`DELETE FROM ${table} WHERE workspace_id = ?`)
+          .run(input.workspaceId);
+      for (const event of recurringAudit)
+        input.coreDb.sqlite
+          .prepare('DELETE FROM audit_events WHERE workspace_id = ? AND audit_event_id = ?')
+          .run(input.workspaceId, event.id);
       const audit = recordServerAuditEvent({
         action: 'workspace.delete',
         actor: { id: input.actorId, kind: 'user' },

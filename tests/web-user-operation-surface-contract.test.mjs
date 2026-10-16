@@ -8,10 +8,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 263;
+const EXPECTED_CATALOG_SIZE = 264;
 const EXPECTED_SERVER_SIZE = 76;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 185;
+const EXPECTED_INCLUDED_SIZE = 186;
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
 const SERVER_WEB_OPERATIONS = {
@@ -20,17 +20,13 @@ const SERVER_WEB_OPERATIONS = {
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
-  ['automation.create', 'R092'],
-  ['automation.delete', 'R092'],
   ['workspace.delete', 'R049'],
   ['workspace.archive-download', 'R008'],
   ['knowledge.proposal.draft', 'R070'],
   ['workspace.archive-import-dry-run', 'R008'],
   ['workspace.archive-import', 'R008'],
-  ['automation.list', 'R092'],
   ['workspace.deleted-recover', 'R049'],
   ['knowledge.proposal.reverse', 'R072'],
-  ['automation.update', 'R092'],
 ]);
 
 /** Published Tier-A titles from the live surface catalog. Unpublished B/C names are rejected. */
@@ -91,10 +87,11 @@ const WEB_OPERATION_GROUPS = {
     'scheduler.cancel': { disposition: 'live', surface: 'Recovery' },
   },
   automation: {
-    'automation.create': { disposition: 'roadmap', roadmap: 'R092' },
-    'automation.delete': { disposition: 'roadmap', roadmap: 'R092' },
-    'automation.list': { disposition: 'roadmap', roadmap: 'R092' },
-    'automation.update': { disposition: 'roadmap', roadmap: 'R092' },
+    'automation.create': { disposition: 'live', surface: 'Automations' },
+    'automation.delete': { disposition: 'live', surface: 'Automations' },
+    'automation.list': { disposition: 'live', surface: 'Automations' },
+    'automation.history': { disposition: 'live', surface: 'Automations' },
+    'automation.update': { disposition: 'live', surface: 'Automations' },
   },
   Catalog: {
     'catalog.mcp-create': { disposition: 'live', surface: 'Catalog' },

@@ -497,8 +497,15 @@ describe('worker MCP routes', () => {
       workspaceMutationAdmission: new WorkspaceMutationAdmission(),
     });
     const rpcErrors: unknown[] = [];
+    const nativeRequests: { update?: Request } = {};
     const fetchMcp = async (input: RequestInfo | URL, init?: RequestInit) => {
-      const response = await app.fetch(new Request(input, init));
+      const request = new Request(input, init);
+      if (request.method === 'POST') {
+        const body = await request.clone().json();
+        if (body.method === 'tools/call' && body.params?.name === 'kernel_records_update')
+          nativeRequests.update = request.clone();
+      }
+      const response = await app.fetch(request);
       if (response.headers.get('content-type')?.includes('application/json')) {
         const payload = (await response.clone().json()) as { error?: unknown };
         if (payload.error) rpcErrors.push(payload.error);
@@ -636,6 +643,96 @@ describe('worker MCP routes', () => {
       } finally {
         refusalDb.sqlite.close();
       }
+      // This selected package reaches real native commands through the authenticated MCP relay.
+      const created = await sessionClient.callTool({
+        name: 'kernel_apps_create',
+        arguments: {
+          format: 'openkit.light-app',
+          schemaVersion: 1,
+          title: 'Worker native relay proof',
+          purpose: 'Preserve local-only membership annotations.',
+          collections: [
+            {
+              name: 'notes',
+              type: 'base',
+              description: 'Worker-owned local notes.',
+              indexes: [],
+              fields: [
+                { name: 'note', type: 'text', required: true, description: 'A local note.' },
+              ],
+            },
+          ],
+        },
+      });
+      const appProof = created.structuredContent as { appId: string; schemaRevision: number };
+      const createdRecord = await sessionClient.callTool({
+        name: 'kernel_records_create',
+        arguments: {
+          appId: appProof.appId,
+          collection: 'notes',
+          schemaRevision: appProof.schemaRevision,
+          data: { note: 'Before Worker update' },
+        },
+      });
+      const recordProof = createdRecord.structuredContent as { id: string; revision: number };
+      const mutation = {
+        appId: appProof.appId,
+        collection: 'notes',
+        recordId: recordProof.id,
+        schemaRevision: appProof.schemaRevision,
+        expectedRecordRevision: recordProof.revision,
+        data: { note: 'After Worker update' },
+      };
+      const updated = await sessionClient.callTool({
+        name: 'kernel_records_update',
+        arguments: mutation,
+      });
+      expect(updated.structuredContent).toMatchObject({
+        id: recordProof.id,
+        revision: 2,
+        data: { note: 'After Worker update' },
+      });
+      expect(nativeRequests.update).toBeDefined();
+      const replayResponse = await fetchMcp(nativeRequests.update!.clone());
+      expect(replayResponse.status).toBe(200);
+      expect((await replayResponse.json()).result).toEqual(updated);
+      await expect(
+        sessionClient.callTool({ name: 'kernel_records_update', arguments: mutation })
+      ).rejects.toMatchObject({ code: -32600, data: { code: 'conflict' } });
+      coreDb.sqlite
+        .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = ?")
+        .run(new Date().toISOString(), 'usr_00000000-0000-7000-8000-000000000001');
+      try {
+        await expect(
+          sessionClient.callTool({
+            name: 'kernel_records_update',
+            arguments: {
+              ...mutation,
+              expectedRecordRevision: 2,
+              data: { note: 'Denied Worker overwrite' },
+            },
+          })
+        ).rejects.toMatchObject({ code: -32600, data: { code: 'mcp-denied' } });
+      } finally {
+        coreDb.sqlite
+          .prepare("UPDATE users SET status = 'active', disabled_at = NULL WHERE id = ?")
+          .run('usr_00000000-0000-7000-8000-000000000001');
+      }
+      const readProof = await sessionClient.callTool({
+        name: 'kernel_records_get',
+        arguments: {
+          appId: appProof.appId,
+          collection: 'notes',
+          recordId: recordProof.id,
+          schemaRevision: appProof.schemaRevision,
+        },
+      });
+      expect(readProof.structuredContent).toMatchObject({
+        id: recordProof.id,
+        revision: 2,
+        schemaRevision: appProof.schemaRevision,
+        data: { note: 'After Worker update' },
+      });
       const pending = await workClient.callTool({
         name: 'work_request_input',
         arguments: {
@@ -730,6 +827,7 @@ describe('worker MCP routes', () => {
       await statelessClient.close().catch(() => undefined);
       await workerMcpGateway.close();
       coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
@@ -2680,7 +2778,9 @@ describe('worker MCP routes', () => {
         expect(response.status, await response.clone().text()).toBe(202);
         return response;
       });
-      const [firstResponse, firstRun] = await Promise.all([admittedFirstRequest, driveTask(true)]);
+      // Start the Harness dispatch budget after durable admission, not during request preparation.
+      const firstResponse = await admittedFirstRequest;
+      const firstRun = await driveTask(true);
       expect(firstResponse.status, await firstResponse.clone().text()).toBe(202);
       const firstTask =
         ownerCommand === 'conversation.submit'

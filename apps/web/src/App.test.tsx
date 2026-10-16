@@ -152,12 +152,11 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
 
   it('keeps unpublished app surfaces out of navigation', async () => {
     await renderAt('/');
-    for (const label of ['Overview', 'Knowledge', 'Artifacts', 'Agents']) {
+    for (const label of ['Overview', 'Knowledge', 'Artifacts', 'Agents', 'Automations']) {
       expect(screen.getByRole('button', { name: label })).toBeInTheDocument();
     }
     expect(screen.queryByRole('button', { name: 'Chat' })).not.toBeInTheDocument();
     expect(screen.queryByText('Concept demos')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Automations' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Generative UI' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Components' })).not.toBeInTheDocument();
   });
