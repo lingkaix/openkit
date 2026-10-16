@@ -2489,6 +2489,10 @@ export function createConversationService({
     const workspaceConfig = findWorkspaceConfig(snapshot, workspaceId)?.config;
     const userConfig = snapshot.userConfigs.find((entry) => entry.userId === userId)?.config;
     const assistant = quickChatSelection(userId, workspaceId);
+    const personalWorkThread =
+      requestedThreadId !== null &&
+      store.getWorkspace(workspaceId).kind === 'personal' &&
+      store.getThread(workspaceId, requestedThreadId).visibility === 'workspace';
     const knowledgeManager = internalRoleSelection('knowledge-manager', userId, workspaceId);
     const targets: Array<z.infer<typeof ConversationTargetCatalogSchema>['targets'][number]> = [
       {
@@ -2496,8 +2500,12 @@ export function createConversationService({
         kind: 'assistant',
         label: 'Assistant',
         description: 'OpenKit Core Assistant.',
-        availability: assistant ? 'available' : 'unavailable',
-        unavailableReason: assistant ? null : 'No admitted logical model is configured.',
+        availability: assistant && !personalWorkThread ? 'available' : 'unavailable',
+        unavailableReason: personalWorkThread
+          ? 'Use your private Timeline for the Personal Assistant.'
+          : assistant
+            ? null
+            : 'No admitted logical model is configured.',
         threadId: requestedThreadId,
         profileId: assistant?.profile?.id ?? null,
         logicalModels: assistant?.logicalModels.map(conversationModelChoice) ?? [],
@@ -2735,8 +2743,11 @@ export function createConversationService({
       const sourceThread = store.getThread(workspaceId, threadId);
       if (
         sourceThread.entryPath === 'conversation' &&
-        sourceThread.visibility === 'private' &&
-        findAssistantTimeline(store, workspaceId, actorId)?.id !== threadId
+        ((sourceThread.visibility === 'private' &&
+          findAssistantTimeline(store, workspaceId, actorId)?.id !== threadId) ||
+          (store.getWorkspace(workspaceId).kind === 'personal' &&
+            sourceThread.visibility === 'workspace' &&
+            chatInput.targetRef === 'internal-role:assistant'))
       ) {
         throw new TurnStartValidationError(
           'assistant_timeline_required',

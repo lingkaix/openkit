@@ -2386,6 +2386,62 @@ describe('quick chat app API', () => {
     expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(accepted);
     expect(provider.assistantCalls()).toBe(2);
   });
+  it('keeps personal shared work eligible but refuses an ordinary Assistant conversation outside the private Timeline', async () => {
+    const createResponses = vi.fn(async () => providerAnswer('This answer must not be published.'));
+    const fixture = await createTimelineFixture({
+      llmPiAiClient: { createResponses } as unknown as PiAiGatewayClient,
+    });
+    const goalResponse = await fixture.app.request(
+      ...operationRequest(
+        'goal.create',
+        {},
+        {
+          body: JSON.stringify({
+            workspaceId: fixture.selectors.workspaceId,
+            intent: 'Prepare a reviewed design.',
+            requestId: randomUUID(),
+          }),
+        }
+      )
+    );
+    expect(goalResponse.status).toBe(200);
+    const { goal } = await goalResponse.json();
+    const work = fixture.store.getThread(fixture.selectors.workspaceId, goal.threadId);
+    expect(work.visibility).toBe('workspace');
+    const beforeTurns = fixture.store.listThreadTurns(work.workspaceId, work.id);
+    const beforeItems = fixture.store.listThreadItems(work.workspaceId, work.id);
+    const response = await fixture.app.request(
+      ...operationRequest(
+        'conversation.submit',
+        {
+          workspaceId: work.workspaceId,
+          threadId: work.id,
+        },
+        { body: JSON.stringify(conversationRequest('Explain a short concept.', randomUUID())) }
+      )
+    );
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({ code: 'assistant_timeline_required' });
+    expect(createResponses).not.toHaveBeenCalled();
+    expect(fixture.store.listThreadTurns(work.workspaceId, work.id)).toEqual(beforeTurns);
+    expect(fixture.store.listThreadItems(work.workspaceId, work.id)).toEqual(beforeItems);
+    expect(fixture.store.getThread(work.workspaceId, work.id)).toEqual(work);
+    const targetsResponse = await fixture.app.request(
+      ...operationRequest(
+        'conversation.targets',
+        {},
+        {
+          body: JSON.stringify({ workspaceId: work.workspaceId, threadId: work.id }),
+        }
+      )
+    );
+    expect(targetsResponse.status).toBe(200);
+    const targets = ConversationTargetCatalogSchema.parse(await targetsResponse.json());
+    expect(
+      targets.targets.find((target) => target.targetRef === 'internal-role:assistant')
+    ).toMatchObject({ availability: 'unavailable' });
+  });
+
   it('keeps unexpected Provider failures private and records a failed durable Assistant Turn', async () => {
     const diagnostics = vi.spyOn(console, 'error').mockImplementation(() => {});
     onTestFinished(() => diagnostics.mockRestore());
