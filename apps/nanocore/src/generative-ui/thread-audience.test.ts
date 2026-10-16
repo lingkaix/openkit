@@ -287,7 +287,7 @@ describe('Generative UI Thread audience', () => {
       expect(ownPublished.status, await ownPublished.clone().text()).toBe(201);
       const ownPresentation = (await ownPublished.json()) as { id: string; itemId: string };
       expect(ownPresentation.id).toMatch(
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+        /^pres_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
       );
 
       const otherPublished = await app.request(

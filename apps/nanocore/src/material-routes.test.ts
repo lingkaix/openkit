@@ -97,7 +97,7 @@ describe('Workspace Material app API', () => {
       const stalePaths = [
         operationRequest('material.read', {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          materialId: 'material_missing',
+          materialId: testEntityId('mat', 'material_missing'),
         }),
         operationRequest('material.read', {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -106,7 +106,7 @@ describe('Workspace Material app API', () => {
         operationRequest('material.revision-read', {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           materialId: localMaterial.materialId,
-          revisionId: 'revision_missing',
+          revisionId: testEntityId('mrev', 'revision_missing'),
         }),
         operationRequest('material.revision-read', {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -159,7 +159,7 @@ describe('Workspace Material app API', () => {
       await expect(deniedPath.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
 
       for (const [requestId, materialId] of [
-        ['bind-unknown-material', 'material_missing'],
+        ['bind-unknown-material', testEntityId('mat', 'material_missing')],
         ['bind-foreign-material', foreignMaterial.materialId],
       ] as const) {
         const response = await app.request(

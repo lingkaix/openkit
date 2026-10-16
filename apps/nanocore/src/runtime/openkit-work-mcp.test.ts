@@ -9,6 +9,7 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { dispatchOpenkitWorkTool, OPENKIT_WORK_TOOLS } from './openkit-work-mcp.js';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
@@ -484,7 +485,12 @@ describe('submission authority and byte evidence', () => {
   ] as const)('refuses replay when canonical source %s contradicts the original AEP', async (field) => {
     const fixture = submissionFixture();
     await fixture.submit();
-    fixture.store.updateTurn(fixture.turn.id, { [field]: 'contradictory-source' });
+    fixture.store.updateTurn(fixture.turn.id, {
+      [field]:
+        field === 'agentSessionId'
+          ? testEntityId('as', 'contradictory-source')
+          : 'contradictory-source',
+    });
     await expect(fixture.submit()).rejects.toMatchObject({ code: 'recovery_required' });
     expect(fixture.captureArtifact).toHaveBeenCalledTimes(1);
     expect(fixture.counts()).toEqual({ artifacts: 1, references: 1, reviews: 1, receipts: 1 });
