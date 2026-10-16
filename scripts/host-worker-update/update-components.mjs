@@ -53,8 +53,10 @@ export function admitComponentParameters(params) {
     noSecrets(input);
     const parsed = parameters.safeParse(input);
     requireFact(parsed.success, 'closed release and component inputs required');
-    requireFact(parsed.data.worker.prepare.requestId !== parsed.data.worker.activationRequestId,
-      'distinct Worker request IDs required');
+    requireFact(
+      parsed.data.worker.prepare.requestId !== parsed.data.worker.activationRequestId,
+      'distinct Worker request IDs required'
+    );
     return parsed.data;
   } catch (error) {
     if (error instanceof ComponentUpdateStop) throw error;
@@ -174,6 +176,11 @@ export async function updateComponents(target, params, evidenceDir, io) {
             return await componentIO[key](...args);
           } catch (error) {
             if (error instanceof ComponentUpdateStop) throw error;
+            if (
+              error?.code === 'operator-identity-unavailable' &&
+              ['machine-binding', 'app-helper-identity', 'canonical-docker-posture', 'app-web-attribution'].includes(error.operatorReason)
+            )
+              throw new ComponentUpdateStop(`Component update: App prerequisite unavailable (${error.operatorReason}); inspect the protected deployment and installed helper before any new effect.`);
             throw new ComponentUpdateStop(
               'Component update: App observation or effect unavailable; inspect its saved request before any new effect.'
             );
