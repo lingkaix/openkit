@@ -97,7 +97,6 @@ import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from './scheduler-records.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
-import { discardAbandonedWorkspaceStaging } from './storage/workspace-file-records.js';
 import {
   type CoreDb,
   listExistingWorkspaceDatabaseScopes,
@@ -115,6 +114,7 @@ import { rebuildInvalidExistingWorkspaceDerivedIndexes } from './storage/index-r
 import { applyMigrations, listAppliedMigrationIds } from './storage/migrate.js';
 import { appendRecoveredTurnObservation } from './storage/work-observation-recovery.js';
 import { cleanupWorkspaceArchiveRequestStaging } from './storage/workspace-archive.js';
+import { discardAbandonedWorkspaceStaging } from './storage/workspace-file-records.js';
 import { shutdownTelemetry, startTelemetry } from './telemetry.js';
 import type { VaultUnlockState } from './vault/vault-unlock-state.js';
 import { reconcileWorkerMcpItems } from './worker-mcp-routes.js';

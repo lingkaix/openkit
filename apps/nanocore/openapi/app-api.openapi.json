@@ -12366,8 +12366,9 @@
             "in": "header",
             "required": true,
             "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
               "type": "string",
-              "format": "uuid"
+              "minLength": 1
             }
           },
           {
@@ -94970,5 +94971,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:89c648388b65661dae0af450c4d3eab86140955229a00dc4c461740b06bbe5d6"
+  "x-openkit-source-digest": "sha256:d3809cf2b387b0632053527c8759cadf375dd51b261eaa893fccb76189da24e3"
 }

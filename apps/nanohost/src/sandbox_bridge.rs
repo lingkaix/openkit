@@ -1836,7 +1836,9 @@ mod tests {
             .collect::<String>();
         assert!(export.contains("stage.length()>request.byte_length"));
         assert!(export.contains("stage.complete(None)"));
-        let stage = include_str!("file_transfer.rs");
+        let stage = include_str!("file_transfer.rs")
+            .split_whitespace()
+            .collect::<String>();
         assert!(
             stage.find("self.file.sync_all()").expect("stream fsync")
                 < stage
