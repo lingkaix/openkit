@@ -154,6 +154,22 @@ describe('App update administration', () => {
     expect(await screen.findByRole('button', { name: 'Prepare' })).toBeInTheDocument();
   });
 
+  it('refreshes fresh cached diagnostics after current mount admission enables the read', async () => {
+    const client = makeClient();
+    const first = renderScreen(client);
+    await screen.findByText('Service availability: available');
+    first.unmount();
+    const pending = deferred<Awaited<ReturnType<CoreClient['operations']['diagnostics.app']>>>();
+    vi.mocked(client.operations['diagnostics.app']).mockImplementationOnce(() => pending.promise);
+    renderScreen(client, first.queryClient);
+    await waitFor(() => expect(client.operations['token.list']).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(client.operations['diagnostics.app']).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText('Service availability: available')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Prepare' })).toBeInTheDocument();
+    await act(async () => pending.resolve(DIAGNOSTICS as never));
+    expect(await screen.findByText('Service availability: available')).toBeInTheDocument();
+  });
+
   it('does not admit a remount from an abandoned pending transport', async () => {
     const client = makeClient();
     const abandoned = deferred<{ items: [] }>();

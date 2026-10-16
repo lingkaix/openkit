@@ -67,6 +67,8 @@ export function AppUpdateScreen() {
     },
     enabled: admitted,
     retry: false,
+    // This query first enables after admission, which must also refresh a fresh cache.
+    staleTime: 0,
     refetchOnMount: 'always',
   });
   useEffect(() => {
