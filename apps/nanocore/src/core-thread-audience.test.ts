@@ -359,7 +359,7 @@ describe('core Thread audience', () => {
       const { app, coreDb, store, workspace, shared } = fixture;
       const turn = store.createTurn(workspace.id, shared.id, 'Queued work', {
         kind: 'user',
-        id: 'user_local',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
       });
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
@@ -374,7 +374,7 @@ describe('core Thread audience', () => {
       });
       const requestId = randomUUID();
       const selectors = { workspaceId: workspace.id, threadId: shared.id, turnId: turn.id };
-      const stopper = bearer(coreDb, { scope: 'workspace', userId: 'user_other' }, workspace.id);
+      const stopper = bearer(coreDb, { scope: 'workspace', userId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' }, workspace.id);
       const response = await app.request(
         ...operationRequest('turn.interrupt', selectors, {
           headers: stopper,
@@ -385,7 +385,7 @@ describe('core Thread audience', () => {
       expect(await response.json()).toMatchObject({
         id: turn.id,
         status: 'cancelled',
-        triggerActor: { kind: 'user', id: 'user_local' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       });
       const read = () => app.request(
         ...operationRequest('audit.workspace-list', { workspaceId: workspace.id }, { headers: stopper })
@@ -398,19 +398,19 @@ describe('core Thread audience', () => {
           action: 'turn.interrupt',
           category: 'command',
           outcome: 'succeeded',
-          actor: { kind: 'user', id: 'user_other' },
+          actor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
           ...selectors,
           requestId,
         }),
       ]);
       const replay = await app.request(
         ...operationRequest('turn.interrupt', selectors, {
-          headers: bearer(coreDb, { scope: 'workspace', userId: 'user_local' }, workspace.id),
+          headers: bearer(coreDb, { scope: 'workspace', userId: 'usr_00000000-0000-7000-8000-000000000001' }, workspace.id),
           body: JSON.stringify({ requestId }),
         })
       );
       expect(replay.status).toBe(200);
-      expect(await replay.json()).toMatchObject({ triggerActor: { kind: 'user', id: 'user_local' } });
+      expect(await replay.json()).toMatchObject({ triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } });
       expect(await (await read()).json()).toEqual(history);
       const rejected = await app.request(
         ...operationRequest('turn.interrupt', selectors, {
@@ -435,14 +435,14 @@ describe('core Thread audience', () => {
         threadId: fixture.own.id,
         turnId: fixture.ownTurn.id,
         requestId: randomUUID(),
-        actor: { kind: 'user', id: 'user_local' },
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         action: 'turn.interrupt',
         category: 'command',
         outcome: 'succeeded',
         summary: 'Stop request accepted.',
       });
       db.sqlite.close();
-      for (const [userId, visible] of [['user_local', true], ['user_other', false]] as const) {
+      for (const [userId, visible] of [['usr_00000000-0000-7000-8000-000000000001', true], ['usr_00000000-0000-73d4-904a-d4c4b905df7c', false]] as const) {
         const response = await fixture.app.request(
           ...operationRequest('audit.workspace-list', { workspaceId: fixture.workspace.id }, {
             headers: bearer(fixture.coreDb, { scope: 'workspace', userId }, fixture.workspace.id),
