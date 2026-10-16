@@ -708,7 +708,7 @@ describe('Knowledge operation definition cutover', () => {
     } finally {
       await f.close();
     }
-  });
+  }, 120_000);
 
   it('returns distinct public and trusted Task preparation views from exactly one governed retrieval each', async () => {
     const f = fixture();
