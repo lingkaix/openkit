@@ -74,6 +74,11 @@ test('keeps files as local drafts and publishes exact originals only on the rece
       response.request().headers()['content-type'] === 'application/vnd.openkit.conversation-files'
   );
   await page.getByRole('button', { name: /^Send message$/ }).click();
+  const disclosure = page.getByRole('dialog', {name:'Share selected files with Worker'});
+  await expect(disclosure.getByLabel('Work brief')).toHaveText('Inspect the attached exact originals.');
+  for (const file of originals) await expect(disclosure.getByText(file.name, {exact:true})).toBeVisible();
+  expect(await artifactInventory()).toEqual(before);
+  await disclosure.getByRole('button', {name:'Share files and send'}).click();
   const response = await accepted;
   expect(response.status(), await response.text()).toBe(202);
   const result = SubmitConversationResponseSchema.parse(await response.json());

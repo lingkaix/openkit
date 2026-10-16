@@ -523,6 +523,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               </p>
             ) : null}
             <Composer
+        fileWorkspaceLabel={workspaces.data?.find((workspace) => workspace.id === workspaceId)?.name}
               key={JSON.stringify([workspaceId, threadId])}
               initialDraft={
                 submission?.status === 'success'

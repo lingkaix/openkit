@@ -1895,11 +1895,13 @@ function conversationCommandInput(chatInput: {
   readonly reasoningEffort?: z.infer<typeof TurnSchema>['reasoningEffort'];
   readonly artifactRefs: unknown;
   readonly fileInputs?: readonly unknown[] | undefined;
+  readonly fileHandoffConfirmed?: true | undefined;
   readonly workerStorageChoice?: WorkerEnvironmentStorageChoice | undefined;
 }) {
   return {
     artifactRefs: chatInput.artifactRefs,
     ...(chatInput.fileInputs?.length ? { fileInputs: chatInput.fileInputs } : {}),
+    ...(chatInput.fileHandoffConfirmed ? { fileHandoffConfirmed: true } : {}),
     input: chatInput.input,
     logicalModelId: chatInput.logicalModelId ?? null,
     ...(chatInput.reasoningEffort !== undefined
@@ -2343,6 +2345,8 @@ export function createConversationService({
     readonly fileInputs?: z.infer<typeof TurnSchema>['fileInputs'];
     readonly filePayloadPaths?: readonly string[];
     readonly fileWriteAdmission?: FileStorageAdmission;
+    /** Final synchronous request and source admission, never persisted. */
+    readonly assertFileInputAdmission?: () => void;
     readonly onTurnCreated?: (
       turn: z.infer<typeof TurnSchema>,
       agentSessionId: string | null
@@ -2560,6 +2564,7 @@ export function createConversationService({
     targets.push({
       targetRef: 'new-task-worker',
       kind: 'new-task-worker',
+      requiresFileHandoffConfirmation: true,
       label: 'New Shard + Worker',
       description: 'Create a linked Task execution Thread and start a Worker.',
       availability: defaultSetup ? 'available' : 'unavailable',
@@ -2866,6 +2871,8 @@ export function createConversationService({
     files?: {
       readonly fileAdmission: FileStorageAdmission;
       readonly prepare: () => Promise<readonly string[]>;
+      /** Rechecks the live request, authority and shared capacity before actual publication. */
+      readonly assertCurrent: () => void;
     }
   ): Promise<{ body: z.infer<typeof SubmitConversationResponseSchema>; status: 200 | 202 }> {
     const { workspaceId, threadId } = chatInput;
@@ -2996,6 +3003,12 @@ export function createConversationService({
         }
         artifacts.push(artifact);
       }
+      if (chatInput.fileInputs?.length && acceptedTarget.requiresFileHandoffConfirmation && !chatInput.fileHandoffConfirmed)
+        throw new TurnStartValidationError(
+          'file_handoff_confirmation_required',
+          'Confirm the exact work brief and selected files for the receiving Workspace.',
+          403
+        );
       if (chatInput.fileInputs?.length && acceptedTarget.kind === 'goal-coordinator')
         throw new TurnStartValidationError(
           'file_inputs_not_applicable',
@@ -3015,6 +3028,7 @@ export function createConversationService({
             fileInputs: chatInput.fileInputs,
             filePayloadPaths,
             fileWriteAdmission: files!.fileAdmission,
+            assertFileInputAdmission: files!.assertCurrent,
           }
         : {};
       if (filePayloadPaths) {
@@ -3535,6 +3549,7 @@ export function createConversationService({
                       : 'Task Knowledge retrieval could not establish one coherent selection.'
                   );
                 }
+                if (filePayloadPaths) files!.assertCurrent();
                 return {
                   delegationRequest: workerRequest,
                   contextPackageDigest: commandInputHash(workerRequest),

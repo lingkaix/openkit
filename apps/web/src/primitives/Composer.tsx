@@ -19,15 +19,36 @@ import {
   DialogTrigger,
   ListBox,
   ListBoxItem,
+  Modal as AriaModal,
+  ModalOverlay,
   Popover,
   Select,
   SelectValue,
   Text,
 } from 'react-aria-components';
+import { Dialog as ConfirmationDialog } from './Dialog';
 import { Icon } from './Icon';
 import { ErrorBanner } from './states';
 
 type ConversationTarget = ConversationTargetCatalog['targets'][number];
+
+/** Captures the exact destination, original selections and submission callback displayed for disclosure. */
+interface FileHandoffProposal {
+  readonly draft: ComposerDraft;
+  readonly workspaceId: string;
+  readonly workspaceLabel: string;
+  readonly artifacts: readonly ComposerArtifactOption[];
+  readonly submit: (draft: ComposerDraft) => unknown;
+}
+
+/** Consent is reusable only for the same Workspace, canonical draft and immutable File objects. */
+function sameFileHandoff(left: Pick<FileHandoffProposal, 'draft' | 'workspaceId'> | null, right: Pick<FileHandoffProposal, 'draft' | 'workspaceId'>): boolean {
+  if (!left || left.workspaceId !== right.workspaceId) return false;
+  const { files: leftFiles = [], fileHandoffConfirmed: _leftConsent, ...leftInput } = left.draft;
+  const { files: rightFiles = [], fileHandoffConfirmed: _rightConsent, ...rightInput } = right.draft;
+  return JSON.stringify(leftInput) === JSON.stringify(rightInput) && leftFiles.length === rightFiles.length && leftFiles.every((file, index) => file === rightFiles[index]);
+}
+
 
 /** A restored request keeps its exact choice even when inventory details are unavailable. */
 type SelectedEnvironment =
@@ -43,6 +64,8 @@ export interface ComposerArtifactOption {
 export interface ComposerDraft {
   /** Unsent original selections stay in this client draft until the exact command succeeds. */
   files?: File[];
+  /** Existing handoff consent bound to this exact draft and its request identity. */
+  fileHandoffConfirmed?: true;
   input: string;
   targetRef: string;
   logicalModelId?: string;
@@ -103,6 +126,8 @@ export interface ComposerProps {
   /** Most recent recorded effort from this Thread's admitted Turns, never runtime state. */
   lastAdmittedEffort?: ReasoningEffort;
   artifacts?: ComposerArtifactOption[];
+  /** Current authorized destination label used by file handoff confirmation. */
+  fileWorkspaceLabel?: string;
   workerEnvironments?: ComposerWorkerEnvironments;
   onSubmit?: (draft: ComposerDraft) => unknown;
 }
@@ -118,6 +143,7 @@ export function Composer({
   targetCatalog,
   lastAdmittedEffort,
   artifacts = [],
+  fileWorkspaceLabel,
   workerEnvironments,
   onSubmit,
 }: ComposerProps) {
@@ -155,11 +181,17 @@ export function Composer({
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
   const [files, setFiles] = useState<File[]>(initialDraft?.files ?? []);
   const [pending, setPending] = useState(false);
+  const [fileHandoff, setFileHandoff] = useState<FileHandoffProposal | null>(null);
+  const confirmedFileHandoff = useRef<Pick<FileHandoffProposal, 'draft' | 'workspaceId'> | null>(
+    initialDraft?.fileHandoffConfirmed && initialDraft.requestId && initialDraft.targetRef && initialDraft.input !== undefined && initialDraft.artifactRefs && targetCatalog
+      ? { draft: initialDraft as ComposerDraft, workspaceId: targetCatalog.workspaceId }
+      : null
+  );
   const [importFailed, setImportFailed] = useState(false);
   const [requestId, setRequestId] = useState(() => initialDraft?.requestId ?? crypto.randomUUID());
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const disabled = Boolean(disabledReason) || isSubmitting || pending;
+  const disabled = Boolean(disabledReason) || isSubmitting || pending || fileHandoff !== null;
   const selectedTarget = targetCatalog?.targets.find((target) => target.targetRef === targetRef);
   const selectedModel = selectedTarget?.logicalModels.find((model) => model.id === logicalModelId);
   const effortLevels = selectedModel?.capabilities.includes('reasoning')
@@ -193,6 +225,8 @@ export function Composer({
 
   /** Starts a fresh request after acceptance without resetting agent/model preferences. */
   const clearSentDraft = useCallback(() => {
+    confirmedFileHandoff.current = null;
+    setFileHandoff(null);
     setValue('');
     setSelectedArtifacts([]);
     setFiles([]);
@@ -244,44 +278,68 @@ export function Composer({
     setEffortSubmitted(false);
   }
 
-  async function submit(event?: FormEvent) {
-    event?.preventDefault();
-    if (!canSubmit || !onSubmit) return;
-    const submittedRequestId = cancelledRequestId === requestId ? crypto.randomUUID() : requestId;
-    // Retain the new attempt's identity even if dispatch later has an uncertain outcome.
-    if (submittedRequestId !== requestId) setRequestId(submittedRequestId);
-    setEffortChoice({ logicalModelId, value: reasoningEffort });
+  /** Dispatches only the captured draft; a later catalog render cannot redirect confirmed bytes. */
+  async function dispatchDraft(draft: ComposerDraft, submitDraft: (draft: ComposerDraft) => unknown) {
+    if (draft.requestId !== requestId) setRequestId(draft.requestId);
+    setEffortChoice({ logicalModelId: draft.logicalModelId ?? '', value: draft.reasoningEffort });
     setEffortSubmitted(true);
     setPending(true);
     try {
-      await onSubmit({
-        ...(files.length ? { files } : {}),
-        input: value,
-        targetRef,
-        ...(logicalModelId ? { logicalModelId } : {}),
-        ...(reasoningEffort ? { reasoningEffort } : {}),
-        artifactRefs: selectedArtifacts.map((artifact) => ({
-          artifactId: artifact.id,
-          artifactVersion: artifact.version,
-        })),
-        requestId: submittedRequestId,
-        ...(selectedEnvironment
-          ? {
-              workerStorageChoice: {
-                expectedRevision: selectedEnvironment.expectedRevision,
-                kind: 'selected' as const,
-                purpose: selectedEnvironment.purpose,
-                storageRef: selectedEnvironment.storageRef,
-              },
-            }
-          : {}),
-      });
+      await submitDraft(draft);
       clearSentDraft();
     } catch {
       // The caller owns error presentation; retaining state here preserves exact retry identity.
     } finally {
       setPending(false);
     }
+  }
+
+  async function submit(event?: FormEvent) {
+    event?.preventDefault();
+    if (!canSubmit || !onSubmit) return;
+    const draft: ComposerDraft = {
+      ...(files.length ? { files: [...files] } : {}),
+      input: value,
+      targetRef,
+      ...(logicalModelId ? { logicalModelId } : {}),
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+      artifactRefs: selectedArtifacts.map((artifact) => ({
+        artifactId: artifact.id,
+        artifactVersion: artifact.version,
+      })),
+      requestId: cancelledRequestId === requestId ? crypto.randomUUID() : requestId,
+      ...(selectedEnvironment
+        ? { workerStorageChoice: {
+            expectedRevision: selectedEnvironment.expectedRevision,
+            kind: 'selected' as const,
+            purpose: selectedEnvironment.purpose,
+            storageRef: selectedEnvironment.storageRef,
+          } }
+        : {}),
+    };
+    const workspaceId = targetCatalog?.workspaceId ?? '';
+    const previouslyConfirmed = sameFileHandoff(confirmedFileHandoff.current, {draft, workspaceId});
+    if (files.length && selectedTarget?.requiresFileHandoffConfirmation && !previouslyConfirmed) {
+      setFileHandoff({
+        draft,
+        workspaceId,
+        workspaceLabel: fileWorkspaceLabel ?? workspaceId,
+        artifacts: [...selectedArtifacts],
+        submit: onSubmit,
+      });
+      return;
+    }
+    await dispatchDraft(previouslyConfirmed ? {...draft, fileHandoffConfirmed: true} : draft, onSubmit);
+  }
+
+  /** One existing work handoff confirmation admits only the exact displayed brief and selected files. */
+  function confirmFileHandoff() {
+    if (!fileHandoff) return;
+    const accepted = fileHandoff;
+    const draft: ComposerDraft = {...accepted.draft, fileHandoffConfirmed: true};
+    confirmedFileHandoff.current = {draft, workspaceId: accepted.workspaceId};
+    setFileHandoff(null);
+    void dispatchDraft(draft, accepted.submit);
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -484,6 +542,28 @@ export function Composer({
           <Icon name={pending || isSubmitting ? 'spinner' : 'send'} />
         </AriaButton>
       </div>
+      <ModalOverlay
+        isOpen={fileHandoff !== null}
+        onOpenChange={(open) => { if (!open) setFileHandoff(null); }}
+        isDismissable
+        className="fixed inset-0 z-50 flex items-center justify-center bg-fg/40 p-6"
+      >
+        <AriaModal className="max-h-full w-full max-w-lg overflow-y-auto rounded-ok-lg border border-border bg-elevated p-5 shadow-ok-menu outline-none">
+          <ConfirmationDialog title="Share selected files with Worker">
+            <p>This work brief and the selected inputs will enter shared Worker work in:</p>
+            <p className="font-bold">{fileHandoff?.workspaceLabel}</p>
+            <pre aria-label="Work brief" className="whitespace-pre-wrap break-words rounded-ok bg-overlay p-3">{fileHandoff?.draft.input}</pre>
+            <ul aria-label="Files to share">
+              {fileHandoff?.draft.files?.map((file, ordinal) => <li key={ordinal}>{file.name}</li>)}
+              {fileHandoff?.artifacts.map((artifact) => <li key={`${artifact.id}:${artifact.version}`}>{artifact.label} · Version {artifact.version}</li>)}
+            </ul>
+            <div className="flex justify-end gap-2">
+              <AriaButton onPress={() => setFileHandoff(null)} className="rounded-ok border border-border px-3 py-2">Cancel</AriaButton>
+              <AriaButton onPress={confirmFileHandoff} className="rounded-ok bg-accent px-3 py-2 text-on-accent">Share files and send</AriaButton>
+            </div>
+          </ConfirmationDialog>
+        </AriaModal>
+      </ModalOverlay>
       {reasoningEffort && !effortLevels.includes(reasoningEffort) ? (
         <p className="mt-2 text-xs text-fg-muted">
           Retained effort: {effortLabel(reasoningEffort)}. This model no longer advertises it.

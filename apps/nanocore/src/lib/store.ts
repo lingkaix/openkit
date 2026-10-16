@@ -564,6 +564,8 @@ interface CreateTurnOptions {
   filePayloadPaths?: readonly string[];
   /** Shared runtime disk owner for exact serialized writes of a fresh file Turn. */
   fileWriteAdmission?: FileStorageAdmission;
+  /** Entry-owned final synchronous request, authority and capacity check. */
+  assertFileInputAdmission?: () => void;
   /** Scheduler-owned turn id when external coordination already reserved lineage. */
   turnId?: string;
   /** Immutable explicit or composed effort captured when the Turn is admitted. */
@@ -2742,6 +2744,7 @@ export class FsStore {
       ...(options.agentSessionId !== undefined ? { agentSessionId: options.agentSessionId } : {}),
       ...(options.triggerSource !== undefined ? { triggerSource: options.triggerSource } : {}),
     });
+    if (options.fileInputs?.length) options.assertFileInputAdmission?.();
     this.turns.set(turn.id, turn);
     if (options.executorKind) this.turnExecutors.set(turn.id, options.executorKind);
     this.threads.set(threadId, {

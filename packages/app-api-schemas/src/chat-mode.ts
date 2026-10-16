@@ -51,6 +51,8 @@ export const ConversationTargetSchema = z
     profileId: z.string().min(1).nullable(),
     logicalModels: z.array(ConversationModelChoiceSchema),
     defaultLogicalModelId: z.string().min(1).nullable(),
+    /** This target discloses selected files and the exact brief into new shared Worker work. */
+    requiresFileHandoffConfirmation: z.boolean().optional(),
   })
   .strict();
 
@@ -79,6 +81,8 @@ export const SubmitConversationRequestSchema = z
       .max(10_000)
       .pipe(TurnFileInputsSchema)
       .optional(),
+    /** Confirmation is bound to the exact submitted payload by the existing command receipt. */
+    fileHandoffConfirmed: z.literal(true).optional(),
     requestId: z.string().min(1),
     /** Explicit retained-storage choice forwarded only to new Task Worker starts. */
     workerStorageChoice: WorkerEnvironmentStorageChoiceSchema.optional(),

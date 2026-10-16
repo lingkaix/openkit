@@ -116,7 +116,7 @@ describe('Turn-owned conversation originals', () => {
     });
     const controller = new AbortController();
     const bytes = new Uint8Array([0xff,0]);
-    const input = {workspaceId:state.workspaceId,threadId:state.thread.id,requestId:randomUUID(),input:'Implement a focused correction.',targetRef:'new-task-worker',artifactRefs:[],fileInputs:[metadata(bytes)]};
+    const input = {workspaceId:state.workspaceId,threadId:state.thread.id,requestId:randomUUID(),input:'Implement a focused correction.',targetRef:'new-task-worker',fileHandoffConfirmed:true as const,artifactRefs:[],fileInputs:[metadata(bytes)]};
     const result = app.request('/api/app/operations/conversation.submit',{method:'POST',headers:{'content-type':CONVERSATION_FILE_MEDIA_TYPE,'x-openkit-request-id':input.requestId},body:frame(input,[bytes]),signal:controller.signal});
     await ready;
     controller.abort();
@@ -297,6 +297,7 @@ describe('Turn-owned conversation originals', () => {
       requestId: randomUUID(),
       input: 'Implement a focused correction.',
       targetRef,
+      ...(targetRef === 'new-task-worker' ? {fileHandoffConfirmed:true as const} : {}),
       artifactRefs: [],
       fileInputs: [metadata(bytes)],
     };
