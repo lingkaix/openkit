@@ -212,8 +212,6 @@ This table names prefixes for independent generation paths. Workspace, Thread, a
 | Workspace export | `wsexp` |
 | Data-root backup | `drb` |
 
-The [Recurring Trigger owner](../specs/20260711-scheduler_recurring_event_triggers.md#identifier-producers) declares occurrence `occ` name `[scheduleId, scheduledAt]` and fixed Turn `tu` name `["recurring", scheduleId, scheduledAt]`, using the canonical recorded UTC millisecond instant. Independent `auto` and `range` allocation and inert import maps retain that owner's lifecycle.
-
 ### Derived Entity Kinds And Namespaces
 
 These kinds retain their owning derivations and use the same text form as any independent UUIDv7 allocation of that kind. Only a kind with an owning derivation admits UUIDv5. These constants encode existing identities; they add no independent allocation requirement.
