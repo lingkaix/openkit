@@ -8244,12 +8244,43 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const fixture = await createWorkerContextExecutorFixture('artifact-follow-up', {
       workerRequest,
     });
-    const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
-    workspaceDb.sqlite.transaction(() => {})();
-    workspaceDb.sqlite.close();
+    const fileAdmission = new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n);
+    withCanonicalFileWriteAdmission(fileAdmission, () => {
+      const sourceTurn = createAssignedTurn(
+        fixture.store,
+        fixture.turn.workspaceId,
+        fixture.turn.threadId,
+        'Produce the reviewed Artifact.',
+        testEntityId('tu', 'tu_source_review')
+      );
+      const createdAt = sourceTurn.startedAt ?? '2026-07-14T00:00:00.000Z';
+      fixture.store.createArtifact({
+        id: 'ar_00000000-0000-7f52-a2ff-8f9bfabc26a1',
+        workspaceId: fixture.turn.workspaceId,
+        threadId: sourceTurn.threadId,
+        turnId: sourceTurn.id,
+        kind: 'report',
+        title: 'Reviewed Artifact',
+        status: 'ready',
+        summary: null,
+        version: 1,
+        content: { format: 'text', body: artifactContent },
+        contentDigest: turnRuntimeSha256(Buffer.from(artifactContent, 'utf8')),
+        lastMutationRequestId: 'source_artifact_review',
+        origin: {
+          kind: 'turn-output',
+          threadId: sourceTurn.threadId,
+          turnId: sourceTurn.id,
+          requestId: 'source_artifact_review',
+        },
+        createdAt,
+        updatedAt: createdAt,
+      });
+      fixture.store.updateTurn(sourceTurn.id, { status: 'completed', completedAt: createdAt });
+    });
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
-      fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
+      fileAdmission,
       backend,
       coreDb: fixture.coreDb,
       createAgentSessionId: () => fixture.agentSessionId,
