@@ -122,6 +122,8 @@ NanoHost can start with an empty Worker Image Store and establish its authentica
 
 NanoCore accepts Worker Agent work only through the configured NanoHost identity and NanoHost-initiated authenticated HTTP/2 session. The App API remains on its HTTP/1.1 listener; `nanohost.bind` selects a separate native HTTP/2 listener on a different local port, while `nanohost.rendezvousUrl` is the endpoint advertised to NanoHost after any deployment mapping. The RuntimeTarget must be ready, predecessor-fenced, and fresh-empty before admission.
 
+For HTTPS, use a separate issuer CA and a server leaf with `CA:FALSE`, `serverAuth` usage and the exact advertised host in its subject alternative names. Select the issuer CA as the NanoHost trust input. Do not present the CA itself as the server leaf. NanoHost reports `nanohost NanoCore TLS certificate verification failed` before admission when certificate verification fails. A successful request from another TLS client does not prove NanoHost verification. For `epoch rebuild hard bound exceeded`, follow [bounded NanoHost recovery](nanocore-operations.en.md#recover-a-nanohost-at-the-rebuild-bound); repeated starts do not renew that deadline.
+
 Use [NanoHost Real-Use Host](https://github.com/lingkaix/openkit/blob/main/docs/cookbooks/nanohost-real-use-host.md) for the current reviewed-host workflow:
 
 Supply the operator-selected host alias explicitly when following that source-checkout procedure. Its test-host examples are not a default target, and fixture teardown must not run against an existing persistent installation.

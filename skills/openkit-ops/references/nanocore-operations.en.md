@@ -243,6 +243,19 @@ If the Vault is locked, inspect its non-secret status and exact external-key ava
 
 Retain the exact failure and partial outcome. A fresh task may continue after recovery; no script or Agent may relabel the interrupted attempt as successful.
 
+### Recover A NanoHost At The Rebuild Bound
+
+`epoch rebuild hard bound exceeded` preserves the first unresolved recovery deadline. Restarting that state does not renew the deadline. The service remains non-ready until the cause and failed epoch state receive explicit operator recovery.
+
+Use this procedure only under authorization to retire the failed epoch's disposable state. Reuse existing authorization when it covers this operation. It does not authorize deleting retained Worker data, changing enrollment or resetting an App deployment. [NanoHost Runtime And Transport](https://github.com/lingkaix/openkit/blob/main/docs/specs/20260802-nanohost_runtime_and_transport.md#epoch-rebuild-cost-budget) owns this recovery boundary.
+
+1. Retain the bounded startup cause, installed artifact identity and relevant redacted invalidation evidence. Correct the original cause before a new attempt. For a TLS failure, verify the advertised host, issuer trust and server certificate role.
+2. Prevent automatic activation under the existing service owner. Stop NanoHost and prove MainPID zero and the complete NanoHost slice empty. An inactive unit alone does not prove descendant absence. Do not change host kernel settings or unrelated services.
+3. Inspect both complete private epoch roots: `/var/lib/openkit/nanohost` and `/run/openkit/nanohost`. Retain each present root as a whole outside its live name, in protected recovery custody. Preserve its ownership, permissions and unresolved marker; record an absent root as absent. Never remove the rebuild marker in isolation or overwrite a prior recovery copy.
+4. Keep the Image Store, retained Worker bytes and association lineage, private Workspace scan store, forensic evidence, NanoHost identity, configuration and credential slots unchanged. Create only fresh private epoch roots under the normal NanoHost lifecycle. Normal startup first proves the complete prior process group absent, then releases old retained-volume attachment hints. Moving roots alone is not that proof, and host hint release does not settle Core records. This starts a new epoch; it does not adopt the retained partial epoch.
+5. Before a controlled single-attempt diagnosis, disable automatic restart so one operator command cannot hide more starts. Restore only other activation settings owned by this operation. Make one bounded start and require a current exact-pair positive `nanohost.runtime-target`, with `predecessorFenced`, `ready` and `freshEmpty` all true. Count every actual start.
+6. If readiness fails, stop and inspect before another authorized attempt. Preserve the new failed state as a whole as well. If readiness succeeds, follow the requested running or stopped final state. Remove only the temporary restart override owned by this operation, after stopping a failed attempt or while retaining the same healthy process. Report this new attempt separately from the earlier failure and distinguish published bytes from a local build.
+
 ### Maintain Local Worker Images
 
 Published OpenKit image digests in release notes name multi-platform Open Container Initiative (OCI) image indexes. NanoHost accepts an index digest for registry preparation and for `image import`, verifies the index, and stores the one image manifest for the host platform; it fails when the index has no single manifest for that platform.

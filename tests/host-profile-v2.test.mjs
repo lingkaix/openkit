@@ -83,7 +83,7 @@ test('bundled checker exercises capability verdicts, integrity, and bounded read
   assert.match(result.stdout, /fixture-checks=pass/);
 });
 
-test('systemd unit inspection ignores unrelated permission warnings and fails closed otherwise', () => {
+test('systemd unit inspection scopes diagnostics to OpenKit and preserves exit failures', () => {
   const installer = readFileSync('apps/nanohost/deploy/install.sh', 'utf8');
   const code = installer
     .split("<<'HOST_CHECK_PY'\n")[1]
@@ -98,6 +98,7 @@ a2 = '''Configuration file /usr/lib/systemd/system/unified-monitoring-agent_rest
 Configuration file /usr/lib/systemd/system/unified-monitoring-agent_restarter.service is marked executable. Please remove executable permission bits. Proceeding anyway.
 Configuration file /usr/lib/systemd/system/unified-monitoring-agent_config_downloader.service is marked executable. Please remove executable permission bits. Proceeding anyway.
 Configuration file /usr/lib/systemd/system/unified-monitoring-agent_config_downloader.timer is marked executable. Please remove executable permission bits. Proceeding anyway.'''
+unrelated_key = "/etc/systemd/system/dnsmasq.service.d/override.conf:7: Unknown key name 'StartLimitIntervalSec' in section 'Service', ignoring."
 absence = 'openkit-nanohost.service: Command /usr/lib/openkit/nanohost is not executable: No such file or directory'
 executable = 'is marked executable. Please remove executable permission bits. Proceeding anyway.'
 writable = 'is marked world-writable. Please remove world writability permission bits. Proceeding anyway.'
@@ -108,12 +109,43 @@ unit = Path('apps/nanohost/deploy/openkit-nanohost.service').read_bytes()
 warning = lambda path, message=executable: 'Configuration file ' + path + ' ' + message
 
 with patch.object(Path, 'lstat', return_value=SimpleNamespace(st_mode=stat.S_IFDIR)), patch('__main__.read_regular', side_effect=lambda path: b'systemd' if str(path) == '/proc/1/comm' else unit):
-    for status, errors in [(0, ''), (0, a2), (1, absence), (1, a2 + '\\n' + absence), (1, absence + '\\n' + a2)] + [(0, warning('/etc/systemd/system/metrics.service', message)) for message in (executable, writable, inaccessible)]:
-        with patch('__main__.command_result', return_value=(status, '', errors)) as inspector:
+    accepted = [
+        (0, '', unrelated_key),
+        (0, unrelated_key, ''),
+        (0, '', ''),
+        (0, '', a2),
+        (1, '', unrelated_key + '\\n' + absence),
+        (1, '', absence),
+        (1, '', a2 + '\\n' + absence),
+        (1, '', absence + '\\n' + a2),
+        (0, '', warning('metrics.service')),
+        (0, '', warning('/etc/systemd/system/metrics.service', 'has an unknown problem. Proceeding anyway.')),
+        (0, '', warning('/etc/systemd/system/metrics.service') + ' Additional error.'),
+    ] + [(0, '', warning('/etc/systemd/system/metrics.service', message)) for message in (executable, writable, inaccessible)]
+    for status, output, errors in accepted:
+        with patch('__main__.command_result', return_value=(status, output, errors)) as inspector:
             observed = observe(entry, Path('/bundle'), {})
-            assert observed == {'active': True, 'unitParses': True, 'slice': 'openkit-nanohost.slice'}, (status, errors, observed)
+            assert observed == {'active': True, 'unitParses': True, 'slice': 'openkit-nanohost.slice'}, (status, output, errors, observed)
             inspector.assert_called_once_with(['/usr/bin/systemd-analyze', 'verify', '--man=no', '--generators=no', '/bundle/openkit-nanohost.service'])
     failures = [
+        (1, '', unrelated_key),
+        (2, '', unrelated_key),
+        (0, '', unrelated_key.replace('dnsmasq.service', 'openkit-nanohost.service')),
+        (0, '', unrelated_key.replace('dnsmasq.service', 'openkit-nanohost.slice')),
+        (0, '', unrelated_key + '\\nopenkit-nanohost.service: Service has no ExecStart= setting.'),
+        (0, '', 'other.service: Failed to create openkit-nanohost.service/start: Unit is masked.'),
+        (0, '', unrelated_key.replace('dnsmasq.service.d', 'openkit-.service.d')),
+        (0, '', unrelated_key.replace('dnsmasq.service.d', 'openkit-.slice.d')),
+        (0, '', unrelated_key.replace('dnsmasq.service.d', 'service.d')),
+        (0, '', unrelated_key.replace('dnsmasq.service.d', 'slice.d')),
+        (0, '', 'other.service: Invalid setting from /etc/systemd/system/service.d/default.conf'),
+        (0, '', 'other.service: Invalid setting from /etc/systemd/system/slice.d/default.conf'),
+        (0, warning('/etc/systemd/system/openkit.slice'), ''),
+        (0, unrelated_key.replace('dnsmasq.service.d', 'openkit-.service.d'), ''),
+        (0, unrelated_key.replace('dnsmasq.service.d', 'openkit-.slice.d'), ''),
+        (0, 'other.service: Invalid setting from /etc/systemd/system/service.d/default.conf', ''),
+        (0, '', warning('/etc/systemd/system/openkit.slice')),
+        (0, '', unrelated_key.replace('dnsmasq.service', 'openkit.slice')),
         (0, '', warning('/bundle/openkit-nanohost.service')),
         (0, '', warning('/etc/systemd/system/openkit-nanohost.service', writable)),
         (0, '', warning('/etc/systemd/system/openkit-nanohost.slice')),
@@ -124,9 +156,6 @@ with patch.object(Path, 'lstat', return_value=SimpleNamespace(st_mode=stat.S_IFD
         (1, '', 'openkit-nanohost.service: Failed to create openkit-nanohost.service/start: Unit openkit-nanohost.slice not found.'),
         (1, '', 'openkit-nanohost.service: Failed to create openkit-nanohost.service/start: Unit openkit-nanohosts.slice not found.'),
         (1, '', 'openkit-nanohost.service: Failed to create openkit-nanohost.service/start: Unit network-online.target is masked.'),
-        (0, '', warning('/etc/systemd/system/metrics.service', 'has an unknown problem. Proceeding anyway.')),
-        (0, '', warning('/etc/systemd/system/metrics.service') + ' Additional error.'),
-        (0, '', warning('metrics.service')),
         (0, 'Unexpected inspector output', ''),
         (1, '', ''),
         (1, '', absence + '\\n' + absence),

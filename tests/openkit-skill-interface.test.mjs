@@ -2523,14 +2523,19 @@ test('bundled named credential selection authenticates exact calls without chang
   for (const [path, bytes] of originalFiles)
     assert.deepEqual(readFileSync(join(layout.configDir, path)), bytes);
   for (const status of [401, 403]) {
+    const code = status === 401 ? 'core.auth.unauthenticated' : 'core.auth.forbidden';
     const denied = await runCli(args, env, '{}', [
       ...layout.imports,
-      responseModule(status, {
-        code: status === 401 ? 'core.auth.unauthenticated' : 'core.auth.forbidden',
-        message: 'Denied okt_fixture_member',
-      }),
+      dataModule(`
+        let calls = 0;
+        globalThis.fetch = async (_url, options) => {
+          if (++calls !== 1 || new Headers(options.headers).get('authorization') !== 'Bearer okt_fixture_member') throw new Error('Unexpected credential or retry');
+          return new Response(JSON.stringify({ protocolVersion: '${protocol.PROTOCOL_VERSION}', code: '${code}', message: 'Denied okt_fixture_member' }), { status: ${status}, headers: { 'content-type': 'application/json' } });
+        };
+      `),
     ]);
     assert.equal(denied.code, 3, denied.stdout);
+    assert.equal(JSON.parse(denied.stdout).error.code, code);
     assert.doesNotMatch(denied.stdout + denied.stderr, /okt_fixture_/);
   }
   const doctor = await runCli(['doctor', '--credential', 'member'], env, '{}', [
@@ -2580,6 +2585,20 @@ test('bundled named credential selection authenticates exact calls without chang
     assert.equal(JSON.parse(failed.stdout).error.code, expected, failed.stdout);
     assert.equal(Object.hasOwn(JSON.parse(failed.stdout), 'requestId'), false);
     assert.doesNotMatch(failed.stdout + failed.stderr, /okt_fixture_/);
+  }
+  const namedFile = listFiles(layout.configDir).find((path) => path.includes('nanocore-named'));
+  const adminFile = listFiles(layout.configDir).find((path) => !path.includes('nanocore-named'));
+  writeFileSync(join(layout.configDir, namedFile), 'invalid fixture storage');
+  for (const unsafe of [false, true]) {
+    if (unsafe) {
+      rmSync(join(layout.configDir, namedFile));
+      symlinkSync(join(layout.configDir, adminFile), join(layout.configDir, namedFile));
+    }
+    const failed = await runCli(args, env, '{}', [...layout.imports, noNetwork]);
+    assert.equal(failed.code, 2, failed.stdout);
+    assert.equal(JSON.parse(failed.stdout).error.code, 'credential_unavailable');
+    assert.equal(Object.hasOwn(JSON.parse(failed.stdout), 'requestId'), false);
+    assert.doesNotMatch(failed.stdout + failed.stderr, /okt_fixture_|nanocore-named/);
   }
   assert.equal(store.readToken({ baseUrl: endpoint }), 'okt_fixture_admin');
 });
