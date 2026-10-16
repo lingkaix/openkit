@@ -250,6 +250,7 @@ test('coverage partition union rejects every missing, overlapping, extra and non
     [a, partitionReceipt(2, '/one.test.js')],
     [a, partitionReceipt(2, '/extra.test.js')],
     [a, { ...b, expected: b.expected.slice(1) }],
+    [a, { ...b, expected: [] }],
     [a, { ...b, report: { ...b.report, success: false } }],
     [
       a,

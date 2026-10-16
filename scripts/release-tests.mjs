@@ -177,6 +177,7 @@ export function verifyCoveragePartitions(partitions, expectedFiles, count) {
     );
     if (matches.length !== 1) throw Error('Test Strategy: missing or duplicate coverage partition');
     const entry = matches[0];
+    compareInventory(entry.expected, entry.expected);
     verifyExecutionInventory(entry.expected, entry.report);
     for (const file of entry.report.testResults) {
       if (
