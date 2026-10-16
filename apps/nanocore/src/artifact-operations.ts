@@ -51,17 +51,17 @@ import { updateWorkerCheckpoint, upsertWorkerCheckpoint } from './runtime/worker
 import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from './scheduler-records.js';
 import {
-  MAX_ARTIFACT_MATERIAL_TEXT_BYTES,
-  readArtifactFileText,
-  verifyArtifactFilePayload,
-} from './storage/artifacts/file-records.js';
-import {
   ensureArtifactFolderSnapshot,
   readArtifactFolderSnapshot,
   ZIP_FOLDER_PROCESSOR,
 } from './storage/artifacts/artifact-folder-cache.js';
 import { FileAdmissionError } from './storage/artifacts/file-admission.js';
 import { ArtifactPayloadCleanupError } from './storage/artifacts/file-payload.js';
+import {
+  MAX_ARTIFACT_MATERIAL_TEXT_BYTES,
+  readArtifactFileText,
+  verifyArtifactFilePayload,
+} from './storage/artifacts/file-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { resolveDataRootPath } from './storage/fs-layout.js';
 
