@@ -6,7 +6,9 @@ import { ensureLocalUser } from '../auth/identity.js';
 import { startRecurringScheduleService } from '../runtime/recurring-schedule-service.js';
 import {
   cancelSchedulerAdmissionEntry,
+  denySchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
+  retryDeniedSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -931,4 +933,89 @@ it('selects a live monthly instant ahead of more than 128 expired-only fixed pre
   expect(db.sqlite.prepare('SELECT count(*) AS n FROM recurring_expired_ranges').get()).toEqual({
     n: 128,
   });
+});
+
+it('preserves one series waiting slot during explicit retry, including after restart', () => {
+  const { root, db, clock, store, setTime } = fixture();
+  const created = store.createAutomation('user_creator', definition);
+  const active = store.updateAutomation('user_creator', created.id, {
+    expectedRevision: 1,
+    status: 'active',
+    scheduledAt: clock(),
+  });
+  const first = store.commitAttempt(store.collectScanCandidates(clock())[0]!.id, active.revision, {
+    kind: 'ready',
+    payload,
+  })!;
+  denySchedulerAdmissionEntry(db, {
+    queueEntryId: first.queueEntryId!,
+    denialReason: 'authority-denied',
+  });
+  setTime('2026-10-16T00:00:05.000Z');
+  const later = store.commitAttempt(store.collectScanCandidates(clock())[0]!.id, active.revision, {
+    kind: 'ready',
+    payload,
+  })!;
+  const other = store.createAutomation('user_creator', {
+    ...definition,
+    name: 'Independent series',
+  });
+  const otherActive = store.updateAutomation('user_creator', other.id, {
+    expectedRevision: 1,
+    status: 'active',
+    scheduledAt: clock(),
+  });
+  const otherDue = store
+    .collectScanCandidates(clock())
+    .find((occurrence) => occurrence.scheduleId === other.id)!;
+  const otherAccepted = store.commitAttempt(otherDue.id, otherActive.revision, {
+    kind: 'ready',
+    payload,
+  })!;
+  expect(() =>
+    retryDeniedSchedulerAdmissionEntry(db, {
+      workspaceId: created.workspaceId,
+      queueEntryId: first.queueEntryId!,
+    })
+  ).toThrow('already has a queued occurrence');
+  expect(requireSchedulerAdmissionEntry(db, first.queueEntryId!).status).toBe('denied');
+  expect(store.getOccurrence(first.id)).toEqual(first);
+  expect(store.getOccurrence(later.id)).toEqual(later);
+  db.sqlite.close();
+  const reopened = openCoreDb(root);
+  fixtures.push({ root, db: reopened });
+  const restored = new AutomationStore(reopened, new WorkspaceMutationAdmission(), clock);
+  expect(() =>
+    retryDeniedSchedulerAdmissionEntry(reopened, {
+      workspaceId: created.workspaceId,
+      queueEntryId: first.queueEntryId!,
+    })
+  ).toThrow('already has a queued occurrence');
+  cancelSchedulerAdmissionEntry(reopened, {
+    workspaceId: created.workspaceId,
+    queueEntryId: later.queueEntryId!,
+  });
+  const retried = retryDeniedSchedulerAdmissionEntry(reopened, {
+    workspaceId: created.workspaceId,
+    queueEntryId: first.queueEntryId!,
+  });
+  expect(retried).toMatchObject({
+    queueEntryId: first.queueEntryId,
+    turnId: first.turnId,
+    status: 'queued',
+  });
+  expect(requireSchedulerAdmissionEntry(reopened, otherAccepted.queueEntryId!).status).toBe(
+    'queued'
+  );
+  expect(requireSchedulerAdmissionEntry(reopened, later.queueEntryId!).status).toBe('cancelled');
+  expect(restored.getOccurrence(first.id)).toEqual(first);
+  expect(restored.getOccurrence(later.id)).toEqual(later);
+  expect(restored.getOccurrence(otherAccepted.id)).toEqual(otherAccepted);
+  expect(
+    reopened.sqlite
+      .prepare(`SELECT count(*) AS count FROM recurring_occurrences occurrence
+    JOIN scheduler_admission_entries entry ON entry.queue_entry_id = occurrence.queue_entry_id
+    WHERE occurrence.schedule_id = ? AND occurrence.state = 'admission-accepted' AND entry.status = 'queued'`)
+      .get(created.id)
+  ).toEqual({ count: 1 });
 });
