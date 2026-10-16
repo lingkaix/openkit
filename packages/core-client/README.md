@@ -88,7 +88,7 @@ NanoHost administration, deployment backup and layout inspection use `client.ope
 
 Automation, Scheduler and Recovery use nine definition-derived `client.operations` methods with complete selector objects. Recovery retry carries Workspace, Thread, Turn and request identities. A declared empty success requires HTTP 204 with zero response bytes and maps to the output schema’s logical `null`; a different successful status or exposed bytes raise `ProtocolValidationError`; API failures still use `ApiCallError`, and other JSON responses retain schema validation. The old App methods are removed.
 
-Scheduler response fixtures mirror the current FIFO admission projection without retired priority, aging or pool-constraint fields.
+Scheduler response fixtures mirror the current FIFO admission projection without retired priority, aging or pool-constraint fields. Automation fixtures use a typed paused definition with an existing Thread, complete interval cadence and immutable responsible actor; resume supplies the expected revision and exact UTC instant.
 
 Server-managed JSON transfer uses `client.operations['workspace.export']({ workspaceId })`, `client.operations['workspace.import-dry-run']({ sourceWorkspaceId, exportId })`, and `client.operations['workspace.import']({ sourceWorkspaceId, exportId, requestId })`. The shared operation client preserves an explicit request id and generates one when omitted. Binary archive methods remain under `client.app`.
 
